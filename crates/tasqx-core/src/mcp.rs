@@ -76,6 +76,8 @@ struct PreparedCall {
     args: Value,
     /// D49/D66: whether the `task.get` answer carries the machine block.
     include_json: bool,
+    /// D146: which rendering the one rendered block is spelled in.
+    view: View,
     /// Whether the `annotation.add` answer echoes the stored body back
     /// (D72/D75's default) or a `body_bytes` length in its place.
     include_body: bool,
@@ -83,6 +85,24 @@ struct PreparedCall {
     paged_by_us: bool,
     /// Whether THIS transport supplied the `task.list` page.
     paged_list_by_us: bool,
+}
+
+/// Which of a task's two human renderings the rendered block carries (D146).
+///
+/// Transport-only, beside `include_json` and for the same reason: the engine
+/// returns one result, and this decides only how it is spelled on the way out.
+/// [`View::Markdown`] is the default because the reader of a tool result is the
+/// model. [`View::Card`] is for the one moment it is not — an agent handing the
+/// task to a PERSON, where a fixed-geometry box survives being pasted into a
+/// chat reply or a pull request and a markdown table reflows into the prose
+/// around it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum View {
+    /// `markdown::task_detail` / `markdown::task_brief` — the table views, and
+    /// what a caller that says nothing has always got.
+    Markdown,
+    /// D146's 72-column box card, inside a `text` fence.
+    Card,
 }
 
 /// What `dispatch` hands back, named so the prepare/dispatch/present seam
@@ -362,6 +382,16 @@ const TRANSPORT_ONLY_ARGS: &[(&str, &str, &str)] = &[
         "whether the response carries the machine-readable block beside the rendered view.      Same argument, same reason and same default as `tasqx_get_task`'s (D49/D66): the two      blocks are one result twice, and a brief's second block is the larger of the pair      because it carries the neighbourhood and the memory snippets as well. `task.brief`      has no opinion on how many blocks its answer is wrapped in.",
     ),
     (
+        "tasqx_get_task",
+        "view",
+        "which of the two human renderings the rendered block is spelled in (D146).      A card is a DOCUMENT — fixed 72-column geometry, no escape codes — because it is      pasted in front of a person, into a chat reply or a pull request, where a markdown      table reflows into the prose around it. Both views render the SAME `task.get`      result: nothing here reaches the store, and `check_params` would refuse the key.",
+    ),
+    (
+        "tasqx_brief_task",
+        "view",
+        "which of the two human renderings the task half of the brief is spelled in.      Same argument and same default as `tasqx_get_task`'s (D146), and only the task half      moves: what the prerequisites decided and what the store remembers follow the card      as the markdown they already were, because the choice is about the TASK and not      about its neighbourhood. `task.brief` has no opinion on how its answer is spelled.",
+    ),
+    (
         "tasqx_annotate_task",
         "include_body",
         "whether the response echoes the annotation body back beside its id and timestamp.      D72/D75 keep the echo ON by default — it is the caller's only evidence that a body      promised to be stored verbatim really was — so this is opt-OUT, not a reversal: a      caller who already holds every byte it sent (the common case for a long note) can      decline paying to receive them again, and one that wants the verbatim proof still      gets it by doing nothing. `annotation.add` has no opinion on how its own result is      echoed back over one particular transport.",
@@ -492,6 +522,20 @@ fn build_tool_specs() -> Vec<ToolSpec> {
                              annotation, and 66% for a task read with `annotations_limit: 0`. \
                              Send false when you are going to read the view."
                     },
+                    "view": {
+                        "type": "string",
+                        "enum": enum_of(["markdown", "card"]),
+                        "description": "How the rendered block is spelled. Default \"markdown\", \
+                             the view YOU read. \"card\" is the D146 box card: a fixed \
+                             72-column box-drawn summary inside a text code fence, for the \
+                             moment you hand this task to a PERSON — pasted into a chat reply \
+                             or a pull request it keeps its shape, where a markdown table \
+                             reflows into the prose around it. It is a SUMMARY: the detail \
+                             view carries the annotation bodies and the card quotes only the \
+                             first one. The JSON block is unchanged under either view — \
+                             `include_json` still decides whether it is sent, and the response \
+                             budget still spends it first."
+                    },
                     "annotations_offset": {
                         "type": "integer",
                         "minimum": 0,
@@ -547,6 +591,19 @@ fn build_tool_specs() -> Vec<ToolSpec> {
                              twice, and a brief's JSON half is the bigger one — it carries the \
                              neighbourhood and every memory snippet again. Pass false when you \
                              only need to READ the brief."
+                    },
+                    "view": {
+                        "type": "string",
+                        "enum": enum_of(["markdown", "card"]),
+                        "description": "How the task half of the brief is spelled. Default \
+                             \"markdown\", the view YOU read. \"card\" is the D146 box card: a \
+                             fixed 72-column box-drawn summary inside a text code fence, for \
+                             the moment you hand this task to a PERSON — pasted into a chat \
+                             reply or a pull request it keeps its shape. Only the task half \
+                             changes: what the prerequisites concluded and the memory hits \
+                             follow the card as the same markdown either way. The JSON block \
+                             is unchanged under either view — `include_json` still decides \
+                             whether it is sent, and the response budget still spends it first."
                     }
                 },
                 "required": ["ref"]
@@ -1593,7 +1650,14 @@ impl<'e> McpServer<'e> {
             );
         }
 
-        let prepared = self.prepare_args(spec, params);
+        // A refusal here is a refusal BEFORE dispatch: an argument this
+        // transport owns and cannot read is not a question the engine can be
+        // asked, and answering it anyway would mean running the call to hand
+        // back a response in a shape the caller did not ask for.
+        let prepared = match self.prepare_args(spec, params) {
+            Ok(prepared) => prepared,
+            Err(refusal) => return refusal,
+        };
 
         let outcome = dispatch(self.engine, spec.method, &prepared.args);
         self.present(spec, &prepared, outcome)
@@ -1603,7 +1667,12 @@ impl<'e> McpServer<'e> {
     /// place. `tools_call` used to interleave these five rewrites with the
     /// lookup, the fence and the response fitting, and every new tool behavior
     /// landed as another inline `if spec.method == ...` in the middle of it.
-    fn prepare_args(&self, spec: &ToolSpec, params: &Value) -> PreparedCall {
+    ///
+    /// `Err` is a finished `tools/call` result (an `isError` text block), not a
+    /// transport error: the only refusal raised here is a transport-only
+    /// argument whose VALUE this server cannot read, which the engine will
+    /// never see because the key never reaches it.
+    fn prepare_args(&self, spec: &ToolSpec, params: &Value) -> Result<PreparedCall, Value> {
         let mut args = params
             .get("arguments")
             .cloned()
@@ -1697,6 +1766,36 @@ impl<'e> McpServer<'e> {
             .get("include_body")
             .and_then(Value::as_bool)
             .unwrap_or(true);
+        // D146, and the one transport-only argument that is not a boolean.
+        //
+        // An unreadable value is REFUSED rather than defaulted, which is the
+        // opposite of what the two booleans above do with a non-boolean — and
+        // deliberately so: `include_json: "yes"` defaulted to the block the
+        // caller was already getting, while `view: "table"` defaulted would
+        // answer a request for a document with the view meant for a model, and
+        // the agent finds out when a person reads a reflowed table in a pull
+        // request. A JSON `null` counts as absent, the same D32 reading this
+        // file already applies to `client` and `actor`, so a client that
+        // serializes unset optionals as null keeps the default.
+        let view = match consumed.get("view").filter(|v| !v.is_null()) {
+            None => View::Markdown,
+            Some(v) => match v.as_str() {
+                Some("markdown") => View::Markdown,
+                Some("card") => View::Card,
+                _ => {
+                    return Err(tool_error(
+                        "bad_request",
+                        format!(
+                            "`view` takes \"markdown\" or \"card\", not {v}. \"markdown\" is \
+                             the default, the rendered view an agent reads; \"card\" is the \
+                             fixed-width box card for pasting in front of a person. Both \
+                             render the same result, so nothing is lost by retrying with \
+                             either one."
+                        ),
+                    ));
+                }
+            },
+        };
 
         let mut paged_by_us = false;
         if spec.method == "task.get" {
@@ -1740,12 +1839,32 @@ impl<'e> McpServer<'e> {
             }
         }
 
-        PreparedCall {
+        Ok(PreparedCall {
             args,
             include_json,
+            view,
             include_body,
             paged_by_us,
             paged_list_by_us,
+        })
+    }
+
+    /// The card options every card this transport draws is drawn with (D146).
+    ///
+    /// Always `Borders::Unicode`, never read off a capability: `Borders::Ascii`
+    /// exists for a destination that mangles box-drawing glyphs — a legacy
+    /// console, a proportional font — and there is no such destination here.
+    /// An MCP response is read in a chat surface, and this server has no
+    /// terminal to ask about anyway. `now` is the caller's, stamped once in
+    /// `present`, so a card and the detail view beside it cannot disagree
+    /// about what "2 hours ago" means.
+    fn card_opts(&self, now: jiff::Timestamp) -> crate::markdown::CardOpts {
+        crate::markdown::CardOpts {
+            detail: crate::markdown::DetailOpts {
+                time: self.time_format,
+                now,
+            },
+            borders: crate::markdown::Borders::Unicode,
         }
     }
 
@@ -1759,21 +1878,45 @@ impl<'e> McpServer<'e> {
                 // above; exactly one tool maps to `task.get`, so this is the
                 // same set either way.
                 if spec.method == "task.brief" {
+                    let now = jiff::Timestamp::now();
                     let opts = crate::markdown::DetailOpts {
                         time: self.time_format,
-                        now: jiff::Timestamp::now(),
+                        now,
+                    };
+                    let card_opts = self.card_opts(now);
+                    // Only the TASK half is a card. The tail — what each
+                    // prerequisite concluded, what this releases, what the
+                    // store remembers — is the markdown it always was, and is
+                    // appended OUTSIDE the fence, because a fence around prose
+                    // is a code block around sentences.
+                    let render = |r: &Value| match prepared.view {
+                        View::Markdown => crate::markdown::task_brief(r, &opts),
+                        View::Card => {
+                            let card = fence(&crate::markdown::task_card(r, &card_opts));
+                            card + &crate::markdown::brief_tail_text(r)
+                        }
                     };
                     if !prepared.include_json {
-                        return tool_ok_text(&crate::markdown::task_brief(&result, &opts));
+                        return tool_ok_text(&render(&result));
                     }
-                    return self.fit_brief_to_budget(result, &prepared.args, &opts);
+                    return self.fit_brief_to_budget(result, &prepared.args, &render);
                 }
                 if spec.method == "task.get" {
+                    // Stamped HERE, never inside the renderer: that is what
+                    // keeps `task_detail` and `task_card` pure and their golden
+                    // tests stable.
+                    let now = jiff::Timestamp::now();
                     let opts = crate::markdown::DetailOpts {
                         time: self.time_format,
-                        // Stamped HERE, never inside the renderer: that is what
-                        // keeps `task_detail` pure and its golden tests stable.
-                        now: jiff::Timestamp::now(),
+                        now,
+                    };
+                    let card_opts = self.card_opts(now);
+                    // D146: one renderer chosen here, then handed to the budget
+                    // whole, so D66's three steps run over whichever view the
+                    // caller asked for instead of being written twice.
+                    let render = |r: &Value| match prepared.view {
+                        View::Markdown => crate::markdown::task_detail(r, &opts),
+                        View::Card => fence(&crate::markdown::task_card(r, &card_opts)),
                     };
                     // No notice: `tool_ok_view_only` explains an omission the
                     // caller did not choose, and here the caller chose it.
@@ -1783,9 +1926,14 @@ impl<'e> McpServer<'e> {
                     // a small task is most of what declining the duplicate was
                     // meant to save.
                     if !prepared.include_json {
-                        return tool_ok_text(&crate::markdown::task_detail(&result, &opts));
+                        return tool_ok_text(&render(&result));
                     }
-                    return self.fit_to_budget(result, &prepared.args, &opts, prepared.paged_by_us);
+                    return self.fit_to_budget(
+                        result,
+                        &prepared.args,
+                        &render,
+                        prepared.paged_by_us,
+                    );
                 }
                 // The opt-out half of D72/D75's echo: the caller already holds
                 // every byte of `body` (it is right there in the request this
@@ -1857,14 +2005,19 @@ impl<'e> McpServer<'e> {
     /// the cut is worse than an oversized answer. A task whose newest single
     /// annotation exceeds the budget therefore still exceeds it — `0` is the
     /// caller's own escape, and it is documented on the parameter.
+    ///
+    /// `render` is a parameter rather than the fixed call to `task_detail` it
+    /// once was, because D146 gave the answer a second spelling: the steps
+    /// above are about how many BYTES a view costs and nothing about which view
+    /// it is, so the card runs the identical budget instead of a second copy of
+    /// it that would be the one nobody tests.
     fn fit_to_budget(
         &self,
         first: Value,
         args: &Value,
-        opts: &crate::markdown::DetailOpts,
+        render: &dyn Fn(&Value) -> String,
         paged_by_us: bool,
     ) -> Value {
-        let render = |result: &Value| crate::markdown::task_detail(result, opts);
         let json_len = |result: &Value| serde_json::to_string(result).map(|s| s.len()).unwrap_or(0);
 
         // Measured on the FINISHED block, never on the bare view: dropping the
@@ -1936,13 +2089,16 @@ impl<'e> McpServer<'e> {
     /// however large, which is the same rule `fit_to_budget` keeps for
     /// `annotations_limit` and for the same reason: a request second-guessed is
     /// a caller who can never ask for a big page on purpose.
+    ///
+    /// `render` is the caller's chosen view (D146), for `fit_to_budget`'s
+    /// reason: the lever and the measurement are the same whichever way the
+    /// task half is spelled.
     fn fit_brief_to_budget(
         &self,
         first: Value,
         args: &Value,
-        opts: &crate::markdown::DetailOpts,
+        render: &dyn Fn(&Value) -> String,
     ) -> Value {
-        let render = |result: &Value| crate::markdown::task_brief(result, opts);
         let json_len = |result: &Value| serde_json::to_string(result).map(|s| s.len()).unwrap_or(0);
         let view_only_fits = |view: &str| view_only_text(view).len() <= RESPONSE_BUDGET_BYTES;
 
@@ -2189,6 +2345,24 @@ fn tool_ok_view_only(view: &str) -> Value {
         "content": [ { "type": "text", "text": view_only_text(view) } ],
         "isError": false
     })
+}
+
+/// Wrap a block in a `text` code fence — D146's card, ready to be pasted.
+///
+/// The fence is not decoration. A 72-column box is a box only while its lines
+/// are rendered in a monospaced run, and the surfaces this response is read in
+/// render a text block as markdown: unfenced, the border glyphs join the
+/// paragraph around them and the card becomes one long line of `│`. `text`
+/// rather than a language name, because there is no language — a highlighter
+/// handed one would colour the borders.
+///
+/// The card already ends in a newline and the closing fence must not be
+/// preceded by a blank line, so the trailing one is taken off and put back:
+/// exactly one `\n` inside the fence and exactly one after it, whatever the
+/// block arrived with.
+fn fence(block: &str) -> String {
+    let body = block.strip_suffix('\n').unwrap_or(block);
+    format!("```text\n{body}\n```\n")
 }
 
 /// One text block, verbatim. The `task.get` view when the caller declined the

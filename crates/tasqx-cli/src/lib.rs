@@ -62,7 +62,7 @@ use clap::error::{ContextKind, ContextValue, ErrorKind};
 use clap::Parser;
 use serde_json::{json, Value};
 
-use tasqx_core::markdown::TimeFormat;
+use tasqx_core::markdown::{Borders, CardOpts, DetailOpts, TimeFormat};
 use tasqx_core::{
     daemon, datetime, dispatch, handle_envelope, notify, ApiError, Engine, ErrorCode, McpServer,
     Scope,
@@ -1001,11 +1001,15 @@ fn execute(cli: Cli) -> Exit {
             correlation,
             self_report,
         }) => run_done(&mut backend, &ctx, r#ref, &correlation, &self_report),
-        Some(Command::Show { r#ref }) => run_show(&mut backend, &ctx, r#ref),
+        Some(Command::Show { r#ref, card, ascii }) => {
+            run_show(&mut backend, &ctx, r#ref, card, ascii)
+        }
         Some(Command::Brief {
             r#ref,
             memory_limit,
-        }) => run_brief(&mut backend, &ctx, r#ref, memory_limit),
+            card,
+            ascii,
+        }) => run_brief(&mut backend, &ctx, r#ref, memory_limit, card, ascii),
         Some(Command::Cancel { r#ref }) => run_simple_ref(&mut backend, &ctx, "task.cancel", r#ref),
         Some(Command::Reopen { r#ref }) => run_simple_ref(&mut backend, &ctx, "task.reopen", r#ref),
         Some(Command::Undo) => run_undo(&mut backend, &ctx),
@@ -1053,9 +1057,15 @@ fn execute(cli: Cli) -> Exit {
         Some(Command::Tokens { action }) => run_tokens(&mut backend, &ctx, &action),
         Some(Command::Export { filter }) => run_export(&mut backend, &filter),
         Some(Command::Import { file }) => run_import(&mut backend, &ctx, file),
-        Some(Command::Next { filter }) => run_next(&mut backend, &ctx, &filter),
+        Some(Command::Next {
+            filter,
+            card,
+            ascii,
+        }) => run_next(&mut backend, &ctx, &filter, card, ascii),
         Some(Command::Pick { filter }) => run_pick(&mut backend, &ctx, &filter),
-        Some(Command::Why { r#ref }) => run_why(&mut backend, &ctx, r#ref),
+        Some(Command::Why { r#ref, card, ascii }) => {
+            run_why(&mut backend, &ctx, r#ref, card, ascii)
+        }
         Some(Command::Chart { .. }) => unreachable!("handled above"),
         Some(Command::Theme { .. }) => unreachable!("handled above"),
         Some(Command::Docs { .. }) => unreachable!("handled above"),

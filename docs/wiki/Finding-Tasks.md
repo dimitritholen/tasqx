@@ -28,6 +28,10 @@ The "what now" button. Prints the single most urgent task that isn't blocked.
 tasqx next
 ```
 
+`--card` prints that task as the same 72-column box-drawn card `tasqx show
+--card` draws (D146), meant for pasting into a document rather than reading
+at a terminal; `--ascii` draws its borders with `+ - |`.
+
 ## tasqx agenda
 
 *Aliases: `ag`, `cal`*
@@ -59,6 +63,16 @@ blocked, and its revision number.
 tasqx show 42
 ```
 
+`--card` prints the task as a fixed 72-column box-drawn card instead of the
+usual screen — meant for pasting into a document, a chat reply or a pull
+request rather than reading at a terminal. `--ascii` draws its borders with
+`+ - |` for destinations that mangle box-drawing characters.
+
+```console
+tasqx show 42 --card
+tasqx show 42 --card --ascii
+```
+
 ## tasqx why
 
 Every open task gets an urgency score, and the ordering of every list comes
@@ -84,6 +98,10 @@ this one, are an illustration; the rows are the contract.
 
 If tasqx ranks something surprisingly high or low, this is where the answer
 is.
+
+`--card` prints the D146 box card first, with this same arithmetic underneath
+it instead of the plain text header above; `--ascii` draws the card's borders
+with `+ - |`.
 
 ## The filter language
 

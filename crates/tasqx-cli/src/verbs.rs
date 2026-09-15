@@ -612,10 +612,38 @@ pub(crate) fn run_done(
     Ok((result, text))
 }
 
-pub(crate) fn run_show(be: &mut Backend, ctx: &Ctx, r#ref: String) -> CmdOutcome {
+pub(crate) fn run_show(
+    be: &mut Backend,
+    ctx: &Ctx,
+    r#ref: String,
+    card: bool,
+    ascii: bool,
+) -> CmdOutcome {
     let result = be.call("task.get", &json!({ "ref": r#ref }))?;
-    let text = render::task_detail(ctx, &result, jiff::Timestamp::now());
+    let text = if card {
+        tasqx_core::markdown::task_card(&result, &card_opts(ctx, ascii))
+    } else {
+        render::task_detail(ctx, &result, jiff::Timestamp::now())
+    };
     Ok((result, text))
+}
+
+/// [`CardOpts`] for `--card`/`--ascii` (D146): borders never follow
+/// `ctx.caps.unicode` — the card is a document, not a screen, and
+/// `tasqx show 42 --card | pbcopy` is the main use, where a pipe makes caps
+/// `PLAIN`. `--ascii` is the explicit fallback instead.
+fn card_opts(ctx: &Ctx, ascii: bool) -> CardOpts {
+    CardOpts {
+        detail: DetailOpts {
+            time: ctx.time_format,
+            now: jiff::Timestamp::now(),
+        },
+        borders: if ascii {
+            Borders::Ascii
+        } else {
+            Borders::Unicode
+        },
+    }
 }
 
 /// `tasqx check add|set|rm` (D138) — acceptance criteria on a task.
@@ -662,13 +690,19 @@ pub(crate) fn run_brief(
     ctx: &Ctx,
     r#ref: String,
     memory_limit: Option<u64>,
+    card: bool,
+    ascii: bool,
 ) -> CmdOutcome {
     let mut params = json!({ "ref": r#ref });
     if let Some(n) = memory_limit {
         params["memory_limit"] = json!(n);
     }
     let result = be.call("task.brief", &params)?;
-    let text = render::task_brief(ctx, &result, jiff::Timestamp::now());
+    let text = if card {
+        tasqx_core::markdown::task_brief_card(&result, &card_opts(ctx, ascii))
+    } else {
+        render::task_brief(ctx, &result, jiff::Timestamp::now())
+    };
     Ok((result, text))
 }
 
@@ -1300,7 +1334,13 @@ pub(crate) fn run_import(be: &mut Backend, ctx: &Ctx, file: String) -> CmdOutcom
 /// `tasqx list project:fin-9695` (which shows every status once a filter is
 /// given) would if used as a substitute. Parenthesised so a caller's own `or`
 /// binds correctly (`@working and (a or b)`, not `@working and a or b`).
-pub(crate) fn run_next(be: &mut Backend, ctx: &Ctx, filter: &[String]) -> CmdOutcome {
+pub(crate) fn run_next(
+    be: &mut Backend,
+    ctx: &Ctx,
+    filter: &[String],
+    card: bool,
+    ascii: bool,
+) -> CmdOutcome {
     // @working already excludes blocked tasks; highest urgency first, take one.
     let filter_str = if filter.is_empty() {
         "@working".to_string()
@@ -1309,18 +1349,53 @@ pub(crate) fn run_next(be: &mut Backend, ctx: &Ctx, filter: &[String]) -> CmdOut
     };
     let params = json!({ "filter": filter_str, "sort": ["-urgency"], "limit": 1 });
     let result = be.call("task.list", &params)?;
+    if card {
+        // A `task.list` row carries none of what a card draws — no checks, no
+        // unmet_blockers, no annotations (D146's card wants what `show` reads,
+        // not what `list` rows carry) — so `--card` re-reads the picked task
+        // through `task.get`, same as `card_opts`' callers in `run_show`. When
+        // that succeeds, the task.get result becomes BOTH the card and the
+        // JSON half of this call: `tasqx next --json --card` answers with the
+        // full task, not the `task.list` envelope plain `next` returns.
+        let picked = result
+            .get("tasks")
+            .and_then(Value::as_array)
+            .and_then(|tasks| tasks.first());
+        if let Some(full) = picked.and_then(|t| read_back(be, t)) {
+            let text = tasqx_core::markdown::task_card(&full, &card_opts(ctx, ascii));
+            return Ok((full, text));
+        }
+    }
     let text = render::next_task(ctx, &result, jiff::Timestamp::now());
     Ok((result, text))
 }
 
-pub(crate) fn run_why(be: &mut Backend, ctx: &Ctx, r#ref: String) -> CmdOutcome {
+pub(crate) fn run_why(
+    be: &mut Backend,
+    ctx: &Ctx,
+    r#ref: String,
+    card: bool,
+    ascii: bool,
+) -> CmdOutcome {
     // #150: `--json` used to be a bare `task.get` result, which never carried
     // the terms `urgency` sums — only the total the human form already showed.
     // `explain: true` is the additive opt-in (D56/D1) that puts the breakdown
     // on the wire, so the machine form answers the question the command name
     // promises instead of handing back the one number the caller already had.
     let result = be.call("task.get", &json!({ "ref": r#ref, "explain": true }))?;
-    let text = render::why(ctx, &result, jiff::Timestamp::now());
+    let text = if card {
+        // The card already carries the title as its header row, so `--card`
+        // follows it with `why_terms` alone rather than `why`'s own header +
+        // terms — printing the title twice would be the one thing a reader
+        // pasting this into a document does not want repeated.
+        format!(
+            "{}\n{}",
+            tasqx_core::markdown::task_card(&result, &card_opts(ctx, ascii)),
+            render::why_terms(ctx, &result, jiff::Timestamp::now())
+        )
+    } else {
+        render::why(ctx, &result, jiff::Timestamp::now())
+    };
     Ok((result, text))
 }
 

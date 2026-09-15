@@ -560,6 +560,12 @@ pub(super) enum Command {
         /// short_id or UUID.
         #[arg(add = crate::complete::candidates::task_ids())]
         r#ref: String,
+        /// Print the task as a 72-column box-drawn card, for pasting into a document.
+        #[arg(long)]
+        card: bool,
+        /// With --card: draw the borders with + - | instead of box-drawing characters.
+        #[arg(long, requires = "card")]
+        ascii: bool,
     },
     /// Everything needed before starting a task, in one read (maps to task.brief).
     #[command(after_help = crate::cmddoc::after_help("brief"))]
@@ -570,6 +576,12 @@ pub(super) enum Command {
         /// How many memory hits to show.
         #[arg(long, value_name = "N")]
         memory_limit: Option<u64>,
+        /// Print the task as a 72-column box-drawn card, for pasting into a document.
+        #[arg(long)]
+        card: bool,
+        /// With --card: draw the borders with + - | instead of box-drawing characters.
+        #[arg(long, requires = "card")]
+        ascii: bool,
     },
     /// Acceptance criteria on a task (maps to check.add/set/remove).
     #[command(after_help = crate::cmddoc::after_help("check"))]
@@ -915,6 +927,12 @@ pub(super) enum Command {
         /// widening to every status the way `tasqx list project:x` does.
         #[arg(add = crate::complete::candidates::filter_words())]
         filter: Vec<String>,
+        /// Print the task as a 72-column box-drawn card, for pasting into a document.
+        #[arg(long)]
+        card: bool,
+        /// With --card: draw the borders with + - | instead of box-drawing characters.
+        #[arg(long, requires = "card")]
+        ascii: bool,
     },
     /// Open the dashboard: an overview screen over the working set, deadlines,
     /// blocked work, projects, burndown and token spend (DESIGN.md §12-D58).
@@ -979,6 +997,12 @@ pub(super) enum Command {
         /// short_id or UUID.
         #[arg(add = crate::complete::candidates::task_ids())]
         r#ref: String,
+        /// Print the task as a 72-column box-drawn card, for pasting into a document.
+        #[arg(long)]
+        card: bool,
+        /// With --card: draw the borders with + - | instead of box-drawing characters.
+        #[arg(long, requires = "card")]
+        ascii: bool,
     },
     /// stdio one-shot: read ONE JSON request envelope on stdin, write ONE response.
     #[command(after_help = crate::cmddoc::after_help("api"))]
@@ -1120,7 +1144,7 @@ impl Command {
             | Command::Export { filter }
             | Command::Watch { filter }
             | Command::Pick { filter }
-            | Command::Next { filter }
+            | Command::Next { filter, .. }
             // `..` because `agenda` carries `--days` beside its tail; the dash
             // restoration is about the tail and nothing else.
             | Command::Agenda { filter, .. } => Some(filter),
