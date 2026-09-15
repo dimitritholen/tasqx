@@ -1214,7 +1214,8 @@ fn build_tool_specs() -> Vec<ToolSpec> {
             destructive: false,
             idempotent: true,
             description: "Make one task depend on another: `ref` is blocked \
-                until `depends_on` is done or cancelled. Returns the resulting \
+                until `depends_on` is done or cancelled; a `ref` that is itself \
+                already closed is never blocked. Returns the resulting \
                 dependency list and blocked state. A cycle is refused as a \
                 conflict.",
             schema: json!({

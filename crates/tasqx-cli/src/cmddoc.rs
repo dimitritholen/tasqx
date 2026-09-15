@@ -544,7 +544,7 @@ pub const COMMAND_REF: &[CmdDoc] = &[
         summary: "Make one task depend on another.",
         usage: "tasqx dep <ref> <depends_on>",
         examples: &[ex_norun("tasqx dep 2 1", "task 2 waits on task 1")],
-        notes: &["`<ref>` becomes blocked until `<depends_on>` is done or cancelled."],
+        notes: &["`<ref>` becomes blocked until `<depends_on>` is done or cancelled; a `<ref>` that is itself already closed is never blocked."],
         see_also: &["undep", "show"],
         topic: Topic::Capturing,
     },

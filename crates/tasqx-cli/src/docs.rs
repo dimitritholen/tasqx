@@ -1427,10 +1427,10 @@ fn page_commands() -> String {
     // ---- dep
     s.push_str(&h3("dep and undep"));
     s.push_str(&p(
-        "<code>tasqx dep 2 1</code> reads \"#2 depends on #1\". A task with at least one \
-         not-yet-done dependency is <strong>blocked</strong>, and blocked tasks drop out of \
-         <code>@working</code> — which is exactly why <code>next</code> never hands you something \
-         you cannot start.",
+        "<code>tasqx dep 2 1</code> reads \"#2 depends on #1\". An open task with at least one \
+         dependency that is not yet done or cancelled is <strong>blocked</strong>, and blocked \
+         tasks drop out of <code>@working</code> — which is exactly why <code>next</code> never \
+         hands you something you cannot start.",
     ));
     s.push_str(&snippet(
         "tasqx dep 2 1",
@@ -1650,7 +1650,7 @@ fn page_filters() -> String {
             &["<code>project:work.tasqx</code>", "Exact project match."],
             &["<code>status:pending</code>", "Exact status: <code>backlog</code>, <code>pending</code>, <code>active</code>, <code>done</code>, <code>cancelled</code>."],
             &["<code>@working</code>", "Status pending or active, <em>and</em> not blocked. The default filter."],
-            &["<code>@blocked</code>", "At least one dependency that is not yet done. Also spelled <code>+blocked</code> or <code>status:blocked</code>."],
+            &["<code>@blocked</code>", "Open, with at least one dependency that is not yet done or cancelled. Also spelled <code>+blocked</code> or <code>status:blocked</code>."],
             &["<code>due.before:&lt;date&gt;</code>", "Due strictly before that instant. Takes any date <code>due:</code> takes — <code>tomorrow</code>, <code>friday</code>, <code>2026-07-25</code>, <code>eom</code>, <code>\"in 3 days\"</code>, or a full RFC3339 instant."],
             &["<code>due.after:&lt;date&gt;</code>", "Due strictly after that instant. Same date grammar."],
         ],

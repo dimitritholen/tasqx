@@ -1490,15 +1490,17 @@ impl Engine {
         statements += 1;
         let mut blocked = HashSet::new();
         {
-            // Same gate `is_blocked` takes, and for the same reason (D-158):
-            // a dependent already `done`/`cancelled` is never blocked, no
-            // matter what its blocker's status is.
-            let terminal = Status::sql_in_list(Status::is_terminal);
+            // The same predicate the per-task readers take — literally, from
+            // `unmet_blocker_source` (D145) — so a dependent already
+            // `done`/`cancelled` is never blocked here either, no matter what
+            // its blocker's status is. What differs is the SELECT: one
+            // statement classifying every task at once, because a query per
+            // row is the D70 cost this snapshot exists to avoid, which is why
+            // this reader appends its own `SELECT DISTINCT` rather than
+            // calling `unmet_blockers` per task.
             let mut stmt = self.conn.prepare(&format!(
-                "SELECT DISTINCT d.task_id FROM dependencies d \
-                 JOIN tasks t ON t.id = d.depends_on_id \
-                 JOIN tasks self ON self.id = d.task_id \
-                 WHERE t.status NOT IN ({terminal}) AND self.status NOT IN ({terminal})"
+                "SELECT DISTINCT d.task_id {}",
+                Self::unmet_blocker_source()
             ))?;
             let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
             for row in rows {
@@ -1837,48 +1839,64 @@ impl Engine {
 
     // ---- blocked / dependency helpers ---------------------------------------
 
-    /// A task is *blocked* if it has any dependency that is not yet *resolved*.
-    /// A dependency is resolved when it is `done` OR `cancelled` (DESIGN §3, D11):
-    /// a cancelled blocker will never complete, so keeping the dependent blocked
-    /// forever is a trap — cancellation releases dependents. Consistent with
-    /// `compute_unblocked`. Read helper; no mutation.
-    pub(super) fn is_blocked(&self, task_id: &str) -> Result<bool, ApiError> {
-        // Enum-derived, never caller text — see `Status::sql_in_list`.
+    /// The one place the "still blocked" rule is spelled (D145): the
+    /// FROM/JOIN/WHERE that every blocked reader appends its own SELECT — and
+    /// its own `d.task_id = ?1` and ORDER BY, where it wants one task — to.
+    /// Three hand-written copies of this clause is what let one of them drift,
+    /// so there is now one; a rule that exists in a single place cannot
+    /// disagree with itself.
+    ///
+    /// BOTH sides gate on `status NOT IN (terminal)`. The blocker's side is
+    /// D11 (resolved means `done` **or** `cancelled`). The dependent's own
+    /// side is D145: a closed task has no unmet blockers regardless of what it
+    /// once depended on, so a blocker still being open no longer counts for
+    /// it. Missing the `self` gate is the defect itself — a task completed
+    /// while its blocker was open kept reporting `blocked: true` forever, and
+    /// a fresh `dependency.add` could set the flag on a closed task after the
+    /// fact. `self` is the dependent; `t` is the blocker, joined the way it
+    /// already was.
+    ///
+    /// Enum-derived, never caller text — see `Status::sql_in_list`.
+    fn unmet_blocker_source() -> String {
         let terminal = Status::sql_in_list(Status::is_terminal);
-        // BOTH sides gate on `status NOT IN (terminal)`: a task closed
-        // (`done`/`cancelled`) is never blocked regardless of what it once
-        // depended on — `blocked` is meaningless for work that is already
-        // finished, and answering `true` for it is the D-158 defect (a task
-        // completed while its blocker was still open kept reporting
-        // `blocked: true` forever, and the flag could be set on a closed task
-        // after the fact by a fresh `dependency.add`). `self` here is the
-        // dependent named by `task_id`, joined the same way `t` (the blocker)
-        // already is.
-        let n: i64 = self.conn.query_row(
-            &format!(
-                "SELECT COUNT(*) FROM dependencies d \
-                 JOIN tasks t ON t.id = d.depends_on_id \
-                 JOIN tasks self ON self.id = d.task_id \
-                 WHERE d.task_id = ?1 AND t.status NOT IN ({terminal}) \
-                 AND self.status NOT IN ({terminal})"
-            ),
-            params![task_id],
-            |r| r.get(0),
-        )?;
-        Ok(n > 0)
+        format!(
+            "FROM dependencies d \
+             JOIN tasks t ON t.id = d.depends_on_id \
+             JOIN tasks self ON self.id = d.task_id \
+             WHERE t.status NOT IN ({terminal}) AND self.status NOT IN ({terminal})"
+        )
+    }
+
+    /// Whether `task_id` is still blocked — the same predicate
+    /// [`Self::unmet_blockers`] lists ([`Self::unmet_blocker_source`]),
+    /// answered as a bool for the callers that only need the flag:
+    /// `dependency.add` and `dependency.remove`, which ask inside their write
+    /// transaction. `EXISTS` stops at the first matching edge instead of
+    /// building a JSON object per blocker to answer a yes/no.
+    ///
+    /// `task.get` does NOT call this: it takes the flag from the single
+    /// `unmet_blockers` call it already makes, so its two fields cannot
+    /// disagree and the read costs one statement rather than two (D145).
+    pub(super) fn is_blocked(&self, task_id: &str) -> Result<bool, ApiError> {
+        let sql = format!(
+            "SELECT EXISTS(SELECT 1 {} AND d.task_id = ?1)",
+            Self::unmet_blocker_source()
+        );
+        Ok(self
+            .conn
+            .query_row(&sql, params![task_id], |r| r.get::<_, bool>(0))?)
     }
 
     /// The dependencies still keeping `task_id` blocked — short_id and title,
-    /// sorted — or an empty vec when there are none. The same resolved/not
-    /// distinction as [`Self::is_blocked`], just with the rows kept instead of
-    /// only counted (finding #8, audit-2026-09).
+    /// sorted — or an empty vec when there are none. THE answer to "what still
+    /// blocks this task": [`Self::is_blocked`] is the bool form of the same
+    /// predicate, and `task.get` reads `blocked` and `unmet_blockers` off this
+    /// one call so the two can never disagree (finding #8, audit-2026-09;
+    /// D145).
     pub(super) fn unmet_blockers(&self, task_id: &str) -> Result<Vec<Value>, ApiError> {
-        let terminal = Status::sql_in_list(Status::is_terminal);
         let mut stmt = self.conn.prepare(&format!(
-            "SELECT t.short_id, t.title FROM dependencies d \
-             JOIN tasks t ON t.id = d.depends_on_id \
-             WHERE d.task_id = ?1 AND t.status NOT IN ({terminal}) \
-             ORDER BY t.short_id"
+            "SELECT t.short_id, t.title {} AND d.task_id = ?1 ORDER BY t.short_id",
+            Self::unmet_blocker_source()
         ))?;
         let rows = stmt.query_map(params![task_id], |r| {
             Ok(json!({ "short_id": r.get::<_, i64>(0)?, "title": r.get::<_, String>(1)? }))
@@ -2114,14 +2132,18 @@ impl Engine {
             Some(budget) => json!(fresh > budget),
             None => Value::Null,
         };
-        obj["blocked"] = json!(self.is_blocked(&task.id)?);
-
         // Finding #8 (audit-2026-09): `blocked` said THAT the task cannot be
         // worked, never WHY — `why` computed the urgency arithmetic and never
         // mentioned the one fact that decides whether the number is
         // actionable. `depends_on` already carries every dependency; this
         // narrows to the ones still open, with the title `why` needs to name.
-        obj["unmet_blockers"] = json!(self.unmet_blockers(&task.id)?);
+        //
+        // One query feeding both fields (D145): `blocked` is exactly "this
+        // list is non-empty", so asking a second time would be a second
+        // statement and a second chance for the two to answer differently.
+        let unmet = self.unmet_blockers(&task.id)?;
+        obj["blocked"] = json!(!unmet.is_empty());
+        obj["unmet_blockers"] = json!(unmet);
 
         // #150 / D1: `tasqx why` renders the urgency breakdown, but `--json`
         // was a bare `task.get` result and `task.get` never carried the terms
