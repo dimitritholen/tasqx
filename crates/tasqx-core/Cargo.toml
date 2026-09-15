@@ -28,6 +28,13 @@ notify-rust = { version = "4", optional = true }
 rusqlite = { version = "0.40.1", features = ["bundled"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
+# D146's box card is a fixed-width grid, and a grid is made of CELLS: a CJK
+# ideograph and most emoji occupy two, a combining mark occupies none. `len()`
+# counts bytes and `chars().count()` counts neither, so either one leaves a
+# border in the wrong column for any title that is not plain ASCII. Not new to
+# the dependency graph — `crates/tasqx-cli` already builds this exact version
+# for the same reason — so the lockfile gains nothing by naming it here too.
+unicode-width = "0.2.2"
 uuid = { version = "1.23.5", features = ["v7", "v5"] }
 
 [target.'cfg(windows)'.dependencies]

@@ -29,6 +29,10 @@ nothing — it will not quietly search everything instead. When you want wider,
 
 `tasqx show` is still the right command when you only want the task.
 
+`--card` works here too, and prints the same box-drawn card `tasqx show
+--card` prints, followed by the brief's own **Depends on** / **Blocks** /
+**From memory** sections.
+
 ## tasqx start
 
 *Alias: `s`*

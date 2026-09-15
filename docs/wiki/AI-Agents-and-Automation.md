@@ -54,6 +54,14 @@ Safety properties worth knowing:
   host may inject into the agent's system prompt; under read-only scope it
   names no write tool.
 
+`tasqx_get_task` and `tasqx_brief_task` take a `view` argument, `"markdown"`
+by default. Pass `view: "card"` when the task is going in front of a person
+rather than being read by the agent itself: the rendered block becomes a
+fixed-width, box-drawn card meant to be pasted whole into a chat reply or a
+document, instead of the usual prose. Everything else about the response,
+including the JSON block, is unchanged. The same card is available from a
+shell: `tasqx show 42 --card` prints the identical bytes.
+
 For the full workflow — what deserves a backlog entry, searching memory before
 starting, annotating before completing — see the
 [AI agent guide](../guides/ai-agent-workflow.md) and the

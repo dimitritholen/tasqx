@@ -19,12 +19,13 @@ A backlog entry costs attention every time someone reads the list, so only real 
 - Decompose a feature into ordered tasks: `tasqx_add_task` (title, project, priority H/M/L, estimate, tags), then `tasqx_add_dependency` to chain them. A dependency marks the dependent task `blocked`; a cycle is refused as a conflict, so you can build chains without checking for loops yourself.
 - Acceptance criteria go in `tasqx_add_check`, not in an annotation. An annotation is prose, so nothing can ask at completion time whether it was met; a check has a state. tasqx never RUNS a check — the criterion is a claim and the evidence is a citation, both stored verbatim — so mark them yourself with `tasqx_set_check`, or pass `checks_passed` (with `evidence`) on completion. `failed` is a normal outcome worth recording; remove a check only when the criterion was the wrong thing to ask.
 - Long-form context — links, design notes, anything that is not a pass/fail criterion — goes in `tasqx_annotate_task`. The body is stored verbatim, multi-line markdown included, so write it the way you'd want to read it back.
+- Open a task's first annotation with one plain-language paragraph saying what the work is and why. There is no separate description field; that paragraph is what the D146 card shows as its Description row.
 
 ## The work loop
 
 Ask for the working set, not the whole list: `tasqx_list_tasks` with filter `"project:<name> @working"`. Blocked, waiting, and completed tasks are invisible there **by design** — an empty working set with open tasks elsewhere means everything is blocked, not that the work is gone.
 
-To read one task, `tasqx_get_task` answers with two content blocks (D49): tasqx-rendered markdown first, then the JSON. Use the markdown as-is — layout is tasqx's job — instead of recomposing the detail from the JSON fields. When you are about to START the task rather than just look at it, use `tasqx_brief_task` instead: same task, same rendering, plus what its prerequisites decided and the memory you would otherwise have had to guess a query for.
+To read one task, `tasqx_get_task` answers with two content blocks (D49): tasqx-rendered markdown first, then the JSON. Use the markdown as-is — layout is tasqx's job — instead of recomposing the detail from the JSON fields. When you are about to START the task rather than just look at it, use `tasqx_brief_task` instead: same task, same rendering, plus what its prerequisites decided and the memory you would otherwise have had to guess a query for. When the task is being shown to a HUMAN rather than read by you, ask for `view: "card"` instead and paste the fenced card back verbatim — it is a fixed-width box-drawn document meant for a document, not a screen (D146).
 
 For each task the loop is:
 

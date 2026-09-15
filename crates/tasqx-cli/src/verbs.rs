@@ -612,10 +612,38 @@ pub(crate) fn run_done(
     Ok((result, text))
 }
 
-pub(crate) fn run_show(be: &mut Backend, ctx: &Ctx, r#ref: String) -> CmdOutcome {
+pub(crate) fn run_show(
+    be: &mut Backend,
+    ctx: &Ctx,
+    r#ref: String,
+    card: bool,
+    ascii: bool,
+) -> CmdOutcome {
     let result = be.call("task.get", &json!({ "ref": r#ref }))?;
-    let text = render::task_detail(ctx, &result, jiff::Timestamp::now());
+    let text = if card {
+        tasqx_core::markdown::task_card(&result, &card_opts(ctx, ascii))
+    } else {
+        render::task_detail(ctx, &result, jiff::Timestamp::now())
+    };
     Ok((result, text))
+}
+
+/// [`CardOpts`] for `--card`/`--ascii` (D146): borders never follow
+/// `ctx.caps.unicode` — the card is a document, not a screen, and
+/// `tasqx show 42 --card | pbcopy` is the main use, where a pipe makes caps
+/// `PLAIN`. `--ascii` is the explicit fallback instead.
+fn card_opts(ctx: &Ctx, ascii: bool) -> CardOpts {
+    CardOpts {
+        detail: DetailOpts {
+            time: ctx.time_format,
+            now: jiff::Timestamp::now(),
+        },
+        borders: if ascii {
+            Borders::Ascii
+        } else {
+            Borders::Unicode
+        },
+    }
 }
 
 /// `tasqx check add|set|rm` (D138) — acceptance criteria on a task.
@@ -662,13 +690,19 @@ pub(crate) fn run_brief(
     ctx: &Ctx,
     r#ref: String,
     memory_limit: Option<u64>,
+    card: bool,
+    ascii: bool,
 ) -> CmdOutcome {
     let mut params = json!({ "ref": r#ref });
     if let Some(n) = memory_limit {
         params["memory_limit"] = json!(n);
     }
     let result = be.call("task.brief", &params)?;
-    let text = render::task_brief(ctx, &result, jiff::Timestamp::now());
+    let text = if card {
+        tasqx_core::markdown::task_brief_card(&result, &card_opts(ctx, ascii))
+    } else {
+        render::task_brief(ctx, &result, jiff::Timestamp::now())
+    };
     Ok((result, text))
 }
 

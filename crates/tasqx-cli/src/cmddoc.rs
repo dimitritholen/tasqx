@@ -323,9 +323,14 @@ pub const COMMAND_REF: &[CmdDoc] = &[
         aliases: &["get"],
         method: "task.get",
         summary: "Show one task in full detail.",
-        usage: "tasqx show <ref>",
-        examples: &[ex("tasqx show 1")],
-        notes: &["Full detail: tags, annotations, dependencies, blocked state, `_rev`."],
+        usage: "tasqx show <ref> [--card [--ascii]]",
+        examples: &[ex("tasqx show 1"), ex("tasqx show 1 --card")],
+        notes: &[
+            "Full detail: tags, annotations, dependencies, blocked state, `_rev`.",
+            "`--card` prints a fixed 72-column box-drawn card meant to be pasted into a \
+             document (a chat, a PR); `--ascii` draws its borders with `+ - |`. The default \
+             screen is unchanged (D146).",
+        ],
         see_also: &["modify", "why", "annotate"],
         topic: Topic::Capturing,
     },
@@ -643,10 +648,11 @@ pub const COMMAND_REF: &[CmdDoc] = &[
         aliases: &[],
         method: "task.brief",
         summary: "Everything needed before starting a task, in one read.",
-        usage: "tasqx brief <ref> [--memory-limit N]",
+        usage: "tasqx brief <ref> [--memory-limit N] [--card [--ascii]]",
         examples: &[
             ex("tasqx brief 1"),
             ex("tasqx brief 1 --memory-limit 3"),
+            ex("tasqx brief 1 --card"),
         ],
         notes: &[
             "The task, what each of its prerequisites concluded, what it blocks, and memory \
@@ -654,6 +660,9 @@ pub const COMMAND_REF: &[CmdDoc] = &[
              so nobody has to guess search terms.",
             "Memory is scoped to the task's project and does not widen when that finds \
              nothing: `tasqx memory search` is the wider read.",
+            "`--card` prints a fixed 72-column box-drawn card meant to be pasted into a \
+             document (a chat, a PR); `--ascii` draws its borders with `+ - |`. The default \
+             screen is unchanged (D146).",
         ],
         see_also: &["show", "next", "memory"],
         topic: Topic::Capturing,

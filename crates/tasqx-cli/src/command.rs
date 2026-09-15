@@ -560,6 +560,12 @@ pub(super) enum Command {
         /// short_id or UUID.
         #[arg(add = crate::complete::candidates::task_ids())]
         r#ref: String,
+        /// Print the task as a 72-column box-drawn card, for pasting into a document.
+        #[arg(long)]
+        card: bool,
+        /// With --card: draw the borders with + - | instead of box-drawing characters.
+        #[arg(long, requires = "card")]
+        ascii: bool,
     },
     /// Everything needed before starting a task, in one read (maps to task.brief).
     #[command(after_help = crate::cmddoc::after_help("brief"))]
@@ -570,6 +576,12 @@ pub(super) enum Command {
         /// How many memory hits to show.
         #[arg(long, value_name = "N")]
         memory_limit: Option<u64>,
+        /// Print the task as a 72-column box-drawn card, for pasting into a document.
+        #[arg(long)]
+        card: bool,
+        /// With --card: draw the borders with + - | instead of box-drawing characters.
+        #[arg(long, requires = "card")]
+        ascii: bool,
     },
     /// Acceptance criteria on a task (maps to check.add/set/remove).
     #[command(after_help = crate::cmddoc::after_help("check"))]

@@ -9,6 +9,15 @@
 //! is not tidiness: output that depends on any of those is not identical between
 //! callers, which is the entire property this exists to provide. `now` is a
 //! parameter for the same reason `compute_attribution` takes one.
+//!
+//! Two spellings live here, and D146 says which is which: the tables above
+//! ([`task_detail`], [`task_brief`]) and the box card below ([`task_card`],
+//! [`task_brief_card`]). The box card is a DOCUMENT BLOCK, and the CLI's rail
+//! card is a SCREEN — a screen knows the terminal it found and may reflow and
+//! paint; a block is pasted into a chat reply or a pull request, where the only
+//! thing holding a box together is that every line is the same number of cells.
+//! So the card's geometry is fixed rather than fitted, and it stays as pure as
+//! everything else in this file.
 
 use crate::types::Status;
 use jiff::Timestamp;
@@ -319,7 +328,21 @@ fn annotations(out: &mut String, result: &Value, opts: &DetailOpts) {
 /// heading over "none" spends the reader's attention to say nothing.
 pub fn task_brief(result: &Value, opts: &DetailOpts) -> String {
     let mut out = task_detail(result.get("task").unwrap_or(result), opts);
+    brief_tail(&mut out, result);
+    out
+}
 
+/// Everything a brief adds after its task half: the neighbourhood and the
+/// memory hits.
+///
+/// Split out because D146 gives the task half a second spelling (the box card)
+/// and the tail must not fork with it. Two copies would drift one section at a
+/// time, and the brief's whole claim is that a task reads the same however it
+/// arrived — which a tail that says something different under a card would
+/// break exactly where nobody is looking. Takes no `DetailOpts`: nothing below
+/// formats an instant or a duration, so the tail is the same bytes under every
+/// `TimeFormat`.
+fn brief_tail(out: &mut String, result: &Value) {
     let n = result.get("neighbourhood");
     let list = |key: &str| -> &[Value] {
         n.and_then(|v| v.get(key))
@@ -402,7 +425,6 @@ pub fn task_brief(result: &Value, opts: &DetailOpts) -> String {
             ));
         }
     }
-    out
 }
 
 fn row(out: &mut String, label: &str, value: &str) {
@@ -595,4 +617,889 @@ fn round_div(secs: i64, unit: i64) -> i64 {
     } else {
         q
     }
+}
+
+// ---- the box card (D146) ----------------------------------------------------
+//
+// The box card is a DOCUMENT BLOCK, and the CLI's rail card (D78) is a SCREEN.
+// That is the whole reason both exist. A screen is drawn to the terminal it
+// found: it knows the width, the theme and whether colour survives the pipe, so
+// it may reflow and it may paint. A document block is pasted into a chat reply,
+// a pull request or an issue, where none of those are knowable and the only
+// thing that holds a box together is that every line is the same number of
+// cells. So the geometry here is FIXED rather than fitted, and the renderer
+// stays as pure as the rest of this module: same task, same bytes, in every
+// caller's conversation.
+
+/// Which glyphs draw the card's box.
+///
+/// [`Borders::Ascii`] is not a downgrade for old terminals — this output is
+/// never drawn to a terminal. It is for the destinations that mangle
+/// box-drawing characters: a proportional font that gives `─` a different
+/// advance than a space, a plain-text email, a diff viewer that renders the
+/// card in a font with no box-drawing coverage at all.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Borders {
+    /// `┌─┬┐│├┼┤└┴┘` — the one to reach for, and correct wherever a monospaced
+    /// font with box-drawing coverage renders it.
+    Unicode,
+    /// `+`, `-` and `|`, which every font has had since before Unicode.
+    Ascii,
+}
+
+/// The eleven glyphs of one border style, named by position: `t`op, `m`iddle,
+/// `b`ottom × `l`eft, `j`oin, `r`ight, plus the horizontal fill and the
+/// vertical. Resolved once per card so no row re-decides the style.
+struct Glyphs {
+    tl: char,
+    tj: char,
+    tr: char,
+    ml: char,
+    mj: char,
+    mr: char,
+    bl: char,
+    bj: char,
+    br: char,
+    h: char,
+    v: char,
+}
+
+impl Borders {
+    fn glyphs(self) -> Glyphs {
+        match self {
+            Borders::Unicode => Glyphs {
+                tl: '┌',
+                tj: '┬',
+                tr: '┐',
+                ml: '├',
+                mj: '┼',
+                mr: '┤',
+                bl: '└',
+                bj: '┴',
+                br: '┘',
+                h: '─',
+                v: '│',
+            },
+            Borders::Ascii => Glyphs {
+                tl: '+',
+                tj: '+',
+                tr: '+',
+                ml: '+',
+                mj: '+',
+                mr: '+',
+                bl: '+',
+                bj: '+',
+                br: '+',
+                h: '-',
+                v: '|',
+            },
+        }
+    }
+}
+
+/// A duration on the card, ALWAYS the compact single-unit form — `4h`, never
+/// `PT4H (4h)` — whatever `opts.time` says.
+///
+/// D146: the table above is read by a model and the card is read by a PERSON,
+/// in a document. `fmt_duration`'s `TimeFormat` exists for the table's reader,
+/// who wants the machine spelling beside the human one; the card's reader
+/// wants a duration they can compare at a glance — an estimate against a
+/// tracked time, one task against the next — and `PT4H (4h)` says the same
+/// thing twice to buy that reader nothing. So the card fixes the format to
+/// the one `fmt_duration` already gives under [`TimeFormat::Relative`], rather
+/// than growing a third vocabulary. Unparseable input falls back to the raw
+/// string, as [`fmt_duration`] does.
+fn card_duration(iso: &str, opts: &DetailOpts) -> String {
+    fmt_duration(
+        iso,
+        &DetailOpts {
+            time: TimeFormat::Relative,
+            now: opts.now,
+        },
+    )
+}
+
+/// An instant on the card, in the form its `opts.time` calls for — but never
+/// the clock: `Both` prints the calendar DATE (the first 10 cells of the
+/// RFC-3339 string) beside the relative phrase, not the full timestamp
+/// [`fmt_instant`] would.
+///
+/// D146 again: a duration is a span with nothing to be wrong about, but a
+/// clock is a moment, and the store's clock is UTC. `docs/maintainers/terminal-style.md`
+/// §3 makes this argument for the CLI's own screens — a UTC clock reads as the
+/// wall clock to anyone not on UTC, and a deadline stamped `17:00` is wrong by
+/// the reader's offset the moment they are not in London in winter — and a
+/// card pasted into a chat or a pull request is read by exactly that
+/// unknown-timezone audience the terminal is not. The date carries no such
+/// claim, so it stays; the relative phrase already said "when" in words that
+/// need no timezone at all.
+///
+/// `Iso` and `Relative` are unchanged from [`fmt_instant`]: `Iso` is the exact
+/// stored string, kept so the goldens that pin it stay deterministic, and
+/// `Relative` was already clock-free. Unparseable input falls back to the raw
+/// string, as [`fmt_instant`] does.
+fn card_instant(iso: &str, opts: &DetailOpts) -> String {
+    if iso.is_empty() {
+        return String::new();
+    }
+    let Ok(then) = iso.parse::<Timestamp>() else {
+        return iso.to_string();
+    };
+    let rel = humanize_ago(then, opts.now);
+    match opts.time {
+        TimeFormat::Iso => iso.to_string(),
+        TimeFormat::Relative => rel,
+        TimeFormat::Both => {
+            let date = if iso.len() >= 10 { &iso[..10] } else { iso };
+            format!("{date} ({rel})")
+        }
+    }
+}
+
+/// Everything [`task_card`] needs: how values are written, and what draws the
+/// box. `detail` is the same [`DetailOpts`] the markdown views take, so an
+/// instant means the same thing in a card as in a detail view — one vocabulary,
+/// the reason [`fmt_instant`] is public at all.
+pub struct CardOpts {
+    /// How instants and durations are written, and the `now` they are relative
+    /// to.
+    pub detail: DetailOpts,
+    /// Which glyphs draw the box.
+    pub borders: Borders,
+}
+
+/// How many display cells one card line occupies, borders included.
+///
+/// 72 rather than 80: the card is pasted into places that indent it — a
+/// blockquote, a nested list, a code fence inside a comment already inset — and
+/// the eight cells of slack are what keep it from wrapping there. Every line of
+/// [`task_card`] is exactly this wide, which is the property that makes it a
+/// box at all.
+pub const CARD_WIDTH: usize = 72;
+
+/// Cells of TEXT in the label column (the column is this plus one space each
+/// side). A label longer than this is cut rather than allowed to push the
+/// border, because a card with one long line is no longer a box.
+const LABEL_TEXT: usize = 11;
+/// Cells of text in the value column, and therefore the width every value is
+/// wrapped to.
+const VALUE_TEXT: usize = 54;
+const LABEL_CELL: usize = LABEL_TEXT + 2;
+const VALUE_CELL: usize = VALUE_TEXT + 2;
+/// The geometry, checked at compile time rather than trusted to the three
+/// constants above staying in step: a card whose rules and rows disagree by one
+/// cell is the one defect this module cannot recover from at runtime.
+const _: () = assert!(1 + LABEL_CELL + 1 + VALUE_CELL + 1 == CARD_WIDTH);
+/// Wrapped lines any one prose value may occupy before it is cut with `…`. A
+/// card is a summary; the annotation it quotes is one `task.get` away.
+const PROSE_LINES: usize = 8;
+
+/// One row: a label, and the value already wrapped into value-column lines.
+///
+/// The lines are computed before anything is drawn so a row can be dropped for
+/// being empty without the border logic knowing what kind of row it was. `lines`
+/// is never empty — an empty vec would silently delete a row that passed the
+/// "has content" test.
+struct Row {
+    label: String,
+    lines: Vec<String>,
+}
+
+/// One task as a box card, 72 cells wide on every line (D146).
+///
+/// Accepts either a `task.get` result or a `task.brief` one: a brief carries
+/// the task under `task`, and when it does, its `neighbourhood` is read too, so
+/// **Unblocks** can name what this task releases instead of listing bare
+/// numbers. Detecting that here rather than asking the caller to unwrap means
+/// one function answers "render this task", whatever read produced it.
+///
+/// Never panics and never returns an empty string, for [`task_detail`]'s
+/// reason: presentation that can fail is worse than the JSON it replaces. Every
+/// field is read tolerantly and a missing one costs its row.
+///
+/// This is a SUMMARY. Created, modified, `_rev`, urgency, the token table and
+/// the evidence under each check are deliberately absent — they are what the
+/// detail view is for, and a card that carried them would be a worse detail
+/// view rather than a better card.
+pub fn task_card(result: &Value, opts: &CardOpts) -> String {
+    let task = result.get("task").unwrap_or(result);
+    let neighbourhood = result.get("neighbourhood");
+    let g = opts.borders.glyphs();
+
+    let sid = task.get("short_id").and_then(Value::as_i64).unwrap_or(0);
+    let header = Row {
+        label: format!("Task #{sid}"),
+        lines: wrap(&sanitize(&str_of(task, "title")), VALUE_TEXT),
+    };
+    let rows = card_rows(task, neighbourhood, opts);
+
+    let mut out = String::new();
+    out.push_str(&rule(&g, g.tl, g.tj, g.tr));
+    write_row(&mut out, &g, &header);
+    // The middle rule separates the header from the body, so a card with no
+    // body rows gets none: two rules with nothing between them is a line that
+    // marks a boundary that is not there.
+    if !rows.is_empty() {
+        out.push_str(&rule(&g, g.ml, g.mj, g.mr));
+    }
+    for row in &rows {
+        write_row(&mut out, &g, row);
+    }
+    out.push_str(&rule(&g, g.bl, g.bj, g.br));
+    out
+}
+
+/// A `task.brief` result (D136) with the box card as its task half.
+///
+/// The tail is `brief_tail` — byte for byte what [`task_brief`] appends —
+/// because the choice between a table and a card is a choice about the TASK,
+/// not about what its prerequisites decided or what the store remembers.
+pub fn task_brief_card(result: &Value, opts: &CardOpts) -> String {
+    let mut out = task_card(result, opts);
+    brief_tail(&mut out, result);
+    out
+}
+
+/// A brief's tail alone: everything [`task_brief`] and [`task_brief_card`]
+/// append after their task half.
+///
+/// Public for the one caller that cannot use either of them whole — the MCP
+/// transport, which wraps ONLY the card in a `text` fence (D146) and must put
+/// the tail outside it, because a fence around the prerequisites' conclusions
+/// is a code block around sentences. Composing `task_card` + this is then the
+/// same bytes as `task_brief_card`, which `tests/markdown_card.rs` pins so the
+/// two ways of building a brief card cannot drift.
+///
+/// Takes no [`DetailOpts`]: nothing in the tail formats an instant or a
+/// duration, so it is the same text under every [`TimeFormat`].
+pub fn brief_tail_text(result: &Value) -> String {
+    let mut out = String::new();
+    brief_tail(&mut out, result);
+    out
+}
+
+/// The body rows, in reading order: what it is, when it is due, what it says,
+/// what holds it up, what it holds up, what would prove it done, what it cost.
+///
+/// Every row is conditional. A card is read at a glance, and a row that says
+/// "none" spends a line to answer a question the reader did not ask — the same
+/// rule [`task_brief`] follows for its sections.
+fn card_rows(task: &Value, neighbourhood: Option<&Value>, opts: &CardOpts) -> Vec<Row> {
+    let mut rows: Vec<Row> = Vec::new();
+    let o = &opts.detail;
+
+    let status = status_line(task, o);
+    if !status.is_empty() {
+        push_row(&mut rows, "Status", &status);
+    }
+
+    if let Some(tags) = task.get("tags").and_then(Value::as_array) {
+        let names: Vec<&str> = tags.iter().filter_map(Value::as_str).collect();
+        if !names.is_empty() {
+            push_row(&mut rows, "Tags", &names.join(", "));
+        }
+    }
+    for (key, label) in [("due", "Due"), ("scheduled", "Scheduled"), ("wait", "Wait")] {
+        if let Some(v) = task
+            .get(key)
+            .and_then(Value::as_str)
+            .filter(|v| !v.is_empty())
+        {
+            push_row(&mut rows, label, &card_instant(v, o));
+        }
+    }
+    if let Some(r) = task
+        .get("recurrence")
+        .and_then(Value::as_str)
+        .filter(|r| !r.is_empty())
+    {
+        push_row(&mut rows, "Repeats", r);
+    }
+
+    let page = annotation_page(task);
+    if let Some(text) = description(task, page) {
+        rows.push(Row {
+            label: "Description".to_string(),
+            lines: text,
+        });
+    }
+
+    let unmet = array_of(task, "unmet_blockers");
+    if !unmet.is_empty() {
+        rows.push(Row {
+            label: "Blocked by".to_string(),
+            lines: numbered_lines(unmet),
+        });
+    }
+    let depends_on = short_ids(task, "depends_on");
+    // Only when nothing in it is still open, because then the list is NEWS:
+    // every prerequisite is resolved and the reason the task was waiting is
+    // gone. With an unmet blocker above, repeating the same ids under a second
+    // label would say the opposite twice.
+    if !depends_on.is_empty() && unmet.is_empty() {
+        let refs: Vec<String> = depends_on.iter().map(|n| format!("#{n}")).collect();
+        push_row(
+            &mut rows,
+            "Depends on",
+            &format!("{} — all done", refs.join(", ")),
+        );
+    }
+    if let Some(lines) = unblocks(task, neighbourhood) {
+        rows.push(Row {
+            label: "Unblocks".to_string(),
+            lines,
+        });
+    }
+    if let Some(lines) = check_lines(task) {
+        rows.push(Row {
+            label: "Checks".to_string(),
+            lines,
+        });
+    }
+
+    if let Some(budget) = task.get("budget_tokens").and_then(Value::as_i64) {
+        let fresh = task
+            .get("fresh_tokens")
+            .and_then(Value::as_i64)
+            .unwrap_or(0);
+        let over = task.get("over").and_then(Value::as_bool).unwrap_or(false);
+        push_row(
+            &mut rows,
+            "Budget",
+            &format!(
+                "{fresh} / {budget} fresh tokens{}",
+                if over { " — over" } else { "" }
+            ),
+        );
+    }
+
+    // Only on a closed task, where "what came of it" is a question with an
+    // answer. On an open one the newest annotation is a progress note, and
+    // labelling it "Delivered" would report work that has not happened.
+    if matches!(str_of(task, "status").as_str(), "done" | "cancelled") {
+        if let Some(last) = page.last() {
+            rows.push(Row {
+                label: "Delivered".to_string(),
+                lines: prose(&first_paragraph(&str_of(last, "body"))),
+            });
+        }
+    }
+    if let Some(notes) = notes_line(task, page, o) {
+        push_row(&mut rows, "Notes", &notes);
+    }
+    rows
+}
+
+/// The one line that answers "what is this task": state, weight, size, spend,
+/// where it lives. Five facts a reader compares across tasks, and five rows
+/// would be four lines of a card spent on labels.
+///
+/// The unrecognized marker is SHORT here where [`status_cell`] spells the whole
+/// accepted set. That table has a column to grow into; this has 54 cells, and
+/// the fact worth carrying is that this build does not know the word — the set
+/// it does know is one detail view away.
+fn status_line(task: &Value, opts: &DetailOpts) -> String {
+    let mut parts: Vec<String> = Vec::new();
+    let status = str_of(task, "status");
+    if !status.is_empty() {
+        let unknown = task.get("status_unrecognized").and_then(Value::as_bool) == Some(true);
+        parts.push(if unknown {
+            format!("{status} (unrecognized)")
+        } else {
+            status
+        });
+    }
+    if let Some(p) = task
+        .get("priority")
+        .and_then(Value::as_str)
+        .filter(|p| !p.is_empty())
+    {
+        parts.push(p.to_string());
+    }
+    if let Some(e) = task
+        .get("estimate")
+        .and_then(Value::as_str)
+        .filter(|e| !e.is_empty())
+    {
+        parts.push(format!("est {}", card_duration(e, opts)));
+    }
+    // `tracked` is ALWAYS present in a task object and reads `PT0S` on a task
+    // nobody has timed, so presence cannot be the test: a "tracked 0s" on every
+    // untimed task is the noise this row exists to avoid. An unparseable value
+    // is kept — that is a fault worth seeing, not a zero.
+    if let Some(t) = task
+        .get("tracked")
+        .and_then(Value::as_str)
+        .filter(|t| !t.is_empty() && crate::util::duration_secs(t) != Some(0))
+    {
+        parts.push(format!("tracked {}", card_duration(t, opts)));
+    }
+    if let Some(p) = task
+        .get("project")
+        .and_then(Value::as_str)
+        .filter(|p| !p.is_empty())
+    {
+        parts.push(format!("project {p}"));
+    }
+    parts.join(" · ")
+}
+
+/// The annotations this result actually carries, oldest first — the order
+/// `task.get` returns a page in, and the order [`annotations`] renders it in.
+fn annotation_page(task: &Value) -> &[Value] {
+    array_of(task, "annotations")
+}
+
+/// The first paragraph of the OLDEST annotation, which by this project's own
+/// convention is where the task's approach and acceptance criteria were
+/// written down. Not the title — a title is a handle, and a card that only
+/// repeated it would tell a reader nothing they did not have.
+///
+/// Returns `None` when there are no annotations at all. When the oldest one is
+/// not on this page, the row says so instead of quoting the oldest annotation
+/// PRESENT and passing it off as the first: a page is taken from the recent
+/// end, so "annotations[0]" and "the first note" are the same object only at
+/// offset zero with nothing older elided.
+fn description(task: &Value, page: &[Value]) -> Option<Vec<String>> {
+    let total = task
+        .get("annotations_total")
+        .and_then(Value::as_u64)
+        .map(|t| t as usize)
+        .unwrap_or(page.len());
+    if total == 0 {
+        return None;
+    }
+    let offset = task
+        .get("annotations_offset")
+        .and_then(Value::as_u64)
+        .unwrap_or(0) as usize;
+    if offset + page.len() < total {
+        return Some(wrap(
+            "(first note not on this page — re-read with annotations_offset)",
+            VALUE_TEXT,
+        ));
+    }
+    let first = page.first()?;
+    Some(prose(&first_paragraph(&str_of(first, "body"))))
+}
+
+/// `3 annotations, newest <instant>`, or just the count.
+///
+/// The instant is only claimed when the page ends at the newest annotation —
+/// `offset` counts from the recent end, so on any later page the last row is
+/// NOT the newest and naming its timestamp would date the task wrong. The count
+/// is the total either way, which is the number the reader is deciding on.
+fn notes_line(task: &Value, page: &[Value], opts: &DetailOpts) -> Option<String> {
+    let total = task
+        .get("annotations_total")
+        .and_then(Value::as_u64)
+        .map(|t| t as usize)
+        .unwrap_or(page.len());
+    if total == 0 {
+        return None;
+    }
+    let offset = task
+        .get("annotations_offset")
+        .and_then(Value::as_u64)
+        .unwrap_or(0) as usize;
+    let plural = if total == 1 { "" } else { "s" };
+    let mut line = format!("{total} annotation{plural}");
+    if offset == 0 {
+        if let Some(created) = page
+            .last()
+            .map(|a| str_of(a, "created"))
+            .filter(|c| !c.is_empty())
+        {
+            line.push_str(&format!(", newest {}", card_instant(&created, opts)));
+        }
+    }
+    Some(line)
+}
+
+/// What this task releases when it is done. Bare `#n` from the task alone; a
+/// title too when a brief's `neighbourhood` is beside it, because "unblocks #70"
+/// answers a question nobody has and "unblocks #70 conformance test" answers the
+/// one they do.
+fn unblocks(task: &Value, neighbourhood: Option<&Value>) -> Option<Vec<String>> {
+    let named = neighbourhood
+        .and_then(|n| n.get("blocks"))
+        .and_then(Value::as_array)
+        .map(Vec::as_slice)
+        .unwrap_or(&[]);
+    let mut ids = short_ids(task, "blocks");
+    if ids.is_empty() {
+        // A brief whose task half lost its `blocks` array still knows what it
+        // blocks: the neighbourhood is the same edge read the other way.
+        ids = named
+            .iter()
+            .filter_map(|b| b.get("short_id").and_then(Value::as_i64))
+            .collect();
+    }
+    if ids.is_empty() {
+        return None;
+    }
+    if named.is_empty() {
+        let refs: Vec<String> = ids.iter().map(|n| format!("#{n}")).collect();
+        return Some(wrap(&refs.join(", "), VALUE_TEXT));
+    }
+    let titled: Vec<Value> = ids
+        .iter()
+        .map(|id| {
+            let title = named
+                .iter()
+                .find(|b| b.get("short_id").and_then(Value::as_i64) == Some(*id))
+                .map(|b| str_of(b, "title"))
+                .unwrap_or_default();
+            serde_json::json!({ "short_id": id, "title": title })
+        })
+        .collect();
+    Some(numbered_lines(&titled))
+}
+
+/// The acceptance criteria as a checklist, under a bar when there are enough of
+/// them to be worth a proportion.
+///
+/// Evidence is not shown. It is quoted prose under each criterion in the detail
+/// view and would be most of the card here — the fact a card carries is how
+/// many are proven, and by whose marker.
+fn check_lines(task: &Value) -> Option<Vec<String>> {
+    let rows = array_of(task, "checks");
+    if rows.is_empty() {
+        return None;
+    }
+    let passed = rows
+        .iter()
+        .filter(|c| str_of(c, "state") == "passed")
+        .count();
+    let mut lines = Vec::new();
+    // Under three, the bar says less than the list under it: a two-cell block
+    // for "1/2" is a picture of a fraction the reader can already see.
+    if rows.len() >= 3 {
+        lines.push(progress_bar(passed, rows.len()));
+    }
+    for c in rows {
+        let mark = match str_of(c, "state").as_str() {
+            "passed" => "x",
+            "failed" => "!",
+            _ => " ",
+        };
+        let body = sanitize(&str_of(c, "body"));
+        // Four cells: exactly `[x] `, so a criterion that wraps reads as one
+        // item rather than as a new unmarked line.
+        lines.extend(wrap_hanging(&format!("[{mark}] {body}"), 4));
+    }
+    Some(lines)
+}
+
+/// `[####------] 12/30`, ten cells wide whatever the total.
+///
+/// Rounded, with both ends pinned. A full bar means every criterion passed and
+/// an empty one means none did, so 29 of 30 never draws full and 1 of 30 never
+/// draws empty — the two readings a glance would get exactly backwards.
+fn progress_bar(passed: usize, total: usize) -> String {
+    const CELLS: i64 = 10;
+    let mut filled = round_div(passed as i64 * CELLS, (total as i64).max(1)).clamp(0, CELLS);
+    if passed > 0 && filled == 0 {
+        filled = 1;
+    }
+    if passed < total && filled == CELLS {
+        filled = CELLS - 1;
+    }
+    let filled = filled as usize;
+    format!(
+        "[{}{}] {passed}/{total}",
+        "#".repeat(filled),
+        "-".repeat(CELLS as usize - filled)
+    )
+}
+
+/// `#12 the title`, one entry per line, continuations hanging under the title.
+/// Used for both blockers and dependents: the same shape carries both, and the
+/// label above says which.
+fn numbered_lines(entries: &[Value]) -> Vec<String> {
+    let mut lines = Vec::new();
+    for e in entries {
+        let sid = e.get("short_id").and_then(Value::as_i64).unwrap_or(0);
+        let prefix = format!("#{sid} ");
+        let indent = width(&prefix);
+        lines.extend(wrap_hanging(
+            &format!("{prefix}{}", sanitize(&str_of(e, "title"))),
+            indent,
+        ));
+    }
+    lines
+}
+
+/// A quoted paragraph, wrapped and capped at [`PROSE_LINES`] with `…` on the
+/// cut line. The cap is what keeps a card a card: one annotation in this
+/// project routinely runs longer than the whole box.
+fn prose(text: &str) -> Vec<String> {
+    let lines = wrap(text, VALUE_TEXT);
+    if lines.len() <= PROSE_LINES {
+        return lines;
+    }
+    let mut cut: Vec<String> = lines.into_iter().take(PROSE_LINES).collect();
+    if let Some(last) = cut.last_mut() {
+        *last = with_ellipsis(last);
+    }
+    cut
+}
+
+/// `…` appended, with as much of the line dropped as that costs. The marker is
+/// one cell, and the line it lands on is already full, so something has to go.
+fn with_ellipsis(line: &str) -> String {
+    let mut s = line.trim_end().to_string();
+    while width(&s) + 1 > VALUE_TEXT {
+        if s.pop().is_none() {
+            break;
+        }
+    }
+    s.push('…');
+    s
+}
+
+/// The text up to the first blank line, as one line.
+///
+/// Bodies in this project open with the ruling and then argue for it (the
+/// convention `tasqx_add_memory` asks for, applied to annotations). The first
+/// paragraph is therefore the summary somebody already wrote, which is a better
+/// summary than any this renderer could compute.
+fn first_paragraph(body: &str) -> String {
+    let para: Vec<&str> = body
+        .lines()
+        .skip_while(|l| l.trim().is_empty())
+        .take_while(|l| !l.trim().is_empty())
+        .map(str::trim)
+        .collect();
+    sanitize(&para.join(" "))
+}
+
+/// Text made safe to put inside a box: tabs and newlines become one space,
+/// every other control character is dropped.
+///
+/// Stored text is whatever an agent wrote, and an annotation carrying a tab, a
+/// stray `\r` or the `\x1b[` of a copied terminal capture would otherwise break
+/// the card in a way no width arithmetic can fix — a newline ends the line
+/// early, a tab is expanded by the reader rather than by us, and an escape
+/// sequence is invisible where it is counted and visible where it is not.
+/// U+2028 and U+2029 are here for the same reason and are not `is_control`.
+fn sanitize(s: &str) -> String {
+    s.chars()
+        .filter_map(|c| match c {
+            '\t' | '\n' | '\u{2028}' | '\u{2029}' => Some(' '),
+            c if c.is_control() => None,
+            c => Some(c),
+        })
+        .collect()
+}
+
+/// Word-wrap to `width` cells.
+fn wrap(s: &str, width: usize) -> Vec<String> {
+    wrap_widths(s, width, width)
+}
+
+/// Word-wrap with a hanging indent: the first line gets the full column, every
+/// continuation is inset by `indent` and wrapped `indent` cells narrower.
+///
+/// The indent is capped at half the column so a pathological prefix cannot
+/// squeeze the text down to a letter per line.
+fn wrap_hanging(s: &str, indent: usize) -> Vec<String> {
+    let indent = indent.min(VALUE_TEXT / 2);
+    let mut lines = wrap_widths(s, VALUE_TEXT, VALUE_TEXT - indent);
+    for line in lines.iter_mut().skip(1) {
+        *line = format!("{}{line}", " ".repeat(indent));
+    }
+    lines
+}
+
+/// The wrapper both of the above are made of: `first` cells for the first line,
+/// `rest` for the others.
+///
+/// Greedy, on whitespace, measuring in CELLS. A word too wide for a line of its
+/// own is broken rather than allowed to overflow — a 120-character URL in an
+/// annotation is not rare, and a box that one line pushes open is not a box.
+/// Always returns at least one line, so a row that has been decided worth
+/// drawing is drawn.
+fn wrap_widths(s: &str, first: usize, rest: usize) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    let mut cur = String::new();
+    let mut cur_w = 0usize;
+    for word in s.split_whitespace() {
+        let mut word = word;
+        loop {
+            let limit = if out.is_empty() { first } else { rest }.max(1);
+            let sep = usize::from(!cur.is_empty());
+            let w = width(word);
+            if cur_w + sep + w <= limit {
+                if sep == 1 {
+                    cur.push(' ');
+                }
+                cur.push_str(word);
+                cur_w += sep + w;
+                break;
+            }
+            if !cur.is_empty() {
+                let room = limit.saturating_sub(cur_w + sep);
+                // A word too wide for a line of its OWN is going to be broken
+                // wherever it lands, so it is broken here, filling the line it
+                // is already on. Flushing first would leave a hole — a URL
+                // after `See`, or a CJK criterion after its `[ ]` marker,
+                // pushed off a line that then holds three cells of text. Not
+                // when the hole is small: under four cells the fragment left
+                // behind is noise rather than a word.
+                if w > rest.max(1) && room >= 4 {
+                    let (head, tail) = split_at_width(word, room);
+                    if sep == 1 {
+                        cur.push(' ');
+                    }
+                    cur.push_str(head);
+                    out.push(std::mem::take(&mut cur));
+                    cur_w = 0;
+                    word = tail;
+                    if word.is_empty() {
+                        break;
+                    }
+                    continue;
+                }
+                // Otherwise try again on a line of its own: it may well fit
+                // there, and `rest` may differ from `first`, so the limit is
+                // re-read.
+                out.push(std::mem::take(&mut cur));
+                cur_w = 0;
+                continue;
+            }
+            let (head, tail) = split_at_width(word, limit);
+            out.push(head.to_string());
+            word = tail;
+            if word.is_empty() {
+                break;
+            }
+        }
+    }
+    if !cur.is_empty() || out.is_empty() {
+        out.push(cur);
+    }
+    out
+}
+
+/// Split `s` at the last char boundary that still fits in `max` cells.
+///
+/// Char by char with the widths accumulated, because a cell count cannot be
+/// divided out of a byte offset. A zero-width char (a combining mark, a
+/// variation selector, a ZWJ) attaches to what precedes it rather than starting
+/// the next line, where it would modify the wrong character or nothing at all.
+/// At least one char always moves, so a caller looping on the tail terminates.
+fn split_at_width(s: &str, max: usize) -> (&str, &str) {
+    let mut w = 0usize;
+    let mut end = 0usize;
+    for (i, c) in s.char_indices() {
+        let cw = unicode_width::UnicodeWidthChar::width(c).unwrap_or(0);
+        if cw > 0 && w + cw > max {
+            if end == 0 {
+                // Wider than the whole line: take it anyway. `fit` below is the
+                // backstop, and the alternative is a loop that never advances.
+                end = i + c.len_utf8();
+            }
+            break;
+        }
+        w += cw;
+        end = i + c.len_utf8();
+    }
+    s.split_at(end)
+}
+
+/// One horizontal rule, `CARD_WIDTH` cells wide.
+fn rule(g: &Glyphs, left: char, join: char, right: char) -> String {
+    let mut s = String::new();
+    s.push(left);
+    for _ in 0..LABEL_CELL {
+        s.push(g.h);
+    }
+    s.push(join);
+    for _ in 0..VALUE_CELL {
+        s.push(g.h);
+    }
+    s.push(right);
+    s.push('\n');
+    s
+}
+
+/// One row, one line per wrapped value line. The label is written once; a
+/// continuation leaves the label column blank, which is what makes a wrapped
+/// value read as one value rather than as several unlabelled rows.
+fn write_row(out: &mut String, g: &Glyphs, row: &Row) {
+    for (i, line) in row.lines.iter().enumerate() {
+        let label = if i == 0 { row.label.as_str() } else { "" };
+        out.push(g.v);
+        out.push_str(&cell(label, LABEL_TEXT));
+        out.push(g.v);
+        out.push_str(&cell(line, VALUE_TEXT));
+        out.push(g.v);
+        out.push('\n');
+    }
+}
+
+/// One column: a space, the text padded (or cut) to `text_width` cells, a
+/// space.
+///
+/// The padding is computed from the MEASURED width and the text is cut to fit
+/// before it is measured, which together are why a line can be neither short
+/// nor long. This is the invariant's last line of defence: the wrapper above
+/// counts cells char by char, and a grapheme cluster whose parts measure wider
+/// than the cluster does would otherwise leave a line a cell adrift.
+fn cell(text: &str, text_width: usize) -> String {
+    let text = fit(text, text_width);
+    let pad = text_width.saturating_sub(width(&text));
+    let mut s = String::with_capacity(text_width + 2);
+    s.push(' ');
+    s.push_str(&text);
+    for _ in 0..pad {
+        s.push(' ');
+    }
+    s.push(' ');
+    s
+}
+
+/// `s` cut to at most `max` cells, re-measuring after every char dropped.
+/// Re-measuring is the point: dropping the last char of a cluster can change
+/// what the rest of it measures, so the answer cannot be computed once.
+fn fit(s: &str, max: usize) -> String {
+    if width(s) <= max {
+        return s.to_string();
+    }
+    let mut out = s.to_string();
+    while width(&out) > max {
+        if out.pop().is_none() {
+            break;
+        }
+    }
+    out
+}
+
+/// How many display cells this text occupies — the only unit a card can be
+/// measured in, for the reason `crates/tasqx-cli/src/render.rs` names: a column
+/// is a grid position and a grid is made of cells, not of bytes or chars.
+fn width(s: &str) -> usize {
+    unicode_width::UnicodeWidthStr::width(s)
+}
+
+/// A wrapped row from one already-complete value string.
+fn push_row(rows: &mut Vec<Row>, label: &str, value: &str) {
+    rows.push(Row {
+        label: label.to_string(),
+        lines: wrap(&sanitize(value), VALUE_TEXT),
+    });
+}
+
+/// An array field, or an empty slice. Never panics on a non-array.
+fn array_of<'a>(v: &'a Value, key: &str) -> &'a [Value] {
+    v.get(key)
+        .and_then(Value::as_array)
+        .map(Vec::as_slice)
+        .unwrap_or(&[])
+}
+
+/// The integer ids in an array field, ignoring anything that is not one.
+fn short_ids(v: &Value, key: &str) -> Vec<i64> {
+    array_of(v, key).iter().filter_map(Value::as_i64).collect()
 }

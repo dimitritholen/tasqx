@@ -59,6 +59,16 @@ blocked, and its revision number.
 tasqx show 42
 ```
 
+`--card` prints the task as a fixed 72-column box-drawn card instead of the
+usual screen — meant for pasting into a document, a chat reply or a pull
+request rather than reading at a terminal. `--ascii` draws its borders with
+`+ - |` for destinations that mangle box-drawing characters.
+
+```console
+tasqx show 42 --card
+tasqx show 42 --card --ascii
+```
+
 ## tasqx why
 
 Every open task gets an urgency score, and the ordering of every list comes
