@@ -331,6 +331,111 @@ fn a_self_report_after_attribution_already_banked_is_refused() {
     );
 }
 
+// ---- token.remove (#210) --------------------------------------------------------
+
+/// #210's only coverage before this was the response-shape case in
+/// `conformance.rs`, which freezes the JSON's SHAPE and nothing about its
+/// truth: changing `DELETE FROM token_usage WHERE id = ?1` to `... AND 0` — a
+/// delete that matches nothing — still answers the identical `removed` object
+/// and passes conformance untouched. The row must actually leave the table,
+/// a sibling measurement must survive untouched, `task.get` must stop
+/// counting the gone row, and the event must carry the FULL measurement (not
+/// just its id) so an operator who removed the wrong one can rebuild it with
+/// `token.add`.
+#[test]
+fn token_remove_deletes_exactly_that_row_and_the_event_carries_it() {
+    let e = engine();
+    let sid = e.task_add(&json!({ "title": "t" })).unwrap()["short_id"].clone();
+
+    let first = e
+        .token_add(&json!({
+            "ref": sid, "tool": "claude-code", "source": "self-report", "confidence": "medium",
+            "input_tokens": 100, "output_tokens": 10,
+            "cache_read_tokens": 5, "cache_creation_tokens": 1,
+        }))
+        .unwrap()["measurement"]
+        .clone();
+    let second = e
+        .token_add(&json!({
+            "ref": sid, "tool": "claude-code", "source": "self-report", "confidence": "medium",
+            "input_tokens": 200, "output_tokens": 20,
+            "cache_read_tokens": 7, "cache_creation_tokens": 2,
+        }))
+        .unwrap()["measurement"]
+        .clone();
+    let before = e.task_get(&json!({ "ref": sid })).unwrap();
+
+    let r = e
+        .token_remove(&json!({ "measurement_id": first["id"].clone() }))
+        .unwrap();
+    assert_eq!(
+        r["removed"], first,
+        "the response must echo the exact measurement that was removed"
+    );
+    assert_eq!(r["short_id"], sid);
+
+    assert_eq!(
+        count(&e, "SELECT COUNT(*) FROM token_usage"),
+        1,
+        "the removed row must leave token_usage and the sibling must survive"
+    );
+
+    let got = e.task_get(&json!({ "ref": sid })).unwrap();
+    let toks = got["tokens"].as_array().unwrap();
+    assert_eq!(
+        toks.len(),
+        1,
+        "task.get must stop counting the removed measurement"
+    );
+    assert_eq!(
+        toks[0]["id"], second["id"],
+        "the surviving measurement must be the one never removed"
+    );
+    assert_eq!(
+        got["_rev"], before["_rev"],
+        "token.remove writes no task update and must not bump rev"
+    );
+
+    let payload = event_payload(&e, "token.remove");
+    assert_eq!(
+        payload["removed"], first,
+        "the event must carry the full measurement, not just its id, so an \
+         operator can rebuild it with token.add"
+    );
+}
+
+/// A wrong id is the same `not_found` contract every other by-id lookup in
+/// this engine answers, and the refusal must not have touched the live row
+/// count or minted a stray event.
+#[test]
+fn token_remove_refuses_an_unknown_id_and_writes_nothing() {
+    let e = engine();
+    let sid = e.task_add(&json!({ "title": "t" })).unwrap()["short_id"].clone();
+    e.token_add(&json!({
+        "ref": sid, "tool": "claude-code", "source": "self-report", "confidence": "medium",
+        "input_tokens": 100,
+    }))
+    .unwrap();
+    let events_before = count(&e, "SELECT COUNT(*) FROM events");
+
+    let err = e
+        .token_remove(&json!({ "measurement_id": "no-such-id" }))
+        .unwrap_err();
+    assert_eq!(err.code, ErrorCode::NotFound);
+    assert!(err.message.contains("no-such-id"), "{}", err.message);
+
+    assert_eq!(
+        count(&e, "SELECT COUNT(*) FROM token_usage"),
+        1,
+        "a refused removal must not touch the live row"
+    );
+    assert_eq!(
+        count(&e, "SELECT COUNT(*) FROM events"),
+        events_before,
+        "a refused removal must write no event"
+    );
+}
+
 // ---- export / import (D12) ------------------------------------------------------
 
 #[test]
@@ -450,6 +555,22 @@ fn event_payload(e: &Engine, op: &str) -> serde_json::Value {
         .query_row(
             "SELECT payload FROM events WHERE op = ?1 ORDER BY id DESC LIMIT 1",
             [op],
+            |r| r.get(0),
+        )
+        .unwrap();
+    serde_json::from_str(&raw).unwrap()
+}
+
+/// [`event_payload`]'s per-entity counterpart: the newest event of `op` for
+/// ONE entity, parsed — for fixtures with more than one task in play, where
+/// `event_payload`'s bare `op` filter could read another task's event.
+fn event_payload_for(e: &Engine, entity_id: &str, op: &str) -> serde_json::Value {
+    let raw: String = e
+        .conn()
+        .query_row(
+            "SELECT payload FROM events WHERE entity_id = ?1 AND op = ?2 \
+             ORDER BY rowid DESC LIMIT 1",
+            (entity_id, op),
             |r| r.get(0),
         )
         .unwrap();
@@ -1159,6 +1280,100 @@ fn a_replayed_otlp_export_does_not_duplicate_the_sample() {
     assert_eq!(count(&e, "SELECT COUNT(*) FROM otlp_samples"), 1);
 }
 
+/// `natural_key`'s comment (engine/tokens.rs, above `otlp_ingest`'s id
+/// derivation) names exactly which fields fold two exports into one row and
+/// which do not, and nothing exercised either claim: a bug that dropped
+/// `cache_read_tokens` (or any other field) from the key would collide two
+/// genuinely different spends into the same row, silently discarding one —
+/// and a bug that put `model` INTO the key would treat the same physical
+/// request as two spends the moment a provider relabelled its model string
+/// mid-stream. Each key field gets its own clone that changes only that one
+/// count or identity, and must mint a new row; `model` gets the opposite
+/// proof.
+#[test]
+fn otlp_samples_that_differ_in_any_one_count_or_key_field_are_distinct_rows() {
+    use tasqx_core::otlp::OtlpSample;
+    use tasqx_core::tokens::UsageSample;
+
+    fn base() -> OtlpSample {
+        OtlpSample {
+            tool: "claude-code".into(),
+            session_id: Some("sess-key".into()),
+            sample: UsageSample {
+                id: None,
+                ts: "2026-09-09T11:41:13Z".into(),
+                model: Some("m".into()),
+                input_tokens: 1500,
+                output_tokens: 2500,
+                cache_read_tokens: 100,
+                cache_creation_tokens: 200,
+            },
+        }
+    }
+
+    let e = engine();
+    assert_eq!(
+        e.otlp_ingest(&[base()]).unwrap(),
+        1,
+        "the base sample inserts one row"
+    );
+
+    let variants: Vec<(&str, OtlpSample)> = vec![
+        ("session_id", {
+            let mut s = base();
+            s.session_id = Some("sess-other".into());
+            s
+        }),
+        ("tool", {
+            let mut s = base();
+            s.tool = "codex".into();
+            s
+        }),
+        ("ts", {
+            let mut s = base();
+            s.sample.ts = "2026-09-09T11:41:14Z".into();
+            s
+        }),
+        ("input_tokens", {
+            let mut s = base();
+            s.sample.input_tokens = 1501;
+            s
+        }),
+        ("output_tokens", {
+            let mut s = base();
+            s.sample.output_tokens = 2501;
+            s
+        }),
+        ("cache_read_tokens", {
+            let mut s = base();
+            s.sample.cache_read_tokens = 101;
+            s
+        }),
+        ("cache_creation_tokens", {
+            let mut s = base();
+            s.sample.cache_creation_tokens = 201;
+            s
+        }),
+    ];
+    for (field, sample) in variants {
+        let n = e.otlp_ingest(&[sample]).unwrap();
+        assert_eq!(
+            n, 1,
+            "a sample differing only in {field} must insert a new row"
+        );
+    }
+
+    // model is documented as excluded from the key (see the comment above
+    // `natural_key` in engine/tokens.rs): a clone that differs ONLY in model
+    // must collide with the base row, not mint a ninth.
+    let mut model_only = base();
+    model_only.sample.model = Some("a-different-model".into());
+    let n = e.otlp_ingest(&[model_only]).unwrap();
+    assert_eq!(n, 0, "model must not be part of the natural key");
+
+    assert_eq!(count(&e, "SELECT COUNT(*) FROM otlp_samples"), 8);
+}
+
 // ---- tokens.recompute (D50 Decision 3: one-shot history repair) -----------------
 
 use std::path::PathBuf;
@@ -1198,6 +1413,25 @@ fn pin_done(e: &Engine, task_uuid: &str, completed: &str, path: &str) {
         .unwrap();
 }
 
+/// [`pin_done`]'s `session_id` counterpart, for fixtures whose attribution
+/// keys off a live session rather than a transcript path.
+fn pin_done_session(e: &Engine, task_uuid: &str, completed: &str, session_id: &str) {
+    e.conn()
+        .execute(
+            "UPDATE events SET payload = ?1 WHERE entity_id = ?2 AND op = 'done'",
+            (
+                json!({
+                    "completed": completed,
+                    "client": "claude-code",
+                    "session_id": session_id,
+                })
+                .to_string(),
+                task_uuid,
+            ),
+        )
+        .unwrap();
+}
+
 fn pin_created(e: &Engine, task_uuid: &str, created: &str) {
     e.conn()
         .execute(
@@ -1208,13 +1442,38 @@ fn pin_created(e: &Engine, task_uuid: &str, created: &str) {
 }
 
 /// The four-bucket object the recompute report speaks.
-fn b4(input: i64, output: i64) -> serde_json::Value {
+fn b4c(input: i64, output: i64, cache_read: i64, cache_creation: i64) -> serde_json::Value {
     json!({
         "input_tokens": input,
         "output_tokens": output,
-        "cache_read_tokens": 0,
-        "cache_creation_tokens": 0,
+        "cache_read_tokens": cache_read,
+        "cache_creation_tokens": cache_creation,
     })
+}
+
+/// The cache-free shorthand: the shape every input/output-only fixture below
+/// expects. Spelled through [`b4c`] so a fixture that DOES spend cache cannot
+/// be asserted against a hard-coded pair of zeros by accident.
+fn b4(input: i64, output: i64) -> serde_json::Value {
+    b4c(input, output, 0, 0)
+}
+
+/// The four counts stored in `token_usage`, for whatever row `where_sql`
+/// matches, in [`b4c`]'s shape — so a test that reads the row back and one
+/// that reads the report's own figure compare like for like.
+fn stored_buckets(e: &Engine, where_sql: &str, params: impl rusqlite::Params) -> serde_json::Value {
+    let (input, output, cache_read, cache_creation): (i64, i64, i64, i64) = e
+        .conn()
+        .query_row(
+            &format!(
+                "SELECT input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens \
+                 FROM token_usage WHERE {where_sql}"
+            ),
+            params,
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        )
+        .unwrap();
+    b4c(input, output, cache_read, cache_creation)
 }
 
 /// #213: attribution hard-coded `model: None` at the write call site for every
@@ -1333,21 +1592,172 @@ fn an_otel_measurement_that_agrees_on_a_model_records_it() {
     );
 }
 
+/// `otlp_samples_for_session` reads its five numeric columns positionally
+/// (`r.get::<_, i64>(5)`, `r.get::<_, i64>(6)`, …) with nothing to catch two
+/// of those indices landing on the wrong field — `cache_read_tokens` and
+/// `cache_creation_tokens` are both bare `i64`s, so a transposition compiles,
+/// and every existing OTEL test used equal or zero values for the two,
+/// leaving a swap invisible all the way through to the stored measurement.
+/// Four DISTINCT counts, checked at both the buffered-sample read
+/// (`pending_attributions`) and the banked measurement (`task.get`), close
+/// that gap.
+#[test]
+fn an_otel_measurement_keeps_cache_read_and_cache_creation_in_their_own_columns() {
+    use tasqx_core::attribution::{attribute_one, compute_attribution, pending_attributions};
+    use tasqx_core::otlp::OtlpSample;
+    use tasqx_core::tokens::UsageSample;
+
+    let e = engine();
+    let sid = e.task_add(&json!({ "title": "t" })).unwrap()["short_id"].clone();
+    e.task_start(&json!({ "ref": sid, "session_id": "sess-cache-cols" }))
+        .unwrap();
+
+    e.otlp_ingest(&[OtlpSample {
+        tool: "claude-code".into(),
+        session_id: Some("sess-cache-cols".into()),
+        sample: UsageSample {
+            id: None,
+            ts: "2026-07-25T10:15:00Z".into(),
+            model: None,
+            input_tokens: 5,
+            output_tokens: 9,
+            cache_read_tokens: 7,
+            cache_creation_tokens: 11,
+        },
+    }])
+    .unwrap();
+
+    e.task_done(&json!({ "ref": sid, "client": "claude-code", "session_id": "sess-cache-cols" }))
+        .unwrap();
+
+    // Pin the field-observed instants: engine timestamps are wall-clock, and a
+    // backward clock step between `task_start`/`task_done` and this pinned
+    // window would drop the sample and fall through to scanning the real
+    // store's transcripts.
+    let id = task_uuid(&e, &sid);
+    e.conn()
+        .execute(
+            "UPDATE events SET payload = ?1 WHERE entity_id = ?2 AND op = 'start'",
+            (r#"{"interval_started":"2026-07-25T10:00:00Z"}"#, &id),
+        )
+        .unwrap();
+    pin_done_session(&e, &id, "2026-07-25T10:30:00Z", "sess-cache-cols");
+
+    let pending = pending_attributions(&e).unwrap();
+    let pa = pending
+        .iter()
+        .find(|p| p.short_id == sid.as_i64().unwrap())
+        .expect("the completed task is pending attribution");
+    assert_eq!(
+        pa.otel_samples.len(),
+        1,
+        "the buffered sample must be visible to the pending build"
+    );
+    let sample = &pa.otel_samples[0];
+    assert_eq!(sample.input_tokens, 5);
+    assert_eq!(sample.output_tokens, 9);
+    assert_eq!(
+        sample.cache_read_tokens, 7,
+        "cache_read_tokens must read back from its own column"
+    );
+    assert_eq!(
+        sample.cache_creation_tokens, 11,
+        "cache_creation_tokens must read back from its own column, not cache_read's"
+    );
+
+    let now: jiff::Timestamp = "2026-07-25T10:35:00Z".parse().unwrap();
+    let r = compute_attribution(pa, now).unwrap();
+    assert!(r.found, "the OTLP-buffered spend must bank");
+    attribute_one(&e, pa, &r).unwrap();
+
+    let got = e.task_get(&json!({ "ref": sid })).unwrap();
+    let toks = got["tokens"].as_array().unwrap();
+    assert_eq!(toks.len(), 1);
+    let m = &toks[0];
+    assert_eq!(m["source"], "otel");
+    assert_eq!(m["input_tokens"], 5);
+    assert_eq!(m["output_tokens"], 9);
+    assert_eq!(
+        m["cache_read_tokens"], 7,
+        "the banked measurement must keep cache_read_tokens in its own field"
+    );
+    assert_eq!(
+        m["cache_creation_tokens"], 11,
+        "the banked measurement must keep cache_creation_tokens in its own field"
+    );
+}
+
+/// One Claude Code transcript line carrying all four usage counts.
+fn claude_line(
+    ts: &str,
+    id: &str,
+    input: i64,
+    output: i64,
+    cache_read: i64,
+    cache_creation: i64,
+) -> String {
+    json!({
+        "timestamp": ts,
+        "message": {
+            "id": id,
+            "usage": {
+                "input_tokens": input,
+                "output_tokens": output,
+                // The wire names the Claude Code parser reads, which are
+                // NOT the column names the store keeps them under.
+                "cache_read_input_tokens": cache_read,
+                "cache_creation_input_tokens": cache_creation,
+            },
+        },
+    })
+    .to_string()
+}
+
 /// The live store's `019f98a4` shape: Y's window is a strict subset of X's
 /// over one transcript, and pre-D50 ticks banked the same 1000/2000 line on
 /// BOTH tasks (X also caught line "b", which only its window covers). The
 /// seeded markers carry NO sample_ids — the pre-upgrade marker shape whose
 /// claims the recompute must rebuild and backfill.
 fn seeded_double_count() -> (Engine, PathBuf, serde_json::Value, serde_json::Value) {
+    seeded_double_count_with(0, 0, 0, 0)
+}
+
+/// The same shape, with a cache volume on each transcript line and in each
+/// seeded marker. The four counts are line "a"'s and line "b"'s cache read and
+/// cache creation; the markers are seeded with their sums, exactly as a
+/// pre-D50 tick that summed the same lines would have banked them.
+///
+/// Built with [`serde_json`] rather than written out as a literal for the same
+/// reason [`done_payload`] is: the lines now vary per caller, and a `format!`
+/// of JSON is a quoting bug waiting to happen.
+fn seeded_double_count_with(
+    a_cache_read: i64,
+    a_cache_creation: i64,
+    b_cache_read: i64,
+    b_cache_creation: i64,
+) -> (Engine, PathBuf, serde_json::Value, serde_json::Value) {
     let dir = scratch_dir("pair");
     let transcript = dir.join("sess-1.jsonl");
     std::fs::write(
         &transcript,
-        concat!(
-            r#"{"timestamp":"2026-07-25T09:47:00.000Z","message":{"id":"a","usage":{"input_tokens":1000,"output_tokens":2000}}}"#,
-            "\n",
-            r#"{"timestamp":"2026-07-25T09:55:00.000Z","message":{"id":"b","usage":{"input_tokens":500,"output_tokens":600}}}"#,
-            "\n",
+        format!(
+            "{}\n{}\n",
+            claude_line(
+                "2026-07-25T09:47:00.000Z",
+                "a",
+                1000,
+                2000,
+                a_cache_read,
+                a_cache_creation
+            ),
+            claude_line(
+                "2026-07-25T09:55:00.000Z",
+                "b",
+                500,
+                600,
+                b_cache_read,
+                b_cache_creation
+            ),
         ),
     )
     .unwrap();
@@ -1378,11 +1788,14 @@ fn seeded_double_count() -> (Engine, PathBuf, serde_json::Value, serde_json::Val
     e.token_attribute(&json!({
         "ref": x, "source": "log-parse", "tool": "claude-code", "confidence": "medium",
         "samples": 2, "input_tokens": 1500, "output_tokens": 2600,
+        "cache_read_tokens": a_cache_read + b_cache_read,
+        "cache_creation_tokens": a_cache_creation + b_cache_creation,
     }))
     .unwrap();
     e.token_attribute(&json!({
         "ref": y, "source": "log-parse", "tool": "claude-code", "confidence": "medium",
         "samples": 1, "input_tokens": 1000, "output_tokens": 2000,
+        "cache_read_tokens": a_cache_read, "cache_creation_tokens": a_cache_creation,
     }))
     .unwrap();
     (e, dir, x, y)
@@ -1481,16 +1894,7 @@ fn recompute_removes_the_double_counted_subset_window() {
         markers_of_x, 2,
         "old marker kept as provenance, new one added"
     );
-    let payload: String = e
-        .conn()
-        .query_row(
-            "SELECT payload FROM events WHERE entity_id = ?1 AND op = 'tokens.attributed' \
-             ORDER BY rowid DESC LIMIT 1",
-            [&x_id],
-            |row| row.get(0),
-        )
-        .unwrap();
-    let v: serde_json::Value = serde_json::from_str(&payload).unwrap();
+    let v = event_payload_for(&e, &x_id, "tokens.attributed");
     assert_eq!(v["sample_ids"], json!(["b"]), "{v}");
 
     // A third pass over the repaired store changes nothing: X is unchanged,
@@ -1501,6 +1905,59 @@ fn recompute_removes_the_double_counted_subset_window() {
     assert_eq!(tasks[0]["task"], x);
     assert_eq!(tasks[0]["action"], "unchanged");
     assert_eq!(after["totals"], json!({ "before": 1100, "after": 1100 }));
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The cache buckets are volume too, and the recompute REWRITES the row it
+/// keeps. Every other recompute fixture in this file spends input and output
+/// only, so `cache_read_tokens` and `cache_creation_tokens` were compared
+/// 0 == 0 on both sides of every before/after in the suite: a `classify_task`
+/// that re-derived the two counts it could see and handed the recomputed
+/// `NewTokenUsage` a hard zero for the other two passed all of them, including
+/// `recompute_removes_the_double_counted_subset_window`, which reads the
+/// surviving row straight out of `token_usage`. `--apply` is a one-way door
+/// (undo refuses `tokens.attributed`), so cache volume dropped here is gone.
+#[test]
+fn recompute_carries_the_cache_buckets_into_the_rewritten_row() {
+    // Line "a" spends 30/40 of cache, line "b" 70/80 — four distinct numbers,
+    // so a bucket read out of the wrong slot cannot still compare equal.
+    let (e, dir, x, y) = seeded_double_count_with(30, 40, 70, 80);
+
+    // Dry == apply is already pinned by
+    // `recompute_removes_the_double_counted_subset_window`, so this asserts
+    // the plan straight off the one applying call.
+    let r = dispatch(&e, "tokens.recompute", &json!({ "dry_run": false })).unwrap();
+    let tasks = r["tasks"].as_array().unwrap();
+    assert_eq!(tasks.len(), 2, "{r}");
+    assert_eq!(tasks[0]["task"], x);
+    assert_eq!(tasks[0]["action"], "recomputed", "{r}");
+    assert_eq!(tasks[0]["before"], b4c(1500, 2600, 100, 120), "{r}");
+    assert_eq!(
+        tasks[0]["after"],
+        b4c(500, 600, 70, 80),
+        "X keeps the uncontested line WITH its cache volume, not a zeroed pair: {r}"
+    );
+    assert_eq!(tasks[1]["task"], y);
+    assert_eq!(tasks[1]["action"], "recomputed", "{r}");
+    assert_eq!(tasks[1]["before"], b4c(1000, 2000, 30, 40), "{r}");
+    assert_eq!(tasks[1]["after"], b4c(0, 0, 0, 0), "{r}");
+    // The totals are the FOUR-bucket sums, not input+output: 4320 + 3070
+    // before, and line "b"'s 1250 after.
+    assert_eq!(r["totals"], json!({ "before": 7390, "after": 1250 }), "{r}");
+
+    // The report is not the store: the surviving row is read back by column.
+    let x_id = task_uuid(&e, &x);
+    assert_eq!(
+        stored_buckets(&e, "task_id = ?1 AND source = 'log-parse'", [&x_id]),
+        b4c(500, 600, 70, 80),
+        "the rewritten row carries all four buckets"
+    );
+
+    // And the marker the apply appended restates the same four, so an
+    // operator reading the event log sees what was banked.
+    let v = event_payload_for(&e, &x_id, "tokens.attributed");
+    assert_eq!(v["totals"], b4c(500, 600, 70, 80), "{v}");
 
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -2413,6 +2870,77 @@ fn channel_conflict_keeps_the_tasks_banked_claims_contesting_later_tasks() {
             "SELECT COUNT(*) FROM token_usage WHERE source='log-parse'"
         ),
         0
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Two implementations of one figure, checked against each other over all four
+/// buckets: the live tick (`compute_attribution` → `token_attribute`) and
+/// `tokens.recompute`'s own re-derivation of the same window. Every other
+/// `bank_live` fixture here spends input and output only, so a bucket dropped
+/// on EITHER side still compared 0 == 0 and the recompute still answered
+/// `unchanged` — the one action that asserts the two agree.
+#[test]
+fn a_live_bank_and_a_recompute_agree_on_all_four_buckets() {
+    let dir = scratch_dir("four-buckets");
+    let transcript = dir.join("sess-5.jsonl");
+    // Both lines sit inside `bank_live`'s [10:00, 10:30] window, and every one
+    // of the eight counts is distinct: a bucket crossed with another shows up
+    // as a wrong number rather than a coincidence.
+    std::fs::write(
+        &transcript,
+        format!(
+            "{}\n{}\n",
+            claude_line("2026-07-25T10:10:00.000Z", "p", 100, 200, 300, 400),
+            claude_line("2026-07-25T10:20:00.000Z", "q", 10, 20, 30, 40),
+        ),
+    )
+    .unwrap();
+
+    let e = engine();
+    let t = e.task_add(&json!({ "title": "t" })).unwrap()["short_id"].clone();
+    bank_live(&e, &t, &transcript);
+
+    // What the live tick banked, through the ordinary read surface.
+    let got = dispatch(&e, "task.get", &json!({ "ref": t })).unwrap();
+    let tokens = got["tokens"].as_array().unwrap();
+    assert_eq!(tokens.len(), 1, "one measurement for one window: {got}");
+    assert_eq!(tokens[0]["source"], "log-parse", "{got}");
+    assert_eq!(tokens[0]["input_tokens"], 110, "{got}");
+    assert_eq!(tokens[0]["output_tokens"], 220, "{got}");
+    assert_eq!(
+        tokens[0]["cache_read_tokens"], 330,
+        "the live tick must carry the transcript's cache reads: {got}"
+    );
+    assert_eq!(
+        tokens[0]["cache_creation_tokens"], 440,
+        "…and its cache creation: {got}"
+    );
+
+    // What the recompute makes of the same window: identical, bucket for
+    // bucket, which is the whole content of `unchanged`. Dry == apply is
+    // already pinned by `recompute_removes_the_double_counted_subset_window`,
+    // so this asserts off the one applying call.
+    let rows_before = count(&e, "SELECT COUNT(*) FROM token_usage");
+    let applied = dispatch(&e, "tokens.recompute", &json!({ "dry_run": false })).unwrap();
+    let entries = applied["tasks"].as_array().unwrap();
+    assert_eq!(entries.len(), 1, "{applied}");
+    assert_eq!(
+        entries[0]["action"], "unchanged",
+        "the two implementations must agree: {applied}"
+    );
+    assert_eq!(entries[0]["before"], b4c(110, 220, 330, 440), "{applied}");
+    assert_eq!(entries[0]["after"], b4c(110, 220, 330, 440), "{applied}");
+    assert_eq!(
+        count(&e, "SELECT COUNT(*) FROM token_usage"),
+        rows_before,
+        "an unchanged task is no row churn"
+    );
+    assert_eq!(
+        stored_buckets(&e, "source = 'log-parse'", []),
+        b4c(110, 220, 330, 440),
+        "the stored row is untouched"
     );
 
     let _ = std::fs::remove_dir_all(&dir);

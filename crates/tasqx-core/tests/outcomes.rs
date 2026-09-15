@@ -252,6 +252,84 @@ fn cost_keeps_the_four_buckets_apart_and_never_emits_a_blend() {
     );
 }
 
+/// #217: `cost.confidence` is the worst grade across the completions in the
+/// group, never "whichever completion `report_outcomes` walked last" — a
+/// rank swap between high and medium, or a last-one-seen aggregation instead
+/// of a minimum, would let a medium self-report get laundered by a high
+/// log-parse measurement recorded on the other completion. Proved in both
+/// completion orders so a bug tied to which task closed first cannot hide
+/// behind one ordering.
+#[test]
+fn cost_confidence_is_the_worst_grade_across_completions_regardless_of_order() {
+    let e = engine();
+    let a = add(&e, "self-reported", json!({}));
+    let b = add(&e, "log-parsed", json!({}));
+    call(
+        &e,
+        "task.done",
+        json!({ "ref": a, "tool": "claude-code", "input_tokens": 100 }),
+    )
+    .expect("done a with a self-report");
+    call(&e, "task.done", json!({ "ref": b })).expect("done b plain");
+    // A log-parse `token.add` after the plain `task.done` is fine: the
+    // self-report-vs-automated-pipeline conflict guard (#208, D50) only fires
+    // the other way round, a self-report arriving after an automated
+    // measurement.
+    call(
+        &e,
+        "token.add",
+        json!({
+            "ref": b, "tool": "claude-code", "source": "log-parse",
+            "confidence": "high", "input_tokens": 200,
+        }),
+    )
+    .expect("log-parse measurement on b");
+
+    let out = call(&e, "report.outcomes", json!({ "metrics": ["cost"] })).expect("outcomes");
+    let cost = &only_group(&out)["cost"];
+    assert_eq!(
+        cost["n"], 2,
+        "both completions contributed a measurement: {out}"
+    );
+    assert_eq!(
+        cost["confidence"], "medium",
+        "the medium self-report must not be laundered by the high log-parse measurement: {out}"
+    );
+
+    // Reversed completion order: b closes (and gets its log-parse
+    // measurement) before a does.
+    let e2 = engine();
+    let b2 = add(&e2, "log-parsed", json!({}));
+    let a2 = add(&e2, "self-reported", json!({}));
+    call(&e2, "task.done", json!({ "ref": b2 })).expect("done b2 plain");
+    call(
+        &e2,
+        "token.add",
+        json!({
+            "ref": b2, "tool": "claude-code", "source": "log-parse",
+            "confidence": "high", "input_tokens": 200,
+        }),
+    )
+    .expect("log-parse measurement on b2");
+    call(
+        &e2,
+        "task.done",
+        json!({ "ref": a2, "tool": "claude-code", "input_tokens": 100 }),
+    )
+    .expect("done a2 with a self-report");
+
+    let out2 = call(&e2, "report.outcomes", json!({ "metrics": ["cost"] })).expect("outcomes");
+    let cost2 = &only_group(&out2)["cost"];
+    assert_eq!(
+        cost2["n"], 2,
+        "both completions contributed a measurement: {out2}"
+    );
+    assert_eq!(
+        cost2["confidence"], "medium",
+        "reversing which task closed first must not change the worst grade: {out2}"
+    );
+}
+
 // ---- scope, grouping and the envelope -------------------------------------
 
 #[test]
