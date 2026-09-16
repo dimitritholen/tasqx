@@ -2486,7 +2486,7 @@ fn page_mcp() -> String {
         ),
         snippet(
         "echo '{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"tools/call\",\"params\":{\"name\":\"tasqx_list_tasks\",\"arguments\":{\"filter\":\"+api\"}}}' | tasqx mcp serve 2>/dev/null",
-        "{\"id\":3,\"jsonrpc\":\"2.0\",\"result\":{\"content\":[{\"text\":\"{\\n  \\\"count\\\": 1,\\n  \\\"tasks\\\": [\\n    {\\n      \\\"_rev\\\": 4,\\n      \\\"due\\\": \\\"2026-07-17T00:00:00Z\\\",\\n      \\\"estimate\\\": \\\"PT4H\\\",\\n      \\\"priority\\\": \\\"H\\\",\\n      \\\"project\\\": \\\"work.tasqx\\\",\\n      \\\"short_id\\\": 1,\\n      \\\"status\\\": \\\"pending\\\",\\n      \\\"tags\\\": [\\n        \\\"api\\\",\\n        \\\"release\\\"\\n      ],\\n      \\\"title\\\": \\\"Ship the v1 JSON API freeze\\\",\\n      \\\"urgency\\\": 17.5\\n    }\\n  ]\\n}\",\"type\":\"text\"}],\"isError\":false}}",
+        "{\"id\":3,\"jsonrpc\":\"2.0\",\"result\":{\"content\":[{\"text\":\"{\\n  \\\"count\\\": 1,\\n  \\\"next_offset\\\": null,\\n  \\\"store_empty\\\": false,\\n  \\\"tasks\\\": [\\n    {\\n      \\\"blocked\\\": false,\\n      \\\"due\\\": \\\"2026-07-17T00:00:00Z\\\",\\n      \\\"priority\\\": \\\"H\\\",\\n      \\\"project\\\": \\\"work.tasqx\\\",\\n      \\\"short_id\\\": 1,\\n      \\\"status\\\": \\\"pending\\\",\\n      \\\"tags\\\": [\\n        \\\"api\\\",\\n        \\\"release\\\"\\n      ],\\n      \\\"title\\\": \\\"Ship the v1 JSON API freeze\\\",\\n      \\\"urgency\\\": 17.5\\n    }\\n  ],\\n  \\\"total\\\": 1\\n}\",\"type\":\"text\"}],\"isError\":false}}",
         ),
     );
     s.push_str(&ref_section(

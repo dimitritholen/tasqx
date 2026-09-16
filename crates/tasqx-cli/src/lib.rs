@@ -3477,14 +3477,18 @@ mod tests {
     /// daemon was reachable to act on it — the receiver only binds inside
     /// `tasqx daemon`, so the config alone does nothing. `otlp_daemon_warning`
     /// is the pure decision `set_setting` prints on stderr; this pins it
-    /// directly rather than through a spawned binary, since no test in this
-    /// process runs a real daemon for it to find.
+    /// directly rather than through a spawned binary, at a socket path nothing
+    /// listens on: the ambient socket is whatever daemon the MACHINE runs, and
+    /// a developer with the real one up saw this test fail for that alone.
     #[test]
     fn otlp_daemon_warning_fires_only_for_enabling_with_no_daemon_reachable() {
-        // Setting it true with nothing listening on the resolved socket: warn,
-        // and name both the key/value and why it matters.
-        let w = otlp_daemon_warning("otlp.enabled", "true")
-            .expect("no daemon is running in this test process");
+        let dead =
+            std::env::temp_dir().join(format!("tasqx-no-daemon-{}.sock", std::process::id()));
+        let dead = dead.to_str().expect("utf-8 path");
+        // Setting it true with nothing listening on the socket: warn, and
+        // name both the key/value and why it matters.
+        let w = otlp_daemon_warning_at("otlp.enabled", "true", dead)
+            .expect("nothing listens on a fresh tempdir path");
         assert!(w.contains("otlp.enabled"), "{w}");
         assert!(
             w.contains("tasqx daemon"),
@@ -3493,13 +3497,13 @@ mod tests {
 
         // Turning it OFF needs no daemon and gets no warning.
         assert_eq!(
-            otlp_daemon_warning("otlp.enabled", "false"),
+            otlp_daemon_warning_at("otlp.enabled", "false", dead),
             None,
             "disabling otlp needs no daemon and must stay silent"
         );
         // An unrelated key's value must never trip this check.
         assert_eq!(
-            otlp_daemon_warning("tokens.enabled", "true"),
+            otlp_daemon_warning_at("tokens.enabled", "true", dead),
             None,
             "the check is scoped to otlp.enabled, not every boolean setting"
         );

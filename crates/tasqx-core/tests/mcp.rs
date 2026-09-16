@@ -2044,6 +2044,177 @@ fn the_transport_recut_page_equals_a_real_limited_call() {
     );
 }
 
+// ---- D152: the row the caller did not project -------------------------------
+
+/// The nine fields a default `tasqx_list_tasks` row carries (D152).
+///
+/// A deliberate second copy of `mcp::LIST_DEFAULT_FIELDS`, which is private to
+/// the crate: narrowing the default row changes what every agent reads, so it
+/// should cost a line here rather than pass unnoticed.
+const DEFAULT_ROW_FIELDS: [&str; 9] = [
+    "short_id", "title", "status", "priority", "urgency", "blocked", "due", "project", "tags",
+];
+
+/// The key set of one row, sorted.
+fn row_keys(row: &Value) -> Vec<String> {
+    let mut keys: Vec<String> = row
+        .as_object()
+        .expect("a row is an object")
+        .keys()
+        .cloned()
+        .collect();
+    keys.sort();
+    keys
+}
+
+/// D152: a caller that names no `fields` gets the nine an agent picking work
+/// reads, with the unset ones left out entirely.
+///
+/// Measured over 36 hours of transcripts, `fields` was never passed once, and
+/// a `@working` page was 41 rows of 637 bytes carrying 22 keys each — most of
+/// them null. `scheduled`, `wait`, `remind`, `recurrence`, `completed` and
+/// `budget_tokens` were spelled on every row to say nothing about any of them.
+#[test]
+fn a_default_task_list_row_is_the_nine_fields_an_agent_reads() {
+    let engine = engine();
+    // D23: an explicit project must name a live project row.
+    engine
+        .project_create(&json!({ "name": "p" }))
+        .expect("init p");
+    engine
+        .task_add(&json!({
+            "title": "t",
+            "project": "p",
+            "priority": "H",
+            "tags": ["api"],
+        }))
+        .expect("add");
+    let server = McpServer::new(&engine, Scope::Write);
+    let body = tool_json(&call(&server, 1, "tasqx_list_tasks", json!({})));
+    let row = &body["tasks"][0];
+
+    let mut expected: Vec<String> = DEFAULT_ROW_FIELDS
+        .iter()
+        .filter(|f| **f != "due")
+        .map(|f| (*f).to_string())
+        .collect();
+    expected.sort();
+    assert_eq!(
+        row_keys(row),
+        expected,
+        "a default row is the nine minus the ones that are null: {row}"
+    );
+    let bytes = serde_json::to_string(row).expect("serialize").len();
+    assert!(
+        bytes < 150,
+        "the default row is what every unprojected call pays for: {bytes} bytes for {row}"
+    );
+}
+
+/// The same rule at its extreme: a task with nothing but a title spells
+/// nothing but what it has.
+#[test]
+fn a_default_row_omits_every_null_key() {
+    let engine = engine();
+    engine.task_add(&json!({ "title": "bare" })).expect("add");
+    let server = McpServer::new(&engine, Scope::Write);
+    let body = tool_json(&call(&server, 1, "tasqx_list_tasks", json!({})));
+    let row = &body["tasks"][0];
+    for absent in ["priority", "due", "project"] {
+        assert!(
+            row.get(absent).is_none(),
+            "an unset `{absent}` must not be spelled at all: {row}"
+        );
+    }
+    assert_eq!(row["title"], json!("bare"), "what it does have is there");
+    assert_eq!(row["tags"], json!([]), "an empty list is not a null");
+}
+
+/// An explicit `fields` reaches any column, default or not — and reaches it
+/// exactly, with nothing added back.
+#[test]
+fn an_explicit_fields_list_reaches_a_non_default_column() {
+    let engine = engine();
+    engine.task_add(&json!({ "title": "t" })).expect("add");
+    let server = McpServer::new(&engine, Scope::Write);
+    let body = tool_json(&call(
+        &server,
+        1,
+        "tasqx_list_tasks",
+        json!({ "fields": ["short_id", "modified", "_rev"] }),
+    ));
+    assert_eq!(
+        row_keys(&body["tasks"][0]),
+        vec![
+            "_rev".to_string(),
+            "modified".to_string(),
+            "short_id".to_string()
+        ],
+        "the projection the caller asked for is the projection it gets"
+    );
+}
+
+/// `fields: []` is how a caller asks THIS transport for the whole row.
+///
+/// The engine reads an empty projection as no restriction at all (#76.1), and
+/// D152 forwards an explicit `fields` of any kind untouched — so what an MCP
+/// client sees here is `task_list`'s own answer, nulls included. Without that,
+/// narrowing the default row would have made the full row unreachable over
+/// MCP, because omitting `fields` no longer means "everything".
+#[test]
+fn empty_fields_over_mcp_is_the_engines_own_full_row() {
+    let engine = engine();
+    engine
+        .project_create(&json!({ "name": "p" }))
+        .expect("init p");
+    for i in 0..3 {
+        engine
+            .task_add(&json!({ "title": format!("t{i}"), "project": "p" }))
+            .expect("add");
+    }
+    let server = McpServer::new(&engine, Scope::Write);
+    let over_mcp = tool_json(&call(
+        &server,
+        1,
+        "tasqx_list_tasks",
+        json!({ "fields": [], "limit": 3 }),
+    ));
+    let direct = engine
+        .task_list(&json!({ "fields": [], "limit": 3 }))
+        .expect("task_list");
+    assert_eq!(
+        over_mcp, direct,
+        "an explicit projection is forwarded, not rewritten"
+    );
+    assert!(
+        over_mcp["tasks"][0].get("due").is_some_and(Value::is_null),
+        "and its nulls survive: {}",
+        over_mcp["tasks"][0]
+    );
+}
+
+/// A `null` `fields` counts as absent, not as a projection — the D32 reading
+/// this transport already applies to `view`, `client` and `max_body_bytes`,
+/// for the client that serializes unset optionals as null.
+#[test]
+fn a_null_fields_gets_the_default_row() {
+    let engine = engine();
+    engine.task_add(&json!({ "title": "t" })).expect("add");
+    let server = McpServer::new(&engine, Scope::Write);
+    let body = tool_json(&call(
+        &server,
+        1,
+        "tasqx_list_tasks",
+        json!({ "fields": Value::Null }),
+    ));
+    assert!(
+        body["tasks"][0].get("created").is_none(),
+        "a null projection must not be answered with the whole row: {}",
+        body["tasks"][0]
+    );
+    assert_eq!(body["tasks"][0]["title"], json!("t"));
+}
+
 // ---- D72: the bytes the caller already holds --------------------------------
 
 /// `include_json: false` returns the rendered view alone — spelled out, and as
