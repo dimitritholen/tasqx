@@ -43,12 +43,18 @@ calendar day, writes included (DESIGN.md D148).
 
 That last part makes it dangerous, so treat it as live ammunition: a pin left
 exported in your shell backdates real work. `tasqx about` states the pin
-whenever one is set, right under the `times UTC` row, and an unparsable value
-exits 2 instead of quietly falling back. It is a capture and testing hook, not a
-user feature — `crates/tasqx-core/src/clock.rs` and
-`crates/tasqx-cli/src/clock.rs` are the only wall-clock reads in the workspace,
-each with a guard test that fails on a second one, and the variable is
-deliberately absent from `tasqx docs`, the wiki and the guides.
+whenever one is set, right under the `times UTC` row, and a value that is not an
+RFC 3339 instant is refused rather than quietly ignored — `tasqx` exits 2 (the
+`bad_request` code), and `scripts/demo-store.py` exits 2 with it, so one
+pipeline answers one mistake with one code.
+
+It is a capture and testing hook, not a user feature. There are two clock
+gateways and no third: `tasqx_core::clock::now` is the workspace's single
+physical wall-clock read, and `tasqx_cli::clock::now` delegates to it after
+validating the variable once at start-up. Each crate carries a guard test that
+fails on any other `Timestamp::now`, `Zoned::now` or `Uuid::now_v7` under its
+`src/`, and the variable is deliberately absent from `tasqx docs`, the wiki and
+the guides.
 
 To use your build as your everyday `tasqx`, install it over the released one:
 

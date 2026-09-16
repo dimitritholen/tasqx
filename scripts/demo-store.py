@@ -65,15 +65,23 @@ def _now():
     any subprocess exists, so parent and children agree by construction, and
     every child sees the same instant this script built its dates from.
     """
+    def refuse(why):
+        # Exit 2, not `sys.exit(message)`'s 1: a malformed pin is a bad argument
+        # in the environment, and `tasqx` answers that same mistake with 2. One
+        # pipeline, two tools, one code — a capture script exiting 1 where the
+        # CLI exits 2 makes the caller's check depend on which of them noticed.
+        print(f"demo-store: {why}", file=sys.stderr)
+        sys.exit(2)
+
     pin = os.environ.get("TASQX_NOW", "").strip()
     if not pin:
         return dt.datetime.now(dt.timezone.utc).replace(microsecond=0)
     try:
         when = dt.datetime.fromisoformat(pin.replace("Z", "+00:00"))
     except ValueError:
-        sys.exit(f"demo-store: TASQX_NOW is not an RFC 3339 instant: {pin}")
+        refuse(f"TASQX_NOW is not an RFC 3339 instant: {pin}")
     if when.tzinfo is None:
-        sys.exit(f"demo-store: TASQX_NOW needs a zone offset or a trailing Z: {pin}")
+        refuse(f"TASQX_NOW needs a zone offset or a trailing Z: {pin}")
     when = when.astimezone(dt.timezone.utc).replace(microsecond=0)
     os.environ["TASQX_NOW"] = when.strftime("%Y-%m-%dT%H:%M:%SZ")
     return when
