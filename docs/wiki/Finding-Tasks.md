@@ -73,6 +73,12 @@ tasqx show 42 --card
 tasqx show 42 --card --ascii
 ```
 
+When an annotation was removed with
+[`tasqx unannotate`](Adding-and-Editing-Tasks.md#tasqx-unannotate), `show`
+prints one line per removed annotation under the history — a tombstone naming
+its id and when it was removed — and the box card's Notes row appends
+", N removed".
+
 ## tasqx why
 
 Every open task gets an urgency score, and the ordering of every list comes

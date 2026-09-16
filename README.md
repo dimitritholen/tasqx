@@ -289,7 +289,8 @@ echo '{"tasqx":"1","method":"task.list","params":{"filter":"@working"}}' | tasqx
   heatmap / burndown charts drawn from the event log, or a self-contained
   themed HTML page with zero external requests. Five built-in themes, and
   output degrades cleanly down to a colorless terminal. `--outcomes` reports
-  the other axis — rework, calibration, silent completions, abandoned work.
+  the other axis — rework, calibration, silent completions, abandoned work,
+  forced completions.
 
   ![The HTML weekly review: headline counts, then what needs attention](docs/img/report.png)
 - **Built for scripts too.** Every command with a result takes `--json`, and
@@ -348,8 +349,9 @@ The worked guides each take five minutes and end with commands you can paste:
   feature, ordered by dependencies. The solo alternative to a board.
 - [Driving tasqx from an AI agent](docs/guides/ai-agent-workflow.md) — wire up
   MCP and let an agent work the backlog end to end.
-- [A self-improving agent](docs/guides/self-improving-agent.md) — a hook on task
-  completion that makes the agent write down what it learned.
+- [A self-improving agent](docs/guides/self-improving-agent.md) — a session-end
+  retrospective skill that records what each task taught, run on an evidence
+  bundle rather than after every completion.
 - [Giving an agent memory in any client](docs/guides/agent-starter-prompt.md)
   — a paste-anywhere block for clients without a tasqx skill.
 - [Personal task management](docs/guides/personal-gtd.md) — frictionless

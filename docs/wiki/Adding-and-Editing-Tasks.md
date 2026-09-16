@@ -163,7 +163,8 @@ This is a **hard delete**, not a hide: the text is overwritten in the store,
 not merely removed from what tasqx shows you — use it to take back a secret, a
 customer name, or a wrong root cause pasted into a note by mistake. What stays
 behind is a tombstone (the id and when it was removed), for audit, with no
-text in it.
+text in it. The tombstone is not hidden away: `tasqx show` and `task.get` both
+list it, and the box card's Notes row counts it.
 
 The annotation's id isn't printed by `tasqx show` — read it from `tasqx show
 42 --json` (each row under `annotations[].id`) or from a prior `tasqx
