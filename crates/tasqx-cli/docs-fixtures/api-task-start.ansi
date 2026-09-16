@@ -1,0 +1,1 @@
+{"id":"s1","ok":true,"result":{"already_running":false,"auto_stopped":[{"id":"63e5a05b-e665-459b-be06-d750369a9ad7","short_id":48,"tracked":"PT0S"}],"id":"813547e2-5937-41f0-8401-82fcdb14a009","interval_started":"2026-09-16T09:00:00Z","short_id":50,"status":"active","title":"Rate-limit the /search endpoint"},"tasqx":"1"}
