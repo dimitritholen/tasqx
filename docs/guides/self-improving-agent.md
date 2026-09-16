@@ -36,8 +36,11 @@ had. The skill instead assembles a bundle per qualifying task, small enough
 to hand to a **fresh** agent rather than a fork:
 
 1. The task itself, read whole — `tasqx_get_task` with `include_json: false`
-   and `annotations_limit` set to the task's own `annotations_total`, so every
-   annotation and every check is present.
+   and `annotations_limit` set to the task's own `annotations_total`. That
+   asks for the whole history; a long one is still cut to the response
+   budget, and the answer says so with a non-null `annotations_next_offset`,
+   so page from there until it is null (or raise `max_body_bytes` when one
+   long body is what was cut) before calling the bundle complete.
 2. The executor's final hand-back report for that task, pasted verbatim.
 3. `tasqx_outcomes` for the task's project, once per project.
 4. Two or three lines on anything the planning session itself reworked or
@@ -56,7 +59,9 @@ not, start with [Driving tasqx from an AI agent](ai-agent-workflow.md).
 
 ## The skill
 
-Save this as `~/.claude/skills/retro/SKILL.md`:
+Save this as `~/.claude/skills/retro/SKILL.md`. If a skill named `retro`
+already lives there, save it under another name and invoke it by that name;
+nothing in the text depends on it:
 
 ```markdown
 ---
