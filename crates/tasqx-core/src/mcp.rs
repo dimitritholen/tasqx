@@ -1789,8 +1789,14 @@ impl<'e> McpServer<'e> {
     /// argument whose VALUE this server cannot read, which the engine will
     /// never see because the key never reaches it.
     fn prepare_args(&self, spec: &ToolSpec, params: &Value) -> Result<PreparedCall, Value> {
+        // A JSON `null` is "no arguments", the same reading `check_params`
+        // gives a null `params`; substituting `{}` here is what lets the
+        // `task.list` defaults below apply to it. Left as `null`, the
+        // engine still answered (null is no params to it) but with the full
+        // row and no page, past every default this transport supplies.
         let mut args = params
             .get("arguments")
+            .filter(|v| !v.is_null())
             .cloned()
             .unwrap_or_else(|| json!({}));
 

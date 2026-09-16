@@ -2215,6 +2215,28 @@ fn a_null_fields_gets_the_default_row() {
     assert_eq!(body["tasks"][0]["title"], json!("t"));
 }
 
+/// A whole `arguments: null` is "no arguments" too — the reading `check_params`
+/// gives a null `params` — so it gets the same default row and the same
+/// transport page as `{}`. Left unnormalized, the null skipped the whole
+/// `task.list` seam: the engine answered it (null is no params to it), but
+/// with the full row and no page, past every default this transport supplies
+/// (PR #38 review).
+#[test]
+fn null_arguments_get_the_default_row_and_the_transport_page() {
+    let engine = engine();
+    engine.task_add(&json!({ "title": "t" })).expect("add");
+    let server = McpServer::new(&engine, Scope::Write);
+    let body = tool_json(&call(&server, 1, "tasqx_list_tasks", Value::Null));
+    assert!(
+        body["tasks"][0].get("created").is_none(),
+        "null arguments must not be answered with the whole row: {}",
+        body["tasks"][0]
+    );
+    assert_eq!(body["tasks"][0]["short_id"], json!(1));
+    let with_empty = tool_json(&call(&server, 2, "tasqx_list_tasks", json!({})));
+    assert_eq!(body, with_empty, "null and {{}} must be the same call");
+}
+
 // ---- D72: the bytes the caller already holds --------------------------------
 
 /// `include_json: false` returns the rendered view alone — spelled out, and as
