@@ -209,7 +209,7 @@ const METHODS: [(&str, &str, &str); 42] = [
     ),
     (
         "task.done",
-        "<code>ref</code>, <code>session_id?</code>, \
+        "<code>ref</code>, <code>force?</code>, <code>session_id?</code>, \
          <code>transcript_path?</code>, <code>client?</code>, <code>tool?</code>, \
          <code>model?</code>, <code>input_tokens?</code>, <code>output_tokens?</code>, \
          <code>cache_read_tokens?</code>, <code>cache_creation_tokens?</code>, \
@@ -220,7 +220,10 @@ const METHODS: [(&str, &str, &str); 42] = [
          the work. Any present token count additionally records a self-report \
          measurement — the primary channel: only the caller knows which task a \
          turn's spend served, and the log-parse fallback refuses samples claimed \
-         by more than one task's window.",
+         by more than one task's window. A task with open blockers is refused \
+         <code>conflict</code> naming them; <code>force: true</code> completes it \
+         anyway, and the response then carries <code>forced: true</code> and \
+         <code>blocked_by</code> (D149).",
     ),
     (
         "task.modify",
@@ -419,8 +422,9 @@ const METHODS: [(&str, &str, &str); 42] = [
          What the work DID, as against what it cost (D137): <code>rework</code> (completions that \
          were reopened), <code>calibration</code> (median tracked-over-estimate), \
          <code>cost</code> (the four token buckets, never blended), <code>silent</code> \
-         (completions carrying no annotation) and <code>abandonment</code> (started, then \
-         cancelled). Every rate comes back beside the <code>n</code> it was computed over. \
+         (completions carrying no annotation), <code>abandonment</code> (started, then \
+         cancelled) and <code>forced</code> (completions that overrode open blockers, D149). \
+         Every rate comes back beside the <code>n</code> it was computed over. \
          Scope is tasks that CLOSED, by the instant they closed — so a completion that was \
          reopened still counts, which is the whole point. Omitting <code>metrics</code> emits \
          all of them; there is no <code>all</code>, because here a cancellation is a measured \

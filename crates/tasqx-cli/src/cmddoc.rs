@@ -398,12 +398,16 @@ pub const COMMAND_REF: &[CmdDoc] = &[
         aliases: &["d", "x", "complete"],
         method: "task.done",
         summary: "Complete a task.",
-        usage: "tasqx done <ref> [--client TOOL] [--session-id ID] \
+        usage: "tasqx done <ref> [--force] [--client TOOL] [--session-id ID] \
                 [--transcript-path PATH] [--tool TOOL] [--model MODEL] \
                 [--input-tokens N] [--output-tokens N] [--cache-read-tokens N] \
                 [--cache-creation-tokens N]",
         examples: &[
             ex_norun("tasqx done 1", "completes; spawns the next recurrence if any"),
+            ex_norun(
+                "tasqx done 1 --force",
+                "complete it although a dependency is still open; the override is recorded",
+            ),
             ex_norun(
                 "tasqx done 1 --client 'claude-code 2.1' --session-id $SID",
                 "close the interval an agent opened with the same ids",
@@ -415,6 +419,10 @@ pub const COMMAND_REF: &[CmdDoc] = &[
             ),
         ],
         notes: &[
+            "A task whose dependencies are still open is refused, naming them. \
+             --force completes it anyway; the override lands on the done event and \
+             `tasqx report --outcomes` counts it under FORCED (D149). Cancelling a \
+             blocked task needs no flag.",
             "The correlation flags carry the same meaning as on `start`, and are \
              recorded per occurrence: a task can start and finish many times, and \
              attribution pairs the two events of one interval.",

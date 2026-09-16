@@ -498,6 +498,9 @@ impl Engine {
             /// Tasks in scope, closed either way — abandonment's denominator.
             closed: i64,
             rework: Vec<i64>,
+            /// D149: completions that overrode still-open blockers. Read
+            /// against `completions`, like `rework` — see `OUTCOME_METRICS`.
+            forced: Vec<i64>,
             silent: Vec<i64>,
             abandoned: Vec<i64>,
             abandoned_secs: i64,
@@ -574,6 +577,7 @@ impl Engine {
                 completions: 0,
                 closed: 0,
                 rework: Vec::new(),
+                forced: Vec::new(),
                 silent: Vec::new(),
                 abandoned: Vec::new(),
                 abandoned_secs: 0,
@@ -607,6 +611,14 @@ impl Engine {
             // is not counted here: nothing was completed to come back.
             if close.reopened_from_done {
                 agg.rework.push(t.short_id);
+            }
+            // D149: a completion that went ahead of its dependencies. Read off
+            // the completion event rather than off the dependency graph as it
+            // stands now — by the time anyone runs this report the blockers
+            // have usually closed, and the question is what was true when the
+            // task was completed.
+            if close.forced {
+                agg.forced.push(t.short_id);
             }
             if !annotated.contains(&t.id) {
                 agg.silent.push(t.short_id);
@@ -707,6 +719,21 @@ impl Engine {
                         "n": agg.completions,
                         "rate": rate(agg.rework.len() as i64, agg.completions),
                         "refs": agg.rework,
+                    }),
+                );
+            }
+            // Beside `rework` because the two are read together: work that
+            // came back and work that went ahead of what it depended on are
+            // the two ways a completion can turn out not to have been one.
+            if wants("forced") {
+                agg.forced.sort_unstable();
+                obj.insert(
+                    "forced".into(),
+                    json!({
+                        "count": agg.forced.len(),
+                        "n": agg.completions,
+                        "rate": rate(agg.forced.len() as i64, agg.completions),
+                        "refs": agg.forced,
                     }),
                 );
             }
@@ -866,6 +893,11 @@ impl Engine {
                     entry.at = at;
                     entry.completed = true;
                     entry.closed = true;
+                    // D149, and assigned rather than or-ed: this describes the
+                    // completion now in scope, so a later ordinary `done`
+                    // clears an earlier override instead of carrying it
+                    // forever.
+                    entry.forced = payload_bool(from.as_ref(), "forced");
                 }
                 "cancel" => {
                     entry.at = at;
@@ -1400,6 +1432,15 @@ struct TaskClose {
     closed: bool,
     /// Whether this task has ever been reopened out of `done`.
     reopened_from_done: bool,
+    /// Whether the most recent completion overrode open blockers (D149).
+    ///
+    /// A property of THAT completion and not of the task, which is where it
+    /// differs from `reopened_from_done` one field up: a task forced through
+    /// once, reopened, and then completed in order after its blocker landed
+    /// has nothing left to answer for, so the later `done` RESETS this. The
+    /// ever-flag spelling would make the count unclearable and the metric
+    /// useless the first time somebody did the right thing afterwards.
+    forced: bool,
     /// Whether this task has ever had its clock started. Abandonment counts
     /// work that was picked up and dropped, not a task that was struck off.
     ever_started: bool,
@@ -1450,4 +1491,18 @@ fn median(samples: &mut [f64]) -> Value {
 /// the whole report.
 fn payload_str<'a>(payload: Option<&'a Value>, key: &str) -> Option<&'a str> {
     payload.and_then(|v| v.get(key)).and_then(Value::as_str)
+}
+
+/// One boolean flag out of an event payload; absent, null or wrong-typed reads
+/// as `false`.
+///
+/// [`payload_str`]'s sibling, and the same argument for existing at all. The
+/// degradation is deliberate and different from a param's: a flag that is not
+/// there was not set, and D149 writes `forced` only when it is true, so
+/// "absent" is the ordinary case rather than a malformed one.
+fn payload_bool(payload: Option<&Value>, key: &str) -> bool {
+    payload
+        .and_then(|v| v.get(key))
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
 }

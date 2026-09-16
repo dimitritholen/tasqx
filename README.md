@@ -54,9 +54,10 @@ the same JSON API every other surface goes through.
   before starting, in one call, including what each prerequisite concluded.
 - **It measures whether the work worked, not just what it cost.**
   `tasqx report --outcomes` reads your own history for rework, estimate
-  calibration, token spend, completions nobody documented and work that was
-  started and dropped. Every rate arrives beside the `n` it was computed over,
-  because a rework rate over three completions is not evidence of anything.
+  calibration, token spend, completions nobody documented, work that was
+  started and dropped, and completions that overrode open blockers. Every
+  rate arrives beside the `n` it was computed over, because a rework rate
+  over three completions is not evidence of anything.
 - **Capture in one line.**
   `tasqx add Ship it due:friday +api !high est:4h` parses as it reads, dates
   take natural language (`tomorrow`, `in 3 days`, `eom`), and Tab completion

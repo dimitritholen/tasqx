@@ -707,7 +707,10 @@ fn every_field_task_get_returns_is_accounted_for_in_the_view() {
 
     d("task.start", &json!({ "ref": 2 }));
     let running = d("task.get", &json!({ "ref": 2 }));
-    d("task.done", &json!({ "ref": 2 }));
+    // `force`: #2 still depends on #1, which this fixture leaves pending on
+    // purpose (it is what makes `blocked`/`unmet_blockers` non-empty above),
+    // and D149 refuses that completion without the override.
+    d("task.done", &json!({ "ref": 2, "force": true }));
     let finished = d("task.get", &json!({ "ref": 2 }));
     // `status_unrecognized` is emitted for a status no writer of THIS build
     // could have produced (D28), so a fixture that only drives the state

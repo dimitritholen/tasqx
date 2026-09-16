@@ -78,6 +78,67 @@ fn a_reopen_from_cancelled_is_not_rework() {
     );
 }
 
+// ---- forced completions ---------------------------------------------------
+
+/// D149. `task.done` refuses a task whose dependencies are still open, and
+/// `force: true` completes it anyway — which would be an override nobody ever
+/// sees again if the log did not carry it. This is where the pattern shows up,
+/// for the reason `unproven` exists: a maintainer reads the rate, rather than
+/// one agent meeting one refusal at a time.
+#[test]
+fn forced_counts_a_completion_that_overrode_its_open_blockers() {
+    let e = engine();
+    let dependent = add(&e, "shipped ahead of its blocker", json!({}));
+    let blocker = add(&e, "never finished", json!({}));
+    let clean = add(&e, "nothing blocked it", json!({}));
+    call(
+        &e,
+        "dependency.add",
+        json!({ "ref": dependent, "depends_on": blocker }),
+    )
+    .expect("dependency.add");
+    call(&e, "task.done", json!({ "ref": dependent, "force": true })).expect("forced");
+    call(&e, "task.done", json!({ "ref": clean })).expect("done");
+
+    let out = call(&e, "report.outcomes", json!({ "metrics": ["forced"] })).expect("outcomes");
+    let forced = &only_group(&out)["forced"];
+    assert_eq!(forced["count"], 1);
+    assert_eq!(
+        forced["n"], 2,
+        "the denominator is completions, like `rework` — the blocker never closed, so it is \
+         not an outcome yet and pads nothing"
+    );
+    assert_eq!(forced["refs"], json!([dependent]));
+    assert!((forced["rate"].as_f64().expect("a rate over two") - 0.5).abs() < 1e-9);
+}
+
+#[test]
+fn a_forced_completion_that_came_back_and_landed_clean_is_no_longer_counted() {
+    let e = engine();
+    let dependent = add(&e, "forced, then done properly", json!({}));
+    let blocker = add(&e, "finished in the end", json!({}));
+    call(
+        &e,
+        "dependency.add",
+        json!({ "ref": dependent, "depends_on": blocker }),
+    )
+    .expect("dependency.add");
+    call(&e, "task.done", json!({ "ref": dependent, "force": true })).expect("forced");
+    call(&e, "task.reopen", json!({ "ref": dependent })).expect("reopen");
+    call(&e, "task.done", json!({ "ref": blocker })).expect("the blocker lands");
+    call(&e, "task.done", json!({ "ref": dependent })).expect("done, this time unblocked");
+
+    let out = call(&e, "report.outcomes", json!({ "metrics": ["forced"] })).expect("outcomes");
+    let forced = &only_group(&out)["forced"];
+    assert_eq!(
+        forced["count"], 0,
+        "the metric is a property of the MOST RECENT completion, exactly like `completed` \
+         itself — work that was redone in order is not an override anyone should still be \
+         reading about: {forced}"
+    );
+    assert_eq!(forced["n"], 2, "both tasks closed as completions");
+}
+
 // ---- calibration ----------------------------------------------------------
 
 #[test]
@@ -419,7 +480,14 @@ fn every_metric_is_reported_when_none_is_named() {
 
     let out = call(&e, "report.outcomes", json!({})).expect("outcomes");
     let g = only_group(&out);
-    for m in ["rework", "calibration", "cost", "silent", "abandonment"] {
+    for m in [
+        "rework",
+        "calibration",
+        "cost",
+        "silent",
+        "abandonment",
+        "forced",
+    ] {
         assert!(g.get(m).is_some(), "{m} missing from a default report: {g}");
     }
 }

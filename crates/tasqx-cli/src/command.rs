@@ -549,6 +549,10 @@ pub(super) enum Command {
         /// short_id or UUID.
         #[arg(add = crate::complete::candidates::task_ids())]
         r#ref: String,
+        /// Complete the task even though some of its dependencies are still
+        /// open (recorded; `report --outcomes` counts it under FORCED).
+        #[arg(long)]
+        force: bool,
         #[command(flatten)]
         correlation: CorrelationArgs,
         #[command(flatten)]

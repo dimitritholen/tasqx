@@ -1362,8 +1362,10 @@ fn a_done_dependent_answers_no_unmet_blockers_even_while_its_blocker_is_open() {
     let (dependent, _blocker, edge) = dependent_blocker_edge(&e);
     e.dependency_add(&edge).expect("dependency.add");
 
-    // The blocker is left pending; only the dependent is completed.
-    e.task_done(&json!({ "ref": dependent["short_id"].clone() }))
+    // The blocker is left pending; only the dependent is completed — with
+    // `force`, because D149 is what refuses that completion now, and the fact
+    // under test is what the store says about the dependent once it is closed.
+    e.task_done(&json!({ "ref": dependent["short_id"].clone(), "force": true }))
         .expect("task.done");
 
     let got = e
@@ -1482,7 +1484,9 @@ fn every_blocked_reader_answers_from_the_same_predicate() {
     }
     // Closed AFTER the edge exists: the dependent's own status is what has to
     // clear the flag, not the absence of an edge.
-    e.task_done(&json!({ "ref": done_dependent["short_id"].clone() }))
+    // `force`: D149 refuses a completion behind an open blocker, and this
+    // fixture needs exactly that shape — #3 done while #1 is still pending.
+    e.task_done(&json!({ "ref": done_dependent["short_id"].clone(), "force": true }))
         .expect("task.done");
     e.task_cancel(&json!({ "ref": cancelled_blocker["short_id"].clone() }))
         .expect("task.cancel");

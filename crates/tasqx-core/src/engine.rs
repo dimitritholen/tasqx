@@ -104,7 +104,7 @@ pub const SUMMARY_METRICS: [&str; 8] = [
 /// completions carrying no annotation, not "bad completions". D137 refuses a
 /// composite score for the same reason these stay five names — the blend
 /// destroys the split that makes a figure actionable.
-pub const OUTCOME_METRICS: [&str; 7] = [
+pub const OUTCOME_METRICS: [&str; 8] = [
     "rework",
     "calibration",
     "cost",
@@ -118,6 +118,11 @@ pub const OUTCOME_METRICS: [&str; 7] = [
     // reason `overrun`'s is completions that had a budget: a rate over every
     // completion would shrink as uncriteriaed work landed.
     "unproven",
+    // D149. Completions that overrode open blockers with `force`. Its
+    // denominator IS completions, like `rework`'s and unlike the two above:
+    // every completion could have been a forced one, so there is no smaller
+    // population to measure it against.
+    "forced",
 ];
 
 /// `memory.search`'s default page when the caller names no `limit`.

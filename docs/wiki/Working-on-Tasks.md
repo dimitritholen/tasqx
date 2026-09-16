@@ -83,6 +83,10 @@ tasqx done 42
   shows it.
 - If other tasks were waiting on this one, they unblock now, and the answer
   names them. Finishing work tells you what it made possible.
+- A task with dependencies still open is refused, naming them. `tasqx done 42
+  --force` completes it anyway; the override is recorded on the completion
+  and `tasqx report --outcomes` counts it under FORCED. Cancelling a blocked
+  task never needs the flag.
 
 ## tasqx cancel
 
