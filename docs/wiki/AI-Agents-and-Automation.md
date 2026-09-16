@@ -86,6 +86,41 @@ paying for it:
   `memory add` / `memory import`), so a ruling is not buried under a
   project's own, more numerous, task annotations.
 
+### Why the tool descriptions are short
+
+Every tool description states its contract — what the call does, what it
+returns, and the one rule you need to call it right — and cites a `D`-number
+when a design decision is behind that rule. The reasoning for the rule is not
+in the description: it is in `DESIGN.md` §12 under that number, and
+`tasqx_search_memory` finds it once the repository's docs have been imported
+with `tasqx memory import`. The descriptions are kept short because they are
+not free. Some clients fetch a tool's schema on first use; most inject the
+whole roster into every request, where it costs on the order of thirty
+kilobytes — a few thousand tokens — on every prompt. A guard test in the test
+suite holds that bound, and a `tools/list` handshake against your own build
+measures it exactly.
+
+A few facts the short descriptions no longer spell out, that you may still
+want to act on:
+
+- **`annotations_limit` and `include_json` spend the same budget.** A
+  `tasqx_get_task` response is fitted to a byte budget, and the machine-readable
+  JSON block is charged first. A big annotation page together with
+  `include_json: true` therefore buys less history than the page you asked for.
+- **`budget_tokens` stops nothing.** tasqx is called between turns and cannot
+  interrupt one. It counts fresh tokens only — input, output and cache
+  creation, never cache reads — so a task that blows its budget is a signal it
+  was too large to hand over whole, not an error.
+- **`tasqx_start_timer` takes `actor` and `keep`.** Each MCP connection gets
+  its own actor id, and starting a task while a *different* actor holds a
+  running clock is refused rather than silently stopping their timer. Pass
+  `keep: true` to run both deliberately — which is what several agents working
+  in parallel need.
+- **`tasqx_remove_annotation` redacts the event too.** It overwrites the body
+  in the annotation row *and* in the original write's audit event, in one
+  transaction, so a secret pasted into a note is also gone from an export.
+  `tasqx undo` cannot bring it back.
+
 For the full workflow — what deserves a backlog entry, searching memory before
 starting, annotating before completing — see the
 [AI agent guide](../guides/ai-agent-workflow.md) and the

@@ -171,8 +171,8 @@ fn enum_of(values: impl IntoIterator<Item = &'static str>) -> Value {
 /// three different grammars for one parser — and the first version did exactly
 /// that, claiming RFC3339 only, which is the narrowest of the spellings the tool
 /// prints in its own parse error.
-const WHEN_GRAMMAR: &str = "Date/time in the tool's date grammar: \"tomorrow\", \
-    \"friday\", \"2026-07-20\", \"in 3 days\", \"eom\", or \"2026-07-20T17:00\" (a clock is UTC unless it carries an offset).";
+const WHEN_GRAMMAR: &str = "Date grammar: \"tomorrow\", \"friday\", \"2026-07-20\", \
+    \"in 3 days\", \"eom\", \"2026-07-20T17:00\" (bare clock = UTC; an offset is honoured).";
 
 /// How many annotations `tasqx_get_task` returns when the caller names no page
 /// size.
@@ -329,15 +329,10 @@ fn max_body_bytes_schema() -> Value {
         "type": "integer",
         "minimum": 0,
         "description": format!(
-            "Cap each annotation body at this many BYTES **in the response**. Default \
+            "Cap each annotation body at this many BYTES in the response; default \
              {ANNOTATION_BODY_CAP}. A longer body is cut on a character boundary and marked \
-             with its real size and the exact call that reads it whole, so nothing is \
-             silently altered; a body that fits is returned untouched and unmarked. This is \
-             what keeps one enormous note inside the response budget, which `annotations_limit` \
-             cannot do — a page bounds how MANY notes come back, never how big one of them is. \
-             Raise it deliberately to read one long note in full, together with \
-             `annotations_limit: 1`; that answer may exceed the budget, which is the point of \
-             asking. Stored text is never capped: this bounds one response, not the store."
+             with its real size and the call that reads it whole; the store is never \
+             capped (D148)."
         )
     })
 }
@@ -346,7 +341,7 @@ fn max_body_bytes_schema() -> Value {
 fn ref_schema() -> Value {
     json!({
         "type": ["integer", "string"],
-        "description": "Task reference: short_id (integer) or full UUID (string)."
+        "description": "Task short_id (integer) or full UUID (string)."
     })
 }
 
@@ -366,26 +361,24 @@ fn with_correlation(mut schema: Value) -> Value {
         "session_id".to_string(),
         json!({
             "type": "string",
-            "description": "Correlation: your agent-session id, recorded on this task's \
-                event for later token attribution. Pass it if your runtime exposes one."
+            "description": "Your agent-session id, recorded on this task's event for \
+                token attribution."
         }),
     );
     props.insert(
         "transcript_path".to_string(),
         json!({
             "type": "string",
-            "description": "Correlation: absolute path to your session transcript/log \
-                file, recorded on this task's event so token usage can be attributed \
-                from it later."
+            "description": "Absolute path to your session transcript, recorded on the \
+                same event."
         }),
     );
     props.insert(
         "client".to_string(),
         json!({
             "type": "string",
-            "description": "The calling tool as \"<name> <version>\". Filled in \
-                automatically from the MCP clientInfo handshake when omitted — only \
-                pass it to override that."
+            "description": "Calling tool as \"<name> <version>\". Filled in from the \
+                MCP handshake when omitted."
         }),
     );
     schema
@@ -557,23 +550,16 @@ fn build_tool_specs() -> Vec<ToolSpec> {
             write: false,
             destructive: false,
             idempotent: true,
-            description: "List tasks matching a filter-DSL query. The filter is \
-                the same grammar the CLI takes, e.g. \
-                \"project:work.tasqx status:pending +api due.before:tomorrow\". \
-                Rows come back in pages: the response carries `count` (returned), `total` \
-                (matched) and `next_offset`, null once nothing is left. Project \
-                `depends_on` with `fields` to see what a blocked row is waiting on. Two \
-                CLI-only recipes worth composing here: the single highest-urgency \
-                unblocked task (\"what now\") is `filter: \"@working\", sort: \
-                [\"-urgency\"], limit: 1`; \"what was I doing\" is `filter: \
-                \"status:active\"`. Rows are narrowed to a default set of fields \
-                unless you name your own; `fields: []` returns every column.",
+            description: "List tasks matching a filter-DSL query — the CLI's grammar, e.g. \
+                \"project:work status:pending +api due.before:tomorrow\". Paged: the response \
+                carries `count`, `total` and `next_offset`, null once nothing is left. Rows \
+                carry a default field set unless you name `fields` (D152).",
             schema: json!({
                 "type": "object",
                 "properties": {
                     "filter": {
                         "type": "string",
-                        "description": "Filter DSL query, e.g. \"status:pending +api\". Use \"@working\" for the active working set. Omit it (or send \"\") for every task: no filter means no filtering."
+                        "description": "Filter DSL, e.g. \"status:pending +api\". \"@working\" is the actionable set. Omit it (or send \"\") for every task."
                     },
                     // No `enum` here: a key may carry a `-` prefix, which a
                     // plain enum of the bare names would forbid. The valid set
@@ -584,8 +570,8 @@ fn build_tool_specs() -> Vec<ToolSpec> {
                         "type": "array",
                         "items": { "type": "string" },
                         "description": format!(
-                            "Sort keys, e.g. [\"-urgency\", \"due\"]. Prefix \"-\" for descending. \
-                             Valid keys: {}. An unknown key is rejected, not ignored.",
+                            "Sort keys, e.g. [\"-urgency\", \"due\"]; \"-\" descends. Valid: {}. \
+                             An unknown key is rejected.",
                             SORT_KEYS.join(", ")
                         )
                     },
@@ -597,30 +583,24 @@ fn build_tool_specs() -> Vec<ToolSpec> {
                         "type": "integer",
                         "minimum": 0,
                         "description": format!(
-                            "How many rows to return. Omit and this tool applies its own page \
-                             ({LIST_PAGE}), shrunk further if the response would exceed its byte \
-                             budget; the answer always carries `total` and a `next_offset` that \
-                             is null once nothing is left. A limit you name is honoured up to \
-                             {max_limit}, the ceiling the core itself clamps to.",
+                            "Rows to return. Omit for this tool's page ({LIST_PAGE}), shrunk \
+                             to fit the response byte budget; a named limit is honoured up \
+                             to {max_limit}.",
                             max_limit = crate::engine::task::MAX_TASK_LIST_LIMIT
                         )
                     },
                     "offset": {
                         "type": "integer",
                         "minimum": 0,
-                        "description": "How many matching rows to skip. Pass the `next_offset` of \
-                             the previous response to walk the rest; ordering is stable across \
-                             pages, so a row is never shown twice or missed."
+                        "description": "Matching rows to skip; pass the previous \
+                             `next_offset`. Ordering is stable across pages."
                     },
                     "fields": {
                         "type": "array",
                         "items": { "type": "string", "enum": enum_of(TASK_FIELDS.iter().map(String::as_str)) },
                         "description": format!(
-                            "Restrict each row to these fields. An unknown name is rejected, not \
-                             ignored. Omit it and each row carries {default} and nothing else, \
-                             with any key whose value is null left out; send \"fields\": [] for \
-                             the whole row, or name what you need (e.g. \"depends_on\", \
-                             \"estimate\", \"tokens\").",
+                            "Restrict each row to these fields. Omit for {default}, with \
+                             null-valued keys dropped; send [] for the whole row.",
                             default = LIST_DEFAULT_FIELDS.join(", ")
                         )
                     }
@@ -633,10 +613,10 @@ fn build_tool_specs() -> Vec<ToolSpec> {
             write: false,
             destructive: false,
             idempotent: true,
-            description: "Get one task's full detail: fields, tags, annotations, and \
-                dependencies. A long annotation history is returned newest-first in pages — \
-                the response always carries `annotations_total`, and `annotations_next_offset` \
-                whenever older annotations were left out.",
+            description: "Get one task's full detail: fields, tags, annotations, \
+                dependencies. Annotations come back newest-first in pages — the response \
+                carries `annotations_total`, and `annotations_next_offset` whenever older \
+                ones were left out.",
             schema: json!({
                 "type": "object",
                 "properties": {
@@ -645,60 +625,37 @@ fn build_tool_specs() -> Vec<ToolSpec> {
                         "type": "integer",
                         "minimum": 0,
                         "description": format!(
-                            "How many of the MOST RECENT annotations to return. Omit and this \
-                             tool applies its own page size ({ANNOTATION_PAGE}), because an \
-                             unbounded history can exceed a client's tool-output limit; pass \
-                             `annotations_total` from a previous response to ask for every \
-                             one. The response byte budget applies to EVERY answer, whatever \
-                             you name here: a page too big for it is cut to the largest page \
-                             that fits and the rendered view says how much it left out and \
-                             which `annotations_offset` reads the rest. By default the whole \
-                             budget goes on history; `include_json: true` spends it on the \
-                             duplicate machine-readable block first, so a big page and that \
-                             flag together buy less history. 0 returns none, which is how you \
-                             read a task's fields without its history."
+                            "Most-recent annotations to return; omit for this tool's page \
+                             ({ANNOTATION_PAGE}). An over-budget page is cut to what fits and \
+                             the view names the `annotations_offset` for the rest; \
+                             `include_json: true` spends that budget first. 0 returns none."
                         )
                     },
                     "max_body_bytes": max_body_bytes_schema(),
                     "include_json": {
                         "type": "boolean",
-                        "description": "Send the machine-readable JSON block as well as the \
-                             rendered view. Default FALSE: you get the rendered view alone, \
-                             because the two blocks are the same result twice and on a task \
-                             whose bulk is annotation prose the JSON is that prose again — \
-                             measured at 54% of a 6.4 KB response for one annotation, and 66% \
-                             for a task read with `annotations_limit: 0`. Send true when a \
-                             SCRIPT is going to parse the result rather than read it."
+                        "description": "Send the machine-readable JSON block beside the \
+                             rendered view. Default FALSE: it is one result twice and you \
+                             read the view (D151). True when a SCRIPT parses this."
                     },
                     "view": {
                         "type": "string",
                         "enum": enum_of(["markdown", "card"]),
-                        "description": "How the rendered block is spelled. Default \"markdown\", \
-                             the view YOU read. \"card\" is the D146 box card: a fixed \
-                             72-column box-drawn summary inside a text code fence, for the \
-                             moment you hand this task to a PERSON — pasted into a chat reply \
-                             or a pull request it keeps its shape, where a markdown table \
-                             reflows into the prose around it. It is a SUMMARY: the detail \
-                             view carries the annotation bodies and the card quotes only the \
-                             first one. The JSON block is unchanged under either view — \
-                             `include_json: true` still decides whether it is sent, and the \
-                             response budget still spends it first."
+                        "description": "How the rendered block is spelled. Default \
+                             \"markdown\", the view YOU read; \"card\" is the D146 72-column \
+                             box card in a text fence, for a PERSON, and quotes only the \
+                             first annotation."
                     },
                     "annotations_offset": {
                         "type": "integer",
                         "minimum": 0,
-                        "description": "How many annotations to skip, counted back from the \
-                            newest. Pass the `annotations_next_offset` of the previous response \
-                            to walk further into the history; that field is null once there is \
-                            nothing older."
+                        "description": "Annotations to skip, counted back from the newest; \
+                            pass the previous `annotations_next_offset`."
                     },
                     "explain": {
                         "type": "boolean",
                         "description": "Add `urgency_breakdown` (`priority`, `due_proximity`, \
-                            `age`, `total`) — the terms `urgency` sums (D1). Default false: an \
-                            agent deciding whether to trust or override the ranking otherwise \
-                            gets the one number it already had and no way to see the arithmetic \
-                            behind it (#150)."
+                            `age`, `total`) — the terms `urgency` sums (D1). Default false."
                     }
                 },
                 "required": ["ref"]
@@ -715,12 +672,10 @@ fn build_tool_specs() -> Vec<ToolSpec> {
             write: false,
             destructive: false,
             idempotent: true,
-            description: "Everything you need before starting one task, in ONE call: the task \
-                itself, the tasks it depends on with what each of THEM concluded, what it \
-                blocks, and relevant memory — under a query tasqx derives from the task's own \
-                title, tags and project, so you do not have to guess search terms. Prefer this \
-                over get_task + search_memory when you are about to START work; use get_task \
-                when you only need the task. Pure read, no side effects.",
+            description: "Everything you need before starting one task, in ONE call (D136): \
+                the task, the tasks it depends on with what each of THEM concluded, what it \
+                blocks, and memory found under a query tasqx derives from the task's title, \
+                tags and project. Use tasqx_get_task when you only need the task.",
             schema: json!({
                 "type": "object",
                 "properties": {
@@ -728,46 +683,32 @@ fn build_tool_specs() -> Vec<ToolSpec> {
                     "memory_limit": {
                         "type": "integer",
                         "description": format!(
-                            "How many memory hits to return. Optional; defaults to {}. Half \
-                             the slots (rounded up) are reserved for knowledge docs — the \
-                             rulings a sibling task's notes would otherwise outrank — and \
-                             annotations fill the rest, either kind taking the other's unused \
-                             slots. The response says what it did in `reserved_docs`, \
-                             `docs_total` and `annotations_total`.",
+                            "Memory hits to return; default {}. Half the slots (rounded up) \
+                             are reserved for knowledge docs, annotations fill the rest, and \
+                             either kind takes the other's unused slots.",
                             crate::engine::BRIEF_MEMORY_LIMIT
                         )
                     },
                     "include_rank": {
                         "type": "boolean",
-                        "description": "Add the raw FTS5 bm25 `rank` to each memory hit in the \
-                             machine-readable block — pair it with `include_json: true`, \
-                             because the rendered view never prints a rank. Default false. \
-                             LOWER (more negative) is the better match, and the hits are \
-                             already sorted best-first, so this is only for comparing hits \
-                             against each other."
+                        "description": "Add the raw FTS5 bm25 `rank` to each memory hit; \
+                             default false, and visible only in the `include_json` block. \
+                             LOWER is the better match and hits arrive sorted best-first."
                     },
                     "max_body_bytes": max_body_bytes_schema(),
                     "include_json": {
                         "type": "boolean",
-                        "description": "Send the machine-readable JSON block as well as the \
-                             rendered view. Default FALSE: you get the rendered view alone. \
-                             The two blocks are the same result twice, and a brief's JSON half \
-                             is the bigger one — it carries the neighbourhood and every memory \
-                             snippet again. Pass true when a script needs the brief as JSON."
+                        "description": "Send the machine-readable JSON block beside the \
+                             rendered view. Default FALSE: it is the brief again, snippets \
+                             included (D151). True when a script parses this."
                     },
                     "view": {
                         "type": "string",
                         "enum": enum_of(["markdown", "card"]),
-                        "description": "How the task half of the brief is spelled. Default \
-                             \"markdown\", the view YOU read. \"card\" is the D146 box card: a \
-                             fixed 72-column box-drawn summary inside a text code fence, for \
-                             the moment you hand this task to a PERSON — pasted into a chat \
-                             reply or a pull request it keeps its shape. Only the task half \
-                             changes: what the prerequisites concluded and the memory hits \
-                             follow the card as the same markdown either way. The JSON block \
-                             is unchanged under either view — `include_json: true` still \
-                             decides whether it is sent, and the response budget still spends \
-                             it first."
+                        "description": "How the TASK HALF is spelled. Default \"markdown\", \
+                             the view YOU read; \"card\" is the D146 72-column box card in a \
+                             text fence, for a PERSON. Prerequisites and memory hits stay \
+                             markdown."
                     }
                 },
                 "required": ["ref"]
@@ -779,7 +720,7 @@ fn build_tool_specs() -> Vec<ToolSpec> {
             write: false,
             destructive: false,
             idempotent: true,
-            description: "Aggregate report grouped by project, status, or priority. Pure read, no side effects.",
+            description: "Aggregate report grouped by project, status or priority. Pure read.",
             schema: json!({
                 "type": "object",
                 "properties": {
@@ -791,7 +732,7 @@ fn build_tool_specs() -> Vec<ToolSpec> {
                     "filter": { "type": "string", "description": "Optional filter DSL to scope the report." },
                     "all": {
                         "type": "boolean",
-                        "description": "Count cancelled tasks too. By default a report with no status term in its filter skips only cancelled tasks — done work always counts (D24)."
+                        "description": "Count cancelled tasks too. By default a report with no status term skips cancelled only — done work always counts (D24)."
                     },
                     "metrics": {
                         "type": "array",
@@ -800,17 +741,16 @@ fn build_tool_specs() -> Vec<ToolSpec> {
                             "enum": enum_of(SUMMARY_METRICS)
                         },
                         "description": "Extra columns per group. Omit and each group carries \
-                             only `count` — `tracked_total`, `overdue` and the token buckets are \
-                             NOT included unless named here, unlike `tasqx report`, which shows \
-                             every metric by default."
+                             only `count`: every other metric is opt-in here, unlike \
+                             `tasqx report`."
                     },
                     "since": {
                         "type": "string",
-                        "description": "Window `tracked_total` and the token buckets to what happened at or after this instant — a task tracking time or logging a measurement — rather than the task's lifetime total. Independent of `filter`'s `completed.after:`/`completed.before:`, which selects tasks by completion date instead (D97). Same date grammar as `due`/`completed` (relative words, offsets, RFC3339)."
+                        "description": "Window `tracked_total` and the token buckets to spend at or after this instant, not the task's lifetime total — a different axis from `filter`'s `completed.*` terms (D97)."
                     },
                     "until": {
                         "type": "string",
-                        "description": "The other end of `since`'s window: excludes anything at or after this instant. `since`/`until` together window WHEN the spend happened, e.g. \"what did this project cost this week\" — the fix for a report that used to answer that question by task completion date and silently missed spend on tasks that hadn't closed."
+                        "description": "The other end of `since`: excludes anything at or after this instant. Together they window WHEN the spend happened."
                     }
                 }
             }),
@@ -827,13 +767,11 @@ fn build_tool_specs() -> Vec<ToolSpec> {
             write: false,
             destructive: false,
             idempotent: true,
-            description: "How the work went, rather than what it cost: rework (completions that \
-                were reopened), estimate calibration, token cost, completions with no annotation, \
-                started-then-cancelled work, and `forced` (completions that overrode still-open \
-                blockers). Every rate comes back beside the `n` it was \
-                computed over — a rate over three completions and one over ninety are different \
-                claims. Scope is tasks that CLOSED: a task still open is not an outcome yet, and \
-                `tasqx_summary` is the read for work in flight. Pure read, no side effects.",
+            description: "How the work went rather than what it cost: rework, estimate \
+                calibration, token cost, unannotated completions, started-then-cancelled \
+                work, and `forced` (completions that overrode open blockers). Every rate \
+                carries the `n` it was computed over. Scope is tasks that CLOSED; \
+                `tasqx_summary` reads work in flight.",
             schema: json!({
                 "type": "object",
                 "properties": {
@@ -842,29 +780,25 @@ fn build_tool_specs() -> Vec<ToolSpec> {
                         "enum": enum_of(SUMMARY_GROUP_BY),
                         "description": format!("Grouping axis. Optional; defaults to {}.", SUMMARY_GROUP_BY[0])
                     },
-                    "filter": { "type": "string", "description": "Optional filter DSL to scope the report — the same grammar `tasqx_list_tasks` takes." },
+                    "filter": { "type": "string", "description": "Optional filter DSL to scope the report — `tasqx_list_tasks`' grammar." },
                     "metrics": {
                         "type": "array",
                         "items": {
                             "type": "string",
                             "enum": enum_of(OUTCOME_METRICS)
                         },
-                        "description": "Which metrics to emit. Omit for ALL of them, which is \
-                             the intended reading: a rework rate with no cost beside it invites \
-                             the wrong fix. Unlike `tasqx_summary`, naming none does not mean a \
-                             bare count."
+                        "description": "Which metrics to emit. Omit for ALL of them; naming \
+                             none does not mean a bare count here."
                     },
                     "since": {
                         "type": "string",
                         "description": "Only count tasks that closed at or after this instant. \
-                             `since`/`until` window WHEN THE TASK CLOSED — its `done`, or its \
-                             cancellation — which is a different axis from `tasqx_summary`'s \
-                             window over when spend happened. Same date grammar as `due` \
-                             (relative words, offsets, RFC3339; a bare clock time is UTC)."
+                             `since`/`until` window WHEN THE TASK CLOSED, not when spend \
+                             happened."
                     },
                     "until": {
                         "type": "string",
-                        "description": "The other end of `since`'s window: excludes tasks that closed at or after this instant."
+                        "description": "The other end of `since`: excludes tasks that closed at or after this instant."
                     }
                 }
             }),
@@ -891,21 +825,12 @@ fn build_tool_specs() -> Vec<ToolSpec> {
             write: false,
             destructive: false,
             idempotent: true,
-            description: "Search the memory store: imported docs/patterns and \
-                task annotations, bm25-ranked with snippets. Plain text queries \
-                are matched as phrases; set raw=true for FTS5 operator syntax \
-                (prefix*, AND/OR, column filters). Every word of a query is matched \
-                by its STEM, so \"reviewing\" finds a doc that only says \"review\" or \
-                \"reviewed\". A hit carries a short excerpt: \
-                read a doc whole with `tasqx_get_memory` on its `id`, and an \
-                annotation whole with `tasqx_get_task` on the task its `source` \
-                names. Every word of a plain query is REQUIRED, so `matched` on the \
-                result is what explains a zero-hit answer. `hits` is already sorted \
-                best-first; `include_rank: true` adds the raw FTS5 bm25 `rank` to each \
-                one, where LOWER (more negative) is the better match. The response \
-                carries `total` (every row the query matched, \
-                before `limit` truncates) and `has_more`, so a hit list that looks \
-                complete is never mistaken for one that is.",
+            description: "Search the memory store — imported docs and task annotations — \
+                bm25-ranked with snippets. A plain query is matched as phrases by word STEM \
+                and every word is REQUIRED, so `matched` explains a zero-hit answer; \
+                `raw: true` takes FTS5 syntax instead. A hit is an excerpt: `tasqx_get_memory` \
+                reads a doc whole, `tasqx_get_task` an annotation. `hits` is sorted best-first \
+                (LOWER bm25 `rank` is better); `total` and `has_more` say what `limit` cut.",
             schema: json!({
                 "type": "object",
                 "properties": {
@@ -927,23 +852,19 @@ fn build_tool_specs() -> Vec<ToolSpec> {
                     },
                     "project": {
                         "type": "string",
-                        "description": "Scope to one project: docs stored with this `project`, and annotations whose task carries it. Omit to search across every project (and unscoped docs)."
+                        "description": "Scope to one project: docs stored with it, and annotations whose task carries it. Omit to search every project."
                     },
                     "include_unscoped": {
                         "type": "boolean",
-                        "description": "Widen a `project` scope to also return docs and \
-                             annotations belonging to NO project — which is what \
-                             `tasqx memory import` produces, so a strict scope hides every \
-                             imported ADR. Never admits ANOTHER project's documents. Needs \
-                             `project`; without one there is nothing to widen from and it is \
-                             refused."
+                        "description": "Widen a `project` scope to docs and annotations with \
+                             NO project — what `tasqx memory import` produces. Never admits \
+                             another project's. Refused without `project`."
                     },
                     "include_rank": {
                         "type": "boolean",
                         "description": "Add the raw FTS5 bm25 `rank` to each hit. Default \
-                             false. LOWER (more negative) is the better match, and `hits` is \
-                             already sorted best-first, so this is only for comparing hits \
-                             against each other — never for a fixed threshold."
+                             false. LOWER (more negative) is better and `hits` is already \
+                             sorted best-first, so never use it as a threshold (D154)."
                     }
                 },
                 "required": ["query"]
@@ -955,14 +876,11 @@ fn build_tool_specs() -> Vec<ToolSpec> {
             write: false,
             destructive: false,
             idempotent: true,
-            description: "Browse memory docs without already knowing a word inside one — the \
-                enumeration `tasqx_search_memory` cannot do without a query. Newest-modified \
-                first by default. Rows come back in pages: the response carries `count` \
-                (returned), `total` (matched) and `next_offset`, null once nothing is left — the \
-                same shape `tasqx_list_tasks` uses, and `limit` says what one page holds. A row \
-                is `id`, `title`, `source` and `modified` — what you need to RECOGNISE a doc; \
-                `include_preview: true` adds the rest of the engine's row, `body_preview` \
-                included, and `tasqx_get_memory` on an `id` reads one doc whole.",
+            description: "Browse memory docs without knowing a word inside one — what \
+                `tasqx_search_memory` cannot do without a query. Newest-modified first, paged \
+                like `tasqx_list_tasks`. A row is `id`, `title`, `source` and `modified`, \
+                enough to RECOGNISE a doc; `include_preview: true` adds the rest, and \
+                `tasqx_get_memory` reads one whole (D154).",
             schema: json!({
                 "type": "object",
                 "properties": {
@@ -970,28 +888,24 @@ fn build_tool_specs() -> Vec<ToolSpec> {
                         "type": "integer",
                         "minimum": 0,
                         "description": format!(
-                            "How many rows to return. Optional; defaults to \
-                             {MEMORY_LIST_PAGE}, because an unbounded browse page grows with \
-                             the store. Pass your own to page differently; `next_offset` \
-                             walks from wherever this leaves off."
+                            "Rows to return; default {MEMORY_LIST_PAGE}, because an unbounded \
+                             browse page grows with the store."
                         )
                     },
                     "include_preview": {
                         "type": "boolean",
-                        "description": "Return the whole engine row per doc — `project`, \
-                             `created`, `_rev`, a 160-character `body_preview` and \
-                             `body_truncated` — instead of the four fields that identify it. \
-                             Default false: the preview is the bulk of a browse page, and \
-                             `tasqx_get_memory` reads one doc whole."
+                        "description": "Return the whole engine row — `project`, `created`, \
+                             `_rev`, a 160-character `body_preview`, `body_truncated` — \
+                             instead of the four identifying fields. Default false (D154)."
                     },
                     "offset": {
                         "type": "integer",
                         "minimum": 0,
-                        "description": "How many matching docs to skip. Pass the previous response's `next_offset` to keep walking."
+                        "description": "Matching docs to skip; pass the previous response's `next_offset`."
                     },
                     "project": {
                         "type": "string",
-                        "description": "Restrict to docs stored with this `project`. Omit to list every doc regardless of project."
+                        "description": "Restrict to docs stored with this `project`. Omit to list every doc."
                     }
                 }
             }),
@@ -1003,15 +917,15 @@ fn build_tool_specs() -> Vec<ToolSpec> {
             write: false,
             destructive: false,
             idempotent: true,
-            description: "Read one knowledge doc whole, by the `id` a search hit carries. \
-                `tasqx_search_memory` returns a short excerpt and this is how you get the rest; \
-                an annotation id is refused, naming the task to read it from instead.",
+            description: "Read one knowledge doc whole, by the `id` a search hit carries — \
+                `tasqx_search_memory` returns only an excerpt. An annotation id is refused, \
+                naming the task to read it from instead.",
             schema: json!({
                 "type": "object",
                 "properties": {
                     "id": {
                         "type": "string",
-                        "description": "The doc UUID, as printed by a search hit or by `tasqx_add_memory`."
+                        "description": "The doc UUID, as a search hit or `tasqx_add_memory` prints it."
                     }
                 },
                 "required": ["id"]
@@ -1023,22 +937,19 @@ fn build_tool_specs() -> Vec<ToolSpec> {
             write: true,
             destructive: false,
             idempotent: false,
-            description: "Create a new task. Returns its short_id, urgency, status — which is \
-                `backlog`, not `pending`, when `scheduled` or `wait` is in the future, and a \
-                backlog task is outside the `@working` set until that date passes — plus the \
-                stored title, due, tags and resolved scheduled, so a title containing `due:`, \
-                `project:`, `est:` or similar text can be checked for accidental inline-sugar \
-                capture, and an ambiguous date like `in 3 days` or `friday` can be checked \
-                against what was actually stored, rather than assumed unchanged.",
+            description: "Create a task. Returns short_id, urgency and status — `backlog`, \
+                not `pending`, when `scheduled` or `wait` is in the future, which holds the \
+                task outside `@working` until then — plus the stored title, due, tags and \
+                resolved `scheduled`, so an ambiguous date or sugar captured into the title \
+                can be checked against what was stored.",
             schema: json!({
                 "type": "object",
                 "properties": {
                     "title": {
                         "type": "string",
-                        "description": "Stored verbatim — this server does not parse the \
-                            CLI's inline sugar (`+tag`, `project:`, `due:`, `!prio`). A title \
-                            like \"fix it +bug due:friday\" is saved with those characters in \
-                            it; use the `tags`/`project`/`due`/`priority` fields below instead."
+                        "description": "Stored verbatim: this server does not parse the CLI's \
+                            inline sugar (`+tag`, `project:`, `due:`, `!prio`). Use the \
+                            fields below."
                     },
                     "project": { "type": "string" },
                     "priority": {
@@ -1053,19 +964,16 @@ fn build_tool_specs() -> Vec<ToolSpec> {
                     // grammar cannot say is which field to reach for, so each
                     // one now leads with its own effect — see `when_schema`.
                     "due": when_schema(
-                        "The deadline. Drives the urgency score and anchors relative reminders; \
-                         it does not hide the task, so an overdue one stays in the working set."
+                        "The deadline; drives urgency and anchors relative reminders, and \
+                         never hides the task."
                     ),
                     "scheduled": when_schema(
-                        "When you intend to start. A future value holds the task in `backlog`, \
-                         out of the `@working` set, until it arrives; `agenda` then places the \
-                         task on the earlier of `due` and `scheduled`."
+                        "When you intend to start; a future value holds the task in \
+                         `backlog` until it arrives."
                     ),
                     "wait": when_schema(
-                        "Hide the task until then. A future value holds it in `backlog` exactly \
-                         as `scheduled` does; the difference is intent — `wait` is \"not my \
-                         problem yet\", `scheduled` is \"I plan to start then\" and is the one \
-                         `agenda` places on."
+                        "Hides the task until then, in `backlog` like `scheduled` but \
+                         meaning \"not my problem yet\"."
                     ),
                     "tags": { "type": "array", "items": { "type": "string" } },
                     "estimate": { "type": "string", "description": "Duration: \"4h\", \"90m\", \"1h30m\", \"2d\", \"1w\", or ISO-8601 \"PT4H\"." },
@@ -1079,13 +987,10 @@ fn build_tool_specs() -> Vec<ToolSpec> {
                     },
                     "budget_tokens": {
                         "type": "integer",
-                        "description": "Token budget (D139): a size gauge over FRESH tokens \
-                            (input + output + cache creation; cache reads are not counted, \
-                            because a budget dominated by them measures re-reading rather than \
-                            work). It STOPS NOTHING — tasqx is a store you call between turns \
-                            and cannot preempt one — so read it as a signal: a task that blows \
-                            its budget was usually too big to hand over whole. `task.get` and \
-                            `task.brief` report `fresh_tokens` and `over` against it."
+                        "description": "Token budget (D139): a size gauge over FRESH tokens — \
+                            input, output, cache creation, never cache reads. It STOPS \
+                            NOTHING; a blown budget signals a task too big to hand over \
+                            whole. `tasqx_get_task` reports `over` against it."
                     }
                 },
                 "required": ["title"]
@@ -1098,16 +1003,11 @@ fn build_tool_specs() -> Vec<ToolSpec> {
             destructive: true,
             idempotent: false,
             description: "Change fields on a task via a `set` map. Returns `{short_id, _rev, \
-                set}`, where `set` echoes the RESOLVED value actually stored for each field \
-                this call named — an ambiguous `due:\"friday\"` or `estimate:\"90m\"` comes \
-                back as the instant/duration it parsed to, so a write can be checked without \
-                a follow-up `tasqx_get_task`. Optimistic concurrency \
-                is ON by default: when `expected_rev` is omitted, this server reads the \
-                task's current `_rev` and pins it, so a concurrent edit yields a `conflict` \
-                naming both revs instead of a silent overwrite — there is no way to opt \
-                out. On `conflict`: re-read the task (`tasqx_get_task`), re-apply the \
-                change to the fresh state, and retry. Under contention that loop is the \
-                protocol working, not a failure.",
+                set}`, where `set` echoes the RESOLVED value stored for each field named. \
+                Optimistic concurrency is ON: when `expected_rev` is omitted this server pins \
+                the task's current `_rev`, so a concurrent edit is a `conflict` naming both \
+                revs rather than a silent overwrite, and there is no way to opt out. On \
+                `conflict`, re-read the task, re-apply, retry (D75).",
             schema: json!({
                 "type": "object",
                 "properties": {
@@ -1116,7 +1016,7 @@ fn build_tool_specs() -> Vec<ToolSpec> {
                         "type": "object",
                         "description": "Field → new value, e.g. {\"priority\":\"M\",\"due\":\"2026-07-22T17:00:00+02:00\"}."
                     },
-                    "expected_rev": { "type": "integer", "description": "Optimistic-concurrency guard. Supplied by the server from the task's current `_rev` when omitted; pass it only to pin a rev you read earlier. There is no last-writer-wins mode." }
+                    "expected_rev": { "type": "integer", "description": "Optimistic-concurrency guard. Supplied by the server from the task's current `_rev` when omitted; pass it to pin a rev you read earlier. There is no last-writer-wins mode." }
                 },
                 "required": ["ref", "set"]
             }),
@@ -1127,21 +1027,13 @@ fn build_tool_specs() -> Vec<ToolSpec> {
             write: true,
             destructive: true,
             idempotent: false,
-            description: "Mark a task done. Returns any tasks newly unblocked by its \
-                completion. Report the tokens this task cost via the *_tokens params — \
-                the caller is the only party that knows which task a turn's spend \
-                served, so self-report is the primary measurement channel; any present \
-                count records a measurement. If you cannot observe your token spend, still \
-                send `tool` and `model` — they are recorded on the completion event without \
-                any count, and the response says what was recorded. Correlation params \
-                (session_id, transcript_path, client) land on that same event; \
-                without a self-report, log-parse attribution is a fallback that refuses \
-                samples claimed by more than one task's window. A task whose dependencies \
-                are still open is refused with `conflict` naming the blockers; pass \
-                `force: true` to complete it anyway — the override is recorded and \
-                `tasqx_outcomes` counts it. Pass `view: \"card\"` when a person is about to \
-                read what shipped: the closing card of the completed task leads the response \
-                and no follow-up `tasqx_get_task` is needed.",
+            description: "Mark a task done. Returns any tasks its completion newly unblocked. \
+                Report what this task cost via the *_tokens params: you are the only party \
+                that knows which task a turn's spend served, so self-report is the primary \
+                channel (D50), and `tool`/`model` are recorded on the event even with no \
+                count. A task with open dependencies is a `conflict` naming the blockers; \
+                `force: true` completes it anyway, counted by `tasqx_outcomes` (D150). \
+                `view: \"card\"` answers the closing card a person reads (D153).",
             // The token-count fields carry no `minimum`: the numeric-minimum
             // drift guard cannot probe a bound on a tool with required args,
             // so the floor lives in the engine (opt_u64 refuses negatives)
@@ -1153,63 +1045,54 @@ fn build_tool_specs() -> Vec<ToolSpec> {
                     "tool": {
                         "type": "string",
                         "description": "The AI tool doing the work, free-form (e.g. \
-                            \"claude-code\"). Recorded on the completion event on its own; \
-                            when token counts are present it also names the measurement, \
-                            defaulting to `client` if you omit it. You do NOT need a token \
-                            count to send it."
+                            \"claude-code\"). Also names a token measurement, defaulting \
+                            to `client`."
                     },
                     "model": {
                         "type": "string",
                         "description": "The model doing the work, e.g. \"claude-opus-5\". \
-                            Recorded on the completion event on its own, and carried on the \
-                            measurement when token counts are present. You do NOT need a \
-                            token count to send it."
+                            Recorded with or without token counts."
                     },
                     "input_tokens": {
                         "type": "integer",
-                        "description": "Self-reported input tokens this task cost (0 or more)."
+                        "description": "Self-reported input tokens (0 or more)."
                     },
                     "output_tokens": {
                         "type": "integer",
-                        "description": "Self-reported output tokens this task cost (0 or more)."
+                        "description": "Self-reported output tokens (0 or more)."
                     },
                     "cache_read_tokens": {
                         "type": "integer",
-                        "description": "Self-reported cache-read tokens this task cost (0 or more)."
+                        "description": "Self-reported cache-read tokens (0 or more)."
                     },
                     "cache_creation_tokens": {
                         "type": "integer",
-                        "description": "Self-reported cache-creation tokens this task cost (0 or more)."
+                        "description": "Self-reported cache-creation tokens (0 or more)."
                     },
                     "checks_passed": {
                         "type": "array",
                         "items": { "type": "string" },
                         "description": "Ids of the acceptance criteria this work proved (D138). \
-                            Completing with criteria still open is NOT refused — nothing is \
-                            blocked — but it is counted as an unproven completion by \
-                            `tasqx_outcomes`, so mark what you actually proved."
+                            Completing with criteria open is not refused, but \
+                            `tasqx_outcomes` counts it unproven."
                     },
                     "evidence": {
                         "type": "string",
-                        "description": "One citation covering the `checks_passed` above: a test \
-                            name, an excerpt of output, a commit sha. Stored verbatim."
+                        "description": "One citation covering `checks_passed`: a test name, an \
+                            excerpt of output, a commit sha."
                     },
                     "force": {
                         "type": "boolean",
-                        "description": "Complete the task even though some of its dependencies \
-                            are still open. Without it, a task with open blockers is refused \
-                            with `conflict` naming them (D150). The override is recorded on the \
-                            completion event and `tasqx_outcomes` counts it under `forced`."
+                        "description": "Complete despite still-open dependencies; without it \
+                            that is a `conflict` naming them (D150). The override is recorded \
+                            and counted under `forced`."
                     },
                     "view": {
                         "type": "string",
                         "enum": enum_of(["markdown", "card"]),
                         "description": "Default \"markdown\": the plain JSON result. \"card\" \
-                            answers the D146 box card of the task AS COMPLETED — Delivered row, \
-                            checks ticked or left open — inside a text code fence, as the first \
-                            block, with the JSON result unchanged behind it. For the moment you \
-                            show a PERSON what shipped; it replaces the tasqx_get_task re-read \
-                            that used to follow every completion (D153)."
+                            leads with the D146 box card of the task AS COMPLETED, in a text \
+                            fence, the JSON unchanged behind it, for a PERSON."
                     }
                 },
                 "required": ["ref"]
@@ -1225,10 +1108,10 @@ fn build_tool_specs() -> Vec<ToolSpec> {
             // task_modify status:cancelled already reached this, but its
             // schema names no status enum, so the reachable path was
             // reachable in principle and undiscoverable in practice.
-            description: "Cancel a task: backlog, pending or active moves to cancelled. The row \
-                is kept, not deleted, and stops counting in reports. Returns any tasks newly \
-                unblocked by the cancellation (D11: cancelling a blocker resolves it, same as \
-                completing one). A task already done or cancelled is a conflict, not a no-op.",
+            description: "Cancel a task: backlog, pending or active moves to cancelled. The \
+                row is kept and stops counting in reports. Returns the tasks the cancellation \
+                newly unblocked (D11: cancelling a blocker resolves it, like completing one). \
+                A task already closed is a conflict, not a no-op.",
             schema: json!({
                 "type": "object",
                 "properties": { "ref": ref_schema() },
@@ -1245,10 +1128,10 @@ fn build_tool_specs() -> Vec<ToolSpec> {
             // its own tool and cancellation goes through `task.modify
             // status:cancelled` (§7). Both were reachable and neither could be
             // taken back, which is the additive-only shape D67 removes.
-            description: "Reopen a closed task: done or cancelled goes back to pending, and the \
-                completion timestamp is cleared so the task stops answering questions about a \
-                week it is no longer finished in. Use it when a task was closed or cancelled in \
-                error. A task that is not closed is a conflict, not a no-op.",
+            description: "Reopen a closed task: done or cancelled goes back to pending, and \
+                the completion timestamp is cleared so the task stops counting in the week it \
+                is no longer finished in. A task that is not closed is a conflict, not a \
+                no-op.",
             schema: json!({
                 "type": "object",
                 "properties": { "ref": ref_schema() },
@@ -1261,9 +1144,8 @@ fn build_tool_specs() -> Vec<ToolSpec> {
             write: true,
             destructive: false,
             idempotent: false,
-            description: "Start the timer on a task (moves it to active). Correlation \
-                params (session_id, transcript_path, client) are recorded on \
-                the start event for token attribution.",
+            description: "Start the timer on a task, moving it to active. The correlation \
+                params land on the start event for token attribution.",
             schema: with_correlation(json!({
                 "type": "object",
                 "properties": {
@@ -1274,13 +1156,10 @@ fn build_tool_specs() -> Vec<ToolSpec> {
                     },
                     "actor": {
                         "type": "string",
-                        "description": "Who is asking for the clock (D140). Filled in \
-                            automatically with this connection's id when omitted, so you do not \
-                            normally pass it — supply your own only if you have a stable agent \
-                            identity worth recording. Starting a task while ANOTHER actor holds \
-                            an active clock is refused with `conflict` rather than silently \
-                            stopping their timer and leaving their work untracked; pass \
-                            keep:true to run both deliberately."
+                        "description": "Who is asking for the clock (D140); filled in with \
+                            this connection's id when omitted. Starting while ANOTHER actor \
+                            holds an active clock is a `conflict`, not a silent stop of their \
+                            timer; pass `keep: true` to run both."
                     }
                 },
                 "required": ["ref"]
@@ -1343,9 +1222,8 @@ fn build_tool_specs() -> Vec<ToolSpec> {
             destructive: false,
             idempotent: false,
             description: "Add an acceptance criterion to a task — one thing that must be true \
-                for the task to count as done. tasqx NEVER RUNS a check: it is a claim you mark \
-                later with evidence, not a command. Use these instead of burying criteria in an \
-                annotation, where nothing can ask at completion time whether they were met.",
+                for it to count as done (D138). tasqx NEVER RUNS a check: it is a claim you \
+                mark later with evidence, not a command.",
             schema: json!({
                 "type": "object",
                 "properties": {
@@ -1361,14 +1239,14 @@ fn build_tool_specs() -> Vec<ToolSpec> {
             write: true,
             destructive: true,
             idempotent: true,
-            description: "Mark one acceptance criterion passed or failed, with the evidence for \
-                it. `failed` is a normal outcome, not an error — recording that a criterion was \
-                NOT met is useful. Evidence is stored verbatim and never interpreted.",
+            description: "Mark one acceptance criterion passed or failed, with the evidence \
+                for it. `failed` is a normal outcome worth recording. Evidence is stored \
+                verbatim and never interpreted.",
             schema: json!({
                 "type": "object",
                 "properties": {
                     "ref": ref_schema(),
-                    "check_id": { "type": "string", "description": "The check's id, from `tasqx_get_task` or the add result." },
+                    "check_id": { "type": "string", "description": "The check's id, from `tasqx_get_task` or the add." },
                     "state": {
                         "type": "string",
                         "enum": enum_of(crate::engine::CHECK_STATES),
@@ -1376,9 +1254,9 @@ fn build_tool_specs() -> Vec<ToolSpec> {
                     },
                     "evidence": {
                         "type": "string",
-                        "description": "Your proof: a test name, an excerpt of command output, a \
-                            commit sha. Optional — some criteria are met by something nobody can \
-                            quote, and inventing a citation is worse than an unproven `passed`."
+                        "description": "Your proof: a test name, an excerpt of output, a commit \
+                            sha. Optional — an invented citation is worse than an unproven \
+                            `passed`."
                     }
                 },
                 "required": ["ref", "check_id", "state"]
@@ -1390,9 +1268,9 @@ fn build_tool_specs() -> Vec<ToolSpec> {
             write: true,
             destructive: true,
             idempotent: true,
-            description: "Drop an acceptance criterion that turned out to be the wrong thing to \
-                ask. Use `tasqx_set_check` with `failed` when the criterion was right and the \
-                work did not meet it — deleting it there would hide the finding.",
+            description: "Drop an acceptance criterion that turned out to be the wrong thing \
+                to ask. Use `tasqx_set_check` with `failed` when the criterion was right and \
+                the work did not meet it; deleting it would hide the finding.",
             schema: json!({
                 "type": "object",
                 "properties": {
@@ -1408,17 +1286,11 @@ fn build_tool_specs() -> Vec<ToolSpec> {
             write: true,
             destructive: false,
             idempotent: false,
-            description: "Attach a timestamped note to a task. The body is \
-                stored verbatim (newlines and markdown included), so this is \
-                where long-form context lives: acceptance criteria, links, \
-                implementation notes. The response echoes the stored body back \
-                by default — proof the store kept it verbatim — but you \
-                already hold every byte you sent, so pass `include_body: \
-                false` to get `{id, created, body_bytes}` instead on a long \
-                note. Wrote something you should not have — a token, a \
-                customer name, a wrong root cause? `tasqx_remove_annotation` \
-                takes the `id` this response returns and scrubs it; there is \
-                otherwise no way to take an annotation back.",
+            description: "Attach a timestamped note to a task. The body is stored verbatim, \
+                newlines and markdown included, so long-form context lives here. The response \
+                echoes the body back as proof of that, or `{id, created, body_bytes}` under \
+                `include_body: false`. `tasqx_remove_annotation` on that `id` is the only way \
+                to take a note back.",
             schema: json!({
                 "type": "object",
                 "properties": {
@@ -1426,11 +1298,9 @@ fn build_tool_specs() -> Vec<ToolSpec> {
                     "body": { "type": "string", "description": "Note text, stored verbatim. Multi-line markdown is fine." },
                     "include_body": {
                         "type": "boolean",
-                        "description": "Echo the stored body back in the response. Default \
-                             true. A long note costs its own bytes twice — once in the \
-                             request, once in this echo — so pass false to get `body_bytes` \
-                             (a length) in place of `body` when you do not need the \
-                             verbatim-storage proof."
+                        "description": "Echo the stored body back. Default true (D72/D75): \
+                             your proof the store kept it verbatim. Pass false for \
+                             `body_bytes` in its place on a long note."
                     }
                 },
                 "required": ["ref", "body"]
@@ -1445,23 +1315,12 @@ fn build_tool_specs() -> Vec<ToolSpec> {
             // D113. Stated for the same reason `tasqx_remove_memory`'s
             // description states its own permanence: it is the one property of
             // this tool a caller cannot learn by trying.
-            description: "Permanently scrub one annotation's text by id — the \
-                id `tasqx_annotate_task` or `tasqx_get_task` reports for it. \
-                Unlike every other write on this server, this is a HARD delete: \
-                the body is overwritten in the store, not merely hidden, so a \
-                secret pasted into a note by mistake is actually gone from the \
-                file, not just gone from what tasqx shows you — this covers \
-                `event.list` and `store.export` too, by redacting the original \
-                `annotation.add` event's own body field in the same \
-                transaction (D113), not only the `annotations` row. A \
-                tombstone (the id and when it was removed) stays for audit, \
-                with no text in it: `tasqx_get_task` lists it as \
-                `annotations_removed` and prints one line per tombstone under \
-                the annotations, so a note that went on purpose does not read \
-                as one that quietly vanished. `tasqx undo` does NOT cover this — there \
-                is nothing left in the log to restore — so double-check the id \
-                before calling. An unknown or already-removed id is \
-                `not_found`.",
+            description: "Permanently scrub one annotation's text by id. Unlike every other \
+                write here this is a HARD delete: the body is overwritten in the store and \
+                the original `annotation.add` event's body is redacted in the same \
+                transaction, so a secret is gone from `event.list` and `store.export` too \
+                (D113). A text-free tombstone stays for audit under `annotations_removed`. \
+                `tasqx undo` does NOT cover this. An unknown or removed id is `not_found`.",
             schema: json!({
                 "type": "object",
                 "properties": {
@@ -1469,7 +1328,7 @@ fn build_tool_specs() -> Vec<ToolSpec> {
                     "annotation_id": {
                         "type": "string",
                         "description": "The annotation's id, as tasqx_annotate_task or \
-                            tasqx_get_task reports it."
+                            tasqx_get_task reports."
                     }
                 },
                 "required": ["ref", "annotation_id"]
@@ -1481,18 +1340,17 @@ fn build_tool_specs() -> Vec<ToolSpec> {
             write: true,
             destructive: false,
             idempotent: true,
-            description: "Make one task depend on another: `ref` is blocked \
-                until `depends_on` is done or cancelled; a `ref` that is itself \
-                already closed is never blocked. Returns the resulting \
-                dependency list and blocked state. A cycle is refused as a \
-                conflict.",
+            description: "Make one task depend on another: `ref` is blocked until \
+                `depends_on` is done or cancelled, and a `ref` already closed is never \
+                blocked. Returns the resulting dependency list and blocked state. A cycle is \
+                refused as a conflict.",
             schema: json!({
                 "type": "object",
                 "properties": {
                     "ref": ref_schema(),
                     "depends_on": {
                         "type": ["integer", "string"],
-                        "description": "The task `ref` must wait for: short_id (integer) or full UUID (string)."
+                        "description": "The task `ref` must wait for: short_id or UUID."
                     }
                 },
                 "required": ["ref", "depends_on"]
@@ -1505,15 +1363,15 @@ fn build_tool_specs() -> Vec<ToolSpec> {
             destructive: true,
             idempotent: true,
             description: "Cut a dependency edge: `ref` stops waiting on `depends_on`. Returns \
-                the remaining dependency list and blocked state, so the answer says whether the \
-                task is actually actionable now or still waiting on something else.",
+                the remaining dependency list and blocked state, so the answer says whether \
+                the task is actionable now or still waiting on something else.",
             schema: json!({
                 "type": "object",
                 "properties": {
                     "ref": ref_schema(),
                     "depends_on": {
                         "type": ["integer", "string"],
-                        "description": "The blocker to stop waiting for: short_id (integer) or full UUID (string)."
+                        "description": "The blocker to stop waiting for: short_id or UUID."
                     }
                 },
                 "required": ["ref", "depends_on"]
@@ -1525,17 +1383,16 @@ fn build_tool_specs() -> Vec<ToolSpec> {
             write: true,
             destructive: false,
             idempotent: false,
-            description: "Store a knowledge document in memory: company \
-                patterns, documentation, decisions worth finding again. Body is \
-                stored verbatim (markdown fine) and becomes searchable via \
-                tasqx_search_memory.",
+            description: "Store a knowledge document in memory: patterns, documentation, \
+                decisions worth finding again. The body is stored verbatim (markdown fine) \
+                and becomes searchable through tasqx_search_memory.",
             schema: json!({
                 "type": "object",
                 "properties": {
                     "title": { "type": "string" },
                     "body": { "type": "string", "description": "Stored verbatim; multi-line markdown is fine." },
                     "source": { "type": "string", "description": "Where this came from: a path, URL, or ticket." },
-                    "project": { "type": "string", "description": "Optional project scope. Omit to leave the doc global/unscoped — it is not defaulted onto whatever project is current." }
+                    "project": { "type": "string", "description": "Optional project scope. Omit to leave the doc unscoped; it is never defaulted onto a current project." }
                 },
                 "required": ["title", "body"]
             }),
@@ -1546,27 +1403,24 @@ fn build_tool_specs() -> Vec<ToolSpec> {
             write: true,
             destructive: true,
             idempotent: false,
-            description: "Correct a memory doc in place: title, body, source and/or project, by \
-                id. Use it instead of `tasqx_add_memory` for a correction — a fix written as a \
-                second doc leaves the stale one polluting search rankings forever, and \
-                `tasqx_remove_memory` is permanent, so delete-then-recreate risks losing the doc \
-                with nothing to put it back. Optimistic concurrency is the same shape \
-                `tasqx_modify_task` uses: when `expected_rev` is omitted, this server reads the \
-                doc's current `rev` and pins it, so a concurrent edit yields a `conflict` naming \
-                both revs instead of a silent overwrite. On `conflict`: re-read the doc \
-                (`tasqx_get_memory`), re-apply the change, and retry with the fresh `rev`.",
+            description: "Correct a memory doc in place — title, body, source and/or project \
+                — by id. Prefer it over a second `tasqx_add_memory`: a correction written as \
+                a new doc leaves the stale one polluting search rankings, and \
+                `tasqx_remove_memory` is permanent. Optimistic concurrency as on \
+                `tasqx_modify_task`: an omitted `expected_rev` pins the current `rev`, so a \
+                concurrent edit is a `conflict` naming both (D75).",
             schema: json!({
                 "type": "object",
                 "properties": {
                     "id": {
                         "type": "string",
-                        "description": "The doc UUID, as printed by a search hit, `tasqx_add_memory`, or `tasqx_list_memory`."
+                        "description": "The doc UUID, as a search hit, `tasqx_add_memory` or `tasqx_list_memory` prints it."
                     },
-                    "title": { "type": "string", "description": "New title. Omit to leave it unchanged." },
-                    "body": { "type": "string", "description": "New body, stored verbatim. Omit to leave it unchanged." },
-                    "source": { "type": "string", "description": "New source. Omit to leave it unchanged." },
-                    "project": { "type": "string", "description": "New project scope. Omit to leave it unchanged." },
-                    "expected_rev": { "type": "integer", "description": "Optimistic-concurrency guard. Supplied by the server from the doc's current `rev` when omitted; pass it only to pin a rev you read earlier." }
+                    "title": { "type": "string", "description": "New title. Omit to leave unchanged." },
+                    "body": { "type": "string", "description": "New body, stored verbatim. Omit to leave unchanged." },
+                    "source": { "type": "string", "description": "New source. Omit to leave unchanged." },
+                    "project": { "type": "string", "description": "New project scope. Omit to leave unchanged." },
+                    "expected_rev": { "type": "integer", "description": "Optimistic-concurrency guard. Supplied by the server from the doc's current `rev` when omitted; pass it to pin a rev you read earlier." }
                 },
                 "required": ["id"]
             }),
@@ -1584,12 +1438,11 @@ fn build_tool_specs() -> Vec<ToolSpec> {
             // D54's `undo` covers task edits and deliberately not memory docs —
             // the event log records that a doc went and does not carry its body,
             // so there is nothing to put back.
-            description: "Remove one knowledge document from memory by id, the id \
-                tasqx_search_memory returns. Use it to retract something you wrote that turned \
-                out to be wrong — a correction written as a second document leaves both in the \
-                store, and search ranks them together with nothing to say which is true. The \
-                removal is permanent: `tasqx undo` does not cover memory documents, and the \
-                body is not recoverable from the event log.",
+            description: "Remove one knowledge document from memory by id. Use it to retract \
+                something that turned out wrong: a correction written as a second document \
+                leaves both in the store, with search ranking them together. The removal is \
+                permanent — `tasqx undo` does not cover memory docs, and the body is not \
+                recoverable from the event log.",
             schema: json!({
                 "type": "object",
                 "properties": {
@@ -1608,10 +1461,9 @@ fn build_tool_specs() -> Vec<ToolSpec> {
             write: true,
             destructive: false,
             idempotent: true,
-            description: "Create a project. Returns its id and name. This does NOT become \
-                the default project — MCP has no tool for `project.use`, so pass `project` \
-                explicitly on every `tasqx_add_task` that should land here, including the \
-                first one.",
+            description: "Create a project. Returns its id and name. It does NOT become the \
+                default project — MCP exposes no `project.use` (D22) — so pass `project` \
+                explicitly on every `tasqx_add_task` that should land here.",
             schema: json!({
                 "type": "object",
                 "properties": {
@@ -1686,7 +1538,9 @@ pub fn instructions(scope: Scope) -> String {
     const SEED: &str = "An empty store is a store nobody seeded. If searches keep returning \
         nothing, ask the user to run `tasqx memory import <docs-dir>` once per markdown folder; \
         no MCP tool imports. The CLI is always `tasqx <verb>`: a bare `tasqx` opens a full-screen \
-        dashboard and hangs a tool call.";
+        dashboard and hangs a tool call. Tool descriptions here are deliberately short and state \
+        only the contract; the reasoning behind a rule is in DESIGN.md §12 under the D-number the \
+        description cites, which tasqx_search_memory finds once those docs are imported (D155).";
 
     let mut parts = vec![INTRO, SEARCH];
     if scope.allows_write() {
