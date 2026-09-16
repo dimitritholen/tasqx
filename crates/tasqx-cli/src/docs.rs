@@ -709,31 +709,134 @@ const ADD_FIELDS: [(&str, &str, &str); 9] = [
     ),
 ];
 
-/// The guide's pages, in nav order: `(anchor id, nav label, page title)`.
-const PAGES: [(&str, &str, &str); 11] = [
-    ("overview", "Overview", "What tasqx is"),
-    (
-        "install",
-        "Install &amp; quickstart",
-        "Install and quickstart",
-    ),
-    ("commands", "Commands", "Every command"),
-    ("filters", "Filter grammar", "The filter grammar"),
-    (
-        "scheduling",
-        "Scheduling &amp; recurrence",
-        "Dates and recurrence",
-    ),
-    ("reminders", "Reminders", "Reminders"),
-    ("daemon", "Daemon &amp; watch", "The daemon and live watch"),
-    ("mcp", "MCP", "The MCP server"),
-    ("api", "JSON API", "The JSON API"),
-    ("data", "Export &amp; import", "Export and import"),
-    (
-        "themes",
-        "Themes &amp; reports",
-        "Themes, charts and reports",
-    ),
+/// A sidebar section: a heading in the nav, and the pages filed under it.
+///
+/// The sections are the reader's mental model of the guide — learn it, use it,
+/// look it up — and they are deliberately declared even when empty. `guides`
+/// and `objects` have no pages yet; the heading still renders, so the shape of
+/// the finished guide is visible from the first screen and the pages that fill
+/// them later need no shell change.
+struct Section {
+    id: &'static str,
+    title: &'static str,
+}
+
+/// The sidebar, top to bottom. [`PAGES`] order *within* a section is the order
+/// they appear under it, and the concatenation of the two is the reading order
+/// [`page_close`]'s prev/next links walk.
+const SECTIONS: [Section; 7] = [
+    Section {
+        id: "get-started",
+        title: "Get started",
+    },
+    Section {
+        id: "using",
+        title: "Using tasqx",
+    },
+    Section {
+        id: "guides",
+        title: "Guides",
+    },
+    Section {
+        id: "ref-cli",
+        title: "Reference: CLI",
+    },
+    Section {
+        id: "ref-api",
+        title: "Reference: JSON API",
+    },
+    Section {
+        id: "ref-mcp",
+        title: "Reference: MCP",
+    },
+    Section {
+        id: "objects",
+        title: "Objects",
+    },
+];
+
+/// One page of the guide.
+///
+/// `id` is the hash anchor — `docs.html#filters` — and is **frozen**: every
+/// link anyone has ever shared is one of these. Regrouping the sidebar moves a
+/// page under a different heading and changes nothing a link depends on.
+/// `label` is the sidebar entry (trusted markup: the literals below carry
+/// `&amp;`), and `title` is the `<h2>` the page opens with.
+struct Page {
+    id: &'static str,
+    section: &'static str,
+    label: &'static str,
+    title: &'static str,
+}
+
+/// The guide's pages, in sidebar order, each naming its [`SECTIONS`] entry.
+const PAGES: [Page; 11] = [
+    Page {
+        id: "overview",
+        section: "get-started",
+        label: "Overview",
+        title: "What tasqx is",
+    },
+    Page {
+        id: "install",
+        section: "get-started",
+        label: "Install &amp; quickstart",
+        title: "Install and quickstart",
+    },
+    Page {
+        id: "filters",
+        section: "using",
+        label: "Filter grammar",
+        title: "The filter grammar",
+    },
+    Page {
+        id: "scheduling",
+        section: "using",
+        label: "Scheduling &amp; recurrence",
+        title: "Dates and recurrence",
+    },
+    Page {
+        id: "reminders",
+        section: "using",
+        label: "Reminders",
+        title: "Reminders",
+    },
+    Page {
+        id: "daemon",
+        section: "using",
+        label: "Daemon &amp; watch",
+        title: "The daemon and live watch",
+    },
+    Page {
+        id: "data",
+        section: "using",
+        label: "Export &amp; import",
+        title: "Export and import",
+    },
+    Page {
+        id: "themes",
+        section: "using",
+        label: "Themes &amp; reports",
+        title: "Themes, charts and reports",
+    },
+    Page {
+        id: "commands",
+        section: "ref-cli",
+        label: "Commands",
+        title: "Every command",
+    },
+    Page {
+        id: "api",
+        section: "ref-api",
+        label: "JSON API",
+        title: "The JSON API",
+    },
+    Page {
+        id: "mcp",
+        section: "ref-mcp",
+        label: "MCP",
+        title: "The MCP server",
+    },
 ];
 
 /// Render the whole guide as one self-contained HTML string.
@@ -745,17 +848,21 @@ pub fn generate() -> String {
     body.push_str(&nav());
     body.push_str("<main>");
 
+    // Emitted in PAGES order, which is sidebar order: with JavaScript off the
+    // document is one long page and that order is the only reading order there
+    // is. Adding a page means a line here and a row in PAGES; the test below
+    // asserts the two agree.
     body.push_str(&page_overview());
     body.push_str(&page_install());
-    body.push_str(&page_commands());
     body.push_str(&page_filters());
     body.push_str(&page_scheduling());
     body.push_str(&page_reminders());
     body.push_str(&page_daemon());
-    body.push_str(&page_mcp());
-    body.push_str(&page_api());
     body.push_str(&page_data());
     body.push_str(&page_themes());
+    body.push_str(&page_commands());
+    body.push_str(&page_api());
+    body.push_str(&page_mcp());
 
     body.push_str("</main></div>");
     body.push_str(&format!(
@@ -778,24 +885,74 @@ pub fn generate() -> String {
 // Chrome
 // ============================================================================
 
+/// The top bar: the drawer toggle, the brand, the version, and the theme
+/// switch.
+///
+/// The three theme buttons are a *stored preference*, not a style: the CSS
+/// still follows `prefers-color-scheme` on its own, and `Auto` is the absence
+/// of the `data-theme` attribute rather than a third palette. So a reader who
+/// never touches the switch — or who has JavaScript off, or a browser that
+/// refuses `localStorage` — gets exactly the behaviour this page has always
+/// had.
 fn header() -> String {
+    let mut themer = String::new();
+    for (mode, label) in [("light", "Light"), ("dark", "Dark"), ("system", "Auto")] {
+        themer.push_str(&format!(
+            "<button class=\"themebtn\" type=\"button\" data-theme-set=\"{mode}\" \
+             aria-pressed=\"false\">{label}</button>"
+        ));
+    }
     format!(
         "<header class=\"top\">\
+           <button id=\"navtoggle\" type=\"button\" aria-label=\"Toggle navigation\" \
+             aria-expanded=\"false\">Menu</button>\
            <div class=\"brand\">tasqx <span class=\"muted\">user guide</span></div>\
-           <button id=\"navtoggle\" aria-label=\"Toggle navigation\">Menu</button>\
            <div class=\"ver muted\">v{}</div>\
+           <div class=\"themer\" role=\"group\" aria-label=\"Colour theme\">{themer}</div>\
          </header>",
         esc(env!("CARGO_PKG_VERSION"))
     )
 }
 
+/// The sidebar: a search box, then one block per [`SECTIONS`] entry.
+///
+/// A section with no pages renders its heading and says so, rather than being
+/// skipped. That is the point of declaring it — the reader can see that a
+/// Guides section is coming, and the day a page lands under it nothing about
+/// this function changes.
 fn nav() -> String {
-    let mut links = String::new();
-    for (id, label, _) in PAGES {
-        // `label` is a literal above and already entity-safe; ids are literals too.
-        links.push_str(&format!("<a href=\"#{id}\" data-page=\"{id}\">{label}</a>"));
+    let mut tree = String::new();
+    for sec in SECTIONS {
+        let mut links = String::new();
+        for pg in PAGES.iter().filter(|p| p.section == sec.id) {
+            // `label` is a literal above and already entity-safe; ids are literals too.
+            links.push_str(&format!(
+                "<a href=\"#{id}\" data-page=\"{id}\">{label}</a>",
+                id = pg.id,
+                label = pg.label,
+            ));
+        }
+        if links.is_empty() {
+            links.push_str("<div class=\"navsec-soon\">Coming soon</div>");
+        }
+        tree.push_str(&format!(
+            "<div class=\"navsec\" data-section=\"{id}\">\
+               <div class=\"navsec-h\">{title}</div>{links}\
+             </div>",
+            id = sec.id,
+            title = esc(sec.title),
+        ));
     }
-    format!("<nav id=\"nav\">{links}</nav>")
+    format!(
+        "<nav id=\"nav\" aria-label=\"Guide\">\
+           <div class=\"navsearch\">\
+             <input id=\"navq\" type=\"search\" autocomplete=\"off\" \
+               placeholder=\"Search the guide\" aria-label=\"Search the guide\">\
+           </div>\
+           <div id=\"navhits\" class=\"navhits\" hidden></div>\
+           <div id=\"navtree\">{tree}</div>\
+         </nav>"
+    )
 }
 
 // ============================================================================
@@ -803,7 +960,7 @@ fn nav() -> String {
 // ============================================================================
 
 fn page_overview() -> String {
-    let mut s = page_open("overview", "What tasqx is");
+    let mut s = page_open("overview");
 
     s.push_str(&lead(
         "tasqx is a fast, terminal-first, AI-native task manager. It is a headless Rust \
@@ -917,7 +1074,7 @@ fn page_overview() -> String {
 // ============================================================================
 
 fn page_install() -> String {
-    let mut s = page_open("install", "Install and quickstart");
+    let mut s = page_open("install");
 
     s.push_str(&lead(
         "tasqx is a single static binary with no runtime and no dynamic linking. Build it \
@@ -1081,7 +1238,7 @@ fn page_install() -> String {
 // ============================================================================
 
 fn page_commands() -> String {
-    let mut s = page_open("commands", "Every command");
+    let mut s = page_open("commands");
 
     s.push_str(&lead(
         "Every verb is a thin translation to exactly one core API method: it builds a params \
@@ -1092,12 +1249,27 @@ fn page_commands() -> String {
     s.push_str(&h3("Global flags"));
     s.push_str(&p("These work on every subcommand."));
     // Rendered from GLOBAL_FLAGS, which the cmddoc guard binds to clap's own
-    // global argument list — the per-verb usage guard never sees these.
-    let global_rows: Vec<Vec<String>> = GLOBAL_FLAGS
+    // global argument list — the per-verb usage guard never sees these. The
+    // flag cell is *split* into a name and a value shape rather than restated
+    // beside it: one source, and the guard keeps holding the half it checks.
+    let split: Vec<(String, String)> = GLOBAL_FLAGS
         .iter()
-        .map(|(flag, effect)| vec![(*flag).to_string(), (*effect).to_string()])
+        .map(|(flag, _)| split_flag(flag))
         .collect();
-    s.push_str(&table_owned(&["Flag", "Effect"], &global_rows));
+    let global_params: Vec<Param> = split
+        .iter()
+        .zip(GLOBAL_FLAGS.iter())
+        .map(|((name, ty), (_, effect))| Param {
+            name,
+            ty,
+            // Nothing global is required: each has a defined behaviour when it
+            // is absent, and that behaviour is what the description states.
+            required: false,
+            default: None,
+            html_desc: effect,
+        })
+        .collect();
+    s.push_str(&param_table("global-flags", &global_params));
 
     s.push_str(&h3("The verb table"));
     // The count is counted, not spelled out. It was written as "Twenty-six" and
@@ -1629,7 +1801,7 @@ fn page_commands() -> String {
 // ============================================================================
 
 fn page_filters() -> String {
-    let mut s = page_open("filters", "The filter grammar");
+    let mut s = page_open("filters");
 
     s.push_str(&lead(
         "One small grammar, used everywhere a query is taken: <code>list</code>, <code>report</code>, \
@@ -1744,7 +1916,7 @@ fn page_filters() -> String {
 // ============================================================================
 
 fn page_scheduling() -> String {
-    let mut s = page_open("scheduling", "Dates and recurrence");
+    let mut s = page_open("scheduling");
 
     s.push_str(&lead(
         "Every date field — <code>due</code>, <code>scheduled</code>, <code>wait</code> — takes the \
@@ -1931,7 +2103,7 @@ fn page_scheduling() -> String {
 // ============================================================================
 
 fn page_reminders() -> String {
-    let mut s = page_open("reminders", "Reminders");
+    let mut s = page_open("reminders");
 
     s.push_str(&lead(
         "tasqx is quiet by default. A task notifies you only if you gave it a <code>remind</code>, \
@@ -2066,7 +2238,7 @@ fn page_reminders() -> String {
 // ============================================================================
 
 fn page_daemon() -> String {
-    let mut s = page_open("daemon", "The daemon and live watch");
+    let mut s = page_open("daemon");
 
     s.push_str(&lead(
         "The daemon is optional. It holds one database connection, serves the JSON API over a \
@@ -2188,26 +2360,39 @@ fn page_daemon() -> String {
 // ============================================================================
 
 fn page_mcp() -> String {
-    let mut s = page_open("mcp", "The MCP server");
+    let mut s = page_open("mcp");
 
     s.push_str(&lead(
         "tasqx bundles an MCP server, so an AI agent reads and mutates your tasks with zero glue. \
          It is the same core API underneath — the agent and your shell are peers.",
     ));
 
-    s.push_str(&h3("It fails closed"));
-    s.push_str(&p(
-        "The least-privilege default is <strong>read-only</strong>. Write access is an explicit \
-         operator choice for this local stdio process. Scope is configuration, not an \
-         authentication credential:",
-    ));
-    s.push_str(&snippet(
-        "tasqx mcp serve\ntasqx mcp serve --scope write",
-        "tasqx mcp: serving over stdio (scope=read)\ntasqx mcp: serving over stdio (scope=write)",
-    ));
-    s.push_str(&snippet(
-        "tasqx mcp serve   # scope omitted",
-        "tasqx mcp: serving over stdio (scope=read)",
+    let scope_runs = format!(
+        "{}{}",
+        snippet(
+            "tasqx mcp serve\ntasqx mcp serve --scope write",
+            "tasqx mcp: serving over stdio (scope=read)\ntasqx mcp: serving over stdio (scope=write)",
+        ),
+        snippet(
+            "tasqx mcp serve   # scope omitted",
+            "tasqx mcp: serving over stdio (scope=read)",
+        ),
+    );
+    s.push_str(&ref_section(
+        "mcp-scope",
+        "It fails closed",
+        &p(
+            "The least-privilege default is <strong>read-only</strong>. Write access is an explicit \
+             operator choice for this local stdio process. Scope is configuration, not an \
+             authentication credential:",
+        ),
+        &tabs(&[
+            ("CLI", &scope_runs),
+            (
+                "MCP",
+                &soon("Coming in the MCP reference: every tool with its input schema and the scope it needs."),
+            ),
+        ]),
     ));
 
     s.push_str(&h3("The tools"));
@@ -2234,18 +2419,20 @@ fn page_mcp() -> String {
         .collect();
     s.push_str(&table_owned(&["Tool", "Scope", "Does"], &tool_rows));
 
-    s.push_str(&h3("Talking to it"));
-    s.push_str(&p(
-        "Newline-delimited JSON-RPC 2.0 on stdin/stdout. Diagnostics go to stderr <em>only</em> — \
-         stdout carries nothing but responses, so the transport is never corrupted by a log line.",
-    ));
-    s.push_str(&p(
-        "The <code>initialize</code> result carries <code>instructions</code>: a scope-aware \
-         workflow the host may inject into the agent's system prompt, so the agent is told \
-         <em>when</em> to reach for tasqx and not only what it can call. It is elided below \
-         because it is a few paragraphs long.",
-    ));
-    s.push_str(&snippet(
+    // The second two-column block on this page: the transport described on the
+    // left, the two captured exchanges beside it.
+    let talking_prose = format!(
+        "{}{}",
+        p("Newline-delimited JSON-RPC 2.0 on stdin/stdout. Diagnostics go to stderr <em>only</em> — \
+           stdout carries nothing but responses, so the transport is never corrupted by a log line."),
+        p("The <code>initialize</code> result carries <code>instructions</code>: a scope-aware \
+           workflow the host may inject into the agent's system prompt, so the agent is told \
+           <em>when</em> to reach for tasqx and not only what it can call. It is elided beside \
+           this, because it is a few paragraphs long."),
+    );
+    let exchanges = format!(
+        "{}{}",
+        snippet(
         "echo '{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"protocolVersion\":\"2024-11-05\",\"capabilities\":{},\"clientInfo\":{\"name\":\"demo\",\"version\":\"1\"}}}' | tasqx mcp serve 2>/dev/null | sed 's/\"instructions\":\"[^\"]*\"/\"instructions\":\"…\"/'",
         // The version comes from the crate, not from a copy of it. This snippet
         // shipped `"version":"0.1.0"` for the whole of 0.2.x: a captured output
@@ -2259,11 +2446,26 @@ fn page_mcp() -> String {
              \"serverInfo\":{{\"name\":\"tasqx\",\"version\":\"{}\"}}}}}}",
             env!("CARGO_PKG_VERSION")
         ),
-    ));
-    s.push_str(&snippet(
+        ),
+        snippet(
         "echo '{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"tools/call\",\"params\":{\"name\":\"tasqx_list_tasks\",\"arguments\":{\"filter\":\"+api\"}}}' | tasqx mcp serve 2>/dev/null",
         "{\"id\":3,\"jsonrpc\":\"2.0\",\"result\":{\"content\":[{\"text\":\"{\\n  \\\"count\\\": 1,\\n  \\\"tasks\\\": [\\n    {\\n      \\\"_rev\\\": 4,\\n      \\\"due\\\": \\\"2026-07-17T00:00:00Z\\\",\\n      \\\"estimate\\\": \\\"PT4H\\\",\\n      \\\"priority\\\": \\\"H\\\",\\n      \\\"project\\\": \\\"work.tasqx\\\",\\n      \\\"short_id\\\": 1,\\n      \\\"status\\\": \\\"pending\\\",\\n      \\\"tags\\\": [\\n        \\\"api\\\",\\n        \\\"release\\\"\\n      ],\\n      \\\"title\\\": \\\"Ship the v1 JSON API freeze\\\",\\n      \\\"urgency\\\": 17.5\\n    }\\n  ]\\n}\",\"type\":\"text\"}],\"isError\":false}}",
+        ),
+    );
+    s.push_str(&ref_section(
+        "mcp-transport",
+        "Talking to it",
+        &talking_prose,
+        &tabs(&[
+            ("MCP", &exchanges),
+            (
+                "JSON API",
+                &soon("Coming in the JSON API reference: the same calls as envelopes, without the JSON-RPC wrapper."),
+            ),
+        ]),
     ));
+
+    s.push_str(&h3("Refusing a write"));
     s.push_str(&p(
         "Ask a read-only server to write, and it refuses by name:",
     ));
@@ -2302,18 +2504,36 @@ fn page_mcp() -> String {
 // ============================================================================
 
 fn page_api() -> String {
-    let mut s = page_open("api", "The JSON API");
+    let mut s = page_open("api");
 
     s.push_str(&lead(
         "The load-bearing artifact. The CLI is a client; so is the MCP server; so could yours be. \
          One envelope in, one envelope out.",
     ));
 
-    s.push_str(&h3("The transport"));
-    s.push_str(&p(
-        "<code>tasqx api</code> reads ONE request envelope on stdin and writes ONE response on \
-         stdout. No framing, no handshake, no daemon needed. For many calls on one connection, \
-         talk to the <a href=\"#daemon\">daemon</a> socket instead — same envelopes, newline-delimited.",
+    // Two-column: the sentence about the transport and the invocation of it,
+    // read side by side. The CLI tab carries the command only — an *output*
+    // claim belongs in a `snippet`, which is captured from the real binary.
+    s.push_str(&ref_section(
+        "api-transport",
+        "The transport",
+        &p(
+            "<code>tasqx api</code> reads ONE request envelope on stdin and writes ONE response on \
+             stdout. No framing, no handshake, no daemon needed. For many calls on one connection, \
+             talk to the <a href=\"#daemon\">daemon</a> socket instead — same envelopes, newline-delimited.",
+        ),
+        &tabs(&[
+            (
+                "CLI",
+                &term_block(&esc(
+                    "echo '{\"tasqx\":\"1\",\"method\":\"task.list\"}' | tasqx api",
+                )),
+            ),
+            (
+                "JSON API",
+                &soon("Coming in the JSON API reference: one section per method, with its parameters and the shape it returns."),
+            ),
+        ]),
     ));
 
     s.push_str(&h3("Request"));
@@ -2333,15 +2553,17 @@ fn page_api() -> String {
         "{\"id\":\"e1\",\"ok\":true,\"result\":{\"count\":1,\"tasks\":[{\"_rev\":4,\"completed\":null,\"created\":\"2026-07-16T08:51:09.2509427Z\",\"due\":\"2026-07-17T00:00:00Z\",\"estimate\":\"PT4H\",\"id\":\"019f6a1f-6142-70d3-be5b-e28dc6060e6c\",\"modified\":\"2026-07-16T08:51:09.6830568Z\",\"priority\":\"H\",\"project\":\"work.tasqx\",\"recurrence\":null,\"remind\":null,\"scheduled\":null,\"short_id\":1,\"status\":\"pending\",\"tags\":[\"api\",\"release\"],\"title\":\"Ship the v1 JSON API freeze\",\"urgency\":17.5,\"wait\":null}]},\"tasqx\":\"1\"}",
     ));
 
-    s.push_str(&h3("Errors"));
-    s.push_str(&p(
-        "An error is a value, not a crash. It carries a stable <code>code</code>, a human \
-         <code>message</code>, and machine-readable <code>data</code> — and the CLI's exit codes are \
-         these same codes.",
-    ));
-    s.push_str(&table(
-        &["Code", "Exit", "Means"],
-        &[
+    // The second two-column block: the codes and what they mean on the left,
+    // the two captured envelopes on the right, where a reader comparing them
+    // does not have to scroll between the table and the example.
+    let error_prose = format!(
+        "{}{}{}",
+        p("An error is a value, not a crash. It carries a stable <code>code</code>, a human \
+           <code>message</code>, and machine-readable <code>data</code> — and the CLI's exit codes \
+           are these same codes."),
+        table(
+            &["Code", "Exit", "Means"],
+            &[
             &[
                 "<code>bad_request</code>",
                 "2",
@@ -2367,18 +2589,34 @@ fn page_api() -> String {
                 "1",
                 "A bug or an I/O failure. Should not happen.",
             ],
-        ],
-    ));
-    s.push_str(&snippet(
-        "echo '{\"tasqx\":\"1\",\"id\":\"e2\",\"method\":\"task.get\",\"params\":{\"ref\":\"999\"}}' | tasqx api",
-        "{\"error\":{\"code\":\"not_found\",\"data\":{\"short_id\":999},\"message\":\"no task with short_id 999\"},\"id\":\"e2\",\"ok\":false,\"tasqx\":\"1\"}",
-    ));
-    s.push_str(&p(
-        "Version mismatches are caught before dispatch, and tell you what <em>is</em> supported:",
-    ));
-    s.push_str(&snippet(
-        "echo '{\"tasqx\":\"2\",\"id\":\"v1\",\"method\":\"task.list\"}' | tasqx api",
-        "{\"error\":{\"code\":\"unsupported_version\",\"data\":{\"supported\":\"1\"},\"message\":\"unsupported api major version: 2\"},\"id\":\"v1\",\"ok\":false,\"tasqx\":\"1\"}",
+            ],
+        ),
+        p("Version mismatches are caught before dispatch, and tell you what <em>is</em> supported:"),
+    );
+    let error_envelopes = format!(
+        "{}{}",
+        snippet(
+            "echo '{\"tasqx\":\"1\",\"id\":\"e2\",\"method\":\"task.get\",\"params\":{\"ref\":\"999\"}}' | tasqx api",
+            "{\"error\":{\"code\":\"not_found\",\"data\":{\"short_id\":999},\"message\":\"no task with short_id 999\"},\"id\":\"e2\",\"ok\":false,\"tasqx\":\"1\"}",
+        ),
+        snippet(
+            "echo '{\"tasqx\":\"2\",\"id\":\"v1\",\"method\":\"task.list\"}' | tasqx api",
+            "{\"error\":{\"code\":\"unsupported_version\",\"data\":{\"supported\":\"1\"},\"message\":\"unsupported api major version: 2\"},\"id\":\"v1\",\"ok\":false,\"tasqx\":\"1\"}",
+        ),
+    );
+    s.push_str(&ref_section(
+        "api-errors",
+        "Errors",
+        &error_prose,
+        &tabs(&[
+            ("JSON API", &error_envelopes),
+            (
+                "CLI",
+                &soon(
+                    "Coming in the CLI reference: the exit code every verb returns, verb by verb.",
+                ),
+            ),
+        ]),
     ));
 
     s.push_str(&h3("Feature detection"));
@@ -2465,7 +2703,7 @@ fn page_api() -> String {
 // ============================================================================
 
 fn page_data() -> String {
-    let mut s = page_open("data", "Export and import");
+    let mut s = page_open("data");
 
     s.push_str(&lead(
         "Your data is yours. <code>export</code> emits canonical JSON — stable UUIDs, every field, \
@@ -2650,7 +2888,7 @@ fn page_data() -> String {
 // ============================================================================
 
 fn page_themes() -> String {
-    let mut s = page_open("themes", "Themes, charts and reports");
+    let mut s = page_open("themes");
 
     s.push_str(&lead(
         "Default output should be something you want to look at. Themes drive the terminal and \
@@ -2813,8 +3051,19 @@ fn page_themes() -> String {
 // Small HTML builders — every caller-supplied string goes through `esc`
 // ============================================================================
 
-/// Open a page section. `title` is escaped; `id` is a literal from [`PAGES`].
-fn page_open(id: &str, title: &str) -> String {
+/// Open a page section, titled from its [`PAGES`] row.
+///
+/// The title used to be passed in beside the id, which meant every page's `h2`
+/// existed twice — once here, once in the table the sidebar and the prev/next
+/// links read — with nothing comparing them. One source, and a page id that is
+/// not in the table is a panic rather than an untitled section: both are bugs
+/// in this file, and only one of them is visible.
+fn page_open(id: &str) -> String {
+    let title = PAGES
+        .iter()
+        .find(|p| p.id == id)
+        .unwrap_or_else(|| panic!("page `{id}` is not in PAGES"))
+        .title;
     format!(
         "<section class=\"page\" id=\"{id}\"><h2>{}</h2>",
         esc(title)
@@ -2823,16 +3072,26 @@ fn page_open(id: &str, title: &str) -> String {
 
 /// Close a page, appending prev/next links derived from [`PAGES`].
 fn page_close(id: &str) -> String {
-    let idx = PAGES.iter().position(|(p, _, _)| *p == id);
+    let idx = PAGES.iter().position(|p| p.id == id);
     let mut links = String::new();
     if let Some(i) = idx {
         if i > 0 {
-            let (pid, plabel, _) = PAGES[i - 1];
-            links.push_str(&format!("<a class=\"prev\" href=\"#{pid}\">← {plabel}</a>"));
+            let p = &PAGES[i - 1];
+            links.push_str(&format!(
+                "<a class=\"prev\" href=\"#{id}\"><span class=\"pn-k\">Previous</span>\
+                 <span class=\"pn-l\">{label}</span></a>",
+                id = p.id,
+                label = p.label,
+            ));
         }
         if i + 1 < PAGES.len() {
-            let (nid, nlabel, _) = PAGES[i + 1];
-            links.push_str(&format!("<a class=\"next\" href=\"#{nid}\">{nlabel} →</a>"));
+            let n = &PAGES[i + 1];
+            links.push_str(&format!(
+                "<a class=\"next\" href=\"#{id}\"><span class=\"pn-k\">Next</span>\
+                 <span class=\"pn-l\">{label}</span></a>",
+                id = n.id,
+                label = n.label,
+            ));
         }
     }
     format!("<div class=\"pagenav\">{links}</div></section>")
@@ -2977,222 +3236,725 @@ fn table_owned(headers: &[&str], rows: &[Vec<String>]) -> String {
 }
 
 // ============================================================================
+// Reference building blocks — the two-column template, tabs, params, terminal
+// ============================================================================
+
+/// An id-safe slug: lowercase alphanumerics, everything else one `-`.
+///
+/// Deliberately *not* [`h3`]'s anchor scheme, which maps every non-alphanumeric
+/// to its own dash and so is not collapsing. Changing that would rewrite the
+/// `#h-…` anchors already shipped, and the ids it produces (`install---
+/// quickstart`) are only ever machine-read. New ids get the readable spelling;
+/// the old ones keep the links they have.
+fn slug(text: &str) -> String {
+    let mut out = String::new();
+    for c in text.chars() {
+        if c.is_ascii_alphanumeric() {
+            out.push(c.to_ascii_lowercase());
+        } else if !out.ends_with('-') {
+            out.push('-');
+        }
+    }
+    out.trim_matches('-').to_string()
+}
+
+/// A two-column reference block: prose left, the code that goes with it right.
+///
+/// The shape every API reference the reader already knows uses, and the reason
+/// is the same one: the sentence explaining a call and the call itself are read
+/// together, not one after the other. `.ref-code` is `position: sticky` inside
+/// its own grid row, so the example stays put while its prose scrolls and is
+/// gone the moment the next section starts — a page-level sticky panel would
+/// instead show the previous section's code next to this one's words.
+///
+/// Under 60rem the grid collapses to one column and the code follows the prose,
+/// because two 20rem columns are worse than one of either.
+///
+/// `title` is escaped; `left_html` and `right_html` are trusted markup built by
+/// the helpers above, like every other builder in this file.
+fn ref_section(id: &str, title: &str, left_html: &str, right_html: &str) -> String {
+    format!(
+        "<section class=\"ref\" id=\"{id}\">\
+           <div class=\"ref-main\"><h3 class=\"ref-h\" id=\"h-{id}\">{title}</h3>{left_html}</div>\
+           <div class=\"ref-code\">{right_html}</div>\
+         </section>",
+        title = esc(title),
+    )
+}
+
+/// A tab strip over alternative renderings of one thing: `(label, html)`.
+///
+/// The first tab is the one a fresh reader sees. After that the *label* — CLI,
+/// JSON API, MCP — is remembered in `localStorage` and applied to every strip
+/// on the page, so a reader who came for the JSON API is not re-choosing it in
+/// every section. It is a label and not an index on purpose: strips do not all
+/// carry the same tabs in the same order, and an index would land on whatever
+/// happened to be third.
+fn tabs(panels: &[(&str, &str)]) -> String {
+    let mut strip = String::new();
+    let mut body = String::new();
+    for (i, (label, html)) in panels.iter().enumerate() {
+        let on = if i == 0 { " active" } else { "" };
+        let key = esc(label);
+        strip.push_str(&format!(
+            "<button class=\"tab{on}\" type=\"button\" data-tab=\"{key}\">{key}</button>"
+        ));
+        body.push_str(&format!(
+            "<div class=\"tabpanel{on}\" data-tab=\"{key}\">{html}</div>"
+        ));
+    }
+    format!("<div class=\"tabs\"><div class=\"tabstrip\">{strip}</div>{body}</div>")
+}
+
+/// A tab panel for content that does not exist yet.
+///
+/// Marked with a class the script reads: a remembered tab label is *not*
+/// applied to a strip whose panel for that label is one of these. Otherwise one
+/// click on "JSON API" would turn every code column on the page into a promise,
+/// which reads as a broken page rather than an unfinished section.
+fn soon(what: &str) -> String {
+    format!("<div class=\"soon\"><p>{}</p></div>", esc(what))
+}
+
+/// One row of a [`param_table`].
+struct Param<'a> {
+    /// The parameter or flag, as the reader types it.
+    name: &'a str,
+    /// Its shape — `string`, `&lt;name&gt;`, `bool` — in a muted mono badge.
+    ty: &'a str,
+    required: bool,
+    /// The value assumed when it is omitted, when there is one to state.
+    default: Option<&'a str>,
+    /// Trusted markup, like every other description in this file.
+    html_desc: &'a str,
+}
+
+/// A parameter list: one addressable row per parameter.
+///
+/// Each row carries `id="<section>-<name>"`, so a section can link to a single
+/// parameter the way an API reference is actually quoted ("see `--socket`"),
+/// and `data-param`, which is what the sidebar search scans — a parameter is
+/// the thing a reader looks for by name, and it is not a heading.
+///
+/// `section` is the extra argument the id scheme needs: the row cannot know
+/// which block it was rendered into, and two sections may well both document a
+/// `--json`.
+fn param_table(section: &str, rows: &[Param]) -> String {
+    let mut out = String::new();
+    for r in rows {
+        let name = esc(r.name);
+        let pill = if r.required {
+            "<span class=\"pill req\">required</span>"
+        } else {
+            "<span class=\"pill opt\">optional</span>"
+        };
+        let def = match r.default {
+            Some(d) => format!(
+                "<span class=\"pdef\">default <code>{}</code></span>",
+                esc(d)
+            ),
+            None => String::new(),
+        };
+        out.push_str(&format!(
+            "<div class=\"param\" id=\"{section}-{slug}\" data-param=\"{name}\">\
+               <div class=\"param-h\"><code class=\"pname\">{name}</code>\
+                 <span class=\"badge\">{ty}</span>{pill}{def}</div>\
+               <div class=\"param-d\">{desc}</div>\
+             </div>",
+            slug = slug(r.name),
+            ty = esc(r.ty),
+            desc = r.html_desc,
+        ));
+    }
+    format!("<div class=\"params\">{out}</div>")
+}
+
+/// Split a `(flag, effect)` cell like `<code>--theme &lt;name&gt;</code>` into
+/// the plain name a [`Param`] row shows and the value shape its badge carries.
+///
+/// The alternative was a second table spelling the two halves out beside
+/// [`GLOBAL_FLAGS`], which the cmddoc guard already binds to clap — and a copy
+/// of a guarded list is exactly the drift this file exists to refuse. A flag
+/// with no value gets the badge `flag`, which is what it is.
+fn split_flag(cell: &str) -> (String, String) {
+    let plain = cell
+        .replace("<code>", "")
+        .replace("</code>", "")
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&amp;", "&");
+    match plain.find(" <") {
+        Some(i) => (plain[..i].to_string(), plain[i + 1..].to_string()),
+        None => (plain, "flag".to_string()),
+    }
+}
+
+/// A terminal block: the palette of a terminal, and a copy button.
+///
+/// [`snippet`] is the shape for *a command and the output it really produced*.
+/// This is the shape for terminal text that is not that pair — the invocation
+/// on its own in a code column, next to the prose describing it. `html_inner`
+/// is trusted markup; callers pass [`esc`]aped terminal text.
+fn term_block(html_inner: &str) -> String {
+    // The button rides in a strip above the text, the same shape [`snippet`]
+    // uses, rather than floating over the first line: a long line scrolling
+    // under a translucent button is unreadable exactly where it matters.
+    format!(
+        "<div class=\"termbox\"><div class=\"snip-h\">\
+           <button class=\"copy\" type=\"button\">Copy</button></div>\
+         <pre class=\"term\"><code>{html_inner}</code></pre></div>"
+    )
+}
+
+// ============================================================================
 // Inline CSS — light/dark, responsive, wide content scrolls in its own box
 // ============================================================================
 
+/// The light palette, and the default one: `:root` carries it, so a browser
+/// with no colour preference and a document with no stored theme still gets a
+/// complete set of variables.
+const LIGHT_VARS: &str = r#"color-scheme: light;
+--accent: #4c6ef5; --accent2: #1c7ed6; --warn: #b58900; --danger: #bf616a;
+--bg: #ffffff; --fg: #1a1d23; --muted: #6b7280; --card: #f6f7f9; --line: #e3e6ea;
+--code-bg: #f2f4f7; --term-bg: #23262d; --term-fg: #d8dee9;
+--rail: #fbfbfc; --hover: #f0f2f5; --shadow: rgba(16, 20, 30, 0.10);
+--badge-bg: #eceff3; --badge-fg: #55607a;
+--pill-req: #9a5b00; --pill-req-bg: #fdf1dd;
+--pill-opt: #5a6474; --pill-opt-bg: #eef0f3;
+"#;
+
+/// The dark palette. Used three times — as the `prefers-color-scheme` answer,
+/// and as the explicit `[data-theme="dark"]` override — from one place, because
+/// a palette maintained in three copies is a palette that disagrees with itself
+/// the first time a token is added.
+const DARK_VARS: &str = r#"color-scheme: dark;
+--accent: #88c0d0; --accent2: #81a1c1; --warn: #ebcb8b; --danger: #bf616a;
+--bg: #22262e; --fg: #d8dee9; --muted: #8b93a3; --card: #2b3039; --line: #3a4150;
+--code-bg: #2b3039; --term-bg: #1b1e24; --term-fg: #d8dee9;
+--rail: #1e222a; --hover: #2f3540; --shadow: rgba(0, 0, 0, 0.35);
+--badge-bg: #333a46; --badge-fg: #a6b0c0;
+--pill-req: #ebcb8b; --pill-req-bg: #3a3527;
+--pill-opt: #9aa4b4; --pill-opt-bg: #2f3540;
+"#;
+
+/// Everything that is not a colour.
+///
+/// The type is tuned to be read for an hour: a 15px base at 1.55, headings with
+/// tight tracking, prose capped at 46rem (a measure, not a window width) while
+/// the reference grid uses the whole 78rem shell. Sizes are in `rem` so a
+/// reader who has raised their browser's font size gets a bigger guide.
+const RULES: &str = r##"
+* { box-sizing: border-box; }
+/* No `scroll-behavior: smooth`: every jump here is a page switch or an anchor
+   the script also has to reason about, and an animated scroll means the hash
+   target and the scroll position disagree for a third of a second. */
+html { scroll-margin-top: 4.5rem; }
+body { margin: 0; background: var(--bg); color: var(--fg);
+  font-family: ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  font-size: 15px; line-height: 1.55; -webkit-text-size-adjust: 100%;
+  -webkit-font-smoothing: antialiased; }
+code, pre, .mono { font-family: ui-monospace, "Cascadia Code", "SF Mono", Consolas, "Liberation Mono", monospace; }
+a { color: var(--accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+.muted { color: var(--muted); }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 4px; }
+
+/* ---- top bar ---- */
+header.top { position: sticky; top: 0; z-index: 40; height: 3.25rem;
+  background: color-mix(in srgb, var(--bg) 92%, transparent); backdrop-filter: blur(8px);
+  border-bottom: 1px solid var(--line); padding: 0 1.5rem;
+  display: flex; align-items: center; gap: 0.9rem; }
+.brand { font-weight: 700; font-size: 1.02rem; letter-spacing: -0.015em; }
+.brand .muted { font-weight: 400; }
+.ver { margin-left: auto; font-size: 0.76rem; letter-spacing: 0.01em; }
+#navtoggle { display: none; background: var(--card); color: var(--fg);
+  border: 1px solid var(--line); border-radius: 8px; padding: 0.3rem 0.65rem;
+  font: inherit; font-size: 0.8rem; cursor: pointer; }
+.themer { display: flex; gap: 0.1rem; padding: 0.15rem;
+  background: var(--card); border: 1px solid var(--line); border-radius: 999px; }
+.themebtn { background: transparent; border: 0; border-radius: 999px; color: var(--muted);
+  font: inherit; font-size: 0.7rem; font-weight: 600; letter-spacing: 0.01em;
+  padding: 0.16rem 0.5rem; cursor: pointer; }
+.themebtn:hover { color: var(--fg); }
+.themebtn.active { background: var(--bg); color: var(--fg); box-shadow: 0 1px 2px var(--shadow); }
+
+/* ---- layout ---- */
+.shell { display: flex; align-items: flex-start; gap: 2.5rem;
+  max-width: 78rem; margin: 0 auto; padding: 0 1.5rem; }
+nav { position: sticky; top: 3.25rem; flex: 0 0 15.5rem; padding: 1.4rem 0 2rem;
+  max-height: calc(100vh - 3.25rem); overflow-y: auto; }
+main { flex: 1 1 auto; min-width: 0; padding: 2.1rem 0 4rem; }
+
+/* ---- sidebar ---- */
+.navsearch { padding: 0 0.15rem 0.9rem; }
+#navq { width: 100%; background: var(--card); color: var(--fg); border: 1px solid var(--line);
+  border-radius: 8px; padding: 0.38rem 0.6rem; font: inherit; font-size: 0.82rem; }
+#navq::placeholder { color: var(--muted); }
+#navq:focus { border-color: var(--accent); outline: none;
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 22%, transparent); }
+.navsec { margin: 0 0 1.05rem; }
+.navsec.off { display: none; }
+.navsec-h { font-size: 0.66rem; font-weight: 700; text-transform: uppercase;
+  letter-spacing: 0.09em; color: var(--muted); padding: 0 0.7rem 0.3rem; }
+.navsec-soon { padding: 0.2rem 0.7rem; font-size: 0.8rem; color: var(--muted); opacity: 0.7; }
+nav a { display: block; padding: 0.26rem 0.7rem; border-radius: 7px;
+  color: var(--fg); font-size: 0.855rem; border-left: 2px solid transparent; }
+nav a:hover { background: var(--hover); text-decoration: none; }
+nav a.off { display: none; }
+nav a.active { background: var(--hover); border-left-color: var(--accent);
+  color: var(--accent); font-weight: 600; }
+.navhits { margin: 0 0 1rem; padding: 0.3rem 0; border-bottom: 1px solid var(--line); }
+.navhits a.hit { padding: 0.3rem 0.7rem; font-size: 0.82rem; }
+.navhits a.hit:hover { background: var(--hover); }
+.hit-x { display: block; font-size: 0.68rem; color: var(--muted); }
+.nohits { padding: 0.3rem 0.7rem; font-size: 0.8rem; color: var(--muted); }
+
+/* ---- pages: JS shows one; without JS everything renders ---- */
+.js .page { display: none; }
+.js .page.active { display: block; animation: fade 0.18s ease-out; }
+@keyframes fade { from { opacity: 0; transform: translateY(3px); } to { opacity: 1; } }
+@media (prefers-reduced-motion: reduce) {
+  .js .page.active { animation: none; }
+}
+
+/* ---- type: prose keeps a measure, the reference grid does not ---- */
+/* Anything the hash can name clears the sticky top bar when it is jumped to. */
+.page, h2, h3, h4, .ref, .param { scroll-margin-top: 4.5rem; }
+.page > *:not(.ref) { max-width: 46rem; }
+h2 { font-size: 1.75rem; font-weight: 600; letter-spacing: -0.022em; margin: 0 0 0.5rem; }
+h3 { font-size: 1.06rem; font-weight: 600; letter-spacing: -0.012em; margin: 2.4rem 0 0.6rem;
+  padding-top: 0.5rem; border-top: 1px solid var(--line); }
+h4 { font-size: 0.92rem; font-weight: 600; letter-spacing: -0.008em; margin: 1.6rem 0 0.4rem; }
+p { margin: 0 0 0.95rem; }
+p.lead { font-size: 1.06rem; line-height: 1.6; color: var(--muted); margin-bottom: 1.6rem; }
+p code, td code, li code, .param-d code { background: var(--code-bg); border: 1px solid var(--line);
+  border-radius: 5px; padding: 0.05em 0.35em; font-size: 0.84em; white-space: nowrap; }
+ul, ol { margin: 0 0 0.95rem; padding-left: 1.2rem; }
+li { margin: 0 0 0.3rem; }
+
+/* ---- snippets: the terminal look ---- */
+.snip { margin: 0 0 1.2rem; border: 1px solid var(--line); border-radius: 10px;
+  overflow: hidden; background: var(--term-bg); }
+.snip-h { display: flex; align-items: center; padding: 0.35rem 0.75rem;
+  border-bottom: 1px solid color-mix(in srgb, var(--term-fg) 15%, transparent); }
+.snip-h .dollar { color: var(--accent2); font-family: ui-monospace, monospace;
+  font-size: 0.8rem; font-weight: 700; }
+.copy { margin-left: auto; background: transparent; color: var(--term-fg);
+  border: 1px solid color-mix(in srgb, var(--term-fg) 25%, transparent);
+  border-radius: 6px; padding: 0.1rem 0.5rem; font: inherit; font-size: 0.7rem;
+  cursor: pointer; opacity: 0.7; }
+.copy:hover { opacity: 1; }
+.copy.ok { opacity: 1; color: var(--accent2); border-color: var(--accent2); }
+/* Every wide block scrolls itself — the page never scrolls sideways. */
+.snip pre { margin: 0; padding: 0.7rem 0.85rem; overflow-x: auto;
+  font-size: 0.82rem; line-height: 1.5; }
+.snip pre.cmd { color: var(--accent2); font-weight: 600; }
+.snip pre.out { color: var(--term-fg); opacity: 0.92;
+  border-top: 1px dashed color-mix(in srgb, var(--term-fg) 15%, transparent); }
+pre.plain { background: var(--card); border: 1px solid var(--line); border-radius: 10px;
+  padding: 0.8rem 0.9rem; margin: 0 0 1.2rem; overflow-x: auto;
+  font-size: 0.82rem; line-height: 1.5; color: var(--fg); }
+pre code { background: none; border: 0; padding: 0; white-space: pre; }
+.termbox { margin: 0 0 1.2rem; border: 1px solid var(--line);
+  border-radius: 10px; overflow: hidden; background: var(--term-bg); }
+pre.term { margin: 0; padding: 0.75rem 0.9rem; overflow-x: auto; color: var(--term-fg);
+  font-size: 0.82rem; line-height: 1.5; }
+
+/* ---- callouts ---- */
+.callout { border: 1px solid var(--line); border-left-width: 3px; border-radius: 8px;
+  background: var(--card); padding: 0.75rem 0.9rem; margin: 0 0 1.2rem; }
+.callout p { margin: 0.25rem 0 0; font-size: 0.9rem; }
+.callout .tag { font-size: 0.66rem; font-weight: 700; text-transform: uppercase;
+  letter-spacing: 0.07em; }
+.callout.note { border-left-color: var(--accent); }
+.callout.note .tag { color: var(--accent); }
+.callout.warn { border-left-color: var(--warn); }
+.callout.warn .tag { color: var(--warn); }
+
+/* ---- tables: the wrapper scrolls, not the page ---- */
+.tw { overflow-x: auto; margin: 0 0 1.2rem; border: 1px solid var(--line);
+  border-radius: 10px; }
+table.grid { width: 100%; border-collapse: collapse; font-size: 0.86rem;
+  min-width: 26rem; }
+table.grid th { text-align: left; color: var(--muted); font-weight: 600;
+  font-size: 0.68rem; text-transform: uppercase; letter-spacing: 0.06em;
+  background: var(--card); border-bottom: 1px solid var(--line);
+  padding: 0.5rem 0.7rem; white-space: nowrap; }
+table.grid td { padding: 0.5rem 0.7rem; border-bottom: 1px solid var(--line);
+  vertical-align: top; }
+table.grid tr:last-child td { border-bottom: 0; }
+
+/* ---- the two-column reference block ---- */
+.ref { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 27rem);
+  gap: 2.5rem; align-items: start; margin: 2.4rem 0 0; padding: 0 0 0.6rem; }
+.ref-main { min-width: 0; }
+/* The section rule belongs to the heading, so it is the width of the prose
+   column and every section on the page is ruled the same way. */
+.ref-code { min-width: 0; position: sticky; top: 4.4rem; align-self: start;
+  padding-top: 0.5rem; }
+.ref-h { margin-top: 0; }
+.ref-main > *:last-child, .ref-code > *:last-child { margin-bottom: 0; }
+
+/* ---- code tabs ---- */
+.tabs { border: 1px solid var(--line); border-radius: 10px; overflow: hidden;
+  background: var(--card); margin: 0 0 1.2rem; }
+.tabstrip { display: flex; flex-wrap: wrap; gap: 0.1rem; padding: 0.3rem 0.35rem;
+  border-bottom: 1px solid var(--line); }
+.tab { background: transparent; border: 0; border-radius: 6px; color: var(--muted);
+  font: inherit; font-size: 0.74rem; font-weight: 600; letter-spacing: 0.01em;
+  padding: 0.22rem 0.55rem; cursor: pointer; white-space: nowrap; }
+.tab:hover { color: var(--fg); }
+.tab.active { background: var(--bg); color: var(--fg); box-shadow: 0 1px 2px var(--shadow); }
+.tabpanel { display: none; padding: 0.55rem; }
+.tabpanel.active { display: block; }
+.tabpanel > * { margin-bottom: 0.55rem; }
+.tabpanel > *:last-child { margin-bottom: 0; }
+.soon { border: 1px dashed var(--line); border-radius: 8px; background: var(--bg);
+  padding: 0.85rem 0.9rem; color: var(--muted); font-size: 0.84rem; }
+.soon p { margin: 0; }
+
+/* ---- parameter list ---- */
+.params { border: 1px solid var(--line); border-radius: 10px; overflow: hidden;
+  margin: 0 0 1.2rem; }
+.param { padding: 0.7rem 0.85rem; border-bottom: 1px solid var(--line); }
+.param:last-child { border-bottom: 0; }
+.param:target { background: var(--hover); }
+.param-h { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0.45rem; }
+code.pname { font-size: 0.82rem; font-weight: 600; color: var(--fg);
+  background: none; border: 0; padding: 0; }
+.badge { font-family: ui-monospace, "SF Mono", Consolas, monospace; font-size: 0.68rem;
+  color: var(--badge-fg); background: var(--badge-bg); border-radius: 5px;
+  padding: 0.05rem 0.34rem; }
+.pill { font-size: 0.62rem; font-weight: 700; text-transform: uppercase;
+  letter-spacing: 0.06em; border-radius: 999px; padding: 0.05rem 0.42rem; }
+.pill.req { color: var(--pill-req); background: var(--pill-req-bg); }
+.pill.opt { color: var(--pill-opt); background: var(--pill-opt-bg); }
+.pdef { font-size: 0.72rem; color: var(--muted); }
+.pdef code { font-size: 0.95em; }
+.param-d { margin-top: 0.32rem; font-size: 0.86rem; }
+.param-d p { margin: 0 0 0.4rem; }
+.param-d p:last-child { margin-bottom: 0; }
+
+/* ---- page nav ---- */
+.pagenav { display: flex; gap: 1rem; margin-top: 3rem; padding-top: 1rem;
+  border-top: 1px solid var(--line); }
+.pagenav a { display: block; flex: 0 1 18rem; padding: 0.55rem 0.8rem;
+  border: 1px solid var(--line); border-radius: 10px; color: var(--fg); }
+.pagenav a:hover { background: var(--hover); text-decoration: none; border-color: var(--accent); }
+.pagenav .next { margin-left: auto; text-align: right; }
+.pn-k { display: block; font-size: 0.66rem; font-weight: 700; text-transform: uppercase;
+  letter-spacing: 0.08em; color: var(--muted); }
+.pn-l { display: block; font-size: 0.9rem; font-weight: 600; color: var(--accent); }
+footer { max-width: 78rem; margin: 0 auto; padding: 1.5rem 1.5rem 3rem;
+  border-top: 1px solid var(--line); color: var(--muted); font-size: 0.78rem; }
+
+/* ---- responsive: the sidebar becomes a drawer ---- */
+@media (max-width: 60rem) {
+  /* `align-items: flex-start` sizes a COLUMN flex container's items to their
+     content, so `main` came out 46rem wide on a 390px screen and took the
+     whole document off the side of it. In one column they stretch. */
+  .shell { flex-direction: column; align-items: stretch; gap: 0; padding: 0 1.1rem; }
+  header.top { padding: 0 1.1rem; gap: 0.7rem; }
+  #navtoggle { display: block; }
+  .ver { display: none; }
+  .themer { margin-left: auto; }
+  nav { position: fixed; top: 3.25rem; left: 0; right: 0; bottom: 0; z-index: 30;
+    flex: none; width: 100%; max-height: none; display: none;
+    background: var(--rail); border-bottom: 1px solid var(--line);
+    padding: 1rem 1.1rem 2.5rem; overflow-y: auto; }
+  nav.open { display: block; }
+  main { padding: 1.4rem 0 3rem; }
+  h2 { font-size: 1.45rem; }
+  .ref { grid-template-columns: minmax(0, 1fr); gap: 1.1rem;
+    margin-top: 2rem; padding-top: 1.1rem; }
+  .ref-code { position: static; }
+  .pagenav { flex-direction: column; }
+  .pagenav .next { margin-left: 0; }
+  .pagenav a { flex: 1 1 auto; }
+}
+"##;
+
 fn css() -> String {
     // A system-font stack: no web font can be requested, so none can be missing.
-    String::from(
-        ":root {\n\
-         --accent: #5e81ac; --accent2: #88c0d0; --warn: #b58900; --danger: #bf616a;\n\
-         --bg: #ffffff; --fg: #1a1d23; --muted: #6b7280; --card: #f6f7f9; --line: #e3e6ea;\n\
-         --code-bg: #f2f4f7; --term-bg: #23262d; --term-fg: #d8dee9;\n\
-         }\n\
-         @media (prefers-color-scheme: dark) {\n\
-         :root {\n\
-         --accent: #88c0d0; --accent2: #81a1c1; --warn: #ebcb8b; --danger: #bf616a;\n\
-         --bg: #22262e; --fg: #d8dee9; --muted: #8b93a3; --card: #2b3039; --line: #3a4150;\n\
-         --code-bg: #2b3039; --term-bg: #1b1e24; --term-fg: #d8dee9;\n\
-         }\n\
-         }\n\
-         * { box-sizing: border-box; }\n\
-         html { scroll-behavior: smooth; }\n\
-         body { margin: 0; background: var(--bg); color: var(--fg);\n\
-         font-family: ui-sans-serif, -apple-system, BlinkMacSystemFont, \"Segoe UI\", Roboto, Helvetica, Arial, sans-serif;\n\
-         line-height: 1.6; -webkit-text-size-adjust: 100%; }\n\
-         code, pre, .mono { font-family: ui-monospace, \"Cascadia Code\", \"SF Mono\", Consolas, \"Liberation Mono\", monospace; }\n\
-         a { color: var(--accent); text-decoration: none; }\n\
-         a:hover { text-decoration: underline; }\n\
-         .muted { color: var(--muted); }\n\
-         \n\
-         /* ---- top bar ---- */\n\
-         header.top { position: sticky; top: 0; z-index: 20;\n\
-         background: color-mix(in srgb, var(--bg) 92%, transparent); backdrop-filter: blur(8px);\n\
-         border-bottom: 1px solid var(--line); padding: 0.8rem 1.25rem;\n\
-         display: flex; align-items: center; gap: 1rem; }\n\
-         .brand { font-weight: 700; font-size: 1.1rem; letter-spacing: -0.01em; }\n\
-         .brand .muted { font-weight: 400; }\n\
-         .ver { margin-left: auto; font-size: 0.8rem; }\n\
-         #navtoggle { display: none; background: var(--card); color: var(--fg);\n\
-         border: 1px solid var(--line); border-radius: 8px; padding: 0.3rem 0.7rem;\n\
-         font: inherit; font-size: 0.85rem; cursor: pointer; }\n\
-         \n\
-         /* ---- layout ---- */\n\
-         .shell { display: flex; align-items: flex-start; gap: 2rem;\n\
-         max-width: 78rem; margin: 0 auto; padding: 0 1.25rem; }\n\
-         nav { position: sticky; top: 4.2rem; flex: 0 0 15rem; padding: 1.5rem 0;\n\
-         max-height: calc(100vh - 4.2rem); overflow-y: auto; }\n\
-         nav a { display: block; padding: 0.4rem 0.7rem; border-radius: 7px;\n\
-         color: var(--fg); font-size: 0.9rem; border-left: 2px solid transparent; }\n\
-         nav a:hover { background: var(--card); text-decoration: none; }\n\
-         nav a.active { background: var(--card); border-left-color: var(--accent);\n\
-         color: var(--accent); font-weight: 600; }\n\
-         main { flex: 1 1 auto; min-width: 0; padding: 1.5rem 0 4rem; }\n\
-         \n\
-         /* ---- pages: JS shows one; without JS everything renders ---- */\n\
-         .js .page { display: none; }\n\
-         .js .page.active { display: block; animation: fade 0.18s ease-out; }\n\
-         @keyframes fade { from { opacity: 0; transform: translateY(3px); } to { opacity: 1; } }\n\
-         @media (prefers-reduced-motion: reduce) {\n\
-         html { scroll-behavior: auto; }\n\
-         .js .page.active { animation: none; }\n\
-         }\n\
-         \n\
-         /* ---- type ---- */\n\
-         h2 { font-size: 1.65rem; letter-spacing: -0.02em; margin: 0 0 0.5rem; }\n\
-         h3 { font-size: 1.05rem; letter-spacing: -0.01em; margin: 2.2rem 0 0.5rem;\n\
-         padding-top: 0.4rem; border-top: 1px solid var(--line); }\n\
-         p { margin: 0 0 0.9rem; }\n\
-         p.lead { font-size: 1.08rem; color: var(--muted); margin-bottom: 1.4rem; }\n\
-         p code, td code, li code { background: var(--code-bg); border: 1px solid var(--line);\n\
-         border-radius: 5px; padding: 0.05em 0.35em; font-size: 0.86em; white-space: nowrap; }\n\
-         \n\
-         /* ---- snippets: the terminal look ---- */\n\
-         .snip { margin: 0 0 1.1rem; border: 1px solid var(--line); border-radius: 10px;\n\
-         overflow: hidden; background: var(--term-bg); }\n\
-         .snip-h { display: flex; align-items: center; padding: 0.35rem 0.75rem;\n\
-         border-bottom: 1px solid color-mix(in srgb, var(--term-fg) 15%, transparent); }\n\
-         .snip-h .dollar { color: var(--accent2); font-family: ui-monospace, monospace;\n\
-         font-size: 0.8rem; font-weight: 700; }\n\
-         .copy { margin-left: auto; background: transparent; color: var(--term-fg);\n\
-         border: 1px solid color-mix(in srgb, var(--term-fg) 25%, transparent);\n\
-         border-radius: 6px; padding: 0.1rem 0.5rem; font: inherit; font-size: 0.72rem;\n\
-         cursor: pointer; opacity: 0.7; }\n\
-         .copy:hover { opacity: 1; }\n\
-         /* Every wide block scrolls itself — the page never scrolls sideways. */\n\
-         .snip pre { margin: 0; padding: 0.7rem 0.85rem; overflow-x: auto;\n\
-         font-size: 0.82rem; line-height: 1.5; }\n\
-         .snip pre.cmd { color: var(--accent2); font-weight: 600; }\n\
-         .snip pre.out { color: var(--term-fg); opacity: 0.92;\n\
-         border-top: 1px dashed color-mix(in srgb, var(--term-fg) 15%, transparent); }\n\
-         pre.plain { background: var(--card); border: 1px solid var(--line); border-radius: 10px;\n\
-         padding: 0.8rem 0.9rem; margin: 0 0 1.1rem; overflow-x: auto;\n\
-         font-size: 0.82rem; line-height: 1.5; color: var(--fg); }\n\
-         pre code { background: none; border: 0; padding: 0; white-space: pre; }\n\
-         \n\
-         /* ---- callouts ---- */\n\
-         .callout { border: 1px solid var(--line); border-left-width: 3px; border-radius: 8px;\n\
-         background: var(--card); padding: 0.75rem 0.9rem; margin: 0 0 1.1rem; }\n\
-         .callout p { margin: 0.25rem 0 0; font-size: 0.92rem; }\n\
-         .callout .tag { font-size: 0.68rem; font-weight: 700; text-transform: uppercase;\n\
-         letter-spacing: 0.07em; }\n\
-         .callout.note { border-left-color: var(--accent); }\n\
-         .callout.note .tag { color: var(--accent); }\n\
-         .callout.warn { border-left-color: var(--warn); }\n\
-         .callout.warn .tag { color: var(--warn); }\n\
-         \n\
-         /* ---- tables: the wrapper scrolls, not the page ---- */\n\
-         .tw { overflow-x: auto; margin: 0 0 1.1rem; border: 1px solid var(--line);\n\
-         border-radius: 10px; }\n\
-         table.grid { width: 100%; border-collapse: collapse; font-size: 0.88rem;\n\
-         min-width: 26rem; }\n\
-         table.grid th { text-align: left; color: var(--muted); font-weight: 600;\n\
-         font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.05em;\n\
-         background: var(--card); border-bottom: 1px solid var(--line);\n\
-         padding: 0.5rem 0.7rem; white-space: nowrap; }\n\
-         table.grid td { padding: 0.5rem 0.7rem; border-bottom: 1px solid var(--line);\n\
-         vertical-align: top; }\n\
-         table.grid tr:last-child td { border-bottom: 0; }\n\
-         \n\
-         /* ---- page nav ---- */\n\
-         .pagenav { display: flex; gap: 1rem; margin-top: 2.5rem; padding-top: 1rem;\n\
-         border-top: 1px solid var(--line); font-size: 0.9rem; }\n\
-         .pagenav .next { margin-left: auto; }\n\
-         footer { max-width: 78rem; margin: 0 auto; padding: 1.5rem 1.25rem 3rem;\n\
-         border-top: 1px solid var(--line); color: var(--muted); font-size: 0.8rem; }\n\
-         \n\
-         /* ---- responsive ---- */\n\
-         @media (max-width: 52rem) {\n\
-         .shell { flex-direction: column; gap: 0; }\n\
-         #navtoggle { display: block; }\n\
-         nav { position: static; flex: none; width: 100%; max-height: none;\n\
-         padding: 0.5rem 0; display: none; border-bottom: 1px solid var(--line); }\n\
-         nav.open { display: block; }\n\
-         main { padding-top: 1.25rem; }\n\
-         h2 { font-size: 1.4rem; }\n\
-         }\n",
-    )
+    //
+    // Three palettes from two blocks: `:root` is light, the media query is the
+    // reader's system preference, and `[data-theme]` — set only by the header's
+    // switch — overrides both. The media query stays the default on purpose, so
+    // "Auto" is the absence of an override rather than a mode of its own.
+    let mut s = String::new();
+    s.push_str(":root {\n");
+    s.push_str(LIGHT_VARS);
+    s.push_str("}\n@media (prefers-color-scheme: dark) {\n:root {\n");
+    s.push_str(DARK_VARS);
+    s.push_str("}\n}\n");
+    s.push_str("html[data-theme=\"light\"] {\n");
+    s.push_str(LIGHT_VARS);
+    s.push_str("}\n");
+    s.push_str("html[data-theme=\"dark\"] {\n");
+    s.push_str(DARK_VARS);
+    s.push_str("}\n");
+    s.push_str(RULES);
+    s
 }
 
 // ============================================================================
 // Inline JS — client-side page switching, no framework, no external anything
 // ============================================================================
 
+/// Written defensively: if anything here throws, the `js` class is never added
+/// and the document degrades to one long readable page rather than a blank one.
+///
+/// Navigation is driven by `location.hash` and the `hashchange` event, and NOT
+/// by `history.pushState`. That is load-bearing, not stylistic: this file is
+/// opened over `file://`, whose origin is `null`, and `pushState` throws a
+/// SecurityError there. Letting each `<a>` do its ordinary default thing sets
+/// the hash, fires `hashchange`, and gives us real history entries — so the
+/// back button and deep links work on the exact transport `tasqx docs` uses.
+///
+/// `localStorage` is reached through `readStore`/`writeStore` and nothing else.
+/// On a `file://` document with a null origin, or under a privacy setting that
+/// refuses storage, merely *touching* `window.localStorage` throws — so a
+/// remembered theme must never be able to take the page down with it.
+///
+/// The search index is the document: `querySelectorAll` over the headings and
+/// parameter rows already in the file. There is nothing to build, nothing to
+/// fetch, and nothing that can disagree with what is on the page.
+const SCRIPT: &str = r##"(function () {
+  function list(sel, root) {
+    return Array.prototype.slice.call((root || document).querySelectorAll(sel));
+  }
+  var pages = list('.page');
+  if (!pages.length) { return; }
+  var navEl = document.getElementById('nav');
+  var tree = document.getElementById('navtree');
+  var hits = document.getElementById('navhits');
+  var queryBox = document.getElementById('navq');
+  var navLinks = list('nav a[data-page]');
+  var THEME_KEY = 'tasqx-docs-theme';
+  var TAB_KEY = 'tasqx-docs-tab';
+
+  // Only hide pages once we know we can show them again.
+  document.documentElement.classList.add('js');
+
+  function readStore(k) {
+    try { return window.localStorage.getItem(k); } catch (e) { return null; }
+  }
+  function writeStore(k, v) {
+    try { window.localStorage.setItem(k, v); } catch (e) { /* storage refused */ }
+  }
+
+  // ---- theme: light / dark / system ---------------------------------------
+  var themeBtns = list('.themebtn');
+  function applyTheme(mode) {
+    var root = document.documentElement;
+    if (mode === 'light' || mode === 'dark') {
+      root.setAttribute('data-theme', mode);
+    } else {
+      root.removeAttribute('data-theme');
+      mode = 'system';
+    }
+    themeBtns.forEach(function (b) {
+      var on = b.getAttribute('data-theme-set') === mode;
+      b.classList.toggle('active', on);
+      b.setAttribute('aria-pressed', on ? 'true' : 'false');
+    });
+  }
+  applyTheme(readStore(THEME_KEY) || 'system');
+
+  // ---- code tabs -----------------------------------------------------------
+  function applyTab(box, label) {
+    var panels = list('.tabpanel', box), found = null;
+    panels.forEach(function (p) {
+      if (p.getAttribute('data-tab') === label) { found = p; }
+    });
+    if (!found) { return false; }
+    panels.forEach(function (p) { p.classList.toggle('active', p === found); });
+    list('.tab', box).forEach(function (b) {
+      b.classList.toggle('active', b.getAttribute('data-tab') === label);
+    });
+    return true;
+  }
+  var storedTab = readStore(TAB_KEY);
+  if (storedTab) {
+    list('.tabs').forEach(function (box) {
+      var panels = list('.tabpanel', box), wanted = null;
+      panels.forEach(function (p) {
+        if (p.getAttribute('data-tab') === storedTab) { wanted = p; }
+      });
+      // A remembered label whose panel is a placeholder is not applied: the
+      // reader would land on "coming soon" in every section at once.
+      if (wanted && !wanted.querySelector('.soon')) { applyTab(box, storedTab); }
+    });
+  }
+
+  // ---- one page at a time, driven by the hash ------------------------------
+  function pageFor(id) {
+    var direct = null;
+    pages.forEach(function (p) { if (p.id === id) { direct = p; } });
+    if (direct) { return { page: direct, target: null }; }
+    var el = id ? document.getElementById(id) : null;
+    var owner = el && el.closest ? el.closest('.page') : null;
+    return { page: owner, target: owner ? el : null };
+  }
+  function show(id) {
+    pages.forEach(function (p) { p.classList.toggle('active', p.id === id); });
+    navLinks.forEach(function (a) {
+      a.classList.toggle('active', a.getAttribute('data-page') === id);
+    });
+    if (navEl) { navEl.classList.remove('open'); }
+  }
+  function go(hash) {
+    var hit = pageFor(hash);
+    var page = hit.page || pages[0];
+    show(page.id);
+    // A heading or a parameter row inside a page that was hidden a moment ago:
+    // reveal the page first, then scroll, or the browser measures nothing.
+    if (hit.target) { hit.target.scrollIntoView(); } else { window.scrollTo(0, 0); }
+  }
+
+  // The browser sets the hash for us; we only react. Nav links, prev/next,
+  // search hits and cross-references inside prose therefore all take one path.
+  window.addEventListener('hashchange', function () { go(location.hash.slice(1)); });
+
+  // ---- sidebar search ------------------------------------------------------
+  // No index: the document is the index. Sidebar entries filter by label, and a
+  // typed query also lists every matching heading and parameter across pages.
+  var HIT_LIMIT = 14;
+  function labelOfPage(page) {
+    if (!page) { return ''; }
+    var a = null;
+    navLinks.forEach(function (x) {
+      if (x.getAttribute('data-page') === page.id) { a = x; }
+    });
+    return a ? a.textContent : page.id;
+  }
+  function clearHits() {
+    while (hits.firstChild) { hits.removeChild(hits.firstChild); }
+  }
+  function search() {
+    var text = (queryBox.value || '').trim().toLowerCase();
+    clearHits();
+    if (!text) {
+      hits.hidden = true;
+      navLinks.forEach(function (a) { a.classList.remove('off'); });
+      list('.navsec', tree).forEach(function (s) { s.classList.remove('off'); });
+      return;
+    }
+    navLinks.forEach(function (a) {
+      a.classList.toggle('off', a.textContent.toLowerCase().indexOf(text) < 0);
+    });
+    // A section with nothing left showing goes too — including the empty ones,
+    // whose "coming soon" is an answer to nobody's query.
+    list('.navsec', tree).forEach(function (s) {
+      s.classList.toggle('off', !list('a[data-page]', s).some(function (a) {
+        return !a.classList.contains('off');
+      }));
+    });
+    var n = 0;
+    list('.page h3, .page h4, .page [data-param]').forEach(function (el) {
+      if (n >= HIT_LIMIT) { return; }
+      var name = el.getAttribute('data-param') || el.textContent;
+      if (name.toLowerCase().indexOf(text) < 0) { return; }
+      var page = el.closest ? el.closest('.page') : null;
+      var id = el.id || (page ? page.id : '');
+      if (!id) { return; }
+      n++;
+      var a = document.createElement('a');
+      a.className = 'hit';
+      a.setAttribute('href', '#' + id);
+      a.textContent = name;
+      var where = document.createElement('span');
+      where.className = 'hit-x';
+      where.textContent = labelOfPage(page);
+      a.appendChild(where);
+      hits.appendChild(a);
+    });
+    if (!n) {
+      var none = document.createElement('div');
+      none.className = 'nohits';
+      none.textContent = 'No matches';
+      hits.appendChild(none);
+    }
+    hits.hidden = false;
+  }
+  if (queryBox && hits && tree) {
+    queryBox.addEventListener('input', search);
+    queryBox.addEventListener('search', search);
+  }
+
+  // ---- one click handler for the whole document ----------------------------
+  document.addEventListener('click', function (e) {
+    var t = e.target;
+    if (!t || !t.classList) { return; }
+
+    if (t.classList.contains('themebtn')) {
+      var mode = t.getAttribute('data-theme-set');
+      applyTheme(mode);
+      writeStore(THEME_KEY, mode);
+      return;
+    }
+    if (t.classList.contains('tab')) {
+      var box = t.closest ? t.closest('.tabs') : null;
+      var label = t.getAttribute('data-tab');
+      if (box && applyTab(box, label)) { writeStore(TAB_KEY, label); }
+      return;
+    }
+    if (t.classList.contains('copy')) { copyFrom(t); return; }
+    if (t.id === 'navtoggle') {
+      e.stopPropagation();
+      if (navEl) {
+        var open = navEl.classList.toggle('open');
+        t.setAttribute('aria-expanded', open ? 'true' : 'false');
+      }
+      return;
+    }
+    // Clicking the page you are already on fires no hashchange; close the
+    // drawer anyway so the tap is not a no-op.
+    var link = t.closest ? t.closest('a[href^="#"]') : null;
+    if (link && navEl) { navEl.classList.remove('open'); }
+  });
+
+  // ---- copy buttons: clipboard where available, a textarea where not -------
+  function copyFrom(btn) {
+    var box = btn.closest ? btn.closest('.snip, .termbox') : null;
+    if (!box) { return; }
+    var node = box.querySelector('pre.cmd code') || box.querySelector('pre.term');
+    if (!node) { return; }
+    var text = node.textContent;
+    function done() {
+      btn.textContent = 'Copied';
+      btn.classList.add('ok');
+      setTimeout(function () {
+        btn.textContent = 'Copy';
+        btn.classList.remove('ok');
+      }, 1200);
+    }
+    function fallback() {
+      try {
+        var ta = document.createElement('textarea');
+        ta.value = text;
+        ta.setAttribute('readonly', '');
+        ta.style.position = 'fixed';
+        ta.style.top = '-1000px';
+        document.body.appendChild(ta);
+        ta.select();
+        document.execCommand('copy');
+        document.body.removeChild(ta);
+        done();
+      } catch (err) { /* nothing left to try; the text is on screen */ }
+    }
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(done, fallback);
+    } else {
+      fallback();
+    }
+  }
+
+  go(location.hash.slice(1) || pages[0].id);
+}());"##;
+
 fn js() -> String {
-    // Written defensively: if anything here throws, the `js` class is never added
-    // and the document degrades to one long readable page rather than a blank one.
-    //
-    // Navigation is driven by `location.hash` and the `hashchange` event, and NOT
-    // by `history.pushState`. That is load-bearing, not stylistic: this file is
-    // opened over `file://`, whose origin is `null`, and `pushState` throws a
-    // SecurityError there. Letting each `<a href="#…">` do its ordinary default
-    // thing sets the hash, fires `hashchange`, and gives us real history entries —
-    // so the back button and deep links work on the exact transport `tasqx docs`
-    // actually uses.
-    String::from(
-        "(function () {\n\
-        \x20 var pages = Array.prototype.slice.call(document.querySelectorAll('.page'));\n\
-        \x20 var links = Array.prototype.slice.call(document.querySelectorAll('nav a'));\n\
-        \x20 var nav = document.getElementById('nav');\n\
-        \x20 if (!pages.length) { return; }\n\
-        \x20 // Only hide pages once we know we can show them again.\n\
-        \x20 document.documentElement.classList.add('js');\n\
-        \n\
-        \x20 function show(id) {\n\
-        \x20   var found = pages.some(function (p) { return p.id === id; });\n\
-        \x20   if (!found) { id = pages[0].id; }\n\
-        \x20   pages.forEach(function (p) { p.classList.toggle('active', p.id === id); });\n\
-        \x20   links.forEach(function (a) { a.classList.toggle('active', a.dataset.page === id); });\n\
-        \x20   if (nav) { nav.classList.remove('open'); }\n\
-        \x20 }\n\
-        \n\
-        \x20 // The browser sets the hash for us; we only react. Nav links, prev/next,\n\
-        \x20 // and cross-references inside prose therefore all take one path.\n\
-        \x20 window.addEventListener('hashchange', function () {\n\
-        \x20   show(location.hash.slice(1));\n\
-        \x20   window.scrollTo(0, 0);\n\
-        \x20 });\n\
-        \n\
-        \x20 // Clicking the page you are already on fires no hashchange; close the\n\
-        \x20 // mobile nav anyway so the tap is not a no-op.\n\
-        \x20 document.addEventListener('click', function (e) {\n\
-        \x20   var a = e.target.closest ? e.target.closest('a[href^=\"#\"]') : null;\n\
-        \x20   if (a && nav) { nav.classList.remove('open'); }\n\
-        \x20 });\n\
-        \n\
-        \x20 if (nav) {\n\
-        \x20   var tog = document.getElementById('navtoggle');\n\
-        \x20   if (tog) {\n\
-        \x20     tog.addEventListener('click', function (e) {\n\
-        \x20       e.stopPropagation();\n\
-        \x20       nav.classList.toggle('open');\n\
-        \x20     });\n\
-        \x20   }\n\
-        \x20 }\n\
-        \n\
-        \x20 // Copy buttons: clipboard where available, a select-all fallback where not.\n\
-        \x20 document.addEventListener('click', function (e) {\n\
-        \x20   if (!e.target.classList || !e.target.classList.contains('copy')) { return; }\n\
-        \x20   var box = e.target.closest('.snip');\n\
-        \x20   var cmd = box && box.querySelector('pre.cmd code');\n\
-        \x20   if (!cmd) { return; }\n\
-        \x20   var btn = e.target;\n\
-        \x20   function ok() { btn.textContent = 'Copied'; setTimeout(function () { btn.textContent = 'Copy'; }, 1200); }\n\
-        \x20   if (navigator.clipboard && navigator.clipboard.writeText) {\n\
-        \x20     navigator.clipboard.writeText(cmd.textContent).then(ok, function () {});\n\
-        \x20   } else {\n\
-        \x20     var r = document.createRange();\n\
-        \x20     r.selectNodeContents(cmd);\n\
-        \x20     var sel = window.getSelection();\n\
-        \x20     sel.removeAllRanges();\n\
-        \x20     sel.addRange(r);\n\
-        \x20     ok();\n\
-        \x20   }\n\
-        \x20 });\n\
-        \n\
-        \x20 show(location.hash.slice(1) || pages[0].id);\n\
-        }());",
-    )
+    String::from(SCRIPT)
 }
 
 #[cfg(test)]
@@ -4281,7 +5043,8 @@ mod tests {
     #[test]
     fn every_nav_link_has_a_page() {
         let doc = generate();
-        for (id, _, _) in PAGES {
+        for pg in PAGES {
+            let id = pg.id;
             assert!(
                 doc.contains(&format!("id=\"{id}\"")),
                 "no section for nav page `{id}`"
@@ -4296,6 +5059,97 @@ mod tests {
             PAGES.len(),
             "the number of rendered pages does not match PAGES"
         );
+    }
+
+    /// Every page is filed under a section that exists, and every section is
+    /// rendered — including the empty ones.
+    ///
+    /// The empty half is the point. `guides` and `objects` have no pages yet,
+    /// and the cheap way to write [`nav`] is to iterate the pages and emit a
+    /// heading when the section changes — which silently drops a section
+    /// nobody has filled, so the day someone adds the first Guides page the
+    /// heading appears out of nowhere and nothing was ever watched failing. A
+    /// section with no pages must render its heading and say so.
+    #[test]
+    fn every_page_is_in_a_declared_section_and_every_section_renders() {
+        let nav = nav();
+        for pg in PAGES {
+            assert!(
+                SECTIONS.iter().any(|s| s.id == pg.section),
+                "page `{}` names section `{}`, which is not in SECTIONS",
+                pg.id,
+                pg.section
+            );
+        }
+        for sec in SECTIONS {
+            assert!(
+                nav.contains(&format!("data-section=\"{}\"", sec.id)),
+                "section `{}` is not rendered in the sidebar",
+                sec.id
+            );
+            assert!(
+                nav.contains(sec.title),
+                "section `{}` renders no heading",
+                sec.id
+            );
+        }
+        let empty: Vec<&str> = SECTIONS
+            .iter()
+            .filter(|s| !PAGES.iter().any(|p| p.section == s.id))
+            .map(|s| s.id)
+            .collect();
+        assert!(
+            !empty.is_empty(),
+            "this guard is comparing nothing: every section has pages, so remove it \
+             or keep one section ahead of the writing"
+        );
+        assert_eq!(
+            nav.matches("navsec-soon").count(),
+            empty.len(),
+            "an empty section ({empty:?}) renders no placeholder, so its heading is \
+             followed by the next section's entries"
+        );
+    }
+
+    /// The sidebar is the reading order, and prev/next walks the same line.
+    /// A page emitted in a different order than PAGES declares would give a
+    /// JavaScript-less reader one order and the Next link another.
+    #[test]
+    fn pages_are_emitted_in_sidebar_order() {
+        let doc = generate();
+        let mut at = 0usize;
+        for pg in PAGES {
+            let needle = format!("<section class=\"page\" id=\"{}\">", pg.id);
+            let found = doc[at..]
+                .find(&needle)
+                .unwrap_or_else(|| panic!("page `{}` is out of PAGES order, or missing", pg.id));
+            at += found + needle.len();
+        }
+        // Prev/next: every page but the first names its predecessor, and every
+        // page but the last names its successor.
+        for (i, pg) in PAGES.iter().enumerate() {
+            let foot = page_close(pg.id);
+            assert_eq!(
+                foot.contains("class=\"prev\""),
+                i > 0,
+                "page `{}` has the wrong prev link",
+                pg.id
+            );
+            assert_eq!(
+                foot.contains("class=\"next\""),
+                i + 1 < PAGES.len(),
+                "page `{}` has the wrong next link",
+                pg.id
+            );
+            if i > 0 {
+                assert!(
+                    foot.contains(&format!("href=\"#{}\"", PAGES[i - 1].id)),
+                    "page `{}` does not link back to `{}`",
+                    pg.id,
+                    PAGES[i - 1].id
+                );
+            }
+        }
     }
 
     /// Wide content must scroll inside its own box. Both mechanisms must be present
@@ -4676,6 +5530,365 @@ mod tests {
         assert!(
             doc.matches("class=\"snip\"").count() >= 25,
             "too few worked examples"
+        );
+    }
+
+    // ---- the shell's building blocks ---------------------------------------
+
+    /// The id slug collapses, where [`h3`]'s deliberately does not.
+    #[test]
+    fn slug_collapses_punctuation_and_trims_it() {
+        assert_eq!(slug("Global flags"), "global-flags");
+        assert_eq!(slug("--no-daemon"), "no-daemon");
+        assert_eq!(slug("--theme <name>"), "theme-name");
+        assert_eq!(slug("Install &amp; quickstart"), "install-amp-quickstart");
+        assert_eq!(slug("!!!"), "");
+    }
+
+    /// One flag cell, two halves — over every shape [`GLOBAL_FLAGS`] really
+    /// holds, so a new one that parses badly is a red test and not a badge
+    /// reading `--socket <addr>` next to an empty name.
+    #[test]
+    fn split_flag_separates_the_name_from_the_value_shape() {
+        assert_eq!(
+            split_flag("<code>--json</code>"),
+            ("--json".into(), "flag".into())
+        );
+        assert_eq!(
+            split_flag("<code>--theme &lt;name&gt;</code>"),
+            ("--theme".into(), "<name>".into())
+        );
+        assert_eq!(
+            split_flag("<code>--socket &lt;addr&gt;</code>"),
+            ("--socket".into(), "<addr>".into())
+        );
+        assert_eq!(
+            split_flag("<code>--help</code>, <code>--version</code>"),
+            ("--help, --version".into(), "flag".into())
+        );
+        // Every real row yields a name that starts like a flag: the guarantee
+        // the id scheme and the badge both rest on.
+        for (flag, _) in GLOBAL_FLAGS {
+            let (name, ty) = split_flag(flag);
+            assert!(name.starts_with("--"), "`{flag}` parsed to name `{name}`");
+            assert!(!ty.is_empty(), "`{flag}` parsed to an empty type badge");
+        }
+    }
+
+    /// A parameter row is addressable, typed, and says whether it is needed.
+    #[test]
+    fn param_table_renders_an_addressable_typed_row() {
+        let html = param_table(
+            "demo",
+            &[
+                Param {
+                    name: "filter",
+                    ty: "string",
+                    required: true,
+                    default: None,
+                    html_desc: "A <code>filter</code> expression.",
+                },
+                Param {
+                    name: "limit",
+                    ty: "integer",
+                    required: false,
+                    default: Some("50"),
+                    html_desc: "How many rows.",
+                },
+            ],
+        );
+        assert!(html.contains("id=\"demo-filter\""), "{html}");
+        assert!(html.contains("data-param=\"filter\""), "{html}");
+        assert!(html.contains("<span class=\"pill req\">required</span>"));
+        assert!(html.contains("<span class=\"pill opt\">optional</span>"));
+        assert!(html.contains("<span class=\"badge\">string</span>"));
+        assert!(html.contains("default <code>50</code>"), "{html}");
+        // The required row has no default, and says nothing about one.
+        assert_eq!(html.matches("class=\"pdef\"").count(), 1);
+        // Descriptions are trusted markup, like every other cell in this file.
+        assert!(html.contains("A <code>filter</code> expression."));
+    }
+
+    /// A name is the one thing in a parameter row that a future generated
+    /// reference could take from a schema rather than a literal here.
+    #[test]
+    fn param_table_escapes_the_name_and_the_type() {
+        let html = param_table(
+            "demo",
+            &[Param {
+                name: "<script>x</script>",
+                ty: "<img>",
+                required: false,
+                default: Some("\"quoted\""),
+                html_desc: "safe",
+            }],
+        );
+        assert!(!html.contains("<script>"), "raw markup survived: {html}");
+        assert!(!html.contains("<img>"), "raw markup survived: {html}");
+        assert!(html.contains("&lt;script&gt;"));
+        assert!(html.contains("&quot;quoted&quot;"));
+    }
+
+    /// Exactly one tab and one panel start active, and it is the first.
+    #[test]
+    fn tabs_open_on_the_first_panel_only() {
+        let html = tabs(&[("CLI", "<p>one</p>"), ("JSON API", "<p>two</p>")]);
+        assert_eq!(html.matches("class=\"tab active\"").count(), 1);
+        assert_eq!(html.matches("class=\"tabpanel active\"").count(), 1);
+        assert!(
+            html.find("class=\"tab active\"").unwrap() < html.find("JSON API").unwrap(),
+            "the second tab opened instead of the first: {html}"
+        );
+        // Button and panel are paired by label, which is what the stored
+        // preference is spelled in.
+        assert_eq!(html.matches("data-tab=\"JSON API\"").count(), 2);
+    }
+
+    /// Labels reach an attribute as well as the visible strip.
+    #[test]
+    fn tabs_escape_their_labels() {
+        let html = tabs(&[("a\"b", "<p>x</p>")]);
+        assert!(
+            !html.contains("a\"b"),
+            "an unescaped quote broke out: {html}"
+        );
+        assert!(html.contains("data-tab=\"a&quot;b\""));
+    }
+
+    /// The two-column block keeps prose and code in their own columns, and
+    /// escapes the one string a caller supplies as text.
+    #[test]
+    fn ref_section_splits_prose_from_code() {
+        let html = ref_section("demo-id", "A <title>", "<p>prose</p>", "<p>code</p>");
+        assert!(html.contains("<section class=\"ref\" id=\"demo-id\">"));
+        assert!(html.contains("<div class=\"ref-main\">"));
+        assert!(html.contains("<div class=\"ref-code\"><p>code</p></div>"));
+        assert!(
+            html.contains("id=\"h-demo-id\""),
+            "the heading is not linkable"
+        );
+        assert!(!html.contains("<title>"), "raw markup in the title: {html}");
+        assert!(html.contains("A &lt;title&gt;"));
+        // Prose precedes code in the source, so a JavaScript-less reader and a
+        // one-column phone both get the sentence before the example.
+        assert!(html.find("ref-main").unwrap() < html.find("ref-code").unwrap());
+    }
+
+    /// A terminal block is copyable, and its text is escaped by its caller —
+    /// this asserts the wrapper the copy handler looks for.
+    #[test]
+    fn term_block_is_a_copyable_terminal() {
+        let html = term_block(&esc("tasqx api < req.json"));
+        assert!(html.contains("<div class=\"termbox\">"));
+        assert!(html.contains("<button class=\"copy\" type=\"button\">Copy</button>"));
+        assert!(html.contains("<pre class=\"term\">"));
+        assert!(html.contains("api &lt; req.json"), "{html}");
+    }
+
+    /// The placeholder panel is marked, because the script refuses to open a
+    /// remembered tab that turns out to be one.
+    #[test]
+    fn a_placeholder_panel_is_marked_as_one() {
+        let html = tabs(&[("CLI", "<p>real</p>"), ("JSON API", &soon("Coming later."))]);
+        assert!(html.contains("<div class=\"soon\"><p>Coming later.</p></div>"));
+        let js = js();
+        assert!(
+            js.contains("querySelector('.soon')"),
+            "a remembered tab label is applied without checking for a placeholder"
+        );
+    }
+
+    // ---- the shell, as rendered --------------------------------------------
+
+    /// The global flags render as parameter rows, each one addressable by name.
+    /// This is the one place [`param_table`] is exercised by a real page, so it
+    /// is the one place a broken id scheme would show.
+    #[test]
+    fn the_global_flags_render_as_addressable_parameter_rows() {
+        let page = page_commands();
+        for (flag, _) in GLOBAL_FLAGS {
+            let (name, _) = split_flag(flag);
+            assert!(
+                page.contains(&format!("id=\"global-flags-{}\"", slug(&name))),
+                "no addressable row for `{name}`"
+            );
+            assert!(
+                page.contains(&format!("data-param=\"{}\"", esc(&name))),
+                "`{name}` is not findable by the sidebar search"
+            );
+        }
+        assert_eq!(
+            page.matches("class=\"param\"").count(),
+            GLOBAL_FLAGS.len(),
+            "the parameter list and GLOBAL_FLAGS disagree"
+        );
+    }
+
+    /// Both reference pages use the two-column template, more than once each.
+    /// One use is an accident; two is the template being the shape of the page.
+    #[test]
+    fn both_reference_pages_use_the_two_column_template() {
+        for (name, page) in [("api", page_api()), ("mcp", page_mcp())] {
+            assert!(
+                page.matches("<section class=\"ref\"").count() >= 2,
+                "the {name} page uses the reference template {} time(s)",
+                page.matches("<section class=\"ref\"").count()
+            );
+            assert!(
+                page.contains("class=\"tabstrip\""),
+                "the {name} page has no code tabs"
+            );
+        }
+    }
+
+    /// Every id the document defines is unique.
+    ///
+    /// Not pedantry: the sidebar search jumps with `getElementById`, `:target`
+    /// is the no-JavaScript page fallback, and both silently pick the first of
+    /// a pair. A second `id="api"` would send half the guide's links to the
+    /// wrong place with every structural guard still green.
+    #[test]
+    fn every_id_in_the_document_is_unique() {
+        let doc = generate();
+        let mut seen: Vec<&str> = Vec::new();
+        let mut dupes: Vec<&str> = Vec::new();
+        for (i, _) in doc.match_indices("id=\"") {
+            let rest = &doc[i + 4..];
+            let end = rest.find('"').expect("an id must be terminated");
+            let id = &rest[..end];
+            if seen.contains(&id) {
+                dupes.push(id);
+            } else {
+                seen.push(id);
+            }
+        }
+        assert!(dupes.is_empty(), "duplicate ids: {dupes:?}");
+        assert!(seen.len() > 20, "suspiciously few ids: {}", seen.len());
+    }
+
+    /// The theme switch offers three modes and the stylesheet answers all
+    /// three — two overrides plus the system default it must not replace.
+    #[test]
+    fn the_theme_switch_and_the_stylesheet_agree_on_three_modes() {
+        let doc = generate();
+        for mode in ["light", "dark", "system"] {
+            assert!(
+                doc.contains(&format!("data-theme-set=\"{mode}\"")),
+                "no `{mode}` button in the top bar"
+            );
+        }
+        assert!(
+            doc.contains("html[data-theme=\"light\"] {"),
+            "no light override"
+        );
+        assert!(
+            doc.contains("html[data-theme=\"dark\"] {"),
+            "no dark override"
+        );
+        assert!(
+            doc.contains("@media (prefers-color-scheme: dark)"),
+            "`system` has nothing to fall back to"
+        );
+        // Auto is the ABSENCE of the attribute, not a third palette: the
+        // script must be able to take the override off again.
+        assert!(
+            doc.contains("removeAttribute('data-theme')"),
+            "`system` cannot be returned to"
+        );
+    }
+
+    /// Every reach for `localStorage` is inside a `try`.
+    ///
+    /// On a `file://` document — how this guide is opened — a browser set to
+    /// block site data throws on the *property access*, before any method is
+    /// called. An unguarded read at the top of the script takes the whole page
+    /// down to a blank screen, and the feature it was serving is a remembered
+    /// tab. Two call sites, both wrapped, and nothing else may touch it.
+    #[test]
+    fn stored_preferences_never_take_the_page_down() {
+        let js = js();
+        assert_eq!(
+            js.matches("localStorage").count(),
+            2,
+            "localStorage is reached outside readStore/writeStore"
+        );
+        assert!(js.contains("try { return window.localStorage.getItem"));
+        assert!(js.contains("try { window.localStorage.setItem"));
+        // Both helpers swallow the failure rather than rethrowing it.
+        assert!(
+            js.matches("catch (e)").count() >= 2,
+            "a storage helper rethrows"
+        );
+    }
+
+    /// The search has no index to fall out of date: it queries the document.
+    #[test]
+    fn the_sidebar_search_reads_the_document_itself() {
+        let doc = generate();
+        assert!(
+            doc.contains("'.page h3, .page h4, .page [data-param]'"),
+            "the search does not scan headings and parameter rows"
+        );
+        assert!(
+            doc.contains("id=\"navq\""),
+            "no search input in the sidebar"
+        );
+        assert!(
+            doc.contains("data-param=\""),
+            "nothing carries data-param, so half the search matches nothing"
+        );
+        // Nothing may be fetched to make it work.
+        assert!(!doc.contains("fetch("), "the search fetches something");
+        assert!(
+            !doc.contains("XMLHttpRequest"),
+            "the search fetches something"
+        );
+    }
+
+    /// One copy handler, both block shapes, and a fallback for the browsers
+    /// (and file:// contexts) where the async clipboard is unavailable.
+    #[test]
+    fn copy_buttons_cover_snippets_and_terminal_blocks() {
+        let doc = generate();
+        assert!(
+            doc.contains("closest('.snip, .termbox')"),
+            "the copy handler knows only one kind of block"
+        );
+        assert!(doc.contains("navigator.clipboard"), "no clipboard path");
+        assert!(
+            doc.contains("createElement('textarea')"),
+            "no fallback where the clipboard API is missing"
+        );
+        assert!(doc.contains("'Copied'"), "no copied state");
+    }
+
+    /// Under 60rem the sidebar is a drawer, and the button that opens it is
+    /// only visible there.
+    #[test]
+    fn the_sidebar_becomes_a_reachable_drawer_on_a_phone() {
+        let doc = generate();
+        let (_, narrow) = doc
+            .split_once("@media (max-width: 60rem) {")
+            .expect("no narrow breakpoint");
+        assert!(
+            doc.contains("#navtoggle { display: none;"),
+            "the drawer button shows on a wide screen too"
+        );
+        assert!(
+            narrow.contains("#navtoggle { display: block; }"),
+            "nothing opens the drawer under 60rem"
+        );
+        assert!(
+            narrow.contains("nav.open { display: block; }"),
+            "the drawer has no open state"
+        );
+        assert!(
+            narrow.contains(".ref-code { position: static; }"),
+            "the sticky code column stays sticky in one column, where it overlaps"
+        );
+        assert!(
+            doc.contains("<button id=\"navtoggle\""),
+            "no drawer button in the top bar"
         );
     }
 }
