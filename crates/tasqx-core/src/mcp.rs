@@ -81,8 +81,6 @@ struct PreparedCall {
     /// Whether the `annotation.add` answer echoes the stored body back
     /// (D72/D75's default) or a `body_bytes` length in its place.
     include_body: bool,
-    /// Whether THIS transport supplied the `annotations_limit` page.
-    paged_by_us: bool,
     /// Whether THIS transport supplied the `task.list` page.
     paged_list_by_us: bool,
 }
@@ -174,6 +172,32 @@ const WHEN_GRAMMAR: &str = "Date/time in the tool's date grammar: \"tomorrow\", 
 /// nothing.
 const ANNOTATION_PAGE: u64 = 20;
 
+/// How many BYTES of one annotation body `tasqx_get_task`/`tasqx_brief_task`
+/// carry when the caller names no `max_body_bytes` (D148).
+///
+/// Bytes, because [`ANNOTATION_PAGE`] bounds rows and rows were never the unit
+/// the problem is expressed in — and this is the half of that sentence D63 left
+/// unfinished. A page bounds how MANY notes come back and can say nothing about
+/// how big ONE of them is, so [`Self::fit_to_budget`]'s floor of one whole
+/// annotation was only a floor while an annotation was small. Field report:
+/// task #609 holds a single 240,000-byte note, and `tasqx_get_task` answered
+/// ~240 KB at every page size from 20 down to 1, ten times
+/// [`RESPONSE_BUDGET_BYTES`].
+///
+/// 16,384 is two thirds of that budget: one capped body plus the task table,
+/// the heading and the omission notice fits a view-only response, so the
+/// bisection floor is now under budget by construction rather than by luck. It
+/// is also comfortably above the annotations this project actually writes — the
+/// ones that provoked D63 were ~6 KB — so an ordinary note is never cut.
+///
+/// **Writes are never capped.** `annotation.add` stores every byte it is given
+/// and echoes them back (D72/D75); this is a bound on one RESPONSE, and the cut
+/// is marked with the original size and the exact call that reads the note
+/// whole. A write cap would silently shorten a note the caller believed was
+/// stored, which is a different and much worse failure — and it would surprise
+/// the CLI, which has no payload limit at all.
+const ANNOTATION_BODY_CAP: u64 = 16_384;
+
 /// How many tasks `tasqx_list_tasks` returns when the caller names no `limit`.
 ///
 /// A STARTING page, not the answer: like [`ANNOTATION_PAGE`] it bounds rows,
@@ -207,10 +231,12 @@ const LIST_PAGE: u64 = crate::engine::task::DEFAULT_TASK_LIST_LIMIT;
 /// first, uninstructed call fit, which matters because a client that hard-fails
 /// on an oversized result never gets to retry with a smaller page.
 ///
-/// It is a budget, not a guarantee. A single annotation larger than this still
-/// exceeds it: the floor is one whole annotation, because truncating a body
-/// would hand the reader prose that stops mid-sentence with no marker, and a
-/// silently altered body is worse than a large one.
+/// It is a budget, not a guarantee — but D148 closed the hole that made it
+/// nearly one. The floor is still one whole annotation, and one annotation is
+/// now bounded too: [`ANNOTATION_BODY_CAP`] cuts an oversized body with a
+/// marker naming its real size and the call that reads it whole, so the floor
+/// exceeds this number only when a caller raised `max_body_bytes` on purpose.
+/// What D63 refused was an UNMARKED cut, and it was right to.
 const RESPONSE_BUDGET_BYTES: usize = 24_576;
 
 /// A date field's schema: what *this* field does, then the grammar every date
@@ -225,6 +251,32 @@ const RESPONSE_BUDGET_BYTES: usize = 24_576;
 /// reading `status` back out of the response.
 fn when_schema(effect: &str) -> Value {
     json!({ "type": "string", "description": format!("{effect} {WHEN_GRAMMAR}") })
+}
+
+/// The `max_body_bytes` property, identical on `tasqx_get_task` and
+/// `tasqx_brief_task` (D148).
+///
+/// One function for [`WHEN_GRAMMAR`]'s reason: the two tools take the same
+/// argument with the same meaning and the same default, and two hand-copies of
+/// that sentence are two chances to advertise two different rules for one
+/// parameter — which is how `annotations_limit`'s description came to describe
+/// a budget exemption the server had stopped honouring.
+fn max_body_bytes_schema() -> Value {
+    json!({
+        "type": "integer",
+        "minimum": 0,
+        "description": format!(
+            "Cap each annotation body at this many BYTES **in the response**. Default \
+             {ANNOTATION_BODY_CAP}. A longer body is cut on a character boundary and marked \
+             with its real size and the exact call that reads it whole, so nothing is \
+             silently altered; a body that fits is returned untouched and unmarked. This is \
+             what keeps one enormous note inside the response budget, which `annotations_limit` \
+             cannot do — a page bounds how MANY notes come back, never how big one of them is. \
+             Raise it deliberately to read one long note in full, together with \
+             `annotations_limit: 1`; that answer may exceed the budget, which is the point of \
+             asking. Stored text is never capped: this bounds one response, not the store."
+        )
+    })
 }
 
 /// Schema fragment for a `ref` argument (short_id int OR full UUID string).
@@ -505,14 +557,17 @@ fn build_tool_specs() -> Vec<ToolSpec> {
                             "How many of the MOST RECENT annotations to return. Omit and this \
                              tool applies its own page size ({ANNOTATION_PAGE}), because an \
                              unbounded history can exceed a client's tool-output limit; pass \
-                             `annotations_total` from a previous response to get every one — \
-                             naming ANY limit here removes the response's byte budget \
-                             entirely (both blocks answered in full, however large), so pair a \
-                             big one with `include_json: false` or the whole history costs \
-                             both blocks' bytes. 0 returns none, which is how you read a \
-                             task's fields without its history."
+                             `annotations_total` from a previous response to ask for every \
+                             one. The response byte budget applies to EVERY answer, whatever \
+                             you name here: a page too big for it is cut to the largest page \
+                             that fits and the rendered view says how much it left out and \
+                             which `annotations_offset` reads the rest. `include_json: false` \
+                             spends the whole budget on history instead of on the duplicate \
+                             machine-readable block, so pair it with a big page. 0 returns \
+                             none, which is how you read a task's fields without its history."
                         )
                     },
+                    "max_body_bytes": max_body_bytes_schema(),
                     "include_json": {
                         "type": "boolean",
                         "description": "Send the machine-readable JSON block as well as the \
@@ -589,6 +644,7 @@ fn build_tool_specs() -> Vec<ToolSpec> {
                             crate::engine::MEMORY_SEARCH_LIMIT
                         )
                     },
+                    "max_body_bytes": max_body_bytes_schema(),
                     "include_json": {
                         "type": "boolean",
                         "description": "Send the machine-readable JSON block as well as the \
@@ -1252,7 +1308,10 @@ fn build_tool_specs() -> Vec<ToolSpec> {
                 `annotation.add` event's own body field in the same \
                 transaction (D113), not only the `annotations` row. A \
                 tombstone (the id and when it was removed) stays for audit, \
-                with no text in it. `tasqx undo` does NOT cover this — there \
+                with no text in it: `tasqx_get_task` lists it as \
+                `annotations_removed` and prints one line per tombstone under \
+                the annotations, so a note that went on purpose does not read \
+                as one that quietly vanished. `tasqx undo` does NOT cover this — there \
                 is nothing left in the log to restore — so double-check the id \
                 before calling. An unknown or already-removed id is \
                 `not_found`.",
@@ -1720,7 +1779,9 @@ impl<'e> McpServer<'e> {
         // transport could not carry. The core keeps answering whole — clients
         // have read it that way since v1 was frozen — and the page size is
         // supplied HERE, where the payload limit actually lives. A caller that
-        // names its own is respected as-is, including one asking for the lot.
+        // names its own page is paged exactly as it asked; what it does NOT
+        // get is a response outside the byte budget (D148), because a page is
+        // a request about rows and the budget is about bytes.
         // The same pattern for the collection reader, and for the same
         // reason one relation over: `task.list` had no default bound at all,
         // and the escape hatch it did have truncated silently — `count` was
@@ -1802,12 +1863,25 @@ impl<'e> McpServer<'e> {
             },
         };
 
-        let mut paged_by_us = false;
         if spec.method == "task.get" {
             if let Some(obj) = args.as_object_mut() {
                 if !obj.contains_key("annotations_limit") {
                     obj.insert("annotations_limit".to_string(), json!(ANNOTATION_PAGE));
-                    paged_by_us = true;
+                }
+            }
+        }
+        // D148: the per-body cap, on both reads that carry annotation prose.
+        // Inserted here and not defaulted in the engine for D63's reason — the
+        // bound belongs to the transport that has a payload limit, and
+        // `tasqx api` and the CLI keep answering whole bodies.
+        //
+        // A JSON `null` counts as absent, the D32 reading this file already
+        // applies to `view` and `client`: a client that serializes unset
+        // optionals as null must get the default, not an uncapped answer.
+        if spec.method == "task.get" || spec.method == "task.brief" {
+            if let Some(obj) = args.as_object_mut() {
+                if obj.get("max_body_bytes").is_none_or(Value::is_null) {
+                    obj.insert("max_body_bytes".to_string(), json!(ANNOTATION_BODY_CAP));
                 }
             }
         }
@@ -1849,7 +1923,6 @@ impl<'e> McpServer<'e> {
             include_json,
             view,
             include_body,
-            paged_by_us,
             paged_list_by_us,
         })
     }
@@ -1933,12 +2006,7 @@ impl<'e> McpServer<'e> {
                     if !prepared.include_json {
                         return tool_ok_text(&render(&result));
                     }
-                    return self.fit_to_budget(
-                        result,
-                        &prepared.args,
-                        &render,
-                        prepared.paged_by_us,
-                    );
+                    return self.fit_to_budget(result, &prepared.args, &render);
                 }
                 // The opt-out half of D72/D75's echo: the caller already holds
                 // every byte of `body` (it is right there in the request this
@@ -1975,15 +2043,21 @@ impl<'e> McpServer<'e> {
     /// Fit a `task.get` response to [`RESPONSE_BUDGET_BYTES`], spending the
     /// duplicate JSON block before it spends any of the history.
     ///
-    /// Only for a caller who named no page size. An explicit `annotations_limit`
-    /// is answered exactly as asked, both blocks included, however large: a
-    /// request second-guessed is a caller who can never fetch a big page on
-    /// purpose, and it is what keeps the frozen machine-readable shape reachable
-    /// for every task rather than only the small ones.
+    /// **Every answer, whatever page size it named (D148).** D66 exempted a
+    /// caller who passed `annotations_limit`, on the argument that a request
+    /// second-guessed is a caller who can never fetch a big page on purpose.
+    /// Measured in the field, the exemption was not an escape hatch but the
+    /// default failure: `{ref: 609, include_json: false, annotations_limit: 5}`
+    /// answered 244,633 bytes against this 24,576-byte budget and the client
+    /// refused the tool result, and the only way to discover the exemption was
+    /// to trip it. The deliberate escape is now an argument that says what it
+    /// does — `max_body_bytes`, named on the response that was cut — and a page
+    /// the caller asked for is still answered in full whenever it fits, which
+    /// is every ordinary read.
     ///
     /// # The order the budget spends in
     ///
-    /// 1. both blocks at the default page — an ordinary task never notices this
+    /// 1. both blocks at the page in hand — an ordinary task never notices this
     ///    function exists;
     /// 2. the view alone at that same page, because on a task whose bulk is
     ///    annotation prose the second block is that prose *again* (D49 renders
@@ -2005,11 +2079,21 @@ impl<'e> McpServer<'e> {
     /// local store, and only ever on a task already large enough to have failed
     /// outright.
     ///
-    /// The floor is one whole annotation: below that the only lever left is
-    /// cutting a body, and prose that stops mid-sentence with nothing marking
-    /// the cut is worse than an oversized answer. A task whose newest single
-    /// annotation exceeds the budget therefore still exceeds it — `0` is the
-    /// caller's own escape, and it is documented on the parameter.
+    /// The floor is one whole annotation, and one annotation is now bounded
+    /// too. D63 stopped here because the only lever below the floor was cutting
+    /// a body, and prose that stops mid-sentence with nothing marking the cut is
+    /// worse than an oversized answer — a judgement about an UNMARKED cut, and
+    /// still the right one. [`ANNOTATION_BODY_CAP`] cuts with a marker carrying
+    /// the body's real size and the exact call that returns every byte of it,
+    /// so the floor sits under this budget by construction. It exceeds it only
+    /// when the caller raised `max_body_bytes` themselves, which is the escape
+    /// and is documented on that parameter.
+    ///
+    /// The bisection's upper bound is the page size in `args` — the caller's
+    /// own, or the default this transport inserted — never the constant. Using
+    /// [`ANNOTATION_PAGE`] would re-cut an explicit `annotations_limit: 40`
+    /// down to 20 before measuring anything, turning the bound into a second
+    /// page size the caller never asked for.
     ///
     /// `render` is a parameter rather than the fixed call to `task_detail` it
     /// once was, because D146 gave the answer a second spelling: the steps
@@ -2021,7 +2105,6 @@ impl<'e> McpServer<'e> {
         first: Value,
         args: &Value,
         render: &dyn Fn(&Value) -> String,
-        paged_by_us: bool,
     ) -> Value {
         let json_len = |result: &Value| serde_json::to_string(result).map(|s| s.len()).unwrap_or(0);
 
@@ -2032,7 +2115,7 @@ impl<'e> McpServer<'e> {
         let view_only_fits = |view: &str| view_only_text(view).len() <= RESPONSE_BUDGET_BYTES;
 
         let view = render(&first);
-        if !paged_by_us || view.len() + json_len(&first) <= RESPONSE_BUDGET_BYTES {
+        if view.len() + json_len(&first) <= RESPONSE_BUDGET_BYTES {
             return tool_ok_with_view(view, &first);
         }
         // Step 2: the same page, without the duplicate.
@@ -2046,9 +2129,22 @@ impl<'e> McpServer<'e> {
         // that provoked all this — a handful of very long bodies — overshoots
         // by a factor of two: it would show two annotations where four fit.
         // Same number of dispatches, an answer that is actually the largest.
+        //
+        // `hi` is the page this answer was produced at — the caller's explicit
+        // `annotations_limit` or the default inserted for them — because the
+        // search is for the largest page that fits AT OR BELOW what was asked
+        // for. A caller who named 0 asked for a task's fields without its
+        // history, and there is no page left to cut: whatever the view costs is
+        // the task itself, and step 2 has already answered it.
         let mut view = view;
         let mut lo = 1u64;
-        let mut hi = ANNOTATION_PAGE;
+        let mut hi = args
+            .get("annotations_limit")
+            .and_then(Value::as_u64)
+            .unwrap_or(ANNOTATION_PAGE);
+        if hi == 0 {
+            return tool_ok_view_only(&view);
+        }
         let mut best: Option<String> = None;
         while lo <= hi {
             let mid = lo + (hi - lo) / 2;
@@ -2091,9 +2187,13 @@ impl<'e> McpServer<'e> {
     /// for a search hit would have dropped the more valuable half.
     ///
     /// A caller that named its own `memory_limit` is answered exactly as asked,
-    /// however large, which is the same rule `fit_to_budget` keeps for
-    /// `annotations_limit` and for the same reason: a request second-guessed is
-    /// a caller who can never ask for a big page on purpose.
+    /// however large: a request second-guessed is a caller who can never ask
+    /// for a big page on purpose. That exemption is this method's own and no
+    /// longer `fit_to_budget`'s — D148 removed the `annotations_limit` one,
+    /// because a task's annotations are the caller's own prose and can be
+    /// arbitrarily large, while a memory page is `MEMORY_SEARCH_LIMIT` bounded
+    /// snippets. The task half arrives with its bodies already capped, which is
+    /// where a brief's unbounded bytes actually came from.
     ///
     /// `render` is the caller's chosen view (D146), for `fit_to_budget`'s
     /// reason: the lever and the measurement are the same whichever way the
@@ -2154,9 +2254,11 @@ impl<'e> McpServer<'e> {
     /// the page this transport supplied.
     ///
     /// Only for a caller who named no `limit`. One that did is answered
-    /// exactly as asked, however large — the same rule `fit_to_budget` keeps
-    /// for `annotations_limit`, and for the same reason: a request
-    /// second-guessed is a caller who can never fetch a big page on purpose.
+    /// exactly as asked, however large: a request second-guessed is a caller
+    /// who can never fetch a big page on purpose. The exemption is safe HERE in
+    /// a way D148 found it was not for `annotations_limit` — a `task.list` row
+    /// is bounded fields, and `MAX_TASK_LIST_LIMIT` bounds how many (D110),
+    /// while one annotation is unbounded prose.
     ///
     /// # Why this re-cuts instead of re-dispatching
     ///
@@ -2335,8 +2437,9 @@ fn tool_ok_with_view(view: String, result: &Value) -> Value {
 /// A `tools/call` result carrying the rendered view ALONE, with a line saying
 /// the machine-readable block is missing and how to ask for it.
 ///
-/// Emitted only when both blocks together exceed the response budget on a call
-/// that named no page size (see [`McpServer::fit_to_budget`]). The note is not
+/// Emitted whenever both blocks together exceed the response budget — at any
+/// page size, the caller's own included (D148, see
+/// [`McpServer::fit_to_budget`]). The note is not
 /// optional politeness: a response silently one block short is indistinguishable
 /// from a server that never sends JSON, and a reader who cannot tell those apart
 /// stops looking for the field they need. It is appended HERE rather than in
@@ -2390,10 +2493,13 @@ fn tool_ok_text(text: &str) -> Value {
 fn view_only_text(view: &str) -> String {
     format!(
         "{view}\n_Machine-readable JSON omitted: both blocks together exceeded this tool's \
-         response budget, and the rendered view above carries the same annotations. Naming \
-         `annotations_limit` returns both blocks **unbounded** — that is an opt-out of the \
-         budget, not a page within it, and on a long history it is several times this \
-         response. `include_json: false` keeps the budget and asks for this view on purpose._\n"
+         response budget, and the rendered view above carries the same annotations — its \
+         Annotations heading says how much of the history it holds, and names the \
+         `annotations_offset` that reads the rest. The budget applies to every answer, \
+         whatever `annotations_limit` you name; `include_json: false` asks for this view on \
+         purpose and spends the whole budget on history. A body longer than `max_body_bytes` \
+         (default 16384) is cut IN THIS RESPONSE ONLY, marked with its real size and the call \
+         that reads it whole._\n"
     )
 }
 

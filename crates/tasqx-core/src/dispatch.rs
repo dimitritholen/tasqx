@@ -69,13 +69,33 @@ pub const PARAMS: &[(&str, &[&str], bool)] = &[
     ),
     (
         "task.get",
-        &["ref", "annotations_limit", "annotations_offset", "explain"],
+        &[
+            "ref",
+            "annotations_limit",
+            "annotations_offset",
+            // D148: a per-annotation body cap IN BYTES. `annotations_limit`
+            // bounds rows and cannot bound one row, so a single enormous note
+            // was past any byte budget at every page size the bisection could
+            // reach. Absent means no cap, exactly as absent `annotations_limit`
+            // means the whole history (D63): the bound belongs to the transport
+            // that has a payload limit.
+            "max_body_bytes",
+            "explain",
+        ],
         false,
     ),
     // D136. No `annotations_limit`: a brief is what is read BEFORE starting,
     // so the task's own history is the part least worth truncating, and the
     // transport's byte budget is where an oversized answer is cut (D66).
-    ("task.brief", &["ref", "memory_limit"], false),
+    // `max_body_bytes` IS forwarded (D148), because it cuts inside one note
+    // rather than dropping notes, and the brief's task half is `task.get`'s
+    // own result — an uncapped one is the same oversized answer with a
+    // neighbourhood stapled to it.
+    (
+        "task.brief",
+        &["ref", "memory_limit", "max_body_bytes"],
+        false,
+    ),
     // task.start/task.done also take the #12 correlation params: they are
     // stored in the start/done event payloads, the durable per-occurrence
     // record the async token-attribution engine reads later.

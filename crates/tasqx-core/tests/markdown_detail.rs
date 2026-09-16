@@ -576,6 +576,14 @@ const RENDERED_AS: &[(&str, Shows)] = &[
         "annotations_next_offset",
         Shows::Cell("`annotations_offset: 2`"),
     ),
+    // D148's tombstone list. The needle is the line's fixed opening rather than
+    // a whole line: both of the values on it — a UUIDv7 id and the instant the
+    // scrub happened — are minted at runtime by the fixture below, so a literal
+    // carrying them could not be written here. The WHOLE line is pinned
+    // byte-for-byte by `a_removed_annotation_prints_its_tombstone_under_the_page`,
+    // which builds its result by hand; this entry's job is only to prove the
+    // key reaches the view at all.
+    ("annotations_removed", Shows::Cell("_(annotation ")),
     (
         "tokens",
         Shows::Cell("| claude-code | 12 | 0 | 0 | 0 | self-report | medium |"),
@@ -681,6 +689,22 @@ fn every_field_task_get_returns_is_accounted_for_in_the_view() {
         &json!({ "ref": 4, "annotations_limit": 1, "annotations_offset": 1 }),
     );
 
+    // A SCRUBBED note, on its own task: `annotations_removed` is empty on every
+    // snapshot above, and a key whose value is never non-empty is a key this
+    // guard cannot account for. Its own task rather than #4's, because removing
+    // one of that history's three notes would move the page numbers the two
+    // paging needles above carry.
+    d("task.add", &json!({ "title": "held a secret" }));
+    let leaked = d(
+        "annotation.add",
+        &json!({ "ref": 5, "body": "sk-super-secret-token" }),
+    );
+    d(
+        "annotation.remove",
+        &json!({ "ref": 5, "annotation_id": leaked["annotation"]["id"] }),
+    );
+    let scrubbed = d("task.get", &json!({ "ref": 5 }));
+
     d("task.start", &json!({ "ref": 2 }));
     let running = d("task.get", &json!({ "ref": 2 }));
     d("task.done", &json!({ "ref": 2 }));
@@ -699,7 +723,7 @@ fn every_field_task_get_returns_is_accounted_for_in_the_view() {
     let anomalous = d("task.get", &json!({ "ref": 2 }));
 
     let snapshots: Vec<(Value, String)> = [
-        pending, waiting, elided, running, finished, anomalous, blocker,
+        pending, waiting, elided, scrubbed, running, finished, anomalous, blocker,
     ]
     .into_iter()
     .map(|task| {
@@ -989,4 +1013,210 @@ fn a_complete_annotation_history_gains_no_paging_furniture() {
     assert!(out.contains("### Annotations (1)\n"), "got:\n{out}");
     assert!(!out.contains("elided"), "got:\n{out}");
     assert!(!out.contains("annotations_offset"), "got:\n{out}");
+}
+
+/// A cut body says it was cut, how big it really is, and the EXACT call that
+/// reads it whole (D148).
+///
+/// The whole defence of truncating at all is this line. D63/D66 refused to cut
+/// a body because prose that stops mid-sentence with nothing marking the cut is
+/// worse than an oversized answer — an UNMARKED cut. Marked, the reader knows
+/// the original size and holds a call that returns every byte of it, so nothing
+/// was silently altered.
+///
+/// The offset in that call is the row's own distance from the newest, which is
+/// NOT the page's offset: the page is rendered oldest-first, so the middle row
+/// of a three-row page at offset 2 sits at `2 + (3 - 1 - 1) = 3`. A marker that
+/// handed back the page's offset would send the reader to a different note.
+#[test]
+fn a_truncated_body_names_its_size_and_the_call_that_reads_it_whole() {
+    let task = json!({
+        "short_id": 609,
+        "title": "One enormous note",
+        "status": "pending",
+        "created": "2026-07-29T09:00:58Z",
+        "modified": "2026-07-29T09:01:45Z",
+        "_rev": 2,
+        "annotations": [
+            { "id": "a1", "created": "2026-07-29T09:01:00Z", "body": "the oldest on this page\n" },
+            {
+                "id": "a2",
+                "created": "2026-07-29T09:01:30Z",
+                "body": "cut here",
+                "body_bytes": 240_000,
+                "body_truncated": true
+            },
+            { "id": "a3", "created": "2026-07-29T09:01:45Z", "body": "the newest on this page\n" }
+        ],
+        "annotations_total": 6,
+        "annotations_offset": 2,
+        "annotations_next_offset": 5
+    });
+
+    let expected = "## #609 · One enormous note
+
+| | |
+|---|---|
+| status | pending |
+| priority | - |
+| project |  |
+| created | 2026-07-29T09:00:58Z |
+| modified | 2026-07-29T09:01:45Z |
+| rev | 2 |
+
+### Annotations (3 of 6)
+
+_Showing 3, oldest first, after the 2 most recent. 1 older elided — re-read this task with `annotations_offset: 5` for the next page._
+
+---
+**2026-07-29T09:01:00Z**
+
+the oldest on this page
+---
+**2026-07-29T09:01:30Z**
+
+cut here
+
+_(truncated: 240000 bytes, 8 shown — read it whole with `annotations_offset: 3`, \
+`annotations_limit: 1`, `max_body_bytes: 240000`)_
+---
+**2026-07-29T09:01:45Z**
+
+the newest on this page
+";
+
+    assert_eq!(task_detail(&task, &iso_opts()), expected);
+}
+
+/// A row that carries neither key renders exactly as it always has — the
+/// marker is emitted for a MARKED row, never inferred from a body's shape.
+#[test]
+fn an_uncut_body_gains_no_marker() {
+    let task = json!({
+        "short_id": 59,
+        "title": "A short one",
+        "status": "pending",
+        "created": "2026-07-29T09:00:58Z",
+        "modified": "2026-07-29T09:01:45Z",
+        "_rev": 2,
+        "annotations": [
+            { "id": "a1", "created": "2026-07-29T09:01:45Z", "body": "only note\n" }
+        ],
+        "annotations_total": 1
+    });
+
+    let out = task_detail(&task, &iso_opts());
+    assert!(!out.contains("truncated"), "got:\n{out}");
+    assert!(!out.contains("max_body_bytes"), "got:\n{out}");
+}
+
+/// D113's tombstone, printed under the history it is missing from (D148).
+///
+/// `annotation.remove` scrubs the text and keeps the row, and until now the
+/// only trace in the view was a count that had gone down. A reader comparing
+/// two reads of the same task watched a note vanish with nothing saying it went
+/// on purpose — which is exactly the silent-drop shape this view's paging
+/// notices exist against.
+#[test]
+fn a_removed_annotation_prints_its_tombstone_under_the_page() {
+    let task = json!({
+        "short_id": 181,
+        "title": "Rotate the leaked key",
+        "status": "pending",
+        "created": "2026-07-29T09:00:58Z",
+        "modified": "2026-07-29T09:01:45Z",
+        "_rev": 3,
+        "annotations": [
+            { "id": "a2", "created": "2026-07-29T09:01:45Z", "body": "key rotated\n" }
+        ],
+        "annotations_total": 1,
+        "annotations_removed": [
+            { "id": "a1", "removed": "2026-07-29T09:30:00Z" }
+        ]
+    });
+
+    let expected = "## #181 · Rotate the leaked key
+
+| | |
+|---|---|
+| status | pending |
+| priority | - |
+| project |  |
+| created | 2026-07-29T09:00:58Z |
+| modified | 2026-07-29T09:01:45Z |
+| rev | 3 |
+
+### Annotations (1)
+
+---
+**2026-07-29T09:01:45Z**
+
+key rotated
+
+_(annotation a1 removed 2026-07-29T09:30:00Z)_
+";
+
+    assert_eq!(task_detail(&task, &iso_opts()), expected);
+}
+
+/// The tombstone is the LAST thing left when the scrub took the only note, so
+/// the branch that renders no annotation rows has to print it too.
+///
+/// That branch returns early, and an early return is where a second surface
+/// quietly loses a field: the task then reads as one that never had a history
+/// at all, which is the reading D113's audit trail exists to prevent.
+#[test]
+fn a_task_whose_only_annotation_was_removed_still_shows_the_tombstone() {
+    let task = json!({
+        "short_id": 181,
+        "title": "Rotate the leaked key",
+        "status": "pending",
+        "created": "2026-07-29T09:00:58Z",
+        "modified": "2026-07-29T09:01:45Z",
+        "_rev": 3,
+        "annotations": [],
+        "annotations_total": 0,
+        "annotations_removed": [
+            { "id": "a1", "removed": "2026-07-29T09:30:00Z" },
+            { "id": "a2", "removed": "2026-07-29T09:31:00Z" }
+        ]
+    });
+
+    let expected = "## #181 · Rotate the leaked key
+
+| | |
+|---|---|
+| status | pending |
+| priority | - |
+| project |  |
+| created | 2026-07-29T09:00:58Z |
+| modified | 2026-07-29T09:01:45Z |
+| rev | 3 |
+
+_(annotation a1 removed 2026-07-29T09:30:00Z)_
+_(annotation a2 removed 2026-07-29T09:31:00Z)_
+";
+
+    assert_eq!(task_detail(&task, &iso_opts()), expected);
+}
+
+/// Nothing removed prints nothing: an empty array is not a section.
+#[test]
+fn an_empty_tombstone_list_prints_nothing() {
+    let task = json!({
+        "short_id": 59,
+        "title": "A short one",
+        "status": "pending",
+        "created": "2026-07-29T09:00:58Z",
+        "modified": "2026-07-29T09:01:45Z",
+        "_rev": 2,
+        "annotations": [
+            { "id": "a1", "created": "2026-07-29T09:01:45Z", "body": "only note\n" }
+        ],
+        "annotations_total": 1,
+        "annotations_removed": []
+    });
+
+    let out = task_detail(&task, &iso_opts());
+    assert!(!out.contains("removed"), "got:\n{out}");
 }
