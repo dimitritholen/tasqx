@@ -65,7 +65,7 @@ impl Engine {
         // THE operation's clock: filter binding, every row's wait/schedule
         // release, the overdue comparison and `generated` all resolve against
         // this one instant — it used to be read three separate times here.
-        let now_ts = Timestamp::now();
+        let now_ts = crate::clock::now();
         let filter = Filter::parse(&filter_str, now_ts).map_err(ApiError::bad_request)?;
         validate_filter_projects(self.conn(), &filter)?;
 
@@ -450,7 +450,7 @@ impl Engine {
         let wants = |m: &str| metrics.iter().any(|x| x == m);
 
         let filter_str = opt_str(p, "filter")?.unwrap_or_default();
-        let now_ts = Timestamp::now();
+        let now_ts = crate::clock::now();
         let filter = Filter::parse(&filter_str, now_ts).map_err(ApiError::bad_request)?;
         validate_filter_projects(self.conn(), &filter)?;
 

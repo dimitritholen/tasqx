@@ -105,13 +105,13 @@ pub fn breakdown(
     due: Option<&str>,
     created: &str,
 ) -> Vec<(&'static str, f64)> {
-    breakdown_at(priority, due, created, Timestamp::now())
+    breakdown_at(priority, due, created, crate::clock::now())
 }
 
 /// [`score_at`] measured now — ONE clock read for all three terms.
 #[must_use]
 pub fn score(priority: Option<Priority>, due: Option<&str>, created: &str) -> f64 {
-    score_at(priority, due, created, Timestamp::now())
+    score_at(priority, due, created, crate::clock::now())
 }
 
 #[cfg(test)]
@@ -129,7 +129,7 @@ mod tests {
     /// wall clock, so only its tests need this; every formula property is
     /// pinned exactly against a fixed `now` below.
     fn days_from_now(days: i64) -> String {
-        let secs = Timestamp::now().as_second() + days * 86_400;
+        let secs = crate::clock::now().as_second() + days * 86_400;
         Timestamp::from_second(secs).unwrap().to_string()
     }
 
@@ -297,7 +297,7 @@ mod tests {
     #[test]
     fn the_wrappers_agree_with_the_at_pair_measured_now() {
         let created = days_from_now(-500); // capped age: drift-proof
-        let now = Timestamp::now();
+        let now = crate::clock::now();
         assert_eq!(
             score(Some(Priority::H), None, &created),
             score_at(Some(Priority::H), None, &created, now)

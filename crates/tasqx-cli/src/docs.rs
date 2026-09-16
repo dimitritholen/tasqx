@@ -4585,15 +4585,20 @@ mod tests {
             // spelled without the prefix to dodge the scan, because dodging a
             // drift guard is how the things it hunts get in.
             "TASQX_PANIC_PROBE_CHILD",
-            // The capture pin (D148): an RFC 3339 instant that `clock::now`
-            // answers with instead of the wall clock, so a documentation
-            // screen rendered today and rendered next month is the same text.
-            // Not a setting, and not on the page: a user who pinned it in
-            // `config.toml` would have `list` insist it is still September
-            // while their tasks went overdue, which is the one reading of a
-            // task list that must never be wrong. It belongs with the capture
-            // tooling that sets it — `CONTRIBUTING.md` and
-            // `scripts/demo-store.py` — and is documented in `clock.rs`.
+            // The capture pin (D148): an RFC 3339 instant that both
+            // `clock::now` doors answer with instead of the wall clock, so a
+            // documentation screen rendered today and rendered next month is
+            // the same text — writes included, since the engine stamps
+            // `created` and `completed` from the same door.
+            //
+            // Emphatically not a setting, and not on the page. A user who
+            // pinned it in `config.toml` would have `list` insist it is still
+            // September while their tasks went overdue, which is the one
+            // reading of a task list that must never be wrong — and every task
+            // they added would be stamped with that day. It belongs with the
+            // capture tooling that sets it for one process (`CONTRIBUTING.md`,
+            // `scripts/demo-store.py`), is documented in both `clock.rs`
+            // modules, and `tasqx about` states it whenever it is in effect.
             "TASQX_NOW",
         ];
         // Read by the capability detector but deliberately not documented as

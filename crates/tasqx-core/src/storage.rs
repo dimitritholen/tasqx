@@ -942,7 +942,7 @@ pub fn map_task_row_at(row: &Row, now: Timestamp) -> rusqlite::Result<Task> {
 /// [`map_task_row_at`] at the current clock — for SINGLE-row reads only,
 /// where "one now per statement" is one call by construction.
 pub fn map_task_row(row: &Row) -> rusqlite::Result<Task> {
-    map_task_row_at(row, Timestamp::now())
+    map_task_row_at(row, crate::clock::now())
 }
 
 /// True when a `reminded` event already exists for this exact (task, instant).
@@ -1176,7 +1176,7 @@ mod tests {
     /// property the bound depends on.
     #[test]
     fn the_event_id_floor_sorts_below_an_id_minted_at_that_instant() {
-        let now = Timestamp::now();
+        let now = crate::clock::now();
         let floor = event_id_floor(now);
         let real = Uuid::now_v7().to_string();
         assert!(

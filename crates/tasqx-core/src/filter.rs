@@ -1957,7 +1957,7 @@ mod tests {
     /// made an old silence reachable, it did not create it.
     #[test]
     fn no_value_prefix_accepts_an_empty_value() {
-        let now = jiff::Timestamp::now();
+        let now = crate::clock::now();
         for (prefix, _) in VALUE_PREFIXES {
             assert!(
                 Filter::parse(prefix, now).is_err(),

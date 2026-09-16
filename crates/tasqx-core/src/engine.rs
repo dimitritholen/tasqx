@@ -439,7 +439,7 @@ impl Engine {
         // `dispatch.rs` finds the keys an engine method reads by scanning this
         // source for `(p,"` and `p.get("`, so spelling it any other way makes
         // the key invisible to the guard and reddens it blaming PARAMS.
-        if let Some(when) = opt_when(p, "from", Timestamp::now())? {
+        if let Some(when) = opt_when(p, "from", crate::clock::now())? {
             // `parse_when` returns the canonical RFC3339 form, so this cannot
             // fail — but an `unwrap` here would turn a future grammar change
             // into a panic in a read path, and the store is the wrong place to

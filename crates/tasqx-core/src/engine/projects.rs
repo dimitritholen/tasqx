@@ -304,7 +304,7 @@ impl Engine {
         // token buckets, and it must run against `tx`, which the loader is not
         // wired to take.
         let (open_tasks, open_overdue) = {
-            let now_ts = Timestamp::now();
+            let now_ts = crate::clock::now();
             let mut stmt = tx.prepare("SELECT status, due FROM tasks WHERE project = ?1")?;
             let mut rows = stmt.query(params![name])?;
             let (mut open, mut overdue) = (0i64, 0i64);

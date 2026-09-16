@@ -20,7 +20,7 @@ impl Engine {
         // One instant for the whole export: the filter's relative dates, every
         // row's wait/schedule release and every recomputed urgency agree about
         // what time it is.
-        let now_ts = Timestamp::now();
+        let now_ts = crate::clock::now();
         let filter = Filter::parse(&opt_str(p, "filter")?.unwrap_or_default(), now_ts)
             .map_err(ApiError::bad_request)?;
         validate_filter_projects(self.conn(), &filter)?;
@@ -894,7 +894,7 @@ impl Engine {
             // the validator's own message is all the import layer adds — one
             // failing task out of a thousand-line export is useless without its
             // id and column.
-            let now_ts = Timestamp::now();
+            let now_ts = crate::clock::now();
             let due = import_field(id, "due", opt_when(tv, "due", now_ts))?;
             let scheduled = import_field(id, "scheduled", opt_when(tv, "scheduled", now_ts))?;
             let wait = import_field(id, "wait", opt_when(tv, "wait", now_ts))?;
