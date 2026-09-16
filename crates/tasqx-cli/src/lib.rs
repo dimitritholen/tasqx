@@ -906,10 +906,11 @@ fn execute(cli: Cli) -> Exit {
                 limit,
                 offset,
                 project,
+                standing,
             },
     }) = &cli.command
     {
-        let paged = limit.is_some() || *offset > 0;
+        let paged = limit.is_some() || *offset > 0 || *standing;
         if memory_screen_active(&ctx.caps, cli.json, paged, term_size, stdout_tty, stdin_tty) {
             if let Err(e) = run_memory_screen(&mut backend, &ctx, project.as_deref()) {
                 eprintln!("error [{}]: {}", code_str(&e), e.message);

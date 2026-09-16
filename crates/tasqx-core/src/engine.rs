@@ -134,6 +134,18 @@ pub const OUTCOME_METRICS: [&str; 8] = [
 /// silently cap every brief at half the hits.
 pub const MEMORY_SEARCH_LIMIT: u64 = 10;
 
+/// How many #101 standing docs one scope holds before `memory.add` says so.
+///
+/// A standing doc is re-read every session by design (D156), so the cost of
+/// one is paid on every turn forever — which makes an unbounded pile of them
+/// the failure mode, not a missing doc. The cap is a HINT on the add that
+/// crosses it, never a refusal: the engine cannot know which of sixteen
+/// rulings is the redundant one, and losing a correction to a hard limit is
+/// worse than reading one line too many. Fifteen because the rules a project
+/// actually re-states fit in that many and a longer list is a document, not a
+/// set of standing orders.
+pub const STANDING_SOFT_CAP: usize = 15;
+
 /// `task.brief`'s own default memory page, and deliberately smaller than
 /// [`MEMORY_SEARCH_LIMIT`] (D154).
 ///
@@ -880,8 +892,10 @@ pub const IMPORT_TOKEN_KEYS: &[&str] = &[
 // #134/#135: `project` and `_rev` are additive (a pre-D134 export has
 // neither), so a legacy document still imports; both read through
 // `opt_str_nonempty`/`opt_i64` exactly as the rest of this list does.
+// #101: `standing` joins them on the same terms — absent in a legacy export,
+// which imports as an ordinary (non-standing) doc.
 pub const IMPORT_DOC_KEYS: &[&str] = &[
-    "id", "source", "title", "body", "created", "modified", "project", "_rev",
+    "id", "source", "title", "body", "created", "modified", "project", "_rev", "standing",
 ];
 
 /// Every key an exported event object can carry (#176). `id`, `payload`,

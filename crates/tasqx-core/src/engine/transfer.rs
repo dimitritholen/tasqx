@@ -322,7 +322,7 @@ impl Engine {
     /// Every memory doc row, id-ordered (creation order, since UUIDv7). D41.
     fn export_docs(&self) -> Result<Vec<Value>, ApiError> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, source, title, body, created, modified, project, rev \
+            "SELECT id, source, title, body, created, modified, project, rev, standing \
              FROM docs ORDER BY id",
         )?;
         let rows = stmt.query_map([], |r| {
@@ -335,6 +335,9 @@ impl Engine {
                 "modified": r.get::<_, String>(5)?,
                 "project": r.get::<_, Option<String>>(6)?,
                 "_rev": r.get::<_, i64>(7)?,
+                // #101: the export is the backup (D12/D37), so a standing doc
+                // must come back standing — the flag travels with the row.
+                "standing": r.get::<_, i64>(8)? != 0,
             }))
         })?;
         let mut out = Vec::new();
@@ -659,6 +662,11 @@ impl Engine {
                 // doc at rev 0, exactly what a fresh `memory.add` would mint.
                 let project = opt_str_nonempty(dv, "project")?;
                 let rev = opt_i64(dv, "_rev")?.unwrap_or(0);
+                // #101: additive on the same terms — an export written before
+                // the flag existed carries no `standing` key, and its docs
+                // restore as ordinary memory rather than as standing orders
+                // nobody issued.
+                let standing = opt_bool(dv, "standing")?.unwrap_or(false);
                 // D135: `search_body` is derived, never carried by the export
                 // itself (it is not part of the exported doc shape) — always
                 // recomputed here from the imported `body`, the same way
@@ -667,12 +675,14 @@ impl Engine {
                 let search_body = crate::frontmatter::flatten(&body).into_owned();
                 tx.execute(
                     "INSERT INTO docs \
-                     (id, source, title, body, search_body, project, rev, created, modified) \
-                     VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9) \
+                     (id, source, title, body, search_body, project, rev, standing, \
+                      created, modified) \
+                     VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10) \
                      ON CONFLICT(id) DO UPDATE SET \
                      source=excluded.source, title=excluded.title, body=excluded.body, \
                      search_body=excluded.search_body, project=excluded.project, \
-                     rev=excluded.rev, created=excluded.created, modified=excluded.modified",
+                     rev=excluded.rev, standing=excluded.standing, \
+                     created=excluded.created, modified=excluded.modified",
                     params![
                         did,
                         source,
@@ -681,6 +691,7 @@ impl Engine {
                         search_body,
                         project,
                         rev,
+                        standing,
                         created,
                         modified
                     ],

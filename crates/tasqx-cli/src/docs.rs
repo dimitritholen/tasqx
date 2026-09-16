@@ -331,10 +331,14 @@ const METHODS: [(&str, &str, &str); 42] = [
     ),
     (
         "memory.add",
-        "<code>title</code>, <code>body</code>, <code>source?</code>, <code>project?</code>",
-        "<code>{id, title, project, created}</code>. Body stored verbatim (D41). \
+        "<code>title</code>, <code>body</code>, <code>source?</code>, <code>project?</code>, \
+         <code>standing?</code>",
+        "<code>{id, title, project, standing, created}</code>. Body stored verbatim (D41). \
          <code>project</code> is optional free-standing scoping (#134); an unset doc stays \
-         global rather than defaulting onto whatever project is current.",
+         global rather than defaulting onto whatever project is current. \
+         <code>standing</code> (default false) marks a ruling meant for every session of its \
+         scope, and above fifteen such docs in one scope the result also carries a \
+         <code>hint</code> to merge or retract (D156).",
     ),
     (
         "memory.get",
@@ -368,19 +372,23 @@ const METHODS: [(&str, &str, &str); 42] = [
     ),
     (
         "memory.list",
-        "<code>limit?</code>, <code>offset?</code>, <code>project?</code>",
+        "<code>limit?</code>, <code>offset?</code>, <code>project?</code>, <code>standing?</code>",
         "<code>{count, total, next_offset, docs}</code> — the same paging shape as \
          <code>task.list</code> (#133). Browses docs newest-modified first, without a query; \
-         each row carries a <code>body_preview</code>, not the full body.",
+         each row carries a <code>body_preview</code>, not the full body, and a \
+         <code>standing</code> flag; <code>standing</code> filters to only standing docs \
+         (<code>true</code>) or only the rest (<code>false</code>), omitted for all (D156).",
     ),
     (
         "memory.update",
         "<code>id</code>, <code>title?</code>, <code>body?</code>, <code>source?</code>, \
-         <code>project?</code>, <code>expected_rev?</code>",
-        "<code>{id, title, source, project, rev, modified}</code> — replaces a doc's fields IN \
-         PLACE (#135), the correction path <code>memory.remove</code>'s permanence has none of. \
-         <code>expected_rev</code> is <code>task.modify</code>'s optimistic-concurrency guard, \
-         unchanged: mismatched, it is a <code>conflict</code> naming both revs.",
+         <code>project?</code>, <code>standing?</code>, <code>expected_rev?</code>",
+        "<code>{id, title, source, project, standing, rev, modified}</code> — replaces a doc's \
+         fields IN PLACE (#135), the correction path <code>memory.remove</code>'s permanence has \
+         none of. <code>standing</code> sets or clears the flag and bumps <code>rev</code> like \
+         any other edit (D156). <code>expected_rev</code> is <code>task.modify</code>'s \
+         optimistic-concurrency guard, unchanged: mismatched, it is a <code>conflict</code> \
+         naming both revs.",
     ),
     (
         "tokens.recompute",

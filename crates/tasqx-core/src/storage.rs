@@ -515,6 +515,12 @@ fn migrate_memory(conn: &Connection) -> Result<(), ApiError> {
     // D135: `search_body` itself — additive, default `''`, same shape as
     // `project`/`rev` above.
     add_column_if_missing(&tx, "docs", "search_body", "TEXT NOT NULL DEFAULT ''")?;
+    // #101/D156: `standing` — a doc that belongs in every session of its
+    // project (or of every project, when it has none) until it is retracted.
+    // Additive and defaulted to 0, like the three above, so every doc on a
+    // store written before this reads back as ordinary memory rather than
+    // being promoted by a migration nobody asked for.
+    add_column_if_missing(&tx, "docs", "standing", "INTEGER NOT NULL DEFAULT 0")?;
 
     // Any row still at that default needs backfilling: every row on a store
     // that just got the column for the first time (the common case, once
@@ -1554,6 +1560,84 @@ mod tests {
             .unwrap();
         assert_eq!(body, body_again, "a third migrate() must be a no-op here");
         assert_eq!(search_body, search_body_again);
+    }
+
+    /// #101/D156: a store written before `docs.standing` existed must gain the
+    /// column on the way in, with every doc already in it reading back as NOT
+    /// standing — a migration that promoted existing docs would put a store's
+    /// whole memory into every session at once.
+    ///
+    /// Driven through `memory.get`/`memory.update` rather than through SQL,
+    /// because the column landing and the engine being able to read and flip
+    /// it on an upgraded row are two different claims, and only the second is
+    /// what an agent on a real (upgraded) store experiences.
+    ///
+    /// File-backed, unlike the in-memory fixtures above: the upgrade path IS a
+    /// close and a reopen — `Engine::open` is what runs `migrate` — and an
+    /// in-memory store does not survive one.
+    #[test]
+    fn migration_adds_standing_and_leaves_an_existing_doc_not_standing() {
+        use serde_json::json;
+
+        let path = std::env::temp_dir()
+            .join(format!(
+                "tasqx-standing-migration-{}-{}.db",
+                std::process::id(),
+                crate::clock::uuid_v7()
+            ))
+            .to_string_lossy()
+            .into_owned();
+        // A UUID because `memory.get` refuses any other shape before it ever
+        // asks the store (#229 item 4).
+        let id = crate::clock::uuid_v7().to_string();
+        {
+            let conn = Connection::open(&path).unwrap();
+            configure(&conn).unwrap();
+            // The pre-#101 `docs` shape: every column this one arrived next
+            // to, and no `standing`.
+            conn.execute_batch(
+                "CREATE TABLE docs (
+                    id         TEXT PRIMARY KEY,
+                    source     TEXT,
+                    title      TEXT NOT NULL,
+                    body       TEXT NOT NULL,
+                    created    TEXT NOT NULL,
+                    modified   TEXT NOT NULL,
+                    project    TEXT,
+                    rev        INTEGER NOT NULL DEFAULT 0,
+                    search_body TEXT NOT NULL DEFAULT ''
+                );",
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO docs (id, source, title, body, created, modified) \
+                 VALUES (?1, NULL, 'the ruling', 'reinstall after merging', 't', 't')",
+                params![id],
+            )
+            .unwrap();
+        }
+
+        let e = crate::Engine::open(&path).unwrap();
+        let before = e.memory_get(&json!({ "id": id })).unwrap();
+        assert_eq!(
+            before["standing"],
+            json!(false),
+            "a doc that predates the column must read back as ordinary memory: {before}"
+        );
+
+        let flipped = e
+            .memory_update(&json!({ "id": id, "standing": true }))
+            .expect("the upgraded row takes the flag");
+        assert_eq!(flipped["standing"], json!(true));
+        let after = e.memory_get(&json!({ "id": id })).unwrap();
+        assert_eq!(
+            after["standing"],
+            json!(true),
+            "the flip must be what the store now holds, not only what the update echoed: {after}"
+        );
+
+        drop(e);
+        let _ = std::fs::remove_file(&path);
     }
 
     /// A YAML list item or a folded block scalar's continuation line has no

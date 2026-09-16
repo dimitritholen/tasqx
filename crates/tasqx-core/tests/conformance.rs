@@ -481,6 +481,9 @@ const DOC_EXPORT_ROW: &[Field] = &[
     // #134/#135: additive, so a pre-#134 export/get still typechecks.
     nul("project", Ty::Str),
     req("_rev", Ty::Int),
+    // #101: additive — every doc states whether it is standing, so a restore
+    // carries the flag and a reader never has to infer it from absence.
+    req("standing", Ty::Bool),
 ];
 
 const EVENT_ROW: &[Field] = &[
@@ -505,6 +508,10 @@ const MEMORY_HIT_ROW: &[Field] = &[
     nul("source", Ty::Str),
     req("snippet", Ty::Str),
     req("rank", Ty::Num),
+    // #101: additive, and NULL on an annotation hit — `standing` is a
+    // property of a doc, and the UNION the two arms form needs the column on
+    // both sides regardless.
+    nul("standing", Ty::Bool),
 ];
 
 const TOKEN_BUCKETS_ROW: &[Field] = &[
@@ -817,7 +824,13 @@ const R_MEMORY_ADD: Shape = &[&[
     req("title", Ty::Str),
     // #134: additive, nullable — a doc with no `project` stays unscoped.
     nul("project", Ty::Str),
+    // #101: additive — the add echoes the flag it stored.
+    req("standing", Ty::Bool),
     req("created", Ty::Str),
+    // #101: present ONLY when this add pushed its scope past
+    // `STANDING_SOFT_CAP` — a consolidation hint, so absence is the ordinary
+    // answer and a client tests for the key rather than reading its value.
+    opt("hint", Ty::Str),
 ]];
 
 const R_MEMORY_SEARCH: Shape = &[&[
@@ -852,6 +865,8 @@ const MEMORY_LIST_ROW: &[Field] = &[
     req("_rev", Ty::Int),
     req("body_preview", Ty::Str),
     req("body_truncated", Ty::Bool),
+    // #101: additive, on every row and not only on a filtered page.
+    req("standing", Ty::Bool),
 ];
 
 const R_MEMORY_LIST: Shape = &[&[
@@ -866,6 +881,9 @@ const R_MEMORY_UPDATE: Shape = &[&[
     req("title", Ty::Str),
     nul("source", Ty::Str),
     nul("project", Ty::Str),
+    // #101: additive — the update echoes the flag as it now stands, whether
+    // this call set it, cleared it or left it alone.
+    req("standing", Ty::Bool),
     req("_rev", Ty::Int),
     req("modified", Ty::Str),
 ]];
@@ -1686,6 +1704,26 @@ fn cases() -> Vec<Case> {
             "memory.add",
             "one doc",
             |_| json!({ "title": "the freeze", "body": "v1 is stable", "source": "DESIGN.md" }),
+            R_MEMORY_ADD,
+        ),
+        // #101: the conditional `hint` has no other fixture — it appears only
+        // on the add that carries its scope PAST `STANDING_SOFT_CAP`, so the
+        // setup has to fill the scope first. Without this case the key is a
+        // line of documentation nothing type-checks.
+        case(
+            "memory.add",
+            "a standing doc that crosses the soft cap, so the consolidation `hint` appears",
+            |e| {
+                for i in 0..tasqx_core::engine::STANDING_SOFT_CAP {
+                    e.memory_add(&json!({
+                        "title": format!("ruling {i}"),
+                        "body": "one line",
+                        "standing": true,
+                    }))
+                    .expect("seed a standing doc");
+                }
+                json!({ "title": "one too many", "body": "the line over the cap", "standing": true })
+            },
             R_MEMORY_ADD,
         ),
         case(

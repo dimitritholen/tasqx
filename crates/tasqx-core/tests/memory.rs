@@ -1464,3 +1464,296 @@ fn include_unscoped_without_a_project_is_refused() {
         err.message
     );
 }
+
+// ---- #101/D156: standing docs ----------------------------------------------
+
+/// The `id` of every doc a `memory.list` page carries, in order.
+fn listed_ids(out: &Value) -> Vec<String> {
+    out["docs"]
+        .as_array()
+        .expect("a list page carries a docs array")
+        .iter()
+        .map(|d| d["id"].as_str().expect("every row has an id").to_string())
+        .collect()
+}
+
+/// #101/D156: a correction given once ("no em-dashes in commits") has to be
+/// readable in every later session, and neither of memory's two reads can
+/// promise that on its own — keyword search never matches a rule that is not
+/// about the task's topic, and a newest-first list drops it the moment newer
+/// docs exist. `standing` is the third axis: a flag the caller sets, filters
+/// on, and clears when the rule stops holding.
+///
+/// All four halves in one test because they are one round trip: what `add`
+/// stored is what `get` echoes, what `list` filters on, and what `update`
+/// retracts — a flag that survived each call in isolation but not the
+/// sequence would still be useless.
+#[test]
+fn a_standing_doc_is_stored_flipped_with_a_rev_bump_and_listed_by_the_flag() {
+    let e = engine();
+    let ruling = call(
+        &e,
+        "memory.add",
+        json!({
+            "title": "commits carry no em-dash",
+            "body": "spell it as two words or a comma",
+            "standing": true,
+        }),
+    )
+    .expect("memory.add");
+    assert_eq!(ruling["standing"], json!(true), "{ruling}");
+    assert!(
+        ruling.get("hint").is_none(),
+        "one standing doc is under any cap, so the consolidation hint must be ABSENT: {ruling}"
+    );
+    let ordinary = call(
+        &e,
+        "memory.add",
+        json!({ "title": "ADR 12", "body": "we chose SELECT FOR UPDATE" }),
+    )
+    .expect("memory.add");
+    assert_eq!(
+        ordinary["standing"],
+        json!(false),
+        "omitting the flag must store an ordinary doc: {ordinary}"
+    );
+
+    let standing_id = ruling["id"].as_str().expect("an id").to_string();
+    let ordinary_id = ordinary["id"].as_str().expect("an id").to_string();
+    let read = call(&e, "memory.get", json!({ "id": standing_id })).expect("get");
+    assert_eq!(read["standing"], json!(true), "{read}");
+    assert_eq!(read["_rev"], json!(0), "a fresh doc is at rev 0: {read}");
+    let read_other = call(&e, "memory.get", json!({ "id": ordinary_id })).expect("get");
+    assert_eq!(read_other["standing"], json!(false), "{read_other}");
+
+    let only_standing = call(&e, "memory.list", json!({ "standing": true })).expect("list");
+    assert_eq!(listed_ids(&only_standing), vec![standing_id.clone()]);
+    assert_eq!(only_standing["total"], 1, "{only_standing}");
+    let only_ordinary = call(&e, "memory.list", json!({ "standing": false })).expect("list");
+    assert_eq!(listed_ids(&only_ordinary), vec![ordinary_id.clone()]);
+    let everything = call(&e, "memory.list", json!({})).expect("list");
+    assert_eq!(
+        everything["total"], 2,
+        "an omitted filter is not `standing:false`: {everything}"
+    );
+    assert!(
+        everything["docs"]
+            .as_array()
+            .expect("docs")
+            .iter()
+            .all(|d| d["standing"].is_boolean()),
+        "every row states the flag, filtered or not: {everything}"
+    );
+
+    // Retraction is an ordinary update: it bumps `rev` like every other one,
+    // so a concurrent `expected_rev` still conflicts instead of clobbering.
+    let retracted = call(
+        &e,
+        "memory.update",
+        json!({ "id": standing_id, "standing": false }),
+    )
+    .expect("an update naming ONLY `standing` is a complete request");
+    assert_eq!(retracted["standing"], json!(false), "{retracted}");
+    assert_eq!(
+        retracted["_rev"],
+        json!(1),
+        "a flip is a revision of the doc: {retracted}"
+    );
+    let after = call(&e, "memory.list", json!({ "standing": true })).expect("list");
+    assert_eq!(
+        after["total"], 0,
+        "the retracted doc must leave the standing set: {after}"
+    );
+
+    // The refusal still bites when NOTHING is named — `standing` joined the
+    // "at least one of" set, it did not dissolve it.
+    let err = call(&e, "memory.update", json!({ "id": standing_id }))
+        .expect_err("an update that changes nothing is refused");
+    assert_eq!(err.code, ErrorCode::BadRequest);
+    assert!(
+        err.message.contains("standing"),
+        "the refusal must name every field that would have counted: {}",
+        err.message
+    );
+}
+
+/// The export is the self-contained backup (D12/D37), so a standing doc that
+/// came back ordinary would silently drop every user correction a restore was
+/// supposed to save — the omission shape D37 fixed for projects and a review
+/// fixed for docs, one column in.
+#[test]
+fn standing_survives_a_store_export_import_round_trip() {
+    let e1 = engine();
+    call(
+        &e1,
+        "memory.add",
+        json!({ "title": "Runbook", "body": "the standing needle", "standing": true }),
+    )
+    .unwrap();
+    let doc = call(&e1, "store.export", json!({})).unwrap();
+    assert_eq!(
+        doc["docs"][0]["standing"],
+        json!(true),
+        "the exported row carries the flag: {}",
+        doc["docs"]
+    );
+
+    let e2 = engine();
+    call(&e2, "store.import", doc).expect("import into a fresh store");
+    let restored = call(&e2, "memory.list", json!({ "standing": true })).expect("list");
+    assert_eq!(
+        restored["total"], 1,
+        "a restored standing doc is still standing: {restored}"
+    );
+    let id = restored["docs"][0]["id"]
+        .as_str()
+        .expect("an id")
+        .to_string();
+    assert_eq!(
+        call(&e2, "memory.get", json!({ "id": id })).unwrap()["standing"],
+        json!(true)
+    );
+
+    // A document written before the flag existed says nothing about it, and
+    // must restore as ordinary memory rather than as a standing order nobody
+    // issued.
+    let e3 = engine();
+    call(
+        &e3,
+        "store.import",
+        json!({
+            "tasks": [],
+            "docs": [{ "title": "Legacy", "body": "no standing key here" }],
+        }),
+    )
+    .expect("a legacy document still imports");
+    let legacy = call(&e3, "memory.list", json!({})).expect("list");
+    assert_eq!(
+        legacy["docs"][0]["standing"],
+        json!(false),
+        "an absent key is not a standing doc: {legacy}"
+    );
+}
+
+/// A standing doc is re-read every session, so the pile is what fails, not a
+/// missing entry. Past the soft cap the add says so — once, on the response
+/// that crossed it — and still stores the doc: the engine cannot know which of
+/// sixteen rulings is the redundant one, and refusing a correction is worse
+/// than carrying one line too many.
+#[test]
+fn the_standing_soft_cap_puts_a_hint_on_the_add_response() {
+    let e = engine();
+    let cap = tasqx_core::engine::STANDING_SOFT_CAP;
+    let mut last = Value::Null;
+    for i in 0..=cap {
+        last = call(
+            &e,
+            "memory.add",
+            json!({ "title": format!("ruling {i}"), "body": "one line", "standing": true }),
+        )
+        .expect("memory.add");
+        if i + 1 == cap {
+            assert!(
+                last.get("hint").is_none(),
+                "the add that lands exactly ON the cap is not over it: {last}"
+            );
+        }
+    }
+    assert!(
+        last["hint"]
+            .as_str()
+            .is_some_and(|h| h.contains("standing")),
+        "the add past the cap must carry a string hint naming what to do: {last}"
+    );
+
+    // Counted per scope, not per store: a project holding one standing doc is
+    // nowhere near its own cap, whatever the unscoped pile above is doing.
+    let scoped = call(
+        &e,
+        "memory.add",
+        json!({
+            "title": "alpha's rule",
+            "body": "one line",
+            "standing": true,
+            "project": "alpha",
+        }),
+    )
+    .expect("memory.add");
+    assert!(
+        scoped.get("hint").is_none(),
+        "the unscoped pile must not be counted against a project: {scoped}"
+    );
+}
+
+/// `memory.search` unions docs with annotations, and only one of the two has
+/// the flag — an annotation's "standing" would be a claim about a note on a
+/// task. The column is on both arms because the UNION needs it; the value is
+/// `null` on the half that cannot have one.
+#[test]
+fn a_search_hit_echoes_standing_on_docs_and_null_on_annotations() {
+    let e = engine();
+    call(
+        &e,
+        "memory.add",
+        json!({ "title": "the ruling", "body": "the shibboleth is here", "standing": true }),
+    )
+    .unwrap();
+    let t = call(&e, "task.add", json!({ "title": "Ship" })).unwrap();
+    call(
+        &e,
+        "annotation.add",
+        json!({ "ref": t["short_id"], "body": "the shibboleth again" }),
+    )
+    .unwrap();
+
+    let found = call(&e, "memory.search", json!({ "query": "shibboleth" })).expect("search");
+    assert_eq!(found["count"], 2, "{found}");
+    let hits = found["hits"].as_array().expect("hits");
+    let doc_hit = hits.iter().find(|h| h["kind"] == "doc").expect("a doc hit");
+    let ann_hit = hits
+        .iter()
+        .find(|h| h["kind"] == "annotation")
+        .expect("an annotation hit");
+    assert_eq!(doc_hit["standing"], json!(true), "{doc_hit}");
+    assert_eq!(
+        ann_hit["standing"],
+        Value::Null,
+        "an annotation has no flag to report, and says so: {ann_hit}"
+    );
+}
+
+/// `memory.import` replaces by `source` (#178/#198), and a re-imported
+/// directory carries no opinion about whether a doc is standing — the flag
+/// was set by a person through `memory.update`, and a re-run that silently
+/// cleared it would retract a ruling nobody retracted.
+#[test]
+fn memory_import_by_source_keeps_the_standing_flag_on_a_replace() {
+    let e = engine();
+    let added = call(
+        &e,
+        "memory.add",
+        json!({ "title": "X", "body": "first body", "source": "x.md", "standing": true }),
+    )
+    .unwrap();
+    let id = added["id"].as_str().expect("an id").to_string();
+
+    call(
+        &e,
+        "memory.import",
+        json!({ "docs": [{ "title": "X", "body": "edited body", "source": "x.md" }] }),
+    )
+    .expect("re-import the same source");
+
+    let after = call(&e, "memory.get", json!({ "id": id })).expect("the id survives a replace");
+    assert_eq!(
+        after["standing"],
+        json!(true),
+        "the re-import must not clear a flag it never mentioned: {after}"
+    );
+    assert_eq!(after["body"], "edited body", "{after}");
+    assert_eq!(
+        after["_rev"],
+        json!(1),
+        "a source-replace is still a revision (D143): {after}"
+    );
+}

@@ -987,6 +987,7 @@ pub(crate) fn run_memory(be: &mut Backend, ctx: &Ctx, action: &MemoryAction) -> 
             body,
             source,
             project,
+            standing,
         } => {
             let mut params = json!({ "title": title, "body": body });
             if let Some(s) = source {
@@ -994,6 +995,9 @@ pub(crate) fn run_memory(be: &mut Backend, ctx: &Ctx, action: &MemoryAction) -> 
             }
             if let Some(p) = project {
                 params["project"] = json!(p);
+            }
+            if *standing {
+                params["standing"] = json!(true);
             }
             let result = be.call("memory.add", &params)?;
             let text = format!(
@@ -1051,6 +1055,7 @@ pub(crate) fn run_memory(be: &mut Backend, ctx: &Ctx, action: &MemoryAction) -> 
             limit,
             offset,
             project,
+            standing,
         } => {
             let mut params = json!({ "offset": offset });
             if let Some(n) = limit {
@@ -1058,6 +1063,9 @@ pub(crate) fn run_memory(be: &mut Backend, ctx: &Ctx, action: &MemoryAction) -> 
             }
             if let Some(p) = project {
                 params["project"] = json!(p);
+            }
+            if *standing {
+                params["standing"] = json!(true);
             }
             let result = be.call("memory.list", &params)?;
             let text = render::memory_table(ctx, &result, crate::clock::now());
@@ -1069,6 +1077,7 @@ pub(crate) fn run_memory(be: &mut Backend, ctx: &Ctx, action: &MemoryAction) -> 
             body,
             source,
             project,
+            standing,
             expected_rev,
         } => {
             let mut params = json!({ "id": id });
@@ -1083,6 +1092,9 @@ pub(crate) fn run_memory(be: &mut Backend, ctx: &Ctx, action: &MemoryAction) -> 
             }
             if let Some(p) = project {
                 params["project"] = json!(p);
+            }
+            if let Some(st) = standing {
+                params["standing"] = json!(st);
             }
             if let Some(rev) = expected_rev {
                 params["expected_rev"] = json!(rev);
