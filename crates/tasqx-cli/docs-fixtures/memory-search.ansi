@@ -1,0 +1,4 @@
+[2;38;2;76;86;106m"release" "canary"[0m   [1m1 hit[0m
+
+release-process  [2;38;2;76;86;106mdocs/release.md[0m  [2;38;2;76;86;106meb864f1e-e68a-4d96-af89-597bd0d2d52e[0m
+    [2;38;2;76;86;106m…Cut the release branch on Monday, tag after the canary has run…[0m

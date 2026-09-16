@@ -27,7 +27,13 @@ reachable daemon ignores TASQX_DB and would answer from the real store instead.
 
 The history goes in through `tasqx import`, which keeps backdated `created`,
 `completed` and event timestamps, so the charts and the dashboard's burndown
-have twelve weeks to draw. A seeded RNG keeps the shape stable from run to run.
+have twelve weeks to draw. The memory docs, the notes and the acceptance checks
+on the blocked task ride in the same import for the same reason: a live
+`memory add` or `annotate` stamps the pinned instant and mints an id off the
+entropy pool, and both of those are printed on a captured screen. Two seeded
+RNGs keep it all stable from run to run — one for the shape of the history, one
+for the ids — which is what lets `scripts/docs-capture.sh` compare a fresh
+capture with the committed fixtures byte for byte.
 """
 
 import datetime as dt
@@ -89,6 +95,7 @@ def _now():
 
 NOW = _now()
 rng = random.Random(7)
+id_rng = random.Random(11)
 
 
 def iso(t):
@@ -102,7 +109,22 @@ def day(offset, hour=0, minute=0):
 
 
 def uid():
-    return str(uuid.uuid4())
+    """A v4 id drawn from the SEEDED rng, so two runs mint the same ids.
+
+    `uuid.uuid4()` reads the OS entropy pool, which made every run a different
+    store — invisible on a table that prints short ids, and fatal to
+    `scripts/docs-capture.sh`, whose fixtures carry ids in full: a `task.get`
+    envelope, a `memory list` row, a `memory search` hit. The drift job would
+    then have fired on every capture instead of on a real change. Determinism
+    here is the promise the rng already makes about the history's shape, applied
+    to the one other thing that reaches a captured screen.
+
+    It draws from an rng of its OWN rather than from `rng`: sharing the stream
+    would shift every later draw, and the shape of twelve weeks of history —
+    which task is on which day, and therefore the short id of every open task —
+    would change under a caller who only wanted stable ids.
+    """
+    return str(uuid.UUID(int=id_rng.getrandbits(128), version=4))
 
 
 PROJECTS = {
@@ -149,22 +171,45 @@ DONE_TITLES = [
     "Add a status page", "Clean up feature flags", "Document the release process",
 ]
 
-# Memory docs: (title, project, source, body). Invented like everything else.
+# Memory docs: (title, project, source, age in days, body). Invented like
+# everything else. The age spreads the UPDATED column `memory list` prints, and
+# fixes the order that column sorts by; five docs all written "today" ordered by
+# their ids, which is an order no reader can predict.
 MEMORY = [
-    ("release-process", "api", "docs/release.md",
+    ("release-process", "api", "docs/release.md", 6,
      "---\ndescription: How an SDK release is cut, tagged and announced\n---\n"
      "Cut the release branch on Monday, tag after the canary has run for a day, "
      "and announce in the changelog feed once the packages are live."),
-    ("on-call-handover", "infra", None,
+    ("on-call-handover", "infra", None, 13,
      "The handover happens Friday at 16:00. Walk the open incidents, the error "
      "budget and anything paged twice in the week, then rotate the pager."),
-    ("pricing-page-decisions", "website", "notes/pricing.md",
+    ("pricing-page-decisions", "website", "notes/pricing.md", 2,
      "# Pricing page\nThree tiers, annual billing shown first. The release of v2 "
      "waits for legal to sign off the new terms."),
-    ("android-token-refresh", "mobile", None,
+    ("android-token-refresh", "mobile", None, 20,
      "The refresh race happens when two requests see an expired token at once. "
      "Serialise refresh behind one lock and retry the losing request."),
-    ("dentist", None, None, "Dr. Visser, Tuesdays and Thursdays, book two weeks ahead."),
+    ("dentist", None, None, 34,
+     "Dr. Visser, Tuesdays and Thursdays, book two weeks ahead."),
+]
+
+# Annotations and acceptance checks on the blocked task (`BLOCKED[0]`), so
+# `show`, `brief` and the `task.get` envelope have the thing they are for:
+# (days ago, body). Everything else in the store carries neither, and a `show`
+# of a task with no note under it documents the layout but not the screen.
+NOTES = [
+    (12, "Scope: the 2.x → 3.0 rename table, the auth change, and a worked "
+         "example per SDK. Not the reference — that generates itself."),
+    (5, "Ruling: the guide ships WITH the 3.0 release, not after it. A migration "
+        "note that lands a week late is a support ticket that already happened."),
+    (1, "Blocked until the rate limit lands: the guide has to state the real "
+        "ceiling, and quoting a number that then changes is worse than waiting."),
+]
+CHECKS = [
+    ("passed", "Every renamed symbol has a row in the table"),
+    ("passed", "One worked example per SDK (js, py, go)"),
+    ("open", "The rate-limit ceiling is stated with its real number"),
+    ("open", "Reviewed by whoever ships 3.0"),
 ]
 
 
@@ -229,9 +274,25 @@ def main():
         sid += 1
 
     blocked, blocker = BLOCKED
-    tasks[-len(OPEN) + blocked]["depends_on"] = [ids[blocker][1]]
+    subject = tasks[-len(OPEN) + blocked]
+    subject["depends_on"] = [ids[blocker][1]]
+    subject["annotations"] = [{"id": uid(), "body": body, "created": iso(day(-ago, 11, 20))}
+                              for ago, body in NOTES]
+    subject["checks"] = [{"id": uid(), "body": body, "state": state, "evidence": None,
+                          "position": i, "created": iso(day(-12, 11, 30)),
+                          "modified": iso(day(-2, 9, 10))}
+                         for i, (state, body) in enumerate(CHECKS)]
 
-    payload = {"default_project": "website", "docs": [], "dropped_dependencies": [],
+    # Memory docs go through `import` rather than `memory add`, so their ids and
+    # their dates are this script's to choose: a live add mints a v7 id off the
+    # clock and stamps "today", and both reach a captured screen (`memory list`
+    # prints the id, `memory search` prints it beside the hit).
+    docs = [{"id": uid(), "title": title, "project": project, "source": source,
+             "body": body, "created": iso(day(-ago - 5, 9, 15)),
+             "modified": iso(day(-ago, 9, 15))}
+            for title, project, source, ago, body in MEMORY]
+
+    payload = {"default_project": "website", "docs": docs, "dropped_dependencies": [],
                "events": sorted(events, key=lambda e: e["ts"]), "projects": projects,
                "tasks": tasks}
 
@@ -255,16 +316,6 @@ def main():
     # The demo records no AI token spend, and an empty TOKENS panel is space
     # a screenshot has better uses for.
     run("config", "set", "dashboard.panels", "tasks,projects,burndown,pulse,effort")
-    # Memory docs, so `memory list` and `memory search` have something to show.
-    # Added live rather than imported: `import` carries tasks, not docs.
-    for title, project, source, body in MEMORY:
-        args = ["memory", "add"]
-        if source:
-            args += ["--source", source]
-        if project:
-            args += ["--project", project]
-        # `--` because a body that opens with frontmatter starts with `---`.
-        run(*args, "--", title, body)
     print(OUT)
 
 

@@ -1,0 +1,64 @@
+[1;38;2;136;192;208mTASQX MANUAL[0m
+
+[38;2;138;138;138mTOPICS[0m
+  getting-started  Getting started
+  projects         Projects
+  capturing        Capturing tasks
+  dates            Dates & recurrence
+  filters          Filter grammar
+  screens          Screens & browsing
+  reminders        Reminders
+  reports          Reports & charts
+  daemon           Daemon & watch
+  automation       Automation (MCP & API)
+  json-api         JSON API
+  completion       Shell completion
+
+[38;2;138;138;138mCOMMANDS[0m
+  init         Create a project — just a name, no folder.
+  add          Capture a task — title plus inline sugar.
+  modify       Change a task — set fields or --clear them.
+  list         List tasks matching a filter.
+  agenda       What is coming up, when — `list` ordered by time.
+  next         The one highest-urgency unblocked task.
+  dashboard    Open the overview screen, or ask for its panels as data.
+  pick         Browse tasks on a full-screen list: read one, search them, start one.
+  show         Show one task in full detail.
+  why          Explain a task's urgency score.
+  start        Mark a task active.
+  stop         Pause an active task.
+  done         Complete a task.
+  cancel       Cancel a task.
+  reopen       Reopen a completed or cancelled task.
+  undo         Take back the last thing this store recorded.
+  annotate     Attach a timestamped note to a task.
+  unannotate   Permanently scrub one annotation's text, by id.
+  tag          Attach tags to a task.
+  untag        Remove tags from a task.
+  dep          Make one task depend on another.
+  undep        Remove a dependency edge.
+  use          Set the default project for bare adds.
+  archive      Retire a project — out of rotation, tasks untouched.
+  projects     List projects (default marked with `*`).
+  check        Acceptance criteria on a task: add, mark, drop.
+  brief        Everything needed before starting a task, in one read.
+  report       Summary counts, or outcomes, optionally grouped, as text or HTML.
+  chart        Render throughput, heatmap, or burndown charts.
+  theme        List or preview terminal themes.
+  config       Read and change tasqx settings.
+  memory       Store and search knowledge: docs, patterns, and your task annotations (D41).
+  tokens       Repair stored token attribution — dry-run by default (D50).
+  export       Dump tasks as canonical JSON.
+  import       Load tasks from a JSON file or stdin.
+  api          One JSON envelope in on stdin → one out on stdout.
+  daemon       Long-lived single-writer server.
+  watch        Live-updating task view.
+  mcp          Serve MCP over stdio with an operator-selected scope.
+  docs         Open the exhaustive browser guide (self-contained HTML).
+  about        Who made tasqx, where to find it, and what build this is.
+  manual       Browse the complete guide in your terminal.
+  completions  Turn on Tab completion for your shell.
+
+▸ Jump to a topic or command:  tasqx manual <name>
+▸ Full browser guide:          tasqx docs
+

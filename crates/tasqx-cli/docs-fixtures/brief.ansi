@@ -1,0 +1,33 @@
+[1;38;2;191;97;106m▌[0m [38;2;138;138;138m#51[0m  [1mWrite the migration guide for SDK 3.0[0m
+[1;38;2;191;97;106m▌[0m
+[1;38;2;191;97;106m▌[0m [1;38;2;191;97;106m⊘ blocked[0m[1;38;2;191;97;106m by #50 · Rate-limit the /search endpoint[0m
+[1;38;2;191;97;106m▌[0m
+[1;38;2;191;97;106m▌[0m [38;2;138;138;138mstatus[0m      pending           [38;2;138;138;138murgency[0m     [38;2;235;203;139mM[0m [1;38;2;191;97;106m▄▄▄▄[0m[2;38;2;76;86;106m[0m [1;38;2;191;97;106m12.2[0m
+[1;38;2;191;97;106m▌[0m [38;2;138;138;138mproject[0m     api               [38;2;138;138;138mdue[0m         [1mMon (in 5 days)[0m
+[1;38;2;191;97;106m▌[0m [38;2;138;138;138mestimate[0m    5h                [38;2;138;138;138mtags[0m        +docs
+[1;38;2;191;97;106m▌[0m [38;2;138;138;138mcreated[0m     16 Aug (31 days ago)
+[1;38;2;191;97;106m▌[0m [38;2;138;138;138mmodified[0m    16 Aug (31 days ago)
+[1;38;2;191;97;106m▌[0m [38;2;138;138;138mrev[0m         1                 [38;2;138;138;138m[x][0m         Every renamed symbol has a row in the table
+[1;38;2;191;97;106m▌[0m [38;2;138;138;138m[x][0m         One worked example per SDK (js, py, go)
+[1;38;2;191;97;106m▌[0m [38;2;138;138;138m[ ][0m         The rate-limit ceiling is stated with its real number
+[1;38;2;191;97;106m▌[0m [38;2;138;138;138m[ ][0m         Reviewed by whoever ships 3.0
+[1;38;2;191;97;106m▌[0m
+[1;38;2;191;97;106m▌[0m [38;2;138;138;138m·[0m Ruling: the guide ships WITH the 3.0 release, not after it. A migration note that lands a week
+[1;38;2;191;97;106m▌[0m   late is a support ticket that already happened.
+[1;38;2;191;97;106m▌[0m [38;2;138;138;138m·[0m Blocked until the rate limit lands: the guide has to state the real ceiling, and quoting a
+[1;38;2;191;97;106m▌[0m   number that then changes is worse than waiting.
+[1;38;2;191;97;106m▌[0m [38;2;138;138;138m·[0m Scope: the 2.x → 3.0 rename table, the auth change, and a worked example per SDK. Not the
+[1;38;2;191;97;106m▌[0m   reference — that generates itself.
+
+[38;2;138;138;138mDEPENDS ON[0m
+  [38;2;136;192;208m#50[0m  Rate-limit the /search endpoint  [2;38;2;76;86;106mpending[0m
+
+[38;2;138;138;138mFROM MEMORY[0m
+  release-process  [2;38;2;76;86;106mdocs/release.md[0m
+    [2;38;2;76;86;106mdescription How an SDK release is cut, tagged and announced Cut the…[0m
+  Write the migration guide for SDK 3.0  [2;38;2;76;86;106mtask:#51[0m
+    [2;38;2;76;86;106m…the 2.x → 3.0 rename table, the auth change, and a…[0m
+  Write the migration guide for SDK 3.0  [2;38;2;76;86;106mtask:#51[0m
+    [2;38;2;76;86;106m…guide ships WITH the 3.0 release, not after it. A migration…[0m
+  Write the migration guide for SDK 3.0  [2;38;2;76;86;106mtask:#51[0m
+    [2;38;2;76;86;106m…the guide has to state the real ceiling, and quoting a number…[0m

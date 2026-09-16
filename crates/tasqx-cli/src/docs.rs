@@ -2549,8 +2549,22 @@ fn page_api() -> String {
     ));
 
     // Two-column: the sentence about the transport and the invocation of it,
-    // read side by side. The CLI tab carries the command only — an *output*
-    // claim belongs in a `snippet`, which is captured from the real binary.
+    // read side by side. The CLI tab carries the invocation, and under it the
+    // OTHER client of `task.list` — `tasqx list` — with the screen it really
+    // printed: a fixture captured from the real binary on the pinned day
+    // (`crates/tasqx-cli/docs-fixtures`, D149) put through `ansi_html`, which is
+    // text rather than a picture. Every claim about output on this site comes
+    // from that path; this is the first one, and #646/#647 place the rest.
+    let cli_transport = format!(
+        "{}<div class=\"snip\"><div class=\"snip-h\"><span class=\"dollar\">$</span></div>\
+           <pre class=\"cmd\"><code>tasqx list</code></pre>{}</div>",
+        term_block(&esc(
+            "echo '{\"tasqx\":\"1\",\"method\":\"task.list\"}' | tasqx api",
+        )),
+        crate::ansi_html::render(
+            crate::fixtures::screen("list").expect("the `list` screen is embedded")
+        ),
+    );
     s.push_str(&ref_section(
         "api-transport",
         "The transport",
@@ -2560,12 +2574,7 @@ fn page_api() -> String {
              talk to the <a href=\"#daemon\">daemon</a> socket instead — same envelopes, newline-delimited.",
         ),
         &tabs(&[
-            (
-                "CLI",
-                &term_block(&esc(
-                    "echo '{\"tasqx\":\"1\",\"method\":\"task.list\"}' | tasqx api",
-                )),
-            ),
+            ("CLI", &cli_transport),
             (
                 "JSON API",
                 &soon("Coming in the JSON API reference: one section per method, with its parameters and the shape it returns."),

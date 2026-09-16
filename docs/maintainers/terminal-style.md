@@ -276,6 +276,49 @@ meaning — on the write echoes it means "this write changed it", and under
 `NO_COLOR` it is the only emphasis left — judge the screen from an HTML render
 of the same ANSI instead, rasterized the same way.
 
+## 15. The capture path, and the one the documentation uses
+
+The loop above is for judging a screen you are changing. What the documentation
+*ships* comes from `scripts/docs-capture.sh`, and it is the shorter way to get a
+screen for almost anything:
+
+```console
+$ cargo build -p tasqx-cli
+$ TASQX=target/debug/tasqx scripts/docs-capture.sh
+$ TASQX=target/debug/tasqx scripts/docs-capture.sh --check   # what CI runs
+```
+
+One row of `crates/tasqx-cli/docs-fixtures/manifest.tsv` is one screen: a name,
+a kind (`pipe`, `pipe-mut` for a row that writes, `tui` for a full-screen one), a
+width, the arguments, and a request envelope for the `api` rows. The script pins
+the clock to one Wednesday, rebuilds the demo store under that pin, renders every
+row — through a pipe, or in a tmux pane for the full-screen three — and writes
+`<name>.ansi` beside the manifest. Those files are committed, `fixtures.rs`
+embeds them, and `ansi_html.rs` renders them into the guide as styled text
+(DESIGN.md D149).
+
+Two consequences for anyone changing a screen:
+
+- **A screen change is a fixture change in the same commit.** The `docs-fixtures`
+  CI job re-captures and compares byte for byte, so a layout tweak that is not
+  regenerated turns the job red. Regenerate; never hand-edit a `.ansi`.
+- **Neither trap above applies here.** `ansi_html` honours SGR 39 and emits bold
+  as `font-weight:700`, with a unit test each, which is why the site shows text
+  rather than pictures of text. To *look* at a rendered screen, generate the
+  guide (`tasqx docs --out site.html`) and open it.
+
+Adding a screen: append a row, run the script, commit the `.ansi` with it, and
+add the name to `screens![]` in `crates/tasqx-cli/src/fixtures.rs` — a test fails
+until the manifest, the directory and that list agree.
+
+Some output cannot be a fixture, and the script refuses it rather than letting
+CI find it on somebody else's machine: an absolute path or a build hash (`about`,
+`core.capabilities`), a freshly minted id (`api task.add`), and an FTS `rank`
+(`task.brief`, `memory.search` as JSON) — bm25 goes through the platform's
+`log()`, so the last digits differ between macOS and Linux. The rendered SCREENS
+over the same searches are fine: they print snippets, not the number. The
+manifest's header lists every exclusion with its reason.
+
 ---
 
 ## Contract
