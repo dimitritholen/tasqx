@@ -49,6 +49,20 @@ clap_complete = { version = "=4.6.7", features = ["unstable-dynamic"] }
 ctrlc = { version = "3.5", features = ["termination"] }
 directories = "6.0.0"
 jiff = { workspace = true }
+# The wiki and the guides under `docs/` are `include_str!`d into `tasqx docs`
+# and turned into pages of the one self-contained HTML file. A markdown
+# parser is a large surface to take on, and three properties make this one the
+# cheap option rather than the expensive one: it runs at GENERATION time inside
+# our own binary, never on a request; its input is the repository's own files,
+# compiled in, so there is no untrusted document and no network; and the
+# alternative — a hand-rolled parser for the subset the docs happen to use — is
+# the kind of thing that silently mis-renders the day someone writes a nested
+# list. `html` is the only feature on: no `serde`, no `getopts`, no `simd`
+# (which wants nightly). MIT, like the rest of the graph. The events are
+# post-processed in `src/docs/markdown.rs` before any HTML is produced, so the
+# site's own snippet, table and callout markup is what ships — not this crate's
+# default rendering.
+pulldown-cmark = { version = "0.13.4", default-features = false, features = ["html"] }
 toml = "1.1.3"
 # Format-preserving TOML editing. A `toml::Table` round trip drops every
 # comment and reorders sections, which is data loss in a file the user

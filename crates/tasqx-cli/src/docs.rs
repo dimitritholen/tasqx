@@ -34,8 +34,17 @@
 //!
 //! Every command and every block of output on this page was executed against the
 //! real binary on an isolated store; nothing here is illustrative.
+//!
+//! **The prose pages are the repository's own markdown.** `docs/wiki`
+//! and `docs/guides` are `include_str!`d by [`markdown`] and rendered into
+//! pages of this same document at generation time, rather than retyped as Rust
+//! literals — one artifact, and no second copy of a sentence to drift.
+
+use std::sync::LazyLock;
 
 use crate::html::esc;
+
+mod markdown;
 
 /// The verb table the Commands page renders: `(verb, aliases, method)`.
 ///
@@ -760,84 +769,91 @@ const SECTIONS: [Section; 7] = [
 /// `id` is the hash anchor — `docs.html#filters` — and is **frozen**: every
 /// link anyone has ever shared is one of these. Regrouping the sidebar moves a
 /// page under a different heading and changes nothing a link depends on.
-/// `label` is the sidebar entry (trusted markup: the literals below carry
-/// `&amp;`), and `title` is the `<h2>` the page opens with.
+/// `label` is the sidebar entry (trusted markup: the fixed table below carries
+/// `&amp;`, and a markdown page's label is escaped when it is built), and
+/// `title` is the `<h2>` the page opens with.
+///
+/// Owned rather than `&'static str` because half the rows are no longer
+/// literals: a markdown page's id and title are computed from the file name and
+/// its `# ` heading, and there is no const that can hold them.
 struct Page {
-    id: &'static str,
+    id: String,
     section: &'static str,
-    label: &'static str,
-    title: &'static str,
+    label: String,
+    title: String,
 }
 
-/// The guide's pages, in sidebar order, each naming its [`SECTIONS`] entry.
-const PAGES: [Page; 11] = [
-    Page {
-        id: "overview",
-        section: "get-started",
-        label: "Overview",
-        title: "What tasqx is",
-    },
-    Page {
-        id: "install",
-        section: "get-started",
-        label: "Install &amp; quickstart",
-        title: "Install and quickstart",
-    },
-    Page {
-        id: "filters",
-        section: "using",
-        label: "Filter grammar",
-        title: "The filter grammar",
-    },
-    Page {
-        id: "scheduling",
-        section: "using",
-        label: "Scheduling &amp; recurrence",
-        title: "Dates and recurrence",
-    },
-    Page {
-        id: "reminders",
-        section: "using",
-        label: "Reminders",
-        title: "Reminders",
-    },
-    Page {
-        id: "daemon",
-        section: "using",
-        label: "Daemon &amp; watch",
-        title: "The daemon and live watch",
-    },
-    Page {
-        id: "data",
-        section: "using",
-        label: "Export &amp; import",
-        title: "Export and import",
-    },
-    Page {
-        id: "themes",
-        section: "using",
-        label: "Themes &amp; reports",
-        title: "Themes, charts and reports",
-    },
-    Page {
-        id: "commands",
-        section: "ref-cli",
-        label: "Commands",
-        title: "Every command",
-    },
-    Page {
-        id: "api",
-        section: "ref-api",
-        label: "JSON API",
-        title: "The JSON API",
-    },
-    Page {
-        id: "mcp",
-        section: "ref-mcp",
-        label: "MCP",
-        title: "The MCP server",
-    },
+/// The pages whose HTML is a function in this file: `(id, section, label, title)`.
+///
+/// Tuple table for the same reason [`VERBS`] and [`METHODS`] are: the page
+/// builders read it, [`PAGES`] is built from it, and there is no second list.
+const FIXED_PAGES: [(&str, &str, &str, &str); 11] = [
+    ("overview", "get-started", "Overview", "What tasqx is"),
+    (
+        "install",
+        "get-started",
+        "Install &amp; quickstart",
+        "Install and quickstart",
+    ),
+    ("filters", "using", "Filter grammar", "The filter grammar"),
+    (
+        "scheduling",
+        "using",
+        "Scheduling &amp; recurrence",
+        "Dates and recurrence",
+    ),
+    ("reminders", "using", "Reminders", "Reminders"),
+    (
+        "daemon",
+        "using",
+        "Daemon &amp; watch",
+        "The daemon and live watch",
+    ),
+    ("data", "using", "Export &amp; import", "Export and import"),
+    (
+        "themes",
+        "using",
+        "Themes &amp; reports",
+        "Themes, charts and reports",
+    ),
+    ("commands", "ref-cli", "Commands", "Every command"),
+    ("api", "ref-api", "JSON API", "The JSON API"),
+    ("mcp", "ref-mcp", "MCP", "The MCP server"),
 ];
+
+/// The guide's pages, in sidebar order, each naming its [`SECTIONS`] entry.
+///
+/// Built by walking [`SECTIONS`], so this order *is* the sidebar's by
+/// construction rather than by a table that has to be kept parallel to one —
+/// which is what [`pages_are_emitted_in_sidebar_order`] used to be the only
+/// thing standing between. Within a section the hand-written pages come first
+/// and the markdown ones follow, in their tables' order.
+static PAGES: LazyLock<Vec<Page>> = LazyLock::new(|| {
+    let mut out = Vec::with_capacity(FIXED_PAGES.len() + markdown::PAGES.len());
+    for sec in SECTIONS {
+        for (id, section, label, title) in FIXED_PAGES {
+            if section == sec.id {
+                out.push(Page {
+                    id: id.to_string(),
+                    section,
+                    label: label.to_string(),
+                    title: title.to_string(),
+                });
+            }
+        }
+        for md in markdown::PAGES.iter().filter(|p| p.section == sec.id) {
+            out.push(Page {
+                id: md.id.clone(),
+                section: md.section,
+                // The fixed labels above are trusted markup; a title lifted out
+                // of a markdown file is not, so it is escaped once, here.
+                label: esc(&md.title),
+                title: md.title.clone(),
+            });
+        }
+    }
+    out
+});
 
 /// Render the whole guide as one self-contained HTML string.
 pub fn generate() -> String {
@@ -850,8 +866,8 @@ pub fn generate() -> String {
 
     // Emitted in PAGES order, which is sidebar order: with JavaScript off the
     // document is one long page and that order is the only reading order there
-    // is. Adding a page means a line here and a row in PAGES; the test below
-    // asserts the two agree.
+    // is. Adding a page means a line here and a row in FIXED_PAGES (or a file
+    // in one of the markdown tables); the test below asserts the two agree.
     body.push_str(&page_overview());
     body.push_str(&page_install());
     body.push_str(&page_filters());
@@ -860,6 +876,12 @@ pub fn generate() -> String {
     body.push_str(&page_daemon());
     body.push_str(&page_data());
     body.push_str(&page_themes());
+    for md in markdown::PAGES.iter().filter(|p| p.section == "using") {
+        body.push_str(&page_markdown(md));
+    }
+    for md in markdown::PAGES.iter().filter(|p| p.section == "guides") {
+        body.push_str(&page_markdown(md));
+    }
     body.push_str(&page_commands());
     body.push_str(&page_api());
     body.push_str(&page_mcp());
@@ -1146,7 +1168,7 @@ fn page_install() -> String {
         "<code>tasqx list</code> shows the <code>@working</code> filter: everything pending or \
          active that is not blocked, hottest first. A bare <code>tasqx</code> prints the same \
          table wherever it is not talking to a person — piped, redirected, or under \
-         <code>--json</code> — and opens the <a href=\"#dashboard\">dashboard</a> when it is.",
+         <code>--json</code> — and opens the <a href=\"#h-dashboard\">dashboard</a> when it is.",
     ));
     s.push_str(&snippet(
         "tasqx list",
@@ -1635,7 +1657,7 @@ fn page_commands() -> String {
     s.push_str(&p(
         "Lists projects created with <code>init</code>. Add <code>--all</code> to include archived \
          ones, which say so in a <code>STATUS</code> column. The <code>*</code> at the left edge \
-         marks the <a href=\"#use\">default project</a>, the way <code>git branch</code> marks \
+         marks the <a href=\"#h-use\">default project</a>, the way <code>git branch</code> marks \
          the branch that is checked out. Every project a \
          task can be in is on this list: naming a project no <code>init</code> created is \
          <code>not_found</code> (exit 4) and naming an archived one is <code>conflict</code> \
@@ -3063,7 +3085,8 @@ fn page_open(id: &str) -> String {
         .iter()
         .find(|p| p.id == id)
         .unwrap_or_else(|| panic!("page `{id}` is not in PAGES"))
-        .title;
+        .title
+        .as_str();
     format!(
         "<section class=\"page\" id=\"{id}\"><h2>{}</h2>",
         esc(title)
@@ -3095,6 +3118,15 @@ fn page_close(id: &str) -> String {
         }
     }
     format!("<div class=\"pagenav\">{links}</div></section>")
+}
+
+/// A page whose body came from a markdown file: the same shell every other
+/// page gets, around HTML [`markdown`] already built.
+fn page_markdown(md: &markdown::MdPage) -> String {
+    let mut s = page_open(&md.id);
+    s.push_str(&md.body);
+    s.push_str(&page_close(&md.id));
+    s
 }
 
 /// A lead paragraph, emitted as trusted HTML so it can carry `<code>`/`<em>` like
@@ -4963,13 +4995,78 @@ mod tests {
         );
     }
 
+    /// Everything outside a `<pre>` or a `<code>`: the document's own markup,
+    /// with the terminal text it quotes taken out.
+    ///
+    /// The distinction [`docs_page_is_self_contained`] needs. A URL the browser
+    /// would *act on* lives in an attribute or a tag; a URL inside a code block
+    /// is a character sequence the reader copies into a shell, and the browser
+    /// never looks at it.
+    fn outside_code(doc: &str) -> String {
+        let mut out = String::with_capacity(doc.len());
+        let mut rest = doc;
+        // The *earlier* of the two openers, not the first one that happens to
+        // be present: taking `<pre` when a `<code>` comes before it would copy
+        // that code span into the output.
+        while let Some(i) = [rest.find("<pre"), rest.find("<code")]
+            .into_iter()
+            .flatten()
+            .min()
+        {
+            let (before, tail) = rest.split_at(i);
+            out.push_str(before);
+            let close = if tail.starts_with("<pre") {
+                "</pre>"
+            } else {
+                "</code>"
+            };
+            rest = match tail.find(close) {
+                Some(j) => &tail[j + close.len()..],
+                // An unterminated block: keep the tail rather than hide it.
+                None => break,
+            };
+        }
+        out.push_str(rest);
+        out
+    }
+
     /// The whole promise of the file: it opens anywhere, offline, forever. Any
     /// external reference — a CDN script, a web font, a remote image — breaks it.
+    ///
+    /// **Scheme URLs are judged by where they sit, not by their spelling.** The
+    /// guide used to refuse the string `https://` anywhere in the document,
+    /// which is a proxy for the property that matters and stopped being an
+    /// honest one when `docs/wiki/Getting-Started.md` became a page: its install
+    /// commands are `curl -fsSL https://…/install.sh | sh`, and a command with
+    /// its scheme filed off is not a shorter command, it is a wrong one. A URL
+    /// inside a `<pre>`/`<code>` is text the reader copies; the file still makes
+    /// no request, and every *href* is checked separately by
+    /// [`every_link_is_an_internal_anchor`], which is the rule that keeps a link
+    /// from leaving the file. Outside those blocks — in an attribute, a tag or
+    /// the inline CSS and JS — a scheme URL is still refused.
     #[test]
     fn docs_page_is_self_contained() {
         let doc = generate();
-        assert!(!doc.contains("http://"), "contains an http:// reference");
-        assert!(!doc.contains("https://"), "contains an https:// reference");
+        // The stripper is load-bearing, so it is checked before it is trusted:
+        // an attribute must survive it and a code block must not.
+        assert!(
+            outside_code("<a href=\"https://cdn.example\">x</a>").contains("https://"),
+            "the stripper hides an attribute — this guard would pass on a CDN link"
+        );
+        assert!(
+            !outside_code("<pre class=\"cmd\"><code>curl https://x | sh</code></pre>")
+                .contains("https://"),
+            "the stripper does not remove quoted terminal text"
+        );
+        let chrome = outside_code(&doc);
+        assert!(
+            !chrome.contains("http://"),
+            "contains an http:// reference outside a code block"
+        );
+        assert!(
+            !chrome.contains("https://"),
+            "contains an https:// reference outside a code block"
+        );
         assert!(!doc.contains("src="), "contains src= (an external asset)");
         assert!(!doc.contains("@import"), "contains a CSS @import");
         assert!(!doc.contains("url("), "contains a CSS url() reference");
@@ -5001,6 +5098,51 @@ mod tests {
             );
             assert!(target.len() > 1, "empty anchor href");
         }
+    }
+
+    /// Every anchor lands on an id that is really in the document.
+    ///
+    /// [`every_link_is_an_internal_anchor`] proves a link stays inside the
+    /// file; this proves it arrives somewhere. The two are different failures
+    /// and only one of them was checked. It matters most for the pages built
+    /// from `docs/wiki`: those links were written as `Finding-Tasks.md#tasqx-why`
+    /// against GitHub's heading anchors and are rewritten by
+    /// [`markdown`] into `#wiki-finding-tasks--tasqx-why` — a rewrite whose
+    /// failure mode is silent, because a hash naming nothing simply leaves the
+    /// reader where they were. A renamed heading breaks it, and renaming a
+    /// heading is an ordinary edit to a prose file.
+    #[test]
+    fn every_anchor_resolves_to_an_id_in_the_document() {
+        let doc = generate();
+        let mut ids: Vec<&str> = Vec::new();
+        for (i, _) in doc.match_indices("id=\"") {
+            let rest = &doc[i + 4..];
+            let end = rest.find('"').expect("an id must be terminated");
+            ids.push(&rest[..end]);
+        }
+        let mut checked = 0usize;
+        let mut dangling: Vec<&str> = Vec::new();
+        for (i, _) in doc.match_indices("href=\"#") {
+            let rest = &doc[i + 7..];
+            let end = rest.find('"').expect("an href must be terminated");
+            let target = &rest[..end];
+            checked += 1;
+            if !ids.contains(&target) {
+                dangling.push(target);
+            }
+        }
+        dangling.sort_unstable();
+        dangling.dedup();
+        assert!(
+            dangling.is_empty(),
+            "anchors pointing at no id in the document: {dangling:?}"
+        );
+        // Floor: the scan must see the cross-page links the wiki pages carry,
+        // or a change to the markup leaves this walking an empty document.
+        assert!(
+            checked > 120,
+            "only {checked} anchors scanned — this guard is checking almost nothing"
+        );
     }
 
     /// Exactly one well-formed document, with its CSS and JS inline.
@@ -5057,8 +5199,8 @@ mod tests {
     #[test]
     fn every_nav_link_has_a_page() {
         let doc = generate();
-        for pg in PAGES {
-            let id = pg.id;
+        for pg in PAGES.iter() {
+            let id = &pg.id;
             assert!(
                 doc.contains(&format!("id=\"{id}\"")),
                 "no section for nav page `{id}`"
@@ -5087,7 +5229,7 @@ mod tests {
     #[test]
     fn every_page_is_in_a_declared_section_and_every_section_renders() {
         let nav = nav();
-        for pg in PAGES {
+        for pg in PAGES.iter() {
             assert!(
                 SECTIONS.iter().any(|s| s.id == pg.section),
                 "page `{}` names section `{}`, which is not in SECTIONS",
@@ -5132,7 +5274,7 @@ mod tests {
     fn pages_are_emitted_in_sidebar_order() {
         let doc = generate();
         let mut at = 0usize;
-        for pg in PAGES {
+        for pg in PAGES.iter() {
             let needle = format!("<section class=\"page\" id=\"{}\">", pg.id);
             let found = doc[at..]
                 .find(&needle)
@@ -5142,7 +5284,7 @@ mod tests {
         // Prev/next: every page but the first names its predecessor, and every
         // page but the last names its successor.
         for (i, pg) in PAGES.iter().enumerate() {
-            let foot = page_close(pg.id);
+            let foot = page_close(&pg.id);
             assert_eq!(
                 foot.contains("class=\"prev\""),
                 i > 0,
