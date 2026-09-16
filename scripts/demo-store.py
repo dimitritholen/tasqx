@@ -2,15 +2,17 @@
 """Build a demo store for screenshots: fictional work with a few months of history.
 
     scripts/demo-store.py                  # writes target/demo/tasks.db
-    TASQX=./target/debug/tasqx scripts/demo-store.py
+    TASQX_DB=$PWD/target/scratch.db TASQX=./target/debug/tasqx scripts/demo-store.py
 
 Nothing renders it directly any more: scripts/docs-capture.sh rebuilds this
 store under a pinned clock and captures every screen from it into
 crates/tasqx-cli/docs-fixtures, and a picture is made from the fixture rather
 than from the store (docs/maintainers/terminal-style.md §14):
 
-    TASQX=target/debug/tasqx scripts/docs-capture.sh
-    TASQX=target/debug/tasqx scripts/snap.sh list        # → target/snaps
+    TASQX_DB=$PWD/target/scratch.db TASQX=target/debug/tasqx \\
+        scripts/docs-capture.sh --no-daemon
+    TASQX_DB=$PWD/target/scratch.db TASQX=target/debug/tasqx \\
+        scripts/snap.sh list                                  # → target/snaps
 
 The HTML report in docs/img/report.png is the one picture with no fixture behind
 it — it is a page, not a screen — so it is still rendered from this store

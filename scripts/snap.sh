@@ -7,7 +7,7 @@
 #
 #   scripts/snap.sh list                 # → target/snaps/list@2x.png
 #   scripts/snap.sh dashboard
-#   TASQX=./target/debug/tasqx scripts/snap.sh pick 3
+#   TASQX_DB=$PWD/target/scratch.db TASQX=./target/debug/tasqx scripts/snap.sh pick 3
 #
 # Env:
 #   TASQX   binary to render with (default: the tasqx on PATH)

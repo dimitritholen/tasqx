@@ -263,15 +263,17 @@ docs-capture.sh ──> <name>.ansi ──> ansi_html ──┬─> tasqx docs  
 
 ```console
 $ cargo build -p tasqx-cli
-$ TASQX=target/debug/tasqx scripts/docs-capture.sh    # only if the screen moved
-$ TASQX=target/debug/tasqx scripts/snap.sh list
-$ TASQX=target/debug/tasqx scripts/snap.sh dashboard 3   # 3x, for a close look
+$ TASQX_DB=$PWD/target/scratch.db TASQX=target/debug/tasqx \
+      scripts/docs-capture.sh --no-daemon                 # only if the screen moved
+$ TASQX_DB=$PWD/target/scratch.db TASQX=target/debug/tasqx scripts/snap.sh list
+$ TASQX_DB=$PWD/target/scratch.db TASQX=target/debug/tasqx scripts/snap.sh dashboard 3
 ```
 
 Steps 2 and 3 open no store and no daemon: the fixture is compiled into the
-binary. A dev build still gets `TASQX` pointed at it, and `CLAUDE.md`'s
-`TASQX_DB=<scratch>/tasks.db` still belongs on the command line — these scripts
-do not relax the rule, they simply have nothing to read.
+binary. The scratch `TASQX_DB` (and, for the capture, `--no-daemon`) is for
+`CLAUDE.md`'s dev-build guard, which reads the command line and not the script,
+so it has to be spelled on each line — these scripts do not relax the rule,
+they simply have nothing to read.
 
 `snap.sh` writes into `target/snaps/`, so pictures do not reach a commit. The
 three in `docs/img/` are the exception and the reason this path exists at all:
@@ -301,8 +303,10 @@ embeds them, and `ansi_html.rs` renders them into the guide as styled text
 (DESIGN.md D149).
 
 ```console
-$ TASQX=target/debug/tasqx scripts/docs-capture.sh
-$ TASQX=target/debug/tasqx scripts/docs-capture.sh --check   # what CI runs
+$ TASQX_DB=$PWD/target/scratch.db TASQX=target/debug/tasqx \
+      scripts/docs-capture.sh --no-daemon
+$ TASQX_DB=$PWD/target/scratch.db TASQX=target/debug/tasqx \
+      scripts/docs-capture.sh --check --no-daemon             # what CI runs
 ```
 
 Two consequences for anyone changing a screen:
