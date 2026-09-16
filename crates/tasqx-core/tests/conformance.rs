@@ -2845,3 +2845,165 @@ fn every_mcp_tool_hands_back_the_frozen_result_of_its_method() {
         }
     }
 }
+
+// ---- the descriptions beside the freeze (#647) -------------------------------
+
+/// One documented or frozen key, reduced to what the two sides can be compared
+/// on: the type name, and the two presence flags.
+type KeyFacts = (&'static str, bool, bool);
+
+/// Flatten a frozen [`Shape`] into `path -> key -> facts`, descending into every
+/// nested shape the freeze declares.
+///
+/// The path vocabulary is `tasqx_core::docs`': `result` is the result object,
+/// `result.tasks[]` the shape of one element of its `tasks` array,
+/// `result.groups[].cost` an object inside such an element. A field whose
+/// `inner` is empty is not descended into — that is the freeze saying "this
+/// object's keys are not part of the contract" (`payload`, `set`, `restored`),
+/// and the documentation says the same by having no group for that path.
+fn flatten(shape: Shape, path: &str, out: &mut BTreeMap<String, BTreeMap<&'static str, KeyFacts>>) {
+    let here = out.entry(path.to_string()).or_default();
+    for group in shape {
+        for f in *group {
+            here.insert(f.key, (f.ty.name(), f.null_ok, f.optional));
+        }
+    }
+    for group in shape {
+        for f in *group {
+            if f.inner.is_empty() {
+                continue;
+            }
+            let suffix = if f.ty == Ty::Array { "[]" } else { "" };
+            flatten(f.inner, &format!("{path}.{}{suffix}", f.key), out);
+        }
+    }
+}
+
+/// The same map, built from the documentation module instead.
+fn documented(method: &str) -> BTreeMap<String, BTreeMap<&'static str, KeyFacts>> {
+    let mut out: BTreeMap<String, BTreeMap<&'static str, KeyFacts>> = BTreeMap::new();
+    for (path, group) in tasqx_core::docs::result_shape(method) {
+        let here = out.entry((*path).to_string()).or_default();
+        for f in *group {
+            here.insert(f.key, (f.ty, f.null_ok, f.optional));
+        }
+    }
+    out
+}
+
+/// `src/docs.rs` describes every key this suite freezes, and no other.
+///
+/// The reference site renders those descriptions as the response table for each
+/// method, so an undescribed key is a table with a hole in it and a described
+/// key that no longer exists is a page teaching a field nobody can read. Both
+/// used to be possible with every gate green: the descriptions were prose in
+/// the generator, and nothing compared them with the shape.
+///
+/// Compared per METHOD and per nested PATH, on the key set and on the three
+/// facts a client branches on — the type, whether `null` is legal, whether the
+/// key can be absent — because a description sitting beside the wrong flag is
+/// worse than none: it is confidently wrong.
+///
+/// The FIRST case per method is the canonical shape, and the others are
+/// deliberately skipped: a second case is the same method under a different
+/// fixture (`task.get` with and without `explain`), except for `task.list`,
+/// whose third case is an explicit `fields` projection — a caller-chosen row,
+/// not a second contract, and documenting it as one would say this method has
+/// two answers.
+#[test]
+fn documented_response_shapes_match_the_freeze() {
+    let all = cases();
+    let mut seen: BTreeSet<&str> = BTreeSet::new();
+    let mut checked = 0usize;
+
+    for c in &all {
+        if !seen.insert(c.method) {
+            continue;
+        }
+        let mut frozen = BTreeMap::new();
+        flatten(c.shape, "result", &mut frozen);
+        let docs = documented(c.method);
+
+        let frozen_paths: Vec<&String> = frozen.keys().collect();
+        let doc_paths: Vec<&String> = docs.keys().collect();
+        assert_eq!(
+            frozen_paths, doc_paths,
+            "`{}`: tasqx_core::docs::result_shape documents a different set of nested objects \
+             than the freeze holds",
+            c.method
+        );
+
+        for (path, keys) in &frozen {
+            let documented_keys = &docs[path];
+            let frozen_names: Vec<&&str> = keys.keys().collect();
+            let doc_names: Vec<&&str> = documented_keys.keys().collect();
+            assert_eq!(
+                frozen_names, doc_names,
+                "`{}` at `{path}`: the documented keys are not the frozen ones",
+                c.method
+            );
+            for (key, facts) in keys {
+                assert_eq!(
+                    documented_keys[key], *facts,
+                    "`{}` at `{path}.{key}`: the description claims \
+                     (type, null_ok, optional) = {:?}, the freeze holds {facts:?}",
+                    c.method, documented_keys[key]
+                );
+                checked += 1;
+            }
+        }
+    }
+
+    // Floor: a map-building bug that returned nothing would green every loop
+    // above while comparing no key at all.
+    assert!(
+        checked > 250,
+        "only {checked} keys compared — this guard is checking almost nothing"
+    );
+}
+
+/// Every description is a sentence, not a placeholder.
+///
+/// The equality guard above cannot see an empty string: a `FieldDoc` with no
+/// `desc` has the right key, the right type and the right flags, and renders as
+/// a table row with an empty cell — which is exactly what an unfinished
+/// reference looks like.
+#[test]
+fn every_documented_field_carries_a_description() {
+    let mut bare: Vec<String> = Vec::new();
+    let mut count = 0usize;
+    for (method, ..) in PARAMS {
+        for (path, group) in tasqx_core::docs::result_shape(method) {
+            for f in *group {
+                count += 1;
+                if f.desc.trim().len() < 10 {
+                    bare.push(format!("{method} {path}.{}", f.key));
+                }
+            }
+        }
+    }
+    assert!(
+        bare.is_empty(),
+        "response keys with no description: {bare:?}"
+    );
+    assert!(count > 250, "only {count} descriptions seen");
+}
+
+/// Every method this build serves has a documented response shape.
+///
+/// `result_shape` answers an unknown method with an empty slice rather than
+/// panicking, so a method added to `PARAMS` and not to the documentation would
+/// otherwise render a section with no response table and nothing would say so.
+#[test]
+fn every_served_method_has_a_documented_response_shape() {
+    let undocumented: Vec<&str> = PARAMS
+        .iter()
+        .map(|(m, _, _)| *m)
+        .filter(|m| tasqx_core::docs::result_shape(m).is_empty())
+        .collect();
+    assert!(
+        undocumented.is_empty(),
+        "these methods answer with a shape nobody described: {undocumented:?} — add them to \
+         `result_shape` in crates/tasqx-core/src/docs.rs"
+    );
+}
