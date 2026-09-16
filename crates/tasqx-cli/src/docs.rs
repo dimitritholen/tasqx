@@ -395,7 +395,10 @@ const METHODS: [(&str, &str, &str); 42] = [
          title, tags and project, echoed in <code>matched</code>, scoped to that project and \
          reported in <code>project</code>. The derived expression is a disjunction: a caller's \
          query states what they want and is ANDed, a derived one is a bag of the task's own \
-         words and would answer nothing if it were.",
+         words and would answer nothing if it were. Half the page (rounded up) is reserved for \
+         knowledge docs and annotations fill the rest, either kind taking the other's unused \
+         slots, docs listed first (D147); <code>reserved_docs</code>, <code>docs_total</code> \
+         and <code>annotations_total</code> say what was done.",
     ),
     (
         "report.outcomes",
