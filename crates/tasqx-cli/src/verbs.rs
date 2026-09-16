@@ -591,7 +591,7 @@ pub(crate) fn run_done(
     // D138's unproven completion, on the same stderr channel as the other two
     // and first of the three: an open criterion is the one that says the work
     // may not actually be finished.
-    // D149's forced completion goes out first of all, on the same stderr
+    // D150's forced completion goes out first of all, on the same stderr
     // channel: `--force` overrode an edge the store held the caller to, and
     // naming which blockers were overridden is the one fact that says this
     // "done" did not take the normal path.

@@ -699,7 +699,7 @@ const R_TASK_DONE: Shape = &[&[
     req("title", Ty::Str),
     req("tracked", Ty::Str),
     nul("estimate", Ty::Str),
-    // D149: present only on a completion that overrode still-open blockers.
+    // D150: present only on a completion that overrode still-open blockers.
     // Both keys or neither — the unblocked completion, which is every one that
     // existed before, answers exactly as it did.
     opt("forced", Ty::Bool),
@@ -1023,7 +1023,7 @@ const OUTCOME_GROUP_ROW: &[Field] = &[
     req_of("overrun", Ty::Object, &[OUTCOME_RATE]),
     // D138. Same rate shape; its denominator is completions that HAD criteria.
     req_of("unproven", Ty::Object, &[OUTCOME_RATE]),
-    // D149. Completions that overrode still-open blockers; its denominator is
+    // D150. Completions that overrode still-open blockers; its denominator is
     // completions, like `rework`'s, because any of them could have been one.
     req_of("forced", Ty::Object, &[OUTCOME_RATE]),
 ];
@@ -1534,7 +1534,7 @@ fn cases() -> Vec<Case> {
         ),
         case(
             "task.done",
-            "D149: a completion forced past an open blocker, so `forced` and `blocked_by` are \
+            "D150: a completion forced past an open blocker, so `forced` and `blocked_by` are \
              observed — an optional key no fixture emits is documentation rather than a frozen \
              shape",
             |e| {

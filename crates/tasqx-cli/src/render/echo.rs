@@ -964,7 +964,7 @@ pub fn budget_note(hint: &str, cols: usize, unicode: bool) -> Option<String> {
     Some(fit_note(&format!("note: {first}"), &pointer, cols))
 }
 
-/// The one line `done`'s `forced: true` becomes on a terminal (D149), on
+/// The one line `done`'s `forced: true` becomes on a terminal (D150), on
 /// stderr beside the other two notes and by the same rule: which blockers
 /// were overridden, then what became of the completion. `--json` keeps the
 /// response whole (D56).

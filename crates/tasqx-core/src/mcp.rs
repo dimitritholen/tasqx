@@ -1072,7 +1072,7 @@ fn build_tool_specs() -> Vec<ToolSpec> {
                         "type": "boolean",
                         "description": "Complete the task even though some of its dependencies \
                             are still open. Without it, a task with open blockers is refused \
-                            with `conflict` naming them (D149). The override is recorded on the \
+                            with `conflict` naming them (D150). The override is recorded on the \
                             completion event and `tasqx_outcomes` counts it under `forced`."
                     }
                 },

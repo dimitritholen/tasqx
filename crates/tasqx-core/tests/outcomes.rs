@@ -80,7 +80,7 @@ fn a_reopen_from_cancelled_is_not_rework() {
 
 // ---- forced completions ---------------------------------------------------
 
-/// D149. `task.done` refuses a task whose dependencies are still open, and
+/// D150. `task.done` refuses a task whose dependencies are still open, and
 /// `force: true` completes it anyway — which would be an override nobody ever
 /// sees again if the log did not carry it. This is where the pattern shows up,
 /// for the reason `unproven` exists: a maintainer reads the rate, rather than

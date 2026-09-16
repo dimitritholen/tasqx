@@ -3808,7 +3808,7 @@ above.
 
 **(d) Drift is a CI failure, not a stale picture.** Written when #644's drift job lands; widened by #647 and #649 as more captured surfaces enter the site.
 
-### D149 — task.done refuses a task with open blockers and records the override that completes it anyway; report.outcomes counts forced completions (extends D11, D145; the counted-not-blocked rule of D138 does not apply)
+### D150 — task.done refuses a task with open blockers and records the override that completes it anyway; report.outcomes counts forced completions (extends D11, D145; the counted-not-blocked rule of D138 does not apply)
 
 **Decision:** `task.done` refuses, `conflict`, when the task being completed still has an unresolved blocker (D145's own `unmet_blocker_source`, unchanged): `cannot complete #610: blocked by #623 (pending)`, naming every open blocker. The optional bool param `force` (MCP `force: true`, CLI `--force`) overrides the refusal and completes the task anyway; the done event gains `forced: true` and `blocked_by: [623]`, and the response gains the same `forced: true` additively plus `blocked_by: [{"short_id": 623, "title": "..."}]` for the readers that resolve titles the way `unblocked` already does. `report.outcomes` gains an eighth metric, `forced` — shaped exactly like `rework` (`{count, n, rate, refs}`, `n` = completions in scope) — and `OUTCOME_METRICS` grows from 7 entries to 8: rework, calibration, cost, silent, abandonment, overrun, unproven, forced. Cancelling a blocked task (`task.cancel`, `task.modify set status:cancelled`) is untouched by all of this: it needs no flag and is refused nothing.
 

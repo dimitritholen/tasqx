@@ -212,7 +212,7 @@ fn article_for_status(status: Status) -> &'static str {
     }
 }
 
-/// One dependency still keeping a task blocked, as D149's refusal names it.
+/// One dependency still keeping a task blocked, as D150's refusal names it.
 ///
 /// A struct rather than the `Value` row [`Engine::unmet_blockers`] yields,
 /// because this one is read THREE ways off a single query — into the refusal
@@ -715,7 +715,7 @@ impl Engine {
         // covering them. Parsed here with the rest, before the lock.
         let checks_passed = opt_str_array(p, "checks_passed")?;
         let evidence = opt_str_nonempty(p, "evidence")?;
-        // D149: the override for a task whose dependencies are still open.
+        // D150: the override for a task whose dependencies are still open.
         // Absent is false, and false is the same thing as absent — there is no
         // "force: false" that means anything different from not asking.
         let force = opt_bool(p, "force")?.unwrap_or(false);
@@ -738,7 +738,7 @@ impl Engine {
             }
         }
 
-        // D149, finding #626. Completing a task whose dependencies are still
+        // D150, finding #626. Completing a task whose dependencies are still
         // open used to succeed in silence — on a store that KNEW, and had said
         // so through `blocked: true` on the same task a moment earlier. The
         // one moment the fact would have changed what the caller did next is
@@ -804,7 +804,7 @@ impl Engine {
         // event payload rather than on the task row.
         let mut done_payload = json!({ "completed": ts });
         correlation.apply(&mut done_payload);
-        // D149: the durable half of the override. Reaching here with blockers
+        // D150: the durable half of the override. Reaching here with blockers
         // in hand means `force` was passed, so this is the record of a
         // completion that went ahead of its dependencies — with WHICH ones
         // were open at that instant, which is the part nothing else can
@@ -881,7 +881,7 @@ impl Engine {
             "tracked": iso_duration(total),
             "estimate": task.estimate,
         });
-        // D149: the response half, additive and present only on a completion
+        // D150: the response half, additive and present only on a completion
         // that actually overrode something — the unblocked path answers byte
         // for byte as it did before, which is what every existing client reads.
         // `blocked_by` carries the `{short_id, title}` row `unmet_blockers`
@@ -2049,7 +2049,7 @@ impl Engine {
     }
 
     /// The same unmet blockers [`Self::unmet_blockers`] lists, with each one's
-    /// STATUS beside it — what D149's refusal message needs and the JSON row
+    /// STATUS beside it — what D150's refusal message needs and the JSON row
     /// shape deliberately does not carry.
     ///
     /// A third caller of [`Self::unmet_blocker_source`] rather than a second
@@ -3779,7 +3779,7 @@ mod tests {
     /// Reproduces tasqx audit #158.
     #[test]
     fn completing_a_task_whose_blocker_is_still_open_clears_the_blocked_flag() {
-        // D149 refuses this completion without `force`, which is the whole
+        // D150 refuses this completion without `force`, which is the whole
         // point of that ruling — the state under test here is what the store
         // then says about the closed dependent.
         let e = seeded(); // #1 blocker (pending), #2 depends on #1
