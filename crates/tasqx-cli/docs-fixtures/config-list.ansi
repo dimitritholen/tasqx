@@ -1,0 +1,14 @@
+[38;2;138;138;138mSETTING              VALUE                                 SOURCE[0m
+theme.name           nord                                  [2;38;2;76;86;106mdefault[0m
+dashboard.enabled    true                                  [2;38;2;76;86;106mdefault[0m
+dashboard.panels     tasks,projects,burndown,pulse,effort  [2;38;2;76;86;106mconfig.toml[0m
+dashboard.refresh    auto                                  [2;38;2;76;86;106mdefault[0m
+dashboard.window     week                                  [2;38;2;76;86;106mdefault[0m
+notify.enabled       false                                 [2;38;2;76;86;106mdefault[0m
+tokens.enabled       false                                 [2;38;2;76;86;106mdefault[0m
+otlp.enabled         false                                 [2;38;2;76;86;106mdefault[0m
+otlp.port            4318                                  [2;38;2;76;86;106mdefault[0m
+daemon.idle_timeout  0                                     [2;38;2;76;86;106mdefault[0m
+completion.hint      true                                  [2;38;2;76;86;106mdefault[0m
+default_project      website                               [2;38;2;76;86;106mstore[0m
+detail.time_format   both                                  [2;38;2;76;86;106mdefault[0m

@@ -37,6 +37,19 @@ macro_rules! screens {
 }
 
 screens![
+    "init-echo",
+    "use-echo",
+    "archive-echo",
+    "modify-echo",
+    "tag-echo",
+    "untag-echo",
+    "dep-echo",
+    "undep-echo",
+    "check-echo",
+    "cancel-echo",
+    "reopen-echo",
+    "stop-echo",
+    "config-list",
     "list",
     "list-narrow",
     "agenda",
