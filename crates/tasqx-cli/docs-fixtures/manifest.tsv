@@ -47,6 +47,29 @@
 #                          carries the memory API instead.
 #
 #name	kind	cols	rows	args	keys	stdin
+# --- CLI reference screens (#646) ---
+#
+# One per verb that the reference (crates/tasqx-cli/src/docs/cli_ref.rs) shows
+# output for and that had no screen before. Every write runs pipe-mut, against
+# its own copy of the store, so the demo store's ids are the same for all of
+# them: 46 is a done task, 48 is the running one, 50 blocks 51, 55 carries
+# +docs. `undo` is deliberately absent — it reverses the newest event, and the
+# newest event here is the `start` demo-store.py runs, which `undo` refuses
+# (exit 5); the row would fail the capture rather than show a screen.
+init-echo	pipe-mut	100	-	init research	-	-
+use-echo	pipe-mut	100	-	use api	-	-
+archive-echo	pipe-mut	100	-	archive home	-	-
+modify-echo	pipe-mut	100	-	modify 55 due:friday !high	-	-
+tag-echo	pipe-mut	100	-	tag 55 openapi sdk	-	-
+untag-echo	pipe-mut	100	-	untag 55 docs	-	-
+dep-echo	pipe-mut	100	-	dep 52 49	-	-
+undep-echo	pipe-mut	100	-	undep 51 50	-	-
+check-echo	pipe-mut	100	-	check add 50 "p99 stays under 200ms at the new ceiling"	-	-
+cancel-echo	pipe-mut	100	-	cancel 59	-	-
+reopen-echo	pipe-mut	100	-	reopen 46	-	-
+stop-echo	pipe-mut	100	-	stop 48	-	-
+config-list	pipe	100	-	config list	-	-
+#
 list	pipe	100	-	list	-	-
 list-narrow	pipe	80	-	list	-	-
 agenda	pipe	100	-	agenda	-	-

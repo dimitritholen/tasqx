@@ -44,6 +44,7 @@ use std::sync::LazyLock;
 
 use crate::html::esc;
 
+mod cli_ref;
 mod markdown;
 
 /// The verb table the Commands page renders: `(verb, aliases, method)`.
@@ -1204,7 +1205,7 @@ fn page_install() -> String {
         "<code>tasqx list</code> shows the <code>@working</code> filter: everything pending or \
          active that is not blocked, hottest first. A bare <code>tasqx</code> prints the same \
          table wherever it is not talking to a person — piped, redirected, or under \
-         <code>--json</code> — and opens the <a href=\"#h-dashboard\">dashboard</a> when it is.",
+         <code>--json</code> — and opens the <a href=\"#cli-dashboard\">dashboard</a> when it is.",
     ));
     s.push_str(&snippet(
         "tasqx list",
@@ -1295,566 +1296,15 @@ fn page_install() -> String {
 // Page 3 — Commands
 // ============================================================================
 
+/// The Commands page: the CLI reference, one section per verb.
+///
+/// The body lives in [`cli_ref`], which derives every section from
+/// [`crate::cmddoc::COMMAND_REF`] and clap rather than spelling verbs out here.
+/// What was in this function was a hand-picked dozen verbs with hand-typed
+/// output beside them, which is two drift surfaces at once: a verb could be
+/// missing and a block could describe a screen this build no longer prints.
 fn page_commands() -> String {
-    let mut s = page_open("commands");
-
-    s.push_str(&lead(
-        "Every verb is a thin translation to exactly one core API method: it builds a params \
-         object, dispatches, and renders. Add <code>--json</code> to any of them to get the raw \
-         API result instead of the table.",
-    ));
-
-    s.push_str(&h3("Global flags"));
-    s.push_str(&p("These work on every subcommand."));
-    // Rendered from GLOBAL_FLAGS, which the cmddoc guard binds to clap's own
-    // global argument list — the per-verb usage guard never sees these. The
-    // flag cell is *split* into a name and a value shape rather than restated
-    // beside it: one source, and the guard keeps holding the half it checks.
-    let split: Vec<(String, String)> = GLOBAL_FLAGS
-        .iter()
-        .map(|(flag, _)| split_flag(flag))
-        .collect();
-    let global_params: Vec<Param> = split
-        .iter()
-        .zip(GLOBAL_FLAGS.iter())
-        .map(|((name, ty), (_, effect))| Param {
-            name,
-            ty,
-            // Nothing global is required: each has a defined behaviour when it
-            // is absent, and that behaviour is what the description states.
-            required: false,
-            default: None,
-            html_desc: effect,
-        })
-        .collect();
-    s.push_str(&param_table("global-flags", &global_params));
-
-    s.push_str(&h3("The verb table"));
-    // The count is counted, not spelled out. It was written as "Twenty-six" and
-    // the table had already grown to 28 — the same restated-value bug as the
-    // prose column below, and one no test could see because a wrong number reads
-    // exactly like a right one.
-    s.push_str(&p(&format!(
-        "{} verbs. The method column is the API call the verb makes — that mapping is \
-         the whole contract.",
-        VERBS.len()
-    )));
-    // Rendered from VERBS, which the drift test asserts against clap's own
-    // subcommand table. The page cannot list a verb the CLI lacks, or omit one it has.
-    //
-    // The "What it does" cell comes from `cmddoc` — the same string `tasqx
-    // <verb> -h` prints — rather than from a prose column here, so the guide and
-    // the terminal cannot describe a verb differently. It is plain text, so it
-    // goes through `esc` like every other untrusted-shaped cell.
-    let verb_rows: Vec<Vec<String>> = VERBS
-        .iter()
-        .map(|(verb, aliases, method)| {
-            let m = if method.starts_with('—') || method.starts_with('(') {
-                method.to_string()
-            } else {
-                format!("<code>{method}</code>")
-            };
-            vec![
-                format!("<code>{verb}</code>"),
-                aliases.to_string(),
-                m,
-                esc(verb_summary(verb)),
-            ]
-        })
-        .collect();
-    s.push_str(&table_owned(
-        &["Verb", "Aliases", "Method", "What it does"],
-        &verb_rows,
-    ));
-
-    s.push_str(&h3("Referring to a task"));
-    s.push_str(&p(
-        "Anywhere a command takes a <code>&lt;ref&gt;</code>, it accepts either the short id you \
-         see in the table (<code>1</code>) or the full UUID. Short ids are for your fingers; UUIDs \
-         are stable forever and are what <a href=\"#data\">export</a> carries.",
-    ));
-
-    // ---- add
-    s.push_str(&h3("add"));
-    s.push_str(&p(
-        "Capture a task. Flags win over inline sugar when both name the same field.",
-    ));
-    // Rendered from ADD_FIELDS; the sugar column is bound to the parser's own
-    // key table by `documented_sugar_keys_match_the_parser`.
-    let add_rows: Vec<Vec<String>> = ADD_FIELDS
-        .iter()
-        .map(|(flag, sugar, notes)| {
-            vec![
-                (*flag).to_string(),
-                (*sugar).to_string(),
-                (*notes).to_string(),
-            ]
-        })
-        .collect();
-    s.push_str(&table_owned(&["Flag", "Sugar", "Notes"], &add_rows));
-    s.push_str(&p(
-        "A <code>project:</code> must be one you created — <code>init</code> it first, and every \
-         task is somewhere <code>projects</code> lists:",
-    ));
-    s.push_str(&snippet(
-        "tasqx init home\ntasqx add \"Water the plants project:home repeat:\\\"every 3 days\\\" due:today\"",
-        "home\n\
-         created   default stays work.tasqx   tasqx use \"home\"\n\
-         ▌ #4  Water the plants\n\
-         ▌ added   - ▄▄▄▃ 11.4   home   due today 23:59   ↻ every 3 days",
-    ));
-
-    // ---- modify
-    s.push_str(&h3("modify"));
-    s.push_str(&p(
-        "Takes the same sugar and the same date grammar as <code>add</code> — a token means the \
-         same thing in both verbs. Bare words become the new title; omit them to leave it alone.",
-    ));
-    s.push_str(&snippet(
-        "tasqx modify 2 due:monday !medium",
-        "▌ #2  Write the user guide\n\
-         ▌ modified   M ▄▄▄▃ 11.0   due Mon   work.tasqx   +docs   rev 2",
-    ));
-    s.push_str(&p(
-        "Setting and clearing are deliberately different shapes. A value is <code>due:friday</code> \
-         or <code>--due friday</code>; removal is <em>only ever</em> <code>--clear due</code>. There \
-         is no magic empty value, so a shell variable that expands to nothing can never silently \
-         wipe a field it meant to set.",
-    ));
-    s.push_str(&snippet(
-        "tasqx modify 2 --clear priority",
-        "▌ #2  Write the user guide\n\
-         ▌ modified   priority cleared   - ▄▄▂▁ 7.1   work.tasqx   due Mon   +docs   rev 3",
-    ));
-    s.push_str(&p("<code>--clear</code> is repeatable over a closed set:"));
-    s.push_str(&pre_plain(&DOCUMENTED_CLEAR_FIELDS.join("   ")));
-    s.push_str(&p(
-        "<code>title</code> and <code>status</code> are absent on purpose: a task without a title \
-         is not a task, and lifecycle moves through <code>start</code>/<code>done</code>/<code>cancel</code> \
-         so their invariants hold. Naming a field in both a set and a <code>--clear</code> is a \
-         <code>bad_request</code>, not a precedence puzzle.",
-    ));
-    s.push_str(&p(
-        "<code>--expected-rev &lt;n&gt;</code> gives you optimistic concurrency: the modify fails \
-         with <code>conflict</code> (exit 5) unless the task is still at that rev, so a concurrent \
-         edit is reported instead of clobbered. <code>tasqx show &lt;ref&gt; --json</code> reports the \
-         current <code>_rev</code>, and every successful modify prints the new one.",
-    ));
-    s.push_str(&p(
-        "<code>--tracked &lt;duration&gt;</code> corrects the tracked-time total — the same \
-         duration grammar as <code>--estimate</code>, but a modify-only field: there is no inline \
-         sugar and no place for it on <code>add</code>, since a correction is only meaningful on a \
-         task that already has a total. It overwrites the stored total outright rather than adding \
-         to it, and <code>--clear tracked</code> resets it to zero, the same value a never-timed \
-         task reports.",
-    ));
-
-    // ---- list
-    s.push_str(&h3("list"));
-    // The key list is rendered from `engine::SORT_KEYS`, never retyped: this
-    // page is where a reader looks up what `sort` accepts, and a stale list
-    // here sends them to a key the engine now refuses.
-    s.push_str(&p(&format!(
-        "Everything after <code>list</code> is the <a href=\"#filters\">filter</a>. No filter means \
-         <code>@working</code>. Results sort by <code>-urgency</code>. Callers of the JSON API can \
-         pass <code>sort</code>; the valid keys are {}, each optionally prefixed with <code>-</code> \
-         for descending. An unknown key is rejected rather than ignored.",
-        tasqx_core::engine::SORT_KEYS
-            .iter()
-            .map(|k| format!("<code>{k}</code>"))
-            .collect::<Vec<_>>()
-            .join(", ")
-    )));
-    // Same rule, same reason: `fields` is rendered from `engine::TASK_FIELDS`,
-    // which is itself read off the projection, so this page cannot name a field
-    // the engine does not emit.
-    s.push_str(&p(&format!(
-        "They can also pass <code>fields</code> to trim each row to the keys they need. The valid \
-         fields are {}. An unknown field is rejected rather than dropped, so a typo fails loudly \
-         instead of rendering an empty column forever.",
-        tasqx_core::engine::TASK_FIELDS
-            .iter()
-            .map(|k| format!("<code>{k}</code>"))
-            .collect::<Vec<_>>()
-            .join(", ")
-    )));
-    s.push_str(&snippet(
-        "tasqx list \"project:work.tasqx +api\"",
-        "project:work.tasqx +api   1 task\n\
-         \n\
-         \x20 ID          URG  TASK                         PROJECT     DUE  TAGS\n\
-         \x20  1  H ▄▄▄▄ 15.7  Ship the v1 JSON API freeze  work.tasqx  Fri  +api +release",
-    ));
-
-    // ---- agenda
-    s.push_str(&h3("agenda"));
-    s.push_str(&p(
-        "<code>agenda</code> asks the same question <code>list</code> does and answers it in the \
-         other order: by time, grouped by day. It maps to the same <code>task.list</code> call — \
-         there is no <code>agenda</code> method, because the grouping is a rendering of fields \
-         every row already carries.",
-    ));
-    s.push_str(&snippet(
-        "tasqx agenda",
-        "through 26 Sep (+14d)   5 tasks · 1 overdue\n\
-         \n\
-         \x20 ID          URG  TASK                             PROJECT     WHEN        TAGS\n\
-         Overdue\n\
-         \x20  3  H ▄▄▄▄ 18.0  Fix WAL busy_timeout on Windows  work.tasqx  due 5d ago  +bug\n\
-         \n\
-         Today · Sat 12 Sep\n\
-         \x20  2  - ▄▄▄▄ 12.0  Write API conformance tests      work.tasqx  due 10:00   +api\n\
-         \x20  1  H ▄▄▄▄ 17.9  Ship the v1 JSON API freeze      work.tasqx  due 15:00   +api +release\n\
-         \n\
-         Tomorrow · Sun 13 Sep\n\
-         \x20  4  - ▁▁▁▁  0.0  Quarterly deps audit             work.tasqx  sched\n\
-         \n\
-         Tue 15 Sep\n\
-         \x20  5  - ▄▄▄▁  9.9  Publish the API docs             work.tasqx\n\
-         \n\
-         1 undated — no due or scheduled date, so nothing puts them on a day; `tasqx list` shows them\n\
-         1 further out — `tasqx agenda --days 90` reaches the furthest",
-    ));
-    s.push_str(&p(
-        "That block was replayed on Saturday 12 September 2026, which is what <code>Today</code> names \
-         there; every heading carries its date as well for exactly that reason. A task is placed \
-         on the <strong>earlier</strong> of its <code>due</code> and its \
-         <code>scheduled</code> — the first day it asks anything of you — and the <code>WHEN</code> \
-         column says which of the two that was. #4 above is there because it is <em>scheduled</em> \
-         for Sunday and has no deadline at all; a view built on <code>due</code> alone would not \
-         have shown it, and one built on <code>scheduled</code> alone would have lost #3. A cell \
-         shows a time only when the task carries one: a date typed without a time is stored as \
-         midnight, so <code>due</code> on its own means exactly what the store knows.",
-    ));
-    s.push_str(&p(
-        "Overdue rows come first and are always shown, whatever <code>--days</code> says — a \
-         horizon is a question about the future, and hiding what you are already late on would \
-         answer a different one. The window is 14 days by default; <code>--days N</code> moves it.",
-    ));
-    s.push_str(&note(
-        "Read the last two lines. This view leaves rows out for two reasons of its own, and it \
-         counts both rather than dropping them in silence: tasks with neither date have no day to \
-         sit on (<code>tasqx list</code> shows them), and tasks past the horizon are reported \
-         together with the exact <code>--days</code> that reaches the furthest one — here \
-         <code>tasqx agenda --days 90</code>, for a certificate renewal in November. A row \
-         further out than the widest window <code>--days</code> accepts is still counted, and \
-         that line names <code>tasqx list</code> instead of a <code>--days</code> the CLI would \
-         refuse.",
-    ));
-    s.push_str(&p(
-        "Everything before <code>--days</code> is the <a href=\"#filters\">filter</a>, exactly as \
-         on <code>list</code>. The default is every open status — <code>backlog</code> included, \
-         unlike <code>list</code>'s <code>@working</code>, because a task scheduled for next week \
-         <em>is</em> backlog until that day arrives and an agenda that could not show it would be \
-         useless. Done and cancelled tasks stay out unless your filter names a status, the rule \
-         <code>report</code> already applies to cancelled work; <code>tasqx agenda status:done</code> \
-         shows them. Blocked tasks are shown: the date arrives whether or not the dependency \
-         cleared.",
-    ));
-    s.push_str(&note(
-        "Days are <strong>UTC</strong> days. Every instant in the store is UTC and a date typed \
-         without a time resolves to midnight UTC, so grouping by local time would file \
-         <code>--due 2026-08-05</code> under the 4th for anyone west of Greenwich — a day earlier \
-         than the one they typed.",
-    ));
-
-    // ---- dashboard
-    s.push_str(&h3("dashboard"));
-    s.push_str(&p(
-        "<code>tasqx dashboard</code> — or a bare, interactive <code>tasqx</code> — opens the \
-         overview screen (D58). Every key below is generated from the same table the in-screen \
-         <code>?</code> overlay renders, so this page cannot drift from it the way a second \
-         hand-typed list would.",
-    ));
-    let dashboard_key_rows: Vec<Vec<String>> = crate::tui::dashboard::KEYS
-        .iter()
-        .map(|k| vec![format!("<code>{}</code>", esc(k.keys)), esc(k.help)])
-        .collect();
-    s.push_str(&table_owned(&["Key", "Does"], &dashboard_key_rows));
-    // Both counts are DERIVED, and from DIFFERENT tables, which is the whole
-    // point. The sentence said "eight" for as long as D80's fold had shipped;
-    // deriving it from `PANEL_NAMES` fixed the number but pinned it to the
-    // screen's roster, and `--json` does not answer with the screen's six —
-    // `document` writes a payload for four of them.
-    s.push_str(&p(&format!(
-        "<code>--json</code> skips the terminal gate entirely — the only verb where \
-         <code>--json</code> decides whether the gate applies. It is not the screen in text: the \
-         screen has {} panels, and the document carries a payload for {} of them ({}), beside the \
-         <code>status</code> header it always writes and a <code>panels</code> array naming what \
-         was asked for. The other two are drawn from the screen's own model, so \
-         <code>--panels pulse,effort</code> is a valid request that answers with no panel \
-         payload at all.",
-        count_word(crate::tui::dashboard::model::PANEL_NAMES.len()),
-        count_word(crate::tui::dashboard::json::PAYLOAD_PANELS.len()),
-        crate::tui::dashboard::json::PAYLOAD_PANELS
-            .map(|p| format!("<code>{p}</code>"))
-            .join(", "),
-    )));
-
-    // ---- pick
-    s.push_str(&h3("pick"));
-    s.push_str(&p(
-        "<code>tasqx pick [filter]</code> is the task browser (D124): a full-screen list over the \
-         working set whose rows are the rows <code>tasqx list</code> prints, under a header that \
-         names the filter and what the set holds. <code>enter</code> opens the task's \
-         <code>tasqx show</code> card; <code>s</code> starts the task under the cursor — the one \
-         key on this screen with a side effect, and the same single-active rule \
-         <code>tasqx start</code> follows. <code>/</code> searches: a fuzzy SUBSEQUENCE match over \
-         id, title, project and tags, where a term found whole ranks above the same letters \
-         scattered. The keys below are generated from the tables the screen's own key bar is \
-         drawn from.",
-    ));
-    for (mode, table) in [
-        ("In the list", crate::tui::pick::LIST_KEYS),
-        (
-            "In the list, with a search kept",
-            crate::tui::pick::LIST_FILTERED_KEYS,
-        ),
-        ("In the search", crate::tui::pick::SEARCH_KEYS),
-        ("On a task's card", crate::tui::pick::DETAIL_KEYS),
-    ] {
-        let rows: Vec<Vec<String>> = table
-            .iter()
-            .map(|k| vec![format!("<code>{}</code>", esc(k.keys)), esc(k.help)])
-            .collect();
-        s.push_str(&p(mode));
-        s.push_str(&table_owned(&["Key", "Does"], &rows));
-    }
-    s.push_str(&p(
-        "It needs a real terminal on BOTH stdin and stdout, so it refuses in a pipe (exit 2, D26) \
-         rather than writing escape codes into it. Leaving without starting a task exits 0 — a \
-         browser you close is not a failed run — while a filter that matches nothing still exits \
-         4, having started nothing either way. Under <code>--json</code> the body's \
-         <code>started</code> says whether this call actually opened a timer — false when you \
-         left, and false on a task that was already running, which \
-         <code>task.start</code> answers idempotently.",
-    ));
-
-    // ---- show
-    s.push_str(&h3("show"));
-    s.push_str(&p(
-        "Everything about one task, including annotations and dependency state.",
-    ));
-    s.push_str(&snippet(
-        "tasqx show 1",
-        "▌ #1  Ship the v1 JSON API freeze\n\
-         ▌\n\
-         ▌ status      pending           urgency     H ▄▄▄▄ 15.7\n\
-         ▌ project     work.tasqx        due         Fri (in 3 days)\n\
-         ▌ estimate    4h                tags        +api +release\n\
-         ▌ created     today 07:51 (just now)\n\
-         ▌ modified    today 07:51 (just now)\n\
-         ▌ rev         2\n\
-         ▌\n\
-         ▌ · Blocked on the D12 decision",
-    ));
-
-    // ---- annotate
-    s.push_str(&h3("annotate"));
-    s.push_str(&snippet(
-        "tasqx annotate 1 \"Blocked on the D12 decision\"",
-        "▌ #1  Ship the v1 JSON API freeze\n\
-         ▌ annotated   Blocked on the D12 decision",
-    ));
-
-    // ---- dep
-    s.push_str(&h3("dep and undep"));
-    s.push_str(&p(
-        "<code>tasqx dep 2 1</code> reads \"#2 depends on #1\". An open task with at least one \
-         dependency that is not yet done or cancelled is <strong>blocked</strong>, and blocked \
-         tasks drop out of <code>@working</code> — which is exactly why <code>next</code> never \
-         hands you something you cannot start.",
-    ));
-    s.push_str(&snippet(
-        "tasqx dep 2 1",
-        "▌ #2  Write the user guide\n\
-         ⊘ blocked by #1 · Ship the v1 JSON API freeze   - ▄▄▂▁ 7.1   work.tasqx   due Mon   +docs",
-    ));
-    s.push_str(&p(
-        "Note that #2 has vanished from the working set — it is blocked by #1:",
-    ));
-    s.push_str(&snippet(
-        "tasqx list",
-        "@working   3 tasks · 1 overdue · 1 due today\n\
-         \n\
-         \x20 ID          URG  TASK                         PROJECT     DUE          TAGS\n\
-         \x20  1  H ▄▄▄▄ 15.7  Ship the v1 JSON API freeze  work.tasqx  Fri          +api +release\n\
-         \x20  3  - ▄▄▄▄ 12.0  Renew the TLS cert           work.tasqx  yesterday    +ops\n\
-         \x20  4  - ▄▄▄▃ 11.4  Water the plants             home        today 23:59",
-    ));
-    s.push_str(&snippet(
-        "tasqx undep 2 1",
-        "▌ #2  Write the user guide\n\
-         ▌ no longer waits on #1   - ▄▄▂▁ 7.1   work.tasqx   due Mon   +docs",
-    ));
-
-    // ---- projects
-    s.push_str(&h3("projects"));
-    s.push_str(&p(
-        "Lists projects created with <code>init</code>. Add <code>--all</code> to include archived \
-         ones, which say so in a <code>STATUS</code> column. The <code>*</code> at the left edge \
-         marks the <a href=\"#h-use\">default project</a>, the way <code>git branch</code> marks \
-         the branch that is checked out. Every project a \
-         task can be in is on this list: naming a project no <code>init</code> created is \
-         <code>not_found</code> (exit 4) and naming an archived one is <code>conflict</code> \
-         (exit 5), on <code>add</code> and <code>modify</code> alike — a typo'd \
-         <code>project:</code> tells you, instead of filing the task somewhere this list would \
-         never show it.",
-    ));
-    s.push_str(&snippet(
-        "tasqx projects",
-        "\x20 PROJECT     DESCRIPTION\n\
-         * work.tasqx  The tasqx project itself",
-    ));
-
-    // ---- use
-    s.push_str(&h3("use"));
-    s.push_str(&p(
-        "The default project is where a bare <code>tasqx add</code> lands — an <code>add</code> with \
-         no <code>project:</code> inherits it. The <em>first</em> project you create claims it; after \
-         that, nothing moves it implicitly. <code>use</code> is the one way to change it.",
-    ));
-    s.push_str(&snippet(
-        "tasqx init prive.klussen\ntasqx use prive.klussen\ntasqx add \"Fix the shed door\"",
-        "prive.klussen\n\
-         created   default stays work.tasqx   tasqx use \"prive.klussen\"\n\
-         prive.klussen\n\
-         now the default   was work.tasqx   a bare tasqx add lands here\n\
-         ▌ #5  Fix the shed door\n\
-         ▌ added   prive.klussen",
-    ));
-    s.push_str(&p(
-        "Note what <code>init</code> did <em>not</em> do: creating <code>prive.klussen</code> left the \
-         default alone and told you so, naming the command that would move it. Every <code>add</code> \
-         reports the project it landed in, so an inherited project is never a silent one.",
-    ));
-    s.push_str(&p(
-        "The project must exist and must not be archived — <code>use</code> on an unknown name is \
-         <code>not_found</code> (exit 4) and never writes; on an archived one it is \
-         <code>conflict</code> (exit 5). Archiving the project that <em>is</em> the default clears \
-         the default rather than leaving it pointed at a retired project, and a bare \
-         <code>add</code> is then projectless until you <code>use</code> another.",
-    ));
-
-    // ---- archive
-    s.push_str(&h3("archive"));
-    s.push_str(&p(
-        "<code>archive</code> takes a project out of rotation for WRITES. Its tasks are untouched — \
-         they keep their history and their project — but the project drops out of \
-         <code>tasqx projects</code> and no write may name it any more. Reads are unaffected: \
-         <code>list</code>, <code>report</code> and <code>agenda</code> still show it and its \
-         tasks, because archiving is a shelf, not a hide.",
-    ));
-    s.push_str(&snippet(
-        "tasqx archive prive.klussen\ntasqx use work.tasqx",
-        "prive.klussen\n\
-         archived   1 open task left in it   it was your default project · tasqx use <project> sets another\n\
-         work.tasqx\n\
-         now the default   a bare tasqx add lands here",
-    ));
-    s.push_str(&p(
-        "That first line is the point of the verb having a terminal at all. The project just \
-         archived <em>was</em> the default, so archiving it cleared the default in the same \
-         transaction (D22) — leaving it pointed at a retired project would file every later bare \
-         <code>add</code> somewhere the project list no longer shows. Until you <code>use</code> \
-         another one, a bare <code>add</code> is projectless, which is the same state a brand-new \
-         store is in. Archiving a project that is <em>not</em> the default says so too, rather \
-         than saying nothing.",
-    ));
-    s.push_str(&snippet(
-        "tasqx projects --all",
-        "\x20 PROJECT        STATUS    DESCRIPTION\n\
-         \x20 prive.klussen  archived\n\
-         * work.tasqx               The tasqx project itself",
-    ));
-    s.push_str(&p(
-        "\u{201c}No write may name it\u{201d} includes <code>archive</code> itself. Retiring a \
-         project that is already retired would change nothing, so it is a <code>conflict</code> \
-         (exit 5) rather than a second success — an <code>ok</code> that changed nothing is \
-         byte-identical to the run that did the work, for you and for the event log, which is \
-         where \u{201c}when did the default move?\u{201d} is answered. The one write that still \
-         names an archived project is <code>store.import</code>, which restores the flag from a \
-         document \u{2014} see the note below.",
-    ));
-    s.push_str(&snippet(
-        "tasqx archive prive.klussen",
-        "error [conflict]: project is already archived: prive.klussen (`tasqx projects --all` \
-         lists it; archiving it again would change nothing)",
-    ));
-    s.push_str(&note(
-        "There is no <code>unarchive</code> verb and no <code>project.unarchive</code> method — \
-         among the project methods, archiving is one-way. <code>store.import</code> does write a \
-         project's <code>archived</code> flag from the document, so restoring a saved export \
-         un-archives one; that is a data restore, not an undo.",
-    ));
-
-    // ---- lifecycle
-    s.push_str(&h3("start, stop, done, cancel, reopen"));
-    s.push_str(&p(
-        "<code>start</code> runs a timer and, by default, stops any other active task — pass \
-         <code>--keep</code> to opt out of single-active. <code>done</code> on a recurring task \
-         spawns the next instance and tells you so. <code>done</code> on a task with open \
-         dependencies is refused, naming them; <code>--force</code> completes it anyway, the \
-         override is recorded, and <code>report --outcomes</code> counts it under FORCED \
-         (D150):",
-    ));
-    s.push_str(&snippet(
-        "tasqx done 4",
-        "▌ #4  Water the plants\n\
-         ▌ done today   home   due today 23:59\n\
-         \x20 #6  next, due Fri",
-    ));
-
-    // ---- docs
-    s.push_str(&h3("docs"));
-    s.push_str(&p("This page. It needs no store and no network."));
-    s.push_str(&table(
-        &["Invocation", "Behaviour"],
-        &[
-            &[
-                "<code>tasqx docs</code>",
-                "Write the guide to a temp file and open your default browser.",
-            ],
-            &[
-                "<code>tasqx docs --out &lt;path&gt;</code>",
-                "Write it there. Never opens a browser.",
-            ],
-            &[
-                "<code>tasqx docs --no-open</code>",
-                "Write the temp file, print the path, do not open.",
-            ],
-            &[
-                "<code>tasqx docs --stdout</code>",
-                "Write the HTML to stdout (pipe it anywhere).",
-            ],
-        ],
-    ));
-    s.push_str(&note(
-        "<code>tasqx docs</code> never fails because a browser is missing. On a headless box the \
-         launch is attempted, the failure is reported on stderr with the file path, and the \
-         command exits 0 — the file is the deliverable, opening it is a courtesy.",
-    ));
-
-    s.push_str(&h3("Exit codes"));
-    s.push_str(&p("Stable contract. Script against these."));
-    s.push_str(&table(
-        &["Code", "Meaning"],
-        &[
-            &["<code>0</code>", "Success."],
-            &["<code>1</code>", "<code>internal</code>, or a failure beneath the request: the store would not open, a local write failed, or <code>watch</code> had no daemon to follow."],
-            &["<code>2</code>", "<code>bad_request</code> — a bad value, an unparseable date, contradictory flags."],
-            &["<code>4</code>", "<code>not_found</code> — no such task, project, or reference."],
-            &["<code>5</code>", "<code>conflict</code> — a lost <code>--expected-rev</code> race, or a lifecycle rule."],
-            &["<code>6</code>", "<code>unsupported_version</code> — the <code>tasqx</code> major you sent is not this build's."],
-        ],
-    ));
-    s.push_str(&snippet(
-        "tasqx modify 1 --expected-rev 1 -p H ; echo \"exit=$?\"",
-        "error [conflict]: expected_rev 1 but task is at rev 2\nexit=5",
-    ));
-
-    s.push_str(&page_close("commands"));
-    s
+    cli_ref::page()
 }
 
 // ============================================================================
@@ -5473,9 +4923,33 @@ mod tests {
     /// Pull every `snippet()` block out of a page as (command, output) pairs.
     /// The page is the only source of truth here — the test reads what a reader
     /// reads, not some parallel list an author has to remember to update.
+    ///
+    /// A CAPTURED screen is not one of these, although [`term_screen`] wraps it
+    /// in the same `.snip` container: it carries a `pre.term` instead of a
+    /// `pre.out`, its command was executed against the demo store rather than
+    /// written for a reader to follow along with, and every claim it makes is
+    /// already guarded by the capture job re-running it (D149). The guards below
+    /// are about hand-written worked examples — whether the ids line up, whether
+    /// a project was created first — and a recording answers none of those
+    /// questions.
     fn snippets_of(page: &str) -> Vec<(String, String)> {
+        // The header `snippet()` writes, and `term_screen` does not.
+        const SNIPPET_HEAD: &str =
+            "<div class=\"snip-h\"><span class=\"dollar\">$</span><button class=\"copy\"";
+        assert!(
+            snippet("x", "y").contains(SNIPPET_HEAD)
+                && !term_screen("x", "list").contains(SNIPPET_HEAD),
+            "the two block shapes are no longer told apart by their header"
+        );
         let mut out = Vec::new();
         for chunk in page.split("<div class=\"snip\">").skip(1) {
+            // The two shapes differ in their header: `snippet` puts a Copy
+            // button beside the `$`, `term_screen` does not, and the header is
+            // the first thing in the chunk — which a `<pre class="term">` test
+            // is not, since the next block on the page may be a `term_block`.
+            if !chunk.starts_with(SNIPPET_HEAD) {
+                continue;
+            }
             let Some(c0) = chunk.find("<pre class=\"cmd\"><code>") else {
                 continue;
             };
@@ -5731,7 +5205,7 @@ mod tests {
         // And the guide's worked output block is the engine's message verbatim,
         // with only the project name swapped for the one the page uses.
         let doc = generate();
-        let shown = err.message.replace("old", "prive.klussen");
+        let shown = err.message.replace("old", "home");
         assert!(
             doc.contains(&esc(&shown)),
             "the Commands page shows an `archive` refusal the engine does not give.\n\
@@ -5747,11 +5221,13 @@ mod tests {
     #[test]
     fn archive_page_scopes_the_refusal_to_writes() {
         let doc = generate();
+        // One verb, one `<section class="ref" id="cli-archive">`, which ends
+        // where the next section opens.
         let section = doc
-            .split(&h3("archive"))
+            .split("id=\"cli-archive\"")
             .nth(1)
             .expect("an archive section")
-            .split(&h3("start, stop, done, cancel, reopen"))
+            .split("<section class=\"ref\"")
             .next()
             .expect("the archive section ends before the next one");
         assert!(
@@ -6029,8 +5505,12 @@ mod tests {
                 "`{name}` is not findable by the sidebar search"
             );
         }
+        // Counted over the global-flags rows alone. The page carries a
+        // parameter row for every argument of every verb now (the CLI
+        // reference, #646), so counting `class="param"` across the whole page
+        // would be counting clap's surface, not this table's.
         assert_eq!(
-            page.matches("class=\"param\"").count(),
+            page.matches("id=\"global-flags-").count(),
             GLOBAL_FLAGS.len(),
             "the parameter list and GLOBAL_FLAGS disagree"
         );
