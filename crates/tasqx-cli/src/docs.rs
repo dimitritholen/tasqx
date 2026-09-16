@@ -3464,7 +3464,8 @@ header.top { position: sticky; top: 0; z-index: 40; height: 3.25rem;
   background: color-mix(in srgb, var(--bg) 92%, transparent); backdrop-filter: blur(8px);
   border-bottom: 1px solid var(--line); padding: 0 1.5rem;
   display: flex; align-items: center; gap: 0.9rem; }
-.brand { font-weight: 700; font-size: 1.02rem; letter-spacing: -0.015em; }
+.brand { font-weight: 700; font-size: 1.02rem; letter-spacing: -0.015em;
+  min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .brand .muted { font-weight: 400; }
 .ver { margin-left: auto; font-size: 0.76rem; letter-spacing: 0.01em; }
 #navtoggle { display: none; background: var(--card); color: var(--fg);
@@ -3671,6 +3672,19 @@ footer { max-width: 78rem; margin: 0 auto; padding: 1.5rem 1.5rem 3rem;
   .pagenav { flex-direction: column; }
   .pagenav .next { margin-left: 0; }
   .pagenav a { flex: 1 1 auto; }
+}
+
+/* ---- and on a small phone, the top bar sheds what it can spare ----
+   At 320px the bar is Menu + brand + a three-way theme switch, and the brand
+   was the only part that could shrink: it wrapped to three lines and spilled
+   out of the fixed 3.25rem the sticky offsets below it are measured from. The
+   subtitle goes instead. The switch keeps its three labels, because a single
+   cycling button costs the reader a guess at what the next press does. */
+@media (max-width: 30rem) {
+  .shell { padding: 0 1rem; }
+  header.top { padding: 0 1rem; gap: 0.6rem; }
+  .brand .muted { display: none; }
+  .themebtn { padding: 0.16rem 0.42rem; }
 }
 "##;
 
@@ -5860,6 +5874,48 @@ mod tests {
             "no fallback where the clipboard API is missing"
         );
         assert!(doc.contains("'Copied'"), "no copied state");
+    }
+
+    /// The top bar cannot wrap, and on a small phone it sheds its subtitle.
+    ///
+    /// Measured on a real 390px viewport, not a 390-wide crop of one: headless
+    /// Chrome on macOS clamps `--window-size` to 500px, so a screenshot at 390
+    /// is a 500px layout with the right edge cut off and *looks* broken while
+    /// the layout is fine. Driven over CDP with the metrics overridden, the
+    /// document's `scrollWidth` equals `innerWidth` on every page — but at
+    /// 320px the brand wrapped to three lines and spilled out of the bar,
+    /// because the bar has a FIXED height that `nav`'s and `.ref-code`'s
+    /// sticky offsets are measured from. Anything in it that can wrap moves
+    /// the whole page's idea of where the viewport starts.
+    #[test]
+    fn the_top_bar_cannot_wrap_out_of_its_own_height() {
+        let doc = generate();
+        assert!(
+            doc.contains("header.top { position: sticky; top: 0; z-index: 40; height: 3.25rem;"),
+            "the bar's height is what the sticky offsets below it are measured from"
+        );
+        let (_, brand) = doc.split_once(".brand {").expect("no brand rule");
+        let brand = &brand[..brand.find('}').expect("unterminated brand rule")];
+        assert!(
+            brand.contains("white-space: nowrap"),
+            "the brand can wrap and push itself out of a fixed-height bar: {brand}"
+        );
+        assert!(
+            brand.contains("text-overflow: ellipsis") && brand.contains("min-width: 0"),
+            "a nowrap brand that cannot shrink overflows instead: {brand}"
+        );
+        let (_, small) = doc
+            .split_once("@media (max-width: 30rem) {")
+            .expect("no small-phone breakpoint");
+        assert!(
+            small.contains(".brand .muted { display: none; }"),
+            "the bar keeps its subtitle where there is no room for it"
+        );
+        // The switch itself stays: it is the only way to overrule the system
+        // palette, and it must not be what gets dropped.
+        for mode in ["light", "dark", "system"] {
+            assert!(doc.contains(&format!("data-theme-set=\"{mode}\"")));
+        }
     }
 
     /// Under 60rem the sidebar is a drawer, and the button that opens it is
