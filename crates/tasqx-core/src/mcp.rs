@@ -474,6 +474,11 @@ const TRANSPORT_ONLY_ARGS: &[(&str, &str, &str)] = &[
         "which of the two human renderings the task half of the brief is spelled in.      Same argument and same default as `tasqx_get_task`'s (D146), and only the task half      moves: what the prerequisites decided and what the store remembers follow the card      as the markdown they already were, because the choice is about the TASK and not      about its neighbourhood. `task.brief` has no opinion on how its answer is spelled.",
     ),
     (
+        "tasqx_complete_task",
+        "view",
+        "whether the response leads with the D146 box card of the task AS COMPLETED (D153).      The closing card a person reads after a completion used to cost a second      `tasqx_get_task` per task — 26 get_task calls against 14 completions over 36 hours      of transcripts — because `task.done`'s frozen result carries no task to render. So      the transport reads the task back itself and spells it ahead of the JSON. `task.done`      has no opinion on how its answer is wrapped.",
+    ),
+    (
         "tasqx_annotate_task",
         "include_body",
         "whether the response echoes the annotation body back beside its id and timestamp.      D72/D75 keep the echo ON by default — it is the caller's only evidence that a body      promised to be stored verbatim really was — so this is opt-OUT, not a reversal: a      caller who already holds every byte it sent (the common case for a long note) can      decline paying to receive them again, and one that wants the verbatim proof still      gets it by doing nothing. `annotation.add` has no opinion on how its own result is      echoed back over one particular transport.",
@@ -1056,7 +1061,9 @@ fn build_tool_specs() -> Vec<ToolSpec> {
                 samples claimed by more than one task's window. A task whose dependencies \
                 are still open is refused with `conflict` naming the blockers; pass \
                 `force: true` to complete it anyway — the override is recorded and \
-                `tasqx_outcomes` counts it.",
+                `tasqx_outcomes` counts it. Pass `view: \"card\"` when a person is about to \
+                read what shipped: the closing card of the completed task leads the response \
+                and no follow-up `tasqx_get_task` is needed.",
             // The token-count fields carry no `minimum`: the numeric-minimum
             // drift guard cannot probe a bound on a tool with required args,
             // so the floor lives in the engine (opt_u64 refuses negatives)
@@ -1115,6 +1122,16 @@ fn build_tool_specs() -> Vec<ToolSpec> {
                             are still open. Without it, a task with open blockers is refused \
                             with `conflict` naming them (D150). The override is recorded on the \
                             completion event and `tasqx_outcomes` counts it under `forced`."
+                    },
+                    "view": {
+                        "type": "string",
+                        "enum": enum_of(["markdown", "card"]),
+                        "description": "Default \"markdown\": the plain JSON result. \"card\" \
+                            answers the D146 box card of the task AS COMPLETED — Delivered row, \
+                            checks ticked or left open — inside a text code fence, as the first \
+                            block, with the JSON result unchanged behind it. For the moment you \
+                            show a PERSON what shipped; it replaces the tasqx_get_task re-read \
+                            that used to follow every completion (D153)."
                     }
                 },
                 "required": ["ref"]
@@ -2031,6 +2048,29 @@ impl<'e> McpServer<'e> {
     fn present(&self, spec: &ToolSpec, prepared: &PreparedCall, outcome: DispatchOutcome) -> Value {
         match outcome {
             Ok(mut result) => {
+                // D153: the closing card, drawn from the task as it is
+                // AFTER completion, so it carries the Delivered row and the
+                // check states. `task.done`'s frozen result has no task in it
+                // to render, so the task is read back here with the same
+                // annotation bounds the transport gives `task.get` — the card
+                // is the one `tasqx_get_task view: "card"` would draw. No
+                // budget fitting: a card is fixed 72-column geometry, a few KB
+                // at worst, well under RESPONSE_BUDGET_BYTES. A failed re-read
+                // leaves the view empty, which `tool_ok_with_view` degrades to
+                // the plain JSON: presentation cannot make a completion that
+                // really happened look broken.
+                if spec.method == "task.done" && prepared.view == View::Card {
+                    let card_opts = self.card_opts(crate::clock::now());
+                    let read = json!({
+                        "ref": result["short_id"],
+                        "annotations_limit": ANNOTATION_PAGE,
+                        "max_body_bytes": ANNOTATION_BODY_CAP,
+                    });
+                    let card = dispatch(self.engine, "task.get", &read)
+                        .map(|task| fence(&crate::markdown::task_card(&task, &card_opts)))
+                        .unwrap_or_default();
+                    return tool_ok_with_view(card, &result);
+                }
                 // The one rendered surface. Keyed on the method rather than the
                 // tool name to match the `task.modify`/`task.start` checks
                 // above; exactly one tool maps to `task.get`, so this is the

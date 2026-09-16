@@ -84,6 +84,9 @@ The tool surface is designed around one loop — work the backlog one task at a 
    that knows which task the spend served, so self-report is the primary
    measurement channel — completing without counts earns a `tokens_hint` in the
    response saying exactly that.
+   Pass `view: "card"` when a person will read the outcome: the completion then
+   leads with the box card of the task as completed (Delivered row, checks), so
+   no `tasqx_get_task` re-read is needed.
 4. `tasqx_annotate_task` — write back what was done, decisions made, anything the
    next session needs.
 

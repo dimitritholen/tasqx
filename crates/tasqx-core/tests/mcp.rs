@@ -857,6 +857,134 @@ fn complete_task_with_token_args_carries_no_hint() {
     );
 }
 
+/// D153: the closing card a person reads after a completion comes out of
+/// `tasqx_complete_task` itself, so the `tasqx_get_task` re-read that used to
+/// follow every completion disappears. The JSON block behind it is the frozen
+/// `task.done` result, unchanged by the view.
+#[test]
+fn complete_task_with_view_card_leads_with_the_closing_card_and_keeps_its_json() {
+    let engine = engine();
+    let server = McpServer::new(&engine, Scope::Write);
+
+    let finish = |id: i64, title: &str, view: Option<&str>| {
+        let added = call(&server, id, "tasqx_add_task", json!({ "title": title }));
+        let sid = tool_text(&added)["short_id"].as_i64().expect("short_id");
+        let annotated = call(
+            &server,
+            id + 1,
+            "tasqx_annotate_task",
+            json!({ "ref": sid, "body": "Shipped the widget.\n\nDetails." }),
+        );
+        assert!(!is_error(&annotated), "annotate failed: {annotated}");
+        let checked = call(
+            &server,
+            id + 2,
+            "tasqx_add_check",
+            json!({ "ref": sid, "body": "the widget ships" }),
+        );
+        assert!(!is_error(&checked), "add_check failed: {checked}");
+        let check_id = tool_text(&checked)["check"]["id"]
+            .as_str()
+            .expect("check id")
+            .to_string();
+        let mut args = json!({ "ref": sid, "checks_passed": [check_id] });
+        if let Some(v) = view {
+            args["view"] = json!(v);
+        }
+        let done = call(&server, id + 3, "tasqx_complete_task", args);
+        assert!(!is_error(&done), "complete failed: {done}");
+        (sid, done)
+    };
+
+    let (sid, done) = finish(1, "carded", Some("card"));
+    let blocks = done["result"]["content"]
+        .as_array()
+        .expect("content is an array");
+    assert_eq!(blocks.len(), 2, "card + JSON, nothing else: {done}");
+
+    let card = blocks[0]["text"].as_str().expect("the card block");
+    assert!(
+        card.starts_with("```text\n\u{250c}") && card.ends_with("```\n"),
+        "block 0 must be the fenced box card: {card:?}"
+    );
+    assert!(
+        card.contains("Delivered") && card.contains("Shipped the widget."),
+        "the card must be the task AS COMPLETED: {card}"
+    );
+    assert!(
+        card.contains("[x]"),
+        "the card must show the check it was completed with: {card}"
+    );
+
+    let result = tool_json(&done);
+    assert_eq!(result["status"], "done");
+    assert_eq!(result["short_id"], sid);
+
+    // The same completion without `view`: one block, and the very same JSON
+    // keys — the view changes the wrapping, never the frozen result (D56).
+    let (_, plain) = finish(10, "plain", None);
+    assert_eq!(
+        plain["result"]["content"]
+            .as_array()
+            .expect("content is an array")
+            .len(),
+        1,
+        "no view means the single JSON block it has always been: {plain}"
+    );
+    let keys = |v: &Value| {
+        let mut k: Vec<String> = v
+            .as_object()
+            .expect("an object result")
+            .keys()
+            .cloned()
+            .collect();
+        k.sort();
+        k
+    };
+    assert_eq!(
+        keys(&result),
+        keys(&tool_json(&plain)),
+        "view: \"card\" must not add, drop or rename a `task.done` field"
+    );
+}
+
+/// An unreadable `view` is refused BEFORE dispatch, so the refusal costs the
+/// caller nothing: the task is still there to complete with a spelling the
+/// transport knows.
+#[test]
+fn complete_task_with_an_unreadable_view_is_refused_before_it_completes() {
+    let engine = engine();
+    let server = McpServer::new(&engine, Scope::Write);
+    let added = call(&server, 1, "tasqx_add_task", json!({ "title": "survivor" }));
+    let sid = tool_text(&added)["short_id"].as_i64().expect("short_id");
+
+    let refused = call(
+        &server,
+        2,
+        "tasqx_complete_task",
+        json!({ "ref": sid, "view": "table" }),
+    );
+    assert!(
+        is_error(&refused),
+        "an unknown view must be an isError result"
+    );
+    let msg = refused["result"]["content"][0]["text"]
+        .as_str()
+        .expect("error text");
+    assert!(msg.contains("view"), "the error must name `view`: {msg}");
+
+    let got = tool_json(&call(
+        &server,
+        3,
+        "tasqx_get_task",
+        json!({ "ref": sid, "include_json": true }),
+    ));
+    assert_eq!(
+        got["status"], "pending",
+        "a refused view must not have completed the task: {got}"
+    );
+}
+
 // ---- memory over MCP (D41) ---------------------------------------------------
 
 #[test]
