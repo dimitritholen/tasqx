@@ -166,12 +166,25 @@ copy_store() {
 # cells WITH their SGR. The pane's shell inherits nothing from here, so every
 # variable the screen reads is handed over with `-e`, never interpolated into
 # shell source (one apostrophe in a value used to be executed there).
+#
+# The pane command holds the screen open with a trailing `sleep`, and that is
+# exactly what makes a FAILURE invisible: `tasqx dashboard --bogus-flag` exits
+# 2 in a tenth of a second, the sleep keeps the pane alive anyway, and what gets
+# captured and committed is a picture of clap's error message. So the command's
+# exit status is written to a file the moment it exits, and a row whose status
+# file exists by capture time is a failed row — the same refusal a piped row
+# gets — rather than a fixture. A screen that is still running has written
+# nothing, which is the whole signal.
 capture_tui() {
     local name=$1 cols=$2 rows=$3 keys=$4 db=$5 dest=$6
     shift 6
     local session="docs-$name"
+    local status_file="$work/$name.status"
+    rm -f "$status_file"
     local pane_cmd
     pane_cmd=$(printf '%q ' "$TASQX" --no-daemon "$@")
+    # `\$?` is the PANE's shell reading its own exit status, not this one's.
+    pane_cmd="$pane_cmd; echo \$? >$(printf '%q' "$status_file"); sleep 300"
     clean_env tmux -f /dev/null -L "$tmux_sock" new-session -d -s "$session" -x "$cols" -y "$rows" \
         -e "TASQX_DB=$db" \
         -e "TASQX_CONFIG_DIR=$demo_config" \
@@ -179,12 +192,25 @@ capture_tui() {
         -e "TASQX_FORCE_COLOR=1" \
         -e "COLORTERM=truecolor" \
         -e "COLUMNS=$cols" \
-        "$pane_cmd; sleep 300"
+        "$pane_cmd"
     sleep "${SETTLE:-2}"
     for key in $keys; do
         tmux -L "$tmux_sock" send-keys -t "$session" "$key"
         sleep 0.4
     done
+    # Checked here, after the keys and immediately before the capture, so a
+    # screen that dies ON a keystroke is caught too and a slow first paint is
+    # not mistaken for a death.
+    if [ -f "$status_file" ]; then
+        local code
+        code=$(tr -d '[:space:]' <"$status_file")
+        echo "docs-capture: row '$name' exited ($code) instead of holding a" >&2
+        echo "screen, so the pane below is an error, not a fixture:" >&2
+        tmux -L "$tmux_sock" capture-pane -p -t "$session" 2>/dev/null |
+            sed 's/^/  /' | sed '/^ *$/d' >&2 || true
+        tmux -L "$tmux_sock" kill-session -t "$session" 2>/dev/null || true
+        return 1
+    fi
     tmux -L "$tmux_sock" capture-pane -p -e -t "$session" >"$work/pane"
     tmux -L "$tmux_sock" kill-session -t "$session" 2>/dev/null || true
     # Trailing blank rows belong to the PANE, not to the screen: a `pick` list
@@ -246,7 +272,11 @@ while IFS=$'\t' read -r name kind cols rows args keys stdin <&3 || [ -n "${name:
         if [ "$keys" = "-" ]; then
             keys=""
         fi
-        capture_tui "$name" "$cols" "$rows" "$keys" "$db" "$dest" "$@"
+        # Refused the same way a piped row that exits nonzero is: a screen that
+        # did not stay on the screen has no fixture worth writing.
+        if ! capture_tui "$name" "$cols" "$rows" "$keys" "$db" "$dest" "$@"; then
+            exit 1
+        fi
         ;;
     *)
         echo "docs-capture: row '$name' has unknown kind '$kind'" >&2
