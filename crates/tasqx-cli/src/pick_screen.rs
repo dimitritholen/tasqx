@@ -51,7 +51,7 @@ pub(crate) fn run_pick(be: &mut Backend, ctx: &Ctx, filter: &[String]) -> CmdOut
         return Err(no_candidates(&filter_str));
     }
 
-    let mut app = tui::pick::App::new(rows, ctx, &filter_str, jiff::Timestamp::now());
+    let mut app = tui::pick::App::new(rows, ctx, &filter_str, crate::clock::now());
     let chosen = tui::with_terminal(|term| pick_loop(term, be, &mut app))
         .map_err(|e| ApiError::internal(format!("terminal error: {e}")))?;
 
@@ -249,7 +249,7 @@ pub(crate) fn picked_summary(
     task: &Value,
     titles: &render::Titles,
 ) -> String {
-    render::started(ctx, result, task, titles, jiff::Timestamp::now())
+    render::started(ctx, result, task, titles, crate::clock::now())
 }
 
 /// The `--json` body: `task.start`'s own answer, plus the identity of the task

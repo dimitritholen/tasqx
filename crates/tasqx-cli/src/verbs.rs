@@ -140,7 +140,7 @@ pub(crate) fn run_add(
     let mut fallback = result.clone();
     fallback["title"] = Value::String(parsed.title.clone());
     let task = read_back(be, &result).unwrap_or(fallback);
-    let text = render::added(ctx, &task, jiff::Timestamp::now());
+    let text = render::added(ctx, &task, crate::clock::now());
     Ok((result, text))
 }
 
@@ -311,7 +311,7 @@ pub(crate) fn run_modify(
     }
 
     let task = read_back(be, &result).unwrap_or_else(|| result.clone());
-    let text = render::modified(ctx, &task, &set, &parsed.tags, jiff::Timestamp::now());
+    let text = render::modified(ctx, &task, &set, &parsed.tags, crate::clock::now());
     Ok((result, text))
 }
 
@@ -389,7 +389,7 @@ pub(crate) fn run_list(
     // Finding #4 (audit-2026-09): an empty result said only "No tasks.",
     // giving no way to tell "nothing pending" from "this filter excludes
     // everything" — the same distinction D55 already drew for `pick`.
-    let text = render::task_table_filtered(ctx, &result, jiff::Timestamp::now(), Some(&filter_str));
+    let text = render::task_table_filtered(ctx, &result, crate::clock::now(), Some(&filter_str));
     Ok((result, text))
 }
 
@@ -467,7 +467,7 @@ pub(crate) fn run_agenda(
     filter: &[String],
     days: Option<usize>,
 ) -> CmdOutcome {
-    let now = jiff::Timestamp::now();
+    let now = crate::clock::now();
     let asked = if filter.is_empty() {
         String::new()
     } else {
@@ -526,7 +526,7 @@ pub(crate) fn run_start(
     let result = be.call("task.start", &params)?;
     let task = read_back(be, &result).unwrap_or_else(|| result.clone());
     let titles = titles_of(be, &ids_in(&result, "auto_stopped", Some("short_id")));
-    let text = render::started(ctx, &result, &task, &titles, jiff::Timestamp::now());
+    let text = render::started(ctx, &result, &task, &titles, crate::clock::now());
     Ok((result, text))
 }
 
@@ -534,7 +534,7 @@ pub(crate) fn run_stop(be: &mut Backend, ctx: &Ctx, r#ref: String) -> CmdOutcome
     let params = json!({ "ref": r#ref });
     let result = be.call("task.stop", &params)?;
     let task = read_back(be, &result).unwrap_or_else(|| result.clone());
-    let text = render::stopped(ctx, &result, &task, jiff::Timestamp::now());
+    let text = render::stopped(ctx, &result, &task, crate::clock::now());
     Ok((result, text))
 }
 
@@ -576,7 +576,7 @@ pub(crate) fn run_done(
     let result = be.call("task.done", &params)?;
     let task = read_back(be, &result).unwrap_or_else(|| result.clone());
     let titles = titles_of(be, &ids_in(&result, "unblocked", None));
-    let text = render::done(ctx, &result, &task, &titles, jiff::Timestamp::now());
+    let text = render::done(ctx, &result, &task, &titles, crate::clock::now());
     // The hint about the write goes to stderr, after the card (D126): the
     // card is the first thing under the prompt, and core's paragraph was 190
     // cells of stdout under every completion. `--json` keeps it whole.
@@ -623,7 +623,7 @@ pub(crate) fn run_show(
     let text = if card {
         tasqx_core::markdown::task_card(&result, &card_opts(ctx, ascii))
     } else {
-        render::task_detail(ctx, &result, jiff::Timestamp::now())
+        render::task_detail(ctx, &result, crate::clock::now())
     };
     Ok((result, text))
 }
@@ -636,7 +636,7 @@ fn card_opts(ctx: &Ctx, ascii: bool) -> CardOpts {
     CardOpts {
         detail: DetailOpts {
             time: ctx.time_format,
-            now: jiff::Timestamp::now(),
+            now: crate::clock::now(),
         },
         borders: if ascii {
             Borders::Ascii
@@ -679,7 +679,7 @@ pub(crate) fn run_check(be: &mut Backend, ctx: &Ctx, action: &CheckAction) -> Cm
     // The echo is the task's card (D126), like every other write on a task:
     // a criterion only means anything beside the work it qualifies.
     let task = read_back(be, &result).unwrap_or_else(|| result.clone());
-    let text = render::task_detail(ctx, &task, jiff::Timestamp::now());
+    let text = render::task_detail(ctx, &task, crate::clock::now());
     Ok((result, text))
 }
 
@@ -701,7 +701,7 @@ pub(crate) fn run_brief(
     let text = if card {
         tasqx_core::markdown::task_brief_card(&result, &card_opts(ctx, ascii))
     } else {
-        render::task_brief(ctx, &result, jiff::Timestamp::now())
+        render::task_brief(ctx, &result, crate::clock::now())
     };
     Ok((result, text))
 }
@@ -724,7 +724,7 @@ pub(crate) fn run_simple_ref(
         "task.reopen" => "reopened",
         other => other,
     };
-    let text = render::status_changed(ctx, verb, &result, &task, &titles, jiff::Timestamp::now());
+    let text = render::status_changed(ctx, verb, &result, &task, &titles, crate::clock::now());
     Ok((result, text))
 }
 
@@ -747,7 +747,7 @@ pub(crate) fn run_undo(be: &mut Backend, ctx: &Ctx) -> CmdOutcome {
         .into_iter()
         .collect();
     let titles = titles_of(be, &blocker);
-    let text = render::undone(ctx, &result, &task, &titles, jiff::Timestamp::now());
+    let text = render::undone(ctx, &result, &task, &titles, crate::clock::now());
     Ok((result, text))
 }
 
@@ -760,7 +760,7 @@ pub(crate) fn run_annotate(
     let body = text.join(" ");
     let result = be.call("annotation.add", &json!({ "ref": r#ref, "body": body }))?;
     let task = read_back(be, &result).unwrap_or_else(|| result.clone());
-    let out = render::annotated(ctx, &result, &task, jiff::Timestamp::now());
+    let out = render::annotated(ctx, &result, &task, crate::clock::now());
     Ok((result, out))
 }
 
@@ -781,7 +781,7 @@ pub(crate) fn run_unannotate(
         &json!({ "ref": r#ref, "annotation_id": annotation_id }),
     )?;
     let task = read_back(be, &result).unwrap_or_else(|| result.clone());
-    let out = render::annotation_removed(ctx, &task, jiff::Timestamp::now());
+    let out = render::annotation_removed(ctx, &task, crate::clock::now());
     Ok((result, out))
 }
 
@@ -806,7 +806,7 @@ pub(crate) fn run_tag(
     let names = sugar::tag_arguments(tags)?;
     let result = be.call(method, &json!({ "ref": r#ref, "tags": names }))?;
     let task = read_back(be, &result).unwrap_or_else(|| result.clone());
-    let now = jiff::Timestamp::now();
+    let now = crate::clock::now();
     let text = render::tag_changed(ctx, &result, &task, method == "tag.add", &names, now);
     Ok((result, text))
 }
@@ -821,14 +821,7 @@ pub(crate) fn run_dep(
     let result = be.call(method, &json!({ "ref": r#ref, "depends_on": depends_on }))?;
     let task = read_back(be, &result).unwrap_or_else(|| result.clone());
     let added = method == "dependency.add";
-    let text = render::dep_changed(
-        ctx,
-        &result,
-        &task,
-        added,
-        &depends_on,
-        jiff::Timestamp::now(),
-    );
+    let text = render::dep_changed(ctx, &result, &task, added, &depends_on, crate::clock::now());
     Ok((result, text))
 }
 
@@ -1050,7 +1043,7 @@ pub(crate) fn run_memory(be: &mut Backend, ctx: &Ctx, action: &MemoryAction) -> 
                 params["project"] = json!(p);
             }
             let result = be.call("memory.list", &params)?;
-            let text = render::memory_table(ctx, &result, jiff::Timestamp::now());
+            let text = render::memory_table(ctx, &result, crate::clock::now());
             Ok((result, text))
         }
         MemoryAction::Update {
@@ -1366,7 +1359,7 @@ pub(crate) fn run_next(
             return Ok((full, text));
         }
     }
-    let text = render::next_task(ctx, &result, jiff::Timestamp::now());
+    let text = render::next_task(ctx, &result, crate::clock::now());
     Ok((result, text))
 }
 
@@ -1391,10 +1384,10 @@ pub(crate) fn run_why(
         format!(
             "{}\n{}",
             tasqx_core::markdown::task_card(&result, &card_opts(ctx, ascii)),
-            render::why_terms(ctx, &result, jiff::Timestamp::now())
+            render::why_terms(ctx, &result, crate::clock::now())
         )
     } else {
-        render::why(ctx, &result, jiff::Timestamp::now())
+        render::why(ctx, &result, crate::clock::now())
     };
     Ok((result, text))
 }

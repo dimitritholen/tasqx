@@ -198,7 +198,7 @@ pub fn generate(engine: &Engine, theme: &Theme, params: &Value) -> Result<String
     // burndown, so 13 weeks of slack covers the wider of the two; before D59 gave
     // `event.list` a bound this read the entire log, which grows with every
     // mutation the store has ever recorded.
-    let now_ts = jiff::Timestamp::now();
+    let now_ts = crate::clock::now();
     let now = now_ts.to_string();
     let from = now_ts
         .to_zoned(jiff::tz::TimeZone::UTC)
@@ -347,7 +347,7 @@ impl<'a> Report<'a> {
         // not the wall clock — the derivation must stay a pure function of the
         // struct's inputs, or a fixture pinned to one date starts answering
         // differently as real time passes.
-        let now_ts = parse_ts(self.now).unwrap_or_else(jiff::Timestamp::now);
+        let now_ts = parse_ts(self.now).unwrap_or_else(crate::clock::now);
         let mut open = 0usize;
         let mut overdue = 0usize;
         let mut completed_recent: Vec<&Value> = Vec::new();
@@ -2555,7 +2555,7 @@ mod tests {
     #[test]
     fn recent_window_follows_injected_now_not_wall_clock() {
         let (summary, mut export, actionable, events) = synthetic();
-        let wall_yesterday = jiff::Timestamp::now()
+        let wall_yesterday = crate::clock::now()
             .checked_sub(jiff::ToSpan::hours(24i64))
             .unwrap()
             .to_string();

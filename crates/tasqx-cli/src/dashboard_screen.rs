@@ -253,7 +253,7 @@ pub(crate) fn run_dashboard(be: &mut Backend, ctx: &Ctx) -> Result<Option<String
     // left open across UTC midnight kept bucketing DUE against yesterday
     // (OVERDUE/TODAY wrong until restart) while `now` moved on without it.
     // Each refresh below re-derives the pair the same way.
-    let now = jiff::Timestamp::now();
+    let now = crate::clock::now();
     let today = now.to_zoned(jiff::tz::TimeZone::UTC).date();
     let days = dashboard_window_days();
     let mut app = App::new(
@@ -312,7 +312,7 @@ pub(crate) fn run_dashboard(be: &mut Backend, ctx: &Ctx) -> Result<Option<String
                 // existing panic hook and `Restore` guard stay sufficient.
                 if app.auto_refresh() && !event::poll(std::time::Duration::from_secs(REFRESH_TICK))?
                 {
-                    let now = jiff::Timestamp::now();
+                    let now = crate::clock::now();
                     let today = now.to_zoned(jiff::tz::TimeZone::UTC).date();
                     match dashboard_data(be, app.window_days(), now, today) {
                         Ok(data) => app.replace(data),
@@ -354,7 +354,7 @@ pub(crate) fn run_dashboard(be: &mut Backend, ctx: &Ctx) -> Result<Option<String
                         // The error is carried out and reported on the normal
                         // terminal, because a message printed here is wiped by the
                         // restore that follows it.
-                        let now = jiff::Timestamp::now();
+                        let now = crate::clock::now();
                         let today = now.to_zoned(jiff::tz::TimeZone::UTC).date();
                         match dashboard_data(be, app.window_days(), now, today) {
                             Ok(data) => app.replace(data),
@@ -422,7 +422,7 @@ pub(crate) fn run_dashboard(be: &mut Backend, ctx: &Ctx) -> Result<Option<String
                 }
                 // Whatever happened, the screen shows it: a started task turns
                 // up in NOW, and a cancelled pick redraws unchanged.
-                let now = jiff::Timestamp::now();
+                let now = crate::clock::now();
                 app.replace(dashboard_data(
                     be,
                     app.window_days(),
@@ -501,7 +501,7 @@ pub(crate) fn run_dashboard_json(be: &mut Backend, _ctx: &Ctx, panels: Option<&s
     let order = panels
         .map(parse_panel_list)
         .unwrap_or_else(dashboard_panels);
-    let data = dashboard_data(be, days, jiff::Timestamp::now(), chart::today())?;
+    let data = dashboard_data(be, days, crate::clock::now(), chart::today())?;
     let doc = tui::dashboard::json::document(&data, days, &order);
     let render = serde_json::to_string_pretty(&doc).unwrap_or_default();
     Ok((doc, render))

@@ -16,6 +16,7 @@ mod about;
 mod argv;
 mod backend;
 mod chart;
+mod clock;
 pub mod cmddoc;
 mod columns;
 mod command;
@@ -74,9 +75,11 @@ use command::{
 };
 use theme::{Caps, Ctx};
 
-/// The real reference instant handed to the natural-language date parser.
+/// The reference instant handed to the natural-language date parser — the
+/// clock as [`clock::now`] answers it, so `$TASQX_NOW` pins `due:tomorrow` the
+/// same way it pins what a rendered row says about it.
 fn now_ts() -> jiff::Timestamp {
-    jiff::Timestamp::now()
+    clock::now()
 }
 
 /// Fields `modify --clear` may unset (DESIGN.md §12-D13).

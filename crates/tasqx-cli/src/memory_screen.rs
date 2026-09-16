@@ -32,7 +32,7 @@ pub(crate) fn run_memory_screen(
         }
     }
 
-    let now = jiff::Timestamp::now();
+    let now = crate::clock::now();
     let when = |d: &Value, key: &str| {
         d[key]
             .as_str()

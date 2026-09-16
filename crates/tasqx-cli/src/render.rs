@@ -1885,7 +1885,7 @@ impl Agenda<'_> {
         self.today
             .to_zoned(TimeZone::UTC)
             .map(|z| z.timestamp())
-            .unwrap_or_else(|_| Timestamp::now())
+            .unwrap_or_else(|_| crate::clock::now())
     }
 
     /// One line per reason this view is holding something back, each naming the
@@ -4386,7 +4386,7 @@ mod tests {
             "project": "work", "due": "2026-07-20T17:00:00Z", "remind": "-1h",
             "estimate": "PT4H"
         });
-        let out = task_detail(&ctx, &base, Timestamp::now());
+        let out = task_detail(&ctx, &base, crate::clock::now());
         assert!(out.contains("remind"), "remind row missing: {out:?}");
         assert!(out.contains("-1h"), "remind value missing: {out:?}");
         // `estimate` is settable via `est:` sugar and totalled by `report`, so the
@@ -4398,7 +4398,7 @@ mod tests {
         // Absent remind must stay absent — the row is conditional, like `due`.
         let mut bare = base.clone();
         bare["remind"] = json!("");
-        assert!(!task_detail(&ctx, &bare, Timestamp::now()).contains("remind"));
+        assert!(!task_detail(&ctx, &bare, crate::clock::now()).contains("remind"));
     }
 
     /// audit #188: `tasqx show` was strictly poorer than the MCP
@@ -4417,7 +4417,7 @@ mod tests {
             "modified": "2026-09-09T11:02:00Z",
             "_rev": 3
         });
-        let out = task_detail(&ctx, &t, Timestamp::now());
+        let out = task_detail(&ctx, &t, crate::clock::now());
         assert!(
             out.lines().any(|l| l.trim_start().starts_with("created")),
             "created row missing: {out:?}"
@@ -4568,7 +4568,7 @@ mod tests {
         let plain = task_detail(
             &Ctx::new(theme::default_theme(), Caps::PLAIN),
             &t,
-            Timestamp::now(),
+            crate::clock::now(),
         );
         assert!(
             plain.contains("  status     "),
@@ -4581,7 +4581,7 @@ mod tests {
         let card = task_detail(
             &Ctx::new(theme::default_theme(), card_caps()),
             &t,
-            Timestamp::now(),
+            crate::clock::now(),
         );
         assert!(
             card.contains('▌') && !card.contains("  status     "),
@@ -4590,7 +4590,7 @@ mod tests {
         let added = added(
             &Ctx::new(theme::default_theme(), card_caps()),
             &t,
-            Timestamp::now(),
+            crate::clock::now(),
         );
         assert!(
             added.starts_with('▌'),
@@ -4641,7 +4641,7 @@ mod tests {
     #[test]
     fn the_show_card_draws_the_rail_on_every_line() {
         let ctx = Ctx::new(theme::default_theme(), card_caps());
-        let out = task_detail(&ctx, &full_task(), Timestamp::now());
+        let out = task_detail(&ctx, &full_task(), crate::clock::now());
         for line in out.lines() {
             assert!(
                 line.starts_with('▌'),
@@ -4660,7 +4660,7 @@ mod tests {
         let mut t = full_task();
         t["title"] = json!("word ".repeat(40).trim().to_string());
         t["annotations"] = json!([{"body": "note ".repeat(50).trim().to_string()}]);
-        let out = task_detail(&ctx, &t, Timestamp::now());
+        let out = task_detail(&ctx, &t, crate::clock::now());
         for line in out.lines() {
             assert!(
                 width(line) <= 60,
@@ -4690,7 +4690,7 @@ mod tests {
         let ctx = Ctx::new(theme::default_theme(), card_caps());
         let mut t = full_task();
         t["annotations"] = json!([{"body": "# Heading\n\n- one\n- two\n\n| a | b |\n|---|---|"}]);
-        let out = task_detail(&ctx, &t, Timestamp::now());
+        let out = task_detail(&ctx, &t, crate::clock::now());
         assert!(
             out.contains("# Heading"),
             "the heading line is gone:\n{out}"
@@ -4723,7 +4723,7 @@ mod tests {
         let out = task_detail(
             &Ctx::new(theme::default_theme(), Caps::PLAIN),
             &t,
-            Timestamp::now(),
+            crate::clock::now(),
         );
         assert!(
             out.contains("line one\nline two"),
@@ -4742,7 +4742,7 @@ mod tests {
                 "short_id": 7, "title": "pairing", "status": "pending",
                 "priority": "M", "project": "work", "urgency": 4.3
             }),
-            Timestamp::now(),
+            crate::clock::now(),
         );
         // D122 folded priority into the urgency cell, so the short pair is now
         // status and urgency.
@@ -5010,12 +5010,12 @@ mod tests {
             let plain = task_detail(
                 &Ctx::new(theme::default_theme(), Caps::PLAIN),
                 &t,
-                Timestamp::now(),
+                crate::clock::now(),
             );
             let card = task_detail(
                 &Ctx::new(theme::default_theme(), card_caps()),
                 &t,
-                Timestamp::now(),
+                crate::clock::now(),
             );
             for line in plain.lines().skip(1) {
                 let Some(first) = line.split_whitespace().next() else {
@@ -5034,7 +5034,7 @@ mod tests {
         let plain = task_detail(
             &Ctx::new(theme::default_theme(), Caps::PLAIN),
             &full_task(),
-            Timestamp::now(),
+            crate::clock::now(),
         );
         let labels = plain
             .lines()
@@ -5064,7 +5064,7 @@ mod tests {
                         "cache_read_tokens": 0, "cache_creation_tokens": 0,
                         "confidence": "low"}],
         });
-        let out = task_detail(&ctx, &t, Timestamp::now());
+        let out = task_detail(&ctx, &t, crate::clock::now());
         let line = out
             .lines()
             .find(|l| l.contains("tokens"))
@@ -5086,7 +5086,7 @@ mod tests {
                         "cache_read_tokens": 0, "cache_creation_tokens": 0,
                         "confidence": "high"}],
         });
-        let out = task_detail(&ctx, &t, Timestamp::now());
+        let out = task_detail(&ctx, &t, crate::clock::now());
         let line = out
             .lines()
             .find(|l| l.contains("tokens"))
@@ -5117,7 +5117,7 @@ mod tests {
             "unblocked": [],
             "tokens_hint": hint,
         });
-        let out = done(&ctx, &result, &result, &Titles::new(), Timestamp::now());
+        let out = done(&ctx, &result, &result, &Titles::new(), crate::clock::now());
         assert!(
             out.contains("done"),
             "the completion line itself went missing: {out:?}"
@@ -5147,7 +5147,7 @@ mod tests {
             "completed": "2026-07-31T10:00:00Z",
             "unblocked": [],
         });
-        let out = done(&ctx, &result, &result, &Titles::new(), Timestamp::now());
+        let out = done(&ctx, &result, &result, &Titles::new(), crate::clock::now());
         assert!(
             !out.contains("tokens_hint") && !out.contains("self-reported"),
             "a hint appeared where the response carried none: {out:?}"
@@ -5188,7 +5188,7 @@ mod tests {
     fn task_table_on_a_genuinely_empty_store_names_the_onboarding_commands() {
         let ctx = Ctx::new(theme::default_theme(), Caps::PLAIN);
         let empty_store = json!({ "tasks": [], "count": 0, "total": 0, "store_empty": true });
-        let out = task_table(&ctx, &empty_store, Timestamp::now());
+        let out = task_table(&ctx, &empty_store, crate::clock::now());
         assert!(out.contains("tasqx init"), "{out:?}");
         assert!(out.contains("tasqx add"), "{out:?}");
         assert!(out.contains("tasqx manual"), "{out:?}");
@@ -5197,7 +5197,7 @@ mod tests {
         // empty-result phrasing — the onboarding hint would be misleading
         // there. #229 item 1 aligned this wording with `report`'s.
         let filtered_empty = json!({ "tasks": [], "count": 0, "total": 0, "store_empty": false });
-        let out2 = task_table(&ctx, &filtered_empty, Timestamp::now());
+        let out2 = task_table(&ctx, &filtered_empty, crate::clock::now());
         assert_eq!(out2, "No matching tasks.\n");
     }
 
@@ -5208,14 +5208,14 @@ mod tests {
     fn next_task_on_a_genuinely_empty_store_names_the_onboarding_commands() {
         let ctx = Ctx::new(theme::default_theme(), Caps::PLAIN);
         let empty_store = json!({ "tasks": [], "store_empty": true });
-        let out = next_task(&ctx, &empty_store, Timestamp::now());
+        let out = next_task(&ctx, &empty_store, crate::clock::now());
         assert!(out.contains("tasqx add"), "{out:?}");
 
         // A working set that is genuinely clear (real tasks exist, none is
         // actionable right now) keeps the original, true statement.
         let clear = json!({ "tasks": [], "store_empty": false });
         assert_eq!(
-            next_task(&ctx, &clear, Timestamp::now()),
+            next_task(&ctx, &clear, crate::clock::now()),
             "Nothing actionable — you're clear.\n"
         );
     }
@@ -5266,7 +5266,7 @@ mod tests {
     #[test]
     fn an_empty_task_table_matches_reports_empty_phrasing() {
         let ctx = Ctx::new(theme::default_theme(), Caps::PLAIN);
-        let text = task_table(&ctx, &json!({ "tasks": [] }), Timestamp::now());
+        let text = task_table(&ctx, &json!({ "tasks": [] }), crate::clock::now());
         assert_eq!(
             text, "No matching tasks.\n",
             "list/watch's empty phrasing must match report's: {text:?}"
@@ -5283,7 +5283,7 @@ mod tests {
         let ctx = Ctx::new(theme::default_theme(), Caps::PLAIN);
         let empty = json!({ "tasks": [], "count": 0 });
 
-        let out = task_table_filtered(&ctx, &empty, Timestamp::now(), Some("+nosuchtag"));
+        let out = task_table_filtered(&ctx, &empty, crate::clock::now(), Some("+nosuchtag"));
         assert!(
             out.contains("+nosuchtag"),
             "the filter must be quoted back: {out:?}"
@@ -5291,7 +5291,7 @@ mod tests {
 
         // The unfiltered caller (task_table itself) is untouched.
         assert_eq!(
-            task_table(&ctx, &empty, Timestamp::now()),
+            task_table(&ctx, &empty, crate::clock::now()),
             "No matching tasks.\n"
         );
     }
@@ -5307,7 +5307,7 @@ mod tests {
             }],
             "count": 1
         });
-        let out = task_table(&ctx, &result, Timestamp::now());
+        let out = task_table(&ctx, &result, crate::clock::now());
         assert!(
             out.contains("Done"),
             "the offending value must be named: {out:?}"
@@ -5325,7 +5325,7 @@ mod tests {
             "project": "work", "due": "", "tags": [], "status": "pending"
         });
         assert!(
-            !task_table(&ctx, &ok, Timestamp::now()).contains("export"),
+            !task_table(&ctx, &ok, crate::clock::now()).contains("export"),
             "clean table grew a warning"
         );
     }
@@ -5341,7 +5341,7 @@ mod tests {
                 "short_id": 7, "title": "important work", "status": "Done",
                 "status_unrecognized": true, "urgency": 1.0
             }),
-            Timestamp::now(),
+            crate::clock::now(),
         );
         assert!(
             out.contains("Done"),
@@ -5381,7 +5381,7 @@ mod tests {
                 }],
                 "count": 1
             });
-            let out = task_table(&ctx, &result, Timestamp::now());
+            let out = task_table(&ctx, &result, crate::clock::now());
             assert!(
                 out.contains("#4"),
                 "the affected task must be identified for {blank:?}: {out:?}"
@@ -5405,7 +5405,7 @@ mod tests {
             "count": 1
         });
         assert!(
-            !task_table(&ctx, &ok, Timestamp::now()).contains("blank title"),
+            !task_table(&ctx, &ok, crate::clock::now()).contains("blank title"),
             "clean table grew a warning"
         );
     }
@@ -5421,7 +5421,7 @@ mod tests {
             }],
             "count": 1
         });
-        let out = task_table(&ctx, &result, Timestamp::now());
+        let out = task_table(&ctx, &result, crate::clock::now());
         assert!(
             !out.contains('\x1b'),
             "raw escape reached the terminal: {out:?}"
@@ -5774,7 +5774,7 @@ mod tests {
                 { "body": "open one", "state": "open", "evidence": null },
             ],
         });
-        let out = task_detail(&ctx, &t, Timestamp::now());
+        let out = task_detail(&ctx, &t, crate::clock::now());
         assert!(out.contains("[x] passed one"), "{out}");
         assert!(out.contains("[!] failed one"), "{out}");
         assert!(out.contains("[ ] open one"), "{out}");
@@ -5792,7 +5792,7 @@ mod tests {
     fn a_task_without_criteria_renders_no_check_lines() {
         let ctx = Ctx::new(theme::default_theme(), Caps::PLAIN);
         let t = json!({ "short_id": 1, "title": "t", "status": "pending", "checks": [] });
-        let out = task_detail(&ctx, &t, Timestamp::now());
+        let out = task_detail(&ctx, &t, crate::clock::now());
         for marker in ["[x]", "[!]", "[ ]"] {
             assert!(
                 !out.contains(marker),
@@ -5811,7 +5811,7 @@ mod tests {
             "short_id": 1, "title": "t", "status": "pending",
             "budget_tokens": 1000, "fresh_tokens": 1300, "over": true,
         });
-        let out = task_detail(&ctx, &with, Timestamp::now());
+        let out = task_detail(&ctx, &with, crate::clock::now());
         assert!(out.contains("1.3K / 1.0K fresh"), "{out}");
         assert!(out.contains("over"), "the verdict is on the row: {out}");
 
@@ -5819,7 +5819,7 @@ mod tests {
             "short_id": 1, "title": "t", "status": "pending",
             "budget_tokens": null, "fresh_tokens": 1300, "over": null,
         });
-        let out = task_detail(&ctx, &without, Timestamp::now());
+        let out = task_detail(&ctx, &without, crate::clock::now());
         assert!(
             !out.contains("budget"),
             "no threshold, no row — 1300 against nothing says nothing: {out}"
@@ -5841,7 +5841,7 @@ mod tests {
                 "confidence": "medium", "tool": "claude-code", "source": "self-report"
             }],
         });
-        let out = task_detail(&ctx, &t, Timestamp::now());
+        let out = task_detail(&ctx, &t, crate::clock::now());
         assert!(out.contains("1.3K / 1.0K fresh"), "the gauge: {out}");
         assert!(
             out.contains("cacheR 500.0K") || out.contains("cacheR 500000"),
@@ -5869,7 +5869,7 @@ mod tests {
                   "snippet": "retries must not double-charge" }
             ], "total": 1 },
         });
-        let out = task_brief(&ctx, &result, Timestamp::now());
+        let out = task_brief(&ctx, &result, crate::clock::now());
         assert!(out.contains("DEPENDS ON"), "{out}");
         assert!(
             out.contains("the key is the request id, never the order id"),
@@ -5896,7 +5896,7 @@ mod tests {
             "neighbourhood": { "depends_on": [], "blocks": [] },
             "memory": { "hits": [], "total": 0 },
         });
-        let out = task_brief(&ctx, &result, Timestamp::now());
+        let out = task_brief(&ctx, &result, crate::clock::now());
         for heading in ["DEPENDS ON", "BLOCKS", "FROM MEMORY"] {
             assert!(
                 !out.contains(heading),
@@ -5915,7 +5915,7 @@ mod tests {
             "neighbourhood": { "depends_on": [], "blocks": [] },
             "memory": { "hits": [{ "title": "one", "snippet": "s" }], "total": 9 },
         });
-        let out = task_brief(&ctx, &result, Timestamp::now());
+        let out = task_brief(&ctx, &result, crate::clock::now());
         assert!(out.contains("1 of 9 matches shown"), "{out}");
     }
 
@@ -6492,7 +6492,7 @@ mod tests {
     #[test]
     fn start_stop_done_name_the_task_and_done_compares_tracked_to_estimate() {
         let ctx = Ctx::new(theme::default_theme(), Caps::PLAIN);
-        let now = Timestamp::now();
+        let now = crate::clock::now();
         let none = Titles::new();
 
         let started_json = json!({
@@ -6538,7 +6538,7 @@ mod tests {
     #[test]
     fn start_and_dep_say_already_instead_of_claiming_a_fresh_action() {
         let ctx = Ctx::new(theme::default_theme(), Caps::PLAIN);
-        let now = Timestamp::now();
+        let now = crate::clock::now();
         let none = Titles::new();
 
         let fresh = json!({
@@ -6581,7 +6581,7 @@ mod tests {
     #[test]
     fn task_added_names_the_project_it_landed_in() {
         let ctx = Ctx::new(theme::default_theme(), Caps::PLAIN);
-        let now = Timestamp::now();
+        let now = crate::clock::now();
         let out = added(
             &ctx,
             &json!({ "short_id": 3, "title": "a task", "status": "pending",
@@ -6681,7 +6681,7 @@ mod tests {
         let out = task_table(
             &ctx,
             &json!({ "tasks": tasks, "count": tasks.len() }),
-            Timestamp::now(),
+            crate::clock::now(),
         );
         let rows: Vec<&str> = rows_of(&out).take(AWKWARD.len()).collect();
         assert_eq!(
@@ -6721,7 +6721,7 @@ mod tests {
             let out = task_table(
                 &ctx,
                 &json!({ "tasks": tasks, "count": tasks.len() }),
-                Timestamp::now(),
+                crate::clock::now(),
             );
             let rows: Vec<&str> = rows_of(&out).take(AWKWARD.len()).collect();
             let want = cells(rows[0]);
@@ -6745,7 +6745,7 @@ mod tests {
         let out = task_table(
             &ctx,
             &json!({ "tasks": tasks, "count": 1 }),
-            Timestamp::now(),
+            crate::clock::now(),
         );
         assert!(
             out.contains("+cardtag"),
@@ -6828,7 +6828,7 @@ mod tests {
             &json!({ "tasks": [
                 task_json(1, "ship it", "work", "next tuesday-ish", &["t"]),
             ], "count": 1 }),
-            Timestamp::now(),
+            crate::clock::now(),
         );
         assert!(
             out.contains("next tuesday-ish"),
@@ -6857,7 +6857,7 @@ mod tests {
             { "short_id": 3, "urgency": 7.0, "priority": "M", "title": "ordinary one",
               "project": "work", "due": "", "tags": [], "status": "pending" },
         ], "count": 3 });
-        let out = task_table(&ctx, &result, Timestamp::now());
+        let out = task_table(&ctx, &result, crate::clock::now());
         let rows: Vec<&str> = rows_of(&out).take(3).collect();
         assert!(rows[0].starts_with('*'), "no timer glyph: {:?}", rows[0]);
         assert!(rows[1].starts_with('B'), "no blocked glyph: {:?}", rows[1]);
@@ -7054,7 +7054,7 @@ mod tests {
             &json!({ "short_id": 1, "urgency": 1.0, "priority": "M",
                      "title": "t".repeat(14), "project": "p".repeat(14),
                      "status": "pending" }),
-            Timestamp::now(),
+            crate::clock::now(),
             false,
         );
         r.due = "d".repeat(14);
@@ -7106,7 +7106,7 @@ mod tests {
             row(2, "an outlier elsewhere", 9.9), row(1, subject, 6.0),
         ], "count": 2 });
         let cell = |r: &Value| {
-            let out = task_table(&ctx, r, Timestamp::now());
+            let out = task_table(&ctx, r, crate::clock::now());
             let line = out.lines().find(|l| l.contains(subject)).unwrap();
             line.split(subject).next().unwrap().to_string()
         };
@@ -7167,7 +7167,7 @@ mod tests {
         let plain = task_table(
             &Ctx::new(theme::default_theme(), Caps::PLAIN),
             &result,
-            Timestamp::now(),
+            crate::clock::now(),
         );
         assert!(
             !plain.contains('▄') && !plain.contains('▁'),
@@ -7176,7 +7176,7 @@ mod tests {
 
         let mut uni = Ctx::new(theme::default_theme(), Caps::PLAIN);
         uni.caps.unicode = true;
-        let drawn = task_table(&uni, &result, Timestamp::now());
+        let drawn = task_table(&uni, &result, crate::clock::now());
         assert!(drawn.contains('▄'), "no gauge with Unicode: {drawn:?}");
         assert_eq!(
             cells(header_of(&drawn)) - cells(header_of(&plain)),
@@ -7193,7 +7193,7 @@ mod tests {
         let out = task_table(
             &ctx,
             &json!({ "tasks": [task_json(1, "ordinary", "work", "", &[])], "count": 1 }),
-            Timestamp::now(),
+            crate::clock::now(),
         );
         assert!(
             header_of(&out).starts_with("  ID"),
@@ -7245,7 +7245,7 @@ mod tests {
         let out = task_table(
             &ctx,
             &json!({ "tasks": [task_json(1, "ordinary", "work", "", &[])], "count": 1 }),
-            Timestamp::now(),
+            crate::clock::now(),
         );
         let summary = out.lines().next().unwrap();
         assert_eq!(summary.trim(), "1 task", "{summary:?}");
@@ -7261,7 +7261,7 @@ mod tests {
         let out = task_table_filtered(
             &ctx,
             &json!({ "tasks": [task_json(1, "ordinary", "work", "", &[])], "count": 1 }),
-            Timestamp::now(),
+            crate::clock::now(),
             Some("project:raid +design"),
         );
         assert!(
@@ -7296,7 +7296,7 @@ mod tests {
             task_json(1, long, "raid.game", "", &["design"]),
         ], "count": 1 });
 
-        let head = |t: &Value| header_of(&task_table(&ctx, t, Timestamp::now())).to_string();
+        let head = |t: &Value| header_of(&task_table(&ctx, t, crate::clock::now())).to_string();
         assert!(head(&with_due).contains("DUE"), "{}", head(&with_due));
         assert!(
             !head(&without_due).contains("DUE"),
@@ -7304,7 +7304,7 @@ mod tests {
             head(&without_due)
         );
         // And the title survives whole once the dead column is gone.
-        let table = task_table(&ctx, &without_due, Timestamp::now());
+        let table = task_table(&ctx, &without_due, crate::clock::now());
         let row = rows_of(&table).next().unwrap().to_string();
         assert!(
             row.contains(long),
@@ -7333,7 +7333,7 @@ mod tests {
             let out = task_table(
                 &ctx,
                 &json!({ "tasks": tasks, "count": tasks.len() }),
-                Timestamp::now(),
+                crate::clock::now(),
             );
             for line in out.lines() {
                 assert!(
@@ -7355,7 +7355,7 @@ mod tests {
         let out = task_table(
             &ctx,
             &json!({ "tasks": [task_json(1, &title, "p", "", &["t"])], "count": 1 }),
-            Timestamp::now(),
+            crate::clock::now(),
         );
         for line in out.lines() {
             assert!(cells(line) <= Ctx::MAX_COLS, "{line:?}");
@@ -7858,7 +7858,7 @@ mod tests {
                 "blocked": true,
                 "unmet_blockers": [{ "short_id": 280, "title": "the blocker" }],
             }),
-            Timestamp::now(),
+            crate::clock::now(),
         );
         assert!(out.contains("#280"), "{out:?}");
         assert!(out.contains("the blocker"), "{out:?}");
@@ -7875,7 +7875,7 @@ mod tests {
                 "blocked": false,
                 "unmet_blockers": [],
             }),
-            Timestamp::now(),
+            crate::clock::now(),
         );
         assert!(
             !out.contains("blocked by"),
@@ -8043,7 +8043,7 @@ mod tests {
             "title": "Ship v1",
             "restored": { "tags": ["api", "release"] },
         });
-        let out = undone(&ctx, &result, &result, &Titles::new(), Timestamp::now());
+        let out = undone(&ctx, &result, &result, &Titles::new(), crate::clock::now());
         // D126 names the operation by the verb that did it: `untag`.
         assert!(
             out.contains("undid untag"),
@@ -8085,7 +8085,7 @@ mod tests {
             if op == "stop" {
                 task["status"] = json!("active");
             }
-            undone(&ctx, &result, &task, &Titles::new(), Timestamp::now())
+            undone(&ctx, &result, &task, &Titles::new(), crate::clock::now())
         };
 
         assert!(line("dependency.remove", json!({ "depends_on": 3 })).contains("#3"));
@@ -8128,7 +8128,7 @@ mod tests {
             "title": "\u{1b}[2Jclear",
             "restored": { "annotation": "\u{1b}]0;evil\u{7}note" },
         });
-        let out = undone(&ctx, &result, &result, &Titles::new(), Timestamp::now());
+        let out = undone(&ctx, &result, &result, &Titles::new(), crate::clock::now());
         assert!(
             !out.contains('\u{1b}'),
             "escape byte reached the terminal: {out:?}"
@@ -8155,7 +8155,7 @@ mod tests {
             &result,
             false,
             &["api".to_string()],
-            Timestamp::now(),
+            crate::clock::now(),
         );
         assert!(out.contains("untagged"), "{out:?}");
         assert!(out.contains("+api"), "the removed tag must appear: {out:?}");
@@ -8173,7 +8173,7 @@ mod tests {
     #[test]
     fn a_tag_line_names_the_added_tag_and_an_empty_set_says_so() {
         let ctx = Ctx::new(theme::default_theme(), Caps::PLAIN);
-        let now = Timestamp::now();
+        let now = crate::clock::now();
         let added = json!({ "short_id": 7, "tags": ["api", "release"] });
         let out = tag_changed(&ctx, &added, &added, true, &["api".to_string()], now);
         assert!(out.contains("#7") && out.contains("tagged"), "{out:?}");
@@ -8200,7 +8200,7 @@ mod tests {
             "tags": ["]0;evilsafe"],
             "removed": ["[2Jgone"],
         });
-        let out = tag_changed(&ctx, &result, &result, false, &[], Timestamp::now());
+        let out = tag_changed(&ctx, &result, &result, false, &[], crate::clock::now());
         assert!(
             !out.contains(''),
             "escape byte reached the terminal: {out:?}"
@@ -8752,7 +8752,7 @@ mod tests {
         let list = task_table(
             &ctx,
             &json!({ "tasks": tasks, "count": 2 }),
-            Timestamp::now(),
+            crate::clock::now(),
         );
         let agenda = agenda_out(tasks.clone(), AGENDA_DEFAULT_DAYS);
 
@@ -8874,12 +8874,12 @@ mod tests {
         let open = task_table(
             &ctx,
             &json!({ "tasks": [row("pending")], "count": 1 }),
-            Timestamp::now(),
+            crate::clock::now(),
         );
         let closed = task_table(
             &ctx,
             &json!({ "tasks": [row("cancelled")], "count": 1 }),
-            Timestamp::now(),
+            crate::clock::now(),
         );
         assert_ne!(
             open, closed,
@@ -8907,12 +8907,12 @@ mod tests {
         let open = task_table(
             &ctx,
             &json!({ "tasks": [row(false)], "count": 1 }),
-            Timestamp::now(),
+            crate::clock::now(),
         );
         let blocked = task_table(
             &ctx,
             &json!({ "tasks": [row(true)], "count": 1 }),
-            Timestamp::now(),
+            crate::clock::now(),
         );
         assert_ne!(
             open, blocked,
@@ -8924,7 +8924,7 @@ mod tests {
             "urgency": 18.0, "blocked": true, "depends_on": [2],
             "unmet_blockers": [{ "short_id": 2, "title": "the blocker" }]
         });
-        let why_out = why(&ctx, &get_result, Timestamp::now());
+        let why_out = why(&ctx, &get_result, crate::clock::now());
         assert!(
             why_out.contains("blocked") && why_out.contains("#2"),
             "`why` must say the task is blocked and name what it is blocked by, \
@@ -8947,12 +8947,12 @@ mod tests {
         let pending = task_table(
             &ctx,
             &json!({ "tasks": [row("pending")], "count": 1 }),
-            Timestamp::now(),
+            crate::clock::now(),
         );
         let active = task_table(
             &ctx,
             &json!({ "tasks": [row("active")], "count": 1 }),
-            Timestamp::now(),
+            crate::clock::now(),
         );
         assert_ne!(
             pending, active,
@@ -8961,7 +8961,7 @@ mod tests {
 
         let mut running = row("active");
         running["active_since"] = json!("2026-08-31T12:00:00Z");
-        let next_out = next_task(&ctx, &json!({ "tasks": [running] }), Timestamp::now());
+        let next_out = next_task(&ctx, &json!({ "tasks": [running] }), crate::clock::now());
         assert!(
             next_out.to_lowercase().contains("already running"),
             "`next` handing back the task that is already running must say so: \

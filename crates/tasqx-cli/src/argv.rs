@@ -417,7 +417,7 @@ pub(crate) fn nearest_long_flag<'a>(offender: &str, known: &'a [String]) -> Opti
 pub fn filter_flag_error(offender: &str) -> Option<String> {
     // The instant is irrelevant here — this parses a rejected FLAG to borrow
     // the grammar's own wording for it, and a flag never reaches a date bound.
-    tasqx_core::filter::Filter::parse(offender, jiff::Timestamp::now()).err()
+    tasqx_core::filter::Filter::parse(offender, crate::clock::now()).err()
 }
 
 #[cfg(test)]

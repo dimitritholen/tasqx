@@ -916,7 +916,7 @@ fn composed(prefix: &str, typed: &str, values: Vec<String>) -> Vec<CompletionCan
 /// against, and no composed candidate is ever a date — the [`Vocabulary::Date`]
 /// arm returns nothing — so which instant it is cannot matter.
 fn parses_back_to(word: &str, value: &str) -> bool {
-    filter::Filter::parse(word, jiff::Timestamp::now()).is_ok_and(|f| f.sole_value() == Some(value))
+    filter::Filter::parse(word, crate::clock::now()).is_ok_and(|f| f.sole_value() == Some(value))
 }
 
 #[cfg(test)]

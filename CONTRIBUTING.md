@@ -33,6 +33,18 @@ Always point a dev build at a scratch store with `TASQX_DB` and pass
 `--no-daemon`. Without both, a dev build opens your real store, or routes through
 a daemon serving it.
 
+`TASQX_NOW` pins the clock. Set it to an RFC 3339 instant and every date the CLI
+*spells* — `due tomorrow`, `2d ago`, an agenda heading, a chart's axis — is
+relative to that instant instead of the wall clock, so a captured screen reads
+the same on any calendar day. `scripts/demo-store.py` reads the same variable and
+passes it on, so the demo store's dates and the render's reference instant come
+from one pinned day. The pin is CLI-side and never changes what is written: the
+`URG` column is still computed by the engine at its own clock, which is the one
+piece of a render it does not hold still (DESIGN.md D148). It is a capture and
+testing hook, not a user feature: it lives in `crates/tasqx-cli/src/clock.rs`,
+the crate's only wall-clock read (a guard test there fails on a second one), and
+an unparsable value exits 2 rather than falling back.
+
 To use your build as your everyday `tasqx`, install it over the released one:
 
 ```console
