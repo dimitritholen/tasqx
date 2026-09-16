@@ -13,6 +13,7 @@
 //! `tasqx` as both organization and application).
 
 mod about;
+pub mod ansi_html;
 mod argv;
 mod backend;
 mod chart;
@@ -25,6 +26,7 @@ pub mod config;
 mod dashboard_screen;
 mod docs;
 mod docs_open;
+pub mod fixtures;
 mod html;
 mod manual;
 mod memory_screen;

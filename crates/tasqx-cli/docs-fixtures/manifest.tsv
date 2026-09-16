@@ -1,0 +1,76 @@
+# The screens the documentation site shows, one row per screen.
+#
+# scripts/docs-capture.sh renders every row into <name>.ansi beside this file,
+# under one pinned instant (2026-09-16T09:00:00Z — every fixture is a picture of
+# that Wednesday), against the store scripts/demo-store.py builds. The files are
+# committed; crates/tasqx-cli/src/fixtures.rs embeds them with include_str! and
+# crates/tasqx-cli/src/ansi_html.rs renders them into the guide. CI re-captures
+# and fails on a difference (DESIGN.md D149), so a screen that changed is a
+# regenerated fixture in the same pull request.
+#
+# Columns, tab-separated. A line starting with # is a comment.
+#
+#   name    the fixture's file name, and the key fixtures::screen() takes
+#   kind    pipe     read-only, rendered through a pipe
+#           pipe-mut writes; runs against a COPY of the store, so rows cannot
+#                    perturb each other or depend on the manifest's order
+#           tui      full-screen; held in a tmux pane and captured with its SGR
+#   cols    COLUMNS (pipe) or the pane's width (tui)
+#   rows    the pane's height; - on a pipe row
+#   args    the arguments after `tasqx --no-daemon`, quoted as a shell would
+#   keys    keys sent before a tui row is captured, space-separated; - for none
+#   stdin   the request envelope fed to `api`; - when nothing is piped in
+#
+# Two screens are deliberately absent, both because they cannot be reproduced on
+# a second machine — which would make the drift job red for everyone but the
+# person who last captured:
+#
+#   about                  prints the store's absolute path and the build's
+#                          commit hash
+#   api core.capabilities  its `store` is this machine's path too. The guide
+#                          renders this one live from `tasqx_core::capabilities`
+#                          with a plausible store instead (D74, docs.rs's
+#                          `capabilities_snippet`), so nothing is lost.
+#   api task.add           answers with a freshly minted v7 id, whose low bits
+#                          are random; the pin fixes the timestamp half and
+#                          nothing fixes the rest. The CLI's `add` echo
+#                          (add-echo) shows the write instead, and prints a
+#                          short id, which is stable.
+#   any api response        carrying an FTS `rank` (`task.brief`, `memory.search`):
+#                          bm25 is computed with the platform's `log()`, so the
+#                          last digits differ between macOS and Linux. Captured
+#                          on one, the drift job fails on the other — which is
+#                          how this rule was found, on CI, with `api-task-brief`.
+#                          The SCREENS over the same search are fine and stay
+#                          (`brief`, `memory-search`, `memory-browser`): they
+#                          print snippets, never the number. `api-memory-list`
+#                          carries the memory API instead.
+#
+#name	kind	cols	rows	args	keys	stdin
+list	pipe	100	-	list	-	-
+list-narrow	pipe	80	-	list	-	-
+agenda	pipe	100	-	agenda	-	-
+next	pipe	100	-	next	-	-
+show	pipe	100	-	show 51	-	-
+brief	pipe	100	-	brief 51	-	-
+why	pipe	100	-	why 51	-	-
+projects	pipe	100	-	projects	-	-
+report	pipe	100	-	report	-	-
+chart-burndown	pipe	100	-	chart burndown	-	-
+memory-list	pipe	100	-	memory list	-	-
+memory-search	pipe	100	-	memory search release canary	-	-
+theme-list	pipe	100	-	theme list	-	-
+manual	pipe	100	-	manual	-	-
+add-echo	pipe-mut	100	-	add "Draft the Q4 roadmap" project:website !H due:friday +planning	-	-
+start-echo	pipe-mut	100	-	start 49	-	-
+done-echo	pipe-mut	100	-	done 47	-	-
+annotate-echo	pipe-mut	100	-	annotate 50 "Ship it behind a flag; the ceiling is 60 requests a minute per key."	-	-
+api-task-list	pipe	100	-	api	-	{"tasqx":"1","id":"e1","method":"task.list","params":{"filter":"+docs","sort":["-urgency"]}}
+api-task-get	pipe	100	-	api	-	{"tasqx":"1","id":"g1","method":"task.get","params":{"ref":"51"}}
+api-task-done	pipe-mut	100	-	api	-	{"tasqx":"1","id":"d1","method":"task.done","params":{"ref":"47"}}
+api-memory-list	pipe	100	-	api	-	{"tasqx":"1","id":"m1","method":"memory.list"}
+api-project-list	pipe	100	-	api	-	{"tasqx":"1","id":"p1","method":"project.list"}
+api-report-summary	pipe	100	-	api	-	{"tasqx":"1","id":"r1","method":"report.summary","params":{"group_by":"project"}}
+dashboard	tui	132	36	dashboard	-	-
+pick	tui	120	40	pick	-	-
+memory-browser	tui	120	40	memory list	-	-

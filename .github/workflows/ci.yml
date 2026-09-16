@@ -131,6 +131,32 @@ jobs:
       - run: sudo apt-get install -y elvish || echo "elvish unavailable; the script will report it as not covered"
       - run: REQUIRE=zsh,fish scripts/shell-completion-smoke.sh
 
+  # The guide's terminal screens are captured output, committed under
+  # crates/tasqx-cli/docs-fixtures and embedded with `include_str!`. A screen
+  # that changed next to a fixture that did not is a page describing a binary
+  # nobody ships any more, and no other gate can see it: the fixtures are text
+  # files, and the tests that read them only check that the manifest, the
+  # directory and the embedded list name the same screens — never that the bytes
+  # are still what this build prints. So the capture runs again here, against
+  # this commit's binary, and the result is compared byte for byte (D149).
+  #
+  # tmux because three rows are full-screen (dashboard, pick, the memory
+  # browser): they draw with cursor addressing and need a real pty, which a pipe
+  # is not. The clock is pinned inside the script, so the comparison is stable on
+  # any calendar day — a red job here means a screen really changed, and the fix
+  # is to regenerate in the same pull request, never to edit a fixture by hand:
+  #   cargo build -p tasqx-cli && TASQX=target/debug/tasqx scripts/docs-capture.sh
+  docs-fixtures:
+    name: captured screens still match the binary
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: sudo apt-get update && sudo apt-get install -y tmux
+      - run: cargo build -p tasqx-cli
+      - run: TASQX=target/debug/tasqx scripts/docs-capture.sh --check
+
   # The OS-notification backend is off by default and therefore compiled by
   # nothing in the normal test run — a break in it would surface only on a
   # user's machine, at the moment a reminder fires.
