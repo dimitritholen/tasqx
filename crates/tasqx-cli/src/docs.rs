@@ -604,7 +604,9 @@ const MCP_TOOLS: [(&str, bool, &str); 29] = [
         true,
         "Complete a task; self-report its token cost (the primary channel). Refused with \
          <code>conflict</code> while the task has open blockers, naming them; \
-         <code>force: true</code> completes it anyway and the override is recorded (D150).",
+         <code>force: true</code> completes it anyway and the override is recorded (D150). \
+         <code>view: \"card\"</code> leads the answer with the box card of the task as \
+         completed, so no <code>tasqx_get_task</code> re-read is needed (D153).",
     ),
     (
         "tasqx_reopen_task",

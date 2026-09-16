@@ -75,7 +75,9 @@ paying for it:
   included, returns the engine's own full row.
 - **`tasqx_complete_task`** refuses a task with open blockers and names them;
   `force: true` completes it anyway, and the override is recorded and counted
-  in `tasqx_outcomes`.
+  in `tasqx_outcomes`. Pass `view: "card"` when a person will read the
+  outcome: the answer then leads with the box card of the task as completed,
+  so no `tasqx_get_task` re-read is needed.
 - A long annotation body is cut in a `tasqx_get_task`/`tasqx_brief_task`
   response with a marker naming its real size; `max_body_bytes` raises the
   cap, and a removed annotation is listed as a tombstone rather than
