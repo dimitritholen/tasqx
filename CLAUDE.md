@@ -25,6 +25,16 @@ The installed binary is a build of this tree. After changing anything under
 `crates/`, `cargo install --path crates/tasqx-cli --force` makes it reflect your
 edits.
 
+## Every change to main goes through a pull request
+
+`main` is protected: pull request required, linear history, eleven required
+status checks, no force pushes. Never merge a branch into `main` locally and
+never push to `main` directly, even when the push would be accepted. The flow
+is: branch from `main` as `task/<id>-<slug>`, commit there, push the branch,
+open a PR with `gh pr create`, wait for the checks, and merge through the PR
+(`gh pr merge --rebase` keeps the history linear). Delete the branch after
+the merge and pull `main` before starting the next task.
+
 ## Releases and pushes are the user's call
 
 Do not push tags, create GitHub releases or `cargo publish` unless the user has
