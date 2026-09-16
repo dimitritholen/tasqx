@@ -58,9 +58,13 @@ Safety properties worth knowing:
 by default. Pass `view: "card"` when the task is going in front of a person
 rather than being read by the agent itself: the rendered block becomes a
 fixed-width, box-drawn card meant to be pasted whole into a chat reply or a
-document, instead of the usual prose. Everything else about the response,
-including the JSON block, is unchanged. The same card is available from a
+document, instead of the usual prose. The same card is available from a
 shell: `tasqx show 42 --card` prints the identical bytes.
+
+Both tools answer the rendered view and nothing else. The machine-readable
+JSON block is the same result a second time, so it is sent only when you ask
+for it with `include_json: true` — worth doing when a script parses the
+answer, and a waste of the response budget when an agent is going to read it.
 
 For the full workflow — what deserves a backlog entry, searching memory before
 starting, annotating before completing — see the

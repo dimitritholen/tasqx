@@ -66,12 +66,13 @@ The tool surface is designed around one loop — work the backlog one task at a 
 2. `tasqx_brief_task` — everything needed before starting, in one call: the task
    and its annotations, each prerequisite with **what that task concluded**, what
    this one blocks, and relevant memory under a query tasqx derives from the
-   task's own title, tags and project. The answer is two content blocks:
-   tasqx-rendered markdown first, then the raw JSON. The markdown is the intended
-   reading — layout is tasqx's job, so the agent uses it as-is rather than
-   recomposing the detail from JSON — and the `detail.time_format` config key
-   (`iso`, `relative` or `both`) decides how it writes timestamps. Pass
-   `include_json: false` when the agent only needs to read it.
+   task's own title, tags and project. The answer is one content block:
+   tasqx-rendered markdown. That is the intended reading — layout is tasqx's job,
+   so the agent uses it as-is rather than recomposing the detail from JSON — and
+   the `detail.time_format` config key (`iso`, `relative` or `both`) decides how
+   it writes timestamps. Pass `include_json: true` when a script needs the raw
+   JSON beside it; it is the same result again, so the agent that reads the
+   markdown is paying twice for it.
 
    `tasqx_get_task` is still the right call when you only want the task itself.
 3. `tasqx_start_timer`, do the work, `tasqx_complete_task` — the completion result

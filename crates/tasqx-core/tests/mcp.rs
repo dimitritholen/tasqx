@@ -548,8 +548,14 @@ fn annotate_tool_round_trips_multiline_markdown() {
         "annotation carries its timestamp"
     );
 
-    // The annotation is readable back through tasqx_get_task, unmangled.
-    let got = call(&server, 3, "tasqx_get_task", json!({ "ref": short_id }));
+    // The annotation is readable back through tasqx_get_task, unmangled. Read
+    // from the machine block, which D151 made opt-in.
+    let got = call(
+        &server,
+        3,
+        "tasqx_get_task",
+        json!({ "ref": short_id, "include_json": true }),
+    );
     assert_eq!(tool_json(&got)["annotations"][0]["body"], body);
 }
 
@@ -769,7 +775,12 @@ fn complete_task_with_token_args_records_a_self_report() {
     assert!(!is_error(&done), "complete failed: {done}");
     assert_eq!(tool_text(&done)["status"], "done");
 
-    let got = tool_json(&call(&server, 4, "tasqx_get_task", json!({ "ref": sid })));
+    let got = tool_json(&call(
+        &server,
+        4,
+        "tasqx_get_task",
+        json!({ "ref": sid, "include_json": true }),
+    ));
     let m = &got["tokens"][0];
     assert_eq!(m["tool"], "cursor 1.3");
     assert_eq!(m["source"], "self-report");
@@ -952,7 +963,15 @@ fn get_task_bounds_a_long_history_when_the_caller_names_no_page_size() {
     task_with_annotations(&engine, 200);
     let server = McpServer::new(&engine, Scope::Read);
 
-    let out = call(&server, 1, "tasqx_get_task", json!({ "ref": 1 }));
+    // `include_json: true`: the page this asserts on is read from the machine
+    // block, and D151 made that block opt-in. The page size is still unnamed,
+    // which is what this test is about.
+    let out = call(
+        &server,
+        1,
+        "tasqx_get_task",
+        json!({ "ref": 1, "include_json": true }),
+    );
     assert!(!is_error(&out));
     let json = tool_json(&out);
     assert_eq!(json["annotations_total"], json!(200));
@@ -991,7 +1010,7 @@ fn an_explicit_annotations_limit_overrides_the_transport_default() {
         &server,
         1,
         "tasqx_get_task",
-        json!({ "ref": 1, "annotations_limit": 3 }),
+        json!({ "ref": 1, "annotations_limit": 3, "include_json": true }),
     ));
     assert_eq!(three["annotations"].as_array().unwrap().len(), 3);
 
@@ -999,7 +1018,7 @@ fn an_explicit_annotations_limit_overrides_the_transport_default() {
         &server,
         2,
         "tasqx_get_task",
-        json!({ "ref": 1, "annotations_limit": 40 }),
+        json!({ "ref": 1, "annotations_limit": 40, "include_json": true }),
     ));
     assert_eq!(all["annotations"].as_array().unwrap().len(), 40);
     assert!(all["annotations_next_offset"].is_null());
@@ -1013,7 +1032,12 @@ fn a_short_history_is_returned_whole_and_advertises_no_next_page() {
     task_with_annotations(&engine, 2);
     let server = McpServer::new(&engine, Scope::Read);
 
-    let json = tool_json(&call(&server, 1, "tasqx_get_task", json!({ "ref": 1 })));
+    let json = tool_json(&call(
+        &server,
+        1,
+        "tasqx_get_task",
+        json!({ "ref": 1, "include_json": true }),
+    ));
     assert_eq!(json["annotations"].as_array().unwrap().len(), 2);
     assert_eq!(json["annotations_total"], json!(2));
     assert!(json["annotations_next_offset"].is_null());
@@ -1116,7 +1140,7 @@ fn an_explicit_limit_over_budget_is_answered_view_only() {
     assert_eq!(
         blocks.len(),
         1,
-        "the duplicate JSON block is still what the budget spends first"
+        "the rendered view alone is the answer (D151), and the bound is what is on trial here"
     );
     let view = blocks[0]["text"].as_str().expect("the view");
     assert!(
@@ -1324,6 +1348,9 @@ fn complete_task_records_tool_and_model_without_token_counts() {
 /// what leads and what a model reads (D49's own reason for the order), so when
 /// something has to go, the redundant block goes first and the history gets the
 /// room.
+///
+/// Driven with `include_json: true`, because the spend ORDER is what this pins
+/// and since D151 there is nothing to spend unless the caller asked for it.
 #[test]
 fn an_oversized_response_drops_the_duplicate_json_before_it_drops_history() {
     let engine = engine();
@@ -1337,7 +1364,12 @@ fn an_oversized_response_drops_the_duplicate_json_before_it_drops_history() {
             .expect("annotate");
     }
     let server = McpServer::new(&engine, Scope::Read);
-    let out = call(&server, 1, "tasqx_get_task", json!({ "ref": 1 }));
+    let out = call(
+        &server,
+        1,
+        "tasqx_get_task",
+        json!({ "ref": 1, "include_json": true }),
+    );
     assert!(!is_error(&out));
 
     let blocks = out["result"]["content"].as_array().expect("content");
@@ -1355,8 +1387,9 @@ fn an_oversized_response_drops_the_duplicate_json_before_it_drops_history() {
     // Silent omission of a whole block is the failure shape this repo keeps
     // paying for: the reader has to be told what is not there and how to get it.
     assert!(
-        view.contains("annotations_limit"),
-        "an omitted JSON block must name the call that brings it back:\n{view}"
+        view.contains("include_json") && view.contains("annotations_limit"),
+        "an omitted JSON block must name the argument that asked for it and the one that \
+         pages the history:\n{view}"
     );
     let shown = view.matches("## Note ").count();
     assert!(
@@ -1370,7 +1403,8 @@ fn an_oversized_response_drops_the_duplicate_json_before_it_drops_history() {
 ///
 /// This is what D148 leaves of D66's exemption: the frozen machine-readable
 /// shape stays reachable for every task whose answer fits, and the answers that
-/// do not fit are the ones a client was refusing anyway.
+/// do not fit are the ones a client was refusing anyway. Reachable by asking —
+/// `include_json: true` since D151.
 #[test]
 fn an_explicit_limit_whose_answer_fits_keeps_both_blocks() {
     let engine = engine();
@@ -1387,7 +1421,7 @@ fn an_explicit_limit_whose_answer_fits_keeps_both_blocks() {
         &server,
         1,
         "tasqx_get_task",
-        json!({ "ref": 1, "annotations_limit": 11 }),
+        json!({ "ref": 1, "annotations_limit": 11, "include_json": true }),
     );
     let blocks = out["result"]["content"].as_array().expect("content");
     assert_eq!(
@@ -1463,7 +1497,7 @@ fn the_json_block_marks_which_bodies_were_cut() {
         &server,
         1,
         "tasqx_get_task",
-        json!({ "ref": 1, "max_body_bytes": 1_000 }),
+        json!({ "ref": 1, "max_body_bytes": 1_000, "include_json": true }),
     );
     let blocks = out["result"]["content"].as_array().expect("content");
     assert_eq!(blocks.len(), 2, "capped, this answer fits both blocks");
@@ -1559,16 +1593,22 @@ fn the_brief_takes_the_body_cap_too() {
     );
 }
 
-/// An ordinary task is untouched: two blocks, no note, nothing to notice.
+/// An ordinary task asked for both blocks gets both, no note, nothing to
+/// notice: the budget is a bound on oversized answers, not a policy.
 #[test]
-fn a_response_within_budget_still_carries_both_blocks() {
+fn a_response_within_budget_carries_both_blocks_when_asked_for() {
     let engine = engine();
     engine.task_add(&json!({ "title": "small" })).expect("add");
     engine
         .annotation_add(&json!({ "ref": 1, "body": "a short note" }))
         .expect("annotate");
     let server = McpServer::new(&engine, Scope::Read);
-    let out = call(&server, 1, "tasqx_get_task", json!({ "ref": 1 }));
+    let out = call(
+        &server,
+        1,
+        "tasqx_get_task",
+        json!({ "ref": 1, "include_json": true }),
+    );
     let blocks = out["result"]["content"].as_array().expect("content");
     assert_eq!(blocks.len(), 2);
     assert!(!blocks[0]["text"].as_str().unwrap().contains("omitted"));
@@ -2006,13 +2046,15 @@ fn the_transport_recut_page_equals_a_real_limited_call() {
 
 // ---- D72: the bytes the caller already holds --------------------------------
 
-/// `include_json: false` returns the rendered view alone, at any size.
+/// `include_json: false` returns the rendered view alone — spelled out, and as
+/// the default D151 made it.
 ///
-/// D49 ships the result twice — once formatted, once as escaped JSON — and D66
-/// spends the duplicate only once the budget is already blown. Below it every
-/// ordinary read paid in full with no way to decline: measured on a live task
-/// with ONE annotation, the JSON block was 54% of a 6,375-byte response, and
-/// 66% of a 1,351-byte one read with `annotations_limit: 0`.
+/// D49 ships the result twice — once formatted, once as escaped JSON. Measured
+/// on a live task with ONE annotation, the JSON block was 54% of a 6,375-byte
+/// response and 66% of a 1,351-byte one read with `annotations_limit: 0`, so
+/// since D151 it is sent only when asked for. Not "at any size" any more: the
+/// view-only answer goes through the same budget as the two-block one, which
+/// `a_view_only_answer_is_still_bounded` pins.
 #[test]
 fn include_json_false_returns_the_view_alone() {
     let engine = engine();
@@ -2024,9 +2066,14 @@ fn include_json_false_returns_the_view_alone() {
         .expect("annotate");
     let server = McpServer::new(&engine, Scope::Write);
 
-    let both = call(&server, 1, "tasqx_get_task", json!({ "ref": 1 }));
+    let both = call(
+        &server,
+        1,
+        "tasqx_get_task",
+        json!({ "ref": 1, "include_json": true }),
+    );
     let blocks = both["result"]["content"].as_array().expect("blocks");
-    assert_eq!(blocks.len(), 2, "the default is unchanged");
+    assert_eq!(blocks.len(), 2, "a caller that asks for both gets both");
 
     let view_only = call(
         &server,
@@ -2056,6 +2103,207 @@ fn include_json_false_returns_the_view_alone() {
         !text.contains("response budget"),
         "a chosen omission is not an over-budget omission: {}",
         &text[text.len().saturating_sub(300)..]
+    );
+}
+
+// ---- D151: the view alone is what a caller who says nothing gets ------------
+
+/// A `tasqx_get_task` call that names no `include_json` gets ONE block, and it
+/// is the rendered view — the JSON is there for the asking and not before.
+///
+/// Measured over 36 hours of transcripts, `tasqx_get_task` and
+/// `tasqx_brief_task` returned 150 KB of the 373 KB tasqx sent back, every
+/// call made by a model, which reads the view. D72's opt-out was passed in
+/// none of the 42 calls, so D151 moved the default to where the observed
+/// caller already was.
+#[test]
+fn the_default_answer_is_the_view_alone() {
+    let engine = engine();
+    engine
+        .task_add(&json!({ "title": "read me" }))
+        .expect("add");
+    engine
+        .annotation_add(&json!({ "ref": 1, "body": "one short note" }))
+        .expect("annotate");
+    let server = McpServer::new(&engine, Scope::Read);
+
+    let out = call(&server, 1, "tasqx_get_task", json!({ "ref": 1 }));
+    assert!(!is_error(&out));
+    let blocks = out["result"]["content"].as_array().expect("blocks");
+    assert_eq!(
+        blocks.len(),
+        1,
+        "the default answer is one block: {blocks:?}"
+    );
+    let view = blocks[0]["text"].as_str().expect("the view");
+    assert!(view.starts_with("## #"), "and it is the view:\n{view}");
+    // Nothing was dropped that the caller asked for, so nothing is explained.
+    assert!(
+        !view.contains("Machine-readable JSON omitted"),
+        "a chosen answer is not an omission:\n{view}"
+    );
+
+    let asked = call(
+        &server,
+        2,
+        "tasqx_get_task",
+        json!({ "ref": 1, "include_json": true }),
+    );
+    let blocks = asked["result"]["content"].as_array().expect("blocks");
+    assert_eq!(blocks.len(), 2, "asked for, the machine block is sent");
+    assert_eq!(
+        tool_json(&asked)["short_id"],
+        json!(1),
+        "and it is the same result, parseable"
+    );
+}
+
+/// The same rule one tool over: a brief answers the view alone, and its JSON
+/// half — the larger of the two, since it restates the neighbourhood and every
+/// memory snippet — is opt-in.
+#[test]
+fn the_default_brief_is_the_view_alone() {
+    let engine = engine();
+    engine
+        .task_add(&json!({ "title": "brief me" }))
+        .expect("add");
+    engine
+        .annotation_add(&json!({ "ref": 1, "body": "one short note" }))
+        .expect("annotate");
+    let server = McpServer::new(&engine, Scope::Read);
+
+    let out = call(&server, 1, "tasqx_brief_task", json!({ "ref": 1 }));
+    assert!(!is_error(&out));
+    let blocks = out["result"]["content"].as_array().expect("blocks");
+    assert_eq!(
+        blocks.len(),
+        1,
+        "the default brief is one block: {blocks:?}"
+    );
+    let view = blocks[0]["text"].as_str().expect("the view");
+    assert!(view.starts_with("## #"), "and it is the view:\n{view}");
+    assert!(
+        !view.contains("Machine-readable JSON omitted"),
+        "nothing asked for was dropped:\n{view}"
+    );
+
+    let asked = call(
+        &server,
+        2,
+        "tasqx_brief_task",
+        json!({ "ref": 1, "include_json": true }),
+    );
+    assert_eq!(
+        asked["result"]["content"].as_array().expect("blocks").len(),
+        2,
+        "asked for, the machine block is sent"
+    );
+    assert_eq!(tool_json(&asked)["task"]["short_id"], json!(1));
+}
+
+/// The view-only answer is BOUNDED, which is the half of D72 that D151 had to
+/// take back.
+///
+/// `include_json: false` used to return before the budget ran — "the view, at
+/// any size" — bounded only by D148's per-body cap. As an opt-in that was
+/// survivable; as the default it would hand a client a twenty-annotation page
+/// of 16 KB bodies, which is 320 KB and the exact failure D148 exists to
+/// remove. So the bisection runs over the view alone, and the view's own
+/// heading is what says which page it holds.
+#[test]
+fn a_view_only_answer_is_still_bounded() {
+    let engine = engine();
+    engine
+        .task_add(&json!({ "title": "eleven very long notes" }))
+        .expect("add");
+    // ~6 KB each, each one well under the body cap: nothing here is truncated,
+    // so the only lever is the page.
+    let body = "detail ".repeat(900);
+    for i in 0..11 {
+        engine
+            .annotation_add(&json!({ "ref": 1, "body": format!("## Note {i}\n\n{body}\n") }))
+            .expect("annotate");
+    }
+    let server = McpServer::new(&engine, Scope::Read);
+
+    let out = call(&server, 1, "tasqx_get_task", json!({ "ref": 1 }));
+    assert!(!is_error(&out));
+    let blocks = out["result"]["content"].as_array().expect("blocks");
+    assert_eq!(blocks.len(), 1, "one block, as the default promises");
+    let sent = serde_json::to_string(&out).expect("json").len();
+    assert!(
+        sent < 24_576,
+        "the view-only answer is {sent} bytes: the default may not be the unbounded path"
+    );
+    let view = blocks[0]["text"].as_str().expect("the view");
+    assert!(
+        view.contains("of 11") && view.contains("annotations_offset"),
+        "the view's own heading is the whole notice: what it holds, and how to read the \
+         rest:\n{view}"
+    );
+    assert!(
+        !view.contains("Machine-readable JSON omitted"),
+        "and it explains no omission, because the caller chose this answer:\n{view}"
+    );
+
+    // Saying it out loud is the same answer as saying nothing.
+    let spelled = call(
+        &server,
+        2,
+        "tasqx_get_task",
+        json!({ "ref": 1, "include_json": false }),
+    );
+    assert_eq!(
+        out["result"]["content"], spelled["result"]["content"],
+        "`include_json: false` is the default spelled out, not a second behaviour"
+    );
+}
+
+/// The brief's view-only answer is bounded the same way, over its own lever:
+/// the memory page (D136/D66), never the task half or the neighbourhood.
+///
+/// The fixture makes MEMORY the overflow on purpose — ten long-titled rulings
+/// the derived query finds — because the brief's bisection has no other lever,
+/// and before D151 a default call returned every byte of them without asking
+/// the budget anything.
+#[test]
+fn a_view_only_brief_is_still_bounded() {
+    let engine = engine();
+    // Each ruling's own title is what the section spends its bytes on: the
+    // snippet beside it is a dozen tokens, so a page of ten is the overflow.
+    let padding = "retention ".repeat(300);
+    for i in 0..12 {
+        engine
+            .memory_add(&json!({
+                "title": format!("kafka retention ruling {i} — {padding}"),
+                "body": "kafka retention is seven days, and the compaction runs nightly"
+            }))
+            .expect("doc");
+    }
+    engine
+        .task_add(&json!({ "title": "kafka retention" }))
+        .expect("add");
+    let server = McpServer::new(&engine, Scope::Read);
+
+    let out = call(&server, 1, "tasqx_brief_task", json!({ "ref": 1 }));
+    assert!(!is_error(&out), "{out}");
+    let blocks = out["result"]["content"].as_array().expect("blocks");
+    assert_eq!(blocks.len(), 1, "one block, as the default promises");
+    let view = blocks[0]["text"].as_str().expect("the view");
+    assert!(
+        view.len() <= 24_576,
+        "the view-only brief is {} bytes: the memory page is the lever and it was not pulled",
+        view.len()
+    );
+    let shown = view.matches("kafka retention ruling").count();
+    assert!(
+        (1..10).contains(&shown),
+        "expected the memory page cut to what fits, got {shown} rulings"
+    );
+    assert!(
+        !view.contains("Machine-readable JSON omitted"),
+        "and no notice: nothing the caller asked for was dropped:\n{}",
+        &view[..view.len().min(400)]
     );
 }
 
@@ -2115,11 +2363,13 @@ fn include_json_is_stripped_before_the_params_gate_on_every_path() {
 /// **unbounded** — that is an opt-out of the budget, not a page within it".
 /// D148 removed that exemption, so the sentence became an instruction to make
 /// a call that no longer exists, printed on the response that had just been
-/// cut to fit. What the notice owes the reader now is what IS true: the two
-/// blocks together were too big, the view carries the same annotations and its
-/// own heading says how much of the history it holds, `include_json: false`
-/// asks for this view on purpose, and an oversized body is cut with a marker
-/// naming `max_body_bytes`.
+/// cut to fit. What the notice owes the reader now is what IS true: they asked
+/// for both blocks, the two together were too big, the view carries the same
+/// annotations and its own heading says how much of the history it holds, and
+/// an oversized body is cut with a marker naming `max_body_bytes`. Since D151
+/// the notice is only ever produced on that path — the view alone is the
+/// default and explains nothing, because nothing asked for was dropped — so
+/// this call names `include_json: true`.
 #[test]
 fn the_json_omission_notice_states_the_rule_the_server_now_follows() {
     let engine = engine();
@@ -2130,7 +2380,12 @@ fn the_json_omission_notice_states_the_rule_the_server_now_follows() {
             .expect("annotate");
     }
     let server = McpServer::new(&engine, Scope::Write);
-    let result = call(&server, 1, "tasqx_get_task", json!({ "ref": 1 }));
+    let result = call(
+        &server,
+        1,
+        "tasqx_get_task",
+        json!({ "ref": 1, "include_json": true }),
+    );
     let blocks = result["result"]["content"].as_array().expect("blocks");
     assert_eq!(blocks.len(), 1, "the premise: this response is over budget");
     let text = blocks[0]["text"].as_str().expect("text");
@@ -2325,12 +2580,17 @@ fn search_memory_description_names_the_rank_direction() {
     );
 }
 
-/// The two parameters that together produce a 327 KB response (naming
-/// `annotations_limit` AND keeping `include_json` at its default) must cross-
-/// reference each other, since the one that leads a caller into the trap
-/// never used to mention the one that gets them out (audit #225.13).
+/// The two parameters that together decide how much history a page buys —
+/// `annotations_limit` and `include_json` — must cross-reference each other,
+/// since the one that leads a caller into the trap never used to mention the
+/// one that governs the other half of the spend (audit #225.13).
+///
+/// The direction flipped with D151: `include_json: false` used to be the
+/// escape from a duplicate the caller got by default, and now the duplicate is
+/// what `include_json: true` buys at the history's expense. Either way the
+/// page-size description has to name it, which is what this asserts.
 #[test]
-fn annotations_limit_description_names_include_json_as_the_escape() {
+fn annotations_limit_description_names_include_json_as_the_other_spend() {
     let engine = engine();
     let server = McpServer::new(&engine, Scope::Write);
     let listed = server
@@ -2346,8 +2606,8 @@ fn annotations_limit_description_names_include_json_as_the_escape() {
         .unwrap_or_default();
     assert!(
         desc.contains("include_json"),
-        "`annotations_limit`'s description should point at `include_json` as the way to keep \
-         the budget once a limit is named: {desc}"
+        "`annotations_limit`'s description should name `include_json` as the other claim on \
+         the same budget: {desc}"
     );
 }
 

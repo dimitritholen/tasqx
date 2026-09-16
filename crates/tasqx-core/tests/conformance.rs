@@ -2681,12 +2681,13 @@ fn tool_call_json(call: &Value, label: &str) -> Value {
     let content = call["content"].as_array().unwrap_or_else(|| {
         panic!("{label}: a CallToolResult carries a `content` array, got {call}")
     });
-    // The JSON block is the LAST one, and `tasqx_get_task` is now allowed to
-    // omit it: over the response budget, the transport spends the duplicate
-    // block before it spends annotations (D66). Every case in this file is
-    // small enough to stay under that budget and therefore still carries both
-    // blocks — which is what keeps this guard live rather than quietly
-    // checking a view. D56 pre-committed to saying so if that ever changed:
+    // The JSON block is the LAST one, and `tasqx_get_task` is allowed to omit
+    // it: it is sent only when the caller asks (D151, which is why the loop
+    // below asks), and over the response budget the transport spends it before
+    // it spends annotations (D66). Every case in this file is small enough to
+    // stay under that budget and therefore still carries both blocks — which
+    // is what keeps this guard live rather than quietly checking a view. D56
+    // pre-committed to saying so if that ever changed:
     // a fixture that grows past the budget will land here as "does not parse",
     // and the answer is to shrink the fixture, never to read a different block.
     let text = content
@@ -2748,7 +2749,19 @@ fn every_mcp_tool_hands_back_the_frozen_result_of_its_method() {
         for c in matching {
             let engine = Engine::open_in_memory().expect("in-memory store");
             let server = McpServer::new(&engine, Scope::Write);
-            let params = (c.setup)(&engine);
+            let mut params = (c.setup)(&engine);
+            // D151: the two rendered tools answer the view ALONE unless asked
+            // for the machine block, so the block this suite checks has to be
+            // asked for. `include_json` is transport-only (D72) — it never
+            // reaches the method's params gate — so the result being checked
+            // is still `dispatch`'s own, unaltered. A THIRD tool growing a
+            // rendered view lands here as "the tool's JSON block does not
+            // parse", which is the right way to find out.
+            if matches!(tool.as_str(), "tasqx_get_task" | "tasqx_brief_task") {
+                if let Some(obj) = params.as_object_mut() {
+                    obj.insert("include_json".to_string(), json!(true));
+                }
+            }
             let response = server
                 .handle_message(&json!({
                     "jsonrpc": "2.0",
