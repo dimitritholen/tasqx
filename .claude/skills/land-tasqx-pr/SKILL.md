@@ -62,28 +62,39 @@ skipping or reordering one of them (see "Why this order" at the end).
 
 5. **Merge.** `gh pr merge <n> --rebase` — **without `--delete-branch`.** The
    branch lives in a worktree; `--delete-branch` deletes it (remote and
-   local) out from under that worktree, and `tasqx-work --done` then finds
-   nothing to clean up. Step 7 deletes the branch instead, and it refuses
-   anything dirty or unmerged, which is the check `--delete-branch` skips.
+   local) out from under that worktree before step 7 has checked, with
+   `git cherry`, that every commit really reached `main`. Step 7 deletes
+   the branch after that check.
    If GitHub answers "the base branch policy prohibits the merge" while the
    checks are green, a thread is still unresolved — go back to step 4, do
-   not retry the merge blind.
+   not retry the merge blind. If it answers with an HTTP 502, or a retry
+   says "Merge already in progress", the merge is usually running — another
+   PR landing on `main` at the same moment makes it wait. Poll
+   `gh pr view <n> --json state --jq .state` every ten seconds until it
+   says `MERGED` instead of issuing the merge again.
 
-6. **Reinstall and verify from the primary checkout.** The worktree is still
-   on disk at this point but is about to go, so build from `main`:
+6. **Leave the worktree, then reinstall and verify from the primary
+   checkout.** A session that entered the task worktree with `EnterWorktree`
+   is isolated to it: the harness refuses any git command aimed at the
+   shared checkout, `git -C ~/projects/tasqx pull` included, and refuses a
+   chained command it cannot verify stays inside the worktree. So first
+   `ExitWorktree` with `action: "keep"` (the worktree stays on disk for
+   step 7), then, from `~/projects/tasqx`, one plain command per call:
 
    ```console
-   $ git -C ~/projects/tasqx pull --ff-only
-   $ cargo install --path ~/projects/tasqx/crates/tasqx-cli --force
+   $ git pull --ff-only
+   $ cargo install --path crates/tasqx-cli --force
    ```
 
    Then exercise the change in-process against the real store, for example
    `tasqx api <<< '{"tasqx":"1","id":"1","method":"<method>","params":{...}}'`
    or the verb the task changed. The daemon and MCP server keep running the
    old binary until they restart, so the in-process call is the only way to
-   see the new build immediately. A verification that fails here is a new
-   commit on the branch and a new PR, not a reason to leave the task open
-   with a half-landed change.
+   see the new build immediately — and a new tool argument (a `view` on a
+   write, say) is refused by the MCP server as an unknown key until the
+   client reconnects it. A verification that fails here is a new commit on
+   the branch and a new PR, not a reason to leave the task open with a
+   half-landed change.
 
    If the task's evidence includes a narrow-viewport screenshot of
    `tasqx docs` output: headless Chrome on macOS floors `--window-size` at
@@ -91,18 +102,29 @@ skipping or reordering one of them (see "Why this order" at the end).
    to 390 and proves nothing about 390. Drive a true narrow viewport through
    CDP's `Emulation.setDeviceMetricsOverride` before trusting it.
 
-7. **Annotate, then close the task exactly once.** Write the delivery
-   annotation first (plain-language paragraph on top, then the commit
-   hashes, the diff stat, what was deliberately skipped), mark the checks
-   with `tasqx_set_check` and their evidence, then
-   `tasqx-work --done <id>`: it removes the worktree and the local branch and
-   completes the task in one call. Do not also call `tasqx_complete_task`
-   afterwards — a second completion of a done task is refused.
+7. **Annotate, clean up by hand, then close the task exactly once.** Write
+   the delivery annotation first (plain-language paragraph on top, then the
+   commit hashes, the diff stat, what was deliberately skipped) and mark the
+   checks with `tasqx_set_check` (`check_id`, `state: "passed"`, `evidence`).
 
-   If the worktree is already gone (an earlier run passed `--delete-branch`),
-   `--done` reports "no worktree" and does nothing; the branch is already
-   deleted, so complete the task directly with `tasqx_complete_task`
-   (`checks_passed`, `evidence`) instead.
+   Do not reach for `tasqx-work --done <id>`: a rebase merge rewrites the
+   commit hashes, so the task branch is never an ancestor of `main` and the
+   launcher refuses with "not merged yet" every time (task #665 tracks
+   that). Check by patch instead, then remove the pieces yourself, from
+   `~/projects/tasqx`:
+
+   ```console
+   $ git cherry origin/main task/<id>-<slug>        # every line must start with "-"
+   $ git worktree remove ~/projects/worktrees/tasqx/<id>-<slug>
+   $ git branch -D task/<id>-<slug>
+   $ git push origin --delete task/<id>-<slug>
+   ```
+
+   A `+` line from `git cherry` means a commit did not land; stop and find
+   out why before deleting anything. Then `tasqx_complete_task` with
+   `evidence` (its `checks_passed` wants check ids, not bodies; the checks
+   are already marked, so evidence alone is enough). Complete once — a
+   second completion of a done task is refused.
 
 8. **Show the closing card.** `tasqx_get_task` with `view: "card"`, pasted
    verbatim, with what the completion unblocked under it.
@@ -129,3 +151,11 @@ build, and the task's status is `done` with its checks marked.
   worktree it had just removed, and completed the task twice; the reviewer
   on its own PR (#30) caught both, which is why reinstall now precedes
   cleanup and completion happens once.
+- **Sighting 3 (task #679, PR #40, 2026-09-16):** the first landing run
+  from a session that had used `EnterWorktree`. Step 6's `git -C
+  ~/projects/tasqx pull` was refused by the worktree isolation, a chained
+  git command was refused as unverifiable, `gh pr merge` answered 502 while
+  the merge was in fact waiting behind another PR, and `tasqx-work --done`
+  refused after the rebase merge as it does every time. Steps 5 to 7 now
+  say what worked: leave the worktree first, one plain command per call,
+  poll the PR state, clean up by hand after `git cherry`.
