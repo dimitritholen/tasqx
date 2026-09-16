@@ -38,7 +38,7 @@ process reads everywhere: the dates the CLI spells (`due tomorrow`, `2d ago`, an
 agenda heading, a chart's axis), the urgency it scores, **and the stamps the
 engine writes** — `created`, `completed`, `active_since`, every event. So a
 store generated at instant P and rendered at instant P is the same bytes on any
-calendar day, writes included (DESIGN.md D148).
+calendar day, writes included (DESIGN.md D149).
 `scripts/demo-store.py` reads the same variable and passes it on.
 
 That last part makes it dangerous, so treat it as live ammunition: a pin left
