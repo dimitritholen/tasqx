@@ -580,7 +580,12 @@ fn build_tool_specs() -> Vec<ToolSpec> {
                     "memory_limit": {
                         "type": "integer",
                         "description": format!(
-                            "How many memory hits to return. Optional; defaults to {}.",
+                            "How many memory hits to return. Optional; defaults to {}. Half \
+                             the slots (rounded up) are reserved for knowledge docs — the \
+                             rulings a sibling task's notes would otherwise outrank — and \
+                             annotations fill the rest, either kind taking the other's unused \
+                             slots. The response says what it did in `reserved_docs`, \
+                             `docs_total` and `annotations_total`.",
                             crate::engine::MEMORY_SEARCH_LIMIT
                         )
                     },

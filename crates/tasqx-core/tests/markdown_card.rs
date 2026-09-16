@@ -653,3 +653,65 @@ fn card_durations_are_always_compact_and_card_instants_follow_time_format() {
         "1 annotation, newest 2026-09-15 (just now)"
     );
 }
+
+/// The two kinds of memory hit are told apart in the view, and the docs are
+/// told first (D147).
+///
+/// The reservation is worth nothing to a reader who cannot see that it
+/// happened: a ruling and a sibling's note render as the same bullet, and
+/// "half the page is held for rulings" is a claim the page must be able to
+/// back. Each label carries how many of that kind were shown out of how many
+/// matched, so a reader can tell a page holding every ruling from one holding
+/// the first of forty.
+#[test]
+fn the_memory_tail_labels_the_docs_and_lists_them_before_the_annotations() {
+    let b = json!({
+        "task": minimal(),
+        "memory": {
+            "count": 2,
+            "total": 2,
+            "has_more": false,
+            "reserved_docs": 5,
+            "docs_total": 1,
+            "annotations_total": 1,
+            "hits": [
+                { "kind": "doc", "title": "Retry audit ruling", "source": "DESIGN.md",
+                  "snippet": "every retry is bounded" },
+                { "kind": "annotation", "title": "audit the retry path", "source": "task:#12",
+                  "snippet": "the retry path tests…" }
+            ]
+        }
+    });
+    assert_eq!(
+        brief_tail_text(&b),
+        "\
+\n### From memory\n\n\
+**Docs** — 1 of 1\n\n\
+- **Retry audit ruling** · `DESIGN.md`\n  every retry is bounded\n\n\
+**Annotations** — 1 of 1\n\n\
+- **audit the retry path** · `task:#12`\n  the retry path tests…\n"
+    );
+    let tail = brief_tail_text(&b);
+    assert!(
+        tail.find("**Docs**") < tail.find("**Annotations**"),
+        "the reserved half is the half read first: {tail}"
+    );
+}
+
+/// A hit that names no kind is still printed, unlabelled — the shape the tail
+/// rendered before D147, and the one an older recorded response still has.
+/// Dropping it would make a renderer that silently loses a hit it does not
+/// recognise, which is the failure mode the labels exist to prevent.
+#[test]
+fn a_hit_with_no_kind_keeps_the_flat_list_it_had_before_the_labels() {
+    let tail = brief_tail_text(&brief());
+    assert_eq!(
+        tail,
+        "\
+\n### Depends on\n\n- **#1** one blocked predicate · done\n  > Derived, not asked twice.\n\
+\n### Blocks\n\n- **#70** conformance test for the frozen fields · pending\n\
+- **#71** the docs that still say otherwise · pending\n\
+\n### From memory\n\n\
+- **blocked is unmet_blockers non-empty** · `DESIGN.md`\n  D145 rules that…\n"
+    );
+}
