@@ -2556,14 +2556,11 @@ fn page_api() -> String {
     // text rather than a picture. Every claim about output on this site comes
     // from that path; this is the first one, and #646/#647 place the rest.
     let cli_transport = format!(
-        "{}<div class=\"snip\"><div class=\"snip-h\"><span class=\"dollar\">$</span></div>\
-           <pre class=\"cmd\"><code>tasqx list</code></pre>{}</div>",
+        "{}{}",
         term_block(&esc(
             "echo '{\"tasqx\":\"1\",\"method\":\"task.list\"}' | tasqx api",
         )),
-        crate::ansi_html::render(
-            crate::fixtures::screen("list").expect("the `list` screen is embedded")
-        ),
+        term_screen("tasqx list", "list"),
     );
     s.push_str(&ref_section(
         "api-transport",
@@ -3459,6 +3456,39 @@ fn term_block(html_inner: &str) -> String {
         "<div class=\"termbox\"><div class=\"snip-h\">\
            <button class=\"copy\" type=\"button\">Copy</button></div>\
          <pre class=\"term\"><code>{html_inner}</code></pre></div>"
+    )
+}
+
+/// A captured screen, placed: the command that produced it, then the real
+/// output — a fixture from `crates/tasqx-cli/docs-fixtures` rendered by
+/// [`crate::ansi_html::render`], which is text and not a picture (D149).
+///
+/// ONE call, because #646 and #647 place one of these per verb and per method
+/// and the wrapper is not decoration. `pre.term` sets a colour and a padding
+/// and no background: a rendered screen dropped into the page bare would sit on
+/// the CARD background, which is white in light mode, where `--term-fg`'s pale
+/// grey is unreadable. The container is what carries `background:
+/// var(--term-bg)` — dark in BOTH themes — the border, the rounded corners and
+/// the block's own horizontal scroll, and `.snip` is the one that also has a
+/// place to put the command line, so the table underneath can never be read as
+/// the output of whatever command happened to be quoted above it.
+///
+/// Panics when `name` is not a captured screen, which is a build-time mistake:
+/// the manifest, the directory and the embedded list are already held equal by
+/// a test in [`crate::fixtures`], so a name that misses is a typo here.
+fn term_screen(cmd: &str, name: &str) -> String {
+    let screen = crate::fixtures::screen(name).unwrap_or_else(|| {
+        panic!(
+            "no captured screen named {name:?}; add a row to \
+             crates/tasqx-cli/docs-fixtures/manifest.tsv and re-run \
+             scripts/docs-capture.sh"
+        )
+    });
+    format!(
+        "<div class=\"snip\"><div class=\"snip-h\"><span class=\"dollar\">$</span></div>\
+           <pre class=\"cmd\"><code>{}</code></pre>{}</div>",
+        esc(cmd),
+        crate::ansi_html::render(screen),
     )
 }
 
@@ -5881,6 +5911,32 @@ mod tests {
         assert!(html.contains("<button class=\"copy\" type=\"button\">Copy</button>"));
         assert!(html.contains("<pre class=\"term\">"));
         assert!(html.contains("api &lt; req.json"), "{html}");
+    }
+
+    /// The wrapper is the whole point: a bare `<pre class="term">` has no
+    /// background of its own, so in LIGHT mode the screen would be drawn in
+    /// `--term-fg` (a pale grey) on the page's white card. The container that
+    /// carries `--term-bg` is what makes the block a terminal in both themes,
+    /// and the command line above it is what keeps the screen from being read
+    /// as the output of a neighbouring snippet.
+    #[test]
+    fn a_captured_screen_is_placed_in_a_terminal_container_with_its_command() {
+        let html = term_screen("tasqx list", "list");
+        assert!(html.starts_with("<div class=\"snip\">"), "{}", &html[..80]);
+        assert!(html.contains("<pre class=\"cmd\"><code>tasqx list</code></pre>"));
+        assert!(html.contains("<pre class=\"term\">"));
+        // Real captured output, rendered as styled text rather than escaped raw
+        // ANSI: a span with a colour, and no escape byte anywhere.
+        assert!(
+            html.contains("<span style=\"color:"),
+            "no styled run in {name}",
+            name = "list"
+        );
+        assert!(!html.contains('\u{1b}'));
+        // The CSS this markup depends on is in the same file; if `.snip` ever
+        // stops carrying the terminal background, this is the pair to fix.
+        assert!(css().contains(".snip { margin"));
+        assert!(css().contains("background: var(--term-bg)"));
     }
 
     /// The placeholder panel is marked, because the script refuses to open a

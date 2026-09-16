@@ -247,14 +247,31 @@ pub fn render(ansi: &str) -> String {
                     params.push(c);
                 }
                 if final_byte == Some('m') {
-                    // `\x1b[m` is `\x1b[0m`; an unparsable field is a 0 for the
-                    // same reason a terminal reads it as one.
+                    // An EMPTY field is zero: ECMA-48 gives an omitted
+                    // parameter its default, and SGR's default is 0, so
+                    // `\x1b[m` and `\x1b[;m` are resets.
+                    //
+                    // A field that is present and unreadable is SKIPPED, and
+                    // the difference is the whole point. Reading it as a zero
+                    // too meant the colon sub-parameter form — `4:3` (curly
+                    // underline), `58:2:…` (underline colour), which a terminal
+                    // that does not implement it simply ignores — RESET every
+                    // attribute instead, so one unsupported underline style
+                    // stripped the colour and the weight off the rest of the
+                    // line. An attribute this renderer cannot model is absent
+                    // from the run; it is never a reset of it.
                     let nums: Vec<u32> = if params.is_empty() {
                         vec![0]
                     } else {
                         params
                             .split(';')
-                            .map(|p| p.parse::<u32>().unwrap_or(0))
+                            .filter_map(|p| {
+                                if p.is_empty() {
+                                    Some(0)
+                                } else {
+                                    p.parse::<u32>().ok()
+                                }
+                            })
                             .collect()
                     };
                     let mut next = style;
@@ -456,6 +473,37 @@ mod tests {
         assert_eq!(
             inner("\x1b[1mb\x1b[0;2mf"),
             "<span style=\"font-weight:700\">b</span><span style=\"opacity:.6\">f</span>"
+        );
+    }
+
+    /// A field a terminal would ignore must not behave like `\x1b[0m`.
+    ///
+    /// The colon sub-parameter form is real and common — `4:3` is a curly
+    /// underline, `58:2:…` an underline colour — and parsing it as "unreadable,
+    /// therefore zero" reset the run: one sequence tmux can hand over stripped
+    /// the colour and the weight off everything after it.
+    #[test]
+    fn an_unreadable_field_is_skipped_while_an_empty_one_is_a_reset() {
+        assert_eq!(
+            inner("\x1b[1;31mred\x1b[4:3mstill red\x1b[32mgreen"),
+            "<span style=\"color:#bf616a;font-weight:700\">redstill red</span>\
+             <span style=\"color:#a3be8c;font-weight:700\">green</span>",
+            "an unsupported underline style must leave bold red standing, and a \
+             supported colour after it must still apply"
+        );
+        assert_eq!(
+            inner("\x1b[2mfaint\x1b[58:2::1:2:3mstill faint"),
+            "<span style=\"opacity:.6\">faintstill faint</span>"
+        );
+        // An omitted field is a zero, which is what makes `\x1b[;m` a reset.
+        assert_eq!(inner("\x1b[1mb\x1b[;mplain"), {
+            format!("{}plain", "<span style=\"font-weight:700\">b</span>")
+        });
+        // A field that reads as a number this renderer does not model is still
+        // ignored the way it always was — `53` (overline) changes nothing.
+        assert_eq!(
+            inner("\x1b[1;53mbold"),
+            "<span style=\"font-weight:700\">bold</span>"
         );
     }
 
