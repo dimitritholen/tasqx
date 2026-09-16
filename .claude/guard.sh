@@ -12,19 +12,30 @@ deny() {
 
 # Force pushes, every flag order. The permission deny rules are prefix
 # matches and miss `git push origin main --force`; this regex is the layer
-# that actually holds.
-if echo "$cmd" | grep -Eq '(^|[;&|[:space:]])git[[:space:]]+push[^;&|]*([[:space:]]--force([[:space:]=]|$)|[[:space:]]-f([[:space:]]|$)|--force-with-lease)'; then
+# that actually holds. `git[^;&|]*[[:space:]]push` (not `git[[:space:]]+push`)
+# so a leading `git -C <dir> push`, as used throughout this repo's workflow,
+# still counts as the push it is.
+if echo "$cmd" | grep -Eq '(^|[;&|[:space:]])git[^;&|]*[[:space:]]push[^;&|]*([[:space:]]--force([[:space:]=]|$)|[[:space:]]-f([[:space:]]|$))'; then
   deny "blocked: force push rewrites shared history. If genuinely needed, the user runs it themselves."
 fi
 
-case "$cmd" in
-*"gh release"*)
-  deny "blocked: gh release — releases ship via the tag-triggered workflow, and pushing that tag is the user's call."
-  ;;
-*"cargo publish"*)
-  deny "blocked: cargo publish — publishing is a user decision."
-  ;;
-esac
+# --force-with-lease is safer than a bare --force (it fails if the remote
+# moved since the last fetch), so it is allowed — but only for reshaping a
+# task branch's own history, never main. Refused unless this push's own
+# segment names a task/<id>-<slug> ref and does not also name main/master
+# (a push naming both is still a push to main, lease or not).
+if echo "$cmd" | grep -Eq '(^|[;&|[:space:]])git[^;&|]*[[:space:]]push[^;&|]*--force-with-lease'; then
+  segment=$(printf '%s\n' "$cmd" | grep -Eo '[[:space:]]push[^;&|]*')
+  if printf '%s\n' "$segment" | grep -Eq '(^|[[:space:]/:=])(main|master)([[:space:]]|$)' \
+    || ! printf '%s\n' "$segment" | grep -Eq '(^|[[:space:]/:=])task/[0-9]+-'; then
+    deny "blocked: --force-with-lease without a task/<id>-<slug> ref. Name the task branch explicitly (git push --force-with-lease origin task/<id>-<slug>); main is never force-pushed."
+  fi
+fi
+
+# gh release create/delete/edit/upload and cargo publish are refused by
+# permissions.deny in .claude/settings.json, which matches those exact
+# verbs — the guard used to duplicate this with a substring match that also
+# caught read-only commands like `gh release list`, so it no longer does.
 
 # Dev builds of tasqx must never touch the real store. Both TASQX_DB and
 # --no-daemon are required INLINE in the same command, because every Bash

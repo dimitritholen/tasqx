@@ -38,8 +38,11 @@ the merge and pull `main` before starting the next task.
 ## Releases and pushes are the user's call
 
 Do not push tags, create GitHub releases or `cargo publish` unless the user has
-asked for that release in this conversation. The guard blocks `gh release` and
-`cargo publish` outright. The release procedure is in `CONTRIBUTING.md`.
+asked for that release in this conversation. The permission rules in
+`.claude/settings.json` refuse `gh release create/delete/edit/upload` and
+`cargo publish` outright. `.claude/guard.sh` refuses force pushes except
+`--force-with-lease` on a `task/<id>-<slug>` branch. The release procedure is
+in `CONTRIBUTING.md`.
 
 ## Task tracking
 
