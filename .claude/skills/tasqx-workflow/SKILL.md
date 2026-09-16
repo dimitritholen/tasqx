@@ -28,10 +28,10 @@ criterion was the wrong thing to ask. Everything else is an annotation, stored v
 
 ## Reading a task
 
-Pass `include_json: false` and use the rendered markdown as-is; do not
-recompose it from JSON. `tasqx_brief_task` derives its memory query from the
-task's title, tags and project, so you never guess terms that silently find
-nothing. Use `tasqx_search_memory` for what the brief cannot see (another
+The answer is the rendered markdown alone (D151); use it as-is, and pass
+`include_json: true` only when a script needs the raw JSON beside it.
+`tasqx_brief_task` derives its memory query from the task's title, tags and
+project, so you never guess terms that silently find nothing. Use `tasqx_search_memory` for what the brief cannot see (another
 project, a subject the title does not name); `raw: true` passes FTS5 syntax.
 
 ## Completing

@@ -437,13 +437,19 @@ fn call_tool(server: &McpServer, name: &str, args: Value) -> Value {
         .expect("a successful call carries result")
 }
 
+/// D49's ordering, on the call that asks for both blocks — which since D151 is
+/// the call that names `include_json: true`, the default being the view alone.
 #[test]
 fn get_task_returns_the_rendered_view_first_and_the_json_second() {
     let engine = Engine::open_in_memory().expect("engine");
     dispatch(&engine, "task.add", &json!({ "title": "measure me" })).expect("add");
     let server = McpServer::new(&engine, Scope::Read);
 
-    let result = call_tool(&server, "tasqx_get_task", json!({ "ref": 1 }));
+    let result = call_tool(
+        &server,
+        "tasqx_get_task",
+        json!({ "ref": 1, "include_json": true }),
+    );
     let content = result["content"].as_array().expect("content array");
 
     assert_eq!(content.len(), 2, "got: {content:#?}");
@@ -453,6 +459,9 @@ fn get_task_returns_the_rendered_view_first_and_the_json_second() {
     assert!(raw.trim_start().starts_with('{'), "got:\n{raw}");
 }
 
+/// Every tool but the two rendered ones returns one block whatever it is
+/// asked — and those two now return one block as well unless
+/// `include_json: true` asks for the second (D151).
 #[test]
 fn every_other_tool_still_returns_exactly_one_block() {
     let engine = Engine::open_in_memory().expect("engine");

@@ -133,9 +133,11 @@ fn assert_is_a_box(card: &str) {
 
 // ---- tasqx_get_task ---------------------------------------------------------
 
-/// The card arrives fenced, and the machine block beside it is the one the
-/// default call sends: `view` chooses a spelling for the rendered half and
-/// nothing else (D146).
+/// The card arrives fenced, and the machine block beside it is the one a
+/// markdown call sends: `view` chooses a spelling for the rendered half and
+/// nothing else (D146). Both calls name `include_json: true`, since D151 made
+/// that block opt-in — which is a property of the ENVELOPE and so leaves this
+/// test's subject, the two spellings of one result, exactly where it was.
 #[test]
 fn a_card_is_the_fenced_box_and_the_json_block_is_untouched() {
     let e = engine();
@@ -146,11 +148,11 @@ fn a_card_is_the_fenced_box_and_the_json_block_is_untouched() {
         &server,
         1,
         "tasqx_get_task",
-        json!({ "ref": r, "view": "card" }),
+        json!({ "ref": r, "view": "card", "include_json": true }),
     );
     assert!(!is_error(&carded));
     let carded = blocks(&carded);
-    assert_eq!(carded.len(), 2, "the JSON block is still on by default");
+    assert_eq!(carded.len(), 2, "both blocks, because both were asked for");
 
     assert!(carded[0].starts_with("```text\n┌"), "{}", carded[0]);
     assert!(carded[0].ends_with("┘\n```\n"), "{:?}", carded[0]);
@@ -160,7 +162,12 @@ fn a_card_is_the_fenced_box_and_the_json_block_is_untouched() {
     assert!(card.contains("Paste a task in front of a person"), "{card}");
     assert_eq!(card, expected_card(&e, r), "not the card markdown.rs draws");
 
-    let default = blocks(&call(&server, 2, "tasqx_get_task", json!({ "ref": r })));
+    let default = blocks(&call(
+        &server,
+        2,
+        "tasqx_get_task",
+        json!({ "ref": r, "include_json": true }),
+    ));
     assert_eq!(
         carded[1], default[1],
         "the machine block is the same result either way"
@@ -173,7 +180,9 @@ fn a_card_is_the_fenced_box_and_the_json_block_is_untouched() {
 }
 
 /// `include_json: false` under a card is the one block the caller asked for,
-/// and no notice: the omission was chosen, not forced by the budget.
+/// and no notice: the omission was chosen, not forced by the budget. Since
+/// D151 it is also what a card call that says nothing gets, so the two are
+/// asserted to be the same response.
 #[test]
 fn a_card_alone_is_one_block_when_the_json_is_declined() {
     let e = engine();
@@ -194,6 +203,17 @@ fn a_card_alone_is_one_block_when_the_json_is_declined() {
         !blocks[0].contains("response budget"),
         "a chosen omission is not an over-budget one:\n{}",
         blocks[0]
+    );
+
+    let silent = call(
+        &server,
+        2,
+        "tasqx_get_task",
+        json!({ "ref": r, "view": "card" }),
+    );
+    assert_eq!(
+        out["result"]["content"], silent["result"]["content"],
+        "saying nothing about the JSON is saying `include_json: false` (D151)"
     );
 }
 
@@ -358,7 +378,7 @@ fn an_oversized_card_response_drops_the_json_before_the_history() {
         &server,
         1,
         "tasqx_get_task",
-        json!({ "ref": r, "view": "card" }),
+        json!({ "ref": r, "view": "card", "include_json": true }),
     );
     assert!(!is_error(&out));
     let blocks = blocks(&out);

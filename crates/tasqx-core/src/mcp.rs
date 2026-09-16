@@ -74,7 +74,11 @@ impl Scope {
 /// taken while rewriting them — the facts `present` needs to fit the answer.
 struct PreparedCall {
     args: Value,
-    /// D49/D66: whether the `task.get` answer carries the machine block.
+    /// Whether the `task.get`/`task.brief` answer carries the machine block
+    /// beside the rendered view. False unless the caller said otherwise
+    /// (D151): the model reads the view, and the JSON is the same result
+    /// again. It also decides what the budget spends first and whether an
+    /// over-budget answer explains itself (D49/D66).
     include_json: bool,
     /// D146: which rendering the one rendered block is spelled in.
     view: View,
@@ -426,12 +430,12 @@ const TRANSPORT_ONLY_ARGS: &[(&str, &str, &str)] = &[
     (
         "tasqx_get_task",
         "include_json",
-        "whether the response carries the machine-readable block beside the rendered view.      The two blocks are the same result twice (D49), so on a task whose bulk is annotation      prose the second is that prose again — 54% of a 6.4 KB response for ONE annotation,      66% for a task read with `annotations_limit: 0`. D66 spends that duplicate only when      the budget is already blown, which left every ordinary read paying it in full and no      way to decline. `task.get` has no opinion on how many blocks its answer is wrapped in.",
+        "whether the response carries the machine-readable block beside the rendered view.      The two blocks are the same result twice (D49), so on a task whose bulk is annotation      prose the second is that prose again — 54% of a 6.4 KB response for ONE annotation,      66% for a task read with `annotations_limit: 0`. Since D151 the default is FALSE:      the reader of a tool result is the model, which reads the view, and the duplicate is      opt-in for the script that parses it. `task.get` has no opinion on how many blocks      its answer is wrapped in.",
     ),
     (
         "tasqx_brief_task",
         "include_json",
-        "whether the response carries the machine-readable block beside the rendered view.      Same argument, same reason and same default as `tasqx_get_task`'s (D49/D66): the two      blocks are one result twice, and a brief's second block is the larger of the pair      because it carries the neighbourhood and the memory snippets as well. `task.brief`      has no opinion on how many blocks its answer is wrapped in.",
+        "whether the response carries the machine-readable block beside the rendered view.      Same argument, same reason and same default as `tasqx_get_task`'s — false since D151,      because the caller reading this is the model and the model reads the view. The two      blocks are one result twice, and a brief's second block is the larger of the pair      because it carries the neighbourhood and the memory snippets as well. `task.brief`      has no opinion on how many blocks its answer is wrapped in.",
     ),
     (
         "tasqx_get_task",
@@ -561,21 +565,23 @@ fn build_tool_specs() -> Vec<ToolSpec> {
                              one. The response byte budget applies to EVERY answer, whatever \
                              you name here: a page too big for it is cut to the largest page \
                              that fits and the rendered view says how much it left out and \
-                             which `annotations_offset` reads the rest. `include_json: false` \
-                             spends the whole budget on history instead of on the duplicate \
-                             machine-readable block, so pair it with a big page. 0 returns \
-                             none, which is how you read a task's fields without its history."
+                             which `annotations_offset` reads the rest. By default the whole \
+                             budget goes on history; `include_json: true` spends it on the \
+                             duplicate machine-readable block first, so a big page and that \
+                             flag together buy less history. 0 returns none, which is how you \
+                             read a task's fields without its history."
                         )
                     },
                     "max_body_bytes": max_body_bytes_schema(),
                     "include_json": {
                         "type": "boolean",
                         "description": "Send the machine-readable JSON block as well as the \
-                             rendered view. Default true. The two blocks are the same result \
-                             twice, so on a task whose bulk is annotation prose the JSON is \
-                             that prose again — measured at 54% of a 6.4 KB response for one \
-                             annotation, and 66% for a task read with `annotations_limit: 0`. \
-                             Send false when you are going to read the view."
+                             rendered view. Default FALSE: you get the rendered view alone, \
+                             because the two blocks are the same result twice and on a task \
+                             whose bulk is annotation prose the JSON is that prose again — \
+                             measured at 54% of a 6.4 KB response for one annotation, and 66% \
+                             for a task read with `annotations_limit: 0`. Send true when a \
+                             SCRIPT is going to parse the result rather than read it."
                     },
                     "view": {
                         "type": "string",
@@ -588,8 +594,8 @@ fn build_tool_specs() -> Vec<ToolSpec> {
                              reflows into the prose around it. It is a SUMMARY: the detail \
                              view carries the annotation bodies and the card quotes only the \
                              first one. The JSON block is unchanged under either view — \
-                             `include_json` still decides whether it is sent, and the response \
-                             budget still spends it first."
+                             `include_json: true` still decides whether it is sent, and the \
+                             response budget still spends it first."
                     },
                     "annotations_offset": {
                         "type": "integer",
@@ -648,10 +654,10 @@ fn build_tool_specs() -> Vec<ToolSpec> {
                     "include_json": {
                         "type": "boolean",
                         "description": "Send the machine-readable JSON block as well as the \
-                             rendered view. Default true. The two blocks are the same result \
-                             twice, and a brief's JSON half is the bigger one — it carries the \
-                             neighbourhood and every memory snippet again. Pass false when you \
-                             only need to READ the brief."
+                             rendered view. Default FALSE: you get the rendered view alone. \
+                             The two blocks are the same result twice, and a brief's JSON half \
+                             is the bigger one — it carries the neighbourhood and every memory \
+                             snippet again. Pass true when a script needs the brief as JSON."
                     },
                     "view": {
                         "type": "string",
@@ -663,8 +669,9 @@ fn build_tool_specs() -> Vec<ToolSpec> {
                              reply or a pull request it keeps its shape. Only the task half \
                              changes: what the prerequisites concluded and the memory hits \
                              follow the card as the same markdown either way. The JSON block \
-                             is unchanged under either view — `include_json` still decides \
-                             whether it is sent, and the response budget still spends it first."
+                             is unchanged under either view — `include_json: true` still \
+                             decides whether it is sent, and the response budget still spends \
+                             it first."
                     }
                 },
                 "required": ["ref"]
@@ -1829,16 +1836,22 @@ impl<'e> McpServer<'e> {
                 }
             }
         }
-        // Default true: the second block has been there since D49 and a caller
-        // that says nothing gets what it has always got.
+        // Default FALSE since D151: the reader of a tool result is the model,
+        // and the model reads the view. The second block is that same result
+        // restated — measured across 36 hours of transcripts, these two tools
+        // sent 150 KB of 373 KB and not one of the 42 calls passed the D72
+        // opt-out — so it is now what a script asks for, not what everyone
+        // pays for. The view-only answer goes through the budget like any
+        // other (see `fit_to_budget`).
         let include_json = consumed
             .get("include_json")
             .and_then(Value::as_bool)
-            .unwrap_or(true);
-        // Default true, for the same reason: `annotation.add` has echoed its
-        // body since before this argument existed (D72/D75), and a caller
-        // that says nothing keeps getting it. `include_body: false` is the
-        // opt-out.
+            .unwrap_or(false);
+        // Default true, unlike the one above, and D151 does not touch it:
+        // `annotation.add` has echoed its body since before this argument
+        // existed (D72/D75) because that echo is the caller's only evidence
+        // the body was stored verbatim — it is not a restatement of something
+        // the response says elsewhere. `include_body: false` is the opt-out.
         let include_body = consumed
             .get("include_body")
             .and_then(Value::as_bool)
@@ -1985,10 +1998,12 @@ impl<'e> McpServer<'e> {
                             card + &crate::markdown::brief_tail_text(r)
                         }
                     };
-                    if !prepared.include_json {
-                        return tool_ok_text(&render(&result));
-                    }
-                    return self.fit_brief_to_budget(result, &prepared.args, &render);
+                    return self.fit_brief_to_budget(
+                        result,
+                        &prepared.args,
+                        &render,
+                        prepared.include_json,
+                    );
                 }
                 if spec.method == "task.get" {
                     // Stamped HERE, never inside the renderer: that is what
@@ -2007,17 +2022,21 @@ impl<'e> McpServer<'e> {
                         View::Markdown => crate::markdown::task_detail(r, &opts),
                         View::Card => fence(&crate::markdown::task_card(r, &card_opts)),
                     };
-                    // No notice: `tool_ok_view_only` explains an omission the
-                    // caller did not choose, and here the caller chose it.
-                    // Saying "both blocks together exceeded this tool's
-                    // response budget" over a 400-byte answer is a false
-                    // sentence AND a bill — the notice is ~300 bytes, which on
-                    // a small task is most of what declining the duplicate was
-                    // meant to save.
-                    if !prepared.include_json {
-                        return tool_ok_text(&render(&result));
-                    }
-                    return self.fit_to_budget(result, &prepared.args, &render);
+                    // The view-only answer (D151's default) runs the SAME
+                    // budget, and this is where it used to return early
+                    // instead: unbounded but for D148's body cap, which as an
+                    // opt-in was survivable and as the default would hand a
+                    // client a twenty-annotation page of 16 KB bodies. What it
+                    // does not get is the omission notice — nothing the caller
+                    // asked for was dropped, and saying "both blocks together
+                    // exceeded this tool's response budget" over a 400-byte
+                    // answer is a false sentence AND a ~300-byte bill.
+                    return self.fit_to_budget(
+                        result,
+                        &prepared.args,
+                        &render,
+                        prepared.include_json,
+                    );
                 }
                 // The opt-out half of D72/D75's echo: the caller already holds
                 // every byte of `body` (it is right there in the request this
@@ -2068,6 +2087,11 @@ impl<'e> McpServer<'e> {
     ///
     /// # The order the budget spends in
     ///
+    /// Under the default (D151) there is no JSON block to spend, so step 1 does
+    /// not apply and the search starts at step 2 — the view alone at the page in
+    /// hand, then a smaller page. `include_json` is the parameter that says
+    /// which of the two runs; the steps themselves are the same either way.
+    ///
     /// 1. both blocks at the page in hand — an ordinary task never notices this
     ///    function exists;
     /// 2. the view alone at that same page, because on a task whose bulk is
@@ -2116,22 +2140,32 @@ impl<'e> McpServer<'e> {
         first: Value,
         args: &Value,
         render: &dyn Fn(&Value) -> String,
+        include_json: bool,
     ) -> Value {
         let json_len = |result: &Value| serde_json::to_string(result).map(|s| s.len()).unwrap_or(0);
 
-        // Measured on the FINISHED block, never on the bare view: dropping the
-        // JSON adds a sentence saying so, and a view that fits by less than that
-        // sentence produced a response over the budget — the payload bound
-        // defeated by the notice explaining the payload bound.
-        let view_only_fits = |view: &str| view_only_text(view).len() <= RESPONSE_BUDGET_BYTES;
+        // The finished text is what is measured and what is sent: the notice
+        // only exists when a JSON block the caller ASKED FOR was dropped (D72,
+        // D151). Measuring the bare view and appending the notice afterwards is
+        // how a view landing just under the limit once produced a response just
+        // over it — the payload bound defeated by the sentence explaining it.
+        let finish = |view: &str| {
+            if include_json {
+                view_only_text(view)
+            } else {
+                view.to_string()
+            }
+        };
+        let fits = |view: &str| finish(view).len() <= RESPONSE_BUDGET_BYTES;
+        let close = |view: &str| tool_ok_text(&finish(view));
 
         let view = render(&first);
-        if view.len() + json_len(&first) <= RESPONSE_BUDGET_BYTES {
+        if include_json && view.len() + json_len(&first) <= RESPONSE_BUDGET_BYTES {
             return tool_ok_with_view(view, &first);
         }
         // Step 2: the same page, without the duplicate.
-        if view_only_fits(&view) {
-            return tool_ok_view_only(&view);
+        if fits(&view) {
+            return close(&view);
         }
 
         // Step 3: the largest page that fits, found by BISECTION rather than by
@@ -2154,7 +2188,7 @@ impl<'e> McpServer<'e> {
             .and_then(Value::as_u64)
             .unwrap_or(ANNOTATION_PAGE);
         if hi == 0 {
-            return tool_ok_view_only(&view);
+            return close(&view);
         }
         let mut best: Option<String> = None;
         while lo <= hi {
@@ -2171,7 +2205,7 @@ impl<'e> McpServer<'e> {
                 break;
             };
             let rendered = render(&candidate);
-            if view_only_fits(&rendered) {
+            if fits(&rendered) {
                 best = Some(rendered);
                 lo = mid + 1;
             } else {
@@ -2185,14 +2219,16 @@ impl<'e> McpServer<'e> {
                 hi = mid - 1;
             }
         }
-        tool_ok_view_only(&best.unwrap_or(view))
+        close(&best.unwrap_or(view))
     }
 
     /// Fit a `task.brief` response to [`RESPONSE_BUDGET_BYTES`] (D136).
     ///
     /// D66's three steps, one method over: both blocks if they fit, then the
     /// rendered view alone, then the largest `memory_limit` that fits, found by
-    /// bisection rather than by halving. The lever is the memory page and
+    /// bisection rather than by halving. Under D151's default there is no JSON
+    /// block to spend, so the first step is skipped and the view alone is what
+    /// is measured — `include_json` says which. The lever is the memory page and
     /// nothing else — the task half and the neighbourhood are what the caller
     /// asked for, and a brief that cut the prerequisite's outcome to make room
     /// for a search hit would have dropped the more valuable half.
@@ -2214,17 +2250,37 @@ impl<'e> McpServer<'e> {
         first: Value,
         args: &Value,
         render: &dyn Fn(&Value) -> String,
+        include_json: bool,
     ) -> Value {
         let json_len = |result: &Value| serde_json::to_string(result).map(|s| s.len()).unwrap_or(0);
-        let view_only_fits = |view: &str| view_only_text(view).len() <= RESPONSE_BUDGET_BYTES;
+        // [`McpServer::fit_to_budget`]'s trio, for its reasons: the notice is
+        // part of what is measured, and it exists only where a JSON block the
+        // caller asked for was dropped (D72, D151).
+        let finish = |view: &str| {
+            if include_json {
+                view_only_text(view)
+            } else {
+                view.to_string()
+            }
+        };
+        let fits = |view: &str| finish(view).len() <= RESPONSE_BUDGET_BYTES;
+        let close = |view: &str| tool_ok_text(&finish(view));
 
         let named_own_limit = args.get("memory_limit").is_some_and(|v| !v.is_null());
         let view = render(&first);
         if named_own_limit || view.len() + json_len(&first) <= RESPONSE_BUDGET_BYTES {
-            return tool_ok_with_view(view, &first);
+            // The exemption and the fitting answer both come out here, and
+            // both honour the caller's block count: two blocks when asked for,
+            // the bare view otherwise — with no notice either way, since
+            // nothing was dropped.
+            return if include_json {
+                tool_ok_with_view(view, &first)
+            } else {
+                tool_ok_text(&view)
+            };
         }
-        if view_only_fits(&view) {
-            return tool_ok_view_only(&view);
+        if fits(&view) {
+            return close(&view);
         }
 
         let mut view = view;
@@ -2242,7 +2298,7 @@ impl<'e> McpServer<'e> {
                 break;
             };
             let rendered = render(&candidate);
-            if view_only_fits(&rendered) {
+            if fits(&rendered) {
                 best = Some(rendered);
                 lo = mid + 1;
             } else {
@@ -2258,7 +2314,7 @@ impl<'e> McpServer<'e> {
                 hi = mid - 1;
             }
         }
-        tool_ok_view_only(&best.unwrap_or(view))
+        close(&best.unwrap_or(view))
     }
 
     /// Fit a `task.list` response to [`RESPONSE_BUDGET_BYTES`] by re-cutting
@@ -2445,27 +2501,6 @@ fn tool_ok_with_view(view: String, result: &Value) -> Value {
     })
 }
 
-/// A `tools/call` result carrying the rendered view ALONE, with a line saying
-/// the machine-readable block is missing and how to ask for it.
-///
-/// Emitted whenever both blocks together exceed the response budget — at any
-/// page size, the caller's own included (D148, see
-/// [`McpServer::fit_to_budget`]). The note is not
-/// optional politeness: a response silently one block short is indistinguishable
-/// from a server that never sends JSON, and a reader who cannot tell those apart
-/// stops looking for the field they need. It is appended HERE rather than in
-/// `markdown::task_detail`, which is pure and golden-tested and knows nothing
-/// about transports or budgets.
-fn tool_ok_view_only(view: &str) -> Value {
-    if view.is_empty() {
-        return tool_ok(&Value::Null);
-    }
-    json!({
-        "content": [ { "type": "text", "text": view_only_text(view) } ],
-        "isError": false
-    })
-}
-
 /// Wrap a block in a `text` code fence — D146's card, ready to be pasted.
 ///
 /// The fence is not decoration. A 72-column box is a box only while its lines
@@ -2484,8 +2519,11 @@ fn fence(block: &str) -> String {
     format!("```text\n{body}\n```\n")
 }
 
-/// One text block, verbatim. The `task.get` view when the caller declined the
-/// JSON block, where there is no omission to explain.
+/// One text block, verbatim. Since D151 this is the ordinary `task.get` and
+/// `task.brief` answer — the rendered view, fitted to the budget, with no
+/// omission to explain — and it also carries the view plus
+/// [`view_only_text`]'s notice on the one path where a caller asked for both
+/// blocks and the two did not fit.
 fn tool_ok_text(text: &str) -> Value {
     json!({
         "content": [{ "type": "text", "text": text }],
@@ -2493,8 +2531,14 @@ fn tool_ok_text(text: &str) -> Value {
     })
 }
 
-/// The view plus the omission notice, as one block — the exact bytes
-/// [`tool_ok_view_only`] sends.
+/// The view plus the omission notice, as one block.
+///
+/// Only for the caller who passed `include_json: true` and was answered one
+/// block anyway (D151): a response silently short of a block the caller ASKED
+/// for is indistinguishable from a server that never sends JSON. The default
+/// answer is the view alone and gets no notice, because nothing the caller
+/// asked for was dropped and the view's own Annotations heading already says
+/// what page it holds.
 ///
 /// One function so the budget and the answer measure the same string. They did
 /// not: `fit_to_budget` compared the bare view against
@@ -2503,14 +2547,15 @@ fn tool_ok_text(text: &str) -> Value {
 /// bound defeated by the sentence explaining the payload bound.
 fn view_only_text(view: &str) -> String {
     format!(
-        "{view}\n_Machine-readable JSON omitted: both blocks together exceeded this tool's \
-         response budget, and the rendered view above carries the same annotations — its \
-         Annotations heading says how much of the history it holds, and names the \
-         `annotations_offset` that reads the rest. The budget applies to every answer, \
-         whatever `annotations_limit` you name; `include_json: false` asks for this view on \
-         purpose and spends the whole budget on history. A body longer than `max_body_bytes` \
-         (default 16384) is cut IN THIS RESPONSE ONLY, marked with its real size and the call \
-         that reads it whole._\n"
+        "{view}\n_Machine-readable JSON omitted: you asked for both blocks and together they \
+         exceeded this tool's response budget, so the budget spent the JSON first. The \
+         rendered view above carries the same annotations — its Annotations heading says how \
+         much of the history it holds, and names the `annotations_offset` that reads the rest. \
+         The budget applies to every answer, whatever `annotations_limit` you name; the \
+         rendered view alone is the default, and `include_json: true` is what spends the \
+         budget on this duplicate before it spends it on history. A body longer than \
+         `max_body_bytes` (default 16384) is cut IN THIS RESPONSE ONLY, marked with its real \
+         size and the call that reads it whole._\n"
     )
 }
 
@@ -3053,12 +3098,14 @@ mod tests {
 
     /// The response budget counts the notice the response adds.
     ///
-    /// `fit_to_budget` measured the bare view and `tool_ok_view_only` appended
-    /// the JSON-omission sentence afterwards, so a view landing within that
-    /// sentence's length of the limit shipped over it — the payload bound
-    /// defeated by the text explaining the payload bound. The window is
-    /// narrower than any hand-written fixture would reliably hit, so the
-    /// fixture is searched for.
+    /// `fit_to_budget` measured the bare view and the JSON-omission sentence
+    /// was appended afterwards, so a view landing within that sentence's
+    /// length of the limit shipped over it — the payload bound defeated by the
+    /// text explaining the payload bound. The window is narrower than any
+    /// hand-written fixture would reliably hit, so the fixture is searched for.
+    ///
+    /// Driven with `include_json: true` since D151: the notice exists only on
+    /// that path now, and this test is about the notice.
     #[test]
     fn a_view_that_only_fits_without_its_own_notice_is_still_shrunk() {
         let notice = view_only_text("").len();
@@ -3107,7 +3154,10 @@ mod tests {
         let out = server
             .handle_message(&json!({
                 "jsonrpc": "2.0", "id": 1, "method": "tools/call",
-                "params": { "name": "tasqx_get_task", "arguments": { "ref": 1 } }
+                "params": {
+                    "name": "tasqx_get_task",
+                    "arguments": { "ref": 1, "include_json": true }
+                }
             }))
             .expect("tools/call is a request");
         let bytes: usize = out["result"]["result"]["content"]
