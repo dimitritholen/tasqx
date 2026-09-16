@@ -2053,12 +2053,18 @@ impl<'e> McpServer<'e> {
                 // check states. `task.done`'s frozen result has no task in it
                 // to render, so the task is read back here with the same
                 // annotation bounds the transport gives `task.get` — the card
-                // is the one `tasqx_get_task view: "card"` would draw. No
-                // budget fitting: a card is fixed 72-column geometry, a few KB
-                // at worst, well under RESPONSE_BUDGET_BYTES. A failed re-read
-                // leaves the view empty, which `tool_ok_with_view` degrades to
-                // the plain JSON: presentation cannot make a completion that
-                // really happened look broken.
+                // is the one `tasqx_get_task view: "card"` would draw. A
+                // failed re-read leaves the view empty, which
+                // `tool_ok_with_view` degrades to the plain JSON: presentation
+                // cannot make a completion that really happened look broken.
+                //
+                // No bisection: a card has no page to cut, its lines are fixed
+                // 72-column geometry and only its row COUNT (checks, blockers,
+                // dependents) can grow. So the budget is a single measure —
+                // card plus JSON — and a card that would breach it is replaced
+                // by a one-line notice naming the read that draws it. The JSON
+                // is what must arrive, and a block the caller asked for is
+                // never dropped silently (D72).
                 if spec.method == "task.done" && prepared.view == View::Card {
                     let card_opts = self.card_opts(crate::clock::now());
                     let read = json!({
@@ -2066,9 +2072,18 @@ impl<'e> McpServer<'e> {
                         "annotations_limit": ANNOTATION_PAGE,
                         "max_body_bytes": ANNOTATION_BODY_CAP,
                     });
-                    let card = dispatch(self.engine, "task.get", &read)
+                    let mut card = dispatch(self.engine, "task.get", &read)
                         .map(|task| fence(&crate::markdown::task_card(&task, &card_opts)))
                         .unwrap_or_default();
+                    let json_len = serde_json::to_string(&result).map(|s| s.len()).unwrap_or(0);
+                    if card.len() + json_len > RESPONSE_BUDGET_BYTES {
+                        card = format!(
+                            "Closing card omitted: with the completion result it would exceed \
+                             this tool's response budget. `tasqx_get_task` with `ref: {}` and \
+                             `view: \"card\"` draws it.\n",
+                            result["short_id"]
+                        );
+                    }
                     return tool_ok_with_view(card, &result);
                 }
                 // The one rendered surface. Keyed on the method rather than the
