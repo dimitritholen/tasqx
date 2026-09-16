@@ -15,6 +15,12 @@ store is somebody's actual work, which does not belong on a public landing
 page. Everything here is invented, and every date is relative to today, so the
 pictures look current whenever they are regenerated.
 
+Set TASQX_NOW to an RFC 3339 instant (2026-09-16T09:00:00Z) and "today" becomes
+that day instead, for both this script's dates and the renders taken afterwards:
+the CLI reads the same variable (crates/tasqx-cli/src/clock.rs), and it is
+passed through to every tasqx call below, so a captured screen is the same bytes
+on any calendar day. Without it the wall clock is today, as before.
+
 It writes ONE path, target/demo/tasks.db (gitignored), and replaces it on
 every run. It sets TASQX_DB and passes --no-daemon on every call, because a
 reachable daemon ignores TASQX_DB and would answer from the real store instead.
@@ -39,7 +45,30 @@ OUT = ROOT / "target" / "demo" / "tasks.db"
 # whatever the machine that renders them has configured.
 CONFIG = ROOT / "target" / "demo" / "config"
 TASQX = os.environ.get("TASQX", "tasqx")
-NOW = dt.datetime.now(dt.timezone.utc).replace(microsecond=0)
+
+
+def _now():
+    """Today, or the day TASQX_NOW pins — the same variable the CLI reads.
+
+    The store's dates and the render's reference instant have to come from one
+    day or the relative spellings ("due tomorrow") describe a different store
+    than the one on screen. An unparsable value is fatal here too, for the
+    reason clock.rs gives: a silent fallback to the wall clock produces exactly
+    the drift the pin was set to prevent.
+    """
+    pin = os.environ.get("TASQX_NOW", "").strip()
+    if not pin:
+        return dt.datetime.now(dt.timezone.utc).replace(microsecond=0)
+    try:
+        when = dt.datetime.fromisoformat(pin.replace("Z", "+00:00"))
+    except ValueError:
+        sys.exit(f"demo-store: TASQX_NOW is not an RFC 3339 instant: {pin}")
+    if when.tzinfo is None:
+        sys.exit(f"demo-store: TASQX_NOW needs a zone offset or a trailing Z: {pin}")
+    return when.astimezone(dt.timezone.utc).replace(microsecond=0)
+
+
+NOW = _now()
 rng = random.Random(7)
 
 
@@ -195,6 +224,8 @@ def main():
 
     CONFIG.mkdir(parents=True, exist_ok=True)
     (CONFIG / "config.toml").unlink(missing_ok=True)
+    # os.environ is carried whole, so TASQX_NOW reaches every call below and
+    # the live `start` lands on the pinned day rather than the real one.
     env = {**os.environ, "TASQX_DB": str(OUT), "TASQX_CONFIG_DIR": str(CONFIG)}
     run = lambda *args: subprocess.run([TASQX, "--no-daemon", *args], env=env, check=True,
                                        stdout=subprocess.DEVNULL)

@@ -30,7 +30,7 @@ fn ev_date(ts: &str) -> Option<Date> {
 
 /// Today's UTC date — the anchor for every "last N" window.
 pub fn today() -> Date {
-    Timestamp::now().to_zoned(TimeZone::UTC).date()
+    crate::clock::now().to_zoned(TimeZone::UTC).date()
 }
 
 /// Pull the events array out of an `event.list` result.

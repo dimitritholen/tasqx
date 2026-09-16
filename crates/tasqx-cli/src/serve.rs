@@ -398,7 +398,7 @@ pub(crate) fn watch_render(
         }
     }
 
-    let mut text = render::task_table(ctx, &result, jiff::Timestamp::now());
+    let mut text = render::task_table(ctx, &result, crate::clock::now());
     if let Some(n) = note {
         text = format!("{}\n{text}", note_line(ctx, n));
     }
@@ -677,7 +677,7 @@ mod tests {
     fn bound_to_viewport_keeps_the_frame_inside_the_pane_and_the_hottest_row_in_it() {
         let result = working_set(44);
         let bounded = bound_to_viewport(result, 24, 4);
-        let text = render::task_table(&plain_ctx(), &bounded, jiff::Timestamp::now());
+        let text = render::task_table(&plain_ctx(), &bounded, crate::clock::now());
         let lines = text.lines().count();
         assert!(
             lines <= 24,

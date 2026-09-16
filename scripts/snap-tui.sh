@@ -13,6 +13,8 @@
 # Env:
 #   TASQX     binary to drive (default: the tasqx on PATH)
 #   TASQX_DB  store to read (MANDATORY for a dev build — see CLAUDE.md)
+#   TASQX_NOW pin the clock to an RFC 3339 instant, passed into the pane like
+#             TASQX_DB, so the screen is the same on any calendar day
 #   TASQX_CONFIG_DIR  config to read, passed into the pane like TASQX_DB (the
 #             pane's shell does not inherit this one's environment)
 #   THEME     passed through as --theme
@@ -70,8 +72,13 @@ trap cleanup EXIT
 # `-x`/`-y` size the pane rather than the outer terminal, which is what the
 # screen reads. Without them a detached session gets tmux's 80x24 default and
 # every width test measures the same screen.
+#
+# TASQX_NOW is spelled into the pane for the same reason TASQX_DB is: the
+# pane's shell does not inherit this one's environment, and a dashboard that
+# read the wall clock while the rest of the capture stood on a pinned day would
+# be the one screen that drifts (DESIGN.md D148).
 tmux new-session -d -s "$session" -x "$cols" -y "$rows" \
-    "TASQX_DB='${TASQX_DB:-}' ${TASQX_CONFIG_DIR:+TASQX_CONFIG_DIR='$TASQX_CONFIG_DIR'} ${TASQX:-tasqx} ${THEME:+--theme $THEME} $* ; sleep 300"
+    "TASQX_DB='${TASQX_DB:-}' ${TASQX_CONFIG_DIR:+TASQX_CONFIG_DIR='$TASQX_CONFIG_DIR'} ${TASQX_NOW:+TASQX_NOW='$TASQX_NOW'} ${TASQX:-tasqx} ${THEME:+--theme $THEME} $* ; sleep 300"
 
 sleep "${SETTLE:-2}"
 

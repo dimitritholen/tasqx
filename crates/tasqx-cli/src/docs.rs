@@ -4585,6 +4585,16 @@ mod tests {
             // spelled without the prefix to dodge the scan, because dodging a
             // drift guard is how the things it hunts get in.
             "TASQX_PANIC_PROBE_CHILD",
+            // The capture pin (D148): an RFC 3339 instant that `clock::now`
+            // answers with instead of the wall clock, so a documentation
+            // screen rendered today and rendered next month is the same text.
+            // Not a setting, and not on the page: a user who pinned it in
+            // `config.toml` would have `list` insist it is still September
+            // while their tasks went overdue, which is the one reading of a
+            // task list that must never be wrong. It belongs with the capture
+            // tooling that sets it — `CONTRIBUTING.md` and
+            // `scripts/demo-store.py` — and is documented in `clock.rs`.
+            "TASQX_NOW",
         ];
         // Read by the capability detector but deliberately not documented as
         // switches: they describe what the terminal IS (set by the terminal,
@@ -4630,6 +4640,9 @@ mod tests {
             // nobody added.
             include_str!("complete/install.rs"),
             include_str!("complete/candidates.rs"),
+            // The hole this list keeps having is a file nobody added, and
+            // `clock.rs` is the newest file that reads a variable (D148).
+            include_str!("clock.rs"),
         ];
 
         // TASQX_* rule: a textual scan, comments included — a prefixed mention
