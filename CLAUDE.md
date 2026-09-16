@@ -27,7 +27,7 @@ edits.
 
 ## Every change to main goes through a pull request
 
-`main` is protected: pull request required, linear history, eleven required
+`main` is protected: pull request required, linear history, twelve required
 status checks, no force pushes. Never merge a branch into `main` locally and
 never push to `main` directly, even when the push would be accepted. The flow
 is: branch from `main` as `task/<id>-<slug>`, commit there, push the branch,
