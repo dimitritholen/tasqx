@@ -182,7 +182,13 @@ pub const PARAMS: &[(&str, &[&str], bool)] = &[
     ("token.remove", &["measurement_id"], false),
     ("dependency.add", &["ref", "depends_on"], false),
     ("dependency.remove", &["ref", "depends_on"], false),
-    ("memory.add", &["title", "body", "source", "project"], false),
+    (
+        "memory.add",
+        // #101: `standing` marks a doc that belongs in every session of its
+        // scope until retracted, not one retrieval has to rediscover.
+        &["title", "body", "source", "project", "standing"],
+        false,
+    ),
     (
         "memory.search",
         &[
@@ -198,10 +204,22 @@ pub const PARAMS: &[(&str, &[&str], bool)] = &[
     ("memory.get", &["id"], false),
     ("memory.remove", &["id"], false),
     ("memory.import", &["docs"], false),
-    ("memory.list", &["limit", "offset", "project"], false),
+    (
+        "memory.list",
+        &["limit", "offset", "project", "standing"],
+        false,
+    ),
     (
         "memory.update",
-        &["id", "title", "body", "source", "project", "expected_rev"],
+        &[
+            "id",
+            "title",
+            "body",
+            "source",
+            "project",
+            "standing",
+            "expected_rev",
+        ],
         false,
     ),
     // The D50 Decision 3 one-shot history repair. `dry_run` defaults to TRUE —

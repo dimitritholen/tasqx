@@ -906,6 +906,11 @@ fn build_tool_specs() -> Vec<ToolSpec> {
                     "project": {
                         "type": "string",
                         "description": "Restrict to docs stored with this `project`. Omit to list every doc."
+                    },
+                    "standing": {
+                        "type": "boolean",
+                        "description": "true lists only standing docs, false only the rest; \
+                            omit for all (D156)."
                     }
                 }
             }),
@@ -1392,7 +1397,12 @@ fn build_tool_specs() -> Vec<ToolSpec> {
                     "title": { "type": "string" },
                     "body": { "type": "string", "description": "Stored verbatim; multi-line markdown is fine." },
                     "source": { "type": "string", "description": "Where this came from: a path, URL, or ticket." },
-                    "project": { "type": "string", "description": "Optional project scope. Omit to leave the doc unscoped; it is never defaulted onto a current project." }
+                    "project": { "type": "string", "description": "Optional project scope. Omit to leave the doc unscoped; it is never defaulted onto a current project." },
+                    "standing": {
+                        "type": "boolean",
+                        "description": "True marks a ruling that belongs in every session of \
+                            its scope until retracted; default false (D156)."
+                    }
                 },
                 "required": ["title", "body"]
             }),
@@ -1420,6 +1430,11 @@ fn build_tool_specs() -> Vec<ToolSpec> {
                     "body": { "type": "string", "description": "New body, stored verbatim. Omit to leave unchanged." },
                     "source": { "type": "string", "description": "New source. Omit to leave unchanged." },
                     "project": { "type": "string", "description": "New project scope. Omit to leave unchanged." },
+                    "standing": {
+                        "type": "boolean",
+                        "description": "Set or clear the standing flag; omit to leave \
+                            unchanged (D156)."
+                    },
                     "expected_rev": { "type": "integer", "description": "Optimistic-concurrency guard. Supplied by the server from the doc's current `rev` when omitted; pass it to pin a rev you read earlier." }
                 },
                 "required": ["id"]

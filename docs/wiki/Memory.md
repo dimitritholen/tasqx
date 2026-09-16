@@ -13,6 +13,11 @@ Store one knowledge document. The body is kept exactly as given.
 tasqx memory add "Deploy runbook" "Deploys go through the blue-green pipeline"
 ```
 
+- `--standing` marks the doc as standing: a ruling that belongs in every
+  session of its project (or every project, when unscoped) until it is
+  cleared, so a correction given once is not forgotten by recency. Past 15
+  standing docs in one scope, `add` answers with a hint to merge or retract.
+
 ## tasqx memory list
 
 Browse your documents without a query — the enumeration `search` cannot do,
@@ -27,6 +32,7 @@ tasqx memory list
 - Piped, under `--json`, or with `--limit`/`--offset`, it prints one line per
   document instead — a screen would be the wrong answer to a pipe.
 - Newest-modified first, paged the same way as `tasqx list`.
+- `--standing` lists only the standing docs (and prints the table).
 
 ## tasqx memory search
 
@@ -58,8 +64,8 @@ Correct a document in place, keeping its id.
 tasqx memory update 019f8422-7b3e-7c41-a2d9-6f1b0e5c8a12 --body "corrected text"
 ```
 
-- `--title`, `--body`, `--source` and `--project` each replace that field;
-  omit one and it stays as it was.
+- `--title`, `--body`, `--source`, `--project` and `--standing true|false`
+  each replace that field; omit one and it stays as it was.
 - Guarded by the same optimistic-concurrency rev `tasqx modify` uses:
   `--expected-rev` fails with `conflict` (exit 5) if the document moved under
   you since you read it.

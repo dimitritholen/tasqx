@@ -1350,6 +1350,10 @@ pub(super) enum MemoryAction {
         /// Optional project scope. Omitted, the doc stays global.
         #[arg(long, add = crate::complete::candidates::projects())]
         project: Option<String>,
+        /// Mark the doc standing: re-read every session of its scope until
+        /// cleared (D156).
+        #[arg(long)]
+        standing: bool,
     },
     /// Browse docs without a query (maps to memory.list). Newest first.
     ///
@@ -1367,6 +1371,9 @@ pub(super) enum MemoryAction {
         /// Restrict to docs stored with this project.
         #[arg(long, add = crate::complete::candidates::projects())]
         project: Option<String>,
+        /// Only standing docs. Like `--limit`, prints the table.
+        #[arg(long)]
+        standing: bool,
     },
     /// Correct a doc in place (maps to memory.update).
     Update {
@@ -1384,6 +1391,9 @@ pub(super) enum MemoryAction {
         /// New project scope. Omit to leave it unchanged.
         #[arg(long, add = crate::complete::candidates::projects())]
         project: Option<String>,
+        /// Set or clear the standing flag. Omit to leave it unchanged.
+        #[arg(long, value_name = "true|false")]
+        standing: Option<bool>,
         /// Optimistic concurrency: fail with `conflict` (exit 5) unless the
         /// doc is still at this rev. Supplied automatically from the doc's
         /// current rev when omitted.

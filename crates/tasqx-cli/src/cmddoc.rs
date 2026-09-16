@@ -791,7 +791,7 @@ pub const COMMAND_REF: &[CmdDoc] = &[
         aliases: &[],
         method: "memory.search + get/add/remove/list/update",
         summary: "Store and search knowledge: docs, patterns, and your task annotations (D41).",
-        usage: "tasqx memory <add <title> <body> [--source s] [--project p]|search <words…> [--limit n] [--scope s] [--raw]|list [--limit n] [--offset n] [--project p]|show <id>|update <id> [--title t] [--body b] [--source s] [--project p] [--expected-rev n]|rm <id>|import <path>>",
+        usage: "tasqx memory <add <title> <body> [--source s] [--project p] [--standing]|search <words…> [--limit n] [--scope s] [--raw]|list [--limit n] [--offset n] [--project p] [--standing]|show <id>|update <id> [--title t] [--body b] [--source s] [--project p] [--standing true|false] [--expected-rev n]|rm <id>|import <path>>",
         examples: &[
             ex("tasqx memory add \"Deploy runbook\" \"deploys go through the blue-green pipeline\""),
             ex("tasqx memory search blue-green"),
@@ -820,6 +820,7 @@ pub const COMMAND_REF: &[CmdDoc] = &[
             "update replaces title/body/source/project in place, guarded by the same optimistic-concurrency rev `tasqx modify` uses. rm is permanent; update is the correction path that keeps the id and doesn't pollute search with a stale duplicate.",
             "Import is one transaction: a bad file imports nothing, and re-importing a directory replaces docs from the same source instead of duplicating them.",
             "An MCP agent reaches the same store: tasqx_search_memory works even read-only, so agents can consult knowledge while executing tasks.",
+            "A standing doc (`--standing`) is a ruling meant for every session of its scope — a correction given once — and `list --standing` shows them; more than 15 in one scope earns a hint to merge or retract (D156).",
         ],
         see_also: &["annotate", "mcp", "api"],
         topic: Topic::Automation,

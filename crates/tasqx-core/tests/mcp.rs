@@ -3022,6 +3022,42 @@ fn search_memory_description_names_the_rank_direction() {
     );
 }
 
+/// The three tools that read or write the `standing` flag (D156) must
+/// advertise it with a real description, not a bare boolean.
+#[test]
+fn memory_tools_document_the_standing_flag() {
+    let engine = engine();
+    let server = McpServer::new(&engine, Scope::Write);
+    let listed = server
+        .handle_message(&json!({ "jsonrpc": "2.0", "id": 1, "method": "tools/list" }))
+        .expect("tools/list is a request");
+    let tools = listed["result"]["tools"].as_array().expect("tools array");
+
+    for name in [
+        "tasqx_add_memory",
+        "tasqx_update_memory",
+        "tasqx_list_memory",
+    ] {
+        let tool = tools
+            .iter()
+            .find(|t| t["name"] == name)
+            .unwrap_or_else(|| panic!("{name} is listed"));
+        let standing = &tool["inputSchema"]["properties"]["standing"];
+        assert_eq!(
+            standing["type"],
+            json!("boolean"),
+            "`{name}`'s `standing` param must be a boolean: {standing}"
+        );
+        assert!(
+            !standing["description"]
+                .as_str()
+                .unwrap_or_default()
+                .is_empty(),
+            "`{name}`'s `standing` param must carry a description: {standing}"
+        );
+    }
+}
+
 /// The two parameters that together decide how much history a page buys —
 /// `annotations_limit` and `include_json` — must cross-reference each other,
 /// since the one that leads a caller into the trap never used to mention the
@@ -3383,9 +3419,10 @@ fn list_memory_include_preview_is_the_engines_own_row() {
             "modified",
             "project",
             "source",
+            "standing",
             "title"
         ],
-        "the nine frozen keys, untouched: {row}"
+        "the ten frozen keys, untouched: {row}"
     );
 }
 

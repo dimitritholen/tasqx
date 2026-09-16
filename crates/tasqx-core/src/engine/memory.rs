@@ -92,7 +92,8 @@ impl Engine {
     // ---- memory.add ----------------------------------------------------------
 
     /// `memory.add` — store one knowledge document. Params: `title`, `body`,
-    /// optional `source`, optional `project` (#134). Returns its new id.
+    /// optional `source`, optional `project` (#134), optional `standing`
+    /// (#101). Returns its new id.
     ///
     /// A doc is standalone, not attached to a task: annotations already cover
     /// "a note about this task", and [`Entity::Doc`] exists so the two stay
@@ -121,25 +122,54 @@ impl Engine {
         let search_body = crate::frontmatter::flatten(&body).into_owned();
         let source = opt_str(p, "source")?;
         let project = opt_str_nonempty(p, "project")?;
+        // #101/D156: a standing doc belongs in every session of its scope
+        // until it is retracted — a correction given once, not something a
+        // keyword search has to rediscover. Default false, so every existing
+        // caller keeps writing ordinary memory.
+        let standing = opt_bool(p, "standing")?.unwrap_or(false);
 
         let id = crate::clock::uuid_v7().to_string();
         let ts = now();
         let tx = self.begin_mutation()?;
         tx.execute(
-            "INSERT INTO docs (id, source, title, body, search_body, project, created, modified) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?7)",
-            params![id, source, title, body, search_body, project, ts],
+            "INSERT INTO docs \
+             (id, source, title, body, search_body, project, standing, created, modified) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?8)",
+            params![id, source, title, body, search_body, project, standing, ts],
         )?;
         insert_event(
             &tx,
             Entity::Doc,
             &id,
             "memory.add",
-            &json!({ "title": title, "source": source, "project": project }),
+            &json!({ "title": title, "source": source, "project": project, "standing": standing }),
         )?;
+        let mut out = json!({ "id": id, "title": title, "project": project, "standing": standing, "created": ts });
+        if standing {
+            // The soft cap, counted inside the same transaction as the INSERT
+            // so the number cannot name a set the write is not part of.
+            // `project IS ?1` and not `=`: the unscoped scope is NULL, which
+            // `=` matches nothing at all — every global standing doc would
+            // count as the first one forever.
+            let count: i64 = tx.query_row(
+                "SELECT COUNT(*) FROM docs WHERE standing = 1 AND project IS ?1",
+                params![project],
+                |r| r.get(0),
+            )?;
+            // A hint, never a refusal: the engine cannot know which of the
+            // rulings is the redundant one, and the key is ABSENT rather than
+            // null under the cap, so a client tests presence and not value.
+            if count > STANDING_SOFT_CAP as i64 {
+                out["hint"] = json!(format!(
+                    "{count} standing docs for this scope, over the soft cap of \
+                     {STANDING_SOFT_CAP}: merge or retract with tasqx_update_memory \
+                     standing:false (D156)"
+                ));
+            }
+        }
         tx.commit()?;
 
-        Ok(json!({ "id": id, "title": title, "project": project, "created": ts }))
+        Ok(out)
     }
 
     // ---- memory.import -------------------------------------------------------
@@ -209,6 +239,11 @@ impl Engine {
             // keeps the index honest. `created` is deliberately absent from
             // the SET list, so a source-replace keeps the ORIGINAL creation
             // date rather than pretending the doc is new.
+            //
+            // #101: `standing` is NOT in the SET list either — a re-imported
+            // directory carries no opinion about whether a doc is standing,
+            // so the flag a person set through `memory.update` survives the
+            // re-run that would otherwise silently clear it.
             //
             // `rev` is in the SET list because a source-replace is a revision
             // of the same document (D143): a `memory.update` still holding
@@ -327,13 +362,13 @@ impl Engine {
         // two statements instead of hand-renumbering `?1`/`?2` per query.
         const DOCS_ARM: &str = "SELECT d.id AS id, 'doc' AS kind, d.title AS title, \
              d.source AS source, snippet(docs_fts, 1, '', '', '…', 12) AS snip, \
-             bm25(docs_fts) AS score \
+             bm25(docs_fts) AS score, d.standing AS standing \
              FROM docs_fts JOIN docs d ON d.rowid = docs_fts.rowid \
              WHERE docs_fts MATCH :match";
         const ANN_ARM: &str = "SELECT a.id AS id, 'annotation' AS kind, t.title AS title, \
              'task:#' || t.short_id AS source, \
              snippet(annotations_fts, 0, '', '', '…', 12) AS snip, \
-             bm25(annotations_fts) AS score \
+             bm25(annotations_fts) AS score, NULL AS standing \
              FROM annotations_fts \
              JOIN annotations a ON a.rowid = annotations_fts.rowid \
              JOIN tasks t ON t.id = a.task_id \
@@ -384,6 +419,11 @@ impl Engine {
                     "source": r.get::<_, Option<String>>(3)?,
                     "snippet": r.get::<_, String>(4)?,
                     "rank": r.get::<_, f64>(5)?,
+                    // #101: a doc hit says whether it is standing; an
+                    // annotation hit is `null`, because the flag is a
+                    // property of a doc and the UNION needs the column on
+                    // both arms either way.
+                    "standing": r.get::<_, Option<i64>>(6)?.map(|n| n != 0),
                 }))
             })?;
             rows.collect()
@@ -453,7 +493,7 @@ impl Engine {
         let found = self
             .conn
             .query_row(
-                "SELECT id, source, title, body, created, modified, project, rev \
+                "SELECT id, source, title, body, created, modified, project, rev, standing \
                  FROM docs WHERE id = ?1",
                 params![id],
                 |r| {
@@ -466,6 +506,9 @@ impl Engine {
                         "modified": r.get::<_, String>(5)?,
                         "project": r.get::<_, Option<String>>(6)?,
                         "_rev": r.get::<_, i64>(7)?,
+                        // #101: read as an integer, because SQLite has no
+                        // boolean type of its own.
+                        "standing": r.get::<_, i64>(8)? != 0,
                     }))
                 },
             )
@@ -521,9 +564,9 @@ impl Engine {
 
     /// `memory.list` — browse memory docs without already knowing a literal
     /// word inside one (#133). Params: `limit`, `offset`, optional `project`
-    /// (#134). Newest-modified-first by default — the recency a caller
-    /// browsing "what's in here" wants, and the same axis `memory.update`
-    /// moves a doc along.
+    /// (#134), optional `standing` (#101). Newest-modified-first by default —
+    /// the recency a caller browsing "what's in here" wants, and the same axis
+    /// `memory.update` moves a doc along.
     ///
     /// Same `{count, total, next_offset}` shape as `task.list` (D70):
     /// `total` is matched rows before the window, `next_offset` is the value
@@ -532,6 +575,10 @@ impl Engine {
     /// query, this one requires none.
     pub fn memory_list(&self, p: &Value) -> Result<Value, ApiError> {
         let project = opt_str_nonempty(p, "project")?;
+        // #101/D156: omitted lists every doc, `true` only the standing ones,
+        // `false` only the rest — a filter, not a sort, so "what is standing
+        // here?" is one call whose answer does not depend on recency.
+        let standing = opt_bool(p, "standing")?;
         let offset = opt_u64(p, "offset")?.unwrap_or(0);
         let offset_i64 = i64::try_from(offset).map_err(|_| {
             ApiError::bad_request(format!(
@@ -550,10 +597,22 @@ impl Engine {
             None => None,
         };
 
-        let where_clause = if project.is_some() {
-            "WHERE project = :project"
+        // Two independent narrowings, so the clause is assembled from
+        // whichever were given rather than enumerated as four cases. The
+        // `standing` half is a literal and not a bound param: it is already a
+        // decided bool here, and binding it would put the flag in the param
+        // list of every statement, including the calls that name none.
+        let mut conds: Vec<&str> = Vec::new();
+        if project.is_some() {
+            conds.push("project = :project");
+        }
+        if let Some(flag) = standing {
+            conds.push(if flag { "standing = 1" } else { "standing = 0" });
+        }
+        let where_clause = if conds.is_empty() {
+            String::new()
         } else {
-            ""
+            format!("WHERE {}", conds.join(" AND "))
         };
         let count_sql = format!("SELECT COUNT(*) FROM docs {where_clause}");
         // Newest-modified first (D115 #133), `id DESC` as the tiebreak two
@@ -577,7 +636,7 @@ impl Engine {
         // that.
         let row_sql = format!(
             "SELECT id, title, source, project, created, modified, rev, \
-                    substr(body, 1, 160) AS preview, length(body) AS body_len \
+                    substr(body, 1, 160) AS preview, length(body) AS body_len, standing \
              FROM docs {where_clause} \
              ORDER BY rtrim(modified, 'Z') DESC, id DESC \
              LIMIT :limit OFFSET :offset"
@@ -616,6 +675,10 @@ impl Engine {
                 "_rev": r.get::<_, i64>(6)?,
                 "body_preview": preview,
                 "body_truncated": body_len > 160,
+                // #101: every row says so, filtered or not — a browse page
+                // that carried the flag only when it was asked to filter on
+                // it could not show which of a mixed page is standing.
+                "standing": r.get::<_, i64>(9)? != 0,
             }))
         })?;
         let docs: Vec<Value> = rows.collect::<Result<_, _>>()?;
@@ -641,8 +704,9 @@ impl Engine {
 
     /// `memory.update` — replace a doc's `title`/`body` in place (#135).
     /// Params: `id`, optional `title`, optional `body`, optional `source`,
-    /// optional `project`, optional `expected_rev`. At least one of
-    /// `title`/`body`/`source`/`project` must be given.
+    /// optional `project`, optional `standing` (#101), optional
+    /// `expected_rev`. At least one of
+    /// `title`/`body`/`source`/`project`/`standing` must be given.
     ///
     /// `memory.remove` is genuinely permanent — no `undo`, nothing in the
     /// event log to reconstruct the body from — so a correction had only two
@@ -666,9 +730,20 @@ impl Engine {
         let body = opt_str_nonempty(p, "body")?;
         let source = opt_str(p, "source")?;
         let project = opt_str_nonempty(p, "project")?;
-        if title.is_none() && body.is_none() && source.is_none() && project.is_none() {
+        // #101/D156: this is the retraction half of the flag — `standing:
+        // false` is how a ruling stops being re-read every session, and it is
+        // a change in its own right, so an update that names ONLY it is a
+        // complete request and not the "nothing to do" refusal below.
+        let standing = opt_bool(p, "standing")?;
+        if title.is_none()
+            && body.is_none()
+            && source.is_none()
+            && project.is_none()
+            && standing.is_none()
+        {
             return Err(ApiError::bad_request(
-                "memory.update requires at least one of `title`, `body`, `source`, `project`",
+                "memory.update requires at least one of `title`, `body`, `source`, `project`, \
+                 `standing`",
             ));
         }
         let expected_rev = opt_i64(p, "expected_rev")?;
@@ -676,7 +751,7 @@ impl Engine {
         let tx = self.begin_mutation()?;
         let current = tx
             .query_row(
-                "SELECT title, body, source, project, rev FROM docs WHERE id = ?1",
+                "SELECT title, body, source, project, rev, standing FROM docs WHERE id = ?1",
                 params![id],
                 |r| {
                     Ok((
@@ -685,11 +760,13 @@ impl Engine {
                         r.get::<_, Option<String>>(2)?,
                         r.get::<_, Option<String>>(3)?,
                         r.get::<_, i64>(4)?,
+                        r.get::<_, i64>(5)? != 0,
                     ))
                 },
             )
             .optional()?;
-        let Some((cur_title, cur_body, cur_source, cur_project, cur_rev)) = current else {
+        let Some((cur_title, cur_body, cur_source, cur_project, cur_rev, cur_standing)) = current
+        else {
             return Err(ApiError::not_found(
                 format!("no memory doc with id {id}"),
                 None,
@@ -714,18 +791,22 @@ impl Engine {
         let new_search_body = crate::frontmatter::flatten(&new_body).into_owned();
         let new_source = source.clone().or(cur_source);
         let new_project = project.clone().or(cur_project);
+        // #101: unnamed leaves the flag exactly as it was — the same "absent
+        // is not `false`" the four fields above hold.
+        let new_standing = standing.unwrap_or(cur_standing);
         let new_rev = cur_rev + 1;
         let ts = now();
 
         tx.execute(
             "UPDATE docs SET title = ?1, body = ?2, search_body = ?3, source = ?4, \
-             project = ?5, rev = ?6, modified = ?7 WHERE id = ?8",
+             project = ?5, standing = ?6, rev = ?7, modified = ?8 WHERE id = ?9",
             params![
                 new_title,
                 new_body,
                 new_search_body,
                 new_source,
                 new_project,
+                new_standing,
                 new_rev,
                 ts,
                 id
@@ -740,6 +821,7 @@ impl Engine {
                 "title": &new_title,
                 "source": &new_source,
                 "project": &new_project,
+                "standing": new_standing,
                 "rev": new_rev,
             }),
         )?;
@@ -750,6 +832,7 @@ impl Engine {
             "title": new_title,
             "source": new_source,
             "project": new_project,
+            "standing": new_standing,
             "_rev": new_rev,
             "modified": ts,
         }))
