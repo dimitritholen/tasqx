@@ -739,10 +739,12 @@ fn build_tool_specs() -> Vec<ToolSpec> {
                     },
                     "include_rank": {
                         "type": "boolean",
-                        "description": "Add the raw FTS5 bm25 `rank` to each memory hit. \
-                             Default false. LOWER (more negative) is the better match, and \
-                             the hits are already sorted best-first, so this is only for \
-                             comparing hits against each other."
+                        "description": "Add the raw FTS5 bm25 `rank` to each memory hit in the \
+                             machine-readable block — pair it with `include_json: true`, \
+                             because the rendered view never prints a rank. Default false. \
+                             LOWER (more negative) is the better match, and the hits are \
+                             already sorted best-first, so this is only for comparing hits \
+                             against each other."
                     },
                     "max_body_bytes": max_body_bytes_schema(),
                     "include_json": {

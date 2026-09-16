@@ -3367,3 +3367,30 @@ fn the_memory_transport_arguments_are_stripped_before_the_params_gate() {
         assert!(!is_error(&resp), "`{tool}` refused `{args}`: {resp}");
     }
 }
+
+/// The brief's `include_rank` is only observable in the machine-readable
+/// block: the rendered view never prints a rank, and that block is what
+/// `include_json: true` buys (D151). A caller who passes the one without the
+/// other gets an answer identical to the default, so the argument's own
+/// description has to name the flag that makes it visible (PR #42 review).
+#[test]
+fn brief_include_rank_description_names_include_json_as_where_it_shows() {
+    let engine = engine();
+    let server = McpServer::new(&engine, Scope::Write);
+    let listed = server
+        .handle_message(&json!({ "jsonrpc": "2.0", "id": 1, "method": "tools/list" }))
+        .expect("tools/list is a request");
+    let tools = listed["result"]["tools"].as_array().expect("tools array");
+    let brief = tools
+        .iter()
+        .find(|t| t["name"] == "tasqx_brief_task")
+        .expect("tasqx_brief_task is listed");
+    let desc = brief["inputSchema"]["properties"]["include_rank"]["description"]
+        .as_str()
+        .unwrap_or_default();
+    assert!(
+        desc.contains("include_json"),
+        "`include_rank`'s description on the brief should name `include_json` as the block \
+         the rank appears in: {desc}"
+    );
+}
