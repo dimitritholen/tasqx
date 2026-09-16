@@ -5270,7 +5270,7 @@ fn a_typed_clock_time_is_stored_as_that_utc_clock_whatever_tz_says() {
     assert_eq!(field("2", "due"), "2026-09-21T04:00:00Z");
 }
 
-// ---- the capture clock (D148) ----------------------------------------------
+// ---- the capture clock (D149) ----------------------------------------------
 
 /// A pin the CLI cannot read is fatal at the door, and it says which value it
 /// choked on.
@@ -5317,7 +5317,7 @@ fn a_clock_pin_the_cli_cannot_read_exits_two_and_quotes_it() {
 
 /// The pin reaches the STORE, and that is the whole point of it.
 ///
-/// A read-only pin was the first cut of D148 and it is half a pin: the capture
+/// A read-only pin was the first cut of D149 and it is half a pin: the capture
 /// manifest renders write echoes (`add`, `start`, `done`) against a demo store
 /// standing on a day in the past, so a `created` stamped from the wall clock
 /// lands after the pinned "today" and `show` spells the new task "created in 15

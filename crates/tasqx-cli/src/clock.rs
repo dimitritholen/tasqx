@@ -24,7 +24,7 @@
 //! in [`tasqx_core::clock`] and in `CONTRIBUTING.md`, and deliberately not in
 //! `tasqx docs`, the wiki or the guides. Nobody tracking real work wants their
 //! overdue tasks frozen — and because the pin reaches the store too (DESIGN.md
-//! D148), `tasqx about` states it beside the store and the build whenever it is
+//! D149), `tasqx about` states it beside the store and the build whenever it is
 //! set.
 //!
 //! **This is the door that validates**, and it validates ONCE, at the top of

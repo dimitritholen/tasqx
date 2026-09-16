@@ -37,7 +37,7 @@
 //! `tasqx daemon`/`tasqx watch` refuse to start pinned, so one instant can never
 //! be half of a two-process command; and the variable is documented only as a
 //! capture and testing hook — in this module, in `CONTRIBUTING.md` and in
-//! DESIGN.md D148 — never as a setting or on a user page.
+//! DESIGN.md D149 — never as a setting or on a user page.
 //!
 //! Here an unparsable value falls back to the wall clock rather than being an
 //! error. A library cannot exit a process it does not own, and every process

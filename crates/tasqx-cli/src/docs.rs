@@ -4585,7 +4585,7 @@ mod tests {
             // spelled without the prefix to dodge the scan, because dodging a
             // drift guard is how the things it hunts get in.
             "TASQX_PANIC_PROBE_CHILD",
-            // The capture pin (D148): an RFC 3339 instant that both
+            // The capture pin (D149): an RFC 3339 instant that both
             // `clock::now` doors answer with instead of the wall clock, so a
             // documentation screen rendered today and rendered next month is
             // the same text — writes included, since the engine stamps
@@ -4646,7 +4646,7 @@ mod tests {
             include_str!("complete/install.rs"),
             include_str!("complete/candidates.rs"),
             // The hole this list keeps having is a file nobody added, and
-            // `clock.rs` is the newest file that reads a variable (D148).
+            // `clock.rs` is the newest file that reads a variable (D149).
             include_str!("clock.rs"),
         ];
 

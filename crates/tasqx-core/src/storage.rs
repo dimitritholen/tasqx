@@ -830,7 +830,7 @@ pub fn insert_event(
 /// `Uuid::now_v7()` from the wall clock while `ts` followed `TASQX_NOW`, so a
 /// pin ahead of today put every freshly written `id` a pin's distance BELOW a
 /// floor derived from its own `ts`, and a bounded `event.list` dropped rows the
-/// same command had just written (D148).
+/// same command had just written (D149).
 ///
 /// So `from` is a **lower bound, not a filter**: it promises no events older
 /// than roughly that instant, not exactly the events at or after it. Callers

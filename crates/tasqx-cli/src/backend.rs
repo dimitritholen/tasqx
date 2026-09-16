@@ -116,7 +116,7 @@ pub(crate) fn default_socket() -> String {
 /// missing/stale socket falls back immediately (no hang).
 ///
 /// **A pinned clock routes in-process, as if `--no-daemon` were passed.**
-/// `TASQX_NOW` is read per process (`clock.rs`, D148) and nothing on the wire
+/// `TASQX_NOW` is read per process (`clock.rs`, D149) and nothing on the wire
 /// carries it, so a daemon started unpinned — or pinned to another instant —
 /// would stamp, score and filter at ITS clock while this process parsed dates
 /// and rendered at the pin: one command, two instants, and neither end able to

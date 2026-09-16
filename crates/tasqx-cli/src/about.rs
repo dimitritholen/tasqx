@@ -30,7 +30,7 @@ pub(crate) struct Facts {
     /// the platform data directory on its way, and a screen that only says
     /// where things are must not author one.
     pub store: String,
-    /// `$TASQX_NOW`, when this process is running on a pinned clock (D148) —
+    /// `$TASQX_NOW`, when this process is running on a pinned clock (D149) —
     /// `None` on the wall clock, which is every ordinary run.
     ///
     /// The screen already answers "which store am I about to write to"; a pin
@@ -61,7 +61,7 @@ impl Facts {
 pub(crate) fn render(ctx: &Ctx, f: &Facts) -> String {
     // `times`: every clock tasqx reads and prints is UTC (D132), and this is
     // the screen that says what kind of tasqx is in front of you. `clock` sits
-    // directly under it and appears only when the clock is pinned (D148): an
+    // directly under it and appears only when the clock is pinned (D149): an
     // absent row is the ordinary case, and a row that said "wall clock" on
     // every run would be noise around the one state worth noticing.
     let clock;
@@ -342,7 +342,7 @@ mod tests {
         }
     }
 
-    /// A pinned clock is stated, an unpinned one is not (D148).
+    /// A pinned clock is stated, an unpinned one is not (D149).
     ///
     /// The pin reaches the STORE — `created`, `completed` and `active_since`
     /// are stamped with it — so a `TASQX_NOW` left exported in a shell silently

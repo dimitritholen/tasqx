@@ -73,7 +73,7 @@ trap cleanup EXIT
 # the screen reads has to be handed over explicitly: TASQX_DB and
 # TASQX_CONFIG_DIR to keep it off the real store, and TASQX_NOW so a dashboard
 # does not read the wall clock while the rest of the capture stands on a pinned
-# day (DESIGN.md D148).
+# day (DESIGN.md D149).
 #
 # None of them is interpolated into shell source. They were: the values sat
 # inside single quotes in the command string, so one apostrophe in TASQX_NOW
