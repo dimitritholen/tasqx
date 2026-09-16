@@ -547,9 +547,20 @@ const MCP_TOOLS: [(&str, bool, &str); 29] = [
     (
         "tasqx_list_tasks",
         false,
-        "List tasks by <a href=\"#filters\">filter</a>.",
+        "List tasks by <a href=\"#filters\">filter</a>. The default row is compact — \
+         <code>short_id</code>, <code>title</code>, <code>status</code>, <code>priority</code>, \
+         <code>urgency</code>, <code>blocked</code>, <code>due</code>, <code>project</code>, \
+         <code>tags</code>, null keys omitted; an explicit <code>fields</code> (including \
+         <code>[]</code>) returns the engine's own row (D152).",
     ),
-    ("tasqx_get_task", false, "One task's full detail."),
+    (
+        "tasqx_get_task",
+        false,
+        "One task's full detail: the rendered view alone by default, \
+         <code>include_json: true</code> for the JSON block too (D151). A long annotation \
+         body is cut in the response with a marker; <code>max_body_bytes</code> raises the \
+         cap, and a removed annotation is listed as a tombstone (D148).",
+    ),
     (
         "tasqx_summary",
         false,
@@ -558,12 +569,17 @@ const MCP_TOOLS: [(&str, bool, &str); 29] = [
     (
         "tasqx_brief_task",
         false,
-        "The task, its prerequisites' conclusions, and memory under a derived query (D136).",
+        "The task, its prerequisites' conclusions, and memory under a derived query (D136). \
+         Half the memory page (rounded up) is reserved for knowledge docs and annotations \
+         fill the rest, with <code>reserved_docs</code>, <code>docs_total</code> and \
+         <code>annotations_total</code> saying what happened (D147); the rendered view alone \
+         by default, <code>include_json: true</code> for the JSON (D151).",
     ),
     (
         "tasqx_outcomes",
         false,
-        "Rework, calibration, cost, silent completions, abandoned work — each rate beside its n (D137).",
+        "Rework, calibration, cost, silent completions, abandoned work, and <code>forced</code> \
+         completions that overrode open blockers — each rate beside its n (D137, D150).",
     ),
     ("tasqx_list_projects", false, "List projects."),
     (
@@ -586,7 +602,9 @@ const MCP_TOOLS: [(&str, bool, &str); 29] = [
     (
         "tasqx_complete_task",
         true,
-        "Complete a task; self-report its token cost (the primary channel).",
+        "Complete a task; self-report its token cost (the primary channel). Refused with \
+         <code>conflict</code> while the task has open blockers, naming them; \
+         <code>force: true</code> completes it anyway and the override is recorded (D150).",
     ),
     (
         "tasqx_reopen_task",
@@ -1772,7 +1790,10 @@ fn page_commands() -> String {
     s.push_str(&p(
         "<code>start</code> runs a timer and, by default, stops any other active task — pass \
          <code>--keep</code> to opt out of single-active. <code>done</code> on a recurring task \
-         spawns the next instance and tells you so:",
+         spawns the next instance and tells you so. <code>done</code> on a task with open \
+         dependencies is refused, naming them; <code>--force</code> completes it anyway, the \
+         override is recorded, and <code>report --outcomes</code> counts it under FORCED \
+         (D150):",
     ));
     s.push_str(&snippet(
         "tasqx done 4",

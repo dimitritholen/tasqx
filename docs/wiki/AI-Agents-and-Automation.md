@@ -66,12 +66,30 @@ JSON block is the same result a second time, so it is sent only when you ask
 for it with `include_json: true` — worth doing when a script parses the
 answer, and a waste of the response budget when an agent is going to read it.
 
+A few more places the response is shaped for the reader that is actually
+paying for it:
+
+- **`tasqx_list_tasks`** answers a compact row by default — `short_id`,
+  `title`, `status`, `priority`, `urgency`, `blocked`, `due`, `project`,
+  `tags` — with any null key omitted; an explicit `fields` list, `[]`
+  included, returns the engine's own full row.
+- **`tasqx_complete_task`** refuses a task with open blockers and names them;
+  `force: true` completes it anyway, and the override is recorded and counted
+  in `tasqx_outcomes`.
+- A long annotation body is cut in a `tasqx_get_task`/`tasqx_brief_task`
+  response with a marker naming its real size; `max_body_bytes` raises the
+  cap, and a removed annotation is listed as a tombstone rather than
+  disappearing from the count.
+- `tasqx_brief_task` holds half its memory page for knowledge docs (from
+  `memory add` / `memory import`), so a ruling is not buried under a
+  project's own, more numerous, task annotations.
+
 For the full workflow — what deserves a backlog entry, searching memory before
 starting, annotating before completing — see the
 [AI agent guide](../guides/ai-agent-workflow.md) and the
-[agent starter prompt](../guides/agent-starter-prompt.md). For the retrospective
-hook that fires on `tasqx_complete_task` and has the agent record what it
-learned, see [A self-improving agent](../guides/self-improving-agent.md).
+[agent starter prompt](../guides/agent-starter-prompt.md). For the session-end
+retrospective that has the agent record what each task taught, see
+[A self-improving agent](../guides/self-improving-agent.md).
 
 ## tasqx api
 

@@ -21,7 +21,10 @@ You get the task's own card, then two things `tasqx show` never carried:
 - **From memory** — documents and past annotations relevant to this task, found
   under a query tasqx builds from the task's own title, tags and project. You
   do not supply search terms, which matters because a guessed term that finds
-  nothing looks exactly like a store with nothing in it.
+  nothing looks exactly like a store with nothing in it. Half the slots are
+  held for docs, so an imported ruling still reaches the page when a project's
+  own task notes share its words; annotations take the rest, and docs take the
+  whole page when more of them matched than that.
 
 Memory is scoped to the task's project and stays scoped when that finds
 nothing — it will not quietly search everything instead. When you want wider,

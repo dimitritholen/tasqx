@@ -678,6 +678,9 @@ pub const COMMAND_REF: &[CmdDoc] = &[
             "The task, what each of its prerequisites concluded, what it blocks, and memory \
              found under a query tasqx derives from the task's own title, tags and project — \
              so nobody has to guess search terms.",
+            "Half the memory page (rounded up) is reserved for knowledge docs, so a ruling is \
+             never buried under a sibling task's own notes; annotations fill whatever slots \
+             docs leave (D147).",
             "Memory is scoped to the task's project and does not widen when that finds \
              nothing: `tasqx memory search` is the wider read.",
             "`--card` prints a fixed 72-column box-drawn card meant to be pasted into a \

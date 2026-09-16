@@ -58,7 +58,9 @@ tasqx report --outcomes project --since -30d
 REWORK counts completions that were later reopened. SILENT counts completions
 nobody annotated — the ones that taught the next session nothing. CALIB is the
 median tracked-over-estimate ratio, which is the "4h tasks are 9h tasks"
-sentence above as a number. DROPPED is work that was started and then cancelled.
+sentence above as a number. DROPPED is work that was started and then
+cancelled. FORCED counts completions that overrode an open blocker with
+`--force`.
 
 Every rate reads `count/n`, never a percentage, and the reason is worth a
 sentence at a standup: 3/12 and 3/3 are the same percentage and very different
