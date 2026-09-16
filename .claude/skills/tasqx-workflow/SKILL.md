@@ -53,8 +53,9 @@ reopened), calibration (tracked over estimate), silent (no annotation),
 unproven (a criterion nobody marked), forced, overrun, abandonment. Every rate
 comes with its `n`; three completions is not evidence.
 
-## Nothing is destroyed
+## Tasks are never destroyed, memory is
 
-There is no hard delete: `delete` and `rm` alias `cancel`, which keeps the
+A task has no hard delete: `delete` and `rm` alias `cancel`, which keeps the
 history, and `tasqx_reopen_task` undoes it. A cancelled dependency releases
-its dependents.
+its dependents. Memory is the exception: `tasqx_remove_memory` and
+`tasqx memory rm` delete the body for good, and `tasqx undo` does not cover it.
