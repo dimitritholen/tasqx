@@ -38,6 +38,11 @@ pub(crate) struct Facts {
     /// stamped with the pinned instant. So the same screen answers "on which
     /// clock", or the hazard is invisible. The value is copied text, like the
     /// store path above it.
+    ///
+    /// The INSTANT alone, with no prose and no separator: those are the
+    /// renderer's, because the separator is [`Ctx::mid`] and depends on what
+    /// the terminal can draw. A `·` baked in here would reach a non-Unicode
+    /// console as mojibake on the one row that exists to be believed.
     pub pin: Option<String>,
 }
 
@@ -48,7 +53,7 @@ impl Facts {
             store: crate::backend::db_path_read_only()
                 .map(|p| p.to_string_lossy().into_owned())
                 .unwrap_or_else(|e| e),
-            pin: crate::clock::pin().map(|ts| format!("pinned by TASQX_NOW · {ts}")),
+            pin: crate::clock::pin().map(|ts| ts.to_string()),
         }
     }
 }
@@ -59,6 +64,7 @@ pub(crate) fn render(ctx: &Ctx, f: &Facts) -> String {
     // directly under it and appears only when the clock is pinned (D148): an
     // absent row is the ordinary case, and a row that said "wall clock" on
     // every run would be noise around the one state worth noticing.
+    let clock;
     let mut rows: Vec<(&str, &str)> = vec![
         ("made by", AUTHOR),
         ("linkedin", LINKEDIN),
@@ -68,7 +74,11 @@ pub(crate) fn render(ctx: &Ctx, f: &Facts) -> String {
         ("times", "UTC"),
     ];
     if let Some(pin) = &f.pin {
-        rows.push(("clock", pin));
+        // `ctx.mid()`, not a literal `·`: the separator is a capability, and a
+        // legacy console that cannot draw it gets `-` like every other row on
+        // every other screen.
+        clock = format!("pinned by TASQX_NOW {} {pin}", ctx.mid());
+        rows.push(("clock", &clock));
     }
     // `columns::fit` sizes the label column and the gap, as it does for every
     // other table here. Both columns are FIXED, for the same reason a number
@@ -112,6 +122,17 @@ mod tests {
             depth: ColorDepth::None,
             ansi: false,
             unicode: true,
+        };
+        Ctx::new(default_theme(), caps).with_cols(cols)
+    }
+
+    /// [`at`] for a console that cannot draw `·` — a legacy Windows code page,
+    /// a dumb terminal, anything `Caps::detect_from` reads as non-Unicode.
+    fn ascii_at(cols: usize) -> Ctx {
+        let caps = Caps {
+            depth: ColorDepth::None,
+            ansi: false,
+            unicode: false,
         };
         Ctx::new(default_theme(), caps).with_cols(cols)
     }
@@ -340,16 +361,33 @@ mod tests {
         );
 
         let pinned = Facts {
-            pin: Some("pinned by TASQX_NOW · 2026-09-16T09:00:00Z".to_string()),
+            pin: Some("2026-09-16T09:00:00Z".to_string()),
             ..facts()
         };
         let screen = strip(&render(&at(100), &pinned));
-        let row = screen
-            .lines()
-            .find(|l| l.trim_start().starts_with("clock"))
-            .unwrap_or_else(|| panic!("no clock row under a pin:\n{screen}"));
+        let clock_row = |screen: &str| -> String {
+            screen
+                .lines()
+                .find(|l| l.trim_start().starts_with("clock"))
+                .unwrap_or_else(|| panic!("no clock row under a pin:\n{screen}"))
+                .to_string()
+        };
+        let row = clock_row(&screen);
         assert!(row.contains("TASQX_NOW"), "{row:?}");
         assert!(row.ends_with("2026-09-16T09:00:00Z"), "{row:?}");
+        assert!(
+            row.contains('·'),
+            "the Unicode separator is missing: {row:?}"
+        );
+
+        // A console that cannot draw `·` gets the house fallback, not mojibake
+        // on the one row whose job is to be believed. `Facts` therefore carries
+        // the instant alone and the separator is chosen at render time.
+        let ascii = clock_row(&strip(&render(&ascii_at(100), &pinned)));
+        assert!(
+            !ascii.contains('·') && ascii.contains("TASQX_NOW - 2026-09-16T09:00:00Z"),
+            "the non-Unicode clock row must use `-`: {ascii:?}"
+        );
         // Directly under the row that says what kind of clock it is.
         let labels: Vec<&str> = screen
             .lines()

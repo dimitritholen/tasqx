@@ -110,9 +110,23 @@ fn v7_at(pin: Timestamp) -> uuid::Uuid {
 /// `TASQX_NOW` as this process sees it — the validation door the CLI calls
 /// before it trusts [`now`].
 ///
-/// `Ok(None)` means "no pin, use the clock".
+/// `Ok(None)` means "no pin, use the clock", and only an ABSENT variable means
+/// that. A value that is not valid Unicode is an error rather than a shrug:
+/// `std::env::var(..).ok()` folds `VarError::NotUnicode` into `None`, so a pin
+/// mistyped into a byte string fell through to the wall clock with nothing
+/// said — the one outcome this door exists to prevent, and on Unix any byte
+/// sequence can reach it. The message is the same one an unparsable value gets,
+/// because to a reader they are the same mistake; the value is spelled back
+/// lossily, since a message about unreadable bytes has to print them somehow.
 pub fn pin_from_env() -> Result<Option<Timestamp>, String> {
-    pinned(std::env::var("TASQX_NOW").ok().as_deref())
+    match std::env::var("TASQX_NOW") {
+        Ok(value) => pinned(Some(&value)),
+        Err(std::env::VarError::NotPresent) => Ok(None),
+        Err(std::env::VarError::NotUnicode(raw)) => Err(format!(
+            "tasqx: TASQX_NOW is not an RFC 3339 instant: {}",
+            raw.to_string_lossy()
+        )),
+    }
 }
 
 /// The parse behind [`now`], split out because the environment is

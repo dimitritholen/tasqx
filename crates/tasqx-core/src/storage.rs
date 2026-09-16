@@ -1178,16 +1178,29 @@ mod tests {
         );
     }
 
-    /// The floor sorts below a real id minted at the same instant, which is the
+    /// The floor sorts below every id that instant can mint, which is the
     /// property the bound depends on.
+    ///
+    /// A fixed instant and a constructed id, not `clock::now()` and a real
+    /// mint: this is a property of the derivation, and a test that reads a
+    /// clock at all can only be as stable as the environment it runs in — with
+    /// `TASQX_NOW` set it would compare a pinned floor against a pinned mint
+    /// and prove nothing it did not already assume. `from_unix_timestamp_millis`
+    /// with zero bytes is the SMALLEST id that millisecond can produce, so
+    /// beating it beats every real one. That a real write lands inside its own
+    /// window is asserted end to end instead, in the CLI's
+    /// `an_event_written_under_a_future_pin_is_inside_its_own_window`.
     #[test]
     fn the_event_id_floor_sorts_below_an_id_minted_at_that_instant() {
-        let now = crate::clock::now();
-        let floor = event_id_floor(now);
-        let real = crate::clock::uuid_v7().to_string();
+        let ms: u64 = 1_800_000_000_000;
+        let floor = event_id_floor(Timestamp::from_millisecond(ms as i64).unwrap());
+        let smallest = uuid::Builder::from_unix_timestamp_millis(ms, &[0u8; 10])
+            .into_uuid()
+            .to_string();
         assert!(
-            floor < real,
-            "floor {floor} must sort below an id minted now ({real})"
+            floor < smallest,
+            "floor {floor} must sort below the smallest id that instant can mint \
+             ({smallest})"
         );
         assert!(
             floor.ends_with("-8000-000000000000"),
@@ -1220,8 +1233,13 @@ mod tests {
     fn an_instant_before_the_epoch_floors_to_the_bottom_rather_than_wrapping() {
         let ts = Timestamp::from_millisecond(-10_000).unwrap();
         let floor = event_id_floor(ts);
+        // The lowest id any clock can mint: the epoch itself, with zero bytes.
+        // Constructed rather than read from the clock, for the reason above.
+        let lowest = uuid::Builder::from_unix_timestamp_millis(0, &[0u8; 10])
+            .into_uuid()
+            .to_string();
         assert!(
-            floor < crate::clock::uuid_v7().to_string(),
+            floor <= lowest,
             "a pre-epoch bound must still sort below every real event, got {floor}"
         );
     }

@@ -5475,6 +5475,30 @@ fn a_malformed_pin_cannot_write_and_is_refused_on_clockless_paths_too() {
         "a refused command wrote a task anyway: {result}"
     );
 
+    // Bytes that are not UTF-8 at all. `std::env::var(..).ok()` folded this
+    // into "no pin" and the command ran on the wall clock, silently — the one
+    // outcome the door exists to prevent (CodeRabbit, PR #26).
+    #[cfg(unix)]
+    {
+        use std::os::unix::ffi::OsStrExt;
+        let raw = std::ffi::OsStr::from_bytes(b"2026-09-16T09:00:00\xffZ");
+        let out = bin("pin-before-write", &dir)
+            .env("TASQX_NOW", raw)
+            .args(["list"])
+            .output()
+            .expect("run tasqx");
+        assert_eq!(
+            out.status.code(),
+            Some(2),
+            "a TASQX_NOW that is not Unicode was treated as no pin at all"
+        );
+        assert!(
+            String::from_utf8_lossy(&out.stderr).contains("TASQX_NOW"),
+            "the refusal must name the variable: {:?}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+
     // `about` reads no clock and used to run happily on a broken pin, on the
     // very screen that is supposed to tell you which clock you are on.
     for clockless in [vec!["about"], vec!["docs"], vec!["completions", "bash"]] {
