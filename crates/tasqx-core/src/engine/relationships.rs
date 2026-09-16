@@ -167,7 +167,7 @@ impl Engine {
     pub fn check_add(&self, p: &Value) -> Result<Value, ApiError> {
         let _ = ref_param(p)?;
         let body = req_str(p, "body")?;
-        let id = Uuid::now_v7().to_string();
+        let id = crate::clock::uuid_v7().to_string();
         let ts = now();
         let tx = self.begin_mutation()?;
         let task = self.resolve_ref_on(&tx, p)?;
@@ -301,7 +301,7 @@ impl Engine {
         let _ = ref_param(p)?;
         let body = req_str(p, "body")?;
 
-        let id = Uuid::now_v7().to_string();
+        let id = crate::clock::uuid_v7().to_string();
         let ts = now();
         let tx = self.begin_mutation()?;
         let task = self.resolve_ref_on(&tx, p)?;

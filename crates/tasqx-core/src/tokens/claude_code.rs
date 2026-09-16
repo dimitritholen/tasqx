@@ -357,7 +357,7 @@ mod tests {
 
     #[test]
     fn samples_from_file_reads_a_real_file() {
-        let path = std::env::temp_dir().join(format!("tasqx-cc-{}.jsonl", uuid::Uuid::now_v7()));
+        let path = std::env::temp_dir().join(format!("tasqx-cc-{}.jsonl", crate::clock::uuid_v7()));
         let content = assistant_line("2026-07-24T10:00:00Z", "msg_a", "claude-opus-4-7", 9, 9);
         std::fs::write(&path, content).expect("write temp transcript");
 
@@ -378,7 +378,7 @@ mod tests {
         bytes.extend_from_slice(good.as_bytes());
         bytes.push(b'\n');
         let path =
-            std::env::temp_dir().join(format!("tasqx-cc-utf8-{}.jsonl", uuid::Uuid::now_v7()));
+            std::env::temp_dir().join(format!("tasqx-cc-utf8-{}.jsonl", crate::clock::uuid_v7()));
         std::fs::write(&path, &bytes).expect("write temp transcript");
 
         let out = samples_from_file(&path).expect("non-utf8 must not error");
@@ -389,8 +389,10 @@ mod tests {
 
     #[test]
     fn samples_from_file_missing_path_is_an_error_naming_the_path() {
-        let path =
-            std::env::temp_dir().join(format!("tasqx-cc-missing-{}.jsonl", uuid::Uuid::now_v7()));
+        let path = std::env::temp_dir().join(format!(
+            "tasqx-cc-missing-{}.jsonl",
+            crate::clock::uuid_v7()
+        ));
         let err = samples_from_file(&path).expect_err("missing file must error");
         assert!(
             err.message.contains(&path.display().to_string()),

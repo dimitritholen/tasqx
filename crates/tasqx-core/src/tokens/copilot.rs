@@ -354,7 +354,7 @@ mod tests {
         path.push(format!(
             "tasqx-copilot-test-{}-{}.jsonl",
             std::process::id(),
-            uuid::Uuid::now_v7()
+            crate::clock::uuid_v7()
         ));
         std::fs::write(&path, content).expect("write temp fixture");
         path
@@ -563,7 +563,7 @@ mod tests {
         path.push(format!(
             "tasqx-copilot-utf8-{}-{}.jsonl",
             std::process::id(),
-            uuid::Uuid::now_v7()
+            crate::clock::uuid_v7()
         ));
         std::fs::write(&path, &bytes).expect("write fixture");
         let samples = samples_from_file(&path).expect("non-utf8 must not error");

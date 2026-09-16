@@ -340,7 +340,7 @@ impl Engine {
             now_ts,
         );
 
-        let id = Uuid::now_v7().to_string();
+        let id = crate::clock::uuid_v7().to_string();
         // The instant the dates above resolved against, as the stored string —
         // `util::now` is `Timestamp::now().to_string()`, so this is the same
         // bytes minus the second clock read the pair used to be.
@@ -962,7 +962,7 @@ impl Engine {
             _ => template.remind.clone(),
         };
 
-        let new_id = Uuid::now_v7().to_string();
+        let new_id = crate::clock::uuid_v7().to_string();
         let new_short = alloc_short_id(tx)?;
         tx.execute(
             &format!(

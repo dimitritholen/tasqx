@@ -5431,3 +5431,205 @@ fn one_pin_renders_the_same_bytes_twice_and_another_pin_does_not() {
          relative dates are not following the clock at all"
     );
 }
+
+/// A malformed pin is refused BEFORE anything writes, and on every path.
+///
+/// Review finding (PR #26): `clock::now` was the only fatal reader, and it runs
+/// while a verb renders — after the engine has already stamped and committed
+/// the row. `tasqx add` with a broken `TASQX_NOW` therefore created a task from
+/// the wall clock and exited 2 afterwards, which reads as "nothing happened"
+/// and is not. Commands that never ask the time at all — `about`, `docs`,
+/// `daemon` — did not notice the broken environment at any point. The check now
+/// sits at the top of `run()`, so the exit code is the same for all of them and
+/// the store is untouched.
+#[test]
+fn a_malformed_pin_cannot_write_and_is_refused_on_clockless_paths_too() {
+    let dir = fresh_config_dir("pin-before-write");
+    let bad = |args: &[&str]| -> std::process::Output {
+        bin("pin-before-write", &dir)
+            .env("TASQX_NOW", "not-an-instant")
+            .args(args)
+            .output()
+            .expect("run tasqx")
+    };
+
+    let added = bad(&["add", "This must not exist"]);
+    assert_eq!(
+        added.status.code(),
+        Some(2),
+        "add under a broken pin must refuse: {}",
+        String::from_utf8_lossy(&added.stdout)
+    );
+
+    // The store is the assertion, not the exit code: a refusal that lands after
+    // the INSERT is not a refusal.
+    let listed = bin("pin-before-write", &dir)
+        .args(["--json", "list"])
+        .output()
+        .expect("run tasqx");
+    assert!(listed.status.success());
+    let result: serde_json::Value = serde_json::from_slice(&listed.stdout).expect("json");
+    assert_eq!(
+        result["tasks"].as_array().map(Vec::len),
+        Some(0),
+        "a refused command wrote a task anyway: {result}"
+    );
+
+    // `about` reads no clock and used to run happily on a broken pin, on the
+    // very screen that is supposed to tell you which clock you are on.
+    for clockless in [vec!["about"], vec!["docs"], vec!["completions", "bash"]] {
+        let out = bad(&clockless);
+        assert_eq!(
+            out.status.code(),
+            Some(2),
+            "{clockless:?} ignored a malformed TASQX_NOW"
+        );
+        assert!(
+            String::from_utf8_lossy(&out.stderr).contains("TASQX_NOW"),
+            "{clockless:?} refused without naming the variable"
+        );
+    }
+}
+
+/// A pinned clock never travels through a daemon — in either direction.
+///
+/// Review finding (PR #26): `TASQX_NOW` is read per process and nothing on the
+/// wire carries it, so a pinned client talking to an unpinned daemon had the
+/// engine stamp and score at one instant while the client parsed and rendered
+/// at another. Both halves are closed here: a pinned one-shot command runs
+/// in-process even with a daemon reachable, and the two commands that ARE a
+/// daemon refuse to start pinned at all.
+#[cfg(unix)]
+#[test]
+fn a_pinned_command_runs_in_process_and_a_pinned_daemon_refuses_to_start() {
+    let dir = fresh_config_dir("pin-no-daemon");
+    let stub = StubDaemon::start("pin-no-daemon");
+    let socket = stub.addr.to_string_lossy().into_owned();
+
+    // The stub accepts and hangs up, so anything that routes to it dies on
+    // `UnexpectedEof`. Success here IS the proof that the pin kept the command
+    // in-process — the fixture's own `--no-daemon` cannot be what did it,
+    // because `--socket` is refused alongside it.
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_tasqx"));
+    let pinned = cmd
+        .env("TASQX_CONFIG_DIR", &dir)
+        .env("TASQX_DB", db_path("pin-no-daemon"))
+        .env("TASQX_NOW", "2026-09-16T09:00:00Z")
+        .args(["--socket", &socket, "add", "In process, not over the wire"])
+        .output()
+        .expect("run tasqx");
+    assert!(
+        pinned.status.success(),
+        "a pinned command was routed to a daemon: {}",
+        String::from_utf8_lossy(&pinned.stderr)
+    );
+
+    // And it landed in the local store, which is the other half of "in-process":
+    // the remote path never reads $TASQX_DB at all.
+    let listed = bin("pin-no-daemon", &dir)
+        .env("TASQX_NOW", "2026-09-16T09:00:00Z")
+        .args(["--json", "list"])
+        .output()
+        .expect("run tasqx");
+    let result: serde_json::Value = serde_json::from_slice(&listed.stdout).expect("json");
+    assert_eq!(
+        result["tasks"].as_array().map(Vec::len),
+        Some(1),
+        "the pinned write did not reach $TASQX_DB: {result}"
+    );
+
+    for server in [vec!["daemon"], vec!["watch"]] {
+        let out = bin("pin-no-daemon", &dir)
+            .env("TASQX_NOW", "2026-09-16T09:00:00Z")
+            .args(&server)
+            .output()
+            .expect("run tasqx");
+        assert_eq!(
+            out.status.code(),
+            Some(2),
+            "`tasqx {}` started on a pinned clock",
+            server[0]
+        );
+        let err = String::from_utf8_lossy(&out.stderr);
+        assert!(
+            err.contains("TASQX_NOW cannot be served through a daemon"),
+            "`tasqx {}` refused without saying why: {err:?}",
+            server[0]
+        );
+    }
+}
+
+/// An event written under a pin is inside its own window.
+///
+/// Review finding (PR #26): `ts` followed the pin but `id` was minted by
+/// `Uuid::now_v7()` off the wall clock, and `event.list {from}` bounds on `id`
+/// (D59, because `ts` is TEXT that cannot be compared). With the pin AHEAD of
+/// real time the new event's id sorted below a floor derived from its own
+/// timestamp, so a bounded read dropped rows the same command had just written
+/// — silently, since an empty window looks like a quiet day.
+#[test]
+fn an_event_written_under_a_future_pin_is_inside_its_own_window() {
+    let dir = fresh_config_dir("pin-event-floor");
+    // Years ahead of the wall clock, which is the shape of the bug: the
+    // one-second margin in `event_id_floor` covers a millisecond tick, not a
+    // clock disagreement.
+    let pin = "2030-01-01T00:00:00Z";
+    let added = bin("pin-event-floor", &dir)
+        .env("TASQX_NOW", pin)
+        .args(["add", "Written in the future"])
+        .output()
+        .expect("run tasqx");
+    assert!(
+        added.status.success(),
+        "{}",
+        String::from_utf8_lossy(&added.stderr)
+    );
+
+    let mut child = bin("pin-event-floor", &dir)
+        .env("TASQX_NOW", pin)
+        .args(["api"])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+        .expect("spawn api");
+    {
+        use std::io::Write;
+        child
+            .stdin
+            .as_mut()
+            .expect("stdin")
+            .write_all(
+                format!(r#"{{"tasqx":"1","method":"event.list","params":{{"from":"{pin}"}}}}"#)
+                    .as_bytes(),
+            )
+            .expect("write envelope");
+    }
+    let out = child.wait_with_output().expect("api output");
+    let resp: serde_json::Value = serde_json::from_slice(&out.stdout).expect("json");
+    let events = resp["result"]["events"]
+        .as_array()
+        .unwrap_or_else(|| panic!("event.list returned no events array: {resp}"));
+    assert!(
+        events.iter().any(|e| e["op"] == "add"),
+        "the add event is outside a window that starts at its own instant: {resp}"
+    );
+    // The id is what `from` actually bounds on, and it must carry the PIN: a
+    // v7 minted in 2026 starts `01…`, one minted at this pin starts `01b8…`,
+    // and the second is the only one that can sort above the floor.
+    let id = events[0]["id"].as_str().expect("an event id");
+    let pinned_floor = {
+        // The same derivation `storage::event_id_floor` uses, spelled out here
+        // so the test does not depend on the crate it is guarding.
+        let ms: i64 = 1_893_456_000_000 - 1_000; // 2030-01-01T00:00:00Z, less the margin
+        format!(
+            "{:08x}-{:04x}-7000-8000-000000000000",
+            ms >> 16,
+            ms & 0xffff
+        )
+    };
+    assert!(
+        id > pinned_floor.as_str(),
+        "the event id was minted off the wall clock ({id}), so a window starting \
+         at the pin cannot contain it"
+    );
+}

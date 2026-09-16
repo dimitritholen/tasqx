@@ -82,7 +82,7 @@ pub(super) fn record_token_usage(
     // only fires on a genuinely out-of-vocabulary value.
     crate::tokens::require_source(&usage.source)?;
     crate::tokens::require_confidence(&usage.confidence)?;
-    let id = Uuid::now_v7().to_string();
+    let id = crate::clock::uuid_v7().to_string();
     let created = now();
     tx.execute(
         "INSERT INTO token_usage (id, task_id, tool, source, model, input_tokens, \

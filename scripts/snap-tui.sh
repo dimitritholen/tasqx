@@ -69,16 +69,61 @@ cleanup() {
 }
 trap cleanup EXIT
 
+# The pane's shell does not inherit this one's environment, so every variable
+# the screen reads has to be handed over explicitly: TASQX_DB and
+# TASQX_CONFIG_DIR to keep it off the real store, and TASQX_NOW so a dashboard
+# does not read the wall clock while the rest of the capture stands on a pinned
+# day (DESIGN.md D148).
+#
+# None of them is interpolated into shell source. They were: the values sat
+# inside single quotes in the command string, so one apostrophe in TASQX_NOW
+# closed the quote and the rest of the value was executed by the pane's shell —
+# before the CLI could reject the pin as unparsable. tmux 3.2 added `-e`, which
+# sets a variable in the session's environment with no shell in between; older
+# tmux gets the same values through `printf %q`, which is bash's own quoting and
+# has no apostrophe hole.
+#
+# The command itself is quoted the same way, so a theme name or an argument
+# carrying a space reaches the binary as one word instead of being re-split by
+# the pane's shell.
+pane_cmd=$(printf '%q ' "${TASQX:-tasqx}")
+if [ -n "${THEME:-}" ]; then
+    pane_cmd+=$(printf '%q %q ' --theme "$THEME")
+fi
+pane_cmd+=$(printf '%q ' "$@")
+
+# The tmux flags are built as positional parameters rather than an array, so
+# this stays runnable under the bash 3.2 that ships with macOS. `$@` no longer
+# holds the tasqx arguments at this point: `pane_cmd` above has them.
+tmux_ver=$(tmux -V | sed 's/[^0-9.]*//g')
+tmux_major=${tmux_ver%%.*}
+tmux_minor=${tmux_ver#*.}
+tmux_minor=${tmux_minor%%.*}
+set --
+if [ "${tmux_major:-0}" -gt 3 ] ||
+    { [ "${tmux_major:-0}" -eq 3 ] && [ "${tmux_minor:-0}" -ge 2 ]; }; then
+    set -- -e "TASQX_DB=${TASQX_DB:-}"
+    if [ -n "${TASQX_CONFIG_DIR:-}" ]; then
+        set -- "$@" -e "TASQX_CONFIG_DIR=$TASQX_CONFIG_DIR"
+    fi
+    if [ -n "${TASQX_NOW:-}" ]; then
+        set -- "$@" -e "TASQX_NOW=$TASQX_NOW"
+    fi
+else
+    assignments=$(printf 'TASQX_DB=%q ' "${TASQX_DB:-}")
+    if [ -n "${TASQX_CONFIG_DIR:-}" ]; then
+        assignments+=$(printf 'TASQX_CONFIG_DIR=%q ' "$TASQX_CONFIG_DIR")
+    fi
+    if [ -n "${TASQX_NOW:-}" ]; then
+        assignments+=$(printf 'TASQX_NOW=%q ' "$TASQX_NOW")
+    fi
+    pane_cmd="$assignments$pane_cmd"
+fi
+
 # `-x`/`-y` size the pane rather than the outer terminal, which is what the
 # screen reads. Without them a detached session gets tmux's 80x24 default and
 # every width test measures the same screen.
-#
-# TASQX_NOW is spelled into the pane for the same reason TASQX_DB is: the
-# pane's shell does not inherit this one's environment, and a dashboard that
-# read the wall clock while the rest of the capture stood on a pinned day would
-# be the one screen that drifts (DESIGN.md D148).
-tmux new-session -d -s "$session" -x "$cols" -y "$rows" \
-    "TASQX_DB='${TASQX_DB:-}' ${TASQX_CONFIG_DIR:+TASQX_CONFIG_DIR='$TASQX_CONFIG_DIR'} ${TASQX_NOW:+TASQX_NOW='$TASQX_NOW'} ${TASQX:-tasqx} ${THEME:+--theme $THEME} $* ; sleep 300"
+tmux new-session -d -s "$session" -x "$cols" -y "$rows" "$@" "$pane_cmd; sleep 300"
 
 sleep "${SETTLE:-2}"
 

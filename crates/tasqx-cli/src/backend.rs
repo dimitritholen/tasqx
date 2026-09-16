@@ -114,7 +114,20 @@ pub(crate) fn default_socket() -> String {
 /// Build the backend: prefer a reachable daemon (single writer), else fall back
 /// to a direct in-process Engine — the pre-daemon behaviour, unchanged. A
 /// missing/stale socket falls back immediately (no hang).
+///
+/// **A pinned clock routes in-process, as if `--no-daemon` were passed.**
+/// `TASQX_NOW` is read per process (`clock.rs`, D148) and nothing on the wire
+/// carries it, so a daemon started unpinned — or pinned to another instant —
+/// would stamp, score and filter at ITS clock while this process parsed dates
+/// and rendered at the pin: one command, two instants, and neither end able to
+/// notice. Comparing pins across a socket would be machinery for a case nobody
+/// should be in, because the pin is a capture hook and a capture is one-shot.
+/// Silent rather than a note, deliberately: `scripts/snap.sh` folds stderr into
+/// the captured image, so a line here would land in the picture. The other half
+/// of the rule is `clock::refuse_to_serve_a_pin`, which stops `tasqx daemon`
+/// and `tasqx watch` from starting on a pinned clock at all.
 pub(crate) fn open_backend(socket_flag: Option<&str>, no_daemon: bool) -> Result<Backend, String> {
+    let no_daemon = no_daemon || crate::clock::pin().is_some();
     if !no_daemon {
         // Explicit, not resolved: a note about "no daemon at <addr>" is only
         // worth printing when the operator named that address themselves —

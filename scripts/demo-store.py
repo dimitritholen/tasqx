@@ -55,6 +55,15 @@ def _now():
     than the one on screen. An unparsable value is fatal here too, for the
     reason clock.rs gives: a silent fallback to the wall clock produces exactly
     the drift the pin was set to prevent.
+
+    What is parsed here is also what the children get. `fromisoformat` is more
+    permissive than the RFC 3339 parser in core — it takes an ISO week date
+    (`2026-W45-4T09:00:00+00:00`) that jiff refuses — so forwarding the ORIGINAL
+    text meant a spelling this script accepted made the first `tasqx` call exit
+    2 instead, fifty lines later and with the script's own diagnostic never
+    printed. The canonical UTC form is written back into the environment before
+    any subprocess exists, so parent and children agree by construction, and
+    every child sees the same instant this script built its dates from.
     """
     pin = os.environ.get("TASQX_NOW", "").strip()
     if not pin:
@@ -65,7 +74,9 @@ def _now():
         sys.exit(f"demo-store: TASQX_NOW is not an RFC 3339 instant: {pin}")
     if when.tzinfo is None:
         sys.exit(f"demo-store: TASQX_NOW needs a zone offset or a trailing Z: {pin}")
-    return when.astimezone(dt.timezone.utc).replace(microsecond=0)
+    when = when.astimezone(dt.timezone.utc).replace(microsecond=0)
+    os.environ["TASQX_NOW"] = when.strftime("%Y-%m-%dT%H:%M:%SZ")
+    return when
 
 
 NOW = _now()
