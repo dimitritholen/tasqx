@@ -118,6 +118,7 @@ during one task resurface during the next:
 2. Hits come back bm25-ranked with snippets — docs and past annotations alike.
    Half the slots are held for docs, so an imported ruling still reaches the page
    when a project's own task notes share its words; annotations take the rest.
+   The brief's page defaults to five hits; a caller-named `memory_limit` widens it.
 3. `tasqx_search_memory` with `"payment idempotency"` for anything the brief's
    scope did not reach.
 4. After the work, `tasqx_add_memory` stores what the next session should know.

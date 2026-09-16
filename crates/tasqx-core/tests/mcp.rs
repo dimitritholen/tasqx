@@ -3094,3 +3094,276 @@ fn include_body_is_stripped_before_the_params_gate() {
         assert!(!is_error(&resp), "`{args}` was refused: {resp}");
     }
 }
+
+// ---- D154: the three memory reads, slimmed ----------------------------------
+
+/// D154: a search hit carries no `rank` unless the caller asks for it.
+///
+/// `rank` is the raw FTS5 bm25 float, seventeen characters of
+/// `-1.2345678901234567` per hit, and `hits` is already sorted best-first — so
+/// the number answers a question nobody asked. The JSON API still freezes it
+/// (D56, `MEMORY_HIT_ROW`); this is the transport declining to send it, the way
+/// D152 narrows a `task.list` row.
+#[test]
+fn a_search_hit_carries_no_rank_unless_asked_for() {
+    let engine = engine();
+    engine
+        .memory_add(&json!({ "title": "envelope rules", "body": "every envelope carries an id" }))
+        .expect("doc");
+    let server = McpServer::new(&engine, Scope::Read);
+
+    let bare = tool_json(&call(
+        &server,
+        1,
+        "tasqx_search_memory",
+        json!({ "query": "envelope" }),
+    ));
+    let hit = &bare["hits"][0];
+    assert_eq!(
+        hit["title"],
+        json!("envelope rules"),
+        "a hit came back: {bare}"
+    );
+    assert!(
+        hit.get("rank").is_none(),
+        "the default hit spends nothing on bm25: {hit}"
+    );
+
+    let asked = tool_json(&call(
+        &server,
+        2,
+        "tasqx_search_memory",
+        json!({ "query": "envelope", "include_rank": true }),
+    ));
+    assert!(
+        asked["hits"][0]["rank"].is_number(),
+        "asked for, the score is the engine's own: {}",
+        asked["hits"][0]
+    );
+}
+
+/// The same rule on the brief's memory half, measured where it is actually
+/// sent: inside the machine block `include_json: true` buys.
+#[test]
+fn a_brief_memory_hit_carries_no_rank_unless_asked_for() {
+    let engine = engine();
+    engine
+        .memory_add(&json!({ "title": "envelope rules", "body": "every envelope carries an id" }))
+        .expect("doc");
+    engine
+        .task_add(&json!({ "title": "envelope rules" }))
+        .expect("task");
+    let server = McpServer::new(&engine, Scope::Read);
+
+    let bare = tool_json(&call(
+        &server,
+        1,
+        "tasqx_brief_task",
+        json!({ "ref": 1, "include_json": true }),
+    ));
+    let hit = &bare["memory"]["hits"][0];
+    assert_eq!(
+        hit["title"],
+        json!("envelope rules"),
+        "a hit came back: {bare}"
+    );
+    assert!(
+        hit.get("rank").is_none(),
+        "the brief's JSON block is the stripped one: {hit}"
+    );
+
+    let asked = tool_json(&call(
+        &server,
+        2,
+        "tasqx_brief_task",
+        json!({ "ref": 1, "include_json": true, "include_rank": true }),
+    ));
+    assert!(
+        asked["memory"]["hits"][0]["rank"].is_number(),
+        "asked for, the score is the engine's own: {}",
+        asked["memory"]["hits"][0]
+    );
+}
+
+/// Eight docs every one of which matches the task's own title, so the page size
+/// is the only thing deciding how many come back.
+fn task_with_eight_matching_docs(engine: &Engine) {
+    for n in 0..8 {
+        engine
+            .memory_add(&json!({
+                "title": format!("envelope rules {n}"),
+                "body": "the envelope rules say every envelope carries an id",
+            }))
+            .expect("doc");
+    }
+    engine
+        .task_add(&json!({ "title": "envelope rules" }))
+        .expect("task");
+}
+
+/// D154: the brief's memory page defaults to five hits, and an explicit
+/// `memory_limit` is still answered exactly as asked.
+#[test]
+fn the_default_brief_memory_page_is_five_hits() {
+    let engine = engine();
+    task_with_eight_matching_docs(&engine);
+    let server = McpServer::new(&engine, Scope::Read);
+
+    let memory = |id: i64, extra: Value| -> Value {
+        let mut args = json!({ "ref": 1, "include_json": true });
+        for (k, v) in extra.as_object().expect("an object") {
+            args[k.clone()] = v.clone();
+        }
+        tool_json(&call(&server, id, "tasqx_brief_task", args))["memory"].clone()
+    };
+
+    let default = memory(1, json!({}));
+    assert_eq!(default["count"], json!(5), "the default page: {default}");
+    assert_eq!(default["hits"].as_array().expect("hits").len(), 5);
+
+    let eight = memory(2, json!({ "memory_limit": 8 }));
+    assert_eq!(
+        eight["count"],
+        json!(8),
+        "an explicit page is honoured: {eight}"
+    );
+
+    let none = memory(3, json!({ "memory_limit": 0 }));
+    assert_eq!(none["count"], json!(0), "including zero: {none}");
+    assert_eq!(none["hits"].as_array().expect("hits").len(), 0);
+}
+
+fn twenty_five_docs(engine: &Engine) {
+    for n in 0..25 {
+        engine
+            .memory_add(&json!({
+                "title": format!("doc {n}"),
+                "body": "a body long enough to have a preview cut out of it",
+                "source": format!("docs/{n}.md"),
+            }))
+            .expect("doc");
+    }
+}
+
+/// D154: `tasqx_list_memory` with no `limit` is twenty compact rows, not every
+/// doc in the store with a 160-character preview on each.
+#[test]
+fn an_unpaged_list_memory_call_is_twenty_narrow_rows() {
+    let engine = engine();
+    twenty_five_docs(&engine);
+    let server = McpServer::new(&engine, Scope::Read);
+
+    let body = tool_json(&call(&server, 1, "tasqx_list_memory", json!({})));
+    assert_eq!(body["count"], json!(20), "the transport's page: {body}");
+    assert_eq!(body["total"], json!(25));
+    assert_eq!(body["next_offset"], json!(20), "and the walk is still open");
+    for row in body["docs"].as_array().expect("docs") {
+        assert_eq!(
+            row_keys(row),
+            vec!["id", "modified", "source", "title"],
+            "a browse row is what identifies a doc, not its body: {row}"
+        );
+    }
+}
+
+/// The narrowing is about the ROW and the page is about how many, so a caller
+/// that names its own `limit` still gets the compact row.
+#[test]
+fn an_explicit_list_memory_limit_is_still_narrowed() {
+    let engine = engine();
+    twenty_five_docs(&engine);
+    let server = McpServer::new(&engine, Scope::Read);
+
+    let body = tool_json(&call(
+        &server,
+        1,
+        "tasqx_list_memory",
+        json!({ "limit": 3 }),
+    ));
+    assert_eq!(body["count"], json!(3), "asked for three: {body}");
+    assert_eq!(
+        row_keys(&body["docs"][0]),
+        vec!["id", "modified", "source", "title"],
+        "still the compact row: {body}"
+    );
+}
+
+/// `include_preview: true` is the engine's own row back, preview and all.
+#[test]
+fn list_memory_include_preview_is_the_engines_own_row() {
+    let engine = engine();
+    twenty_five_docs(&engine);
+    let server = McpServer::new(&engine, Scope::Read);
+
+    let body = tool_json(&call(
+        &server,
+        1,
+        "tasqx_list_memory",
+        json!({ "limit": 1, "include_preview": true }),
+    ));
+    let row = &body["docs"][0];
+    assert_eq!(
+        row_keys(row),
+        vec![
+            "_rev",
+            "body_preview",
+            "body_truncated",
+            "created",
+            "id",
+            "modified",
+            "project",
+            "source",
+            "title"
+        ],
+        "the nine frozen keys, untouched: {row}"
+    );
+}
+
+/// `limit: 0` is a real page of nothing, not an omitted limit in disguise, and
+/// the narrowing must not trip over an empty page.
+#[test]
+fn list_memory_limit_zero_returns_no_rows() {
+    let engine = engine();
+    twenty_five_docs(&engine);
+    let server = McpServer::new(&engine, Scope::Read);
+
+    let body = tool_json(&call(
+        &server,
+        1,
+        "tasqx_list_memory",
+        json!({ "limit": 0 }),
+    ));
+    assert_eq!(body["count"], json!(0), "zero means zero: {body}");
+    assert_eq!(body["docs"].as_array().expect("docs").len(), 0);
+    assert_eq!(body["total"], json!(25), "and the store is still counted");
+}
+
+/// Neither transport-only argument may reach the params gate: `memory.search`,
+/// `task.brief` and `memory.list` refuse an unknown key, so a forwarded copy is
+/// a `bad_request` on every call that names one.
+#[test]
+fn the_memory_transport_arguments_are_stripped_before_the_params_gate() {
+    let engine = engine();
+    twenty_five_docs(&engine);
+    engine.task_add(&json!({ "title": "doc 1" })).expect("task");
+    let server = McpServer::new(&engine, Scope::Read);
+    for (tool, args) in [
+        (
+            "tasqx_search_memory",
+            json!({ "query": "doc", "include_rank": false }),
+        ),
+        (
+            "tasqx_search_memory",
+            json!({ "query": "doc", "include_rank": true }),
+        ),
+        (
+            "tasqx_brief_task",
+            json!({ "ref": 1, "include_rank": true }),
+        ),
+        ("tasqx_list_memory", json!({ "include_preview": false })),
+        ("tasqx_list_memory", json!({ "include_preview": true })),
+    ] {
+        let resp = call(&server, 1, tool, args.clone());
+        assert!(!is_error(&resp), "`{tool}` refused `{args}`: {resp}");
+    }
+}

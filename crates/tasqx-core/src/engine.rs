@@ -134,6 +134,19 @@ pub const OUTCOME_METRICS: [&str; 8] = [
 /// silently cap every brief at half the hits.
 pub const MEMORY_SEARCH_LIMIT: u64 = 10;
 
+/// `task.brief`'s own default memory page, and deliberately smaller than
+/// [`MEMORY_SEARCH_LIMIT`] (D154).
+///
+/// A caller's `memory.search` query is a QUESTION — someone typed those words
+/// and wants what they turn up — while the brief's is a derived bag of words
+/// taken from the task's title, tags and project. A derived query earns a
+/// shorter page: measured 2026-09-16 on the real store, the brief's ten hits
+/// were ~4 KB of a 6.8 KB response, and the agent reading it opened at most two
+/// of them. Five keeps D147's reservation intact — `ceil(5 / 2)` is three doc
+/// slots, so a ruling still cannot be buried under a sibling task's notes — and
+/// an explicit `memory_limit` is answered exactly as asked, at any size.
+pub const BRIEF_MEMORY_LIMIT: u64 = 5;
+
 /// The keys `task.list` can sort by. A `-` prefix on any of them sorts
 /// descending; the default when `sort` is omitted is `-urgency`.
 ///

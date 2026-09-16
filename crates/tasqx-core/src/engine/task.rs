@@ -2496,7 +2496,10 @@ impl Engine {
     // ---- task.brief ----------------------------------------------------------
 
     /// `task.brief` — D136. Everything needed before starting one task, in one
-    /// read. Params: `ref`, `memory_limit?`.
+    /// read. Params: `ref`, `memory_limit?` (default
+    /// [`BRIEF_MEMORY_LIMIT`], five — not
+    /// `memory.search`'s ten, because this query is derived rather than asked
+    /// (D154); an explicit value of any size is honoured).
     ///
     /// Three parts and no new data: the task exactly as [`Engine::task_get`]
     /// returns it, the dependency neighbourhood with each prerequisite's
@@ -2726,7 +2729,7 @@ impl Engine {
                 "annotations_total": 0,
             }));
         };
-        let limit = usize::try_from(limit.unwrap_or(crate::engine::MEMORY_SEARCH_LIMIT))
+        let limit = usize::try_from(limit.unwrap_or(crate::engine::BRIEF_MEMORY_LIMIT))
             .unwrap_or(usize::MAX);
         let mut params = json!({ "query": expr.clone(), "raw": true, "limit": limit });
         if let Some(p) = &project {

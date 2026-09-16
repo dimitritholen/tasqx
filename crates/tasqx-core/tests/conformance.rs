@@ -2776,6 +2776,23 @@ fn every_mcp_tool_hands_back_the_frozen_result_of_its_method() {
                     }
                 }
             }
+            // D154, the same seam on the three memory reads: the transport now
+            // drops a hit's `rank` and narrows a `memory.list` row, so the
+            // frozen rows — `MEMORY_HIT_ROW` and `MEMORY_LIST_ROW` — have to
+            // be asked for here. Both arguments are transport-only, like
+            // `include_json` and unlike `fields`, so neither reaches the
+            // params gate and what is checked below is still `dispatch`'s own
+            // result.
+            if matches!(tool.as_str(), "tasqx_search_memory" | "tasqx_brief_task") {
+                if let Some(obj) = params.as_object_mut() {
+                    obj.insert("include_rank".to_string(), json!(true));
+                }
+            }
+            if tool == "tasqx_list_memory" {
+                if let Some(obj) = params.as_object_mut() {
+                    obj.insert("include_preview".to_string(), json!(true));
+                }
+            }
             let response = server
                 .handle_message(&json!({
                     "jsonrpc": "2.0",
