@@ -1,0 +1,55 @@
+name: docs
+
+# The offline guide (`tasqx docs`) and the public site are the same HTML file.
+# This publishes it to GitHub Pages on every push to `main`, so the published
+# page never drifts from what the binary in that commit renders.
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# Only one Pages deployment may be in flight at a time; queue rather than
+# cancel so a push that lands mid-deploy still gets its own run instead of
+# losing to a half-applied one.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo build --release -p tasqx-cli
+      - name: Render the guide
+        # `tasqx docs` needs no store to render the guide, but the binary still
+        # opens one to answer the capabilities handshake on startup — so this
+        # carries both TASQX_DB and --no-daemon inline, same as every other dev
+        # build of this tree (CLAUDE.md, "Dev builds never touch the real store").
+        run: |
+          mkdir -p site
+          TASQX_DB=${{ runner.temp }}/docs/tasks.db target/release/tasqx --no-daemon docs --out site/index.html
+      - name: Disable Jekyll
+        # Pages runs Jekyll on the artifact by default, which ignores files and
+        # directories starting with `_` and would mangle the self-contained
+        # guide. `.nojekyll` turns that off.
+        run: touch site/.nojekyll
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+
+  deploy:
+    name: deploy
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

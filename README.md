@@ -339,6 +339,7 @@ Platform notes (zsh ordering, Windows profiles, execution policy) are in the
 
 ## Learn more
 
+The **[documentation site](https://dimitritholen.github.io/tasqx/)** is the guide `tasqx docs` opens offline, published from `main`.
 The **[wiki](docs/wiki/Home.md)** explains every command in plain language.
 The worked guides each take five minutes and end with commands you can paste:
 
