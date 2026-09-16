@@ -2902,6 +2902,76 @@ fn the_read_only_refusal_names_the_flag_that_fixes_it() {
     );
 }
 
+// ---- the roster's own size is a per-prompt cost (D155) ----------------------
+
+/// `tools/list` is paid on EVERY prompt by a client that does not defer tool
+/// schemas — Codex, Gemini and most others inject the whole block — so the
+/// roster's serialized size is a budget, not a detail.
+///
+/// Measured 2026-09-16 with a `tools/list` handshake against this build:
+/// 29 tools, **30,897 bytes** for `result.tools` serialized compact, the
+/// largest single entry 2,679 bytes (`tasqx_complete_task`) and the largest
+/// `description` 498 bytes. Before D155 the same measurement read 42,737
+/// bytes, with descriptions up to 1,034 bytes.
+///
+/// The bounds are deliberately close to the measurement: they exist to catch
+/// the essay creeping back, which is how the 42 KB accumulated in the first
+/// place. Re-measure with the pipeline in D155 before raising one, and raise
+/// it because a tool was ADDED, not because a description grew.
+///
+/// The floor is not zero. With every `description` key removed from the roster
+/// the same serialization is 11,597 bytes of schema skeleton — property names,
+/// `type`, the closed `enum` lists D30 renders from the engine's own consts,
+/// and the MCP `annotations` hints — none of which is prose that can be cut.
+/// That is why the per-entry bound is thousands and not hundreds: a tool with
+/// nine parameters costs ~1 KB before it says anything at all.
+#[test]
+fn the_whole_tool_roster_stays_inside_its_per_prompt_budget() {
+    const MAX_DESCRIPTION: usize = 800;
+    const MAX_ENTRY: usize = 3_072;
+    const MAX_ROSTER: usize = 31_744;
+
+    let engine = engine();
+    let server = McpServer::new(&engine, Scope::Write);
+    let listed = server
+        .handle_message(&json!({ "jsonrpc": "2.0", "id": 1, "method": "tools/list" }))
+        .expect("tools/list is a request");
+    let tools = listed["result"]["tools"].as_array().expect("tools array");
+
+    for tool in tools {
+        let name = tool["name"].as_str().expect("every tool is named");
+        let described = tool["description"]
+            .as_str()
+            .expect("every tool carries a description")
+            .len();
+        assert!(
+            described <= MAX_DESCRIPTION,
+            "`{name}`'s description is {described} bytes, over the {MAX_DESCRIPTION}-byte \
+             cap (D155). A description states the contract and cites the D-number; the \
+             reasoning behind the rule belongs in DESIGN.md §12."
+        );
+        let entry = serde_json::to_string(tool)
+            .expect("a tool entry serializes")
+            .len();
+        assert!(
+            entry <= MAX_ENTRY,
+            "`{name}` serializes to {entry} bytes, over the {MAX_ENTRY}-byte per-tool cap \
+             (D155). Its parameter descriptions are the half of that cost that is prose."
+        );
+    }
+
+    let roster = serde_json::to_string(tools)
+        .expect("the roster serializes")
+        .len();
+    assert!(
+        roster <= MAX_ROSTER,
+        "`result.tools` serializes to {roster} bytes, over the {MAX_ROSTER}-byte roster cap \
+         (D155) — about {} tokens on every prompt of every client that does not defer tool \
+         schemas.",
+        roster / 4
+    );
+}
+
 // ---- schema descriptions carry facts the audit found missing ----------------
 
 /// `tasqx_summary`'s `metrics` param was the only property on the whole
