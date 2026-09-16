@@ -24,13 +24,12 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - run: cargo build --release -p tasqx-cli
       - name: Render the guide
-        # `tasqx docs` needs no store to render the guide, but the binary still
-        # opens one to answer the capabilities handshake on startup — so this
-        # carries both TASQX_DB and --no-daemon inline, same as every other dev
-        # build of this tree (CLAUDE.md, "Dev builds never touch the real store").
+        # `tasqx docs` is static content: it opens no store and no daemon
+        # (lib.rs dispatches it before any backend exists), so nothing on this
+        # runner is touched and no TASQX_DB is needed.
         run: |
           mkdir -p site
-          TASQX_DB=${{ runner.temp }}/docs/tasks.db target/release/tasqx --no-daemon docs --out site/index.html
+          target/release/tasqx docs --out site/index.html
       - name: Disable Jekyll
         # Pages runs Jekyll on the artifact by default, which ignores files and
         # directories starting with `_` and would mangle the self-contained
