@@ -726,7 +726,8 @@ fn build_tool_specs() -> Vec<ToolSpec> {
             idempotent: true,
             description: "How the work went, rather than what it cost: rework (completions that \
                 were reopened), estimate calibration, token cost, completions with no annotation, \
-                and started-then-cancelled work. Every rate comes back beside the `n` it was \
+                started-then-cancelled work, and `forced` (completions that overrode still-open \
+                blockers). Every rate comes back beside the `n` it was \
                 computed over — a rate over three completions and one over ninety are different \
                 claims. Scope is tasks that CLOSED: a task still open is not an outcome yet, and \
                 `tasqx_summary` is the read for work in flight. Pure read, no side effects.",
@@ -1011,7 +1012,10 @@ fn build_tool_specs() -> Vec<ToolSpec> {
                 any count, and the response says what was recorded. Correlation params \
                 (session_id, transcript_path, client) land on that same event; \
                 without a self-report, log-parse attribution is a fallback that refuses \
-                samples claimed by more than one task's window.",
+                samples claimed by more than one task's window. A task whose dependencies \
+                are still open is refused with `conflict` naming the blockers; pass \
+                `force: true` to complete it anyway — the override is recorded and \
+                `tasqx_outcomes` counts it.",
             // The token-count fields carry no `minimum`: the numeric-minimum
             // drift guard cannot probe a bound on a tool with required args,
             // so the floor lives in the engine (opt_u64 refuses negatives)
@@ -1063,6 +1067,13 @@ fn build_tool_specs() -> Vec<ToolSpec> {
                         "type": "string",
                         "description": "One citation covering the `checks_passed` above: a test \
                             name, an excerpt of output, a commit sha. Stored verbatim."
+                    },
+                    "force": {
+                        "type": "boolean",
+                        "description": "Complete the task even though some of its dependencies \
+                            are still open. Without it, a task with open blockers is refused \
+                            with `conflict` naming them (D149). The override is recorded on the \
+                            completion event and `tasqx_outcomes` counts it under `forced`."
                     }
                 },
                 "required": ["ref"]

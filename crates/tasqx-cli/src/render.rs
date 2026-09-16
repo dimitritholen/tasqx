@@ -3194,6 +3194,9 @@ pub fn outcomes(ctx: &Ctx, result: &Value, group_by: &str) -> String {
     if has("rework") {
         labels.push("REWORK".into());
     }
+    if has("forced") {
+        labels.push("FORCED".into());
+    }
     if has("silent") {
         labels.push("SILENT".into());
     }
@@ -3221,6 +3224,9 @@ pub fn outcomes(ctx: &Ctx, result: &Value, group_by: &str) -> String {
         let mut rework_count = 0;
         if let Some(m) = g.get("rework") {
             rework_count = m.get("count").and_then(Value::as_i64).unwrap_or(0);
+            cells.push(over(m, "count"));
+        }
+        if let Some(m) = g.get("forced") {
             cells.push(over(m, "count"));
         }
         if let Some(m) = g.get("silent") {
@@ -3336,8 +3342,8 @@ pub fn outcomes(ctx: &Ctx, result: &Value, group_by: &str) -> String {
     out.push_str(&prose(
         ctx,
         Some("muted"),
-        "REWORK / SILENT / DROPPED / OVER / UNPROVEN read count over the completions or \
-         closings they were counted against — a rate with no denominator beside it is not \
+        "REWORK / FORCED / SILENT / DROPPED / OVER / UNPROVEN read count over the completions \
+         or closings they were counted against — a rate with no denominator beside it is not \
          a rate. OVER counts only the completions that had a budget and UNPROVEN only those \
          that had acceptance criteria. CALIB is the median tracked-over-estimate ratio and \
          the number of completions carrying both figures.",
@@ -5929,6 +5935,7 @@ mod tests {
             "project": "work",
             "closed": 4, "completions": 3,
             "rework": { "count": 1, "n": 3, "rate": 0.333, "refs": [2] },
+            "forced": { "count": 1, "n": 3, "rate": 0.333, "refs": [5] },
             "silent": { "count": 2, "n": 3, "rate": 0.667, "refs": [2, 3] },
             "calibration": { "median_ratio": 1.5, "n": 2 },
             "abandonment": { "count": 1, "n": 4, "rate": 0.25, "tracked_total": "PT20M", "refs": [4] },
@@ -5936,6 +5943,7 @@ mod tests {
         }] });
         let out = outcomes(&ctx, &result, "project");
         assert!(out.contains("1/3"), "rework reads count over n: {out}");
+        assert!(out.contains("FORCED"), "forced gets its own column: {out}");
         assert!(out.contains("2/3"), "silent reads count over n: {out}");
         assert!(out.contains("1/4"), "abandonment reads count over n: {out}");
         assert!(

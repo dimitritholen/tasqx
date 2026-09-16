@@ -122,8 +122,9 @@ during one task resurface during the next:
 the work cost, this answers whether it worked. Over the tasks that **closed**,
 it reports rework (completions that were later reopened), estimate calibration,
 token cost, silent completions (no annotation written), abandoned work, token
-overruns and unproven completions — each rate beside the `n` it was computed
-over, because a rework rate over three completions is not evidence.
+overruns, unproven completions and forced completions (completions that
+overrode open blockers) — each rate beside the `n` it was computed over,
+because a rework rate over three completions is not evidence.
 
 ```console
 tasqx report --outcomes project --since -30d

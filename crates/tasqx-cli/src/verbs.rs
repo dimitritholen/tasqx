@@ -567,10 +567,14 @@ pub(crate) fn run_done(
     be: &mut Backend,
     ctx: &Ctx,
     r#ref: String,
+    force: bool,
     correlation: &command::CorrelationArgs,
     self_report: &command::SelfReportArgs,
 ) -> CmdOutcome {
     let mut params = json!({ "ref": r#ref });
+    if force {
+        params["force"] = json!(true);
+    }
     apply_correlation(&mut params, correlation);
     apply_self_report(&mut params, self_report);
     let result = be.call("task.done", &params)?;
@@ -587,6 +591,19 @@ pub(crate) fn run_done(
     // D138's unproven completion, on the same stderr channel as the other two
     // and first of the three: an open criterion is the one that says the work
     // may not actually be finished.
+    // D149's forced completion goes out first of all, on the same stderr
+    // channel: `--force` overrode an edge the store held the caller to, and
+    // naming which blockers were overridden is the one fact that says this
+    // "done" did not take the normal path.
+    if result.get("forced").and_then(Value::as_bool) == Some(true) {
+        let blocked_by = ids_in(&result, "blocked_by", Some("short_id"));
+        let unicode = crate::theme::Caps::detect_stderr().unicode;
+        if let Some(note) =
+            render::forced_note(&blocked_by, crate::theme::detect_stderr_cols(), unicode)
+        {
+            crate::note_after_output(note);
+        }
+    }
     if let Some(hint) = result.get("checks_hint").and_then(Value::as_str) {
         let unicode = crate::theme::Caps::detect_stderr().unicode;
         if let Some(note) = render::checks_note(hint, crate::theme::detect_stderr_cols(), unicode) {

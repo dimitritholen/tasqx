@@ -964,6 +964,31 @@ pub fn budget_note(hint: &str, cols: usize, unicode: bool) -> Option<String> {
     Some(fit_note(&format!("note: {first}"), &pointer, cols))
 }
 
+/// The one line `done`'s `forced: true` becomes on a terminal (D149), on
+/// stderr beside the other two notes and by the same rule: which blockers
+/// were overridden, then what became of the completion. `--json` keeps the
+/// response whole (D56).
+///
+/// Core sets `forced` and `blocked_by` together ONLY when `--force`
+/// completed a task over open blockers, so every call here has something to
+/// say.
+pub fn forced_note(blocked_by: &[i64], cols: usize, unicode: bool) -> Option<String> {
+    if blocked_by.is_empty() {
+        return None;
+    }
+    let ids = blocked_by
+        .iter()
+        .map(|n| format!("#{n}"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let pointer = format!("{}recorded as a forced completion", dash(unicode));
+    Some(fit_note(
+        &format!("note: completed while blocked by {ids}"),
+        &pointer,
+        cols,
+    ))
+}
+
 /// A note and its pointer, the pointer dropped whole when the two do not
 /// fit: two columns through `columns::fit`, the pointer's own separator in
 /// its width, so a note gives way by the same rule a card's line does.

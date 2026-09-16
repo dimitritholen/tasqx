@@ -699,6 +699,18 @@ const R_TASK_DONE: Shape = &[&[
     req("title", Ty::Str),
     req("tracked", Ty::Str),
     nul("estimate", Ty::Str),
+    // D149: present only on a completion that overrode still-open blockers.
+    // Both keys or neither — the unblocked completion, which is every one that
+    // existed before, answers exactly as it did.
+    opt("forced", Ty::Bool),
+    // The row shape is `task.get`'s `unmet_blockers`, frozen here too: the
+    // whole point of reusing that vocabulary is that a client reads blockers
+    // one way, and a shape declared without its rows would let the two drift.
+    opt_of(
+        "blocked_by",
+        Ty::Array,
+        &[&[req("short_id", Ty::Int), req("title", Ty::Str)]],
+    ),
 ]];
 
 const R_TASK_MODIFY: Shape = &[&[
@@ -1011,6 +1023,9 @@ const OUTCOME_GROUP_ROW: &[Field] = &[
     req_of("overrun", Ty::Object, &[OUTCOME_RATE]),
     // D138. Same rate shape; its denominator is completions that HAD criteria.
     req_of("unproven", Ty::Object, &[OUTCOME_RATE]),
+    // D149. Completions that overrode still-open blockers; its denominator is
+    // completions, like `rework`'s, because any of them could have been one.
+    req_of("forced", Ty::Object, &[OUTCOME_RATE]),
 ];
 
 /// Abandonment adds the time inside the dropped work to the rate shape —
@@ -1514,6 +1529,20 @@ fn cases() -> Vec<Case> {
                     "session_id": "s-1",
                     "client": "conformance",
                 })
+            },
+            R_TASK_DONE,
+        ),
+        case(
+            "task.done",
+            "D149: a completion forced past an open blocker, so `forced` and `blocked_by` are \
+             observed — an optional key no fixture emits is documentation rather than a frozen \
+             shape",
+            |e| {
+                plain_task(e);
+                plain_task(e);
+                e.dependency_add(&json!({ "ref": 1, "depends_on": 2 }))
+                    .expect("dep");
+                json!({ "ref": 1, "force": true })
             },
             R_TASK_DONE,
         ),

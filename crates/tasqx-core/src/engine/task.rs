@@ -212,6 +212,22 @@ fn article_for_status(status: Status) -> &'static str {
     }
 }
 
+/// One dependency still keeping a task blocked, as D149's refusal names it.
+///
+/// A struct rather than the `Value` row [`Engine::unmet_blockers`] yields,
+/// because this one is read THREE ways off a single query — into the refusal
+/// message, into the done event as bare short_ids, and into the response as
+/// `{short_id, title}` — and a tuple would leave each of those three sites
+/// spelling `.0`/`.1`/`.2` for itself.
+struct OpenBlocker {
+    short_id: i64,
+    title: String,
+    /// The blocker's status as every other read resolves it, so "how far off
+    /// is it" is part of the answer: `#623 (pending)` and `#623 (active)` mean
+    /// very different things to somebody deciding whether to override.
+    status: String,
+}
+
 /// D148: write one annotation row's `body`, cut to `cap` BYTES and marked when
 /// it did not fit. `None` is no cap.
 ///
@@ -699,6 +715,10 @@ impl Engine {
         // covering them. Parsed here with the rest, before the lock.
         let checks_passed = opt_str_array(p, "checks_passed")?;
         let evidence = opt_str_nonempty(p, "evidence")?;
+        // D149: the override for a task whose dependencies are still open.
+        // Absent is false, and false is the same thing as absent — there is no
+        // "force: false" that means anything different from not asking.
+        let force = opt_bool(p, "force")?.unwrap_or(false);
         let tx = self.begin_mutation()?;
         let task = self.resolve_ref_on(&tx, p)?;
         match task.status {
@@ -716,6 +736,50 @@ impl Engine {
                     other.as_str()
                 )));
             }
+        }
+
+        // D149, finding #626. Completing a task whose dependencies are still
+        // open used to succeed in silence — on a store that KNEW, and had said
+        // so through `blocked: true` on the same task a moment earlier. The
+        // one moment the fact would have changed what the caller did next is
+        // the moment it went unsaid.
+        //
+        // Refused, and not answered with a warning field on a success: a
+        // warning on a success IS the silent shape #626 named. The caller that
+        // did not read `blocked` does not read `warning` either, the dependency
+        // graph is left saying something nobody acted on, and the store keeps
+        // no record that anything unusual happened. A refusal has to be
+        // answered — with `force`, which is then a fact on the completion event
+        // that `report.outcomes` counts under `forced`. That is D138's shape
+        // (count it, do not block it) applied one level up: the ACT is not
+        // blocked, only the silent version of it.
+        //
+        // Read inside the transaction, like `dependency.add`'s `is_blocked`:
+        // the check and the UPDATE it guards must see one serialized snapshot,
+        // or a blocker closing in the gap decides the refusal.
+        //
+        // AFTER the status match on purpose: a done/cancelled/backlog task is
+        // told the thing that actually stops it, rather than being sent to
+        // close a blocker that would not have helped.
+        //
+        // `task.cancel` and the `modify` path to cancellation stay open with
+        // no force at all. Cancelling blocked work is precisely what
+        // cancelling is for — the usual reason a task sits behind a blocker
+        // forever is that it should go away — and a cancel closes nothing that
+        // depended on the blocker: it releases dependents (D11) rather than
+        // claiming the work was carried out.
+        let blockers = self.open_blockers(&task.id)?;
+        if !blockers.is_empty() && !force {
+            let named = blockers
+                .iter()
+                .map(|b| format!("#{} ({})", b.short_id, b.status))
+                .collect::<Vec<_>>()
+                .join(", ");
+            return Err(ApiError::conflict(format!(
+                "cannot complete #{}: blocked by {named}; force:true (or --force) completes it \
+                 anyway and records the override",
+                task.short_id
+            )));
         }
 
         let ts = now();
@@ -740,6 +804,22 @@ impl Engine {
         // event payload rather than on the task row.
         let mut done_payload = json!({ "completed": ts });
         correlation.apply(&mut done_payload);
+        // D149: the durable half of the override. Reaching here with blockers
+        // in hand means `force` was passed, so this is the record of a
+        // completion that went ahead of its dependencies — with WHICH ones
+        // were open at that instant, which is the part nothing else can
+        // reconstruct once they close. Short_ids and not titles: the event is
+        // the fact, and a title is re-readable from the task.
+        //
+        // Written only when something was actually overridden. `force` on an
+        // unblocked task overrode nothing, so the payload stays exactly as it
+        // has always been — `report.outcomes` counts overrides, not callers
+        // who pass the flag by habit.
+        if !blockers.is_empty() {
+            done_payload["forced"] = json!(true);
+            done_payload["blocked_by"] =
+                json!(blockers.iter().map(|b| b.short_id).collect::<Vec<_>>());
+        }
         // One rule, not two: what the caller named is on the event whether or
         // not a measurement was written beside it. The measurement is the fact
         // about spend; the event is the audit of the call. They can differ —
@@ -801,6 +881,19 @@ impl Engine {
             "tracked": iso_duration(total),
             "estimate": task.estimate,
         });
+        // D149: the response half, additive and present only on a completion
+        // that actually overrode something — the unblocked path answers byte
+        // for byte as it did before, which is what every existing client reads.
+        // `blocked_by` carries the `{short_id, title}` row `unmet_blockers`
+        // already uses on `task.get`, so a caller reads one vocabulary for
+        // blockers rather than two.
+        if !blockers.is_empty() {
+            out["forced"] = json!(true);
+            out["blocked_by"] = json!(blockers
+                .iter()
+                .map(|b| json!({ "short_id": b.short_id, "title": b.title }))
+                .collect::<Vec<_>>());
+        }
         if let Some(sp) = spawned {
             out["spawned"] = sp;
         }
@@ -1947,6 +2040,62 @@ impl Engine {
         ))?;
         let rows = stmt.query_map(params![task_id], |r| {
             Ok(json!({ "short_id": r.get::<_, i64>(0)?, "title": r.get::<_, String>(1)? }))
+        })?;
+        let mut out = Vec::new();
+        for r in rows {
+            out.push(r?);
+        }
+        Ok(out)
+    }
+
+    /// The same unmet blockers [`Self::unmet_blockers`] lists, with each one's
+    /// STATUS beside it — what D149's refusal message needs and the JSON row
+    /// shape deliberately does not carry.
+    ///
+    /// A third caller of [`Self::unmet_blocker_source`] rather than a second
+    /// hand-written join, for that helper's own reason: three copies of this
+    /// clause is what let one of them drift.
+    ///
+    /// The status is the EFFECTIVE one, not the `status` column. That column is
+    /// a cache for backlog rows — a task whose `wait`/`scheduled` has passed
+    /// still reads `backlog` in SQL until some verb rewrites the row, and
+    /// [`effective_status`] is where every other read resolves it (see
+    /// `storage::map_task_row`). A refusal naming `#623 (backlog)` for a
+    /// blocker that is ready to be picked up would be a message the store's own
+    /// `task.get` contradicts. The predicate above is unaffected either way:
+    /// backlog and pending are both open, so no terminal set can hold one and
+    /// not the other.
+    ///
+    /// An unparseable status is printed as STORED (D28's rule, the one
+    /// `status_text` applies): a row an older writer left behind is named as it
+    /// is, never as the `pending` placeholder the loader substitutes.
+    ///
+    /// Not folded into `unmet_blockers`: that row shape is frozen on
+    /// `task.get` (§4), and widening it there would put a third spelling of
+    /// status onto a read surface that already answers `status` for the task
+    /// itself.
+    fn open_blockers(&self, task_id: &str) -> Result<Vec<OpenBlocker>, ApiError> {
+        let mut stmt = self.conn.prepare(&format!(
+            "SELECT t.short_id, t.title, t.status, t.wait, t.scheduled {} \
+             AND d.task_id = ?1 ORDER BY t.short_id",
+            Self::unmet_blocker_source()
+        ))?;
+        let now_ts = Timestamp::now();
+        let rows = stmt.query_map(params![task_id], |r| {
+            let stored: String = r.get(2)?;
+            let wait: Option<String> = r.get(3)?;
+            let scheduled: Option<String> = r.get(4)?;
+            let status = match Status::parse(&stored) {
+                Some(s) => effective_status(s, wait.as_deref(), scheduled.as_deref(), now_ts)
+                    .as_str()
+                    .to_string(),
+                None => stored,
+            };
+            Ok(OpenBlocker {
+                short_id: r.get(0)?,
+                title: r.get(1)?,
+                status,
+            })
         })?;
         let mut out = Vec::new();
         for r in rows {
@@ -3630,8 +3779,11 @@ mod tests {
     /// Reproduces tasqx audit #158.
     #[test]
     fn completing_a_task_whose_blocker_is_still_open_clears_the_blocked_flag() {
+        // D149 refuses this completion without `force`, which is the whole
+        // point of that ruling — the state under test here is what the store
+        // then says about the closed dependent.
         let e = seeded(); // #1 blocker (pending), #2 depends on #1
-        let done = e.task_done(&json!({ "ref": 2 })).unwrap();
+        let done = e.task_done(&json!({ "ref": 2, "force": true })).unwrap();
         assert_eq!(done["status"], json!("done"));
 
         let got = e.task_get(&json!({ "ref": 2 })).unwrap();

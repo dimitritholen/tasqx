@@ -1009,9 +1009,10 @@ fn execute(cli: Cli) -> Exit {
         Some(Command::Stop { r#ref }) => run_stop(&mut backend, &ctx, r#ref),
         Some(Command::Done {
             r#ref,
+            force,
             correlation,
             self_report,
-        }) => run_done(&mut backend, &ctx, r#ref, &correlation, &self_report),
+        }) => run_done(&mut backend, &ctx, r#ref, force, &correlation, &self_report),
         Some(Command::Show { r#ref, card, ascii }) => {
             run_show(&mut backend, &ctx, r#ref, card, ascii)
         }
