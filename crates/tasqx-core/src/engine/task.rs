@@ -2417,6 +2417,33 @@ impl Engine {
     /// is empty: that would make the result depend on a branch the caller
     /// cannot see, and D69's rule is that a result says what it answered about.
     /// A caller who wants wider still has `memory.search`, unchanged.
+    ///
+    /// **Why half the page is held for docs (D147).** bm25 alone decided this
+    /// wrong, and decided it silently. The derived expression is the task's own
+    /// title words, tags and project leaf; every sibling task in one project
+    /// shares exactly that vocabulary, and their annotations are many and long,
+    /// so a ruling written ONCE, in its own words, loses every slot to them.
+    /// Briefing two tasks in this repo returned ten hits out of a hundred and
+    /// twenty-nine, every one a sibling's test-audit note, and none of the
+    /// three rulings that actually applied. A ruling that cannot be retrieved
+    /// makes the store write-only, so `ceil(limit/2)` slots are RESERVED for
+    /// `kind: doc` — reserved, not capped: annotations take the doc slots no
+    /// doc claims, and docs take the rest when there are more docs than that.
+    /// Docs are listed first, and `reserved_docs`/`docs_total`/
+    /// `annotations_total` say what was done (D69) rather than leaving a reader
+    /// to infer it from the mix.
+    ///
+    /// The two searches are one expression run under two `scope`s, not a second
+    /// ranking: D136's one-FTS-path rule holds, because each kind is still
+    /// ordered by the same `memory.search` under the same `matched`. The
+    /// alternative — a kind-aware boost inside one query — is an opaque
+    /// reweighting that the `matched` echo cannot explain, and it would change
+    /// `memory.search` for every caller to fix a problem only the derived query
+    /// has.
+    ///
+    /// The composition is monotone in `limit`: a smaller limit never yields
+    /// more hits of either kind. D66's byte-budget bisection over
+    /// `memory_limit` (`fit_brief_to_budget`) depends on that.
     fn derived_memory(
         &self,
         task: &Task,
@@ -2431,6 +2458,10 @@ impl Engine {
             // `matched` is null, which says no expression ran. That is a
             // different answer from "an expression ran and matched nothing",
             // and the two must not print the same.
+            //
+            // The D147 counters are present and zero here, not omitted: a field
+            // that exists on one branch and not on another is a field every
+            // reader has to test for, on the branch reached least often.
             return Ok(json!({
                 "count": 0,
                 "total": 0,
@@ -2438,12 +2469,14 @@ impl Engine {
                 "hits": [],
                 "matched": Value::Null,
                 "project": project,
+                "reserved_docs": 0,
+                "docs_total": 0,
+                "annotations_total": 0,
             }));
         };
-        let mut params = json!({ "query": expr, "raw": true });
-        if let Some(n) = limit {
-            params["limit"] = json!(n);
-        }
+        let limit = usize::try_from(limit.unwrap_or(crate::engine::MEMORY_SEARCH_LIMIT))
+            .unwrap_or(usize::MAX);
+        let mut params = json!({ "query": expr.clone(), "raw": true, "limit": limit });
         if let Some(p) = &project {
             params["project"] = json!(p);
             // A doc with no project is knowledge belonging to no ONE project —
@@ -2455,14 +2488,52 @@ impl Engine {
             // project's knowledge, and the knowledge belonging to no project".
             params["include_unscoped"] = json!(true);
         }
-        let mut out = self.memory_search(&params)?;
-        // Additive to `memory.search`'s own shape: which project the hits were
-        // scoped to. The search echoes the expression it ran; the brief chose
-        // the scope as well, so it echoes that too.
-        if let Some(obj) = out.as_object_mut() {
-            obj.insert("project".to_string(), json!(project));
-        }
-        Ok(out)
+        // Each kind asked for a WHOLE page of its own, so either can fill the
+        // other's unused slots without a second query to widen it.
+        let scoped = |scope: &str| -> Result<(Vec<Value>, i64), ApiError> {
+            let mut p = params.clone();
+            p["scope"] = json!(scope);
+            let out = self.memory_search(&p)?;
+            // Through util's typed layer, like every other JSON read in the
+            // engine: a raw accessor here would read a `hits` that came back
+            // the wrong shape as an empty page, which is the silent-drop this
+            // whole method is about.
+            let hits = opt_array(&out, "hits")?.cloned().unwrap_or_default();
+            let total = opt_i64(&out, "total")?.unwrap_or(0);
+            Ok((hits, total))
+        };
+        let (docs, docs_total) = scoped("docs")?;
+        let (annotations, annotations_total) = scoped("annotations")?;
+
+        // Saturating throughout: `limit` is caller input and may be zero or
+        // enormous, and a page that underflowed to `usize::MAX` would hand back
+        // the whole store.
+        let reserved = limit.div_ceil(2);
+        let docs_take = docs
+            .len()
+            .min(reserved.max(limit.saturating_sub(annotations.len())));
+        let ann_take = annotations.len().min(limit.saturating_sub(docs_take));
+        let hits: Vec<Value> = docs
+            .into_iter()
+            .take(docs_take)
+            .chain(annotations.into_iter().take(ann_take))
+            .collect();
+
+        let total = docs_total.saturating_add(annotations_total);
+        Ok(json!({
+            "count": hits.len(),
+            "total": total,
+            "has_more": (hits.len() as i64) < total,
+            "hits": hits,
+            "matched": expr,
+            // Additive to `memory.search`'s own shape: which project the hits
+            // were scoped to. The search echoes the expression it ran; the
+            // brief chose the scope as well, so it echoes that too.
+            "project": project,
+            "reserved_docs": reserved,
+            "docs_total": docs_total,
+            "annotations_total": annotations_total,
+        }))
     }
 
     // ---- task.cancel ---------------------------------------------------------

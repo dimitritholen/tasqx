@@ -428,6 +428,18 @@ fn a_title_with_nothing_searchable_in_it_answers_empty_rather_than_failing() {
         out["memory"]["matched"].is_null(),
         "no expression ran, and saying so is not the same as saying none matched"
     );
+    // The reservation fields are on THIS answer too (D147). A field that is
+    // present on one branch and absent on another is a field every reader has
+    // to test for, and the early return is the branch a reader reaches least
+    // often and debugs hardest.
+    for key in ["reserved_docs", "docs_total", "annotations_total"] {
+        assert_eq!(
+            out["memory"][key].as_i64(),
+            Some(0),
+            "`{key}` is an integer zero here, not absent: {}",
+            out["memory"]
+        );
+    }
 }
 
 #[test]
@@ -478,4 +490,212 @@ fn the_brief_writes_nothing() {
     let before = count(&e);
     brief(&e, t);
     assert_eq!(before, count(&e), "a read appends nothing to the log");
+}
+
+// ---- the reserved half (D147) ---------------------------------------------
+
+/// The case the reservation exists for: a ruling written once, in its own
+/// words, against a project's worth of sibling notes written in the task's.
+///
+/// bm25 alone answers this wrong and answers it silently. The derived query is
+/// the task's own title words, tags and project leaf; every sibling task in one
+/// project shares exactly that vocabulary, and their annotations are many and
+/// long, so the page fills with them and the one document that RULED on the
+/// subject never reaches the reader. A store whose rulings cannot be retrieved
+/// is a store that is write-only.
+#[test]
+fn a_ruling_survives_a_hundred_sibling_notes_that_share_the_tasks_words() {
+    let e = engine();
+    call(&e, "project.create", json!({ "name": "tasqx" })).expect("project");
+    // Written once, and only two of its words are the task's.
+    call(
+        &e,
+        "memory.add",
+        json!({
+            "title": "Retry audit ruling",
+            "body": "every retry is bounded",
+            "project": "tasqx",
+            "source": "DESIGN.md"
+        }),
+    )
+    .expect("the ruling");
+    // Twenty siblings, five notes each: a hundred annotations repeating the
+    // task's vocabulary, which is what an ordinary project looks like after a
+    // month of work.
+    for i in 0..20 {
+        let sibling = add(
+            &e,
+            &format!("audit the retry path tests {i}"),
+            json!({ "project": "tasqx" }),
+        );
+        for j in 0..5 {
+            call(
+                &e,
+                "annotation.add",
+                json!({
+                    "ref": sibling,
+                    "body": format!(
+                        "audit {j}: the retry path tests audit the retry path again, \
+                         retry path audit, tests audit retry path"
+                    )
+                }),
+            )
+            .expect("sibling note");
+        }
+    }
+    let t = add(
+        &e,
+        "Audit the retry path tests",
+        json!({ "project": "tasqx" }),
+    );
+
+    let out = brief(&e, t);
+    let m = &out["memory"];
+    assert!(
+        hit_titles(&out).contains(&"Retry audit ruling".to_string()),
+        "the ruling is on the page, not buried under its siblings' notes: {m}"
+    );
+    let kinds: Vec<&str> = m["hits"]
+        .as_array()
+        .expect("hits")
+        .iter()
+        .filter_map(|h| h["kind"].as_str())
+        .collect();
+    assert_eq!(kinds[0], "doc", "docs are listed first: {m}");
+    assert_eq!(m["reserved_docs"], 5, "half of the default limit: {m}");
+    assert_eq!(m["docs_total"], 1);
+    assert!(
+        m["annotations_total"].as_i64().expect("annotations_total") >= 100,
+        "the notes really are the crowd this test claims: {m}"
+    );
+    assert_eq!(m["count"], 10);
+    assert_eq!(m["has_more"], true);
+    assert_eq!(
+        m["total"].as_i64().expect("total"),
+        m["docs_total"].as_i64().expect("docs_total")
+            + m["annotations_total"].as_i64().expect("annotations_total"),
+        "one total over both kinds, so `has_more` means what it says: {m}"
+    );
+}
+
+/// The order and the fill: docs take the front of the page in their own bm25
+/// order, and annotations take what is left — including the doc slots no doc
+/// claimed.
+#[test]
+fn docs_come_first_and_annotations_fill_what_docs_leave() {
+    let e = engine();
+    for n in 0..2 {
+        call(
+            &e,
+            "memory.add",
+            json!({ "title": format!("retry ruling {n}"), "body": "retries are bounded and logged" }),
+        )
+        .expect("doc");
+    }
+    for n in 0..20 {
+        let sibling = add(&e, &format!("earlier retry work {n}"), json!({}));
+        call(
+            &e,
+            "annotation.add",
+            json!({ "ref": sibling, "body": "the retries were bounded here too" }),
+        )
+        .expect("note");
+    }
+    let t = add(&e, "Bound the retries", json!({}));
+
+    let m = &brief(&e, t)["memory"];
+    let kinds: Vec<&str> = m["hits"]
+        .as_array()
+        .expect("hits")
+        .iter()
+        .filter_map(|h| h["kind"].as_str())
+        .collect();
+    assert_eq!(
+        kinds,
+        ["doc", "doc"]
+            .into_iter()
+            .chain(std::iter::repeat_n("annotation", 8))
+            .collect::<Vec<_>>(),
+        "two docs first, eight annotations after: {m}"
+    );
+    assert_eq!(m["reserved_docs"], 5, "reserved, not spent: {m}");
+    assert_eq!(m["docs_total"], 2);
+    assert_eq!(m["annotations_total"], 20);
+}
+
+/// The mirror: a reservation that HELD five slots for docs when eight docs
+/// matched would be a cap, not a reservation. Either kind takes the other's
+/// unused slots.
+#[test]
+fn annotations_take_the_doc_slots_docs_do_not_use() {
+    let e = engine();
+    for n in 0..8 {
+        call(
+            &e,
+            "memory.add",
+            json!({ "title": format!("retry ruling {n}"), "body": "retries are bounded and logged" }),
+        )
+        .expect("doc");
+    }
+    for n in 0..2 {
+        let sibling = add(&e, &format!("earlier retry work {n}"), json!({}));
+        call(
+            &e,
+            "annotation.add",
+            json!({ "ref": sibling, "body": "the retries were bounded here too" }),
+        )
+        .expect("note");
+    }
+    let t = add(&e, "Bound the retries", json!({}));
+
+    let out = call(&e, "task.brief", json!({ "ref": t, "memory_limit": 10 })).expect("brief");
+    let m = &out["memory"];
+    let kinds: Vec<&str> = m["hits"]
+        .as_array()
+        .expect("hits")
+        .iter()
+        .filter_map(|h| h["kind"].as_str())
+        .collect();
+    assert_eq!(kinds.iter().filter(|k| **k == "doc").count(), 8, "{m}");
+    assert_eq!(
+        kinds.iter().filter(|k| **k == "annotation").count(),
+        2,
+        "{m}"
+    );
+    assert_eq!(m["count"], 10);
+    assert_eq!(m["reserved_docs"], 5);
+}
+
+/// `memory_limit: 0` is the floor D66's bisection actually reaches, so it is
+/// arithmetic on `0` in two places and must answer rather than panic.
+#[test]
+fn memory_limit_zero_answers_no_hits_and_no_panic() {
+    let e = engine();
+    call(
+        &e,
+        "memory.add",
+        json!({ "title": "retry ruling", "body": "retries are bounded and logged" }),
+    )
+    .expect("doc");
+    let sibling = add(&e, "earlier retry work", json!({}));
+    call(
+        &e,
+        "annotation.add",
+        json!({ "ref": sibling, "body": "the retries were bounded here too" }),
+    )
+    .expect("note");
+    let t = add(&e, "Bound the retries", json!({}));
+
+    let out = call(&e, "task.brief", json!({ "ref": t, "memory_limit": 0 })).expect("brief");
+    let m = &out["memory"];
+    assert_eq!(m["count"], 0);
+    assert_eq!(m["hits"].as_array().expect("hits").len(), 0);
+    assert_eq!(m["reserved_docs"], 0, "half of nothing is nothing: {m}");
+    assert_eq!(m["docs_total"], 1);
+    assert_eq!(m["annotations_total"], 1);
+    assert_eq!(m["total"], 2);
+    assert_eq!(
+        m["has_more"], true,
+        "a page of zero over a store of two withheld both: {m}"
+    );
 }

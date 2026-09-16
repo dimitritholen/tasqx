@@ -896,10 +896,14 @@ const BRIEF_NEIGHBOURHOOD: &[Field] = &[
     req_of("blocks", Ty::Array, &[BRIEF_DEPENDENT]),
 ];
 
-/// `memory.search`'s own result, plus the project the brief scoped it to.
-/// `matched` is nullable HERE and not there: a task with no searchable word
-/// runs no expression at all, and "none ran" is a different answer from "one
-/// ran and matched nothing".
+/// `memory.search`'s own result, plus the project the brief scoped it to and
+/// what D147's reservation did. `matched` is nullable HERE and not there: a
+/// task with no searchable word runs no expression at all, and "none ran" is a
+/// different answer from "one ran and matched nothing".
+///
+/// The three D147 rows are REQUIRED, including on that no-expression branch,
+/// where they are zero: a field present on one branch and absent on another is
+/// a field every reader has to test for.
 const BRIEF_MEMORY: &[Field] = &[
     req("count", Ty::Int),
     req("total", Ty::Int),
@@ -907,6 +911,9 @@ const BRIEF_MEMORY: &[Field] = &[
     req("hits", Ty::Array),
     nul("matched", Ty::Str),
     nul("project", Ty::Str),
+    req("reserved_docs", Ty::Int),
+    req("docs_total", Ty::Int),
+    req("annotations_total", Ty::Int),
 ];
 
 const R_TASK_BRIEF: Shape = &[&[

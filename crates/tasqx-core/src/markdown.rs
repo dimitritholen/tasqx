@@ -394,18 +394,77 @@ fn brief_tail(out: &mut String, result: &Value) {
         .unwrap_or(&[]);
     if !hits.is_empty() {
         out.push_str("\n### From memory\n\n");
-        for h in hits {
-            let source = h
-                .get("source")
-                .and_then(Value::as_str)
-                .filter(|s| !s.is_empty())
-                .map(|s| format!(" · `{s}`"))
-                .unwrap_or_default();
-            out.push_str(&format!("- **{}**{source}\n", str_of(h, "title")));
-            let snippet = str_of(h, "snippet");
-            if !snippet.is_empty() {
-                out.push_str(&format!("  {snippet}\n"));
+        // D147: the two kinds are told apart, and the docs are told first. The
+        // reservation is worth nothing to a reader who cannot see it happened —
+        // a ruling and a sibling's note are the same bullet otherwise — and the
+        // label carries how many of that kind were shown out of how many
+        // matched, so a page holding every ruling reads differently from one
+        // holding the first of forty.
+        let total_of = |key: &str| {
+            result
+                .get("memory")
+                .and_then(|m| m.get(key))
+                .and_then(Value::as_i64)
+        };
+        let of_kind = |kind: &str| -> Vec<&Value> {
+            hits.iter()
+                .filter(|h| h.get("kind").and_then(Value::as_str) == Some(kind))
+                .collect()
+        };
+        let docs = of_kind("doc");
+        let annotations = of_kind("annotation");
+        // Anything that named neither kind. A response recorded before D147 —
+        // or any future kind — still prints, unlabelled and in its own order,
+        // because a renderer that silently drops a hit it does not recognise is
+        // the failure the labels exist to prevent.
+        let rest: Vec<&Value> = hits
+            .iter()
+            .filter(|h| {
+                !matches!(
+                    h.get("kind").and_then(Value::as_str),
+                    Some("doc") | Some("annotation")
+                )
+            })
+            .collect();
+        let groups = [
+            ("Docs", docs, total_of("docs_total")),
+            ("Annotations", annotations, total_of("annotations_total")),
+            ("", rest, None),
+        ];
+        let mut written = false;
+        for (label, group, group_total) in groups {
+            if group.is_empty() {
+                continue;
             }
+            if written {
+                out.push('\n');
+            }
+            if !label.is_empty() {
+                match group_total {
+                    Some(m) => {
+                        out.push_str(&format!("**{label}** — {} of {m}\n\n", group.len()));
+                    }
+                    // An older response carries no per-kind total. The count
+                    // shown is still true; the denominator is simply not known,
+                    // and inventing one from the page would be a number that
+                    // reads as a fact.
+                    None => out.push_str(&format!("**{label}** — {}\n\n", group.len())),
+                }
+            }
+            for h in group {
+                let source = h
+                    .get("source")
+                    .and_then(Value::as_str)
+                    .filter(|s| !s.is_empty())
+                    .map(|s| format!(" · `{s}`"))
+                    .unwrap_or_default();
+                out.push_str(&format!("- **{}**{source}\n", str_of(h, "title")));
+                let snippet = str_of(h, "snippet");
+                if !snippet.is_empty() {
+                    out.push_str(&format!("  {snippet}\n"));
+                }
+            }
+            written = true;
         }
         // Said in the view, not left to the JSON block a caller may have
         // declined: a reader who cannot tell a bounded page from the whole
