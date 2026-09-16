@@ -2080,7 +2080,7 @@ impl Engine {
              AND d.task_id = ?1 ORDER BY t.short_id",
             Self::unmet_blocker_source()
         ))?;
-        let now_ts = Timestamp::now();
+        let now_ts = crate::clock::now();
         let rows = stmt.query_map(params![task_id], |r| {
             let stored: String = r.get(2)?;
             let wait: Option<String> = r.get(3)?;
