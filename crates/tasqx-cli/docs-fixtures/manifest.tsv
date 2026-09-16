@@ -97,3 +97,40 @@ api-report-summary	pipe	100	-	api	-	{"tasqx":"1","id":"r1","method":"report.summ
 dashboard	tui	132	36	dashboard	-	-
 pick	tui	120	40	pick	-	-
 memory-browser	tui	120	40	memory list	-	-
+
+# --- API reference request/response pairs (#647) ---
+#
+# One row per JSON API method whose answer is reproducible: the `stdin` column
+# IS the envelope the reference prints above the response
+# (crates/tasqx-cli/src/docs/api_ref.rs, `EXAMPLES`, and a test holds the two
+# equal). A method missing here is named with its reason in that
+# same table — a fresh v7 id, an FTS bm25 rank, a payload that is the whole
+# store, or this machine's own paths — and the page marks those examples
+# illustrative rather than passing off a paste as a capture.
+#
+# `api-show-json` is not a method: it is the `--json` flag's own screen, which
+# the page uses to show that a CLI verb prints the API's bytes unchanged.
+api-show-json	pipe	100	-	show 53 --json	-	-
+api-project-use	pipe-mut	100	-	api	-	{"tasqx":"1","id":"pu1","method":"project.use","params":{"name":"api"}}
+api-project-archive	pipe-mut	100	-	api	-	{"tasqx":"1","id":"pa1","method":"project.archive","params":{"name":"mobile"}}
+api-task-start	pipe-mut	100	-	api	-	{"tasqx":"1","id":"s1","method":"task.start","params":{"ref":"50"}}
+api-task-stop	pipe-mut	100	-	api	-	{"tasqx":"1","id":"st1","method":"task.stop","params":{"ref":"48"}}
+api-task-modify	pipe-mut	100	-	api	-	{"tasqx":"1","id":"m1","method":"task.modify","params":{"ref":"52","set":{"priority":"H","due":"friday"}}}
+api-task-cancel	pipe-mut	100	-	api	-	{"tasqx":"1","id":"c1","method":"task.cancel","params":{"ref":"60"}}
+api-task-reopen	pipe-mut	100	-	api	-	{"tasqx":"1","id":"ro1","method":"task.reopen","params":{"ref":"12"}}
+api-tag-add	pipe-mut	100	-	api	-	{"tasqx":"1","id":"t1","method":"tag.add","params":{"ref":"53","tags":["q4"]}}
+api-tag-remove	pipe-mut	100	-	api	-	{"tasqx":"1","id":"t2","method":"tag.remove","params":{"ref":"53","tags":["ops"]}}
+api-annotation-remove	pipe-mut	100	-	api	-	{"tasqx":"1","id":"ar1","method":"annotation.remove","params":{"ref":"51","annotation_id":"17dd6621-7db4-43b5-9f36-ddf89018081e"}}
+api-check-set	pipe-mut	100	-	api	-	{"tasqx":"1","id":"cs1","method":"check.set","params":{"ref":"51","check_id":"7e37a508-7921-4cb2-bf0c-0a2944eb31e4","state":"passed","evidence":"docs/guides/sdk-3.0.md#rate-limits"}}
+api-check-remove	pipe-mut	100	-	api	-	{"tasqx":"1","id":"cr1","method":"check.remove","params":{"ref":"51","check_id":"e6a1096b-6f05-4e95-96f5-52452080f2ac"}}
+api-dependency-add	pipe-mut	100	-	api	-	{"tasqx":"1","id":"da1","method":"dependency.add","params":{"ref":"55","depends_on":"50"}}
+api-dependency-remove	pipe-mut	100	-	api	-	{"tasqx":"1","id":"dr1","method":"dependency.remove","params":{"ref":"51","depends_on":"50"}}
+api-memory-get	pipe	100	-	api	-	{"tasqx":"1","id":"mg1","method":"memory.get","params":{"id":"eb864f1e-e68a-4d96-af89-597bd0d2d52e"}}
+api-memory-update	pipe-mut	100	-	api	-	{"tasqx":"1","id":"mu1","method":"memory.update","params":{"id":"1bce1a9b-5134-4ab7-8665-34cd79fe0c5f","body":"The handover happens Friday at 16:00, in the on-call channel."}}
+api-memory-remove	pipe-mut	100	-	api	-	{"tasqx":"1","id":"mr1","method":"memory.remove","params":{"id":"091eb5ff-05d5-4cb2-ba2f-0afdc77f7935"}}
+api-tokens-recompute	pipe	100	-	api	-	{"tasqx":"1","id":"rc1","method":"tokens.recompute"}
+api-report-outcomes	pipe	100	-	api	-	{"tasqx":"1","id":"ro1","method":"report.outcomes","params":{"group_by":"project","metrics":["rework","calibration"]}}
+api-store-import	pipe-mut	100	-	api	-	{"tasqx":"1","id":"si1","method":"store.import","params":{"tasks":[{"id":"9a1f3c52-0b44-4a2e-9d6f-7c5b1e08a4d1","short_id":900,"title":"Restore the incident timeline","status":"pending","priority":"M","project":"infra","created":"2026-09-10T08:00:00Z","modified":"2026-09-10T08:00:00Z","_rev":1,"tags":["ops"],"depends_on":[],"annotations":[]}]}}
+api-event-list	pipe	100	-	api	-	{"tasqx":"1","id":"ev1","method":"event.list","params":{"entity":"project","limit":2}}
+api-reminder-fire	pipe-mut	100	-	api	-	{"tasqx":"1","id":"rf1","method":"reminder.fire","params":{"ref":"49","at":"2026-09-17T16:00:00Z"}}
+api-otlp-status	pipe	100	-	api	-	{"tasqx":"1","id":"o1","method":"otlp.status"}

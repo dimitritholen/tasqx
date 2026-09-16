@@ -1,0 +1,1338 @@
+//! Response-shape documentation: one line of English per key the JSON API
+//! answers with (#647).
+//!
+//! # Why this lives in the engine, beside the freeze
+//!
+//! `tests/conformance.rs` already knows every key of every response — it is the
+//! contract of record, and it fails the build when a key is renamed, removed or
+//! added without being written down. What it cannot hold is what a key MEANS,
+//! because a test file is not linkable from `src/` and the documentation
+//! generator lives in the other crate. So the descriptions live here, in the
+//! same crate as the engine that emits the keys, and
+//! `documented_response_shapes_match_the_freeze` asserts this module and that
+//! suite describe the same shape: same keys, same types, same nullable and
+//! optional flags, per method and per nested object. A field added to the
+//! freeze without a description is red, and a description with no field behind
+//! it is red.
+//!
+//! That is the whole point. A shape that can change without its description
+//! changing is a stale page, and the generated reference
+//! (`tasqx-cli/src/docs/api_ref.rs`) renders these tables verbatim — nothing on
+//! it is retyped prose about a response somebody once read.
+//!
+//! # The path vocabulary
+//!
+//! [`result_shape`] returns `(path, group)` pairs. `result` is the envelope's
+//! `result` object itself; `result.tasks[]` is the shape of every element of
+//! its `tasks` array; `result.groups[].cost` is an object inside such an
+//! element. Several groups may share one path — that is how a composed shape is
+//! spelled, exactly as the conformance suite composes it (a task row is the
+//! core task, plus its live time, plus its blocked flag), and a renderer walks
+//! them as one table per path.
+
+/// One key of a response object: what it is called, what it holds, whether it
+/// can be `null` or absent, and one line of what it means.
+///
+/// The first four are the conformance suite's own vocabulary, mirrored so the
+/// guard can compare them; `desc` is the half only a human can write.
+#[derive(Debug, Clone, Copy)]
+pub struct FieldDoc {
+    /// The JSON key, as the wire spells it.
+    pub key: &'static str,
+    /// `string`, `integer`, `number`, `boolean`, `array` or `object` — the same
+    /// coarse names `Ty::name` gives in the conformance suite, and coarse for
+    /// the same reason: a client breaks on a string that became a number, not
+    /// on the difference between `3` and `3.0`.
+    pub ty: &'static str,
+    /// The key is always present, and `null` is one of its legal values.
+    pub null_ok: bool,
+    /// The key may be absent entirely.
+    pub optional: bool,
+    /// One line: what this key means to a caller. Markdown-free; the renderer
+    /// escapes it and spells `backticked` spans as code.
+    pub desc: &'static str,
+}
+
+/// Always present, never `null`.
+const fn f(key: &'static str, ty: &'static str, desc: &'static str) -> FieldDoc {
+    FieldDoc {
+        key,
+        ty,
+        null_ok: false,
+        optional: false,
+        desc,
+    }
+}
+
+/// Always present, may be `null`.
+const fn n(key: &'static str, ty: &'static str, desc: &'static str) -> FieldDoc {
+    FieldDoc {
+        null_ok: true,
+        ..f(key, ty, desc)
+    }
+}
+
+/// May be absent; when present it is not `null`.
+const fn o(key: &'static str, ty: &'static str, desc: &'static str) -> FieldDoc {
+    FieldDoc {
+        optional: true,
+        ..f(key, ty, desc)
+    }
+}
+
+/// `project.create`'s result.
+pub const R_PROJECT_CREATE: &[FieldDoc] = &[
+    f("id", "string", "The new project's uuid."),
+    f("name", "string", "The project's name, as stored."),
+    f("default", "boolean", "Whether this create claimed the default project — true only when the store had none."),
+    n("current_default", "string", "The default project after the call, whichever it is. Null only in a store with no default at all."),
+];
+
+/// `project.list`'s result.
+pub const R_PROJECT_LIST: &[FieldDoc] = &[
+    f("count", "integer", "How many projects came back."),
+    f("store_empty", "boolean", "Whether the store has ever held a task at all — how \"nothing yet\" is told apart from \"nothing matched\"."),
+    f("projects", "array", "One row per project, sorted by name."),
+];
+
+/// One project as `project.list` lists it.
+pub const PROJECT_LIST_ROW: &[FieldDoc] = &[
+    f("id", "string", "The project's uuid."),
+    f("name", "string", "The project's name — the value `project:` filters on and `task.add` takes."),
+    n("description", "string", "The project's description, or null."),
+    f("archived", "boolean", "Whether the project is archived. Archived projects are omitted unless `include_archived` asked for them."),
+    f("default", "boolean", "Whether this is the project a bare `task.add` lands in."),
+];
+
+/// `project.use`'s result.
+pub const R_PROJECT_USE: &[FieldDoc] = &[
+    f("name", "string", "The project that is now the default."),
+    f(
+        "default",
+        "boolean",
+        "Always true on success — the call's whole effect, echoed.",
+    ),
+    n(
+        "previous",
+        "string",
+        "The project that was the default before, or null if there was none.",
+    ),
+];
+
+/// `project.archive`'s result.
+pub const R_PROJECT_ARCHIVE: &[FieldDoc] = &[
+    f("name", "string", "The project that was archived."),
+    f("archived", "boolean", "Always true on success."),
+    f(
+        "default_cleared",
+        "boolean",
+        "Whether archiving it also cleared the store's default project (D22).",
+    ),
+    f(
+        "open_tasks",
+        "integer",
+        "How much open work the archive left behind, counted in the same transaction (D89).",
+    ),
+    f(
+        "open_overdue",
+        "integer",
+        "How many of those open tasks are past their due date.",
+    ),
+];
+
+/// `task.add`'s result.
+pub const R_TASK_ADD: &[FieldDoc] = &[
+    f("id", "string", "The new task's uuid — stable, and what an export and an import agree on."),
+    f("short_id", "integer", "The task's short id — the small number every `ref` accepts and the CLI prints."),
+    f("status", "string", "The status the task landed in: `pending`, or `backlog` when a future `wait` parks it."),
+    n("project", "string", "The project the task actually landed in — for an inherited default this is the only place the caller learns it."),
+    f("urgency", "number", "The urgency score the fixed formula gives it (D1)."),
+    n("recurrence", "string", "The recurrence rule as stored, or null."),
+    f("title", "string", "The title as STORED — the CLI's inline sugar can rewrite what you typed, so this is what to verify against."),
+    n("due", "string", "The due date resolved to an instant: `due: \"friday\"` comes back as its ISO timestamp."),
+    f("tags", "array", "The tags as stored, lowercased and deduplicated."),
+    n("scheduled", "string", "The scheduled date resolved to an instant, the same way `due` is."),
+];
+
+/// `task.list`'s result.
+pub const R_TASK_LIST: &[FieldDoc] = &[
+    f("count", "integer", "How many rows came back."),
+    f("total", "integer", "How many tasks matched the filter, before `limit` truncated."),
+    n("next_offset", "integer", "The `offset` that fetches the next page; null once nothing is left."),
+    f("store_empty", "boolean", "Whether the store has ever held a task at all — how \"nothing yet\" is told apart from \"nothing matched\"."),
+    f("tasks", "array", "The matching tasks, one row each."),
+];
+
+/// The canonical task object — the shape every task-shaped surface starts from.
+pub const TASK_CORE: &[FieldDoc] = &[
+    f("id", "string", "The task's uuid, stable across exports and machines."),
+    f("short_id", "integer", "The task's short id — the small number every `ref` accepts and the CLI prints."),
+    f("title", "string", "The task's title, verbatim."),
+    f("status", "string", "One of `pending`, `backlog`, `active`, `done`, `cancelled`."),
+    n("priority", "string", "`H`, `M`, `L`, or null for none."),
+    n("project", "string", "The project the task belongs to, or null."),
+    n("due", "string", "When it is due, as an instant, or null."),
+    n("scheduled", "string", "When work is planned to start, or null. Does not hide the row."),
+    n("wait", "string", "Hidden from the working set until this instant, or null."),
+    n("estimate", "string", "The estimate as an ISO 8601 duration (`PT4H`), or null."),
+    n("recurrence", "string", "The recurrence rule (`every 3 days`), or null."),
+    n("remind", "string", "The reminder spec — an offset from `due` or an absolute instant — or null."),
+    f("urgency", "number", "The urgency score (D1): priority, due proximity and age, summed."),
+    f("tags", "array", "Every tag on the task, as plain strings."),
+    f("created", "string", "When the task was captured."),
+    f("modified", "string", "When it last changed."),
+    n("completed", "string", "When it was completed, or null while it is open."),
+    n("budget_tokens", "integer", "The size gauge over FRESH tokens (D139), or null for no threshold. It stops nothing."),
+    f("_rev", "integer", "The row's revision counter, bumped by every write. Send it back as `expected_rev` to make a change conditional."),
+];
+
+/// The live-read spelling of tracked time: an ISO duration plus the open interval's anchor.
+pub const TASK_LIVE_TIME: &[FieldDoc] = &[
+    f(
+        "tracked",
+        "string",
+        "Total time on the clock, as an ISO duration, including any interval still open.",
+    ),
+    n(
+        "active_since",
+        "string",
+        "When the open interval started, or null when the timer is not running.",
+    ),
+];
+
+/// Whether an unmet dependency is holding the task back.
+pub const TASK_BLOCKED: &[FieldDoc] = &[f(
+    "blocked",
+    "boolean",
+    "Whether an unmet dependency is holding this task back.",
+)];
+
+/// The flag a row carries when its `status` came from a newer tasqx.
+pub const TASK_STATUS_FLAG: &[FieldDoc] = &[
+    o("status_unrecognized", "boolean", "Present only on a row whose `status` no writer of this build could have produced — an import from a newer tasqx."),
+];
+
+/// D139's derived pair: what was spent, and whether that is past the budget.
+pub const TASK_BUDGET_GAUGE: &[FieldDoc] = &[
+    f("fresh_tokens", "integer", "Fresh tokens spent on this task — input, output and cache creation, never cache reads (D139)."),
+    n("over", "boolean", "Whether `fresh_tokens` is past `budget_tokens`; null when no budget was set, because there is no verdict to give."),
+];
+
+/// The acceptance criteria hanging off a task (D138).
+pub const TASK_CHECKS: &[FieldDoc] = &[f(
+    "checks",
+    "array",
+    "The acceptance criteria on the task, in position order (D138).",
+)];
+
+/// `task.get`'s edges and notes — its annotation rows can carry D148's cut markers.
+pub const TASK_GET_RELATIONS: &[FieldDoc] = &[
+    f("depends_on", "array", "The short ids this task waits on."),
+    f(
+        "annotations",
+        "array",
+        "The notes on this task, newest first, paged.",
+    ),
+];
+
+/// The reverse edge: what this task is holding back.
+pub const TASK_BLOCKS: &[FieldDoc] = &[f(
+    "blocks",
+    "array",
+    "The short ids this task is holding back — the reverse edge of `depends_on`.",
+)];
+
+/// What `task.get` says about the history it did NOT return.
+pub const TASK_ANNOTATION_PAGE: &[FieldDoc] = &[
+    f("annotations_total", "integer", "How many notes the task has, whether or not this page carries them all."),
+    f("annotations_offset", "integer", "How many notes this page skipped."),
+    n("annotations_next_offset", "integer", "The offset of the next page of notes; null on the last one."),
+    f("annotations_removed", "array", "One tombstone per scrubbed note (D113) — id and instant, never the text. Excluded from `annotations` and its total."),
+];
+
+/// The measurements on a task read live — always present, empty when there are none.
+pub const TASK_TOKENS: &[FieldDoc] = &[f(
+    "tokens",
+    "array",
+    "Every token measurement banked against this task.",
+)];
+
+/// #150's optional breakdown, present only under `explain: true`.
+pub const TASK_URGENCY_BREAKDOWN: &[FieldDoc] = &[o(
+    "urgency_breakdown",
+    "object",
+    "The terms `urgency` sums — present only when `explain: true` asked for them.",
+)];
+
+/// The open prerequisites `blocked` is blocked on, named rather than counted.
+pub const TASK_UNMET_BLOCKERS: &[FieldDoc] = &[f(
+    "unmet_blockers",
+    "array",
+    "The open prerequisites, named — what `blocked: true` is blocked ON.",
+)];
+
+/// One acceptance criterion (D138) — a claim tasqx stores and never runs.
+pub const TASK_CHECK: &[FieldDoc] = &[
+    f("id", "string", "The criterion's uuid — what `check.set` and `check.remove` take."),
+    f("body", "string", "The criterion itself, stored verbatim. tasqx never runs it; it is a claim, not a command."),
+    f("state", "string", "`open`, `passed` or `failed`. A failure is a normal outcome, not an error."),
+    n("evidence", "string", "The citation for the state, or null — some criteria are met by something nobody can quote."),
+    f("position", "integer", "Where it sits in the list, from zero."),
+    f("created", "string", "When the criterion was added."),
+    f("modified", "string", "When its state or evidence last changed."),
+];
+
+/// One annotation.
+pub const ANNOTATION_ROW: &[FieldDoc] = &[
+    f(
+        "id",
+        "string",
+        "The note's uuid — what `annotation.remove` takes.",
+    ),
+    f(
+        "body",
+        "string",
+        "The note, stored and returned verbatim (D41).",
+    ),
+    f("created", "string", "When the note was written."),
+];
+
+/// D148's cut markers, present only on a body this response truncated.
+pub const ANNOTATION_CAP: &[FieldDoc] = &[
+    o("body_bytes", "integer", "The body's real size in bytes. Present only on a body this response cut (D148)."),
+    o("body_truncated", "boolean", "Present and true only on a body this response cut, so \"was this cut?\" stays a presence question."),
+];
+
+/// What `annotation.remove` left behind (D113): the id and the instant, never the text.
+pub const TOMBSTONE_ROW: &[FieldDoc] = &[
+    f("id", "string", "The scrubbed note's id."),
+    f(
+        "removed",
+        "string",
+        "When it was scrubbed. Never the text — that is the point of the method.",
+    ),
+];
+
+/// One token measurement.
+pub const MEASUREMENT_ROW: &[FieldDoc] = &[
+    f("id", "string", "The measurement's uuid — what `token.remove` takes."),
+    f("tool", "string", "Which tool spent the tokens (`claude-code`, `codex`, …)."),
+    f("source", "string", "How the figure was obtained: `self-report`, `log-parse` or `otel`."),
+    n("model", "string", "The model that did the work, or null."),
+    f("input_tokens", "integer", "Fresh input tokens."),
+    f("output_tokens", "integer", "Output tokens."),
+    f("cache_read_tokens", "integer", "Tokens read from cache — never blended with the others (D48)."),
+    f("cache_creation_tokens", "integer", "Tokens spent writing the cache."),
+    f("confidence", "string", "How checkable the figure is: `high`, `medium` or `low`. A self-report may not claim `high`."),
+    f("created", "string", "When the measurement was banked."),
+];
+
+/// The terms `urgency` sums (D1).
+pub const URGENCY_BREAKDOWN_ROW: &[FieldDoc] = &[
+    f("priority", "number", "The priority term."),
+    f("due_proximity", "number", "The due-date term."),
+    f("age", "number", "The age term."),
+    f("total", "number", "The sum — the same number as the row's `urgency`, so nobody has to recompute the rounding."),
+];
+
+/// One blocking task: the short id and the title, the vocabulary `task.get` and `task.done` share.
+pub const BLOCKER_ROW: &[FieldDoc] = &[
+    f("short_id", "integer", "The blocking task's short id."),
+    f(
+        "title",
+        "string",
+        "The blocking task's title, so a refusal can be read without a second call.",
+    ),
+];
+
+/// `task.brief`'s result.
+pub const R_TASK_BRIEF: &[FieldDoc] = &[
+    f(
+        "task",
+        "object",
+        "`task.get`'s own result for this task, verbatim.",
+    ),
+    f(
+        "neighbourhood",
+        "object",
+        "What this task waits on and what it releases.",
+    ),
+    f(
+        "memory",
+        "object",
+        "A `memory.search` result under an expression derived from the task's own words.",
+    ),
+];
+
+/// D136's neighbourhood: what the task waits on, and what it releases.
+pub const BRIEF_NEIGHBOURHOOD: &[FieldDoc] = &[
+    f(
+        "depends_on",
+        "array",
+        "Each prerequisite, with its newest annotation — what that task concluded.",
+    ),
+    f(
+        "blocks",
+        "array",
+        "What this task releases when it completes, title and status only.",
+    ),
+];
+
+/// One prerequisite, with what it concluded.
+pub const BRIEF_PREREQUISITE: &[FieldDoc] = &[
+    f(
+        "short_id",
+        "integer",
+        "The task's short id — the small number every `ref` accepts and the CLI prints.",
+    ),
+    f("title", "string", "The task's title, verbatim."),
+    f("status", "string", "The prerequisite's status."),
+    n(
+        "annotation",
+        "object",
+        "The prerequisite's newest note, or null when nobody wrote one.",
+    ),
+];
+
+/// One dependent, title and status only.
+pub const BRIEF_DEPENDENT: &[FieldDoc] = &[
+    f(
+        "short_id",
+        "integer",
+        "The task's short id — the small number every `ref` accepts and the CLI prints.",
+    ),
+    f("title", "string", "The task's title, verbatim."),
+    f("status", "string", "The dependent's status."),
+];
+
+/// The brief's memory half: a search result plus what D147's reservation did.
+pub const BRIEF_MEMORY: &[FieldDoc] = &[
+    f("count", "integer", "How many hits came back."),
+    f("total", "integer", "How many rows matched before the page was cut."),
+    f("has_more", "boolean", "Whether anything was left behind."),
+    f("hits", "array", "The hits themselves — the same rows `memory.search` returns."),
+    n("matched", "string", "The FTS expression tasqx derived from the task; null when the task had no searchable word."),
+    n("project", "string", "The project the search was scoped to, or null."),
+    f("reserved_docs", "integer", "How many of the page's slots were held for knowledge docs (D147)."),
+    f("docs_total", "integer", "How many docs matched."),
+    f("annotations_total", "integer", "How many annotations matched."),
+];
+
+/// `task.start`'s result.
+pub const R_TASK_START: &[FieldDoc] = &[
+    f("id", "string", "The task's uuid."),
+    f("status", "string", "`active` once the clock is running."),
+    n("interval_started", "string", "When the new interval opened; null on the idempotent re-start of a task already running."),
+    f("short_id", "integer", "The task's short id — the small number every `ref` accepts and the CLI prints."),
+    f("title", "string", "The task's title, verbatim."),
+    f("already_running", "boolean", "True when the call opened no new interval because the timer was already on."),
+    f("auto_stopped", "array", "Whatever D6's single-active rule stopped to make room. Empty unless `keep` was omitted and something else was running."),
+];
+
+/// One task D6's single-active rule stopped to make room.
+pub const AUTO_STOPPED_ROW: &[FieldDoc] = &[
+    f("id", "string", "The stopped task's uuid."),
+    f("short_id", "integer", "The stopped task's short id."),
+    f(
+        "tracked",
+        "string",
+        "That task's running total after the stop.",
+    ),
+];
+
+/// `task.stop`'s result.
+pub const R_TASK_STOP: &[FieldDoc] = &[
+    f("status", "string", "The status the task fell back to."),
+    f(
+        "interval",
+        "string",
+        "The interval just closed, as an ISO duration.",
+    ),
+    f(
+        "tracked",
+        "string",
+        "The running total after the stop — the same word `task.get` uses.",
+    ),
+    f(
+        "short_id",
+        "integer",
+        "The task's short id — the small number every `ref` accepts and the CLI prints.",
+    ),
+    f("title", "string", "The task's title, verbatim."),
+];
+
+/// `task.done`'s result.
+pub const R_TASK_DONE: &[FieldDoc] = &[
+    f(
+        "status",
+        "string",
+        "`done` — the status the task is now in.",
+    ),
+    f(
+        "completed",
+        "string",
+        "The instant recorded as the completion.",
+    ),
+    f(
+        "unblocked",
+        "array",
+        "The short ids this completion released.",
+    ),
+    o(
+        "spawned",
+        "object",
+        "The next instance, present only when the completed task carried a recurrence rule (D2).",
+    ),
+    o(
+        "tokens_hint",
+        "string",
+        "Present only when the completion self-reported no token counts — the nudge, not an error.",
+    ),
+    f(
+        "short_id",
+        "integer",
+        "The task's short id — the small number every `ref` accepts and the CLI prints.",
+    ),
+    f("title", "string", "The task's title, verbatim."),
+    f("tracked", "string", "Time on the clock when it closed."),
+    n(
+        "estimate",
+        "string",
+        "What it was estimated at, or null — beside `tracked`, the calibration in one line.",
+    ),
+    o(
+        "forced",
+        "boolean",
+        "Present and true only on a completion that overrode still-open blockers (D150).",
+    ),
+    o(
+        "blocked_by",
+        "array",
+        "The blockers that override left open. Present only beside `forced`.",
+    ),
+];
+
+/// `task.modify`'s result.
+pub const R_TASK_MODIFY: &[FieldDoc] = &[
+    f("short_id", "integer", "The task's short id — the small number every `ref` accepts and the CLI prints."),
+    f("_rev", "integer", "The row's revision counter, bumped by every write. Send it back as `expected_rev` to make a change conditional."),
+    f("set", "object", "The RESOLVED value stored for each field this call named — `due: \"friday\"` comes back as its instant."),
+];
+
+/// `task.cancel`'s result.
+pub const R_TASK_CANCEL: &[FieldDoc] = &[
+    f(
+        "short_id",
+        "integer",
+        "The task's short id — the small number every `ref` accepts and the CLI prints.",
+    ),
+    f("status", "string", "`cancelled`."),
+    f(
+        "unblocked",
+        "array",
+        "The short ids the cancellation released — a cancelled blocker stops blocking (D114).",
+    ),
+];
+
+/// `task.reopen`'s result.
+pub const R_TASK_REOPEN: &[FieldDoc] = &[
+    f(
+        "short_id",
+        "integer",
+        "The task's short id — the small number every `ref` accepts and the CLI prints.",
+    ),
+    f("status", "string", "The status the task went back to."),
+    f(
+        "blocked",
+        "array",
+        "The open dependents this reopen put back into `blocked` — the mirror of `unblocked`.",
+    ),
+];
+
+/// `tag.add`'s result.
+pub const R_TAG_ADD: &[FieldDoc] = &[
+    f(
+        "short_id",
+        "integer",
+        "The task's short id — the small number every `ref` accepts and the CLI prints.",
+    ),
+    f("tags", "array", "Every tag on the task after the call."),
+];
+
+/// `tag.remove`'s result.
+pub const R_TAG_REMOVE: &[FieldDoc] = &[
+    f("short_id", "integer", "The task's short id — the small number every `ref` accepts and the CLI prints."),
+    f("tags", "array", "The tags left on the task."),
+    f("removed", "array", "The tags this call took off. A tag the task does not have is `not_found` and removes nothing."),
+];
+
+/// `annotation.add`'s result.
+pub const R_ANNOTATION_ADD: &[FieldDoc] = &[
+    f(
+        "short_id",
+        "integer",
+        "The task's short id — the small number every `ref` accepts and the CLI prints.",
+    ),
+    f(
+        "annotation",
+        "object",
+        "The note as stored, echoed back so a caller can see its bytes survived.",
+    ),
+];
+
+/// `annotation.remove`'s result.
+pub const R_ANNOTATION_REMOVE: &[FieldDoc] = &[
+    f(
+        "short_id",
+        "integer",
+        "The task's short id — the small number every `ref` accepts and the CLI prints.",
+    ),
+    f(
+        "removed",
+        "object",
+        "The tombstone: the id and the instant, never the text (D113).",
+    ),
+];
+
+/// `check.add`'s result.
+pub const R_CHECK_ADD: &[FieldDoc] = &[
+    f(
+        "short_id",
+        "integer",
+        "The task's short id — the small number every `ref` accepts and the CLI prints.",
+    ),
+    f(
+        "check",
+        "object",
+        "The criterion as stored, appended at the end and starting `open`.",
+    ),
+];
+
+/// `check.set`'s result.
+pub const R_CHECK_SET: &[FieldDoc] = &[
+    f(
+        "short_id",
+        "integer",
+        "The task's short id — the small number every `ref` accepts and the CLI prints.",
+    ),
+    f("check_id", "string", "The criterion that moved."),
+    f("state", "string", "Its new state."),
+];
+
+/// `check.remove`'s result.
+pub const R_CHECK_REMOVE: &[FieldDoc] = &[
+    f(
+        "short_id",
+        "integer",
+        "The task's short id — the small number every `ref` accepts and the CLI prints.",
+    ),
+    f("check_id", "string", "The criterion that was dropped."),
+    f(
+        "removed",
+        "boolean",
+        "Always true on success; an unknown id is `not_found` instead.",
+    ),
+];
+
+/// `token.add`'s result.
+pub const R_TOKEN_ADD: &[FieldDoc] = &[
+    f("short_id", "integer", "The task's short id — the small number every `ref` accepts and the CLI prints."),
+    f("measurement", "object", "The measurement as banked. A repeated `idempotency_key` returns the one already stored, unchanged."),
+];
+
+/// `token.remove`'s result.
+pub const R_TOKEN_REMOVE: &[FieldDoc] = &[
+    f(
+        "short_id",
+        "integer",
+        "The task's short id — the small number every `ref` accepts and the CLI prints.",
+    ),
+    f(
+        "removed",
+        "object",
+        "The measurement that is now gone — the same object `token.add` hands back (#210).",
+    ),
+];
+
+/// `tokens.recompute`'s result.
+pub const R_TOKENS_RECOMPUTE: &[FieldDoc] = &[
+    f(
+        "dry_run",
+        "boolean",
+        "Whether this run wrote anything. Defaults to true: report the delta, change nothing.",
+    ),
+    f(
+        "tasks",
+        "array",
+        "One row per task whose attribution would change.",
+    ),
+    f(
+        "totals",
+        "object",
+        "The whole-store totals, before and after.",
+    ),
+];
+
+/// One task the attribution pass would change.
+pub const RECOMPUTE_ROW: &[FieldDoc] = &[
+    f("task", "integer", "The task's short id."),
+    f(
+        "action",
+        "string",
+        "What the pass would do to it: `insert`, `update` or `delete`.",
+    ),
+    f("before", "object", "The four buckets as they stand."),
+    f("after", "object", "The four buckets the pass computed."),
+];
+
+/// The four token buckets, never blended (D48).
+pub const TOKEN_BUCKETS_ROW: &[FieldDoc] = &[
+    f("input_tokens", "integer", "Fresh input tokens."),
+    f("output_tokens", "integer", "Output tokens."),
+    f("cache_read_tokens", "integer", "Tokens read from cache."),
+    f(
+        "cache_creation_tokens",
+        "integer",
+        "Tokens spent writing the cache.",
+    ),
+];
+
+/// The whole-store token total, before and after the pass.
+pub const RECOMPUTE_TOTALS: &[FieldDoc] = &[
+    f(
+        "before",
+        "integer",
+        "Total attributed tokens before the pass.",
+    ),
+    f("after", "integer", "Total attributed tokens after it."),
+];
+
+/// `dependency.add`'s result.
+pub const R_DEPENDENCY_ADD: &[FieldDoc] = &[
+    f(
+        "short_id",
+        "integer",
+        "The task's short id — the small number every `ref` accepts and the CLI prints.",
+    ),
+    f(
+        "depends_on",
+        "array",
+        "Every short id this task now waits on.",
+    ),
+    f(
+        "blocked",
+        "boolean",
+        "Whether the task is blocked after the call.",
+    ),
+    f(
+        "inserted",
+        "boolean",
+        "False when the edge was already there — a re-run told apart from a new edge.",
+    ),
+];
+
+/// `dependency.remove`'s result.
+pub const R_DEPENDENCY_REMOVE: &[FieldDoc] = &[
+    f(
+        "short_id",
+        "integer",
+        "The task's short id — the small number every `ref` accepts and the CLI prints.",
+    ),
+    f(
+        "depends_on",
+        "array",
+        "Every short id this task still waits on.",
+    ),
+    f(
+        "blocked",
+        "boolean",
+        "Whether the task is still blocked — whether it is actionable now.",
+    ),
+];
+
+/// `memory.add`'s result.
+pub const R_MEMORY_ADD: &[FieldDoc] = &[
+    f(
+        "id",
+        "string",
+        "The new doc's uuid — what a search hit carries and `memory.get` takes.",
+    ),
+    f("title", "string", "The doc's title, as stored."),
+    n(
+        "project",
+        "string",
+        "The project the doc is scoped to, or null for a global one (#134).",
+    ),
+    f(
+        "standing",
+        "boolean",
+        "Whether the doc was stored as a standing ruling — one meant for every session of its scope (D156).",
+    ),
+    f("created", "string", "When it was stored."),
+    o(
+        "hint",
+        "string",
+        "Present only when this add pushed its scope past the soft cap on standing docs: a nudge to merge or retract one. Test for the key, not its value (D156).",
+    ),
+];
+
+/// `memory.search`'s result.
+pub const R_MEMORY_SEARCH: &[FieldDoc] = &[
+    f("count", "integer", "How many hits came back."),
+    f("total", "integer", "How many rows matched before `limit` truncated (#132)."),
+    f("has_more", "boolean", "Whether anything was left behind."),
+    f("hits", "array", "The hits, bm25-ranked, docs and annotations together."),
+    f("matched", "string", "The FTS5 expression actually run — how `count: 0` is told apart from a store holding nothing on the subject."),
+];
+
+/// One search hit — a doc or an annotation, with its snippet and rank.
+pub const MEMORY_HIT_ROW: &[FieldDoc] = &[
+    f("id", "string", "The doc's id, or the annotation's."),
+    f("kind", "string", "`doc` or `annotation` — which store the hit came from."),
+    f("title", "string", "The doc's title; for an annotation, the task it is written on."),
+    n("source", "string", "Where the doc came from (a file path, `task:#51`), or null."),
+    f("snippet", "string", "The matching passage, with the hit in context. Never the whole body."),
+    f("rank", "number", "The bm25 score. Lower is a better match; the number itself is not comparable between searches."),
+    n("standing", "boolean", "For a doc hit, whether it is a standing ruling (D156); null on an annotation hit, which has no such flag."),
+];
+
+/// One knowledge doc, whole. The same row `memory.get` and `store.export` both answer with.
+pub const DOC_EXPORT_ROW: &[FieldDoc] = &[
+    f("id", "string", "The doc's uuid."),
+    n("source", "string", "Where it came from — the path `memory.import` keyed on, or null."),
+    f("title", "string", "The doc's title."),
+    f("body", "string", "The whole body, stored and returned verbatim (D41)."),
+    f("created", "string", "When it was first stored."),
+    f("modified", "string", "When it last changed."),
+    n("project", "string", "The project it is scoped to, or null."),
+    f("_rev", "integer", "The row's revision counter, bumped by every write. Send it back as `expected_rev` to make a change conditional."),
+    f("standing", "boolean", "Whether it is a standing ruling, meant for every session of its scope (D156). Stated on every doc, so a restore carries it."),
+];
+
+/// `memory.remove`'s result.
+pub const R_MEMORY_REMOVE: &[FieldDoc] = &[
+    f("id", "string", "The doc that is gone."),
+    f(
+        "removed",
+        "boolean",
+        "Always true on success. Removal is permanent and outside `undo`.",
+    ),
+];
+
+/// `memory.import`'s result.
+pub const R_MEMORY_IMPORT: &[FieldDoc] = &[
+    f("imported", "integer", "How many docs the batch stored."),
+    f(
+        "replaced",
+        "integer",
+        "How many of those replaced a doc with the same `source`, in place.",
+    ),
+    f("docs", "array", "One row per document in the batch."),
+];
+
+/// One document of an import batch, and whether it replaced one in place.
+pub const IMPORTED_DOC_ROW: &[FieldDoc] = &[
+    f("id", "string", "The doc's id — the one it already had when it was replaced in place."),
+    f("title", "string", "Its title."),
+    n("source", "string", "The source it was keyed on."),
+    f("replaced", "boolean", "Whether this row replaced an existing doc rather than creating one (D143)."),
+    f("_rev", "integer", "The row's revision counter, bumped by every write. Send it back as `expected_rev` to make a change conditional."),
+];
+
+/// `memory.list`'s result.
+pub const R_MEMORY_LIST: &[FieldDoc] = &[
+    f("count", "integer", "How many docs came back."),
+    f("total", "integer", "How many docs the scope holds."),
+    n(
+        "next_offset",
+        "integer",
+        "The `offset` that fetches the next page; null once nothing is left.",
+    ),
+    f("docs", "array", "The docs, newest-modified first."),
+];
+
+/// One row of the doc browser: recency metadata and a preview, not the body (#133).
+pub const MEMORY_LIST_ROW: &[FieldDoc] = &[
+    f("id", "string", "The doc's uuid."),
+    f("title", "string", "Its title."),
+    n("source", "string", "Where it came from, or null."),
+    n("project", "string", "The project it is scoped to, or null."),
+    f("created", "string", "When it was stored."),
+    f("modified", "string", "When it last changed — the column this list sorts by."),
+    f("_rev", "integer", "The row's revision counter, bumped by every write. Send it back as `expected_rev` to make a change conditional."),
+    f("body_preview", "string", "The opening of the body, not the whole of it — browsing pays for a preview, not a payload."),
+    f("body_truncated", "boolean", "Whether the preview is shorter than the body."),
+    f("standing", "boolean", "Whether it is a standing ruling (D156) — on every row, not only on a page filtered by `standing`."),
+];
+
+/// `memory.update`'s result.
+pub const R_MEMORY_UPDATE: &[FieldDoc] = &[
+    f("id", "string", "The doc that changed."),
+    f("title", "string", "Its title after the update."),
+    n("source", "string", "Its source after the update, or null."),
+    n("project", "string", "Its project after the update, or null."),
+    f("standing", "boolean", "The standing flag as it now stands, whether this call set it, cleared it or left it alone (D156)."),
+    f("_rev", "integer", "The row's revision counter, bumped by every write. Send it back as `expected_rev` to make a change conditional."),
+    f("modified", "string", "When the update landed."),
+];
+
+/// `report.summary`'s result.
+pub const R_REPORT_SUMMARY: &[FieldDoc] = &[
+    f("groups", "array", "One row per group, on the axis `group_by` named."),
+    f("generated", "string", "When the report was computed — the time of the call, not the window."),
+    f("filter", "string", "The filter this total was taken over, echoed so it cannot be read against the wrong scope (D69)."),
+    f("all", "boolean", "Whether cancelled work was counted (D24)."),
+    f("tokens_excluded_cancelled_tasks", "integer", "How many cancelled tasks carrying token spend the default just excluded."),
+    n("since", "string", "The start of the time window, or null when the caller set none (D97)."),
+    n("until", "string", "The end of that window, or null."),
+    f("store_empty", "boolean", "Whether the store has ever held a task at all — how \"nothing yet\" is told apart from \"nothing matched\"."),
+];
+
+/// One group of `report.summary`. The key column is NAMED by `group_by`.
+pub const SUMMARY_GROUP_ROW: &[FieldDoc] = &[
+    f(
+        "project",
+        "string",
+        "The group key — named by `group_by`, so this column is `project`, `status` or `priority`.",
+    ),
+    f("count", "integer", "How many tasks fell in this group."),
+    f(
+        "est_total",
+        "string",
+        "Their estimates summed, as an ISO duration. Only when `metrics` names it — the default is `count` alone.",
+    ),
+    f("overdue", "integer", "How many of them are past due. Only when `metrics` names it."),
+];
+
+/// `report.outcomes`'s result.
+pub const R_REPORT_OUTCOMES: &[FieldDoc] = &[
+    f("groups", "array", "One row per group, each metric beside the `n` it was computed over."),
+    f("group_by", "string", "The axis the rows are grouped on, echoed."),
+    f("metrics", "array", "The metrics computed. Omitting `metrics` on the request emits all of them."),
+    f("generated", "string", "When the report was computed."),
+    f("filter", "string", "The filter applied, echoed."),
+    n("since", "string", "The start of the window over when tasks CLOSED, or null."),
+    n("until", "string", "The end of that window, or null."),
+    f("store_empty", "boolean", "Whether the store has ever held a task at all — how \"nothing yet\" is told apart from \"nothing matched\"."),
+];
+
+/// One group of `report.outcomes`, each metric beside the `n` it was computed over.
+pub const OUTCOME_GROUP_ROW: &[FieldDoc] = &[
+    f("project", "string", "The group key, named by `group_by`."),
+    f(
+        "completions",
+        "integer",
+        "How many tasks completed in the window.",
+    ),
+    f(
+        "closed",
+        "integer",
+        "How many closed — completions plus cancellations.",
+    ),
+    f("rework", "object", "Completions that were later reopened."),
+    f(
+        "calibration",
+        "object",
+        "Tracked time over estimate, as a median.",
+    ),
+    f("cost", "object", "The four token buckets, never blended."),
+    f(
+        "silent",
+        "object",
+        "Completions carrying no annotation — work that left no record of what it decided.",
+    ),
+    f(
+        "abandonment",
+        "object",
+        "Work that was started and then cancelled, with the time inside it.",
+    ),
+    f(
+        "overrun",
+        "object",
+        "Completions that went past their `budget_tokens` (D139).",
+    ),
+    f(
+        "unproven",
+        "object",
+        "Completions whose acceptance criteria were not all passed (D138).",
+    ),
+    f(
+        "forced",
+        "object",
+        "Completions that overrode still-open blockers (D150).",
+    ),
+];
+
+/// A rate and its denominator (D137). Never one without the other.
+pub const OUTCOME_RATE: &[FieldDoc] = &[
+    f("count", "integer", "How many occurrences."),
+    f(
+        "n",
+        "integer",
+        "The denominator this rate was computed over. A rate never travels without it.",
+    ),
+    n(
+        "rate",
+        "number",
+        "`count` over `n`; null rather than zero when there was nothing to divide by.",
+    ),
+    f(
+        "refs",
+        "array",
+        "The short ids behind the count, so a number can be opened.",
+    ),
+];
+
+/// Tracked time over estimate, as a median.
+pub const OUTCOME_CALIBRATION: &[FieldDoc] = &[
+    n(
+        "median_ratio",
+        "number",
+        "Median tracked-over-estimate. Null when nothing in the group carried both.",
+    ),
+    f(
+        "n",
+        "integer",
+        "The denominator this rate was computed over. A rate never travels without it.",
+    ),
+];
+
+/// The four buckets, plus how checkable they are.
+pub const OUTCOME_COST: &[FieldDoc] = &[
+    f("tokens_in", "integer", "Fresh input tokens across the group."),
+    f("tokens_out", "integer", "Output tokens."),
+    f("tokens_cache_read", "integer", "Cache reads."),
+    f("tokens_cache_creation", "integer", "Cache writes."),
+    f("n", "integer", "The denominator this rate was computed over. A rate never travels without it."),
+    o("confidence", "string", "How checkable the figures are. Absent — not null — when nothing was measured, because there is nothing to grade."),
+];
+
+/// The rate shape plus the time inside the abandoned work.
+pub const OUTCOME_ABANDONMENT: &[FieldDoc] = &[
+    f(
+        "count",
+        "integer",
+        "How many started tasks were then cancelled.",
+    ),
+    f(
+        "n",
+        "integer",
+        "The denominator this rate was computed over. A rate never travels without it.",
+    ),
+    n("rate", "number", "`count` over `n`, or null."),
+    f(
+        "tracked_total",
+        "string",
+        "The time spent inside the abandoned work — how much, not only how many.",
+    ),
+    f("refs", "array", "The short ids behind the count."),
+];
+
+/// `store.export`'s result.
+pub const R_STORE_EXPORT: &[FieldDoc] = &[
+    f(
+        "tasks",
+        "array",
+        "Every task in scope, whole: fields, tags, notes, criteria, edges and measurements.",
+    ),
+    f(
+        "dropped_dependencies",
+        "integer",
+        "How many dependency edges pointed outside the filtered slice and were dropped.",
+    ),
+    f("projects", "array", "Every project."),
+    f("docs", "array", "Every knowledge doc."),
+    f(
+        "events",
+        "array",
+        "The whole audit log, minus the bookkeeping rows an import itself writes.",
+    ),
+    n(
+        "default_project",
+        "string",
+        "The store's default project, or null.",
+    ),
+];
+
+/// The restore spelling of tracked time (D42): raw seconds, both keys omitted when they would be zero.
+pub const TASK_EXPORT_TIME: &[FieldDoc] = &[
+    o(
+        "tracked_seconds",
+        "integer",
+        "Tracked time in raw seconds (D42). Omitted when it would be zero.",
+    ),
+    o(
+        "active_since",
+        "string",
+        "The open interval's anchor, omitted when no timer is running.",
+    ),
+];
+
+/// The same measurements on an export row, where the key is omitted rather than empty.
+pub const TASK_EXPORT_TOKENS: &[FieldDoc] = &[o(
+    "tokens",
+    "array",
+    "Every token measurement against this task. Omitted entirely for a task that has none.",
+)];
+
+/// `store.export`'s edges and notes, whose rows are never cut.
+pub const TASK_RELATIONS: &[FieldDoc] = &[
+    f("depends_on", "array", "The short ids this task waits on."),
+    f(
+        "annotations",
+        "array",
+        "Every note on the task — an export carries the whole history, unpaged.",
+    ),
+];
+
+/// The exported project record (D37).
+pub const PROJECT_EXPORT_ROW: &[FieldDoc] = &[
+    f("id", "string", "The project's uuid."),
+    f(
+        "name",
+        "string",
+        "Its name — what a task's `project` names.",
+    ),
+    n("description", "string", "Its description, or null."),
+    f("archived", "boolean", "Whether it is archived."),
+    f("created", "string", "When it was created."),
+];
+
+/// One row of the append-only audit log.
+pub const EVENT_ROW: &[FieldDoc] = &[
+    f("id", "string", "The event's uuid."),
+    f("entity", "string", "What kind of thing it happened to: `task`, `project`, `memory`."),
+    f("entity_id", "string", "That thing's uuid."),
+    f("op", "string", "What happened: `add`, `done`, `start`, `stop`, `tag.remove`, …"),
+    n("payload", "object", "The op's own vocabulary. Null only for a row whose payload will not parse — a corrupt store."),
+    f("ts", "string", "When it happened."),
+    n("actor", "string", "Who did it, when the caller said, or null."),
+];
+
+/// `store.import`'s result.
+pub const R_STORE_IMPORT: &[FieldDoc] = &[
+    f("imported", "integer", "How many tasks the document brought in."),
+    f("projects_imported", "integer", "How many projects it carried."),
+    f("projects_created", "array", "The NAMES of projects minted because a task named one the document did not carry — a list, so nothing appears out of nowhere unseen."),
+    f("docs_imported", "integer", "How many knowledge docs came in."),
+    f("docs_declared", "boolean", "Whether the document had a `docs` section at all — an empty one told apart from a missing one (#179)."),
+    f("events_imported", "integer", "How many audit rows came in."),
+    n("default_project", "string", "The default project after the import, or null."),
+];
+
+/// `event.list`'s result.
+pub const R_EVENT_LIST: &[FieldDoc] = &[
+    f("count", "integer", "How many events came back."),
+    f("events", "array", "The events, newest first."),
+];
+
+/// `event.revert`'s result.
+pub const R_EVENT_REVERT: &[FieldDoc] = &[
+    f("reverted", "object", "The event that was undone."),
+    f("short_id", "integer", "The task's short id — the small number every `ref` accepts and the CLI prints."),
+    f("title", "string", "The title of the task the undo touched."),
+    f("restored", "object", "What the inverse put back — per-op, the undo's own vocabulary."),
+    f("_rev", "integer", "The row's revision counter, bumped by every write. Send it back as `expected_rev` to make a change conditional."),
+];
+
+/// The event an undo reversed.
+pub const REVERTED_EVENT: &[FieldDoc] = &[
+    f("event", "string", "The undone event's id."),
+    f(
+        "op",
+        "string",
+        "Its op — undo names what it undid instead of answering ok.",
+    ),
+    f("ts", "string", "When the undone event happened."),
+];
+
+/// `reminder.fire`'s result.
+pub const R_REMINDER_FIRE: &[FieldDoc] = &[
+    f(
+        "fired",
+        "boolean",
+        "Whether this call fired the reminder. False on a repeat — the method is idempotent.",
+    ),
+    f(
+        "short_id",
+        "integer",
+        "The task's short id — the small number every `ref` accepts and the CLI prints.",
+    ),
+    f(
+        "at",
+        "string",
+        "The instant the reminder is recorded against.",
+    ),
+];
+
+/// `core.capabilities`'s result.
+pub const R_CORE_CAPABILITIES: &[FieldDoc] = &[
+    f("api", "string", "The API major version this build speaks."),
+    f("methods", "array", "Every method name it dispatches."),
+    f("params", "object", "The accepted params key set, per method — a key outside it is refused, never ignored (D33)."),
+    f("features", "array", "The optional features this build carries."),
+    n("default_project", "string", "The store's default project, or null."),
+    n("store", "string", "The store file this engine answers from (D74) — the caller's own in-process, the daemon's over a socket. Null in memory."),
+];
+
+/// `otlp.status`'s result.
+pub const R_OTLP_STATUS: &[FieldDoc] = &[
+    f("received", "integer", "Samples still inside the 30-day retention window."),
+    f("attributed", "integer", "How many of them turned into a measurement."),
+    f("orphaned", "integer", "How many matched no task's window."),
+    n("last_seen", "string", "The newest sample's timestamp; null on an empty buffer — a misconfigured exporter told apart from a quiet one."),
+];
+
+/// Every documented group of one method's `result`, as `(path, fields)`.
+///
+/// Composed the way the conformance suite composes the same shape, and checked
+/// against it key for key. An unknown method answers with an empty slice rather
+/// than panicking: the generator's own guard is what reports a method with no
+/// documented shape, with the method's name in the message, which is more use
+/// than a panic from inside a lookup.
+pub fn result_shape(method: &str) -> &'static [(&'static str, &'static [FieldDoc])] {
+    match method {
+        "project.create" => &[("result", R_PROJECT_CREATE)],
+        "project.list" => &[
+            ("result", R_PROJECT_LIST),
+            ("result.projects[]", PROJECT_LIST_ROW),
+        ],
+        "project.use" => &[("result", R_PROJECT_USE)],
+        "project.archive" => &[("result", R_PROJECT_ARCHIVE)],
+        "task.add" => &[("result", R_TASK_ADD)],
+        "task.list" => &[
+            ("result", R_TASK_LIST),
+            ("result.tasks[]", TASK_CORE),
+            ("result.tasks[]", TASK_LIVE_TIME),
+            ("result.tasks[]", TASK_BLOCKED),
+            ("result.tasks[]", TASK_STATUS_FLAG),
+        ],
+        "task.get" => &[
+            ("result", TASK_BUDGET_GAUGE),
+            ("result", TASK_CHECKS),
+            ("result", TASK_CORE),
+            ("result", TASK_LIVE_TIME),
+            ("result", TASK_GET_RELATIONS),
+            ("result", TASK_BLOCKS),
+            ("result", TASK_ANNOTATION_PAGE),
+            ("result", TASK_TOKENS),
+            ("result", TASK_BLOCKED),
+            ("result", TASK_STATUS_FLAG),
+            ("result", TASK_URGENCY_BREAKDOWN),
+            ("result", TASK_UNMET_BLOCKERS),
+            ("result.checks[]", TASK_CHECK),
+            ("result.annotations[]", ANNOTATION_ROW),
+            ("result.annotations[]", ANNOTATION_CAP),
+            ("result.annotations_removed[]", TOMBSTONE_ROW),
+            ("result.tokens[]", MEASUREMENT_ROW),
+            ("result.urgency_breakdown", URGENCY_BREAKDOWN_ROW),
+            ("result.unmet_blockers[]", BLOCKER_ROW),
+        ],
+        "task.brief" => &[
+            ("result", R_TASK_BRIEF),
+            ("result.neighbourhood", BRIEF_NEIGHBOURHOOD),
+            ("result.neighbourhood.depends_on[]", BRIEF_PREREQUISITE),
+            ("result.neighbourhood.blocks[]", BRIEF_DEPENDENT),
+            ("result.memory", BRIEF_MEMORY),
+        ],
+        "task.start" => &[
+            ("result", R_TASK_START),
+            ("result.auto_stopped[]", AUTO_STOPPED_ROW),
+        ],
+        "task.stop" => &[("result", R_TASK_STOP)],
+        "task.done" => &[
+            ("result", R_TASK_DONE),
+            ("result.blocked_by[]", BLOCKER_ROW),
+        ],
+        "task.modify" => &[("result", R_TASK_MODIFY)],
+        "task.cancel" => &[("result", R_TASK_CANCEL)],
+        "task.reopen" => &[("result", R_TASK_REOPEN)],
+        "tag.add" => &[("result", R_TAG_ADD)],
+        "tag.remove" => &[("result", R_TAG_REMOVE)],
+        "annotation.add" => &[
+            ("result", R_ANNOTATION_ADD),
+            ("result.annotation", ANNOTATION_ROW),
+        ],
+        "annotation.remove" => &[
+            ("result", R_ANNOTATION_REMOVE),
+            ("result.removed", TOMBSTONE_ROW),
+        ],
+        "check.add" => &[("result", R_CHECK_ADD), ("result.check", TASK_CHECK)],
+        "check.set" => &[("result", R_CHECK_SET)],
+        "check.remove" => &[("result", R_CHECK_REMOVE)],
+        "token.add" => &[
+            ("result", R_TOKEN_ADD),
+            ("result.measurement", MEASUREMENT_ROW),
+        ],
+        "token.remove" => &[
+            ("result", R_TOKEN_REMOVE),
+            ("result.removed", MEASUREMENT_ROW),
+        ],
+        "tokens.recompute" => &[
+            ("result", R_TOKENS_RECOMPUTE),
+            ("result.tasks[]", RECOMPUTE_ROW),
+            ("result.tasks[].before", TOKEN_BUCKETS_ROW),
+            ("result.tasks[].after", TOKEN_BUCKETS_ROW),
+            ("result.totals", RECOMPUTE_TOTALS),
+        ],
+        "dependency.add" => &[("result", R_DEPENDENCY_ADD)],
+        "dependency.remove" => &[("result", R_DEPENDENCY_REMOVE)],
+        "memory.add" => &[("result", R_MEMORY_ADD)],
+        "memory.search" => &[
+            ("result", R_MEMORY_SEARCH),
+            ("result.hits[]", MEMORY_HIT_ROW),
+        ],
+        "memory.get" => &[("result", DOC_EXPORT_ROW)],
+        "memory.remove" => &[("result", R_MEMORY_REMOVE)],
+        "memory.import" => &[
+            ("result", R_MEMORY_IMPORT),
+            ("result.docs[]", IMPORTED_DOC_ROW),
+        ],
+        "memory.list" => &[
+            ("result", R_MEMORY_LIST),
+            ("result.docs[]", MEMORY_LIST_ROW),
+        ],
+        "memory.update" => &[("result", R_MEMORY_UPDATE)],
+        "report.summary" => &[
+            ("result", R_REPORT_SUMMARY),
+            ("result.groups[]", SUMMARY_GROUP_ROW),
+        ],
+        "report.outcomes" => &[
+            ("result", R_REPORT_OUTCOMES),
+            ("result.groups[]", OUTCOME_GROUP_ROW),
+            ("result.groups[].rework", OUTCOME_RATE),
+            ("result.groups[].calibration", OUTCOME_CALIBRATION),
+            ("result.groups[].cost", OUTCOME_COST),
+            ("result.groups[].silent", OUTCOME_RATE),
+            ("result.groups[].abandonment", OUTCOME_ABANDONMENT),
+            ("result.groups[].overrun", OUTCOME_RATE),
+            ("result.groups[].unproven", OUTCOME_RATE),
+            ("result.groups[].forced", OUTCOME_RATE),
+        ],
+        "store.export" => &[
+            ("result", R_STORE_EXPORT),
+            ("result.tasks[]", TASK_CORE),
+            ("result.tasks[]", TASK_EXPORT_TIME),
+            ("result.tasks[]", TASK_EXPORT_TOKENS),
+            ("result.tasks[]", TASK_RELATIONS),
+            ("result.tasks[]", TASK_STATUS_FLAG),
+            ("result.tasks[]", TASK_CHECKS),
+            ("result.tasks[].tokens[]", MEASUREMENT_ROW),
+            ("result.tasks[].annotations[]", ANNOTATION_ROW),
+            ("result.tasks[].checks[]", TASK_CHECK),
+            ("result.projects[]", PROJECT_EXPORT_ROW),
+            ("result.docs[]", DOC_EXPORT_ROW),
+            ("result.events[]", EVENT_ROW),
+        ],
+        "store.import" => &[("result", R_STORE_IMPORT)],
+        "event.list" => &[("result", R_EVENT_LIST), ("result.events[]", EVENT_ROW)],
+        "event.revert" => &[
+            ("result", R_EVENT_REVERT),
+            ("result.reverted", REVERTED_EVENT),
+        ],
+        "reminder.fire" => &[("result", R_REMINDER_FIRE)],
+        "core.capabilities" => &[("result", R_CORE_CAPABILITIES)],
+        "otlp.status" => &[("result", R_OTLP_STATUS)],
+        _ => &[],
+    }
+}

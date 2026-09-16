@@ -20,6 +20,7 @@
 //!  * [`storage`]   — SQLite setup (WAL, busy_timeout), schema, row primitives.
 //!  * [`engine`]    — [`Engine`] and the per-method mutation/query logic.
 //!  * [`mod@dispatch`] — the single dispatch table + envelope handling.
+//!  * [`docs`]      — one line of English per response key, beside the freeze.
 //!  * [`filter`]    — the filter DSL subset used by `task.list`.
 //!  * [`urgency`]   — the fixed urgency formula.
 //!  * [`datetime`]  — the natural-language date grammar, `now` always injected.
@@ -65,6 +66,7 @@ pub mod clock;
 pub mod daemon;
 pub mod datetime;
 pub mod dispatch;
+pub mod docs;
 pub mod engine;
 pub mod error;
 pub mod filter;

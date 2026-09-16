@@ -789,7 +789,13 @@ pub const COMMAND_REF: &[CmdDoc] = &[
     CmdDoc {
         verb: "memory",
         aliases: &[],
-        method: "memory.search + get/add/remove/list/update",
+        // `memory.import` is named in full, and as its own ` + ` part rather
+        // than a seventh suffix, for two reasons: the verb reaches it and
+        // nothing else does — the omission printed "no CLI verb reaches this
+        // method" on the API reference under the one method whose documented
+        // use is a command line (#647) — and a seventh suffix makes the
+        // slash-joined token unbreakable past a 40-column manual page.
+        method: "memory.search + get/add/remove/list/update + memory.import",
         summary: "Store and search knowledge: docs, patterns, and your task annotations (D41).",
         usage: "tasqx memory <add <title> <body> [--source s] [--project p] [--standing]|search <words…> [--limit n] [--scope s] [--raw]|list [--limit n] [--offset n] [--project p] [--standing]|show <id>|update <id> [--title t] [--body b] [--source s] [--project p] [--standing true|false] [--expected-rev n]|rm <id>|import <path>>",
         examples: &[

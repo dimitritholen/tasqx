@@ -44,8 +44,10 @@ use std::sync::LazyLock;
 
 use crate::html::esc;
 
+mod api_ref;
 mod cli_ref;
 mod markdown;
+mod mcp_ref;
 
 /// The verb table the Commands page renders: `(verb, aliases, method)`.
 ///
@@ -118,7 +120,16 @@ const VERBS: [(&str, &str, &str); 43] = [
     ("chart", "—", "event.list"),
     ("theme", "—", "— (no store)"),
     ("config", "—", "— (registry + core.capabilities)"),
-    ("memory", "—", "memory.search + get/add/remove/list/update"),
+    (
+        "memory",
+        "—",
+        // The suffix list is read as `memory.<suffix>` by the API reference's
+        // verb map (#647), so `import` belongs in it: `tasqx memory import` is
+        // the ONLY way to reach `memory.import`, and leaving it out printed
+        // "no verb reaches this method" under the one method whose documented
+        // use is a command line.
+        "memory.search + get/add/remove/list/update + memory.import",
+    ),
     ("tokens", "—", "tokens.recompute"),
     ("export", "—", "store.export"),
     ("import", "—", "store.import"),
@@ -543,139 +554,6 @@ pub const DOCUMENTED_CLEAR_FIELDS: [&str; 10] = [
     "estimate",
     "tracked",
     "budget_tokens",
-];
-
-/// The MCP tool table the MCP page renders: `(tool, is_write, what it does)`.
-///
-/// Single source, same reason as [`VERBS`] — and unlike [`VERBS`] the truth it
-/// is bound to lives in another crate: `tasqx_core::mcp::tool_roster()`, the
-/// list `tools/list` actually serves. Until this table existed the page was
-/// free-prose rows nothing compared, which is the same shape the verb table was
-/// in before the drift guards: a tool could be added, renamed, or moved across
-/// the read/write fence with every gate green.
-const MCP_TOOLS: [(&str, bool, &str); 29] = [
-    (
-        "tasqx_list_tasks",
-        false,
-        "List tasks by <a href=\"#filters\">filter</a>. The default row is compact — \
-         <code>short_id</code>, <code>title</code>, <code>status</code>, <code>priority</code>, \
-         <code>urgency</code>, <code>blocked</code>, <code>due</code>, <code>project</code>, \
-         <code>tags</code>, null keys omitted; an explicit <code>fields</code> (including \
-         <code>[]</code>) returns the engine's own row (D152).",
-    ),
-    (
-        "tasqx_get_task",
-        false,
-        "One task's full detail: the rendered view alone by default, \
-         <code>include_json: true</code> for the JSON block too (D151). A long annotation \
-         body is cut in the response with a marker; <code>max_body_bytes</code> raises the \
-         cap, and a removed annotation is listed as a tombstone (D148).",
-    ),
-    (
-        "tasqx_summary",
-        false,
-        "Aggregate report by project/status/priority.",
-    ),
-    (
-        "tasqx_brief_task",
-        false,
-        "The task, its prerequisites' conclusions, and memory under a derived query (D136). \
-         Half the memory page (rounded up) is reserved for knowledge docs and annotations \
-         fill the rest, with <code>reserved_docs</code>, <code>docs_total</code> and \
-         <code>annotations_total</code> saying what happened (D147); the rendered view alone \
-         by default, <code>include_json: true</code> for the JSON (D151).",
-    ),
-    (
-        "tasqx_outcomes",
-        false,
-        "Rework, calibration, cost, silent completions, abandoned work, and <code>forced</code> \
-         completions that overrode open blockers — each rate beside its n (D137, D150).",
-    ),
-    ("tasqx_list_projects", false, "List projects."),
-    (
-        "tasqx_search_memory",
-        false,
-        "Search docs + annotations (D41).",
-    ),
-    (
-        "tasqx_get_memory",
-        false,
-        "Read one doc whole, by the id a hit carries (D71).",
-    ),
-    (
-        "tasqx_list_memory",
-        false,
-        "Browse docs without a query, newest-modified first (#133).",
-    ),
-    ("tasqx_add_task", true, "Capture a task."),
-    ("tasqx_modify_task", true, "Change fields."),
-    (
-        "tasqx_complete_task",
-        true,
-        "Complete a task; self-report its token cost (the primary channel). Refused with \
-         <code>conflict</code> while the task has open blockers, naming them; \
-         <code>force: true</code> completes it anyway and the override is recorded (D150). \
-         <code>view: \"card\"</code> leads the answer with the box card of the task as \
-         completed, so no <code>tasqx_get_task</code> re-read is needed (D153).",
-    ),
-    (
-        "tasqx_reopen_task",
-        true,
-        "Reopen a done or cancelled task; clears the completion timestamp.",
-    ),
-    (
-        "tasqx_cancel_task",
-        true,
-        "Cancel a task; returns any tasks newly unblocked (D114).",
-    ),
-    ("tasqx_start_timer", true, "Start the timer."),
-    ("tasqx_stop_timer", true, "Stop the timer."),
-    ("tasqx_tag_task", true, "Add tags."),
-    ("tasqx_untag_task", true, "Remove tags."),
-    (
-        "tasqx_add_check",
-        true,
-        "Add an acceptance criterion — a claim, never a command tasqx runs (D138).",
-    ),
-    (
-        "tasqx_set_check",
-        true,
-        "Mark a criterion passed or failed, with the evidence for it.",
-    ),
-    (
-        "tasqx_remove_check",
-        true,
-        "Drop a criterion that was the wrong thing to ask.",
-    ),
-    (
-        "tasqx_annotate_task",
-        true,
-        "Attach a note (markdown-friendly).",
-    ),
-    (
-        "tasqx_remove_annotation",
-        true,
-        "Scrub one annotation's text by id — a hard delete, permanent, and outside \
-         <code>undo</code> (D113).",
-    ),
-    ("tasqx_add_dependency", true, "Block one task on another."),
-    (
-        "tasqx_remove_dependency",
-        true,
-        "Cut a dependency edge; says whether the task is actionable now.",
-    ),
-    ("tasqx_add_memory", true, "Store a knowledge doc."),
-    (
-        "tasqx_update_memory",
-        true,
-        "Correct a doc's title/body/source/project in place (#135).",
-    ),
-    (
-        "tasqx_remove_memory",
-        true,
-        "Retract a knowledge doc by id — permanent, and outside <code>undo</code>.",
-    ),
-    ("tasqx_create_project", true, "Create a project."),
 ];
 
 /// The global-flags table the Commands page renders: `(flag, effect)`.
@@ -1878,349 +1756,21 @@ fn page_daemon() -> String {
 // Page 8 — MCP
 // ============================================================================
 
+/// The MCP reference — [`mcp_ref`] builds it: the setup prose, then one
+/// section per tool, generated from the server's own roster (#647).
 fn page_mcp() -> String {
-    let mut s = page_open("mcp");
-
-    s.push_str(&lead(
-        "tasqx bundles an MCP server, so an AI agent reads and mutates your tasks with zero glue. \
-         It is the same core API underneath — the agent and your shell are peers.",
-    ));
-
-    let scope_runs = format!(
-        "{}{}",
-        snippet(
-            "tasqx mcp serve\ntasqx mcp serve --scope write",
-            "tasqx mcp: serving over stdio (scope=read)\ntasqx mcp: serving over stdio (scope=write)",
-        ),
-        snippet(
-            "tasqx mcp serve   # scope omitted",
-            "tasqx mcp: serving over stdio (scope=read)",
-        ),
-    );
-    s.push_str(&ref_section(
-        "mcp-scope",
-        "It fails closed",
-        &p(
-            "The least-privilege default is <strong>read-only</strong>. Write access is an explicit \
-             operator choice for this local stdio process. Scope is configuration, not an \
-             authentication credential:",
-        ),
-        &tabs(&[
-            ("CLI", &scope_runs),
-            (
-                "MCP",
-                &soon("Coming in the MCP reference: every tool with its input schema and the scope it needs."),
-            ),
-        ]),
-    ));
-
-    s.push_str(&h3("The tools"));
-    // The split is counted, not spelled out — the "Twenty-six verbs" lesson,
-    // one page over.
-    let reads = MCP_TOOLS.iter().filter(|(_, write, _)| !write).count();
-    s.push_str(&p(&format!(
-        "{reads} read tools always; {writes} write tools only with write scope. Each carries MCP \
-         annotations (<code>readOnlyHint</code>, <code>destructiveHint</code>) so a client can reason \
-         about them before calling.",
-        writes = MCP_TOOLS.len() - reads,
-    )));
-    // Rendered from MCP_TOOLS, which the drift test binds to the server's own
-    // roster — name and read/write fence both.
-    let tool_rows: Vec<Vec<String>> = MCP_TOOLS
-        .iter()
-        .map(|(name, write, does)| {
-            vec![
-                format!("<code>{name}</code>"),
-                if *write { "write" } else { "read" }.to_string(),
-                (*does).to_string(),
-            ]
-        })
-        .collect();
-    s.push_str(&table_owned(&["Tool", "Scope", "Does"], &tool_rows));
-
-    // The second two-column block on this page: the transport described on the
-    // left, the two captured exchanges beside it.
-    let talking_prose = format!(
-        "{}{}",
-        p("Newline-delimited JSON-RPC 2.0 on stdin/stdout. Diagnostics go to stderr <em>only</em> — \
-           stdout carries nothing but responses, so the transport is never corrupted by a log line."),
-        p("The <code>initialize</code> result carries <code>instructions</code>: a scope-aware \
-           workflow the host may inject into the agent's system prompt, so the agent is told \
-           <em>when</em> to reach for tasqx and not only what it can call. It is elided beside \
-           this, because it is a few paragraphs long."),
-    );
-    let exchanges = format!(
-        "{}{}",
-        snippet(
-        "echo '{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"protocolVersion\":\"2024-11-05\",\"capabilities\":{},\"clientInfo\":{\"name\":\"demo\",\"version\":\"1\"}}}' | tasqx mcp serve 2>/dev/null | sed 's/\"instructions\":\"[^\"]*\"/\"instructions\":\"…\"/'",
-        // The version comes from the crate, not from a copy of it. This snippet
-        // shipped `"version":"0.1.0"` for the whole of 0.2.x: a captured output
-        // is a claim about what the binary answers, and a hand-typed one stops
-        // being true at the next release with nothing to notice. `Mcp::initialize`
-        // fills the field from `CARGO_PKG_VERSION`, so read it from the same
-        // place and the page cannot drift again.
-        &format!(
-            "{{\"id\":1,\"jsonrpc\":\"2.0\",\"result\":{{\"capabilities\":{{\"tools\":{{}}}},\
-             \"instructions\":\"…\",\"protocolVersion\":\"2024-11-05\",\
-             \"serverInfo\":{{\"name\":\"tasqx\",\"version\":\"{}\"}}}}}}",
-            env!("CARGO_PKG_VERSION")
-        ),
-        ),
-        snippet(
-        "echo '{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"tools/call\",\"params\":{\"name\":\"tasqx_list_tasks\",\"arguments\":{\"filter\":\"+api\"}}}' | tasqx mcp serve 2>/dev/null",
-        "{\"id\":3,\"jsonrpc\":\"2.0\",\"result\":{\"content\":[{\"text\":\"{\\n  \\\"count\\\": 1,\\n  \\\"next_offset\\\": null,\\n  \\\"store_empty\\\": false,\\n  \\\"tasks\\\": [\\n    {\\n      \\\"blocked\\\": false,\\n      \\\"due\\\": \\\"2026-07-17T00:00:00Z\\\",\\n      \\\"priority\\\": \\\"H\\\",\\n      \\\"project\\\": \\\"work.tasqx\\\",\\n      \\\"short_id\\\": 1,\\n      \\\"status\\\": \\\"pending\\\",\\n      \\\"tags\\\": [\\n        \\\"api\\\",\\n        \\\"release\\\"\\n      ],\\n      \\\"title\\\": \\\"Ship the v1 JSON API freeze\\\",\\n      \\\"urgency\\\": 17.5\\n    }\\n  ],\\n  \\\"total\\\": 1\\n}\",\"type\":\"text\"}],\"isError\":false}}",
-        ),
-    );
-    s.push_str(&ref_section(
-        "mcp-transport",
-        "Talking to it",
-        &talking_prose,
-        &tabs(&[
-            ("MCP", &exchanges),
-            (
-                "JSON API",
-                &soon("Coming in the JSON API reference: the same calls as envelopes, without the JSON-RPC wrapper."),
-            ),
-        ]),
-    ));
-
-    s.push_str(&h3("Refusing a write"));
-    s.push_str(&p(
-        "Ask a read-only server to write, and it refuses by name:",
-    ));
-    s.push_str(&snippet(
-        "echo '{\"jsonrpc\":\"2.0\",\"id\":4,\"method\":\"tools/call\",\"params\":{\"name\":\"tasqx_add_task\",\"arguments\":{\"title\":\"nope\"}}}' | tasqx mcp serve 2>/dev/null",
-        "{\"id\":4,\"jsonrpc\":\"2.0\",\"result\":{\"content\":[{\"text\":\"error [bad_request]: tool `tasqx_add_task` requires write scope, but this MCP server is running read-only. This cannot be changed from a tool call: the operator must relaunch the server as `tasqx mcp serve --scope write`.\",\"type\":\"text\"}],\"isError\":true}}",
-    ));
-
-    s.push_str(&h3("Wiring it into a client"));
-    s.push_str(&p(
-        "Most MCP clients take a command and arguments. Pass the scope you want the child \
-         process to have:",
-    ));
-    s.push_str(&pre_plain(
-        "{\n\
-         \x20 \"mcpServers\": {\n\
-         \x20   \"tasqx\": {\n\
-         \x20     \"command\": \"tasqx\",\n\
-         \x20     \"args\": [\"mcp\", \"serve\", \"--scope\", \"write\"]\n\
-         \x20   }\n\
-         \x20 }\n\
-         }",
-    ));
-    s.push_str(&note(
-        "Start an agent with the default read scope. Give it write only once you have watched what \
-         it does with read. A future network transport needs real authentication; this scope flag \
-         is not a credential.",
-    ));
-
-    s.push_str(&page_close("mcp"));
-    s
+    mcp_ref::page()
 }
 
 // ============================================================================
 // Page 9 — JSON API
 // ============================================================================
 
+/// The JSON API reference — [`api_ref`] builds it: the envelope and error
+/// prose, then one section per method with its parameters, its response shape
+/// and a real request/response pair (#647).
 fn page_api() -> String {
-    let mut s = page_open("api");
-
-    s.push_str(&lead(
-        "The load-bearing artifact. The CLI is a client; so is the MCP server; so could yours be. \
-         One envelope in, one envelope out.",
-    ));
-
-    // Two-column: the sentence about the transport and the invocation of it,
-    // read side by side. The CLI tab carries the invocation, and under it the
-    // OTHER client of `task.list` — `tasqx list` — with the screen it really
-    // printed: a fixture captured from the real binary on the pinned day
-    // (`crates/tasqx-cli/docs-fixtures`, D149) put through `ansi_html`, which is
-    // text rather than a picture. Every claim about output on this site comes
-    // from that path; this is the first one, and #646/#647 place the rest.
-    let cli_transport = format!(
-        "{}{}",
-        term_block(&esc(
-            "echo '{\"tasqx\":\"1\",\"method\":\"task.list\"}' | tasqx api",
-        )),
-        term_screen("tasqx list", "list"),
-    );
-    s.push_str(&ref_section(
-        "api-transport",
-        "The transport",
-        &p(
-            "<code>tasqx api</code> reads ONE request envelope on stdin and writes ONE response on \
-             stdout. No framing, no handshake, no daemon needed. For many calls on one connection, \
-             talk to the <a href=\"#daemon\">daemon</a> socket instead — same envelopes, newline-delimited.",
-        ),
-        &tabs(&[
-            ("CLI", &cli_transport),
-            (
-                "JSON API",
-                &soon("Coming in the JSON API reference: one section per method, with its parameters and the shape it returns."),
-            ),
-        ]),
-    ));
-
-    s.push_str(&h3("Request"));
-    s.push_str(&pre_plain(
-        "{\n\
-         \x20 \"tasqx\":  \"1\",            // API major. Required.\n\
-         \x20 \"id\":     \"e1\",           // Optional. Echoed back if present.\n\
-         \x20 \"method\": \"task.list\",    // Required.\n\
-         \x20 \"params\": { }              // Optional; defaults to {}.\n\
-         }",
-    ));
-
-    s.push_str(&h3("Response"));
-    s.push_str(&p("Success carries <code>result</code>; failure carries <code>error</code>. <code>ok</code> tells you which without inspecting further."));
-    s.push_str(&snippet(
-        "echo '{\"tasqx\":\"1\",\"id\":\"e1\",\"method\":\"task.list\",\"params\":{\"filter\":\"+api\",\"sort\":[\"-urgency\"]}}' | tasqx api",
-        "{\"id\":\"e1\",\"ok\":true,\"result\":{\"count\":1,\"tasks\":[{\"_rev\":4,\"completed\":null,\"created\":\"2026-07-16T08:51:09.2509427Z\",\"due\":\"2026-07-17T00:00:00Z\",\"estimate\":\"PT4H\",\"id\":\"019f6a1f-6142-70d3-be5b-e28dc6060e6c\",\"modified\":\"2026-07-16T08:51:09.6830568Z\",\"priority\":\"H\",\"project\":\"work.tasqx\",\"recurrence\":null,\"remind\":null,\"scheduled\":null,\"short_id\":1,\"status\":\"pending\",\"tags\":[\"api\",\"release\"],\"title\":\"Ship the v1 JSON API freeze\",\"urgency\":17.5,\"wait\":null}]},\"tasqx\":\"1\"}",
-    ));
-
-    // The second two-column block: the codes and what they mean on the left,
-    // the two captured envelopes on the right, where a reader comparing them
-    // does not have to scroll between the table and the example.
-    let error_prose = format!(
-        "{}{}{}",
-        p("An error is a value, not a crash. It carries a stable <code>code</code>, a human \
-           <code>message</code>, and machine-readable <code>data</code> — and the CLI's exit codes \
-           are these same codes."),
-        table(
-            &["Code", "Exit", "Means"],
-            &[
-            &[
-                "<code>bad_request</code>",
-                "2",
-                "Malformed params, an unparseable date, contradictory input.",
-            ],
-            &[
-                "<code>not_found</code>",
-                "4",
-                "No such task/project/reference.",
-            ],
-            &[
-                "<code>conflict</code>",
-                "5",
-                "A lost <code>expected_rev</code> race, or a lifecycle rule.",
-            ],
-            &[
-                "<code>unsupported_version</code>",
-                "6",
-                "The <code>tasqx</code> major you sent is not this build's.",
-            ],
-            &[
-                "<code>internal</code>",
-                "1",
-                "A bug or an I/O failure. Should not happen.",
-            ],
-            ],
-        ),
-        p("Version mismatches are caught before dispatch, and tell you what <em>is</em> supported:"),
-    );
-    let error_envelopes = format!(
-        "{}{}",
-        snippet(
-            "echo '{\"tasqx\":\"1\",\"id\":\"e2\",\"method\":\"task.get\",\"params\":{\"ref\":\"999\"}}' | tasqx api",
-            "{\"error\":{\"code\":\"not_found\",\"data\":{\"short_id\":999},\"message\":\"no task with short_id 999\"},\"id\":\"e2\",\"ok\":false,\"tasqx\":\"1\"}",
-        ),
-        snippet(
-            "echo '{\"tasqx\":\"2\",\"id\":\"v1\",\"method\":\"task.list\"}' | tasqx api",
-            "{\"error\":{\"code\":\"unsupported_version\",\"data\":{\"supported\":\"1\"},\"message\":\"unsupported api major version: 2\"},\"id\":\"v1\",\"ok\":false,\"tasqx\":\"1\"}",
-        ),
-    );
-    s.push_str(&ref_section(
-        "api-errors",
-        "Errors",
-        &error_prose,
-        &tabs(&[
-            ("JSON API", &error_envelopes),
-            (
-                "CLI",
-                &soon(
-                    "Coming in the CLI reference: the exit code every verb returns, verb by verb.",
-                ),
-            ),
-        ]),
-    ));
-
-    s.push_str(&h3("Feature detection"));
-    s.push_str(&p(
-        "Do not guess what a build supports — ask it. <code>core.capabilities</code> is the \
-         handshake, and it also reports the current default project.",
-    ));
-    s.push_str(&snippet(
-        "echo '{\"tasqx\":\"1\",\"id\":\"c1\",\"method\":\"core.capabilities\"}' | tasqx api",
-        &capabilities_snippet(),
-    ));
-
-    s.push_str(&h3("The methods"));
-    s.push_str(&p(&format!(
-        "All {} — and this table is what the tests compare against \
-         <code>core.capabilities</code>: the method names, and (D33) the Params column against its \
-         <code>params</code> map, so it cannot describe a method — or a key — this build does not \
-         have. A key not in the accepted set is refused, never ignored.",
-        METHODS.len()
-    )));
-    let method_rows: Vec<Vec<String>> = METHODS
-        .iter()
-        .map(|(method, params, returns)| {
-            vec![
-                format!("<code>{method}</code>"),
-                params.to_string(),
-                returns.to_string(),
-            ]
-        })
-        .collect();
-    s.push_str(&table_owned(&["Method", "Params", "Returns"], &method_rows));
-
-    s.push_str(&h3("Reading tasks without the API"));
-    s.push_str(&p(
-        "Any CLI command with <code>--json</code> prints the raw API result — the same bytes the \
-         envelope's <code>result</code> would carry. That is usually the shortest path from a shell \
-         script to structured data:",
-    ));
-    s.push_str(&snippet(
-        "tasqx show 1 --json",
-        "{\n\
-         \x20 \"_rev\": 4,\n\
-         \x20 \"annotations\": [\n\
-         \x20   {\n\
-         \x20     \"body\": \"Blocked on the D12 decision\",\n\
-         \x20     \"created\": \"2026-07-16T08:51:09.6830568Z\",\n\
-         \x20     \"id\": \"019f6a1f-62f3-75f0-bf57-e5ff9c7c452a\"\n\
-         \x20   }\n\
-         \x20 ],\n\
-         \x20 \"annotations_next_offset\": null,\n\
-         \x20 \"annotations_total\": 1,\n\
-         \x20 \"blocked\": false,\n\
-         \x20 \"completed\": null,\n\
-         \x20 \"created\": \"2026-07-16T08:51:09.2509427Z\",\n\
-         \x20 \"depends_on\": [],\n\
-         \x20 \"due\": \"2026-07-17T00:00:00Z\",\n\
-         \x20 \"estimate\": \"PT4H\",\n\
-         \x20 \"id\": \"019f6a1f-6142-70d3-be5b-e28dc6060e6c\",\n\
-         \x20 \"modified\": \"2026-07-16T08:51:09.6830568Z\",\n\
-         \x20 \"priority\": \"H\",\n\
-         \x20 \"project\": \"work.tasqx\",\n\
-         \x20 \"recurrence\": null,\n\
-         \x20 \"remind\": null,\n\
-         \x20 \"scheduled\": null,\n\
-         \x20 \"short_id\": 1,\n\
-         \x20 \"status\": \"pending\",\n\
-         \x20 \"tags\": [\n\
-         \x20   \"api\",\n\
-         \x20   \"release\"\n\
-         \x20 ],\n\
-         \x20 \"title\": \"Ship the v1 JSON API freeze\",\n\
-         \x20 \"tokens\": [],\n\
-         \x20 \"urgency\": 17.5,\n\
-         \x20 \"wait\": null\n\
-         }",
-    ));
-
-    s.push_str(&page_close("api"));
-    s
+    api_ref::page()
 }
 
 // ============================================================================
@@ -2668,9 +2218,12 @@ fn p(html: &str) -> String {
 /// written for a word — extending it is a one-line edit the day a roster grows
 /// that far, which is cheaper than the sentence going stale unwatched.
 fn count_word(n: usize) -> &'static str {
-    const WORDS: [&str; 13] = [
+    const WORDS: [&str; 14] = [
         "zero", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten",
         "eleven", "twelve",
+        // The thirteenth: the methods the MCP page says an agent cannot reach
+        // (#647). Extending the table is the one-line edit this panic asks for.
+        "thirteen",
     ];
     WORDS
         .get(n)
@@ -3276,6 +2829,9 @@ fn css() -> String {
     s.push_str(DARK_VARS);
     s.push_str("}\n");
     s.push_str(RULES);
+    // The JSON blocks the API reference renders carry their own four colours
+    // and a height cap; they live beside the code that emits the spans (#647).
+    s.push_str(api_ref::CSS);
     s
 }
 
@@ -4030,16 +3586,20 @@ mod tests {
         }
     }
 
-    /// The MCP page's tool table against the roster `tools/list` actually
-    /// serves. Until [`MCP_TOOLS`] existed the table was free-prose rows
-    /// nothing compared — the one documented surface an MCP operator reads
-    /// before wiring an agent up, unbound to the server it describes.
+    /// The MCP page against the roster `tools/list` actually serves.
     ///
-    /// Three claims, each checked: the names (both directions, so a tool can
-    /// neither ship undocumented nor survive on the page after removal), the
-    /// read/write fence per tool (a read documented as a write scares an
-    /// operator off a safe tool; the reverse teaches that a mutation is safe),
-    /// and the counted split sentence the page opens with.
+    /// This used to compare a hand-written `MCP_TOOLS` table with the server's
+    /// roster. The table is gone (#647): the page is GENERATED from
+    /// `mcp::tool_docs()`, so the name and the read/write fence cannot
+    /// disagree with the server by construction, and the per-tool guards live
+    /// beside the generator in [`mcp_ref`]. What is left here is what only the
+    /// whole document can answer — that every tool really reaches the rendered
+    /// page, and that the counted split sentence is counted from the roster
+    /// rather than typed.
+    ///
+    /// Both halves have failed before. The split sentence was prose for three
+    /// releases while the roster grew, and a tool could be added, renamed or
+    /// moved across the scope fence with every gate green.
     #[test]
     fn documented_mcp_tools_match_the_servers_roster() {
         let real = tasqx_core::mcp::tool_roster();
@@ -4051,30 +3611,15 @@ mod tests {
             real.len()
         );
 
-        for (name, write) in &real {
-            let (_, documented_write, _) = MCP_TOOLS
-                .iter()
-                .find(|(n, ..)| n == name)
-                .unwrap_or_else(|| panic!("MCP tool `{name}` is missing from the guide's table"));
-            assert_eq!(
-                documented_write, write,
-                "read/write drift on `{name}`: the guide and the server disagree \
-                 about which side of the scope fence it is on"
-            );
-        }
-        for (name, ..) in MCP_TOOLS {
-            assert!(
-                real.iter().any(|(n, _)| *n == name),
-                "the guide documents MCP tool `{name}`, which the server does not serve"
-            );
-        }
-
-        // The table and the counted split must actually reach the page.
         let doc = generate();
-        for (name, ..) in MCP_TOOLS {
+        for (name, _) in &real {
             assert!(
                 doc.contains(&format!("<code>{name}</code>")),
-                "tool `{name}` is in MCP_TOOLS but never rendered onto the page"
+                "tool `{name}` is served and never rendered onto the page"
+            );
+            assert!(
+                doc.contains(&format!("id=\"mcp-{name}\"")),
+                "tool `{name}` has no section to link to"
             );
         }
         let reads = real.iter().filter(|(_, write)| !write).count();

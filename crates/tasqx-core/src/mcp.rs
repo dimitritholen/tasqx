@@ -1502,6 +1502,54 @@ pub fn tool_roster() -> Vec<(&'static str, bool)> {
     tool_specs().iter().map(|s| (s.name, s.write)).collect()
 }
 
+/// One tool as a documentation generator has to read it (#647): everything
+/// `tools/list` publishes about it, plus the method it routes to.
+///
+/// A borrowed view of the private `ToolSpec`, rather than that type made
+/// public. The spec is this module's own bookkeeping and gains fields when the
+/// protocol does; this is the subset the MCP reference renders, so widening one
+/// does not silently widen the other. `schema` is borrowed from the built-once
+/// table, so nothing is cloned per tool.
+pub struct ToolDoc {
+    /// The tool name a host calls.
+    pub name: &'static str,
+    /// The JSON API method it routes to — §7's 1:1 mapping, and the anchor the
+    /// reference links to.
+    pub method: &'static str,
+    /// Whether it needs write scope.
+    pub write: bool,
+    /// The MCP `destructiveHint`: can this call destroy information the store
+    /// already holds?
+    pub destructive: bool,
+    /// The MCP `idempotentHint`: does repeating it leave the store where one
+    /// call left it?
+    pub idempotent: bool,
+    /// The description the model reads before choosing the tool.
+    pub description: &'static str,
+    /// The `inputSchema`, exactly as `tools/list` serves it.
+    pub schema: &'static Value,
+}
+
+/// Every tool, in `tools/list` order, for the documentation generator.
+///
+/// Same reason [`tool_roster`] is public, and the same guard shape: the MCP
+/// reference page is generated from this, so a tool cannot ship undocumented
+/// and a documented tool cannot outlive the server's roster.
+pub fn tool_docs() -> Vec<ToolDoc> {
+    tool_specs()
+        .iter()
+        .map(|s| ToolDoc {
+            name: s.name,
+            method: s.method,
+            write: s.write,
+            destructive: s.destructive,
+            idempotent: s.idempotent,
+            description: s.description,
+            schema: &s.schema,
+        })
+        .collect()
+}
+
 /// The server-level workflow a host may inject into the agent's system prompt,
 /// scope-aware (D141).
 ///
