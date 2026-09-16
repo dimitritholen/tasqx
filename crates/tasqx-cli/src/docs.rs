@@ -418,7 +418,8 @@ const METHODS: [(&str, &str, &str); 42] = [
          words and would answer nothing if it were. Half the page (rounded up) is reserved for \
          knowledge docs and annotations fill the rest, either kind taking the other's unused \
          slots, docs listed first (D147); <code>reserved_docs</code>, <code>docs_total</code> \
-         and <code>annotations_total</code> say what was done. <code>max_body_bytes</code> caps \
+         and <code>annotations_total</code> say what was done. <code>memory_limit</code> \
+         defaults to 5 (D154). <code>max_body_bytes</code> caps \
          each annotation body of the TASK half in the response, exactly as on \
          <code>task.get</code> (D148) — no <code>annotations_limit</code>, because a brief is \
          what you read BEFORE starting and dropping whole notes from it is the wrong cut.",

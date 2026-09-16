@@ -393,6 +393,33 @@ fn annotations_are_searched_beside_documents() {
     );
 }
 
+/// D154: an omitted `memory_limit` is FIVE hits, not `memory.search`'s ten.
+///
+/// The number lives in the engine, so the CLI's `tasqx brief` and the MCP tool
+/// answer the same page — and it is smaller than a search's because this query
+/// was derived from the task's own words rather than asked by anybody. An
+/// explicit limit is untouched by the change, which is what the test below
+/// this one pins.
+#[test]
+fn the_default_memory_page_is_five_hits() {
+    let e = engine();
+    for n in 0..8 {
+        call(
+            &e,
+            "memory.add",
+            json!({ "title": format!("retries {n}"), "body": "retries are bounded and logged" }),
+        )
+        .expect("doc");
+    }
+    let t = add(&e, "Bound the retries", json!({}));
+
+    let m = &brief(&e, t)["memory"];
+    assert_eq!(m["count"], 5, "the default page: {m}");
+    assert_eq!(m["hits"].as_array().expect("hits").len(), 5);
+    assert_eq!(m["total"], 8, "and it says what it withheld: {m}");
+    assert_eq!(m["has_more"], true);
+}
+
 #[test]
 fn memory_limit_bounds_the_hits() {
     let e = engine();
@@ -562,13 +589,16 @@ fn a_ruling_survives_a_hundred_sibling_notes_that_share_the_tasks_words() {
         .filter_map(|h| h["kind"].as_str())
         .collect();
     assert_eq!(kinds[0], "doc", "docs are listed first: {m}");
-    assert_eq!(m["reserved_docs"], 5, "half of the default limit: {m}");
+    assert_eq!(
+        m["reserved_docs"], 3,
+        "half of the default limit, rounded up (D154 moved it to five): {m}"
+    );
     assert_eq!(m["docs_total"], 1);
     assert!(
         m["annotations_total"].as_i64().expect("annotations_total") >= 100,
         "the notes really are the crowd this test claims: {m}"
     );
-    assert_eq!(m["count"], 10);
+    assert_eq!(m["count"], 5);
     assert_eq!(m["has_more"], true);
     assert_eq!(
         m["total"].as_i64().expect("total"),
@@ -614,11 +644,12 @@ fn docs_come_first_and_annotations_fill_what_docs_leave() {
         kinds,
         ["doc", "doc"]
             .into_iter()
-            .chain(std::iter::repeat_n("annotation", 8))
+            .chain(std::iter::repeat_n("annotation", 3))
             .collect::<Vec<_>>(),
-        "two docs first, eight annotations after: {m}"
+        "two docs first, then annotations for the rest of the page — including the \
+         third doc slot no doc claimed: {m}"
     );
-    assert_eq!(m["reserved_docs"], 5, "reserved, not spent: {m}");
+    assert_eq!(m["reserved_docs"], 3, "reserved, not spent: {m}");
     assert_eq!(m["docs_total"], 2);
     assert_eq!(m["annotations_total"], 20);
 }

@@ -85,6 +85,16 @@ struct PreparedCall {
     /// Whether the `annotation.add` answer echoes the stored body back
     /// (D72/D75's default) or a `body_bytes` length in its place.
     include_body: bool,
+    /// Whether a memory hit carries the bm25 `rank` it was ranked by (D154).
+    /// False unless the caller said otherwise: `hits` arrives sorted
+    /// best-first, so the float restates the order it is printed in.
+    include_rank: bool,
+    /// Whether a `memory.list` row is the engine's own (D154). False unless
+    /// the caller said otherwise, in which case the row is narrowed to the
+    /// four fields that identify a doc — the same narrowing
+    /// `fields_defaulted_by_us` performs one tool over, with no `fields` param
+    /// on the method to express it as.
+    include_preview: bool,
     /// Whether THIS transport supplied the `task.list` page.
     paged_list_by_us: bool,
     /// Whether THIS transport supplied the `task.list` projection (D152).
@@ -230,6 +240,29 @@ const ANNOTATION_BODY_CAP: u64 = 16_384;
 /// now decided once, at the engine, so the CLI and `tasqx api` share it
 /// instead of falling back to "no limit" behind this transport's back.
 const LIST_PAGE: u64 = crate::engine::task::DEFAULT_TASK_LIST_LIMIT;
+
+/// How many docs `tasqx_list_memory` returns when the caller names no `limit`
+/// (D154).
+///
+/// [`LIST_PAGE`]'s reasoning one relation over, and the same failure: an
+/// omitted `limit` means EVERY doc from `offset` on at the engine, which is a
+/// browse page that grows with the store. One `tasqx_list_memory {}` on the
+/// real store on 2026-09-16 answered 42.7 KB for 51 docs — past
+/// [`RESPONSE_BUDGET_BYTES`] by a factor of two — because each row carried a
+/// 160-character `body_preview` the caller had not asked to read.
+///
+/// Twenty because that is what a browse page is FOR: enough to see what is in
+/// the store, with `next_offset` to walk further. There is no byte-shrink
+/// behind it the way [`LIST_PAGE`] has one, because the row this page carries
+/// is narrowed too (see [`McpServer::present`]) — a title and a source path
+/// rather than a body preview, which on the store that provoked this measured
+/// 7 KB for the twenty against 42.7 KB for the fifty-one. A pathological page
+/// of very long titles is still possible and would arrive whole; the lever if
+/// that ever shows up is the same bisection `fit_list_to_budget` already is.
+///
+/// The bound lives here and not in `memory_list` for D63's reason: the CLI and
+/// `tasqx api` have no payload limit and keep answering whole.
+const MEMORY_LIST_PAGE: u64 = 20;
 
 /// The fields one `tasqx_list_tasks` row carries when the caller names none
 /// (D152).
@@ -479,6 +512,21 @@ const TRANSPORT_ONLY_ARGS: &[(&str, &str, &str)] = &[
         "whether the response leads with the D146 box card of the task AS COMPLETED (D153).      The closing card a person reads after a completion used to cost a second      `tasqx_get_task` per task — 26 get_task calls against 14 completions over 36 hours      of transcripts — because `task.done`'s frozen result carries no task to render. So      the transport reads the task back itself and spells it ahead of the JSON. `task.done`      has no opinion on how its answer is wrapped.",
     ),
     (
+        "tasqx_search_memory",
+        "include_rank",
+        "whether each hit carries the raw FTS5 bm25 `rank` the engine ranked it by (D154).      Default FALSE: `hits` arrives already sorted best-first, so the number answers a      question the order has already answered — and it is seventeen characters of      `-1.2345678901234567` on every hit of every search. The JSON API still freezes it      (D56) and `tasqx api memory.search` still returns it; this is one transport      declining to spend bytes on it. `memory.search` has no opinion on which of the keys      it returns a client chooses to forward.",
+    ),
+    (
+        "tasqx_brief_task",
+        "include_rank",
+        "whether the brief's memory hits carry the bm25 `rank`. Same argument, same reason      and same default as `tasqx_search_memory`'s — the brief runs that same search under      a query it derived, so its hits are the same rows and were sorted the same way. It      is read before the budget runs, so the JSON block `include_json: true` buys is the      stripped one and not a second, wider copy. `task.brief` has no opinion on which of      the keys it returns a client chooses to forward.",
+    ),
+    (
+        "tasqx_list_memory",
+        "include_preview",
+        "whether a listed doc carries the engine's whole row — `project`, `created`, `_rev`,      the 160-character `body_preview` and `body_truncated` — or the four fields a browse      page is read for: `id`, `title`, `source`, `modified` (D154). Default FALSE, because      the preview is what made one `tasqx_list_memory {}` 42.7 KB for 51 docs, and a      browse page is how you FIND a doc: `tasqx_get_memory` on the id is how you read one.      `memory.list` has no opinion on which of its keys one transport forwards.",
+    ),
+    (
         "tasqx_annotate_task",
         "include_body",
         "whether the response echoes the annotation body back beside its id and timestamp.      D72/D75 keep the echo ON by default — it is the caller's only evidence that a body      promised to be stored verbatim really was — so this is opt-OUT, not a reversal: a      caller who already holds every byte it sent (the common case for a long note) can      decline paying to receive them again, and one that wants the verbatim proof still      gets it by doing nothing. `annotation.add` has no opinion on how its own result is      echoed back over one particular transport.",
@@ -686,8 +734,15 @@ fn build_tool_specs() -> Vec<ToolSpec> {
                              annotations fill the rest, either kind taking the other's unused \
                              slots. The response says what it did in `reserved_docs`, \
                              `docs_total` and `annotations_total`.",
-                            crate::engine::MEMORY_SEARCH_LIMIT
+                            crate::engine::BRIEF_MEMORY_LIMIT
                         )
+                    },
+                    "include_rank": {
+                        "type": "boolean",
+                        "description": "Add the raw FTS5 bm25 `rank` to each memory hit. \
+                             Default false. LOWER (more negative) is the better match, and \
+                             the hits are already sorted best-first, so this is only for \
+                             comparing hits against each other."
                     },
                     "max_body_bytes": max_body_bytes_schema(),
                     "include_json": {
@@ -843,11 +898,10 @@ fn build_tool_specs() -> Vec<ToolSpec> {
                 read a doc whole with `tasqx_get_memory` on its `id`, and an \
                 annotation whole with `tasqx_get_task` on the task its `source` \
                 names. Every word of a plain query is REQUIRED, so `matched` on the \
-                result is what explains a zero-hit answer. A hit's `rank` is the raw \
-                FTS5 bm25 score: LOWER (more negative) is a BETTER match, the opposite \
-                of most scoring conventions. `hits` is already sorted best-first, so \
-                `rank` is for comparing hits against each other, not for a fixed \
-                threshold. The response carries `total` (every row the query matched, \
+                result is what explains a zero-hit answer. `hits` is already sorted \
+                best-first; `include_rank: true` adds the raw FTS5 bm25 `rank` to each \
+                one, where LOWER (more negative) is the better match. The response \
+                carries `total` (every row the query matched, \
                 before `limit` truncates) and `has_more`, so a hit list that looks \
                 complete is never mistaken for one that is.",
             schema: json!({
@@ -881,6 +935,13 @@ fn build_tool_specs() -> Vec<ToolSpec> {
                              imported ADR. Never admits ANOTHER project's documents. Needs \
                              `project`; without one there is nothing to widen from and it is \
                              refused."
+                    },
+                    "include_rank": {
+                        "type": "boolean",
+                        "description": "Add the raw FTS5 bm25 `rank` to each hit. Default \
+                             false. LOWER (more negative) is the better match, and `hits` is \
+                             already sorted best-first, so this is only for comparing hits \
+                             against each other — never for a fixed threshold."
                     }
                 },
                 "required": ["query"]
@@ -896,15 +957,30 @@ fn build_tool_specs() -> Vec<ToolSpec> {
                 enumeration `tasqx_search_memory` cannot do without a query. Newest-modified \
                 first by default. Rows come back in pages: the response carries `count` \
                 (returned), `total` (matched) and `next_offset`, null once nothing is left — the \
-                same shape `tasqx_list_tasks` uses. Each row carries a short `body_preview`, not \
-                the full body; read one whole with `tasqx_get_memory` on its `id`.",
+                same shape `tasqx_list_tasks` uses, and `limit` says what one page holds. A row \
+                is `id`, `title`, `source` and `modified` — what you need to RECOGNISE a doc; \
+                `include_preview: true` adds the rest of the engine's row, `body_preview` \
+                included, and `tasqx_get_memory` on an `id` reads one doc whole.",
             schema: json!({
                 "type": "object",
                 "properties": {
                     "limit": {
                         "type": "integer",
                         "minimum": 0,
-                        "description": "How many rows to return. Omit for every doc from `offset` on."
+                        "description": format!(
+                            "How many rows to return. Optional; defaults to \
+                             {MEMORY_LIST_PAGE}, because an unbounded browse page grows with \
+                             the store. Pass your own to page differently; `next_offset` \
+                             walks from wherever this leaves off."
+                        )
+                    },
+                    "include_preview": {
+                        "type": "boolean",
+                        "description": "Return the whole engine row per doc — `project`, \
+                             `created`, `_rev`, a 160-character `body_preview` and \
+                             `body_truncated` — instead of the four fields that identify it. \
+                             Default false: the preview is the bulk of a browse page, and \
+                             `tasqx_get_memory` reads one doc whole."
                     },
                     "offset": {
                         "type": "integer",
@@ -1890,6 +1966,24 @@ impl<'e> McpServer<'e> {
                 }
             }
         }
+        // D154, the same two moves on the other browse tool. `memory.list`
+        // reads an omitted `limit` as "every doc from `offset` on", which is a
+        // page that grows with the store — 42.7 KB for 51 docs, measured — so
+        // the page is supplied HERE, where the payload limit lives, exactly as
+        // above. An explicit `limit` is forwarded untouched, `limit: 0`
+        // included: zero is a page of nothing a caller can mean on purpose,
+        // and the engine answers it with `total` intact. A JSON `null` counts
+        // as absent, the D32 reading this file already applies to `fields` and
+        // `view`. The ROW narrowing is not here but in `present`: `memory.list`
+        // has no `fields` param to express it as, so the transport does it to
+        // the answer instead.
+        if spec.method == "memory.list" {
+            if let Some(obj) = args.as_object_mut() {
+                if obj.get("limit").is_none_or(Value::is_null) {
+                    obj.insert("limit".to_string(), json!(MEMORY_LIST_PAGE));
+                }
+            }
+        }
 
         // Arguments this server READS AND DOES NOT FORWARD. The removal is
         // driven by [`TRANSPORT_ONLY_ARGS`] rather than written out per key,
@@ -1928,6 +2022,20 @@ impl<'e> McpServer<'e> {
             .get("include_body")
             .and_then(Value::as_bool)
             .unwrap_or(true);
+        // D154's two, both false by default and both read the way
+        // `include_json` is: a non-boolean falls back to the default rather
+        // than being refused, because the default is the smaller answer and a
+        // caller who mistyped one of these asked for less, not for something
+        // else — unlike `view`, where a defaulted mistake spells a document as
+        // a table in front of a person.
+        let include_rank = consumed
+            .get("include_rank")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        let include_preview = consumed
+            .get("include_preview")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
         // D146, and the one transport-only argument that is not a boolean.
         //
         // An unreadable value is REFUSED rather than defaulted, which is the
@@ -2019,6 +2127,8 @@ impl<'e> McpServer<'e> {
             include_json,
             view,
             include_body,
+            include_rank,
+            include_preview,
             paged_list_by_us,
             fields_defaulted_by_us,
         })
@@ -2048,6 +2158,33 @@ impl<'e> McpServer<'e> {
     fn present(&self, spec: &ToolSpec, prepared: &PreparedCall, outcome: DispatchOutcome) -> Value {
         match outcome {
             Ok(mut result) => {
+                // D154: the bm25 float, dropped from every hit unless the
+                // caller asked for it. FIRST, before anything below measures
+                // or renders: the brief hands its result to
+                // `fit_brief_to_budget`, so a strip that ran afterwards would
+                // leave the JSON block the caller paid for wider than the one
+                // this is supposed to send. The re-dispatched candidates that
+                // bisection measures need no strip of their own — they are
+                // rendered and never serialized, and `markdown` prints no
+                // `rank`.
+                //
+                // Keyed on the method, so the default of `false` for the
+                // sixteen tools that do not advertise the argument can never
+                // reach a result that has nothing to do with memory.
+                if !prepared.include_rank {
+                    let hits = match spec.method {
+                        "memory.search" => result.get_mut("hits"),
+                        "task.brief" => result.pointer_mut("/memory/hits"),
+                        _ => None,
+                    };
+                    if let Some(hits) = hits.and_then(Value::as_array_mut) {
+                        for hit in hits {
+                            if let Some(obj) = hit.as_object_mut() {
+                                obj.remove("rank");
+                            }
+                        }
+                    }
+                }
                 // D153: the closing card, drawn from the task as it is
                 // AFTER completion, so it carries the Delivered row and the
                 // check states. `task.done`'s frozen result has no task in it
@@ -2176,6 +2313,29 @@ impl<'e> McpServer<'e> {
                         for row in rows {
                             if let Some(obj) = row.as_object_mut() {
                                 obj.retain(|_, v| !v.is_null());
+                            }
+                        }
+                    }
+                }
+                // D154's row narrowing, D152's one relation over and done
+                // HERE rather than in the arguments because `memory.list` has
+                // no projection param to ask with: the four kept keys are what
+                // a browse page is read for — which doc, what it is called,
+                // where it came from, how fresh it is — and the five dropped
+                // ones are `project`, `created`, `_rev` and the
+                // 160-character `body_preview`/`body_truncated` pair that made
+                // one call 42.7 KB. Unlike a default `task.list` row, a null
+                // is KEPT: these four are the row's identity, and a shape that
+                // changes with the data is one a caller has to probe. A doc is
+                // read whole with `tasqx_get_memory`, which is what the tool
+                // description says to do.
+                if spec.method == "memory.list" && !prepared.include_preview {
+                    if let Some(rows) = result.get_mut("docs").and_then(Value::as_array_mut) {
+                        for row in rows {
+                            if let Some(obj) = row.as_object_mut() {
+                                obj.retain(|k, _| {
+                                    matches!(k.as_str(), "id" | "title" | "source" | "modified")
+                                });
                             }
                         }
                     }
@@ -2364,7 +2524,8 @@ impl<'e> McpServer<'e> {
     /// for a big page on purpose. That exemption is this method's own and no
     /// longer `fit_to_budget`'s — D148 removed the `annotations_limit` one,
     /// because a task's annotations are the caller's own prose and can be
-    /// arbitrarily large, while a memory page is `MEMORY_SEARCH_LIMIT` bounded
+    /// arbitrarily large, while a memory page is
+    /// [`BRIEF_MEMORY_LIMIT`](crate::engine::BRIEF_MEMORY_LIMIT) bounded
     /// snippets. The task half arrives with its bodies already capped, which is
     /// where a brief's unbounded bytes actually came from.
     ///
@@ -2411,7 +2572,12 @@ impl<'e> McpServer<'e> {
 
         let mut view = view;
         let mut lo = 0u64;
-        let mut hi = crate::engine::MEMORY_SEARCH_LIMIT;
+        // The ceiling is the page this bisection is shrinking, and it only
+        // ever runs for a caller who named no `memory_limit` (the one that did
+        // returned above) — so the page in hand is the default, five since
+        // D154. Bisecting from ten would spend two dispatches measuring pages
+        // the engine was never asked for.
+        let mut hi = crate::engine::BRIEF_MEMORY_LIMIT;
         let mut best: Option<String> = None;
         while lo <= hi {
             let mid = lo + (hi - lo) / 2;
