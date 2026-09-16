@@ -1,11 +1,11 @@
 ---
 name: land-tasqx-pr
-description: Land a tasqx task's branch on protected main — push, open the PR, wait out the eleven required checks, handle every review thread, rebase-merge without --delete-branch, reinstall and verify, then close the task once. Use it ONLY when the user explicitly asks to land, merge, ship or open the PR for a task ("open the PR and merge it", "land task #N", "merge the branch", "ship it"); a finished implementation on its own is not a request to publish it. Sighted on tasks #95, #645 and #650 — each time a step was skipped, misread or run in the wrong order and cost a retry, so follow the sequence even when a shortcut looks safe.
+description: Land a tasqx task's branch on protected main — push, open the PR, wait out the twelve required checks, handle every review thread, rebase-merge without --delete-branch, reinstall and verify, then close the task once. Use it ONLY when the user explicitly asks to land, merge, ship or open the PR for a task ("open the PR and merge it", "land task #N", "merge the branch", "ship it"); a finished implementation on its own is not a request to publish it. Sighted on tasks #95, #645 and #650 — each time a step was skipped, misread or run in the wrong order and cost a retry, so follow the sequence even when a shortcut looks safe.
 ---
 
 # Land a tasqx task PR
 
-`main` in tasqx is protected: pull request required, linear history, eleven
+`main` in tasqx is protected: pull request required, linear history, twelve
 required status checks, no force pushes, every review thread resolved before
 merge. This is the checklist that gets a task's branch through that gate
 without a wasted round trip. It assumes the task branch `task/<id>-<slug>`

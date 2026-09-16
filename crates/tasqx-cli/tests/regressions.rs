@@ -5657,3 +5657,55 @@ fn an_event_written_under_a_future_pin_is_inside_its_own_window() {
          at the pin cannot contain it"
     );
 }
+
+/// A page that cannot be written answers in the shape the caller asked for.
+///
+/// `tasqx docs --out` and `tasqx docs --screen … --out` both went through one
+/// writer that printed `error: cannot create …` on stderr and called `exit(1)`
+/// itself. Under `--json` that left a caller with an exit code and nothing to
+/// parse — on the one path where it had explicitly asked for a parseable answer
+/// — which is exactly the class `json_flag_emits_the_error_envelope_on_the_error
+/// _path_too` above fixed for the verbs that route through the shared terminal.
+/// The writer now returns `internal`, so the same terminal renders it.
+///
+/// The unwritable path is a regular FILE standing where a directory component
+/// would have to be: `create_dir_all` refuses that on every platform, with no
+/// permission games and nothing to clean up but the file itself.
+#[test]
+fn a_docs_page_that_cannot_be_written_is_a_json_envelope_not_a_bare_exit() {
+    let dir = fresh_config_dir("docs-write-envelope");
+    let blocker = dir.join("not-a-directory");
+    std::fs::write(&blocker, b"a file, not a directory").expect("write the blocker");
+    let target = blocker.join("under").join("page.html");
+
+    for args in [
+        vec!["--json", "docs", "--screen", "list", "--out"],
+        vec!["--json", "docs", "--out"],
+    ] {
+        let out = bin("docs-write-envelope", &dir)
+            .args(&args)
+            .arg(&target)
+            .output()
+            .expect("run");
+        assert_eq!(
+            out.status.code(),
+            Some(1),
+            "a failed write must still exit 1: {args:?}"
+        );
+        let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap_or_else(|e| {
+            panic!(
+                "`{args:?}` printed no envelope on stdout ({e}): stdout={:?} stderr={:?}",
+                String::from_utf8_lossy(&out.stdout),
+                String::from_utf8_lossy(&out.stderr)
+            )
+        });
+        assert_eq!(v["ok"], false, "{v}");
+        assert_eq!(v["error"]["code"], "internal", "{v}");
+        let msg = v["error"]["message"].as_str().unwrap_or_default();
+        assert!(
+            msg.contains("cannot create") || msg.contains("cannot write"),
+            "the envelope must name what failed, not just that something did: {v}"
+        );
+    }
+    let _ = std::fs::remove_file(&blocker);
+}

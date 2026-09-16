@@ -54,7 +54,7 @@ pub(crate) fn run_docs(
         })?,
     };
 
-    write_page(&path, &doc);
+    write_page(&path, &doc)?;
 
     // The machine-relevant facts are the same in all three branches — where the
     // guide is, and whether a viewer was launched — so they are one shape, and
@@ -112,7 +112,7 @@ fn run_docs_screen(name: &str, out: Option<&str>) -> CmdOutcome {
             page,
         ));
     };
-    write_page(&path, &page);
+    write_page(&path, &page)?;
     Ok((
         json!({ "path": path.to_string_lossy(), "screen": name, "bytes": page.len() }),
         format!("Wrote the {name} screen → {}\n", path.display()),
@@ -122,22 +122,26 @@ fn run_docs_screen(name: &str, out: Option<&str>) -> CmdOutcome {
 /// Write one generated page, creating the directory it names.
 ///
 /// A failed write is a real error rather than a degraded success: unlike a
-/// missing browser, it leaves no deliverable at all. Exits 1 on the spot
-/// because there is nothing for the caller to report — the guide and the
-/// screen page both want exactly this, which is why it is not written twice.
-fn write_page(path: &std::path::Path, bytes: &str) {
+/// missing browser, it leaves no deliverable at all. It is `internal` — exit 1,
+/// the status this printed and exited with directly before — because it is a
+/// failure BENEATH the request rather than anything the caller spelled wrong,
+/// which is the same family `docs_default_path`'s absence uses two screens up.
+///
+/// Returned rather than exited on, so `--json` gets an error envelope instead of
+/// a bare line on stderr: `eprintln!` + `exit(1)` from in here left a JSON caller
+/// with no parseable answer at all, on the one path where it had asked for one.
+/// The guide and the screen page both want exactly this, which is why it is not
+/// written twice.
+fn write_page(path: &std::path::Path, bytes: &str) -> Result<(), ApiError> {
     if let Some(parent) = path.parent() {
         if !parent.as_os_str().is_empty() {
-            if let Err(e) = std::fs::create_dir_all(parent) {
-                eprintln!("error: cannot create {}: {e}", parent.display());
-                exit(1);
-            }
+            std::fs::create_dir_all(parent).map_err(|e| {
+                ApiError::internal(format!("cannot create {}: {e}", parent.display()))
+            })?;
         }
     }
-    if let Err(e) = std::fs::write(path, bytes) {
-        eprintln!("error: cannot write {}: {e}", path.display());
-        exit(1);
-    }
+    std::fs::write(path, bytes)
+        .map_err(|e| ApiError::internal(format!("cannot write {}: {e}", path.display())))
 }
 
 /// Where a browser-bound guide gets written: the user's own cache directory.
@@ -350,5 +354,38 @@ mod tests {
         assert!(written.contains("<pre class=\"term\">"));
         assert!(text.contains(&path.display().to_string()), "{text}");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A write that cannot land is returned, not exited on — and it is the same
+    /// error for the screen page and for the guide, because they share the
+    /// writer. `exit(1)` from inside `write_page` could not be observed by a
+    /// caller at all: it took the process down before `--json` had rendered
+    /// anything, so the JSON surface answered with a status and no envelope.
+    ///
+    /// The unwritable path is a regular FILE where a directory component has to
+    /// be, which `create_dir_all` refuses on every platform.
+    #[test]
+    fn a_page_that_cannot_be_written_is_an_error_both_callers_return() {
+        let blocker =
+            std::env::temp_dir().join(format!("tasqx-screen-blocker-{}", std::process::id()));
+        std::fs::write(&blocker, b"a file, not a directory").expect("write the blocker");
+        let path = blocker.join("under").join("page.html");
+        let target = path.to_string_lossy().to_string();
+
+        for screen in [Some("list"), None] {
+            let err = run_docs(Some(&target), false, false, screen)
+                .expect_err("a page that cannot be written is an error");
+            assert_eq!(
+                err.exit_code(),
+                1,
+                "a failed write is a failure beneath the request: {err}"
+            );
+            assert!(
+                err.message.contains("cannot create") || err.message.contains("cannot write"),
+                "the message must name what failed: {}",
+                err.message
+            );
+        }
+        let _ = std::fs::remove_file(&blocker);
     }
 }

@@ -3,11 +3,16 @@
 # Capture every screen the documentation site shows, as the ANSI the binary
 # really printed, into crates/tasqx-cli/docs-fixtures/.
 #
-#   TASQX=./target/debug/tasqx scripts/docs-capture.sh            # regenerate
-#   TASQX=./target/debug/tasqx scripts/docs-capture.sh --check    # CI: diff only
+#   TASQX_DB=$PWD/target/scratch.db TASQX=./target/debug/tasqx \
+#       scripts/docs-capture.sh --no-daemon             # regenerate
+#   TASQX_DB=$PWD/target/scratch.db TASQX=./target/debug/tasqx \
+#       scripts/docs-capture.sh --check --no-daemon     # what CI runs
 #
 # Env:
 #   TASQX     binary to drive. MANDATORY — see "Why TASQX is required" below.
+#   TASQX_DB  unused: every row below names the store it renders from. It is on
+#             the command lines above because CLAUDE.md's dev-build rule asks
+#             for a scratch store inline beside any target/debug/tasqx.
 #   SETTLE    seconds to wait for a full-screen row's first paint (default 2)
 #
 # Flags:
@@ -48,7 +53,7 @@ for arg in "$@"; do
     --check) check=1 ;;
     --no-daemon) ;;
     -h | --help)
-        sed -n '3,36p' "$0" | sed 's/^# \{0,1\}//'
+        sed -n '3,41p' "$0" | sed 's/^# \{0,1\}//'
         exit 0
         ;;
     *)
@@ -67,7 +72,8 @@ demo_config=$root/target/demo/config
 if [ -z "${TASQX:-}" ]; then
     echo "docs-capture.sh: set TASQX to the binary to capture, e.g." >&2
     echo "  cargo build -p tasqx-cli" >&2
-    echo "  TASQX=target/debug/tasqx scripts/docs-capture.sh" >&2
+    echo "  TASQX_DB=\$PWD/target/scratch.db TASQX=target/debug/tasqx \\" >&2
+    echo "      scripts/docs-capture.sh --no-daemon" >&2
     exit 2
 fi
 command -v "$TASQX" >/dev/null 2>&1 || [ -x "$TASQX" ] || {
@@ -359,5 +365,6 @@ printf '  %s\n' "${differs[@]}" >&2
 echo >&2
 echo "If the change was intended, regenerate them in the same commit:" >&2
 echo "  cargo build -p tasqx-cli" >&2
-echo "  TASQX=target/debug/tasqx scripts/docs-capture.sh" >&2
+echo "  TASQX_DB=\$PWD/target/scratch.db TASQX=target/debug/tasqx \\" >&2
+echo "      scripts/docs-capture.sh --no-daemon" >&2
 exit 1
