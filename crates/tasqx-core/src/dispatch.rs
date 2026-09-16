@@ -131,7 +131,7 @@ pub const PARAMS: &[(&str, &[&str], bool)] = &[
             // covering them.
             "checks_passed",
             "evidence",
-            // D149: complete the task even though its dependencies are still
+            // D150: complete the task even though its dependencies are still
             // open. Without it, a blocked completion is a `conflict`.
             "force",
             "input_tokens",

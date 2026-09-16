@@ -180,7 +180,7 @@ fn a_terminal_dependent_is_never_announced_as_unblocked() {
         // until someone wires up the transition that reaches it.
         match finish {
             // `force`: taking the dependent out of play before its blocker
-            // resolves is precisely the completion D149 refuses, and it is the
+            // resolves is precisely the completion D150 refuses, and it is the
             // state this test needs to build.
             Status::Done => e
                 .task_done(&json!({ "ref": dependent, "force": true }))

@@ -118,7 +118,7 @@ pub const OUTCOME_METRICS: [&str; 8] = [
     // reason `overrun`'s is completions that had a budget: a rate over every
     // completion would shrink as uncriteriaed work landed.
     "unproven",
-    // D149. Completions that overrode open blockers with `force`. Its
+    // D150. Completions that overrode open blockers with `force`. Its
     // denominator IS completions, like `rework`'s and unlike the two above:
     // every completion could have been a forced one, so there is no smaller
     // population to measure it against.

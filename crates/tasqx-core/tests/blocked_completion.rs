@@ -1,4 +1,4 @@
-//! Completing a task whose dependencies are still open (D149).
+//! Completing a task whose dependencies are still open (D150).
 //!
 //! Finding #626: `task.done` used to complete a blocked task silently. The
 //! store knew the blocker was open — `task.get` said `blocked: true` on the
@@ -76,7 +76,7 @@ fn completing_a_task_whose_blocker_is_still_open_is_refused_and_writes_nothing()
     depend(&e, dependent, blocker);
 
     let err = call(&e, "task.done", json!({ "ref": dependent }))
-        .expect_err("D149: an open blocker refuses the completion");
+        .expect_err("D150: an open blocker refuses the completion");
     assert_eq!(err.code, ErrorCode::Conflict);
     assert!(
         err.message.contains(&format!(

@@ -421,7 +421,7 @@ pub const COMMAND_REF: &[CmdDoc] = &[
         notes: &[
             "A task whose dependencies are still open is refused, naming them. \
              --force completes it anyway; the override lands on the done event and \
-             `tasqx report --outcomes` counts it under FORCED (D149). Cancelling a \
+             `tasqx report --outcomes` counts it under FORCED (D150). Cancelling a \
              blocked task needs no flag.",
             "The correlation flags carry the same meaning as on `start`, and are \
              recorded per occurrence: a task can start and finish many times, and \

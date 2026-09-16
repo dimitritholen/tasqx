@@ -232,7 +232,7 @@ const METHODS: [(&str, &str, &str); 42] = [
          by more than one task's window. A task with open blockers is refused \
          <code>conflict</code> naming them; <code>force: true</code> completes it \
          anyway, and the response then carries <code>forced: true</code> and \
-         <code>blocked_by</code> (D149).",
+         <code>blocked_by</code> (D150).",
     ),
     (
         "task.modify",
@@ -432,7 +432,7 @@ const METHODS: [(&str, &str, &str); 42] = [
          were reopened), <code>calibration</code> (median tracked-over-estimate), \
          <code>cost</code> (the four token buckets, never blended), <code>silent</code> \
          (completions carrying no annotation), <code>abandonment</code> (started, then \
-         cancelled) and <code>forced</code> (completions that overrode open blockers, D149). \
+         cancelled) and <code>forced</code> (completions that overrode open blockers, D150). \
          Every rate comes back beside the <code>n</code> it was computed over. \
          Scope is tasks that CLOSED, by the instant they closed — so a completion that was \
          reopened still counts, which is the whole point. Omitting <code>metrics</code> emits \

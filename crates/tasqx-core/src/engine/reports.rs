@@ -498,7 +498,7 @@ impl Engine {
             /// Tasks in scope, closed either way — abandonment's denominator.
             closed: i64,
             rework: Vec<i64>,
-            /// D149: completions that overrode still-open blockers. Read
+            /// D150: completions that overrode still-open blockers. Read
             /// against `completions`, like `rework` — see `OUTCOME_METRICS`.
             forced: Vec<i64>,
             silent: Vec<i64>,
@@ -612,7 +612,7 @@ impl Engine {
             if close.reopened_from_done {
                 agg.rework.push(t.short_id);
             }
-            // D149: a completion that went ahead of its dependencies. Read off
+            // D150: a completion that went ahead of its dependencies. Read off
             // the completion event rather than off the dependency graph as it
             // stands now — by the time anyone runs this report the blockers
             // have usually closed, and the question is what was true when the
@@ -893,7 +893,7 @@ impl Engine {
                     entry.at = at;
                     entry.completed = true;
                     entry.closed = true;
-                    // D149, and assigned rather than or-ed: this describes the
+                    // D150, and assigned rather than or-ed: this describes the
                     // completion now in scope, so a later ordinary `done`
                     // clears an earlier override instead of carrying it
                     // forever.
@@ -1432,7 +1432,7 @@ struct TaskClose {
     closed: bool,
     /// Whether this task has ever been reopened out of `done`.
     reopened_from_done: bool,
-    /// Whether the most recent completion overrode open blockers (D149).
+    /// Whether the most recent completion overrode open blockers (D150).
     ///
     /// A property of THAT completion and not of the task, which is where it
     /// differs from `reopened_from_done` one field up: a task forced through
@@ -1498,7 +1498,7 @@ fn payload_str<'a>(payload: Option<&'a Value>, key: &str) -> Option<&'a str> {
 ///
 /// [`payload_str`]'s sibling, and the same argument for existing at all. The
 /// degradation is deliberate and different from a param's: a flag that is not
-/// there was not set, and D149 writes `forced` only when it is true, so
+/// there was not set, and D150 writes `forced` only when it is true, so
 /// "absent" is the ordinary case rather than a malformed one.
 fn payload_bool(payload: Option<&Value>, key: &str) -> bool {
     payload
