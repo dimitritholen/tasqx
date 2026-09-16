@@ -39,7 +39,7 @@ impl Engine {
         // D18's finding at the one edge D18 did not reach.
         let description = opt_str_nonempty(p, "description")?;
 
-        let id = Uuid::now_v7().to_string();
+        let id = crate::clock::uuid_v7().to_string();
         let ts = now();
         let tx = self.begin_mutation()?;
         // Duplicate check runs inside the IMMEDIATE tx: the write lock is already

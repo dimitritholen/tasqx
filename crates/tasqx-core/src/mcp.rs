@@ -1605,7 +1605,7 @@ impl<'e> McpServer<'e> {
             engine,
             scope,
             client_info: std::cell::RefCell::new(None),
-            connection_id: format!("mcp:{}", uuid::Uuid::now_v7()),
+            connection_id: format!("mcp:{}", crate::clock::uuid_v7()),
             time_format: crate::markdown::TimeFormat::Both,
         }
     }

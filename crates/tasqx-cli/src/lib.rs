@@ -425,6 +425,14 @@ pub fn run() {
     // why it cannot simply reuse the one on the next line.
     complete::intercept();
 
+    // SECOND, and still before argv is parsed or any store is opened: a
+    // `TASQX_NOW` nobody can read is fatal for every command, not only for the
+    // ones that ask what time it is. `add` used to write its row — the ENGINE
+    // stamps and commits it — and exit 2 afterwards while rendering, and
+    // `about`, `docs`, `completions` and `daemon` never noticed the broken
+    // environment at all.
+    clock::validate();
+
     // Not `Cli::parse()`: filter tokens like `-needs` must reach the grammar,
     // and the only way to keep that from disarming clap's flag handling is to
     // hide the dash before clap looks. See `argv`.

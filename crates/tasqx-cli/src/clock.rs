@@ -27,38 +27,75 @@
 //! D148), `tasqx about` states it beside the store and the build whenever it is
 //! set.
 //!
-//! **This is the door that validates.** An unparsable value is fatal here: one
-//! line on stderr and exit 2, before an engine exists. A typo that silently fell
-//! back to the wall clock would produce exactly the drift the pin was set to
-//! prevent, and the capture would look like it worked. The engine cannot exit a
-//! process it does not own, so it falls back there instead — and every process
-//! that reaches the engine (the one-shot CLI, `api`, `mcp serve`, `daemon`,
-//! `watch`) comes through this door first.
+//! **This is the door that validates**, and it validates ONCE, at the top of
+//! [`crate::run`], before argv is parsed and before anything opens a store. The
+//! engine cannot exit a process it does not own, so it falls back to the wall
+//! clock on a value it cannot read; [`validate`] is what makes that branch
+//! unreachable from a real run.
+
+/// Refuse a `TASQX_NOW` nobody can read, before the command does anything.
+///
+/// Called first in [`crate::run`], so it covers every path — `add`, `about`,
+/// `docs`, `completions`, `daemon`, `api`, `mcp serve` — and not merely the
+/// ones that happen to ask what time it is. It has to be that early because
+/// the alternative is worse than a late error: `add` resolves its dates
+/// through [`now`] but the ENGINE stamps and commits the row, so a malformed
+/// pin used to write a task with a wall-clock `created` and only then exit 2
+/// while rendering. A refusal that lands after the write is not a refusal.
+/// Exit 2 is the CLI's `bad_request` code (DESIGN.md §4).
+///
+/// Deliberately after `complete::intercept`, which is still the first
+/// statement of `run` and still a single environment lookup on the ordinary
+/// path: a Tab press is not a command, writes nothing, and printing a refusal
+/// into somebody's shell completion is not how a broken environment should be
+/// reported. Its candidates fall back to the wall clock, like any other reader.
+pub fn validate() {
+    if let Err(msg) = tasqx_core::clock::pin_from_env() {
+        eprintln!("{msg}");
+        std::process::exit(2);
+    }
+}
+
+/// Refuse to run a long-lived server on a pinned clock.
+///
+/// `tasqx daemon` and `tasqx watch` are the two commands that outlive one
+/// capture, and each reads `TASQX_NOW` from its OWN environment: a daemon
+/// started unpinned (or pinned to another instant) would stamp and score with
+/// its clock while the client parsed and rendered with a different one, and
+/// nothing on the wire carries a pin to compare. The honest fix is not to
+/// compare pins across processes — that is machinery for a case nobody should
+/// be in — but to say no: the pin is a capture hook, and a capture is one-shot.
+/// [`crate::backend::open_backend`] closes the other half by running in-process
+/// whenever a pin is set, so a pinned one-shot command cannot be answered by
+/// somebody else's daemon either.
+pub fn refuse_to_serve_a_pin() {
+    if pin().is_some() {
+        eprintln!(
+            "tasqx: TASQX_NOW cannot be served through a daemon; \
+             run one-shot commands with the pin instead"
+        );
+        std::process::exit(2);
+    }
+}
 
 /// The reference instant: `TASQX_NOW` when it is set, the wall clock otherwise.
 ///
-/// Exits 2 — the CLI's `bad_request` code (DESIGN.md §4) — with one line on
-/// stderr when `TASQX_NOW` holds something that is not an RFC 3339 instant, so
-/// the engine's own fallback for that case is unreachable from a real run.
+/// Infallible, because [`validate`] has already run: a value this cannot read
+/// never reaches here from the binary, and the engine's fallback answers for
+/// the unit tests that call it directly.
 ///
 /// The environment is read on every call rather than once into a `OnceLock`:
 /// the dashboard re-reads the clock on every tick and a cached wall-clock
 /// reading would freeze a live screen.
 pub fn now() -> jiff::Timestamp {
-    match tasqx_core::clock::pin_from_env() {
-        Ok(Some(pin)) => pin,
-        Ok(None) => tasqx_core::clock::now(),
-        Err(msg) => {
-            eprintln!("{msg}");
-            std::process::exit(2);
-        }
-    }
+    tasqx_core::clock::now()
 }
 
-/// The pin as `tasqx about` reports it (D132's clock row): `Some` only when
-/// `TASQX_NOW` names an instant [`now`] would use. An unparsable value cannot
-/// reach here — `now` exits on it — so the row never spells a value the process
-/// is not actually running on.
+/// The pin as `tasqx about` reports it (D132's clock row) and as
+/// [`refuse_to_serve_a_pin`] tests for it: `Some` only when `TASQX_NOW` names
+/// an instant [`now`] would actually use, so the row never spells a value the
+/// process is not running on — a malformed one exited at [`validate`], and an
+/// unset or blank one is no pin at all.
 pub fn pin() -> Option<jiff::Timestamp> {
     tasqx_core::clock::pin_from_env().ok().flatten()
 }

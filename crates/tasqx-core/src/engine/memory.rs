@@ -9,7 +9,7 @@ use super::*;
 /// #229 item 4: validate a memory `id`'s SHAPE before the store is ever
 /// asked about it — mirroring `resolve_ref_value_on`'s `bad_request` for a
 /// task ref that cannot possibly be a short_id or a UUID. Every memory id
-/// this engine ever mints is a UUID (`memory_add`'s `Uuid::now_v7()`), so a
+/// this engine ever mints is a UUID (`memory_add`'s `clock::uuid_v7()`), so a
 /// string that fails to parse as one is a malformed request, not a store
 /// miss — the two must not share one exit code (DESIGN.md's `2`
 /// bad_request vs `4` not_found contract exists so a script can branch
@@ -122,7 +122,7 @@ impl Engine {
         let source = opt_str(p, "source")?;
         let project = opt_str_nonempty(p, "project")?;
 
-        let id = Uuid::now_v7().to_string();
+        let id = crate::clock::uuid_v7().to_string();
         let ts = now();
         let tx = self.begin_mutation()?;
         tx.execute(
@@ -199,7 +199,7 @@ impl Engine {
             let is_replace = existing.is_some();
             let (id, rev) = match existing {
                 Some((id, cur_rev)) => (id, cur_rev + 1),
-                None => (Uuid::now_v7().to_string(), 0),
+                None => (crate::clock::uuid_v7().to_string(), 0),
             };
             // ON CONFLICT DO UPDATE, never DELETE+INSERT (D41's own rule,
             // learned the hard way for the annotation upsert): a DELETE does
@@ -799,7 +799,7 @@ mod tests {
 
         // A well-formed but nonexistent UUID is still genuinely not_found —
         // only the SHAPE check moved, not the "no such doc" answer.
-        let real_uuid = uuid::Uuid::now_v7().to_string();
+        let real_uuid = crate::clock::uuid_v7().to_string();
         let missing = e.memory_get(&json!({ "id": real_uuid })).unwrap_err();
         assert_eq!(
             missing.code,

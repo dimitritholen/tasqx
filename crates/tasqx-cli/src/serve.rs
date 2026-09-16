@@ -8,7 +8,11 @@ use super::*;
 
 /// `tasqx daemon`: open one Engine and serve the local socket until Ctrl-C.
 /// Diagnostics go to stderr; the socket carries the newline-delimited JSON API.
+///
+/// Refused outright on a pinned clock (D148): a daemon outlives the capture
+/// that pinned it and would answer every later client at a frozen instant.
 pub(crate) fn run_daemon(socket_flag: Option<&str>, db: Option<&str>) {
+    clock::refuse_to_serve_a_pin();
     let socket = resolve_socket(socket_flag);
     let engine = match open_engine_at(db) {
         Ok(e) => e,
@@ -129,6 +133,11 @@ fn watch_reconnect(socket: &str) -> daemon::Conn {
 /// frame stays on screen, with a `reconnecting…` status line on stderr, until
 /// a new daemon answers.
 pub(crate) fn run_watch(socket_flag: Option<&str>, no_daemon: bool, filter: &[String], ctx: &Ctx) {
+    // Before the `--no-daemon` refusal below, because this is the more specific
+    // answer: `watch` is the one command that CANNOT run in-process, so a pin
+    // has nowhere to go here (D148). Its whole job is to re-render as a daemon's
+    // clock moves, which is the opposite of a frozen one.
+    clock::refuse_to_serve_a_pin();
     if no_daemon {
         eprintln!("tasqx watch: --no-daemon is set, but watch requires a running daemon");
         exit(1);

@@ -151,7 +151,7 @@ impl Engine {
                     IMPORT_ANNOTATION_KEYS,
                 )?;
                 let aid = import_field(id, "annotations[].id", opt_str_nonempty(a, "id"))?
-                    .unwrap_or_else(|| Uuid::now_v7().to_string());
+                    .unwrap_or_else(|| crate::clock::uuid_v7().to_string());
                 let body = import_field(id, "annotations[].body", req_str(a, "body"))?;
                 let acreated =
                     import_field(id, "annotations[].created", opt_str_nonempty(a, "created"))?
@@ -193,7 +193,7 @@ impl Engine {
         for (n, c) in rows.iter().enumerate() {
             import_keys(&format!("task {id}, "), "checks[]", c, IMPORT_CHECK_KEYS)?;
             let cid = import_field(id, "checks[].id", opt_str_nonempty(c, "id"))?
-                .unwrap_or_else(|| Uuid::now_v7().to_string());
+                .unwrap_or_else(|| crate::clock::uuid_v7().to_string());
             let body = import_field(id, "checks[].body", req_str(c, "body"))?;
             let state = import_field(id, "checks[].state", opt_str_nonempty(c, "state"))?
                 .unwrap_or_else(|| CHECK_STATES[0].to_string());
@@ -242,7 +242,7 @@ impl Engine {
             for m in measurements {
                 import_keys(&format!("task {id}, "), "tokens[]", m, IMPORT_TOKEN_KEYS)?;
                 let mid = import_field(id, "tokens[].id", opt_str_nonempty(m, "id"))?
-                    .unwrap_or_else(|| Uuid::now_v7().to_string());
+                    .unwrap_or_else(|| crate::clock::uuid_v7().to_string());
                 let tool = import_field(id, "tokens[].tool", req_str(m, "tool"))?;
                 let source = import_field(id, "tokens[].source", req_str(m, "source"))?;
                 import_field(
@@ -637,7 +637,8 @@ impl Engine {
             for dv in &rows {
                 let dv = import_shape("", "doc", dv)?;
                 import_keys("", "doc", dv, IMPORT_DOC_KEYS)?;
-                let did = opt_str_nonempty(dv, "id")?.unwrap_or_else(|| Uuid::now_v7().to_string());
+                let did = opt_str_nonempty(dv, "id")?
+                    .unwrap_or_else(|| crate::clock::uuid_v7().to_string());
                 let title = req_str(dv, "title").map_err(|e| {
                     ApiError::bad_request(format!(
                         "{} — each imported doc requires a `title`",
@@ -709,7 +710,8 @@ impl Engine {
             for ev in &rows {
                 let ev = import_shape("", "event", ev)?;
                 import_keys("", "event", ev, IMPORT_EVENT_KEYS)?;
-                let eid = opt_str_nonempty(ev, "id")?.unwrap_or_else(|| Uuid::now_v7().to_string());
+                let eid = opt_str_nonempty(ev, "id")?
+                    .unwrap_or_else(|| crate::clock::uuid_v7().to_string());
                 let entity_raw = req_str(ev, "entity").map_err(|e| {
                     ApiError::bad_request(format!(
                         "{} — each imported event requires an `entity`",

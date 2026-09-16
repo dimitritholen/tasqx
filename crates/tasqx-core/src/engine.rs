@@ -931,7 +931,7 @@ fn upsert_project(
     };
     let id = match payload_id {
         Some(id) if !taken(id)? => id.to_string(),
-        _ => Uuid::now_v7().to_string(),
+        _ => crate::clock::uuid_v7().to_string(),
     };
     tx.execute(
         "INSERT INTO projects (id, name, description, archived, created) VALUES (?1,?2,?3,?4,?5)",

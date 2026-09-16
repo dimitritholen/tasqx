@@ -14,7 +14,6 @@ use std::collections::HashSet;
 
 use jiff::Timestamp;
 use rusqlite::{params, Connection, OptionalExtension, Row, Transaction};
-use uuid::Uuid;
 
 use crate::error::ApiError;
 use crate::types::{effective_status, Entity, Priority, Status, Task};
@@ -784,7 +783,7 @@ pub fn insert_event(
         "INSERT INTO events (id, entity, entity_id, op, payload, ts, actor) \
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
         params![
-            Uuid::now_v7().to_string(),
+            crate::clock::uuid_v7().to_string(),
             entity.as_str(),
             entity_id,
             op,
@@ -818,13 +817,20 @@ pub fn insert_event(
 /// index-served with no second index to write on every insert.
 ///
 /// **The one-second margin is not slack, it is the contract.** [`insert_event`]
-/// reads the clock *twice* — `Uuid::now_v7()` for `id`, then `now()` for `ts`,
-/// with a `payload.to_string()` between them — so a row whose write straddles a
-/// millisecond tick has `ts` one millisecond ahead of the instant inside its own
-/// `id`. Flooring exactly would then exclude a row whose `ts` is inside the
-/// window: an under-inclusion, the direction that loses data. A second of margin
-/// swamps that gap by six orders of magnitude, and over-inclusion is free
-/// because every consumer buckets by `ts` anyway.
+/// reads the clock *twice* — `crate::clock::uuid_v7()` for `id`, then `now()`
+/// for `ts`, with a `payload.to_string()` between them — so a row whose write
+/// straddles a millisecond tick has `ts` one millisecond ahead of the instant
+/// inside its own `id`. Flooring exactly would then exclude a row whose `ts` is
+/// inside the window: an under-inclusion, the direction that loses data. A
+/// second of margin swamps that gap by six orders of magnitude, and
+/// over-inclusion is free because every consumer buckets by `ts` anyway.
+///
+/// The margin is sized for that tick and nothing larger, which is why both
+/// reads must come off the same clock. They did not, once: `id` was minted by
+/// `Uuid::now_v7()` from the wall clock while `ts` followed `TASQX_NOW`, so a
+/// pin ahead of today put every freshly written `id` a pin's distance BELOW a
+/// floor derived from its own `ts`, and a bounded `event.list` dropped rows the
+/// same command had just written (D148).
 ///
 /// So `from` is a **lower bound, not a filter**: it promises no events older
 /// than roughly that instant, not exactly the events at or after it. Callers
@@ -1026,7 +1032,7 @@ pub fn ensure_tag_link(tx: &Transaction, task_id: &str, tag_name: &str) -> Resul
     let tag_id = match existing {
         Some(id) => id,
         None => {
-            let id = Uuid::now_v7().to_string();
+            let id = crate::clock::uuid_v7().to_string();
             tx.execute(
                 "INSERT INTO tags (id, name) VALUES (?1, ?2)",
                 params![id, tag_name],
@@ -1178,7 +1184,7 @@ mod tests {
     fn the_event_id_floor_sorts_below_an_id_minted_at_that_instant() {
         let now = crate::clock::now();
         let floor = event_id_floor(now);
-        let real = Uuid::now_v7().to_string();
+        let real = crate::clock::uuid_v7().to_string();
         assert!(
             floor < real,
             "floor {floor} must sort below an id minted now ({real})"
@@ -1215,7 +1221,7 @@ mod tests {
         let ts = Timestamp::from_millisecond(-10_000).unwrap();
         let floor = event_id_floor(ts);
         assert!(
-            floor < Uuid::now_v7().to_string(),
+            floor < crate::clock::uuid_v7().to_string(),
             "a pre-epoch bound must still sort below every real event, got {floor}"
         );
     }
