@@ -122,6 +122,11 @@ house style for everything tasqx prints: how a row is weighted, what the left
 rail carries, how a date is spelled. Read it before laying out or changing a
 screen. Its Contract table is checked against the renderer by a test.
 
+A screen change is a fixture change in the same commit: `scripts/docs-capture.sh`
+re-captures every screen the documentation ships, and `scripts/snap.sh <name>`
+rasterises one of them through `tasqx docs --screen` when a picture is what is
+wanted — the README's three, or your own eyes on a layout (§14 there).
+
 ## Tests first
 
 A fix lands with a test that was **watched fail against the original code**. When

@@ -4,11 +4,23 @@
     scripts/demo-store.py                  # writes target/demo/tasks.db
     TASQX=./target/debug/tasqx scripts/demo-store.py
 
-then render it, with the demo's own config so the machine's does not leak in:
+Nothing renders it directly any more: scripts/docs-capture.sh rebuilds this
+store under a pinned clock and captures every screen from it into
+crates/tasqx-cli/docs-fixtures, and a picture is made from the fixture rather
+than from the store (docs/maintainers/terminal-style.md §14):
+
+    TASQX=target/debug/tasqx scripts/docs-capture.sh
+    TASQX=target/debug/tasqx scripts/snap.sh list        # → target/snaps
+
+The HTML report in docs/img/report.png is the one picture with no fixture behind
+it — it is a page, not a screen — so it is still rendered from this store
+directly, with the demo's own config so the machine's does not leak in, under
+the same pin and in UTC so the snapshot line does not quote a timezone:
 
     export TASQX_DB=$PWD/target/demo/tasks.db TASQX_CONFIG_DIR=$PWD/target/demo/config
-    scripts/snap.sh list 100 -- --no-daemon list
-    scripts/snap-tui.sh dashboard 132 36 -- --no-daemon dashboard
+    TZ=UTC TASQX_NOW=2026-09-16T09:00:00Z tasqx --no-daemon report --html --out report.html
+    google-chrome --headless --hide-scrollbars --force-device-scale-factor=2 \\
+        --window-size=1200,760 --screenshot=docs/img/report.png file://$PWD/report.html
 
 Why it exists: the README's screenshots have to come from somewhere, and a real
 store is somebody's actual work, which does not belong on a public landing
