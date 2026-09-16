@@ -952,6 +952,57 @@ fn complete_task_with_view_card_leads_with_the_closing_card_and_keeps_its_json()
 /// caller nothing: the task is still there to complete with a spelling the
 /// transport knows.
 #[test]
+fn a_closing_card_over_the_budget_gives_way_to_a_notice_and_the_json_still_arrives() {
+    let engine = engine();
+    let server = McpServer::new(&engine, Scope::Write);
+    let added = call(
+        &server,
+        1,
+        "tasqx_add_task",
+        json!({ "title": "Sixty long checks" }),
+    );
+    let sid = tool_text(&added)["short_id"].clone();
+    // Each check wraps to ~9 card lines; sixty of them is a card well past
+    // the budget, and there is no annotation page whose cutting could help.
+    for i in 0..60 {
+        let body = format!("check {i}: {}", "criterion ".repeat(50));
+        let checked = call(
+            &server,
+            100 + i,
+            "tasqx_add_check",
+            json!({ "ref": sid, "body": body }),
+        );
+        assert!(!is_error(&checked), "add_check failed: {checked}");
+    }
+    let done = call(
+        &server,
+        2,
+        "tasqx_complete_task",
+        json!({ "ref": sid, "view": "card" }),
+    );
+    assert!(!is_error(&done), "complete failed: {done}");
+    let blocks = done["result"]["content"]
+        .as_array()
+        .expect("content is an array");
+    assert_eq!(blocks.len(), 2, "notice + JSON: {done}");
+    let notice = blocks[0]["text"].as_str().expect("the notice block");
+    assert!(
+        notice.starts_with("Closing card omitted") && notice.contains("tasqx_get_task"),
+        "an over-budget card is replaced by a notice naming the read that draws it: {notice}"
+    );
+    let total: usize = blocks
+        .iter()
+        .map(|b| b["text"].as_str().map(str::len).unwrap_or(0))
+        .sum();
+    assert!(total <= 24_576, "{total} bytes is over the budget");
+    let result = tool_json(&done);
+    assert_eq!(
+        result["status"], "done",
+        "the completion itself is untouched"
+    );
+}
+
+#[test]
 fn complete_task_with_an_unreadable_view_is_refused_before_it_completes() {
     let engine = engine();
     let server = McpServer::new(&engine, Scope::Write);
