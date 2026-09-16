@@ -212,6 +212,53 @@ fn article_for_status(status: Status) -> &'static str {
     }
 }
 
+/// D148: write one annotation row's `body`, cut to `cap` BYTES and marked when
+/// it did not fit. `None` is no cap.
+///
+/// It takes the body rather than reading it back off the row for a mechanical
+/// reason worth knowing: `util`'s source scan bans `.get("…").and_then(as_…)`
+/// anywhere under `engine/`, because that shape cannot tell an absent param
+/// from a wrong-typed one. This is a row this function is BUILDING and not a
+/// param at all, but a source scan cannot see the difference — and a guard with
+/// a per-site exception is a guard nobody trusts. Passing the value in is also
+/// simply the honest signature.
+///
+/// A row that already fits is left exactly as it was — same `body`, and neither
+/// new key — so the frozen v1 answer is unchanged for every ordinary note and a
+/// reader asks "was this cut?" by presence rather than by comparing a boolean
+/// on every row of every response.
+///
+/// **The cut walks back to a `char` boundary.** `&body[..cap]` panics inside a
+/// codepoint, and the bodies this project stores are prose full of em dashes
+/// and accents, so an arbitrary byte cap lands mid-character routinely: the
+/// naive version turns a READ of a perfectly good task into a 500. Walking down
+/// takes at most three steps (UTF-8 is at most four bytes per character) and
+/// yields the LONGEST prefix that is both within the cap and valid UTF-8 — a
+/// cap of 0, or one shorter than the first character, yields an empty body,
+/// which is the degenerate end of the same rule rather than a special case.
+///
+/// `body_bytes` is the ORIGINAL length, because it is the one fact the reader
+/// cannot recover from what arrived, and the renderer needs it to name the
+/// exact call that reads the note whole.
+fn put_body(row: &mut Map<String, Value>, body: String, cap: Option<u64>) {
+    let original = body.len();
+    let cap = match cap {
+        Some(c) => usize::try_from(c).unwrap_or(usize::MAX),
+        None => usize::MAX,
+    };
+    if original <= cap {
+        row.insert("body".to_string(), json!(body));
+        return;
+    }
+    let mut end = cap;
+    while end > 0 && !body.is_char_boundary(end) {
+        end -= 1;
+    }
+    row.insert("body".to_string(), json!(&body[..end]));
+    row.insert("body_bytes".to_string(), json!(original));
+    row.insert("body_truncated".to_string(), json!(true));
+}
+
 impl Engine {
     // ---- task.add ------------------------------------------------------------
 
@@ -1989,11 +2036,18 @@ impl Engine {
     /// into its place. `id` is UUIDv7, minted in creation order, unique, and
     /// already the PRIMARY KEY, so one column settles both the order and the
     /// tie that `created` could never settle on its own.
+    ///
+    /// `max_body` is D148's per-row cap in BYTES: a body over it is replaced by
+    /// its longest prefix that fits and still ends on a `char` boundary, and the
+    /// row gains `body_bytes` (the ORIGINAL length) and `body_truncated: true`.
+    /// `None` is no cap and no new keys, so the answer a caller who passed
+    /// nothing has read since v1 is byte-identical.
     fn annotations_page(
         &self,
         task_id: &str,
         limit: Option<u64>,
         offset: u64,
+        max_body: Option<u64>,
     ) -> Result<(Vec<Value>, u64), ApiError> {
         let total: i64 = self.conn.query_row(
             "SELECT COUNT(*) FROM annotations WHERE task_id = ?1 AND removed IS NULL",
@@ -2014,11 +2068,11 @@ impl Engine {
              ORDER BY id DESC LIMIT ?2 OFFSET ?3",
         )?;
         let rows = stmt.query_map(params![task_id, sql_limit, sql_offset], |r| {
-            Ok(json!({
-                "id": r.get::<_, String>(0)?,
-                "body": r.get::<_, String>(1)?,
-                "created": r.get::<_, String>(2)?,
-            }))
+            let mut row = Map::new();
+            row.insert("id".to_string(), json!(r.get::<_, String>(0)?));
+            put_body(&mut row, r.get::<_, String>(1)?, max_body);
+            row.insert("created".to_string(), json!(r.get::<_, String>(2)?));
+            Ok(Value::Object(row))
         })?;
         let mut v = Vec::new();
         for r in rows {
@@ -2026,6 +2080,34 @@ impl Engine {
         }
         v.reverse();
         Ok((v, total))
+    }
+
+    /// The tombstones `annotation.remove` left on this task: `{id, removed}`
+    /// per scrubbed row, oldest first, and never the text — D113's whole point
+    /// is that the text is gone from storage, not merely hidden.
+    ///
+    /// Its own array rather than rows inside `annotations` (D148).
+    /// `annotations`, `annotations_total` and `annotations_next_offset` are the
+    /// page arithmetic every client already reads, and a tombstone folded into
+    /// them would change what "the third annotation" means on every task that
+    /// ever had one removed. Beside them it is additive: a client that never
+    /// looks is unaffected.
+    fn removed_annotations(&self, task_id: &str) -> Result<Vec<Value>, ApiError> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, removed FROM annotations WHERE task_id = ?1 AND removed IS NOT NULL \
+             ORDER BY id",
+        )?;
+        let rows = stmt.query_map(params![task_id], |r| {
+            Ok(json!({
+                "id": r.get::<_, String>(0)?,
+                "removed": r.get::<_, String>(1)?,
+            }))
+        })?;
+        let mut v = Vec::new();
+        for r in rows {
+            v.push(r?);
+        }
+        Ok(v)
     }
 
     // ---- task.get ------------------------------------------------------------
@@ -2097,7 +2179,11 @@ impl Engine {
 
         let limit = opt_u64(p, "annotations_limit")?;
         let offset = opt_u64(p, "annotations_offset")?.unwrap_or(0);
-        let (annotations, total) = self.annotations_page(&task.id, limit, offset)?;
+        // D148. `None` is no cap: a caller that named none reads the bodies
+        // whole, the same way one that names no `annotations_limit` reads the
+        // whole history.
+        let max_body = opt_u64(p, "max_body_bytes")?;
+        let (annotations, total) = self.annotations_page(&task.id, limit, offset, max_body)?;
         let returned = annotations.len() as u64;
         obj["annotations"] = json!(annotations);
         obj["annotations_total"] = json!(total);
@@ -2116,6 +2202,12 @@ impl Engine {
         } else {
             Value::Null
         };
+        // D148/D113: what was removed, beside the page rather than in it. A
+        // scrubbed note leaves only a hole in the count otherwise, so a reader
+        // comparing two reads of the same task watches an annotation vanish
+        // with nothing saying it went on purpose. Always present, empty array
+        // included — the rule every other always-present key here follows.
+        obj["annotations_removed"] = json!(self.removed_annotations(&task.id)?);
         // D138: the criteria, in the order they were written. Always present,
         // empty array included — a caller that has to tell "no criteria" from
         // "this shape does not carry them" cannot, and the difference matters
@@ -2284,7 +2376,18 @@ impl Engine {
         // forwarded — the brief is what you read BEFORE starting, so the
         // task's own history is the part least worth truncating, and the
         // transport's byte budget (D66) is where a too-large answer is cut.
-        let detail = self.task_detail_within_snapshot(&json!({ "ref": task.short_id }))?;
+        //
+        // `max_body_bytes` IS forwarded (D148), and the difference is the
+        // reason: a page limit drops whole notes, while the cap keeps every
+        // note and cuts inside the longest one, with a marker naming the call
+        // that reads it whole. Threaded by hand because this params object is
+        // built here rather than being the caller's — a brief's `ref` may be a
+        // UUID and is resolved to a short_id above.
+        let mut detail_params = json!({ "ref": task.short_id });
+        if let Some(cap) = opt_u64(p, "max_body_bytes")? {
+            detail_params["max_body_bytes"] = json!(cap);
+        }
+        let detail = self.task_detail_within_snapshot(&detail_params)?;
 
         let neighbourhood = json!({
             "depends_on": self.prerequisites_with_outcome(&task.id)?,

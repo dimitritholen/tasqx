@@ -125,6 +125,14 @@ fn done() -> Value {
     })
 }
 
+/// The same task after `annotation.remove` scrubbed a third note: two readable
+/// annotations and one tombstone (D113/D148).
+fn scrubbed() -> Value {
+    let mut task = done();
+    task["annotations_removed"] = json!([{ "id": "a0", "removed": "2026-09-15T17:30:00Z" }]);
+    task
+}
+
 /// A page of a longer history, taken from the recent end: the first note is ten
 /// annotations older than anything on it.
 fn paged() -> Value {
@@ -351,6 +359,36 @@ fn only_a_closed_task_reports_what_was_delivered() {
     assert!(!task_card(&full(), &unicode()).contains("Delivered"));
 }
 
+/// A scrubbed note is counted on the Notes row, because the card's own count
+/// cannot show it any other way (D148).
+///
+/// `annotations_total` excludes removed rows on purpose — that is the number
+/// every client's paging arithmetic reads — so a card that said "2
+/// annotations" over a task that has had three is telling the truth about the
+/// page and hiding the audit trail. The suffix is the whole change: no new
+/// row, so every other card is byte-identical.
+#[test]
+fn the_notes_row_counts_what_was_removed() {
+    assert_eq!(
+        task_card(&scrubbed(), &unicode()),
+        "\
+┌─────────────┬────────────────────────────────────────────────────────┐
+│ Task #69    │ one blocked predicate                                  │
+├─────────────┼────────────────────────────────────────────────────────┤
+│ Status      │ done · H · project tasqx                               │
+│ Description │ Approach: derive the flag from the list.               │
+│ Depends on  │ #1, #2 — all done                                      │
+│ Delivered   │ Shipped: one predicate spelled once, read three ways.  │
+│ Notes       │ 2 annotations, newest 2026-09-15T17:08:22Z, 1 removed  │
+└─────────────┴────────────────────────────────────────────────────────┘
+"
+    );
+    assert!(
+        !task_card(&done(), &unicode()).contains("removed"),
+        "a task with nothing removed keeps the row it always had"
+    );
+}
+
 /// The oldest annotation PRESENT is not the first note when the page was taken
 /// from the recent end. The row says so rather than quoting the wrong one.
 #[test]
@@ -457,6 +495,7 @@ fn every_line_of_every_card_is_exactly_the_card_width() {
         ("minimal", minimal()),
         ("full", full()),
         ("done", done()),
+        ("scrubbed", scrubbed()),
         ("paged", paged()),
         ("scheduled", scheduled()),
         ("hostile", hostile()),

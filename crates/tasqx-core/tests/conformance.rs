@@ -340,6 +340,29 @@ const ANNOTATION_ROW: &[Field] = &[
 ];
 const ANNOTATION: Shape = &[ANNOTATION_ROW];
 
+/// D148's pair, on the READS that take `max_body_bytes` and nowhere else.
+///
+/// Both optional, and present only on a row that response cut. Conditional
+/// rather than always-present for the same reason `urgency_breakdown` is: a key
+/// on every row of every response is exactly the cost the byte budget exists to
+/// control, and a `body_truncated: false` beside every body would turn "was
+/// this cut?" from a presence question into a value comparison on a field no v1
+/// client reads. `body` itself stays required and a string.
+///
+/// Its own group beside [`ANNOTATION_ROW`] rather than inside it, for
+/// [`TASK_EXPORT_TOKENS`]' reason one shape over: `annotation.add` echoes what
+/// it just STORED and `store.export` writes the store, so neither can ever cut
+/// a body, and declaring keys there that nothing can produce is the
+/// documentation-instead-of-a-contract shape this suite refuses.
+const ANNOTATION_CAP: &[Field] = &[opt("body_bytes", Ty::Int), opt("body_truncated", Ty::Bool)];
+const CAPPED_ANNOTATION: Shape = &[ANNOTATION_ROW, ANNOTATION_CAP];
+
+/// What `annotation.remove` left behind: the id and the instant, never the
+/// text (D113/D148). Both required — a tombstone that cannot say WHEN is not
+/// an audit trail.
+const TOMBSTONE_ROW: &[Field] = &[req("id", Ty::Str), req("removed", Ty::Str)];
+const TOMBSTONE: Shape = &[TOMBSTONE_ROW];
+
 /// One `token_usage` measurement — `engine::tokens::measurement_from_row`.
 const MEASUREMENT_ROW: &[Field] = &[
     req("id", Ty::Str),
@@ -362,6 +385,15 @@ const TASK_RELATIONS: &[Field] = &[
     req_of("annotations", Ty::Array, ANNOTATION),
 ];
 
+/// The same pair on `task.get`, whose annotation rows can carry D148's cut
+/// markers. Split from [`TASK_RELATIONS`] rather than widening it, because
+/// `store.export`'s rows never can and a shape that declares a key no call can
+/// emit freezes nothing.
+const TASK_GET_RELATIONS: &[Field] = &[
+    req("depends_on", Ty::Array),
+    req_of("annotations", Ty::Array, CAPPED_ANNOTATION),
+];
+
 /// The reverse edge (tasqx audit #159): short_ids of the tasks THIS task
 /// blocks. `task.get`-only — `store.export`'s row shape is `TASK_RELATIONS`
 /// and does not carry it, so this is its own group rather than folded into
@@ -378,10 +410,19 @@ const TASK_BLOCKS: &[Field] = &[req("blocks", Ty::Array)];
 /// `annotations_next_offset` is nullable rather than absent for the same reason
 /// every other nullable key here is: a key that appears and disappears makes a
 /// client branch on presence, and this one flips on every read of the last page.
+///
+/// `annotations_removed` (D148) is the third: REQUIRED and an array on every
+/// `task.get`, empty included. It is deliberately not folded into
+/// `annotations` — that array and its total exclude scrubbed rows by design, so
+/// a tombstone among them would change what every client's page arithmetic
+/// counts. Required rather than optional for this group's own reason: a key
+/// that appears only on a task something was removed from makes a client branch
+/// on presence to ask an ordinary question.
 const TASK_ANNOTATION_PAGE: &[Field] = &[
     req("annotations_total", Ty::Int),
     req("annotations_offset", Ty::Int),
     nul("annotations_next_offset", Ty::Int),
+    req_of("annotations_removed", Ty::Array, TOMBSTONE),
 ];
 
 const TASK_BLOCKED: &[Field] = &[req("blocked", Ty::Bool)];
@@ -589,7 +630,7 @@ const R_TASK_GET: Shape = &[
     TASK_CHECKS,
     TASK_CORE,
     TASK_LIVE_TIME,
-    TASK_RELATIONS,
+    TASK_GET_RELATIONS,
     TASK_BLOCKS,
     TASK_ANNOTATION_PAGE,
     TASK_TOKENS,
@@ -1218,6 +1259,22 @@ fn plain_task(e: &Engine) -> Value {
         .expect("add task")
 }
 
+/// Write a note on `r` and scrub it, so the task carries one D113 tombstone.
+///
+/// Every `task.get` case calls this, because `annotations_removed` is a frozen
+/// ARRAY SHAPE on every `task.get` answer and this suite fails a case whose
+/// fixture leaves such an array empty — an unchecked row shape is a freeze
+/// nobody is holding. It is also the only route to a tombstone: the row is
+/// written by `annotation.add` and emptied by `annotation.remove`, and nothing
+/// else in the API produces one.
+fn scrub_one(e: &Engine, r: i64) {
+    let doomed = e
+        .annotation_add(&json!({ "ref": r, "body": "pasted a secret by mistake" }))
+        .expect("the note that should not have been written");
+    e.annotation_remove(&json!({ "ref": r, "annotation_id": doomed["annotation"]["id"] }))
+        .expect("scrub it");
+}
+
 /// A self-report measurement — the one `token.add` vocabulary the engine
 /// accepts from a caller with a straight face (D50).
 fn self_report(r: i64) -> Value {
@@ -1334,7 +1391,8 @@ fn cases() -> Vec<Case> {
         ),
         case(
             "task.get",
-            "a pending task with tags, a dependency, an annotation, a check and a measurement",
+            "a pending task with tags, a dependency, a CUT annotation, a scrubbed one, a check \
+             and a measurement",
             |e| {
                 rich_task(e);
                 plain_task(e);
@@ -1342,6 +1400,7 @@ fn cases() -> Vec<Case> {
                     .expect("dep");
                 e.annotation_add(&json!({ "ref": 1, "body": "a note" }))
                     .expect("annotate");
+                scrub_one(e, 1);
                 // D138: marked, so `evidence` is observed non-null — an
                 // optional key no fixture emits is documentation rather than a
                 // frozen shape.
@@ -1356,7 +1415,11 @@ fn cases() -> Vec<Case> {
                 }))
                 .expect("set");
                 e.token_add(&self_report(1)).expect("token");
-                json!({ "ref": 1 })
+                // D148: a cap SHORTER than the note, so `body_bytes` and
+                // `body_truncated` are actually observed. An optional key no
+                // case ever produces is a line of documentation, not a frozen
+                // shape — this suite says so itself.
+                json!({ "ref": 1, "max_body_bytes": 3 })
             },
             R_TASK_GET,
         ),
@@ -1370,6 +1433,7 @@ fn cases() -> Vec<Case> {
                     .expect("dep");
                 e.annotation_add(&json!({ "ref": 1, "body": "a note" }))
                     .expect("annotate");
+                scrub_one(e, 1);
                 // D138: `checks` is on every `task.get`, so every case that
                 // freezes that shape has to emit a row — the suite refuses to
                 // freeze a row shape no fixture produces.
@@ -1391,6 +1455,7 @@ fn cases() -> Vec<Case> {
                 e.task_start(&json!({ "ref": 1 })).expect("start");
                 e.annotation_add(&json!({ "ref": 1, "body": "still going" }))
                     .expect("annotate");
+                scrub_one(e, 1);
                 e.check_add(&json!({ "ref": 1, "body": "the criterion" }))
                     .expect("check");
                 e.token_add(&self_report(1)).expect("token");

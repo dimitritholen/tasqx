@@ -1078,11 +1078,17 @@ fn get_task_shrinks_its_page_until_the_response_fits_the_budget() {
     );
 }
 
-/// Shrinking is for the caller who named no page size. One who did gets exactly
-/// what they asked for, over budget or not — an explicit request second-guessed
-/// is a caller who can never fetch a big page on purpose.
+/// The budget holds for an explicit page size too (D148, superseding D66's
+/// exemption).
+///
+/// The field report: `tasqx_get_task {ref: 609, include_json: false,
+/// annotations_limit: 5}` answered **244,633 bytes** against a 24,576-byte
+/// budget, and the same call with NO limit answered 245,038 — naming a limit
+/// removed the bound, and the client refused the tool result either way. An
+/// exemption a caller can only discover by blowing their client's output limit
+/// is not an escape hatch; `max_body_bytes` is, and it says what it costs.
 #[test]
-fn an_explicit_limit_is_never_shrunk_to_fit() {
+fn an_explicit_limit_over_budget_is_answered_view_only() {
     let engine = engine();
     engine.task_add(&json!({ "title": "big" })).expect("add");
     let body = "detail ".repeat(900);
@@ -1093,14 +1099,39 @@ fn an_explicit_limit_is_never_shrunk_to_fit() {
     }
     let server = McpServer::new(&engine, Scope::Read);
 
-    let json = tool_json(&call(
+    let out = call(
         &server,
         1,
         "tasqx_get_task",
         json!({ "ref": 1, "annotations_limit": 11 }),
-    ));
-    assert_eq!(json["annotations"].as_array().unwrap().len(), 11);
-    assert!(json["annotations_next_offset"].is_null());
+    );
+    assert!(!is_error(&out));
+    let sent = serde_json::to_string(&out).expect("json").len();
+    assert!(
+        sent < 24_576,
+        "an explicit limit used to exempt the whole response; this one is {sent} bytes"
+    );
+
+    let blocks = out["result"]["content"].as_array().expect("content");
+    assert_eq!(
+        blocks.len(),
+        1,
+        "the duplicate JSON block is still what the budget spends first"
+    );
+    let view = blocks[0]["text"].as_str().expect("the view");
+    assert!(
+        view.contains("of 11"),
+        "a cut page still says how much of the history it holds:\n{view}"
+    );
+    assert!(
+        view.contains("annotations_offset"),
+        "and how to reach the rest:\n{view}"
+    );
+    let shown = view.matches("## Note ").count();
+    assert!(
+        (1..11).contains(&shown),
+        "expected the page cut to what fits, got {shown} of 11"
+    );
 }
 
 // ---- memory removal reaches the agent that wrote the memory ------------------
@@ -1334,19 +1365,21 @@ fn an_oversized_response_drops_the_duplicate_json_before_it_drops_history() {
     );
 }
 
-/// A caller that named its own page size gets both blocks, however large. The
-/// frozen machine-readable shape stays reachable for every task — it is only
-/// off by default on the ones too big to carry it twice.
+/// A caller that named its own page size keeps BOTH blocks whenever the answer
+/// fits — the budget is a bound, not a policy of dropping the machine block.
+///
+/// This is what D148 leaves of D66's exemption: the frozen machine-readable
+/// shape stays reachable for every task whose answer fits, and the answers that
+/// do not fit are the ones a client was refusing anyway.
 #[test]
-fn an_explicit_limit_keeps_the_json_block_even_over_budget() {
+fn an_explicit_limit_whose_answer_fits_keeps_both_blocks() {
     let engine = engine();
     engine
-        .task_add(&json!({ "title": "eleven long notes" }))
+        .task_add(&json!({ "title": "eleven short notes" }))
         .expect("add");
-    let body = "detail ".repeat(900);
     for i in 0..11 {
         engine
-            .annotation_add(&json!({ "ref": 1, "body": format!("## Note {i}\n\n{body}\n") }))
+            .annotation_add(&json!({ "ref": 1, "body": format!("## Note {i}\n\nshort.\n") }))
             .expect("annotate");
     }
     let server = McpServer::new(&engine, Scope::Read);
@@ -1360,9 +1393,170 @@ fn an_explicit_limit_keeps_the_json_block_even_over_budget() {
     assert_eq!(
         blocks.len(),
         2,
-        "an explicit page size is not second-guessed"
+        "a page that fits is answered exactly as asked, both blocks"
     );
     assert_eq!(tool_json(&out)["annotations"].as_array().unwrap().len(), 11);
+}
+
+/// The reported defect, end to end: ONE 240,000-byte annotation, read with an
+/// explicit page size and with none, both under the budget (D148).
+///
+/// The page size was never the lever here. The bisection's floor is one whole
+/// annotation, and this task's one annotation is ten times the budget on its
+/// own, so every page from 20 down to 1 answered the same quarter of a
+/// megabyte. `max_body_bytes` is the lever that was missing, and the transport
+/// applies it by default.
+#[test]
+fn one_enormous_annotation_fits_the_budget_at_every_page_size() {
+    let engine = engine();
+    engine
+        .task_add(&json!({ "title": "one enormous note" }))
+        .expect("add");
+    engine
+        .annotation_add(&json!({ "ref": 1, "body": "z".repeat(240_000) }))
+        .expect("annotate");
+    let server = McpServer::new(&engine, Scope::Read);
+
+    for (id, args) in [
+        (
+            1,
+            json!({ "ref": 1, "include_json": false, "annotations_limit": 5 }),
+        ),
+        (2, json!({ "ref": 1 })),
+    ] {
+        let out = call(&server, id, "tasqx_get_task", args.clone());
+        assert!(!is_error(&out), "{args}: {out}");
+        let sent = serde_json::to_string(&out).expect("json").len();
+        assert!(
+            sent < 24_576,
+            "{args} answered {sent} bytes; the field report measured 244,633 and 245,038"
+        );
+        let view = out["result"]["content"][0]["text"]
+            .as_str()
+            .expect("the view");
+        assert!(
+            view.contains("truncated: 240000 bytes"),
+            "the cut has to be MARKED, with the original size on it:\n{view}"
+        );
+        assert!(
+            view.contains("`max_body_bytes: 240000`"),
+            "and name the exact call that reads the note whole:\n{view}"
+        );
+    }
+}
+
+/// The cut is visible in the machine block too, on the rows it happened to,
+/// and only on those rows.
+#[test]
+fn the_json_block_marks_which_bodies_were_cut() {
+    let engine = engine();
+    engine.task_add(&json!({ "title": "mixed" })).expect("add");
+    engine
+        .annotation_add(&json!({ "ref": 1, "body": "small enough" }))
+        .expect("annotate");
+    engine
+        .annotation_add(&json!({ "ref": 1, "body": "y".repeat(30_000) }))
+        .expect("annotate");
+    let server = McpServer::new(&engine, Scope::Read);
+
+    let out = call(
+        &server,
+        1,
+        "tasqx_get_task",
+        json!({ "ref": 1, "max_body_bytes": 1_000 }),
+    );
+    let blocks = out["result"]["content"].as_array().expect("content");
+    assert_eq!(blocks.len(), 2, "capped, this answer fits both blocks");
+    let rows = tool_json(&out)["annotations"]
+        .as_array()
+        .expect("annotations")
+        .clone();
+    assert!(
+        rows[0].get("body_truncated").is_none() && rows[0].get("body_bytes").is_none(),
+        "the small note is untouched: {}",
+        rows[0]
+    );
+    assert_eq!(rows[1]["body_truncated"], json!(true));
+    assert_eq!(rows[1]["body_bytes"], json!(30_000));
+    assert_eq!(rows[1]["body"].as_str().expect("body").len(), 1_000);
+}
+
+/// Raising the cap is the deliberate escape, and it is answered as asked.
+///
+/// The floor stays what D63 set it at — one whole annotation — so a caller who
+/// raises `max_body_bytes` past the budget on purpose, with
+/// `annotations_limit: 1` so it is one note and not a history, gets every byte
+/// of that note. What changed is that this now takes an argument that says what
+/// it is doing, rather than being what any page size at all did by accident.
+#[test]
+fn a_raised_cap_returns_the_whole_body_on_purpose() {
+    let engine = engine();
+    engine
+        .task_add(&json!({ "title": "one enormous note" }))
+        .expect("add");
+    engine
+        .annotation_add(&json!({ "ref": 1, "body": "z".repeat(240_000) }))
+        .expect("annotate");
+    let server = McpServer::new(&engine, Scope::Read);
+
+    let out = call(
+        &server,
+        1,
+        "tasqx_get_task",
+        json!({
+            "ref": 1, "include_json": false,
+            "annotations_limit": 1, "max_body_bytes": 300_000
+        }),
+    );
+    let blocks = out["result"]["content"].as_array().expect("content");
+    assert_eq!(blocks.len(), 1, "`include_json: false` was asked for");
+    let view = blocks[0]["text"].as_str().expect("the view");
+    assert!(
+        view.contains(&"z".repeat(240_000)),
+        "the whole body, uncut: {} bytes of view",
+        view.len()
+    );
+    assert!(
+        !view.contains("truncated:"),
+        "and nothing claiming it was cut"
+    );
+}
+
+/// The cap reaches the engine through `tasqx_brief_task` as well — the brief's
+/// task half is `task.get`'s own result (D136), so an uncapped one is the same
+/// oversized answer with a neighbourhood stapled to it.
+#[test]
+fn the_brief_takes_the_body_cap_too() {
+    let engine = engine();
+    engine
+        .task_add(&json!({ "title": "briefed" }))
+        .expect("add");
+    engine
+        .annotation_add(&json!({ "ref": 1, "body": "y".repeat(30_000) }))
+        .expect("annotate");
+    let server = McpServer::new(&engine, Scope::Read);
+
+    let out = call(
+        &server,
+        1,
+        "tasqx_brief_task",
+        json!({ "ref": 1, "max_body_bytes": 500 }),
+    );
+    assert!(!is_error(&out), "the brief must accept the cap: {out}");
+    let sent = serde_json::to_string(&out).expect("json").len();
+    assert!(sent < 24_576, "the brief is bounded too: {sent} bytes");
+
+    // And the default cap applies with nothing named at all.
+    let defaulted = call(&server, 2, "tasqx_brief_task", json!({ "ref": 1 }));
+    assert!(!is_error(&defaulted));
+    let view = defaulted["result"]["content"][0]["text"]
+        .as_str()
+        .expect("the view");
+    assert!(
+        view.contains("truncated: 30000 bytes"),
+        "the transport's own default cap has to reach the brief:\n{}",
+        &view[..view.len().min(600)]
+    );
 }
 
 /// An ordinary task is untouched: two blocks, no note, nothing to notice.
@@ -1915,17 +2109,19 @@ fn include_json_is_stripped_before_the_params_gate_on_every_path() {
     }
 }
 
-/// The omission notice says what naming a limit COSTS.
+/// The omission notice may not say a thing the server no longer does.
 ///
-/// It read as a bounded retry — "Pass `annotations_limit` to get the JSON
-/// block back" — and the obvious value to retry with is the page size printed
-/// two lines above it. Measured on a live task: the budgeted answer was 22,932
-/// bytes, the same call with the page size it had just been shown was 46,512,
-/// and with `annotations_total` (which the tool's own description recommends
-/// for a whole history) 173,032 — seven times the budget the server had just
-/// refused to exceed.
+/// It used to read: naming `annotations_limit` "returns both blocks
+/// **unbounded** — that is an opt-out of the budget, not a page within it".
+/// D148 removed that exemption, so the sentence became an instruction to make
+/// a call that no longer exists, printed on the response that had just been
+/// cut to fit. What the notice owes the reader now is what IS true: the two
+/// blocks together were too big, the view carries the same annotations and its
+/// own heading says how much of the history it holds, `include_json: false`
+/// asks for this view on purpose, and an oversized body is cut with a marker
+/// naming `max_body_bytes`.
 #[test]
-fn the_json_omission_notice_says_that_naming_a_limit_removes_the_budget() {
+fn the_json_omission_notice_states_the_rule_the_server_now_follows() {
     let engine = engine();
     engine.task_add(&json!({ "title": "long" })).expect("add");
     for i in 0..12 {
@@ -1938,29 +2134,32 @@ fn the_json_omission_notice_says_that_naming_a_limit_removes_the_budget() {
     let blocks = result["result"]["content"].as_array().expect("blocks");
     assert_eq!(blocks.len(), 1, "the premise: this response is over budget");
     let text = blocks[0]["text"].as_str().expect("text");
+    let tail = &text[text.len().saturating_sub(600)..];
     assert!(
-        text.contains("unbounded"),
-        "the notice must say the escape hatch is an opt-out, not a page: {}",
-        &text[text.len().saturating_sub(400)..]
+        !text.contains("unbounded"),
+        "no answer is unbounded any more: {tail}"
     );
     assert!(
         text.contains("include_json"),
-        "and name the way to keep the budget: {}",
-        &text[text.len().saturating_sub(400)..]
+        "the notice still names the way to spend the budget on history: {tail}"
+    );
+    assert!(
+        text.contains("max_body_bytes"),
+        "and the argument that governs one oversized body: {tail}"
     );
 
-    // And the claim the notice now makes is true.
-    let unbounded = call(
+    // And the claim it no longer makes is false: naming the whole history is
+    // answered inside the same budget, not outside it.
+    let named = call(
         &server,
         2,
         "tasqx_get_task",
         json!({ "ref": 1, "annotations_limit": 12 }),
     );
-    let big = serde_json::to_string(&unbounded).expect("json").len();
-    let budgeted = serde_json::to_string(&result).expect("json").len();
+    let big = serde_json::to_string(&named).expect("json").len();
     assert!(
-        big > budgeted * 2,
-        "naming a limit really is several times the budgeted answer: {big} vs {budgeted}"
+        big < 24_576,
+        "an explicit limit is bounded like every other answer: {big} bytes"
     );
 }
 

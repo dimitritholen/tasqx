@@ -232,6 +232,11 @@ fn annotations(out: &mut String, result: &Value, opts: &DetailOpts) {
     let rows = match result.get("annotations").and_then(Value::as_array) {
         Some(rows) if !rows.is_empty() => rows,
         _ => {
+            // The tombstones outlive the page they are missing from, so they
+            // are printed on THIS branch as well — a task whose only note was
+            // scrubbed has nothing else left to say it ever had one, and an
+            // early return is exactly where a second surface loses a field.
+            let stones = tombstones(result, opts);
             // `annotations_limit: 0` is the documented way to read a task's
             // fields without its history, and the tool's own contract is that
             // the response "always carries `annotations_total`" — but that
@@ -250,6 +255,7 @@ fn annotations(out: &mut String, result: &Value, opts: &DetailOpts) {
                     ));
                 }
             }
+            out.push_str(&stones);
             return;
         }
     };
@@ -302,14 +308,60 @@ fn annotations(out: &mut String, result: &Value, opts: &DetailOpts) {
         note.push_str("_\n\n");
         out.push_str(&note);
     }
-    for a in rows {
+    for (i, a) in rows.iter().enumerate() {
         let when = fmt_instant(a.get("created").and_then(Value::as_str).unwrap_or(""), opts);
         let body = a.get("body").and_then(Value::as_str).unwrap_or("");
         out.push_str(&format!("---\n**{when}**\n\n{body}"));
         if !body.ends_with('\n') {
             out.push('\n');
         }
+        // D148's marker, and the reason a cut body is acceptable at all: it
+        // names the original size and the EXACT call that returns every byte of
+        // it, so nothing was silently altered — what D63/D66 refused was an
+        // unmarked cut.
+        //
+        // The offset is the row's own distance from the newest annotation, not
+        // the page's: the page is taken from the recent end and then reversed
+        // into reading order, so the row at index `i` of `n` rows sits at
+        // `offset + (n - 1 - i)`. Handing back the page's offset would send the
+        // reader to whichever note happens to sit at the recent end of it.
+        if a.get("body_truncated").and_then(Value::as_bool) == Some(true) {
+            let full = a.get("body_bytes").and_then(Value::as_u64).unwrap_or(0);
+            let here = offset + (shown - 1 - i);
+            out.push_str(&format!(
+                "\n_(truncated: {full} bytes, {} shown — read it whole with \
+                 `annotations_offset: {here}`, `annotations_limit: 1`, \
+                 `max_body_bytes: {full}`)_\n",
+                body.len()
+            ));
+        }
     }
+    out.push_str(&tombstones(result, opts));
+}
+
+/// D113's tombstones as their own lines: one per annotation whose text
+/// `annotation.remove` scrubbed, in `annotations_removed` order.
+///
+/// Under the history rather than in it, because `annotations` and
+/// `annotations_total` exclude removed rows by design — the count every client
+/// pages against — so a tombstone folded into the rows would change what "the
+/// third annotation" means on every task that ever had one removed. A count
+/// that merely went down is not an audit trail: it is the silent drop this
+/// view's paging notices already exist against.
+///
+/// Absent or empty prints nothing at all, not an empty section.
+fn tombstones(result: &Value, opts: &DetailOpts) -> String {
+    let rows = array_of(result, "annotations_removed");
+    if rows.is_empty() {
+        return String::new();
+    }
+    let mut out = String::from("\n");
+    for r in rows {
+        let id = str_of(r, "id");
+        let when = fmt_instant(&str_of(r, "removed"), opts);
+        out.push_str(&format!("_(annotation {id} removed {when})_\n"));
+    }
+    out
 }
 
 /// One table row. Central so every row is spaced identically — a golden test
@@ -1142,19 +1194,31 @@ fn description(task: &Value, page: &[Value]) -> Option<Vec<String>> {
     Some(prose(&first_paragraph(&str_of(first, "body"))))
 }
 
-/// `3 annotations, newest <instant>`, or just the count.
+/// `3 annotations, newest <instant>`, with `, 2 removed` when D113 scrubbed
+/// some — or just the count.
 ///
 /// The instant is only claimed when the page ends at the newest annotation —
 /// `offset` counts from the recent end, so on any later page the last row is
 /// NOT the newest and naming its timestamp would date the task wrong. The count
 /// is the total either way, which is the number the reader is deciding on.
+///
+/// The removals are a SUFFIX and not their own row (D148): the card is a
+/// summary a person reads, `annotations_total` excludes scrubbed rows by
+/// design, and a card that said "2 annotations" over a task that has had three
+/// tells the truth about the page while hiding the audit trail. One clause on
+/// the row that already carries the count is the whole of it, so every card
+/// with nothing removed is byte-identical to the one it drew before.
 fn notes_line(task: &Value, page: &[Value], opts: &DetailOpts) -> Option<String> {
     let total = task
         .get("annotations_total")
         .and_then(Value::as_u64)
         .map(|t| t as usize)
         .unwrap_or(page.len());
-    if total == 0 {
+    let removed = array_of(task, "annotations_removed").len();
+    // A task whose only note was scrubbed has a total of zero and a tombstone,
+    // and dropping the row there would be the silent removal again: the row
+    // says "0 annotations, 1 removed", which is what happened.
+    if total == 0 && removed == 0 {
         return None;
     }
     let offset = task
@@ -1171,6 +1235,9 @@ fn notes_line(task: &Value, page: &[Value], opts: &DetailOpts) -> Option<String>
         {
             line.push_str(&format!(", newest {}", card_instant(&created, opts)));
         }
+    }
+    if removed > 0 {
+        line.push_str(&format!(", {removed} removed"));
     }
     Some(line)
 }

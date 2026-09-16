@@ -171,10 +171,18 @@ const METHODS: [(&str, &str, &str); 42] = [
     (
         "task.get",
         "<code>ref</code>, <code>annotations_limit?</code>, <code>annotations_offset?</code>, \
-         <code>explain?</code>",
+         <code>max_body_bytes?</code>, <code>explain?</code>",
         "Full detail incl. annotations, deps, <code>blocked</code>. A limit takes the newest \
          annotations; <code>annotations_total</code> and <code>annotations_next_offset</code> \
-         say what was left out. <code>explain: true</code> adds <code>urgency_breakdown</code> \
+         say what was left out. <code>max_body_bytes</code> caps each annotation body IN THE \
+         RESPONSE (D148): a longer one is cut on a character boundary and the row gains \
+         <code>body_bytes</code> (its real size) and <code>body_truncated</code>, so a single \
+         enormous note cannot blow a caller's payload limit; omit it and every body comes back \
+         whole, which is what the CLI and <code>tasqx api</code> do. \
+         <code>annotations_removed</code> lists the tombstones <code>annotation.remove</code> \
+         left — <code>{id, removed}</code> per scrubbed note, never its text — while \
+         <code>annotations</code> and <code>annotations_total</code> keep excluding them. \
+         <code>explain: true</code> adds <code>urgency_breakdown</code> \
          (<code>priority</code>, <code>due_proximity</code>, <code>age</code>, <code>total</code>) \
          — the terms <code>urgency</code> sums (D1); the plumbing <code>tasqx why --json</code> \
          uses (#150).",
@@ -385,7 +393,7 @@ const METHODS: [(&str, &str, &str); 42] = [
     ),
     (
         "task.brief",
-        "<code>ref</code>, <code>memory_limit?</code>",
+        "<code>ref</code>, <code>memory_limit?</code>, <code>max_body_bytes?</code>",
         "<code>{task, neighbourhood, memory}</code>. Everything needed before starting one task \
          (D136): <code>task</code> is <code>task.get</code>'s own result verbatim; \
          <code>neighbourhood.depends_on</code> names each prerequisite with its NEWEST \
@@ -398,7 +406,10 @@ const METHODS: [(&str, &str, &str); 42] = [
          words and would answer nothing if it were. Half the page (rounded up) is reserved for \
          knowledge docs and annotations fill the rest, either kind taking the other's unused \
          slots, docs listed first (D147); <code>reserved_docs</code>, <code>docs_total</code> \
-         and <code>annotations_total</code> say what was done.",
+         and <code>annotations_total</code> say what was done. <code>max_body_bytes</code> caps \
+         each annotation body of the TASK half in the response, exactly as on \
+         <code>task.get</code> (D148) — no <code>annotations_limit</code>, because a brief is \
+         what you read BEFORE starting and dropping whole notes from it is the wrong cut.",
     ),
     (
         "report.outcomes",
