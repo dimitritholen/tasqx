@@ -5269,3 +5269,165 @@ fn a_typed_clock_time_is_stored_as_that_utc_clock_whatever_tz_says() {
     run(&["modify", "2", "--due", "2026-09-21T06:00:00+02:00"]);
     assert_eq!(field("2", "due"), "2026-09-21T04:00:00Z");
 }
+
+// ---- the capture clock (D148) ----------------------------------------------
+
+/// A pin the CLI cannot read is fatal at the door, and it says which value it
+/// choked on.
+///
+/// The alternative — ignore it and use the wall clock — is the failure the pin
+/// exists to remove: the capture runs, the screens look right, and the fixtures
+/// drift by a day against a `TASQX_NOW` with a typo in it. The engine's own
+/// `clock::now` falls back instead of exiting (a library cannot exit a process
+/// it does not own), so this exit is what makes that branch unreachable from a
+/// real run, and it must be asserted through the binary rather than on the
+/// function.
+#[test]
+fn a_clock_pin_the_cli_cannot_read_exits_two_and_quotes_it() {
+    let dir = fresh_config_dir("bad-pin");
+    let out = bin("bad-pin", &dir)
+        .env("TASQX_NOW", "tomorrow")
+        .args(["list"])
+        .output()
+        .expect("run tasqx");
+    assert_eq!(
+        out.status.code(),
+        Some(2),
+        "a bad TASQX_NOW must exit 2, not render: {}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        err.contains("TASQX_NOW") && err.contains("tomorrow"),
+        "the refusal must name the variable and the value: {err:?}"
+    );
+
+    // Blank is not a typo: `TASQX_NOW=` is how a script clears it.
+    let cleared = bin("bad-pin", &dir)
+        .env("TASQX_NOW", "  ")
+        .args(["list"])
+        .output()
+        .expect("run tasqx");
+    assert!(
+        cleared.status.success(),
+        "a blank pin is an unset pin: {}",
+        String::from_utf8_lossy(&cleared.stderr)
+    );
+}
+
+/// The pin reaches the STORE, and that is the whole point of it.
+///
+/// A read-only pin was the first cut of D148 and it is half a pin: the capture
+/// manifest renders write echoes (`add`, `start`, `done`) against a demo store
+/// standing on a day in the past, so a `created` stamped from the wall clock
+/// lands after the pinned "today" and `show` spells the new task "created in 15
+/// days", with `active_since` in the future and `tracked` negative. Here: a
+/// task added under a pin is stamped with the pinned instant, its due date is
+/// relative to the pinned day, and its urgency — computed inside the engine —
+/// is scored at the same instant rather than at the real one.
+#[test]
+fn a_write_under_a_pin_is_stamped_with_the_pin() {
+    let dir = fresh_config_dir("pin-writes");
+    let pin = "2026-09-16T09:00:00Z";
+    let run = |args: &[&str]| -> std::process::Output {
+        let out = bin("pin-writes", &dir)
+            .env("TASQX_NOW", pin)
+            .args(args)
+            .output()
+            .expect("run tasqx");
+        assert!(
+            out.status.success(),
+            "{args:?} failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        out
+    };
+    run(&["add", "Ship it", "due:tomorrow"]);
+    let out = run(&["--json", "show", "1"]);
+    let task: serde_json::Value = serde_json::from_slice(&out.stdout).expect("json");
+
+    assert_eq!(
+        task["created"].as_str(),
+        Some(pin),
+        "`created` must be the pinned instant, not the wall clock: {task}"
+    );
+    assert_eq!(
+        task["due"].as_str(),
+        Some("2026-09-17T00:00:00Z"),
+        "`due:tomorrow` is midnight of the day after the PINNED today: {task}"
+    );
+
+    // Urgency is the engine's arithmetic, not a label, and it is the value a
+    // read-only pin would have left moving with the real day.
+    let urgency = task["urgency"].as_f64().expect("an urgency score");
+    let day_later = bin("pin-writes", &dir)
+        .env("TASQX_NOW", "2026-09-17T09:00:00Z")
+        .args(["--json", "show", "1"])
+        .output()
+        .expect("run tasqx");
+    let later: serde_json::Value = serde_json::from_slice(&day_later.stdout).expect("json");
+    assert_ne!(
+        later["urgency"].as_f64(),
+        Some(urgency),
+        "a day of pinned time must move the score the way a real day would: {later}"
+    );
+    assert_eq!(
+        later["created"].as_str(),
+        Some(pin),
+        "reading at another pin must not restamp the row: {later}"
+    );
+}
+
+/// Two capture runs at one pin produce the same bytes, writes included; two
+/// pins a day apart do not.
+///
+/// This is the property the drift job in #644 rests on, asserted end to end:
+/// the same commands against two FRESH stores, each built by the same writes
+/// under the same pin, must render identically — which can only hold if the
+/// stamps, the scores and the spellings all come from the pin.
+#[test]
+fn one_pin_renders_the_same_bytes_twice_and_another_pin_does_not() {
+    let pin = "2026-09-16T09:00:00Z";
+    // The store is BUILT at one instant and RENDERED at another, because a
+    // store built fresh at every pin renders the same relative text at any of
+    // them ("created today", "due tomorrow") — which is a real property and
+    // not the one under test. What a drift job compares is a fixed store seen
+    // from a moving day.
+    let capture = |tag: &str, built_at: &str, read_at: &str| -> String {
+        let dir = fresh_config_dir(tag);
+        let run = |at: &str, args: &[&str]| -> String {
+            let out = bin(tag, &dir)
+                .env("TASQX_NOW", at)
+                .env("COLUMNS", "100")
+                .args(args)
+                .output()
+                .expect("run tasqx");
+            assert!(
+                out.status.success(),
+                "{args:?} failed: {}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+            String::from_utf8_lossy(&out.stdout).into_owned()
+        };
+        let mut screen = run(built_at, &["add", "Ship it", "due:tomorrow"]);
+        screen.push_str(&run(built_at, &["done", "1"]));
+        screen.push_str(&run(read_at, &["list", "status:done"]));
+        screen.push_str(&run(read_at, &["why", "1"]));
+        screen.push_str(&run(read_at, &["show", "1"]));
+        screen
+    };
+
+    let first = capture("pin-bytes-a", pin, pin);
+    let second = capture("pin-bytes-b", pin, pin);
+    assert_eq!(
+        first, second,
+        "two runs at one pin must be byte-identical, or a drift job fires on the calendar"
+    );
+
+    let day_later = capture("pin-bytes-c", pin, "2026-09-17T09:00:00Z");
+    assert_ne!(
+        first, day_later,
+        "the same store read a pinned day later must read differently, or the \
+         relative dates are not following the clock at all"
+    );
+}

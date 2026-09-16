@@ -1,43 +1,53 @@
-//! The CLI's one wall-clock read, and the pin that makes a render repeatable.
+//! The CLI's door onto the clock: validation, and then [`tasqx_core::clock`],
+//! which is where the clock itself lives.
 //!
 //! Every "what time is it" in `tasqx-cli` comes through [`now`]. A guard test at
 //! the bottom of this file reads every `.rs` file under `src/` and fails on a
-//! `Timestamp::now` or `Zoned::now` anywhere else, because the value of a single
-//! door is exactly that nothing walks around it.
+//! `Timestamp::now` or `Zoned::now` anywhere else; the engine has the same guard
+//! over its own `src/`, so the two crates have one clock between them.
 //!
 //! # `TASQX_NOW`
 //!
 //! Set `TASQX_NOW` to an RFC 3339 instant (`2026-09-16T09:00:00Z`, or any offset
-//! spelling jiff accepts) and [`now`] answers that instead of the clock. It
-//! exists so `scripts/docs-capture.sh` can render the documentation screens
-//! reproducibly: a captured `list`, `agenda`, `why` or `chart` prints `due
-//! tomorrow`, `3d`, a burndown window and a relative annotation age, so the same
-//! store rendered on two different days produces two different files and a drift
-//! job that compares them would fire on every calendar day rather than on a real
-//! change. `scripts/demo-store.py` reads the same variable, so the store's dates
-//! and the render's reference instant come from one pinned day.
+//! spelling jiff accepts) and every instant this process reads is that one: the
+//! dates the CLI spells, the stamps the engine writes, the instant urgency is
+//! scored at. It exists so the documentation pipeline can render its screens
+//! reproducibly — a captured `list`, `agenda`, `why`, `chart` or write echo
+//! prints `due tomorrow`, `3d`, `created today`, a burndown window and an
+//! urgency score, so the same store rendered on two different days produces two
+//! different files and a drift job comparing them would fire on every calendar
+//! day rather than on a real change. `scripts/demo-store.py` reads the same
+//! variable, so the store's dates and the render's reference instant come from
+//! one pinned day.
 //!
-//! It is a testing and capture hook, not a user feature: it is documented here
-//! and in `CONTRIBUTING.md`, and deliberately not in `tasqx docs`, the wiki or
-//! the guides. Nobody tracking real work wants their overdue tasks frozen.
+//! It is a testing and capture hook, not a user feature: it is documented here,
+//! in [`tasqx_core::clock`] and in `CONTRIBUTING.md`, and deliberately not in
+//! `tasqx docs`, the wiki or the guides. Nobody tracking real work wants their
+//! overdue tasks frozen — and because the pin reaches the store too (DESIGN.md
+//! D148), `tasqx about` states it beside the store and the build whenever it is
+//! set.
 //!
-//! An unparsable value is fatal rather than ignored. A typo that silently fell
+//! **This is the door that validates.** An unparsable value is fatal here: one
+//! line on stderr and exit 2, before an engine exists. A typo that silently fell
 //! back to the wall clock would produce exactly the drift the pin was set to
-//! prevent, and the capture would look like it worked.
+//! prevent, and the capture would look like it worked. The engine cannot exit a
+//! process it does not own, so it falls back there instead — and every process
+//! that reaches the engine (the one-shot CLI, `api`, `mcp serve`, `daemon`,
+//! `watch`) comes through this door first.
 
 /// The reference instant: `TASQX_NOW` when it is set, the wall clock otherwise.
 ///
 /// Exits 2 — the CLI's `bad_request` code (DESIGN.md §4) — with one line on
-/// stderr when `TASQX_NOW` holds something that is not an RFC 3339 instant.
+/// stderr when `TASQX_NOW` holds something that is not an RFC 3339 instant, so
+/// the engine's own fallback for that case is unreachable from a real run.
 ///
 /// The environment is read on every call rather than once into a `OnceLock`:
 /// the dashboard re-reads the clock on every tick and a cached wall-clock
 /// reading would freeze a live screen.
 pub fn now() -> jiff::Timestamp {
-    match pinned(std::env::var("TASQX_NOW").ok().as_deref()) {
+    match tasqx_core::clock::pin_from_env() {
         Ok(Some(pin)) => pin,
-        // The one wall-clock read in the crate.
-        Ok(None) => jiff::Timestamp::now(),
+        Ok(None) => tasqx_core::clock::now(),
         Err(msg) => {
             eprintln!("{msg}");
             std::process::exit(2);
@@ -45,66 +55,31 @@ pub fn now() -> jiff::Timestamp {
     }
 }
 
-/// The parse behind [`now`], split out because the environment is
-/// process-global: a test that set `TASQX_NOW` would be setting it for every
-/// other test in the same binary, which run in parallel threads.
-///
-/// `Ok(None)` means "no pin, use the clock". An unset variable and an empty or
-/// blank one are the same answer — `TASQX_NOW=` is how a script clears it, and
-/// `$TASQX_DB` already treats empty as unset (`backend::db_path`) — so the
-/// error is reserved for a value somebody meant.
-fn pinned(raw: Option<&str>) -> Result<Option<jiff::Timestamp>, String> {
-    let Some(value) = raw else {
-        return Ok(None);
-    };
-    let trimmed = value.trim();
-    if trimmed.is_empty() {
-        return Ok(None);
-    }
-    match trimmed.parse::<jiff::Timestamp>() {
-        Ok(ts) => Ok(Some(ts)),
-        Err(_) => Err(format!(
-            "tasqx: TASQX_NOW is not an RFC 3339 instant: {value}"
-        )),
-    }
+/// The pin as `tasqx about` reports it (D132's clock row): `Some` only when
+/// `TASQX_NOW` names an instant [`now`] would use. An unparsable value cannot
+/// reach here — `now` exits on it — so the row never spells a value the process
+/// is not actually running on.
+pub fn pin() -> Option<jiff::Timestamp> {
+    tasqx_core::clock::pin_from_env().ok().flatten()
 }
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use std::ffi::OsStr;
     use std::path::{Path, PathBuf};
 
+    /// The parse itself belongs to the engine (`tasqx_core::clock::pinned`, and
+    /// tested there); what this crate owns is that the value `about` reports is
+    /// the value the clock would use, and that a bad one exits 2 — the latter
+    /// driven through the real binary in `tests/regressions.rs`.
     #[test]
-    fn an_unset_or_blank_pin_leaves_the_wall_clock_alone() {
-        assert_eq!(pinned(None), Ok(None));
-        assert_eq!(pinned(Some("")), Ok(None));
-        assert_eq!(pinned(Some("   ")), Ok(None));
-    }
-
-    #[test]
-    fn a_pinned_instant_is_the_instant_it_names() {
-        let ts = pinned(Some("2026-09-16T09:00:00Z")).unwrap().unwrap();
-        assert_eq!(ts.to_string(), "2026-09-16T09:00:00Z");
-        // Whitespace comes free with `VAR=$(date ...)` in a capture script.
-        assert_eq!(pinned(Some("  2026-09-16T09:00:00Z\n")).unwrap(), Some(ts));
-        // An offset spelling names the same instant as its UTC one.
-        assert_eq!(pinned(Some("2026-09-16T11:00:00+02:00")).unwrap(), Some(ts));
-    }
-
-    /// A typo must not fall back to the clock: a capture that drifts is the one
-    /// failure the pin exists to remove, and a silent fallback hides it behind
-    /// output that looks right.
-    #[test]
-    fn an_unparsable_pin_is_an_error_that_quotes_the_value() {
-        for bad in ["tomorrow", "2026-09-16", "2026-09-16 09:00:00", "now"] {
-            let err = pinned(Some(bad)).unwrap_err();
-            assert_eq!(
-                err,
-                format!("tasqx: TASQX_NOW is not an RFC 3339 instant: {bad}"),
-                "{bad:?}"
-            );
-        }
+    fn the_reported_pin_is_the_instant_the_clock_would_use() {
+        let want: jiff::Timestamp = "2026-09-16T09:00:00Z".parse().unwrap();
+        assert_eq!(
+            tasqx_core::clock::pinned(Some("2026-09-16T09:00:00Z")).unwrap(),
+            Some(want)
+        );
+        assert_eq!(tasqx_core::clock::pinned(Some("  ")).unwrap(), None);
     }
 
     /// Every `.rs` file under `crates/tasqx-cli/src`, this one excluded.

@@ -1956,7 +1956,7 @@ impl<'e> McpServer<'e> {
                 // above; exactly one tool maps to `task.get`, so this is the
                 // same set either way.
                 if spec.method == "task.brief" {
-                    let now = jiff::Timestamp::now();
+                    let now = crate::clock::now();
                     let opts = crate::markdown::DetailOpts {
                         time: self.time_format,
                         now,
@@ -1983,7 +1983,7 @@ impl<'e> McpServer<'e> {
                     // Stamped HERE, never inside the renderer: that is what
                     // keeps `task_detail` and `task_card` pure and their golden
                     // tests stable.
-                    let now = jiff::Timestamp::now();
+                    let now = crate::clock::now();
                     let opts = crate::markdown::DetailOpts {
                         time: self.time_format,
                         now,

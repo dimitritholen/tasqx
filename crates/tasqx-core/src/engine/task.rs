@@ -290,7 +290,7 @@ impl Engine {
             })?),
             None => None,
         };
-        let now_ts = Timestamp::now();
+        let now_ts = crate::clock::now();
         let due = opt_when(p, "due", now_ts)?;
         let scheduled = opt_when(p, "scheduled", now_ts)?;
         let wait = opt_when(p, "wait", now_ts)?;
@@ -510,7 +510,7 @@ impl Engine {
             Status::Backlog => {
                 return Err(ApiError::conflict(format!(
                     "cannot start a backlog task (only pending -> active){}",
-                    Self::backlog_escape_hint(&task, Timestamp::now())
+                    Self::backlog_escape_hint(&task, crate::clock::now())
                 )));
             }
             other => {
@@ -706,7 +706,7 @@ impl Engine {
             Status::Backlog => {
                 return Err(ApiError::conflict(format!(
                     "cannot complete a backlog task (only pending|active -> done){}",
-                    Self::backlog_escape_hint(&task, Timestamp::now())
+                    Self::backlog_escape_hint(&task, crate::clock::now())
                 )));
             }
             other => {
@@ -1170,7 +1170,7 @@ impl Engine {
         // per-field reads could resolve `due:"today"` and `wait:"today"` in
         // one call across midnight — and the stored `modified`/urgency pair
         // below derives from it too.
-        let now_ts = Timestamp::now();
+        let now_ts = crate::clock::now();
 
         // Whitelist of modifiable columns; recompute urgency if inputs change.
         let mut priority = task.priority;
@@ -1491,7 +1491,7 @@ impl Engine {
     pub(super) fn load_task_snapshots_counted(
         &self,
     ) -> Result<(Vec<TaskSnapshot>, usize), ApiError> {
-        self.load_task_snapshots_counted_for(SnapshotParts::EVERYTHING, Timestamp::now())
+        self.load_task_snapshots_counted_for(SnapshotParts::EVERYTHING, crate::clock::now())
     }
 
     /// Counting variant of [`Engine::load_task_snapshots_for`].
@@ -1698,7 +1698,7 @@ impl Engine {
         // THE operation's clock: the filter's relative dates, every row's
         // wait/schedule release, and the recomputed urgencies below all
         // resolve against this one instant.
-        let now_ts = Timestamp::now();
+        let now_ts = crate::clock::now();
         let filter = Filter::parse(&filter_str, now_ts).map_err(ApiError::bad_request)?;
         validate_filter_projects(self.conn(), &filter)?;
 
@@ -2416,7 +2416,7 @@ impl Engine {
     /// the newest note by `id`, the same key `annotations_page` orders by
     /// (D142), so "newest" means one thing in the store.
     fn prerequisites_with_outcome(&self, task_id: &str) -> Result<Vec<Value>, ApiError> {
-        let now = Timestamp::now();
+        let now = crate::clock::now();
         // `TASK_COLS` and `map_task_row_at`, not a hand-picked `t.status`:
         // status is a read surface and goes through the one derivation every
         // other reader uses (D28, D29). Read raw, a task parked behind a future
@@ -2469,7 +2469,7 @@ impl Engine {
     /// of what it is about to release; `task.done`'s `unblocked` already
     /// reports the forward direction at the moment that direction matters.
     fn dependents_brief(&self, task_id: &str) -> Result<Vec<Value>, ApiError> {
-        let now = Timestamp::now();
+        let now = crate::clock::now();
         // Through the same derivation as the prerequisites above, and for the
         // same reason (D28, D29): status is a read surface.
         let mut stmt = self.conn.prepare(&format!(
@@ -3728,7 +3728,7 @@ mod tests {
         // exist (`depends_on`, `annotations`, `tokens`); the two seeded here
         // are the two asserted below.
         let (narrow, statements) = e
-            .load_task_snapshots_counted_for(SnapshotParts::FILTERS_ONLY, Timestamp::now())
+            .load_task_snapshots_counted_for(SnapshotParts::FILTERS_ONLY, crate::clock::now())
             .unwrap();
         assert_eq!(statements, SnapshotParts::FILTERS_ONLY.statement_count());
         assert_eq!(statements, 3);

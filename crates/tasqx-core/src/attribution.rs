@@ -1040,7 +1040,7 @@ fn correlated_done_scan(engine: &Engine) -> Result<HashMap<String, DoneInfo>, Ap
         let active_ids: Vec<String> = stmt
             .query_map([], |r| r.get::<_, String>(0))?
             .collect::<rusqlite::Result<_>>()?;
-        let now = Timestamp::now().to_string();
+        let now = crate::clock::now().to_string();
         for task_id in active_ids {
             if correlated.contains_key(&task_id) {
                 continue;

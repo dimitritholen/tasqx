@@ -30,6 +30,15 @@ pub(crate) struct Facts {
     /// the platform data directory on its way, and a screen that only says
     /// where things are must not author one.
     pub store: String,
+    /// `$TASQX_NOW`, when this process is running on a pinned clock (D148) —
+    /// `None` on the wall clock, which is every ordinary run.
+    ///
+    /// The screen already answers "which store am I about to write to"; a pin
+    /// changes what gets written INTO it, since a task added under one is
+    /// stamped with the pinned instant. So the same screen answers "on which
+    /// clock", or the hazard is invisible. The value is copied text, like the
+    /// store path above it.
+    pub pin: Option<String>,
 }
 
 impl Facts {
@@ -39,14 +48,18 @@ impl Facts {
             store: crate::backend::db_path_read_only()
                 .map(|p| p.to_string_lossy().into_owned())
                 .unwrap_or_else(|e| e),
+            pin: crate::clock::pin().map(|ts| format!("pinned by TASQX_NOW · {ts}")),
         }
     }
 }
 
 pub(crate) fn render(ctx: &Ctx, f: &Facts) -> String {
     // `times`: every clock tasqx reads and prints is UTC (D132), and this is
-    // the screen that says what kind of tasqx is in front of you.
-    let rows: [(&str, &str); 6] = [
+    // the screen that says what kind of tasqx is in front of you. `clock` sits
+    // directly under it and appears only when the clock is pinned (D148): an
+    // absent row is the ordinary case, and a row that said "wall clock" on
+    // every run would be noise around the one state worth noticing.
+    let mut rows: Vec<(&str, &str)> = vec![
         ("made by", AUTHOR),
         ("linkedin", LINKEDIN),
         ("github", GITHUB),
@@ -54,6 +67,9 @@ pub(crate) fn render(ctx: &Ctx, f: &Facts) -> String {
         ("store", &f.store),
         ("times", "UTC"),
     ];
+    if let Some(pin) = &f.pin {
+        rows.push(("clock", pin));
+    }
     // `columns::fit` sizes the label column and the gap, as it does for every
     // other table here. Both columns are FIXED, for the same reason a number
     // is: a cut label is not a label, and a cut URL is a different URL. When
@@ -87,6 +103,7 @@ mod tests {
         Facts {
             version: crate::VERSION,
             store: "/home/x/.local/share/tasqx/tasqx.db".to_string(),
+            pin: None,
         }
     }
 
@@ -302,6 +319,49 @@ mod tests {
                 "{theme}: the value a label names carries paint of its own: {row:?}"
             );
         }
+    }
+
+    /// A pinned clock is stated, an unpinned one is not (D148).
+    ///
+    /// The pin reaches the STORE — `created`, `completed` and `active_since`
+    /// are stamped with it — so a `TASQX_NOW` left exported in a shell silently
+    /// backdates real work. This row is what makes that visible on the screen
+    /// that already answers which store and which build, and it names both the
+    /// variable to unset and the instant in effect, because "pinned" alone
+    /// tells a reader nothing about what is being written. When there is no
+    /// pin there is no row: the ordinary case says nothing, so the unusual one
+    /// is the thing that stands out.
+    #[test]
+    fn a_pinned_clock_is_stated_beside_the_store_and_an_unpinned_one_is_silent() {
+        let plain = render(&at(100), &facts());
+        assert!(
+            !plain.contains("clock"),
+            "an unpinned run must not carry a clock row:\n{plain}"
+        );
+
+        let pinned = Facts {
+            pin: Some("pinned by TASQX_NOW · 2026-09-16T09:00:00Z".to_string()),
+            ..facts()
+        };
+        let screen = strip(&render(&at(100), &pinned));
+        let row = screen
+            .lines()
+            .find(|l| l.trim_start().starts_with("clock"))
+            .unwrap_or_else(|| panic!("no clock row under a pin:\n{screen}"));
+        assert!(row.contains("TASQX_NOW"), "{row:?}");
+        assert!(row.ends_with("2026-09-16T09:00:00Z"), "{row:?}");
+        // Directly under the row that says what kind of clock it is.
+        let labels: Vec<&str> = screen
+            .lines()
+            .filter_map(|l| l.trim_start().split("  ").next())
+            .collect();
+        let times = labels
+            .iter()
+            .position(|l| *l == "times")
+            .expect("times row");
+        assert_eq!(labels.get(times + 1), Some(&"clock"), "{labels:?}");
+        // The store is still named: the pin is an addition, not a replacement.
+        assert!(screen.contains(&pinned.store), "{screen}");
     }
 
     /// `about` is a declared `--json` carve-out, with its reason written down:

@@ -61,6 +61,7 @@
 #![warn(missing_docs)]
 
 pub mod attribution;
+pub mod clock;
 pub mod daemon;
 pub mod datetime;
 pub mod dispatch;

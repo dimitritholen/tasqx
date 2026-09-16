@@ -999,7 +999,7 @@ pub fn serve_with_options(
             shared.hub.subscribers(),
             reminder_due_within(
                 *lock_recover(&shared.next_reminder),
-                jiff::Timestamp::now(),
+                crate::clock::now(),
                 // The horizon is the configured timeout itself rather than a
                 // constant of its own: the question is "would leaving now
                 // strand work we would otherwise have been here for", and the
@@ -1121,7 +1121,7 @@ fn record_idle_retirement(marker: &std::path::Path, socket: &str, store: Option<
          store {}\n\
          retired {}\n",
         store.unwrap_or("-"),
-        jiff::Timestamp::now(),
+        crate::clock::now(),
     );
     if let Some(parent) = marker.parent() {
         let _ = std::fs::create_dir_all(parent);
@@ -1293,7 +1293,7 @@ fn reminder_loop(sh: Shared, notifier: Arc<dyn Notifier>, shutdown: Arc<AtomicBo
             &sh,
             &mut sched,
             seen_rowid,
-            jiff::Timestamp::now(),
+            crate::clock::now(),
             &*notifier,
             &scheduler::fire_one,
             &mut fire_errors,
@@ -1502,7 +1502,7 @@ fn attribution_loop(sh: Shared, shutdown: Arc<AtomicBool>) {
         match attribution_tick(
             &sh,
             seen_rowid,
-            jiff::Timestamp::now(),
+            crate::clock::now(),
             &attribution::attribute_one,
             &mut errors,
         ) {
@@ -3820,7 +3820,7 @@ mod tests {
         // Capture an instant AFTER creation and write the transcript at it; the
         // completion below closes the window at a later `now()`, so the sample is
         // provably inside [created, completed].
-        let in_window = jiff::Timestamp::now().to_string();
+        let in_window = crate::clock::now().to_string();
         std::fs::write(&path, transcript(&in_window)).unwrap();
         complete(
             &sh,
@@ -3836,7 +3836,7 @@ mod tests {
         let seen = attribution_tick(
             &sh,
             -1,
-            jiff::Timestamp::now(),
+            crate::clock::now(),
             &attribution::attribute_one,
             &mut errors,
         )
@@ -3914,7 +3914,7 @@ mod tests {
 
         // First completion + attribution: one measurement, one marker.
         let first_path = dir.join("sess-1.jsonl");
-        std::fs::write(&first_path, transcript(&jiff::Timestamp::now().to_string())).unwrap();
+        std::fs::write(&first_path, transcript(&crate::clock::now().to_string())).unwrap();
         complete(
             &sh,
             json!({
@@ -3928,7 +3928,7 @@ mod tests {
         attribution_tick(
             &sh,
             -1,
-            jiff::Timestamp::now(),
+            crate::clock::now(),
             &attribution::attribute_one,
             &mut errors,
         )
@@ -3942,11 +3942,7 @@ mod tests {
             g.task_reopen(&json!({ "ref": id })).unwrap();
         }
         let second_path = dir.join("sess-2.jsonl");
-        std::fs::write(
-            &second_path,
-            transcript(&jiff::Timestamp::now().to_string()),
-        )
-        .unwrap();
+        std::fs::write(&second_path, transcript(&crate::clock::now().to_string())).unwrap();
         complete(
             &sh,
             json!({
@@ -3962,7 +3958,7 @@ mod tests {
         attribution_tick(
             &sh,
             -1,
-            jiff::Timestamp::now(),
+            crate::clock::now(),
             &attribution::attribute_one,
             &mut errors,
         )
@@ -3983,7 +3979,7 @@ mod tests {
         let dir = attr_test_dir("idem");
         let path = dir.join("session.jsonl");
         let id = add_task(&sh, "ship it");
-        let in_window = jiff::Timestamp::now().to_string();
+        let in_window = crate::clock::now().to_string();
         std::fs::write(&path, transcript(&in_window)).unwrap();
         complete(
             &sh,
@@ -3991,7 +3987,7 @@ mod tests {
         );
 
         let mut errors = ErrorTransition::default();
-        let now = jiff::Timestamp::now();
+        let now = crate::clock::now();
         let seen =
             attribution_tick(&sh, -1, now, &attribution::attribute_one, &mut errors).unwrap();
         assert_eq!(count(&sh, N_MEASUREMENTS), 1);
@@ -4022,7 +4018,7 @@ mod tests {
         attribution_tick(
             &sh,
             -1,
-            jiff::Timestamp::now(),
+            crate::clock::now(),
             &attribution::attribute_one,
             &mut errors,
         )
@@ -4060,14 +4056,14 @@ mod tests {
         let id = add_task(&sh, "ship it");
         // Capture the in-window instant BEFORE completing — the window closes at
         // completion, so the eventual sample must predate it.
-        let in_window = jiff::Timestamp::now().to_string();
+        let in_window = crate::clock::now().to_string();
         complete(
             &sh,
             json!({ "ref": id, "client": "claude-code", "transcript_path": path.to_string_lossy() }),
         );
 
         let mut errors = ErrorTransition::default();
-        let now = jiff::Timestamp::now();
+        let now = crate::clock::now();
         // Tick 1: the transcript has not been flushed yet. This is transient —
         // no marker, no fatal (fatal is None here; the tick must still return Ok),
         // and the watermark is invalidated so the next tick retries.
@@ -4096,7 +4092,7 @@ mod tests {
         let dir = attr_test_dir("flaky");
         let path = dir.join("session.jsonl");
         let id = add_task(&sh, "ship it");
-        let in_window = jiff::Timestamp::now().to_string();
+        let in_window = crate::clock::now().to_string();
         std::fs::write(&path, transcript(&in_window)).unwrap();
         complete(
             &sh,
@@ -4117,7 +4113,7 @@ mod tests {
         };
 
         let mut errors = ErrorTransition::default();
-        let now = jiff::Timestamp::now();
+        let now = crate::clock::now();
         let seen = attribution_tick(&sh, -1, now, &flaky, &mut errors).unwrap();
         assert_eq!(seen, -1, "a failed write forces a rebuild next tick");
         assert_eq!(count(&sh, N_ATTRIBUTED), 0, "nothing recorded yet");
@@ -4139,7 +4135,7 @@ mod tests {
         // Two tasks completed with correlation while no daemon (no tick) ran.
         let a = add_task(&sh, "task a");
         let b = add_task(&sh, "task b");
-        let in_window = jiff::Timestamp::now().to_string();
+        let in_window = crate::clock::now().to_string();
         let pa = dir.join("a.jsonl");
         let pb = dir.join("b.jsonl");
         std::fs::write(&pa, transcript(&in_window)).unwrap();
@@ -4158,7 +4154,7 @@ mod tests {
         attribution_tick(
             &sh,
             -1,
-            jiff::Timestamp::now(),
+            crate::clock::now(),
             &attribution::attribute_one,
             &mut errors,
         )
@@ -4184,7 +4180,7 @@ mod tests {
         let seen = attribution_tick(
             &sh,
             -1,
-            jiff::Timestamp::now(),
+            crate::clock::now(),
             &attribution::attribute_one,
             &mut errors,
         )

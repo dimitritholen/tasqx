@@ -679,7 +679,7 @@ impl Engine {
         }
         // Opportunistic retention prune, in the same transaction. An unresolvable
         // cutoff (clock underflow) yields "" and deletes nothing — never a panic.
-        let cutoff = jiff::Timestamp::now()
+        let cutoff = crate::clock::now()
             .checked_sub(jiff::SignedDuration::from_secs(OTLP_RETENTION_SECS))
             .map(|t| t.to_string())
             .unwrap_or_default();

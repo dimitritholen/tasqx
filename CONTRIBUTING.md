@@ -33,17 +33,22 @@ Always point a dev build at a scratch store with `TASQX_DB` and pass
 `--no-daemon`. Without both, a dev build opens your real store, or routes through
 a daemon serving it.
 
-`TASQX_NOW` pins the clock. Set it to an RFC 3339 instant and every date the CLI
-*spells* — `due tomorrow`, `2d ago`, an agenda heading, a chart's axis — is
-relative to that instant instead of the wall clock, so a captured screen reads
-the same on any calendar day. `scripts/demo-store.py` reads the same variable and
-passes it on, so the demo store's dates and the render's reference instant come
-from one pinned day. The pin is CLI-side and never changes what is written: the
-`URG` column is still computed by the engine at its own clock, which is the one
-piece of a render it does not hold still (DESIGN.md D148). It is a capture and
-testing hook, not a user feature: it lives in `crates/tasqx-cli/src/clock.rs`,
-the crate's only wall-clock read (a guard test there fails on a second one), and
-an unparsable value exits 2 rather than falling back.
+`TASQX_NOW` pins the clock. Set it to an RFC 3339 instant and that is what the
+process reads everywhere: the dates the CLI spells (`due tomorrow`, `2d ago`, an
+agenda heading, a chart's axis), the urgency it scores, **and the stamps the
+engine writes** — `created`, `completed`, `active_since`, every event. So a
+store generated at instant P and rendered at instant P is the same bytes on any
+calendar day, writes included (DESIGN.md D148).
+`scripts/demo-store.py` reads the same variable and passes it on.
+
+That last part makes it dangerous, so treat it as live ammunition: a pin left
+exported in your shell backdates real work. `tasqx about` states the pin
+whenever one is set, right under the `times UTC` row, and an unparsable value
+exits 2 instead of quietly falling back. It is a capture and testing hook, not a
+user feature — `crates/tasqx-core/src/clock.rs` and
+`crates/tasqx-cli/src/clock.rs` are the only wall-clock reads in the workspace,
+each with a guard test that fails on a second one, and the variable is
+deliberately absent from `tasqx docs`, the wiki and the guides.
 
 To use your build as your everyday `tasqx`, install it over the released one:
 

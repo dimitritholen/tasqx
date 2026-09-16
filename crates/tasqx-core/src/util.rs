@@ -12,7 +12,7 @@ use crate::error::ApiError;
 
 /// Current instant as an RFC3339 (UTC) string, e.g. `2026-07-15T11:06:10Z`.
 pub fn now() -> String {
-    Timestamp::now().to_string()
+    crate::clock::now().to_string()
 }
 
 /// Parse an RFC3339 timestamp; returns None on anything jiff can't read.
