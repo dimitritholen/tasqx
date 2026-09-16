@@ -712,11 +712,17 @@ pub(crate) fn set_setting(key: &str, value: &str) -> CmdOutcome {
 /// no socket flag), so this reads the same default/env resolution the
 /// daemon-routing path uses when neither is passed.
 pub(crate) fn otlp_daemon_warning(key: &str, value: &str) -> Option<String> {
+    otlp_daemon_warning_at(key, value, &resolve_socket(None))
+}
+
+/// The decision behind [`otlp_daemon_warning`] with the socket named by the
+/// caller, so a test can point it at an address nothing listens on instead
+/// of asserting about whatever daemon the machine happens to be running.
+pub(crate) fn otlp_daemon_warning_at(key: &str, value: &str, target: &str) -> Option<String> {
     if key != "otlp.enabled" || value != "true" {
         return None;
     }
-    let target = resolve_socket(None);
-    if daemon::try_connect(&target).is_some() {
+    if daemon::try_connect(target).is_some() {
         return None;
     }
     Some(format!(

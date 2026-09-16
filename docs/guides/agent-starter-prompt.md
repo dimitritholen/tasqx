@@ -72,7 +72,9 @@ a one-line fix does not; do it and move on.
   in an annotation, not the title.
 - Pick work from `tasqx_list_tasks` with filter `project:<name> @working`. Blocked and
   waiting tasks are hidden there by design: an empty working set with open tasks means
-  everything is blocked, not that the work is gone.
+  everything is blocked, not that the work is gone. The default row is compact — id,
+  title, status, priority, urgency, blocked, due, project, tags — so pass `fields` for
+  any other column, or `fields: []` for the whole row.
 - Per task: `tasqx_brief_task` for everything you need before starting — the task, what
   each prerequisite concluded, and relevant memory under a query tasqx derives, so you
   supply no search terms. Then `tasqx_start_timer`, do the work, annotate the outcome,

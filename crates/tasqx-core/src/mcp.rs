@@ -87,6 +87,11 @@ struct PreparedCall {
     include_body: bool,
     /// Whether THIS transport supplied the `task.list` page.
     paged_list_by_us: bool,
+    /// Whether THIS transport supplied the `task.list` projection (D152).
+    /// When it did — and only then — a null-valued key is dropped from every
+    /// row on the way out, because a default row nobody asked for should not
+    /// spend bytes saying a field is unset.
+    fields_defaulted_by_us: bool,
 }
 
 /// Which of a task's two human renderings the rendered block carries (D146).
@@ -225,6 +230,27 @@ const ANNOTATION_BODY_CAP: u64 = 16_384;
 /// now decided once, at the engine, so the CLI and `tasqx api` share it
 /// instead of falling back to "no limit" behind this transport's back.
 const LIST_PAGE: u64 = crate::engine::task::DEFAULT_TASK_LIST_LIMIT;
+
+/// The fields one `tasqx_list_tasks` row carries when the caller names none
+/// (D152).
+///
+/// Measured, like [`LIST_PAGE`]: re-measured 2026-09-16 over 36 hours and 18
+/// sessions of this repo, `tasqx_list_tasks` sent 54 KB over 19 calls and not
+/// one of them passed `fields`. A single `project:tasqx @working` page was 41
+/// rows of 637 bytes with 22 keys each, most of them null — every row spelled
+/// `scheduled`, `wait`, `remind`, `recurrence`, `completed`, `active_since`
+/// and `budget_tokens` to say nothing about any of them.
+///
+/// These nine are what an agent PICKING WORK reads: which task, what it is,
+/// where it stands, how it ranks, whether it can be started, when it is due,
+/// whose it is. Everything else is still one explicit `fields` away, and
+/// `fields: []` — the engine's own "no restriction" (#76.1) — is the whole
+/// row. The narrowing lives here and not in `task_list` for D63's reason: the
+/// bound belongs to the transport that has a payload limit, so the CLI and
+/// `tasqx api` keep answering whole rows.
+const LIST_DEFAULT_FIELDS: &[&str] = &[
+    "short_id", "title", "status", "priority", "urgency", "blocked", "due", "project", "tags",
+];
 
 /// The size a `tasqx_get_task` response is shrunk to fit, counting BOTH content
 /// blocks — the rendered view and the JSON behind it, which D49 ships together.
@@ -487,7 +513,8 @@ fn build_tool_specs() -> Vec<ToolSpec> {
                 CLI-only recipes worth composing here: the single highest-urgency \
                 unblocked task (\"what now\") is `filter: \"@working\", sort: \
                 [\"-urgency\"], limit: 1`; \"what was I doing\" is `filter: \
-                \"status:active\"`.",
+                \"status:active\"`. Rows are narrowed to a default set of fields \
+                unless you name your own; `fields: []` returns every column.",
             schema: json!({
                 "type": "object",
                 "properties": {
@@ -535,7 +562,14 @@ fn build_tool_specs() -> Vec<ToolSpec> {
                     "fields": {
                         "type": "array",
                         "items": { "type": "string", "enum": enum_of(TASK_FIELDS.iter().map(String::as_str)) },
-                        "description": "Restrict each row to these fields. An unknown name is rejected, not ignored."
+                        "description": format!(
+                            "Restrict each row to these fields. An unknown name is rejected, not \
+                             ignored. Omit it and each row carries {default} and nothing else, \
+                             with any key whose value is null left out; send \"fields\": [] for \
+                             the whole row, or name what you need (e.g. \"depends_on\", \
+                             \"estimate\", \"tokens\").",
+                            default = LIST_DEFAULT_FIELDS.join(", ")
+                        )
                     }
                 }
             }),
@@ -1809,12 +1843,27 @@ impl<'e> McpServer<'e> {
         // page for an OMITTED limit is still supplied HERE, where the payload
         // limit lives, and `total` / `next_offset` make what was left out both
         // visible and reachable.
+        //
+        // D152 narrows the ROW the same way and in the same place the page is
+        // narrowed, and for the same reason: measured over 36 hours of
+        // transcripts, `fields` was never passed, so every list call paid for
+        // 22 keys per row to read nine of them. An explicit `fields` of any
+        // kind is forwarded untouched — including `fields: []`, which the
+        // engine reads as no restriction at all (#76.1) and which is therefore
+        // how a caller asks this transport for the whole row. A JSON `null`
+        // counts as absent, the D32 reading this file already applies to
+        // `view` and `client`.
         let mut paged_list_by_us = false;
+        let mut fields_defaulted_by_us = false;
         if spec.method == "task.list" {
             if let Some(obj) = args.as_object_mut() {
                 if !obj.contains_key("limit") {
                     obj.insert("limit".to_string(), json!(LIST_PAGE));
                     paged_list_by_us = true;
+                }
+                if obj.get("fields").is_none_or(Value::is_null) {
+                    obj.insert("fields".to_string(), json!(LIST_DEFAULT_FIELDS));
+                    fields_defaulted_by_us = true;
                 }
             }
         }
@@ -1948,6 +1997,7 @@ impl<'e> McpServer<'e> {
             view,
             include_body,
             paged_list_by_us,
+            fields_defaulted_by_us,
         })
     }
 
@@ -2051,6 +2101,21 @@ impl<'e> McpServer<'e> {
                         if let Some(obj) = result["annotation"].as_object_mut() {
                             obj.remove("body");
                             obj.insert("body_bytes".to_string(), json!(body_len));
+                        }
+                    }
+                }
+                // The other half of D152's default row: a key the caller
+                // never named AND whose value is null says nothing, so it is
+                // dropped. Before the budget below, not after, so the fit
+                // counts the bytes actually sent. Rows under an explicit
+                // `fields` are byte-identical to `dispatch`'s own, nulls
+                // included — this transport narrows only what it widened.
+                if prepared.fields_defaulted_by_us {
+                    if let Some(rows) = result.get_mut("tasks").and_then(Value::as_array_mut) {
+                        for row in rows {
+                            if let Some(obj) = row.as_object_mut() {
+                                obj.retain(|_, v| !v.is_null());
+                            }
                         }
                     }
                 }

@@ -62,7 +62,9 @@ the non-interactive side by construction.
 The tool surface is designed around one loop — work the backlog one task at a time:
 
 1. `tasqx_list_tasks` with `"project:myapp.checkout"` — see the feature, blocked
-   tasks marked.
+   tasks marked. The default row is compact — `short_id, title, status, priority,
+   urgency, blocked, due, project, tags` — so pass `fields` for any other column,
+   or `fields: []` for the whole row.
 2. `tasqx_brief_task` — everything needed before starting, in one call: the task
    and its annotations, each prerequisite with **what that task concluded**, what
    this one blocks, and relevant memory under a query tasqx derives from the

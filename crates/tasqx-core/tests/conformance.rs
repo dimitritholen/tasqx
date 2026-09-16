@@ -2762,6 +2762,20 @@ fn every_mcp_tool_hands_back_the_frozen_result_of_its_method() {
                     obj.insert("include_json".to_string(), json!(true));
                 }
             }
+            // D152, the same seam one tool over: `tasqx_list_tasks` now
+            // narrows a row the caller did not project, so the frozen FULL row
+            // has to be asked for here. `fields: []` is the engine's own "no
+            // restriction" (#76.1) and a real param, so unlike `include_json`
+            // it reaches `dispatch` unaltered — the shape checked below is
+            // still the method's own. A case that names its own `fields` is
+            // left alone.
+            if tool == "tasqx_list_tasks" {
+                if let Some(obj) = params.as_object_mut() {
+                    if !obj.contains_key("fields") {
+                        obj.insert("fields".to_string(), json!([]));
+                    }
+                }
+            }
             let response = server
                 .handle_message(&json!({
                     "jsonrpc": "2.0",
