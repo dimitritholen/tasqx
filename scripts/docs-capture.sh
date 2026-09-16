@@ -81,9 +81,10 @@ case "$TASQX" in
 */*) TASQX=$(cd "$(dirname "$TASQX")" && pwd)/$(basename "$TASQX") ;;
 esac
 # `-e` (a variable straight into the session environment, no shell in between)
-# arrived in tmux 3.2. The older `printf %q` path snap-tui.sh keeps is not
-# carried here: this script runs on CI and on maintainer machines, both of
-# which have 3.2 or newer, and one quoting path is one place to get it wrong.
+# arrived in tmux 3.2, and it is the only quoting path here: a `printf %q`
+# fallback for older tmux was carried by the retired snap-tui.sh, and this
+# script runs on CI and on maintainer machines, both of which have 3.2 or
+# newer. One quoting path is one place to get it wrong.
 command -v tmux >/dev/null || {
     echo "docs-capture.sh: tmux is not on PATH (the full-screen rows need a pty)" >&2
     exit 1

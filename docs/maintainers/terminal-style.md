@@ -238,55 +238,58 @@ gauge that replaced the winner was picked the same way.
 
 ## 14. The loop
 
-`freeze` v0.2.2 segfaults on WSL2 for any PNG output and for `--execute` — its
-SVG-to-PNG step runs `resvg` through a WASM runtime that faults there. So:
+One capture, one renderer, and a picture only where a picture is the only thing
+that will do:
 
-1. Drive the binary yourself and pipe its ANSI into `freeze` on stdin, with
-   `TASQX_FORCE_COLOR=1` and `COLUMNS` set to the width under test.
-2. Ask `freeze` for `.svg`, not `.png`.
-3. Rasterize with headless Chrome at `--force-device-scale-factor=2`, sized
-   from the SVG's own `width`/`height` attributes.
-
-`scripts/snap.sh` does all three:
-
-```console
-$ scripts/snap.sh list 100 -- list
-$ scripts/snap.sh narrow 80 -- list "+design"
-$ THEME=mono scripts/snap.sh mono 100 -- list
+```text
+docs-capture.sh ──> <name>.ansi ──> ansi_html ──┬─> tasqx docs      (text)
+   (tmux / pipe)      (committed)               └─> docs --screen ──> snap.sh
+                                                    (one page)       (PNG)
 ```
 
-It writes into `target/snaps/`, so the pictures never reach a commit. Driving a
-dev build needs `TASQX` pointed at it **and** a scratch `TASQX_DB` —
-`CLAUDE.md`'s rule, which this script does not relax.
-
-TUI screens (`dashboard`, `pick`) need a pty, which this path does not give.
-`scripts/snap-tui.sh` holds them in tmux and captures the pane.
-
-One trap in that path: freeze ignores SGR 39 (default foreground), so a cell
-that resets to the terminal's own colour keeps whatever colour came before it.
-The dashboard's titles rendered tinted in the ramp colour of the figure beside
-them for exactly this reason, although the bytes carried `ESC[39m` and a real
-terminal drew them plain. `snap-tui.sh` now rewrites SGR 39 to freeze's own
-default foreground before rendering. If a colour still looks as if it bled,
-read the ANSI (`tmux capture-pane -p -e | cat -v`) before filing it.
-
-A second trap: freeze draws SGR 1 at normal weight (its SVG says
-`font-weight: normal`), so nothing is bold in its pictures. Where bold carries
-meaning — on the write echoes it means "this write changed it", and under
-`NO_COLOR` it is the only emphasis left — judge the screen from an HTML render
-of the same ANSI instead, rasterized the same way.
-
-## 15. The capture path, and the one the documentation uses
-
-The loop above is for judging a screen you are changing. What the documentation
-*ships* comes from `scripts/docs-capture.sh`, and it is the shorter way to get a
-screen for almost anything:
+1. **Capture the screen once**, as the ANSI the binary really printed.
+   `scripts/docs-capture.sh` renders every row of
+   `crates/tasqx-cli/docs-fixtures/manifest.tsv` under a pinned clock against
+   the demo store and writes `<name>.ansi` beside the manifest (§15).
+2. **Render it.** `crate::ansi_html` turns one fixture into a
+   `<pre class="term">`: that is what `tasqx docs` serves, as text rather than
+   as a picture (D149(b)), and `tasqx docs --screen <name>` writes the same
+   block as a standalone page — the site's terminal styling, a dark background,
+   no header, no script, sized to its own content.
+3. **Rasterise it** when you need an image. `scripts/snap.sh <name> [scale]`
+   writes that page, hands it to headless Chrome at
+   `--force-device-scale-factor=2` in a window measured from the page itself,
+   and leaves `target/snaps/<name>@2x.png`.
 
 ```console
 $ cargo build -p tasqx-cli
-$ TASQX=target/debug/tasqx scripts/docs-capture.sh
-$ TASQX=target/debug/tasqx scripts/docs-capture.sh --check   # what CI runs
+$ TASQX=target/debug/tasqx scripts/docs-capture.sh    # only if the screen moved
+$ TASQX=target/debug/tasqx scripts/snap.sh list
+$ TASQX=target/debug/tasqx scripts/snap.sh dashboard 3   # 3x, for a close look
 ```
+
+Steps 2 and 3 open no store and no daemon: the fixture is compiled into the
+binary. A dev build still gets `TASQX` pointed at it, and `CLAUDE.md`'s
+`TASQX_DB=<scratch>/tasks.db` still belongs on the command line — these scripts
+do not relax the rule, they simply have nothing to read.
+
+`snap.sh` writes into `target/snaps/`, so pictures do not reach a commit. The
+three in `docs/img/` are the exception and the reason this path exists at all:
+GitHub's markdown cannot carry a styled span, so the README's screens have to be
+raster — and they are rasterised from the same renderer the site uses, not from
+a second toolchain. `freeze` was that second toolchain, and it disagreed with
+the bytes twice: it ignored SGR 39, so a cell resetting to the terminal's
+default kept the colour before it (the dashboard's titles rendered tinted in the
+ramp colour of the figure beside them), and it drew SGR 1 at normal weight, so
+nothing was ever bold — on a write echo bold means "this write changed it", and
+under `NO_COLOR` it is the only emphasis left. `ansi_html` has a unit test for
+each; that is what made the second toolchain retirable.
+
+A width the manifest does not carry is a manifest change, not a `snap.sh` flag:
+`list-narrow` is `list` at 80 columns, and a width you are judging gets a row
+the same way — added while you work on it, kept if the site should show it.
+
+## 15. The fixtures the documentation ships
 
 One row of `crates/tasqx-cli/docs-fixtures/manifest.tsv` is one screen: a name,
 a kind (`pipe`, `pipe-mut` for a row that writes, `tui` for a full-screen one), a
@@ -297,15 +300,20 @@ row — through a pipe, or in a tmux pane for the full-screen three — and writ
 embeds them, and `ansi_html.rs` renders them into the guide as styled text
 (DESIGN.md D149).
 
+```console
+$ TASQX=target/debug/tasqx scripts/docs-capture.sh
+$ TASQX=target/debug/tasqx scripts/docs-capture.sh --check   # what CI runs
+```
+
 Two consequences for anyone changing a screen:
 
 - **A screen change is a fixture change in the same commit.** The `docs-fixtures`
   CI job re-captures and compares byte for byte, so a layout tweak that is not
   regenerated turns the job red. Regenerate; never hand-edit a `.ansi`.
-- **Neither trap above applies here.** `ansi_html` honours SGR 39 and emits bold
-  as `font-weight:700`, with a unit test each, which is why the site shows text
-  rather than pictures of text. To *look* at a rendered screen, generate the
-  guide (`tasqx docs --out site.html`) and open it.
+- **A README picture is downstream of a fixture.** When `list` or `dashboard`
+  changes, re-capture, then re-run `scripts/snap.sh` for that name and copy the
+  PNG over `docs/img/`. To read a whole rendered screen instead of looking at
+  one, generate the guide (`tasqx docs --out site.html`) and open it.
 
 Adding a screen: append a row, run the script, commit the `.ansi` with it, and
 add the name to `screens![]` in `crates/tasqx-cli/src/fixtures.rs` — a test fails

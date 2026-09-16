@@ -1066,6 +1066,15 @@ pub(super) enum Command {
         /// Write the HTML to stdout instead of a file (pipe it anywhere).
         #[arg(long)]
         stdout: bool,
+        /// Write ONE captured screen as a standalone page — the terminal
+        /// styling of the guide, nothing else — to --out, or to stdout. An
+        /// unknown name exits 2 listing the screens there are.
+        // Excludes --no-open: nothing here opens a browser, and a flag that
+        // suppresses something that never happens reads as if it did.
+        // `--stdout` stays compatible: it is what this already does without
+        // `--out`, so spelling it changes nothing.
+        #[arg(long, value_name = "NAME", conflicts_with = "no_open")]
+        screen: Option<String>,
     },
     /// Who made tasqx, where to find it, and what build this is.
     /// Prints the author, two links, this build's version and commit, and the
@@ -1706,6 +1715,21 @@ mod tests {
         assert!(Cli::try_parse_from(["tasqx", "docs", "--out", "g.html"]).is_ok());
         assert!(Cli::try_parse_from(["tasqx", "docs", "--stdout"]).is_ok());
         assert!(Cli::try_parse_from(["tasqx", "docs", "--no-open"]).is_ok());
+    }
+
+    /// `--screen` opens nothing, so `--no-open` beside it would suppress a
+    /// browser that was never going to launch — a flag pair that reads as if
+    /// one of them mattered. Its two real destinations are unaffected.
+    #[test]
+    fn docs_screen_refuses_no_open_and_takes_both_destinations() {
+        let err = Cli::try_parse_from(["tasqx", "docs", "--screen", "list", "--no-open"])
+            .err()
+            .expect("--screen never opens a browser, so --no-open says nothing");
+        assert_eq!(err.kind(), ErrorKind::ArgumentConflict);
+        assert!(Cli::try_parse_from(["tasqx", "docs", "--screen", "list"]).is_ok());
+        assert!(
+            Cli::try_parse_from(["tasqx", "docs", "--screen", "list", "--out", "s.html"]).is_ok()
+        );
     }
 
     /// A closed vocabulary that clap does not know about is invisible twice

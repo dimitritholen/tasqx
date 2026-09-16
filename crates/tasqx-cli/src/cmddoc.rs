@@ -931,12 +931,16 @@ pub const COMMAND_REF: &[CmdDoc] = &[
         aliases: &[],
         method: "— (no store)",
         summary: "Open the exhaustive browser guide (self-contained HTML).",
-        usage: "tasqx docs [--out PATH | --no-open | --stdout]",
+        usage: "tasqx docs [--out PATH | --no-open | --stdout] [--screen NAME]",
         examples: &[
             ex_norun("tasqx docs", "open the browser guide"),
             ex("tasqx docs --stdout"),
+            exn("tasqx docs --screen list", "one captured screen, standalone"),
         ],
-        notes: &["The exhaustive browser guide (self-contained HTML). For a quick in-terminal guide, `tasqx manual`."],
+        notes: &[
+            "The exhaustive browser guide (self-contained HTML). For a quick in-terminal guide, `tasqx manual`.",
+            "`--screen NAME` writes ONE captured screen instead of the guide: a standalone page carrying the guide's terminal styling and nothing else, to `--out` or to stdout. It is the rasterisation path behind the README's pictures (`scripts/snap.sh`), and an unknown name exits 2 listing every screen there is.",
+        ],
         see_also: &["manual"],
         topic: Topic::GettingStarted,
     },

@@ -4,20 +4,23 @@
 //! captured by `scripts/docs-capture.sh`) as TEXT, not as pictures — DESIGN.md
 //! D149(b). A picture of a terminal cannot be searched, selected, copied, read
 //! by a screen reader or re-flowed on a phone, it weighs twenty times the
-//! bytes, and it needs a second toolchain (`freeze` + headless Chrome) that has
-//! already cost this project two defects:
+//! bytes, and it needed a second toolchain (`freeze` + headless Chrome) that
+//! cost this project two defects before it was retired:
 //!
-//! * `freeze` ignores SGR 39 ("default foreground"), so a cell that resets to
+//! * `freeze` ignored SGR 39 ("default foreground"), so a cell that resets to
 //!   the terminal's own colour kept whatever colour came before it — the
 //!   dashboard's titles rendered in the ramp colour of the figure beside them,
-//!   which no real terminal draws. `snap-tui.sh` still carries a `sed` that
-//!   rewrites the byte away.
-//! * `freeze` draws SGR 1 at normal weight (its SVG says `font-weight: normal`),
-//!   so nothing is bold in its pictures — and bold is the whole emphasis of a
+//!   which no real terminal draws.
+//! * `freeze` drew SGR 1 at normal weight (its SVG says `font-weight: normal`),
+//!   so nothing was bold in its pictures — and bold is the whole emphasis of a
 //!   write echo, and the ONLY emphasis left under `NO_COLOR`.
 //!
 //! Both are cases this renderer has a unit test for, because both are cases the
-//! previous path got wrong silently: the screen still looked like a screen.
+//! previous path got wrong silently: the screen still looked like a screen. It
+//! is also why the README's three pictures — raster because GitHub's markdown
+//! carries no styled span — are rasterised from THIS renderer:
+//! `docs::screen_page` wraps one block in the site's terminal styling and
+//! `scripts/snap.sh` photographs the page.
 //!
 //! What is supported is what tasqx's own screens and a `tmux capture-pane -e`
 //! of them emit: reset, bold, dim, italic, underline and their offs, the 16

@@ -667,9 +667,15 @@ fn execute(cli: Cli) -> Exit {
         out,
         no_open,
         stdout,
+        screen,
     }) = &cli.command
     {
-        return Exit::Out(run_docs(out.as_deref(), *no_open, *stdout));
+        return Exit::Out(run_docs(
+            out.as_deref(),
+            *no_open,
+            *stdout,
+            screen.as_deref(),
+        ));
     }
 
     // `completions` needs no store, no theme and no network — it prints one
@@ -3317,7 +3323,8 @@ mod tests {
         }
     }
 
-    /// `--out` and `--no-open` are the two headless doors, and `--stdout` the pipe.
+    /// `--out` and `--no-open` are the two headless doors, `--stdout` the pipe,
+    /// and `--screen` picks one captured screen instead of the guide.
     #[test]
     fn docs_flags_parse() {
         match add_of(&["tasqx", "docs", "--out", "guide.html"]) {
@@ -3325,6 +3332,7 @@ mod tests {
                 out,
                 no_open,
                 stdout,
+                screen,
             } => {
                 assert_eq!(out.as_deref(), Some("guide.html"));
                 assert!(
@@ -3332,6 +3340,7 @@ mod tests {
                     "--out implies no-open at the behaviour level, not the flag"
                 );
                 assert!(!stdout);
+                assert!(screen.is_none());
             }
             _ => panic!("expected a docs command"),
         }
@@ -3343,14 +3352,24 @@ mod tests {
             Command::Docs { stdout, .. } => assert!(stdout),
             _ => panic!("expected a docs command"),
         }
+        // `--screen` takes a name, and combines with `--out`: the picture the
+        // README ships is written to a file, not piped.
+        match add_of(&["tasqx", "docs", "--screen", "list", "--out", "s.html"]) {
+            Command::Docs { screen, out, .. } => {
+                assert_eq!(screen.as_deref(), Some("list"));
+                assert_eq!(out.as_deref(), Some("s.html"));
+            }
+            _ => panic!("expected a docs command"),
+        }
         // Bare `docs` is the browser path.
         match add_of(&["tasqx", "docs"]) {
             Command::Docs {
                 out,
                 no_open,
                 stdout,
+                screen,
             } => {
-                assert!(out.is_none() && !no_open && !stdout);
+                assert!(out.is_none() && !no_open && !stdout && screen.is_none());
             }
             _ => panic!("expected a docs command"),
         }

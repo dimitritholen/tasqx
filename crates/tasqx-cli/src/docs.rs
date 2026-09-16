@@ -3821,6 +3821,40 @@ fn css() -> String {
     s
 }
 
+/// One captured screen as a standalone page: the site's terminal styling, a
+/// dark background, and nothing else — no header, no sidebar, no script.
+///
+/// This is the README's rasterisation path (`scripts/snap.sh`). GitHub's
+/// markdown cannot carry a styled span, so those pictures stay raster — but
+/// they are rasterised from the SAME renderer the site reads, rather than from
+/// a second toolchain: `freeze` ignored SGR 39 and drew bold at normal weight,
+/// so a picture taken that way disagreed with the bytes the binary printed
+/// (D149, and the two defects `ansi_html` has a unit test for).
+///
+/// The stylesheet is the site's own consts and no copy of them: [`DARK_VARS`]
+/// for the palette — always the dark one, because a terminal is dark in both
+/// site themes — and [`RULES`] for `pre.term`. Three overrides follow them,
+/// and only these three: the page IS the screen, so it carries `--term-bg`,
+/// is sized to its content (a screenshot has no window to fill), and does not
+/// scroll — a scroll container in a screenshot is a cropped screen.
+///
+/// `None` when nothing was captured under `name`; the caller lists
+/// [`crate::fixtures::names`] and exits 2.
+pub(crate) fn screen_page(name: &str) -> Option<String> {
+    let screen = crate::fixtures::screen(name)?;
+    Some(format!(
+        "<!doctype html>\n<html lang=\"en\">\n<head>\n<meta charset=\"utf-8\">\n\
+         <title>tasqx — {}</title>\n<style>\n:root {{\n{DARK_VARS}}}\n{RULES}\n\
+         /* The page IS the screen: content-sized, unscrolled, nothing around it. */\n\
+         html, body {{ background: var(--term-bg); }}\n\
+         body {{ margin: 0; width: max-content; }}\n\
+         pre.term {{ width: max-content; overflow: visible; padding: 0.9rem 1.1rem; }}\n\
+         </style>\n</head>\n<body>\n{}\n</body>\n</html>\n",
+        esc(name),
+        crate::ansi_html::render(screen),
+    ))
+}
+
 // ============================================================================
 // Inline JS — client-side page switching, no framework, no external anything
 // ============================================================================
