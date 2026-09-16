@@ -103,9 +103,12 @@ retro needs is a few thousand tokens per task.
 Assemble one bundle per qualifying task:
 
 1. The task read whole: `tasqx_get_task` with `include_json: false` and
-   `annotations_limit` set to the task's `annotations_total`, so every
-   annotation (approach, decisions, blockers, delivery) and every check with
-   its evidence is present.
+   `annotations_limit` set to the task's `annotations_total`. That asks for
+   every annotation (approach, decisions, blockers, delivery) and every check
+   with its evidence; a long history is still cut to the response budget
+   (D148), and the answer says so with a non-null `annotations_next_offset`,
+   so page from there until it is null (or raise `max_body_bytes` when one
+   long body was the cut) before calling the bundle complete.
 2. The executor's final hand-back report for that task, pasted verbatim, with
    the token count and wall time from its task notification.
 3. The `tasqx_outcomes` result for the task's project (calibration, rework,
