@@ -323,7 +323,7 @@ which types into a real terminal and encodes what it draws (D163):
 
 | GIF | Tape | Re-record after a change to |
 |---|---|---|
-| `docs/img/hero.gif` | `scripts/hero.tape` | `add`, `next`, the dashboard |
+| `docs/img/hero.gif` | `scripts/hero.tape` | `add`, `dep`, `pick` (search and card), short-id allocation |
 | `docs/img/deps.gif` | `scripts/deps.tape` | `init`, `add`, `dep`, `list`, `done`, `next`, short-id allocation |
 | `docs/img/memory.gif` | `scripts/memory.tape` | `memory import`, `memory search`, `scripts/demo-decisions/` |
 | `docs/img/outcomes.gif` | `scripts/outcomes.tape` | `report --outcomes`, `outcomes()` in `scripts/demo-store.py` |
@@ -343,8 +343,9 @@ $ vhs scripts/hero.tape                                   # → docs/img/hero.gi
 ```
 
 Use vhs 0.11.0: 0.12.0 prints "Creating docs/img/hero.gif...", exits 0 and
-writes nothing (charmbracelet/vhs#787). Keep a GIF at 15 seconds or less and
-around 2 MB at most, and look at its last frame before committing — a GIF loops,
+writes nothing (charmbracelet/vhs#787). Keep a feature-row GIF at 15 seconds or
+less and the hero at about 25, each around 2 MB at most, and look at its last
+frame before committing — a GIF loops,
 and the last frame is the one a reader sits on.
 
 ## 15. The fixtures the documentation ships
