@@ -3954,3 +3954,159 @@ The reasoning is not lost, it is relocated: it lives in this §12 under the D-nu
 **Why.** Three manual steps from three places (a README command, a skill pasted out of a guide, a file found in this repo) become one command whose skills cannot be a different version from the tasqx that reads them. Claude Code rewrites `~/.claude.json` while it runs, so its own CLI is the only safe writer.
 
 **Rejected: telling an outdated copy from a user's edit.** Without a record of what was installed both are just "different"; a manifest of shipped hashes is the upgrade path if overwriting on upgrade ever matters.
+### D160 — Tasqx Desktop is a Tauri 2 client of API major 1: one socket protocol, no frontend storage path, and bounded, provenance-visible graph projections
+
+**Decision:** Tasqx Desktop is a cross-platform local-first client, not another
+engine.  It lives in `apps/tasqx-desktop`, with its own npm `package-lock.json`,
+React/TypeScript frontend and Tauri 2 host.  The existing Rust workspace stays
+independently buildable and neither `tasqx-core` nor `tasqx-cli` gains a desktop
+dependency except for a genuinely thin OS-integration command.  The frontend
+never opens SQLite, reads the store file, or recreates engine validation; all
+task, project, memory, graph and mutation behaviour goes through Tasqx's
+versioned JSON API.  Tauri owns lifecycle, native windows, menus, tray,
+notifications, file dialogs and future external-editor handoff.  Its commands
+manage only those OS seams and the daemon session: they contain no task or graph
+business rules.
+
+**Protocol boundary.** Desktop connects to the existing local Unix socket on
+macOS/Linux or named pipe on Windows.  Every request is one newline-delimited
+JSON frame:
+
+```json
+{"tasqx":"1","id":"<unique in-flight id>","method":"<method>","params":{}}
+```
+
+Responses echo that `id`; pushed event frames carry no request id.  The client
+has exactly one reader, one writer, and an in-flight request map, so an event
+cannot be accepted as a response and concurrent requests cannot be correlated
+by arrival order.  It calls `core.capabilities {}` before registering a feature
+or sending an optional field, gates UI by the returned methods/features, and
+renders the API's stable `bad_request`, `not_found`, `conflict`,
+`unsupported_version`, `internal` and transport-unavailable failures rather
+than translating them to a generic error.
+
+Connection follows `disconnected → connecting → synchronizing → live`; data is
+stale outside `live`.  On each connection the client sends transport-level
+`subscribe`, awaits `{ "result": { "subscribed": true } }`, then takes its
+baseline through `core.capabilities`, `project.list`, `task.list`,
+`report.summary`, and the selected `task.get`.  Subscribe supplies no snapshot.
+Events received while this set is loading are buffered.  An event applies only
+when its `_rev` exceeds the loaded entity revision; a missing revision or an
+operation that can remove or reshape an entity reloads that entity.  A
+`task.changed.gap`, malformed or unknown event, non-increasing revision, or
+server restart repeats the complete baseline before the UI becomes live again.
+Reconnect delays are exactly 0 ms, 250 ms, 500 ms, 1 s, 2 s, 4 s, 8 s, then
+15 s repeatedly, resetting only after a successful baseline.  The offline
+banner appears after one second, shows the next retry, and retries until the
+user stops it; reconnect preserves route, filters, selection and drafts.
+
+Every desktop mutation carries the last-read `expected_rev` where the API
+supports it.  A successful response alone updates the local entity.  A conflict
+preserves the draft and offers reload, compare and retry where permitted; it
+never silently overwrites a concurrent change.
+
+**Graph and links.** API major `1` gains `graph.query` and the explicit
+`link.add`, `link.remove`, and `link.list` family.  `graph.query` accepts a
+stable root reference; depth 0–4 (default 2); node/relation types; project,
+status, tag and modified-date filters; `include_inferred` (default false); and
+bounded `max_nodes` 1–1000 (default 250) and `max_edges` 1–5000 (default 750).
+It returns deterministically ordered nodes (`id`, `type`, `label`, `summary`,
+`project`, `status`, `modified` where applicable), edges (`id`, `from`, `to`,
+`relation`, `kind`, `confidence` for inferred edges, `source`), and
+`truncated`, counts and omitted-node/edge metadata when a bound is reached.
+Unknown roots, types or relations and invalid ranges are stable API errors.
+
+Node types are task, memory document, annotation and project.  Structural edges
+are task dependencies, task annotations, task/project and memory/project
+membership, and durable explicit links.  Inferred edges may express search
+matches, shared project/tag/terms, related annotations or similar/cited content;
+they are generated from existing data, carry provenance/confidence, and are
+never persisted or presented as fact until a user promotes one.  Explicit links
+persist stable endpoint ids and relation strings, start with the fixed validated
+registry `references`, `supersedes`, `implements_decision`, `derived_from` and
+`contradicts`, reject self-links and missing entities, make duplicates
+idempotent, return `not_found` when removing an absent link, and permit cycles.
+
+The graph UI is Sigma.js with Graphology and WebGL, with renderer cleanup on
+unmount.  It begins from a bounded neighbourhood rather than the whole store;
+supports focus, expansion, search-to-focus, node/edge/project/status/tag/date/
+confidence filters, pinning, presets, open-in-detail and inferred-edge
+promotion; and provides an accessible list fallback.  Structural edges are
+solid and saturated; inferred ones are dashed, muted and visibly label their
+source/confidence.  Saved graph views are presentation state, not shared data:
+atomically persist schema-1 JSON in `appDataDir()/graph-views.json`, keyed by
+project and view name, with root/focus, filters, edge settings, layout, pins and
+camera.  Export/import is JSON; a corrupt store is renamed `.bak`, replaced by
+an empty valid one, and reported as recoverable.
+
+**Product surface.** The shell navigates Dashboard, Tasks, Projects, Memory,
+Graph, Reports and Settings, preserving selection in the route.  It follows
+Superset as an interaction-quality reference only: dense, keyboard-first,
+multi-pane, calm and professional—not its branding or implementation.  The
+Tasqx system defines dark and light themes, semantic status colours,
+typography, iconography, focus/selection/loading/empty/error states, and graph
+semantics.  It uses a 4 px spacing base, compact 32 px primary and 28 px
+secondary rows, 8 px panel padding, 12 px section gaps, 6 px controls, 8 px
+panels, one-pixel borders and no persistent heavy shadow.  The system-sans UI
+and system-mono IDs/dates/errors use these themes:
+
+| Role | Dark | Light |
+|---|---|---|
+| Canvas / panel / elevated | `#101214` / `#171A1F` / `#1E232A` | `#F5F7FA` / `#FFFFFF` / `#EEF2F6` |
+| Border / text / muted | `#2A313A` / `#E8ECF1` / `#98A2B3` | `#D8DEE7` / `#18202A` / `#667085` |
+| Accent / success / warning / danger / purple | `#6AC4DC` / `#32D74B` / `#FFD60A` / `#FF453A` / `#BF5AF2` | `#087F9B` / `#16833B` / `#996A00` / `#C62828` / `#6B3FA0` |
+
+Normal text meets WCAG AA and non-text boundaries meet 3:1.  The 240 px
+collapsible sidebar, flexible 480 px-minimum centre, and 360 px resizable
+inspector (280 px minimum) persist locally.  Below 1100 px the inspector moves
+behind a toggle; below 760 px one region at a time uses navigation history; the
+whole app never horizontally scrolls.  All controls have hover, pressed,
+disabled, selected, focus, loading and error behaviour; focus is a 2 px accent
+outline offset by 2 px, icon-only controls have accessible names/tooltips, and
+reduced motion changes no required meaning.  `Cmd/Ctrl-K`, `g d`, `g t`, `g m`,
+`g g`, `j`/`k`, Enter, Escape and `r` are respectively palette, destination,
+row/open/close and refresh shortcuts.
+
+**Delivery order.** Phase 1 is this foundation: shell, design system, layout
+persistence, shortcut framework and typed API client.  Phase 2 is read-only
+dashboard/tasks: capabilities, projects, paginated task list/detail, summaries,
+the three-zone workspace and its loading/empty/error/stale states.  Phase 3 is
+editing and live updates: task lifecycle, tags, dependencies, checks,
+annotations, memory edits, daemon events and conflicts.  Phase 4 is Memory
+Explorer: Tasqx full-text semantics, 250 ms debounced/cancellable search,
+project/type/standing/date filters, excerpts, full detail on selection,
+annotation-owner navigation, backlinks and unseeded-store states.  Phase 5 is
+the bounded knowledge graph above.  Phase 6 packages and releases macOS,
+Windows and Linux installers, opt-in signature-verified updates, rollback and
+export/import recovery.
+
+Desktop uses Node 22 LTS and npm with its committed lockfile.  Its gates are
+`npm ci`, typecheck, ESLint, Vitest/Testing Library, Vite production build and
+`tauri build`; Playwright checks the built webview where supported.  Every
+feature includes API/client-state unit tests, disposable-store/daemon
+integration tests, deterministic DOM assertions or screenshots in both themes,
+keyboard/focus/accessibility and reduced-motion coverage.  No test uses a
+developer's default store or daemon.  Pull requests produce unsigned artifacts
+on all three OS families; protected version tags alone produce signed/notarized
+artifacts, failing if the named signing secrets are absent.  Release smoke tests
+cover clean install/launch, daemon connection, dashboard read, a mutation,
+daemon-restart reconnect, graph load, export/import and clean uninstall.
+
+**Why.** The existing API is the only place core semantics can remain consistent
+between the CLI, TUI, MCP server and a desktop client.  A narrow protocol and
+bounded graph contract make the rich UI possible without importing a second
+engine, treating similarity as fact, or making the SQLite file an accidental
+private API.
+
+**Rejected: direct frontend SQLite access or TypeScript domain rules.** Either
+creates a second validation and concurrency path, so it will drift from every
+existing Tasqx client.
+
+**Rejected: Electron or Cytoscape.js for the first release.** Tauri 2 fits the
+small local host and existing Rust ownership; Sigma.js/Graphology gives the
+chosen WebGL path for bounded thousand-node views.  Revisit either only after a
+prototype demonstrates a material limitation.
+
+**Rejected: a full-store graph by default or durable inferred links.** Both
+turn the task-to-knowledge path into noise; server bounds and visible provenance
+are the product's integrity guarantee.
