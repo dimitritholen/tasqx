@@ -111,7 +111,9 @@ task, and where to find help.
 four operations, and refuses everything else by name along with the verb that
 does take it back. `tasqx agenda` is a day-grouped list, not the week grid the
 spec sketched. There is no `unarchive` — importing a saved export is the way
-back. The rest of the TUI beyond `tasqx config edit`, plugins and sync are
-specified in `DESIGN.md` and don't exist yet; they were designed together so
-adding them later doesn't touch the data model, but "designed" is doing a lot
-of work in that sentence.
+back. The full-screen views (`tasqx dashboard`, `tasqx pick`, the memory
+browser, `tasqx config edit`, `tasqx setup`) let you browse and start work, but
+not edit or complete a task in place. Plugins and sync are specified in
+`DESIGN.md` and don't exist yet; they were designed together so adding them
+later doesn't touch the data model, but "designed" is doing a lot of work in
+that sentence.
