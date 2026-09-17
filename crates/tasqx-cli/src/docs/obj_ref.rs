@@ -1,4 +1,4 @@
-//! The Objects section: one page per thing the JSON API hands back (#648, D159).
+//! The Objects section: one page per thing the JSON API hands back (#648, D160).
 //!
 //! # Nothing on these pages is retyped
 //!
