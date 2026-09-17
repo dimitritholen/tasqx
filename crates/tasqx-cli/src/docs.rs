@@ -1069,18 +1069,48 @@ fn page_install() -> String {
     let mut s = page_open("install");
 
     s.push_str(&lead(
-        "tasqx is a single static binary with no runtime and no dynamic linking. Build it \
-         from the workspace and put it on your PATH.",
+        "tasqx is a single static binary with no runtime and no dynamic linking. Install it \
+         with a package manager, an installer script, or build it from source.",
     ));
 
-    s.push_str(&h3("Build"));
+    s.push_str(&h3("With a package manager"));
+    s.push_str(&p(
+        "Updates then come from <code>brew upgrade tasqx</code> / <code>scoop update tasqx</code>, \
+         and brew switches Tab completion on by itself. macOS and Linux, with Homebrew:",
+    ));
+    s.push_str(&snippet("brew install dimitritholen/tasqx/tasqx", ""));
+    s.push_str(&p("Windows, with Scoop:"));
     s.push_str(&snippet(
-        "cargo build --release -p tasqx-cli\n# the binary lands at target/release/tasqx (tasqx.exe on Windows)",
+        "scoop bucket add tasqx https://github.com/dimitritholen/scoop-tasqx\nscoop install tasqx",
+        "",
+    ));
+
+    s.push_str(&h3("With the installer script"));
+    s.push_str(&p("Linux and macOS:"));
+    s.push_str(&snippet(
+        "curl -fsSL https://raw.githubusercontent.com/dimitritholen/tasqx/main/install.sh | sh",
         "",
     ));
     s.push_str(&p(
-        "Requires a stable Rust toolchain (built and verified on 1.95). On Windows the MSVC \
-         toolchain is discovered automatically — you do not need it on your PATH.",
+        "Windows (the first statement makes older PowerShell able to download at all):",
+    ));
+    s.push_str(&snippet(
+        "[Net.ServicePointManager]::SecurityProtocol=[Net.SecurityProtocolType]::Tls12; irm https://raw.githubusercontent.com/dimitritholen/tasqx/main/install.ps1 | iex",
+        "",
+    ));
+    s.push_str(&p(
+        "Prebuilt archives for Linux, macOS and Windows are also on the project's GitHub \
+         Releases page.",
+    ));
+
+    s.push_str(&h3("Or build from source"));
+    s.push_str(&snippet(
+        "git clone https://github.com/dimitritholen/tasqx.git\ncd tasqx\ncargo install --path crates/tasqx-cli --force",
+        "",
+    ));
+    s.push_str(&p(
+        "Requires Rust 1.95 or newer. On Windows the MSVC toolchain is discovered \
+         automatically — you do not need it on your PATH.",
     ));
 
     s.push_str(&h3("Sixty seconds with tasqx"));
