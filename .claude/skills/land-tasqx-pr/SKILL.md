@@ -24,20 +24,27 @@ with `EnterWorktree` is isolated to it, and the isolation guard refuses an
 inline `gh api graphql … --jq` with nested quotes, a `$(cat …)` inside `gh`
 arguments, and chained commands as "too complex to verify":
 
-- `$S/wait-qodo.sh <n>` waits until Qodo's "busy" comment is gone, then lists
-  the unresolved threads; `$S/wait-qodo.sh <n> --bodies` prints each one's
-  finding as text.
-- `$S/reply-resolve.sh <thread-id> "<reply>"` replies and resolves, with the
-  reply passed as a GraphQL variable so any text is safe.
+- `$S/open-pr.sh <branch> <title-file> <body-file>` opens the PR with the
+  title and body read from files, so an apostrophe or backtick in the commit
+  subject cannot break or expand the command.
+- `$S/wait-qodo.sh <n>` waits until Qodo has commented and nothing of its is
+  still "busy", then lists the unresolved threads (every page);
+  `$S/wait-qodo.sh <n> --bodies` prints each one's finding as text. Exit 3
+  means Qodo had not finished or GitHub kept failing: do not merge on it.
+- `$S/reply-resolve.sh <thread-id> <reply-file>` replies and resolves. Write
+  the reply into a file with the Write tool first; it never goes on the
+  command line, where the calling shell would expand backticks and `$(…)`
+  copied from a finding.
 
 Run commands from the worktree, one plain command per call.
 
 1. **Push.** Confirm the last commit carries no AI attribution trailer
    (`git log -1 --format=%B`), then `git push -u origin task/<id>-<slug>`.
 
-2. **Open the PR.** Write the body to a file in the scratchpad (problem,
-   fix, verification, skipped) and pass the title as a single-quoted literal:
-   `gh pr create --head task/<id>-<slug> --base main --title '<commit subject>' --body-file <file>`.
+2. **Open the PR.** Write the title (the commit subject, one line) and the
+   body (problem, fix, verification, skipped) to two files in the scratchpad
+   with the Write tool, then
+   `$S/open-pr.sh task/<id>-<slug> <title-file> <body-file>`.
    No AI attribution in the body either.
 
 3. **Wait for checks, then for the reviewers.** First read
@@ -45,7 +52,8 @@ Run commands from the worktree, one plain command per call.
    no CI at all, and `gh pr checks` then lists only CodeRabbit — go to the
    `rebase-tasqx-pr` skill instead of waiting. Otherwise
    `gh pr checks <n> --watch --interval 30` until every required check is
-   green (`cargo-mutants` "skipping" is fine), then `$S/wait-qodo.sh <n>`.
+   green (`cargo-mutants` "skipping" is fine), then `$S/wait-qodo.sh <n>`;
+   on exit 3 run it again later rather than moving on.
    Run both in the background (`run_in_background`) and end the turn only
    when no local `cargo` gate run of yours is still going: the Stop hook starts
    its own full run, and two overlapping runs report spurious failures.
@@ -62,10 +70,11 @@ Run commands from the worktree, one plain command per call.
      the whole finding, verify it against the code, and decide fix or
      reject. A fix is committed in the worktree — never the primary
      checkout — pushed, and step 3 repeats against the new head. Then reply
-     and resolve:
+     and resolve: write "Fixed in <sha>: <one line>" to a file with the Write
+     tool, then
 
      ```console
-     $ .claude/skills/land-tasqx-pr/scripts/reply-resolve.sh <thread-id> "Fixed in <sha>: <one line>"
+     $ .claude/skills/land-tasqx-pr/scripts/reply-resolve.sh <thread-id> <reply-file>
      ```
 
      A rejected finding gets the reason in the reply, then the same resolve.
