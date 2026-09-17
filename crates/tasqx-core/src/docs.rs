@@ -172,7 +172,7 @@ pub const TASK_CORE: &[FieldDoc] = &[
     n("priority", "string", "`H`, `M`, `L`, or null for none."),
     n("project", "string", "The project the task belongs to, or null."),
     n("due", "string", "When it is due, as an instant, or null."),
-    n("scheduled", "string", "When work is planned to start, or null. Does not hide the row."),
+    n("scheduled", "string", "When work is planned to start, or null. Until then the task is `backlog`, out of the working set, as with `wait`."),
     n("wait", "string", "Hidden from the working set until this instant, or null."),
     n("estimate", "string", "The estimate as an ISO 8601 duration (`PT4H`), or null."),
     n("recurrence", "string", "The recurrence rule (`every 3 days`), or null."),
