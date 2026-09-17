@@ -614,9 +614,9 @@ fn build_tool_specs() -> Vec<ToolSpec> {
             destructive: false,
             idempotent: true,
             description: "Get one task's full detail: fields, tags, annotations, \
-                dependencies. Annotations come back newest-first in pages — the response \
-                carries `annotations_total`, and `annotations_next_offset` whenever older \
-                ones were left out.",
+                dependencies. Annotations come back in pages counted from the newest, oldest \
+                first within a page — the response carries `annotations_total`, and \
+                `annotations_next_offset` whenever older ones were left out.",
             schema: json!({
                 "type": "object",
                 "properties": {

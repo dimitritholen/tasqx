@@ -979,7 +979,7 @@ const BRIEF_MEMORY: &[Field] = &[
     req("count", Ty::Int),
     req("total", Ty::Int),
     req("has_more", Ty::Bool),
-    req("hits", Ty::Array),
+    req_of("hits", Ty::Array, &[MEMORY_HIT_ROW]),
     nul("matched", Ty::Str),
     nul("project", Ty::Str),
     req("reserved_docs", Ty::Int),
@@ -987,12 +987,34 @@ const BRIEF_MEMORY: &[Field] = &[
     req("annotations_total", Ty::Int),
 ];
 
+/// The brief's task half: `task.get`'s result, less `urgency_breakdown`.
+///
+/// Composed from the same groups [`R_TASK_GET`] is, so there is still one copy
+/// of each row to keep in step — but declared, so a key that drifts inside the
+/// brief's `task` fails here and in the reference guard rather than passing as
+/// an opaque object. `urgency_breakdown` is left out because `task.brief`
+/// never forwards `explain`, and an optional key no call can produce freezes
+/// nothing.
+const R_TASK_BRIEF_TASK: Shape = &[
+    TASK_BUDGET_GAUGE,
+    TASK_CHECKS,
+    TASK_CORE,
+    TASK_LIVE_TIME,
+    TASK_GET_RELATIONS,
+    TASK_BLOCKS,
+    TASK_ANNOTATION_PAGE,
+    TASK_TOKENS,
+    TASK_BLOCKED,
+    TASK_STATUS_FLAG,
+    &[req_of(
+        "unmet_blockers",
+        Ty::Array,
+        &[&[req("short_id", Ty::Int), req("title", Ty::Str)]],
+    )],
+];
+
 const R_TASK_BRIEF: Shape = &[&[
-    // The task half is `task.get`'s whole result, so it is frozen by that
-    // method's own case rather than restated here — restating it would be a
-    // second copy to keep in step, and the one thing D136 promises about this
-    // key is that it IS the other method's answer.
-    req("task", Ty::Object),
+    req_of("task", Ty::Object, R_TASK_BRIEF_TASK),
     req_of("neighbourhood", Ty::Object, &[BRIEF_NEIGHBOURHOOD]),
     req_of("memory", Ty::Object, &[BRIEF_MEMORY]),
 ]];
@@ -1872,7 +1894,17 @@ fn cases() -> Vec<Case> {
                     "body": "Every request carries a tasqx version and a method."
                 }))
                 .expect("doc");
-                json!({ "ref": 1 })
+                // The task half's row shapes are frozen too, so #1 needs a
+                // row in every array `task.get` answers with, and the search
+                // needs a hit — a row shape no fixture produces is unchecked.
+                // The cap is shorter than the note so D148's markers show.
+                e.annotation_add(&json!({ "ref": 1, "body": "shipping the freeze today" }))
+                    .expect("annotate the subject");
+                scrub_one(e, 1);
+                e.check_add(&json!({ "ref": 1, "body": "the criterion" }))
+                    .expect("check");
+                e.token_add(&self_report(1)).expect("token");
+                json!({ "ref": 1, "max_body_bytes": 3 })
             },
             R_TASK_BRIEF,
         ),
@@ -2238,6 +2270,11 @@ const OPTIONAL_KEYS_NO_FIXTURE_CAN_PRODUCE: &[(&str, &str)] = &[
         "result.tasks[].status_unrecognized",
         "the same flag on the collection surfaces (`task.list`, `store.export`), and unreachable \
          for the same reason",
+    ),
+    (
+        "result.task.status_unrecognized",
+        "the same flag on `task.brief`'s task half, which is `task.get`'s result, and \
+         unreachable for the same reason",
     ),
 ];
 

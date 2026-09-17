@@ -168,7 +168,7 @@ pub const TASK_CORE: &[FieldDoc] = &[
     f("id", "string", "The task's uuid, stable across exports and machines."),
     f("short_id", "integer", "The task's short id — the small number every `ref` accepts and the CLI prints."),
     f("title", "string", "The task's title, verbatim."),
-    f("status", "string", "One of `pending`, `backlog`, `active`, `done`, `cancelled`."),
+    f("status", "string", "`pending`, `backlog`, `active`, `done` or `cancelled` — or, on a stored row whose status text this build does not recognize, that text verbatim, with `status_unrecognized: true` beside it."),
     n("priority", "string", "`H`, `M`, `L`, or null for none."),
     n("project", "string", "The project the task belongs to, or null."),
     n("due", "string", "When it is due, as an instant, or null."),
@@ -191,7 +191,7 @@ pub const TASK_LIVE_TIME: &[FieldDoc] = &[
     f(
         "tracked",
         "string",
-        "Total time on the clock, as an ISO duration, including any interval still open.",
+        "Time on the clock from CLOSED intervals, as an ISO duration. An interval still running is not in it; `active_since` marks where that one began.",
     ),
     n(
         "active_since",
@@ -207,9 +207,9 @@ pub const TASK_BLOCKED: &[FieldDoc] = &[f(
     "Whether an unmet dependency is holding this task back.",
 )];
 
-/// The flag a row carries when its `status` came from a newer tasqx.
+/// The flag a row carries when its stored `status` is text this build does not recognize.
 pub const TASK_STATUS_FLAG: &[FieldDoc] = &[
-    o("status_unrecognized", "boolean", "Present only on a row whose `status` no writer of this build could have produced — an import from a newer tasqx."),
+    o("status_unrecognized", "boolean", "Present, and true, only on a row whose `status` no writer of this build could have produced — a store an older import wrote unvalidated, or a hand-edited one. `store.import` now refuses such a status."),
 ];
 
 /// D139's derived pair: what was spent, and whether that is past the budget.
@@ -231,7 +231,7 @@ pub const TASK_GET_RELATIONS: &[FieldDoc] = &[
     f(
         "annotations",
         "array",
-        "The notes on this task, newest first, paged.",
+        "The notes on this task, oldest first within the page. Pages are counted back from the newest note, so `annotations_offset: 0` is the most recent page.",
     ),
 ];
 
@@ -350,7 +350,7 @@ pub const R_TASK_BRIEF: &[FieldDoc] = &[
     f(
         "task",
         "object",
-        "`task.get`'s own result for this task, verbatim.",
+        "`task.get`'s own result for this task, without `urgency_breakdown` — the brief does not take `explain`.",
     ),
     f(
         "neighbourhood",
@@ -422,7 +422,7 @@ pub const BRIEF_MEMORY: &[FieldDoc] = &[
 pub const R_TASK_START: &[FieldDoc] = &[
     f("id", "string", "The task's uuid."),
     f("status", "string", "`active` once the clock is running."),
-    n("interval_started", "string", "When the new interval opened; null on the idempotent re-start of a task already running."),
+    n("interval_started", "string", "When the running interval opened. On the idempotent re-start of a task already running, that interval's existing start. Null only if an active row has lost its start, which no tasqx write produces."),
     f("short_id", "integer", "The task's short id — the small number every `ref` accepts and the CLI prints."),
     f("title", "string", "The task's title, verbatim."),
     f("already_running", "boolean", "True when the call opened no new interval because the timer was already on."),
@@ -1236,10 +1236,30 @@ pub fn result_shape(method: &str) -> &'static [(&'static str, &'static [FieldDoc
         ],
         "task.brief" => &[
             ("result", R_TASK_BRIEF),
+            // The task half is `task.get`'s result, less `urgency_breakdown`:
+            // the brief never forwards `explain`.
+            ("result.task", TASK_BUDGET_GAUGE),
+            ("result.task", TASK_CHECKS),
+            ("result.task", TASK_CORE),
+            ("result.task", TASK_LIVE_TIME),
+            ("result.task", TASK_GET_RELATIONS),
+            ("result.task", TASK_BLOCKS),
+            ("result.task", TASK_ANNOTATION_PAGE),
+            ("result.task", TASK_TOKENS),
+            ("result.task", TASK_BLOCKED),
+            ("result.task", TASK_STATUS_FLAG),
+            ("result.task", TASK_UNMET_BLOCKERS),
+            ("result.task.checks[]", TASK_CHECK),
+            ("result.task.annotations[]", ANNOTATION_ROW),
+            ("result.task.annotations[]", ANNOTATION_CAP),
+            ("result.task.annotations_removed[]", TOMBSTONE_ROW),
+            ("result.task.tokens[]", MEASUREMENT_ROW),
+            ("result.task.unmet_blockers[]", BLOCKER_ROW),
             ("result.neighbourhood", BRIEF_NEIGHBOURHOOD),
             ("result.neighbourhood.depends_on[]", BRIEF_PREREQUISITE),
             ("result.neighbourhood.blocks[]", BRIEF_DEPENDENT),
             ("result.memory", BRIEF_MEMORY),
+            ("result.memory.hits[]", MEMORY_HIT_ROW),
         ],
         "task.start" => &[
             ("result", R_TASK_START),
