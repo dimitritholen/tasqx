@@ -492,7 +492,7 @@ const TRANSPORT_ONLY_ARGS: &[(&str, &str, &str)] = &[
     (
         "tasqx_get_task",
         "view",
-        "which of the two human renderings the rendered block is spelled in (D146).      A card is a DOCUMENT — fixed 72-column geometry, no escape codes — because it is      pasted in front of a person, into a chat reply or a pull request, where a markdown      table reflows into the prose around it. Both views render the SAME `task.get`      result: nothing here reaches the store, and `check_params` would refuse the key.",
+        "which of the two human renderings the rendered block is spelled in (D146).      A card is a DOCUMENT — fixed 72-column geometry, no escape codes — because it is      pasted in front of a person deciding on the task (D164), into a chat reply or a pull request, where a markdown      table reflows into the prose around it. Both views render the SAME `task.get`      result: nothing here reaches the store, and `check_params` would refuse the key.",
     ),
     (
         "tasqx_brief_task",
@@ -502,7 +502,7 @@ const TRANSPORT_ONLY_ARGS: &[(&str, &str, &str)] = &[
     (
         "tasqx_complete_task",
         "view",
-        "whether the response leads with the D146 box card of the task AS COMPLETED (D153).      The closing card a person reads after a completion used to cost a second      `tasqx_get_task` per task — 26 get_task calls against 14 completions over 36 hours      of transcripts — because `task.done`'s frozen result carries no task to render. So      the transport reads the task back itself and spells it ahead of the JSON. `task.done`      has no opinion on how its answer is wrapped.",
+        "whether the response leads with the D146 box card of the task AS COMPLETED (D153).      The closing card a person reads after a completion used to cost a second      `tasqx_get_task` per task — 26 get_task calls against 14 completions over 36 hours      of transcripts — because `task.done`'s frozen result carries no task to render. So      the transport reads the task back itself and spells it ahead of the JSON — asked for      when a person decides on the task, not on a routine completion (D164). `task.done`      has no opinion on how its answer is wrapped.",
     ),
     (
         "tasqx_search_memory",
@@ -643,8 +643,8 @@ fn build_tool_specs() -> Vec<ToolSpec> {
                         "enum": enum_of(["markdown", "card"]),
                         "description": "How the rendered block is spelled. Default \
                              \"markdown\", the view YOU read; \"card\" is the D146 72-column \
-                             box card in a text fence, for a PERSON, and quotes only the \
-                             first annotation."
+                             box card in a text fence, for a PERSON deciding on the task (D164), \
+                             and quotes only the first annotation."
                     },
                     "annotations_offset": {
                         "type": "integer",
@@ -707,8 +707,8 @@ fn build_tool_specs() -> Vec<ToolSpec> {
                         "enum": enum_of(["markdown", "card"]),
                         "description": "How the TASK HALF is spelled. Default \"markdown\", \
                              the view YOU read; \"card\" is the D146 72-column box card in a \
-                             text fence, for a PERSON. Prerequisites and memory hits stay \
-                             markdown."
+                             text fence, for a PERSON deciding on the task (D164). Prerequisites \
+                             and memory hits stay markdown."
                     }
                 },
                 "required": ["ref"]
@@ -1038,7 +1038,8 @@ fn build_tool_specs() -> Vec<ToolSpec> {
                 channel (D50), and `tool`/`model` are recorded on the event even with no \
                 count. A task with open dependencies is a `conflict` naming the blockers; \
                 `force: true` completes it anyway, counted by `tasqx_outcomes` (D150). \
-                `view: \"card\"` answers the closing card a person reads (D153).",
+                `view: \"card\"` leads with the task's box card (D153), for a person deciding on \
+                it; a routine completion needs none (D164).",
             // The token-count fields carry no `minimum`: the numeric-minimum
             // drift guard cannot probe a bound on a tool with required args,
             // so the floor lives in the engine (opt_u64 refuses negatives)
@@ -1097,7 +1098,7 @@ fn build_tool_specs() -> Vec<ToolSpec> {
                         "enum": enum_of(["markdown", "card"]),
                         "description": "Default \"markdown\": the plain JSON result. \"card\" \
                             leads with the D146 box card of the task AS COMPLETED, in a text \
-                            fence, the JSON unchanged behind it, for a PERSON."
+                            fence, the JSON unchanged behind it, for a PERSON deciding on it (D164)."
                     }
                 },
                 "required": ["ref"]
