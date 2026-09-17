@@ -241,10 +241,13 @@ gauge that replaced the winner was picked the same way.
 One capture, one renderer, and a picture only where a picture is the only thing
 that will do:
 
-```text
-docs-capture.sh ──> <name>.ansi ──> ansi_html ──┬─> tasqx docs      (text)
-   (tmux / pipe)      (committed)               └─> docs --screen ──> snap.sh
-                                                    (one page)       (PNG)
+```mermaid
+flowchart LR
+    CAP["docs-capture.sh<br/>(tmux / pipe)"] --> ANSI["#lt;name#gt;.ansi<br/>(committed)"]
+    ANSI --> HTML["ansi_html"]
+    HTML --> DOCS["tasqx docs<br/>(text)"]
+    HTML --> SCREEN["docs --screen<br/>(one page)"]
+    SCREEN --> SNAP["snap.sh<br/>(PNG)"]
 ```
 
 1. **Capture the screen once**, as the ANSI the binary really printed.
