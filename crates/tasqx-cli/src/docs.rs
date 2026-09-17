@@ -792,6 +792,10 @@ static PAGES: LazyLock<Vec<Page>> = LazyLock::new(|| {
 
 /// Render the whole guide as one self-contained HTML string.
 pub fn generate() -> String {
+    // Table ids (`next_table_id`) are unique per call, not globally — reset
+    // so two `generate()` calls in one test process don't disagree with
+    // themselves.
+    TABLE_SEQ.with(|c| c.set(0));
     let mut body = String::new();
 
     body.push_str(&header());
@@ -2352,18 +2356,28 @@ fn table(headers: &[&str], rows: &[&[&str]]) -> String {
 /// [`table`] for rows built at runtime (the verb and method tables, generated
 /// from `VERBS` / `METHODS`). Same contract: headers escaped, cells trusted.
 fn table_owned(headers: &[&str], rows: &[Vec<String>]) -> String {
+    let tid = next_table_id();
     let mut h = String::new();
-    for x in headers {
-        h.push_str(&format!("<th>{}</th>", esc(x)));
+    let mut header_ids: Vec<String> = Vec::with_capacity(headers.len());
+    for (i, x) in headers.iter().enumerate() {
+        let hid = format!("{tid}-h{i}");
+        h.push_str(&format!("<th id=\"{hid}\">{}</th>", esc(x)));
+        header_ids.push(hid);
     }
     let mut b = String::new();
     for row in rows {
         b.push_str("<tr>");
-        // `data-label` is the column header a cell shows under 60rem, where
-        // a row stacks into a card and the header row is hidden.
+        // `data-label` is the column header a cell shows under 60rem, where a
+        // row stacks into a card; `headers` is the same pairing for
+        // assistive tech, which the stacked breakpoint keeps `thead` visible
+        // to (PR #61 review) rather than `display: none`.
         for (i, cell) in row.iter().enumerate() {
             let label = headers.get(i).copied().unwrap_or_default();
-            b.push_str(&format!("<td data-label=\"{}\">{cell}</td>", esc(label)));
+            let hid = header_ids.get(i).map(String::as_str).unwrap_or_default();
+            b.push_str(&format!(
+                "<td data-label=\"{}\" headers=\"{hid}\">{cell}</td>",
+                esc(label)
+            ));
         }
         b.push_str("</tr>");
     }
@@ -2371,6 +2385,23 @@ fn table_owned(headers: &[&str], rows: &[Vec<String>]) -> String {
     format!(
         "<div class=\"tw\"><table class=\"grid\"><thead><tr>{h}</tr></thead><tbody>{b}</tbody></table></div>"
     )
+}
+
+/// A fresh table id, unique within one [`generate`] call: `tbl-<n>`, reset at
+/// its top. [`docs::markdown`]'s table rewrite uses its own `mdtbl-` counter
+/// (its pages are built once, lazily, ahead of any particular `generate`
+/// call) — the two prefixes can never collide, so the ids stay unique across
+/// the whole single-file site without the two builders sharing state.
+fn next_table_id() -> String {
+    TABLE_SEQ.with(|c| {
+        let n = c.get();
+        c.set(n + 1);
+        format!("tbl-{n}")
+    })
+}
+
+thread_local! {
+    static TABLE_SEQ: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
 // ============================================================================
@@ -2493,18 +2524,22 @@ fn param_table(section: &str, rows: &[Param]) -> String {
             ),
             None => String::new(),
         };
+        // `dt`/`dd` inside a `<div>` is a valid group in a `<dl>` (the div
+        // carries the id, target highlight and border; the list gives a
+        // screen reader "term, definition" instead of an anonymous pair of
+        // divs — PR #61 review).
         out.push_str(&format!(
             "<div class=\"param\" id=\"{section}-{slug}\" data-param=\"{name}\">\
-               <div class=\"param-h\"><code class=\"pname\">{name}</code>\
-                 <span class=\"badge\">{ty}</span>{pill}{def}</div>\
-               <div class=\"param-d\">{desc}</div>\
+               <dt class=\"param-h\"><code class=\"pname\">{name}</code>\
+                 <span class=\"badge\">{ty}</span>{pill}{def}</dt>\
+               <dd class=\"param-d\">{desc}</dd>\
              </div>",
             slug = slug(r.name),
             ty = esc(r.ty),
             desc = r.html_desc,
         ));
     }
-    format!("<div class=\"params\">{out}</div>")
+    format!("<dl class=\"params\">{out}</dl>")
 }
 
 /// The opening tag of one [`field_list`] row, which tests split a page on.
@@ -2522,10 +2557,10 @@ fn field_list(rows: &[(String, String)]) -> String {
     let mut out = String::new();
     for (head, desc) in rows {
         out.push_str(&format!(
-            "{FIELD_ROW}<div class=\"param-h\">{head}</div><div class=\"param-d\">{desc}</div></div>"
+            "{FIELD_ROW}<dt class=\"param-h\">{head}</dt><dd class=\"param-d\">{desc}</dd></div>"
         ));
     }
-    format!("<div class=\"params\">{out}</div>")
+    format!("<dl class=\"params\">{out}</dl>")
 }
 
 /// Split a `(flag, effect)` cell like `<code>--theme &lt;name&gt;</code>` into
@@ -2884,7 +2919,11 @@ footer { max-width: 78rem; margin: 0 auto; padding: 1.5rem 1.5rem 3rem;
      mostly empty cells. Each cell names its column from `data-label`, which
      `table_owned` and the markdown table rewrite put on every `td`. */
   table.grid { min-width: 0; }
-  table.grid thead { display: none; }
+  /* Visually hidden, not `display: none`: a screen reader still has the
+     header row to announce, even though the sighted layout below gets its
+     labels from `data-label` instead (PR #61 review). */
+  table.grid thead { position: absolute; width: 1px; height: 1px; overflow: hidden;
+    clip: rect(0 0 0 0); clip-path: inset(50%); white-space: nowrap; }
   table.grid, table.grid tbody, table.grid tr, table.grid td { display: block; }
   table.grid tr { padding: 0.55rem 0.8rem; border-bottom: 1px solid var(--line); }
   table.grid tbody tr:last-child { border-bottom: 0; }
@@ -3983,7 +4022,23 @@ mod tests {
     #[test]
     fn the_errors_table_exit_column_matches_the_code_mapping() {
         use tasqx_core::ErrorCode;
-        let doc = generate();
+        // The `headers` attribute `table_owned` now stamps on every `<td>`
+        // carries a table-generation-order id, which this test does not
+        // predict — strip it so the adjacency check below still pins the two
+        // cells next to each other regardless of that id (PR #61 review).
+        fn strip_headers_attr(html: &str) -> String {
+            let mut out = String::with_capacity(html.len());
+            let mut rest = html;
+            while let Some(idx) = rest.find(" headers=\"") {
+                out.push_str(&rest[..idx]);
+                let after = &rest[idx + " headers=\"".len()..];
+                let end = after.find('"').expect("a closed headers attribute");
+                rest = &after[end + 1..];
+            }
+            out.push_str(rest);
+            out
+        }
+        let doc = strip_headers_attr(&generate());
         // Membership from the enum. Retyped here, a sixth variant reached this
         // page with the guard green and no row to show for it.
         for code in ErrorCode::all() {
@@ -5046,6 +5101,39 @@ mod tests {
         assert!(html.contains("&quot;quoted&quot;"));
     }
 
+    /// A parameter/field list is a real definition list, not anonymous divs:
+    /// every `dt` (name and type) is paired with a following `dd`
+    /// (description), so assistive tech announces "term, definition" instead
+    /// of two unlabelled groups (PR #61 review).
+    #[test]
+    fn every_param_row_pairs_a_dt_with_a_following_dd() {
+        let params = param_table(
+            "demo",
+            &[Param {
+                name: "filter",
+                ty: "string",
+                required: true,
+                default: None,
+                html_desc: "A filter expression.",
+            }],
+        );
+        let fields = field_list(&[("head one".to_string(), "desc one".to_string())]);
+        for html in [params, fields] {
+            assert!(html.starts_with("<dl class=\"params\">"), "{html}");
+            let dts = html.matches("<dt class=\"param-h\">").count();
+            let dds = html.matches("<dd class=\"param-d\">").count();
+            assert_eq!(dts, dds, "{html}");
+            assert!(dts > 0, "no rows rendered: {html}");
+            for after in html.split("<dt class=\"param-h\">").skip(1) {
+                let (_, rest) = after.split_once("</dt>").expect("a closed dt");
+                assert!(
+                    rest.trim_start().starts_with("<dd class=\"param-d\">"),
+                    "a dt with no following dd: {html}"
+                );
+            }
+        }
+    }
+
     /// Exactly one tab and one panel start active, and it is the first.
     #[test]
     fn tabs_open_on_the_first_panel_only() {
@@ -5382,9 +5470,10 @@ mod tests {
     }
 
     /// Every cell of every `table.grid` the site renders — the builders' and
-    /// the markdown pages' alike — names its column in `data-label`, because
-    /// under 60rem a row stacks into a card and the label is the only header a
-    /// reader still sees. A cell without one is a bare value with no name.
+    /// the markdown pages' alike — names its column in `data-label` (for the
+    /// stacked phone layout) and in `headers` (for assistive tech, which
+    /// keeps a visually hidden `thead` instead of a `display: none` one — PR
+    /// #61 review). A cell without either is a bare value with no name.
     #[test]
     fn every_grid_cell_is_labelled_with_its_column_header() {
         fn text(html: &str) -> String {
@@ -5402,17 +5491,22 @@ mod tests {
         }
         let doc = generate();
         let mut cells = 0usize;
+        let mut all_th_ids: Vec<&str> = Vec::new();
         for table in doc.split("<table class=\"grid\">").skip(1) {
             let table = table.split("</table>").next().expect("a closed table");
             let (head, body) = table.split_once("</thead>").expect("a table head");
-            let headers: Vec<String> = head
-                .split("<th>")
-                .skip(1)
-                .map(|th| {
-                    let inner = th;
-                    text(inner.split("</th>").next().unwrap_or(inner))
-                })
-                .collect();
+            let mut headers: Vec<String> = Vec::new();
+            let mut th_ids: Vec<&str> = Vec::new();
+            for th in head.split("<th ").skip(1) {
+                let (open, rest) = th.split_once('>').expect("a closed th open tag");
+                let id = open
+                    .split_once("id=\"")
+                    .and_then(|(_, r)| r.split('"').next())
+                    .unwrap_or_else(|| panic!("a th with no id: <th {open}>"));
+                th_ids.push(id);
+                headers.push(text(rest.split("</th>").next().unwrap_or(rest)));
+            }
+            all_th_ids.extend(&th_ids);
             for row in body.split("<tr>").skip(1) {
                 for (i, td) in row.split("<td").skip(1).enumerate() {
                     let label = td
@@ -5432,17 +5526,39 @@ mod tests {
                         headers.get(i).map(String::as_str),
                         "cell {i} is labelled for the wrong column: <td{td}"
                     );
+                    let headers_attr = td
+                        .split_once("headers=\"")
+                        .filter(|(before, _)| !before.contains('>'))
+                        .and_then(|(_, rest)| rest.split('"').next())
+                        .unwrap_or_else(|| {
+                            panic!("a cell with no headers attribute under {headers:?}: <td{td}")
+                        });
+                    assert_eq!(
+                        Some(headers_attr),
+                        th_ids.get(i).copied(),
+                        "cell {i}'s headers attribute names the wrong th: <td{td}"
+                    );
                     cells += 1;
                 }
             }
         }
         assert!(cells > 500, "only {cells} grid cells checked");
+        let unique: std::collections::HashSet<&&str> = all_th_ids.iter().collect();
+        assert_eq!(
+            unique.len(),
+            all_th_ids.len(),
+            "duplicate th ids across the site"
+        );
         let (_, narrow) = doc
             .split_once("@media (max-width: 60rem) {")
             .expect("no narrow breakpoint");
         assert!(
             narrow.contains("table.grid td::before { content: attr(data-label);"),
             "a stacked cell does not show its label"
+        );
+        assert!(
+            !narrow.contains("table.grid thead { display: none;"),
+            "the header row is display:none, not just visually hidden, so a screen reader loses it too"
         );
     }
 
