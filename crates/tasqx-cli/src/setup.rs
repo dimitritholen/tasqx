@@ -29,6 +29,9 @@ const MCP_ADD: [&str; 11] = [
     "mcp", "add", "--scope", "user", "tasqx", "--", "tasqx", "mcp", "serve", "--scope", "write",
 ];
 
+/// What runs ahead of `MCP_ADD` when a differing registration is replaced.
+const MCP_REMOVE: [&str; 5] = ["mcp", "remove", "--scope", "user", "tasqx"];
+
 /// One thing setup can install.
 pub struct Item {
     pub name: &'static str,
@@ -66,11 +69,12 @@ pub const ITEMS: [Item; 3] = [
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Status {
     NotInstalled,
-    /// The MCP registration is present (it has no "current" to compare with).
+    /// The MCP registration runs `tasqx mcp serve --scope write`.
     Installed,
     /// A skill byte-equal to the bundled one.
     Current,
-    /// A skill that is there and is not the bundled one.
+    /// A skill that is not the bundled one, or a registration that runs
+    /// something other than the write-scope server.
     Differs,
 }
 
@@ -100,14 +104,15 @@ fn skill_path(home: &Path, name: &str) -> PathBuf {
 pub fn status(item: &Item, home: &Path) -> Status {
     match item.skill {
         None => {
-            let registered = std::fs::read_to_string(home.join(".claude.json"))
+            let entry = std::fs::read_to_string(home.join(".claude.json"))
                 .ok()
                 .and_then(|t| serde_json::from_str::<Value>(&t).ok())
-                .is_some_and(|v| v.get("mcpServers").and_then(|m| m.get("tasqx")).is_some());
-            if registered {
-                Status::Installed
-            } else {
-                Status::NotInstalled
+                .and_then(|v| v.get("mcpServers")?.get("tasqx").cloned());
+            match entry {
+                None => Status::NotInstalled,
+                Some(e) if is_ours(&e) => Status::Installed,
+                // A read-only or hand-made registration is kept, not trusted.
+                Some(_) => Status::Differs,
             }
         }
         Some(body) => match std::fs::read(skill_path(home, item.name)) {
@@ -120,14 +125,50 @@ pub fn status(item: &Item, home: &Path) -> Status {
     }
 }
 
-/// `claude` with its home set to setup's, so `--home` reaches the profile
-/// Claude Code writes as well as the one setup reads.
-fn claude(home: &Path) -> std::process::Command {
+/// Whether a `mcpServers.tasqx` entry is the one `MCP_ADD` writes: a `tasqx`
+/// command (bare or by path) with the write-scope `mcp serve` arguments.
+fn is_ours(entry: &Value) -> bool {
+    let (command, args) = MCP_ADD[6..]
+        .split_first()
+        .expect("MCP_ADD ends in the command");
+    entry.get("args") == Some(&json!(args))
+        && entry
+            .get("command")
+            .and_then(Value::as_str)
+            .and_then(|c| Path::new(c).file_stem())
+            .is_some_and(|s| s == *command)
+}
+
+/// Runs `claude <argv>` with its home set to setup's, so `--home` reaches the
+/// profile Claude Code writes as well as the one setup reads.
+fn claude(home: &Path, argv: &[&str]) -> Result<(), ClaudeError> {
     let mut c = std::process::Command::new("claude");
     c.env("HOME", home);
     #[cfg(windows)]
     c.env("USERPROFILE", home);
-    c
+    match c.args(argv).output() {
+        Ok(out) if out.status.success() => Ok(()),
+        Ok(out) => Err(ClaudeError::Failed(format!(
+            "failed: `claude {} {}` exited {}: {}",
+            argv[0],
+            argv[1],
+            out.status
+                .code()
+                .map_or("on a signal".into(), |c| c.to_string()),
+            String::from_utf8_lossy(&out.stderr).trim()
+        ))),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Err(ClaudeError::Missing),
+        Err(e) => Err(ClaudeError::Failed(format!(
+            "failed: cannot run `claude`: {e}"
+        ))),
+    }
+}
+
+enum ClaudeError {
+    /// No `claude` on PATH.
+    Missing,
+    /// It ran and failed, or could not be started; the result line.
+    Failed(String),
 }
 
 /// What installing one item did, as the word a result line prints.
@@ -148,6 +189,9 @@ fn install(item: &Item, home: &Path, force: bool) -> Outcome {
         (Some(_), Status::Differs) if !force => {
             ok("kept, differs from the bundled copy — rerun with --force to replace it")
         }
+        (None, Status::Differs) if !force => ok(
+            "kept, does not run `tasqx mcp serve --scope write` — rerun with --force to replace it",
+        ),
         (Some(body), _) => {
             let path = skill_path(home, item.name);
             match crate::complete::install::write_atomically(&path, body) {
@@ -159,39 +203,42 @@ fn install(item: &Item, home: &Path, force: bool) -> Outcome {
                 },
             }
         }
-        (None, _) => register_mcp(home),
+        (None, st) => register_mcp(home, st == Status::Differs),
     }
 }
 
 // ponytail: `Command::new("claude")` finds `claude` and `claude.exe` but not an
 // npm `claude.cmd` shim on Windows; that user gets the printed command.
-fn register_mcp(home: &Path) -> Outcome {
-    match claude(home).args(MCP_ADD).output() {
-        Ok(out) if out.status.success() => Outcome {
-            said: "installed".to_string(),
-            failed: false,
-        },
-        Ok(out) => Outcome {
-            said: format!(
-                "failed: `claude mcp add` exited {}: {}",
-                out.status
-                    .code()
-                    .map_or("on a signal".into(), |c| c.to_string()),
-                String::from_utf8_lossy(&out.stderr).trim()
-            ),
-            failed: true,
-        },
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Outcome {
-            said: format!(
-                "skipped: Claude Code CLI not found — run `claude {}`",
-                MCP_ADD.join(" ")
-            ),
-            failed: false,
-        },
-        Err(e) => Outcome {
-            said: format!("failed: cannot run `claude`: {e}"),
-            failed: true,
-        },
+/// `claude mcp add`, after `claude mcp remove` when `replace`; a failed remove
+/// adds nothing.
+fn register_mcp(home: &Path, replace: bool) -> Outcome {
+    let steps: &[&[&str]] = if replace {
+        &[&MCP_REMOVE, &MCP_ADD]
+    } else {
+        &[&MCP_ADD]
+    };
+    for argv in steps {
+        match claude(home, argv) {
+            Ok(()) => {}
+            Err(ClaudeError::Failed(said)) => return Outcome { said, failed: true },
+            Err(ClaudeError::Missing) => {
+                let run: Vec<String> = steps
+                    .iter()
+                    .map(|a| format!("`claude {}`", a.join(" ")))
+                    .collect();
+                return Outcome {
+                    said: format!(
+                        "skipped: Claude Code CLI not found — run {}",
+                        run.join(", then ")
+                    ),
+                    failed: false,
+                };
+            }
+        }
+    }
+    Outcome {
+        said: if replace { "updated" } else { "installed" }.to_string(),
+        failed: false,
     }
 }
 
