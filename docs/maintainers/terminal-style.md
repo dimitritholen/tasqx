@@ -324,7 +324,11 @@ which types into a real terminal and encodes what it draws (D163):
 | GIF | Tape | Re-record after a change to |
 |---|---|---|
 | `docs/img/hero.gif` | `scripts/hero.tape` | `add`, `next`, the dashboard |
-| `docs/img/deps.gif` | `scripts/deps.tape` | `list`, `done`, `next` |
+| `docs/img/deps.gif` | `scripts/deps.tape` | `init`, `add`, `dep`, `list`, `done`, `next`, short-id allocation |
+
+The column names the commands on screen and the ones the tape's hidden setup
+runs; a change to any command a tape types, or to `scripts/demo-store.py`, is
+a reason to re-record it.
 
 Every tape starts with `Source scripts/demo-prelude.tape`, which rebuilds the
 demo store under the same pin as the capture and wraps `tasqx` in

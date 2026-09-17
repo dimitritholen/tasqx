@@ -6,13 +6,17 @@
 # tasqx reads at it, and wraps `tasqx` so each call passes --no-daemon — a
 # reachable daemon would answer from the real store instead. `set +H` keeps
 # bash from reading `!H` as history expansion; the terminal is left hidden.
+#
+# `ready` is set only when the store rebuilt. A tape ends its hidden setup with
+# `... && [ "$ready" ] && clear`, so a failed step leaves its error on screen
+# for the recording to show instead of being wiped by the clear.
 
 Hide
 Type "export TASQX_DB=$PWD/target/demo/tasks.db TASQX_CONFIG_DIR=$PWD/target/demo/config TASQX_NOW=2026-09-16T09:00:00Z TZ=UTC COLORTERM=truecolor"
 Enter
 Type "unset NO_COLOR CLICOLOR CLICOLOR_FORCE TASQX_THEME TASQX_SOCK TASQX_DASHBOARD"
 Enter
-Type "python3 scripts/demo-store.py >/dev/null"
+Type "ready=; python3 scripts/demo-store.py >/dev/null && ready=1"
 Enter
 Type `tasqx() { command tasqx --no-daemon "$@"; }`
 Enter
