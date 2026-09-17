@@ -621,7 +621,7 @@ fn arg_default(a: &Arg) -> Option<String> {
 ///
 /// Panics when the name is not a row, which is the same build-time mistake
 /// [`term_screen`] panics on and which the guard below catches first.
-fn screen_cmd(name: &str) -> String {
+pub(super) fn screen_cmd(name: &str) -> String {
     for line in MANIFEST.lines() {
         if line.starts_with('#') || line.trim().is_empty() {
             continue;

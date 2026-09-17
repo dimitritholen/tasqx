@@ -172,8 +172,8 @@ pub const TASK_CORE: &[FieldDoc] = &[
     n("priority", "string", "`H`, `M`, `L`, or null for none."),
     n("project", "string", "The project the task belongs to, or null."),
     n("due", "string", "When it is due, as an instant, or null."),
-    n("scheduled", "string", "When work is planned to start, or null. Does not hide the row."),
-    n("wait", "string", "Hidden from the working set until this instant, or null."),
+    n("scheduled", "string", "When work is planned to start, or null. Until then a task that is not `active` is `backlog`, out of the working set, as with `wait`."),
+    n("wait", "string", "Hidden from the working set until this instant, or null. A running task stays `active` regardless."),
     n("estimate", "string", "The estimate as an ISO 8601 duration (`PT4H`), or null."),
     n("recurrence", "string", "The recurrence rule (`every 3 days`), or null."),
     n("remind", "string", "The reminder spec — an offset from `due` or an absolute instant — or null."),
@@ -181,9 +181,9 @@ pub const TASK_CORE: &[FieldDoc] = &[
     f("tags", "array", "Every tag on the task, as plain strings."),
     f("created", "string", "When the task was captured."),
     f("modified", "string", "When it last changed."),
-    n("completed", "string", "When it was completed, or null while it is open."),
+    n("completed", "string", "When `task.done` completed it, or null — on an open task, and on a cancelled one, which is never stamped."),
     n("budget_tokens", "integer", "The size gauge over FRESH tokens (D139), or null for no threshold. It stops nothing."),
-    f("_rev", "integer", "The row's revision counter, bumped by every write. Send it back as `expected_rev` to make a change conditional."),
+    f("_rev", "integer", "The task's revision counter, bumped by every change to the task or to its tags, notes, checks and dependencies — not by token spend or a fired reminder. Send it back as `expected_rev` to make a change conditional."),
 ];
 
 /// The live-read spelling of tracked time: an ISO duration plus the open interval's anchor.
@@ -225,15 +225,20 @@ pub const TASK_CHECKS: &[FieldDoc] = &[f(
     "The acceptance criteria on the task, in position order (D138).",
 )];
 
-/// `task.get`'s edges and notes — its annotation rows can carry D148's cut markers.
-pub const TASK_GET_RELATIONS: &[FieldDoc] = &[
-    f("depends_on", "array", "The short ids this task waits on."),
-    f(
-        "annotations",
-        "array",
-        "The notes on this task, oldest first within the page. Pages are counted back from the newest note, so `annotations_offset: 0` is the most recent page.",
-    ),
-];
+/// The forward dependency edge: what this task waits on. The same key on a
+/// live read and on an export row.
+pub const TASK_DEPENDS_ON: &[FieldDoc] = &[f(
+    "depends_on",
+    "array",
+    "The short ids this task waits on.",
+)];
+
+/// `task.get`'s page of notes — its rows can carry D148's cut markers.
+pub const TASK_ANNOTATIONS: &[FieldDoc] = &[f(
+    "annotations",
+    "array",
+    "The notes on this task, oldest first within the page. Pages are counted back from the newest note, so `annotations_offset: 0` is the most recent page.",
+)];
 
 /// The reverse edge: what this task is holding back.
 pub const TASK_BLOCKS: &[FieldDoc] = &[f(
@@ -242,11 +247,28 @@ pub const TASK_BLOCKS: &[FieldDoc] = &[f(
     "The short ids this task is holding back — the reverse edge of `depends_on`.",
 )];
 
-/// What `task.get` says about the history it did NOT return.
-pub const TASK_ANNOTATION_PAGE: &[FieldDoc] = &[
-    f("annotations_total", "integer", "How many notes the task has, whether or not this page carries them all."),
-    f("annotations_offset", "integer", "How many notes this page skipped."),
-    n("annotations_next_offset", "integer", "The offset of the next page of notes; null on the last one."),
+/// What `task.get` says about the history it did NOT return — paging, not a
+/// property of the task or of any note.
+pub const ANNOTATION_PAGING: &[FieldDoc] = &[
+    f(
+        "annotations_total",
+        "integer",
+        "How many notes the task has, whether or not this page carries them all.",
+    ),
+    f(
+        "annotations_offset",
+        "integer",
+        "How many notes this page skipped.",
+    ),
+    n(
+        "annotations_next_offset",
+        "integer",
+        "The offset of the next page of notes; null on the last one.",
+    ),
+];
+
+/// The notes a task once carried and no longer does (D113).
+pub const TASK_ANNOTATIONS_REMOVED: &[FieldDoc] = &[
     f("annotations_removed", "array", "One tombstone per scrubbed note (D113) — id and instant, never the text. Excluded from `annotations` and its total."),
 ];
 
@@ -515,7 +537,7 @@ pub const R_TASK_DONE: &[FieldDoc] = &[
 /// `task.modify`'s result.
 pub const R_TASK_MODIFY: &[FieldDoc] = &[
     f("short_id", "integer", "The task's short id — the small number every `ref` accepts and the CLI prints."),
-    f("_rev", "integer", "The row's revision counter, bumped by every write. Send it back as `expected_rev` to make a change conditional."),
+    f("_rev", "integer", "The task's revision counter, bumped by every change to the task or to its tags, notes, checks and dependencies — not by token spend or a fired reminder. Send it back as `expected_rev` to make a change conditional."),
     f("set", "object", "The RESOLVED value stored for each field this call named — `due: \"friday\"` comes back as its instant."),
 ];
 
@@ -860,7 +882,7 @@ pub const MEMORY_LIST_ROW: &[FieldDoc] = &[
     f("created", "string", "When it was stored."),
     f("modified", "string", "When it last changed — the column this list sorts by."),
     f("_rev", "integer", "The row's revision counter, bumped by every write. Send it back as `expected_rev` to make a change conditional."),
-    f("body_preview", "string", "The opening of the body, not the whole of it — browsing pays for a preview, not a payload."),
+    f("body_preview", "string", "The opening of the body, or all of it when the body is short (`body_truncated` says which) — browsing pays for a preview, not a payload."),
     f("body_truncated", "boolean", "Whether the preview is shorter than the body."),
     f("standing", "boolean", "Whether it is a standing ruling (D156) — on every row, not only on a page filtered by `standing`."),
 ];
@@ -1075,15 +1097,12 @@ pub const TASK_EXPORT_TOKENS: &[FieldDoc] = &[o(
     "Every token measurement against this task. Omitted entirely for a task that has none.",
 )];
 
-/// `store.export`'s edges and notes, whose rows are never cut.
-pub const TASK_RELATIONS: &[FieldDoc] = &[
-    f("depends_on", "array", "The short ids this task waits on."),
-    f(
-        "annotations",
-        "array",
-        "Every note on the task — an export carries the whole history, unpaged.",
-    ),
-];
+/// `store.export`'s notes, whose rows are never cut or paged.
+pub const TASK_EXPORT_ANNOTATIONS: &[FieldDoc] = &[f(
+    "annotations",
+    "array",
+    "Every note on the task — an export carries the whole history, unpaged.",
+)];
 
 /// The exported project record (D37).
 pub const PROJECT_EXPORT_ROW: &[FieldDoc] = &[
@@ -1138,7 +1157,7 @@ pub const R_EVENT_REVERT: &[FieldDoc] = &[
     f("short_id", "integer", "The task's short id — the small number every `ref` accepts and the CLI prints."),
     f("title", "string", "The title of the task the undo touched."),
     f("restored", "object", "What the inverse put back — per-op, the undo's own vocabulary."),
-    f("_rev", "integer", "The row's revision counter, bumped by every write. Send it back as `expected_rev` to make a change conditional."),
+    f("_rev", "integer", "The task's revision counter, bumped by every change to the task or to its tags, notes, checks and dependencies — not by token spend or a fired reminder. Send it back as `expected_rev` to make a change conditional."),
 ];
 
 /// The event an undo reversed.
@@ -1218,9 +1237,11 @@ pub fn result_shape(method: &str) -> &'static [(&'static str, &'static [FieldDoc
             ("result", TASK_CHECKS),
             ("result", TASK_CORE),
             ("result", TASK_LIVE_TIME),
-            ("result", TASK_GET_RELATIONS),
+            ("result", TASK_DEPENDS_ON),
+            ("result", TASK_ANNOTATIONS),
             ("result", TASK_BLOCKS),
-            ("result", TASK_ANNOTATION_PAGE),
+            ("result", ANNOTATION_PAGING),
+            ("result", TASK_ANNOTATIONS_REMOVED),
             ("result", TASK_TOKENS),
             ("result", TASK_BLOCKED),
             ("result", TASK_STATUS_FLAG),
@@ -1242,9 +1263,11 @@ pub fn result_shape(method: &str) -> &'static [(&'static str, &'static [FieldDoc
             ("result.task", TASK_CHECKS),
             ("result.task", TASK_CORE),
             ("result.task", TASK_LIVE_TIME),
-            ("result.task", TASK_GET_RELATIONS),
+            ("result.task", TASK_DEPENDS_ON),
+            ("result.task", TASK_ANNOTATIONS),
             ("result.task", TASK_BLOCKS),
-            ("result.task", TASK_ANNOTATION_PAGE),
+            ("result.task", ANNOTATION_PAGING),
+            ("result.task", TASK_ANNOTATIONS_REMOVED),
             ("result.task", TASK_TOKENS),
             ("result.task", TASK_BLOCKED),
             ("result.task", TASK_STATUS_FLAG),
@@ -1340,7 +1363,8 @@ pub fn result_shape(method: &str) -> &'static [(&'static str, &'static [FieldDoc
             ("result.tasks[]", TASK_CORE),
             ("result.tasks[]", TASK_EXPORT_TIME),
             ("result.tasks[]", TASK_EXPORT_TOKENS),
-            ("result.tasks[]", TASK_RELATIONS),
+            ("result.tasks[]", TASK_DEPENDS_ON),
+            ("result.tasks[]", TASK_EXPORT_ANNOTATIONS),
             ("result.tasks[]", TASK_STATUS_FLAG),
             ("result.tasks[]", TASK_CHECKS),
             ("result.tasks[].tokens[]", MEASUREMENT_ROW),
