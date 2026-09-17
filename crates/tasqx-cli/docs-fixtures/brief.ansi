@@ -26,8 +26,8 @@
   release-process  [2;38;2;76;86;106mdocs/release.md[0m
     [2;38;2;76;86;106mdescription How an SDK release is cut, tagged and announced Cut the…[0m
   Write the migration guide for SDK 3.0  [2;38;2;76;86;106mtask:#51[0m
-    [2;38;2;76;86;106m…the 2.x → 3.0 rename table, the auth change, and a…[0m
-  Write the migration guide for SDK 3.0  [2;38;2;76;86;106mtask:#51[0m
     [2;38;2;76;86;106m…guide ships WITH the 3.0 release, not after it. A migration…[0m
+  Write the migration guide for SDK 3.0  [2;38;2;76;86;106mtask:#51[0m
+    [2;38;2;76;86;106m…the 2.x → 3.0 rename table, the auth change, and a…[0m
   Write the migration guide for SDK 3.0  [2;38;2;76;86;106mtask:#51[0m
     [2;38;2;76;86;106m…the guide has to state the real ceiling, and quoting a number…[0m

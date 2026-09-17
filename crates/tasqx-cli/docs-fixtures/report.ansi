@@ -1,8 +1,11 @@
-[38;2;138;138;138mPROJECT  COUNT  EST  OVERDUE  TRACKED  TOKENS[0m
-[2;38;2;129;161;193mapi[0m         10  12h        [2;38;2;76;86;106m0[0m        -       -
-[2;38;2;129;161;193mhome[0m         2    -        [2;38;2;76;86;106m0[0m        -       -
-[2;38;2;129;161;193minfra[0m       12  10h        [38;2;235;203;139m1[0m        -       -
-[2;38;2;129;161;193mmobile[0m      18  12h        [2;38;2;76;86;106m0[0m        -       -
-[2;38;2;129;161;193mwebsite[0m     19  14h        [2;38;2;76;86;106m0[0m        -       -
+[38;2;138;138;138mPROJECT  COUNT  EST  OVERDUE  TRACKED                TOKENS[0m
+[2;38;2;129;161;193mapi[0m          9  16h        [2;38;2;76;86;106m0[0m   4h 15m   cacheR 7.0M ~medium
+[2;38;2;129;161;193mhome[0m         2    -        [2;38;2;76;86;106m0[0m        -                     -
+[2;38;2;129;161;193minfra[0m       11  15h        [38;2;235;203;139m1[0m   5h 10m   cacheR 2.8M ~medium
+[2;38;2;129;161;193mmobile[0m      16  18h        [2;38;2;76;86;106m0[0m   9h 50m   cacheR 7.7M ~medium
+[2;38;2;129;161;193mwebsite[0m     17  38h        [2;38;2;76;86;106m0[0m  36h 25m   cacheR 2.4M ~medium
 
-[38;2;138;138;138mTOTAL[0m       61  48h        [38;2;235;203;139m1[0m        -       -
+[38;2;138;138;138mTOTAL[0m       55  87h        [38;2;235;203;139m1[0m  55h 40m  cacheR 20.1M ~medium
+
+[2;38;2;76;86;106mTOKENS shows the largest of four buckets (cacheR/cacheW/in/out) by volume; --metrics[0m
+[2;38;2;76;86;106mtokens_in,tokens_out,tokens_cache_read,tokens_cache_creation or --html shows all four.[0m

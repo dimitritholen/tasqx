@@ -209,8 +209,9 @@ MEMORY = [
 
 # Annotations and acceptance checks on the blocked task (`BLOCKED[0]`), so
 # `show`, `brief` and the `task.get` envelope have the thing they are for:
-# (days ago, body). Everything else in the store carries neither, and a `show`
-# of a task with no note under it documents the layout but not the screen.
+# (days ago, body). No other open task carries either, and a `show` of a task
+# with no note under it documents the layout but not the screen. Finished work
+# carries its own, from `outcomes()` below.
 NOTES = [
     (12, "Scope: the 2.x → 3.0 rename table, the auth change, and a worked "
          "example per SDK. Not the reference — that generates itself."),
@@ -225,6 +226,147 @@ CHECKS = [
     ("open", "The rate-limit ceiling is stated with its real number"),
     ("open", "Reviewed by whoever ships 3.0"),
 ]
+
+# What `report --outcomes` reads off the finished work: delivery notes, rework,
+# forced completions, estimates beside tracked time, criteria, token spend, and
+# a few tasks that were dropped. Worded clear of the demo's memory searches
+# (`release canary`, and `brief 51`'s own terms), so no captured hit changes.
+DELIVERY_NOTES = [
+    "Shipped behind a flag and rolled out to everyone after a quiet day.",
+    "Measured before and after: p95 down from 840ms to 310ms.",
+    "Done. The follow-up cleanup is its own task.",
+    "Verified on staging and production; nothing paged overnight.",
+    "Took longer than planned: the test fixtures needed rebuilding first.",
+    "Paired on the review; two edge cases found and fixed before merge.",
+    "Deployed Tuesday morning; the dashboards have been flat since.",
+]
+REWORK_NOTE = "Reopened: the first fix missed the retry path. Redone with a test for it."
+FORCED_NOTE = "Closed ahead of its blocker on purpose: that one only gates the rollout."
+DONE_CHECKS = [
+    "Covered by a test that fails without the change",
+    "Checked on a real device, not only the simulator",
+    "The on-call runbook mentions it",
+]
+# How many finished tasks older than three weeks, per project, become
+# started-then-cancelled instead: DROPPED counts abandoned effort. They are
+# converted rather than added so no short id moves — a new task would take #62,
+# which the README tapes' own `add`s rely on.
+DROPPED = {"website": 2, "api": 1, "mobile": 2, "infra": 1}
+
+
+def v7(t):
+    """A v7 id stamped with `t`, its low bits from the seeded id rng.
+
+    The outcome readers replay a task's events `ORDER BY id`, which the
+    engine's own time-ordered ids make chronological; a v4 id would pair a
+    `start` with the wrong `stop`, or sort a completion after its reopen.
+    """
+    n = (int(t.timestamp() * 1000) << 80) | id_rng.getrandbits(80)
+    n = (n & ~(0xF << 76)) | (7 << 76)
+    n = (n & ~(0x3 << 62)) | (0x2 << 62)
+    return str(uuid.UUID(int=n))
+
+
+def parse(s):
+    return dt.datetime.strptime(s, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=dt.timezone.utc)
+
+
+def span(secs):
+    h, m = divmod(secs // 60, 60)
+    return "PT" + (f"{h}H" if h else "") + (f"{m}M" if m or not h else "")
+
+
+def outcomes(tasks, events):
+    """Give the finished history the outcomes a real team's has.
+
+    Runs after every other id is minted and draws its decisions from an rng of
+    its own, so the history's shape, the open tasks' short ids and every id a
+    fixture quotes stay what they were. What it adds happens before the
+    completion already recorded, so no task's `completed` moves.
+    """
+    orng = random.Random(13)
+    done_ev = {e["entity_id"]: e for e in events if e["op"] == "done"}
+    done = [t for t in tasks if t["status"] == "done"]
+    old = [t for t in done if parse(t["completed"]) < day(-21)]
+    picked = [t for project, n in DROPPED.items()
+              for t in orng.sample([t for t in old if t["project"] == project], n)]
+    for t in picked:
+        # The recorded completion becomes the cancellation, after a started
+        # interval: `cancel` closes it into tracked time, as the engine does.
+        at, e = parse(t["completed"]), done_ev[t["id"]]
+        secs = orng.randrange(6, 24) * 300
+        began = at - dt.timedelta(seconds=secs)
+        events.append({"actor": "user", "entity": "task", "entity_id": t["id"],
+                       "id": v7(began), "op": "start", "ts": iso(began),
+                       "payload": {"interval_started": iso(began)}})
+        e.update(op="cancel", id=v7(at), payload={"from": "active"})
+        t.update(status="cancelled", completed=None, tracked_seconds=secs)
+        done.remove(t)
+
+    def ev(tid, op, ts, payload):
+        events.append({"actor": "user", "entity": "task", "entity_id": tid, "id": v7(ts),
+                       "op": op, "ts": iso(ts), "payload": payload})
+
+    def track(t, secs, end):
+        # One block, or two an hour apart, the last ending at `end`.
+        blocks = [secs] if secs <= 3 * 3600 else [secs - secs // 2, secs // 2]
+        for b in reversed(blocks):
+            began = end - dt.timedelta(seconds=b)
+            ev(t["id"], "start", began, {"interval_started": iso(began)})
+            ev(t["id"], "stop", end, {"tracked": span(b)})
+            end = began - dt.timedelta(hours=1)
+        t["tracked_seconds"] = secs
+
+    for t in done:
+        tid, when = t["id"], parse(t["completed"])
+        e = done_ev[tid]
+        e["id"] = v7(when)
+        notes = []
+        first_close = when
+        roll = orng.random()
+        if roll < 0.09:
+            # Rework: completed a day earlier, reopened, and finished for real
+            # at the completion the history already records.
+            first_close = when - dt.timedelta(days=1, hours=orng.randrange(1, 5))
+            ev(tid, "done", first_close, {"completed": iso(first_close)})
+            ev(tid, "reopen", first_close + dt.timedelta(hours=3), {"from": "done"})
+            notes.append((first_close + dt.timedelta(hours=3), REWORK_NOTE))
+        elif roll < 0.16:
+            blockers = [b for b in done if b["project"] == t["project"]
+                        and parse(b["created"]) < when < parse(b["completed"])]
+            if blockers:
+                b = orng.choice(blockers)
+                t["depends_on"] = [b["id"]]
+                e["payload"].update({"blocked_by": [b["short_id"]], "forced": True})
+                notes.append((when, FORCED_NOTE))
+        if orng.random() < 0.55:
+            est = orng.choice([1, 2, 2, 3, 4])
+            ratio = min(2.2, max(0.5, orng.lognormvariate(0.15, 0.35)))
+            t["estimate"] = f"PT{est}H"
+            track(t, round(est * 12 * ratio) * 300, first_close - dt.timedelta(minutes=5))
+        if not notes and orng.random() < 0.72:
+            notes.append((when, orng.choice(DELIVERY_NOTES)))
+        t["annotations"] = [{"id": uid(), "body": body, "created": iso(at)} for at, body in notes]
+        if orng.random() < 0.25:
+            picks = orng.sample(DONE_CHECKS, orng.choice([2, 3]))
+            unproven = orng.random() < 0.3
+            t["checks"] = [{"id": uid(), "body": body,
+                            "state": "open" if unproven and i == len(picks) - 1 else "passed",
+                            "evidence": None, "position": i, "created": t["created"],
+                            "modified": iso(when)}
+                           for i, body in enumerate(picks)]
+        if orng.random() < 0.4:
+            fresh = orng.randrange(20, 400) * 1000
+            out = orng.randrange(2, 40) * 1000
+            cc = orng.randrange(10, 200) * 1000
+            m = {"id": uid(), "tool": "claude-code", "source": "self-report",
+                 "model": "claude-opus-5", "input_tokens": fresh, "output_tokens": out,
+                 "cache_read_tokens": orng.randrange(100, 3000) * 1000,
+                 "cache_creation_tokens": cc, "confidence": "medium", "created": iso(when)}
+            t["tokens"] = [m]
+            e["payload"].update({"tool": "claude-code", "model": "claude-opus-5", "tokens": m})
+            if orng.random() < 0.5:
+                t["budget_tokens"] = int(round((fresh + out + cc) * orng.uniform(0.7, 1.6), -4))
 
 
 def main():
@@ -306,6 +448,8 @@ def main():
              "modified": iso(day(-ago, 9, 15))}
             for title, project, source, ago, body in MEMORY]
 
+    outcomes(tasks, events)
+
     payload = {"default_project": "website", "docs": docs, "dropped_dependencies": [],
                "events": sorted(events, key=lambda e: e["ts"]), "projects": projects,
                "tasks": tasks}
@@ -327,8 +471,9 @@ def main():
     # The running timer is started live: an active interval is store state an
     # export does not carry, and it should read "running since just now".
     run("start", str(ids[RUNNING][0]))
-    # The demo records no AI token spend, and an empty TOKENS panel is space
-    # a screenshot has better uses for.
+    # Token spend is recorded on finished work only, for `report --outcomes`;
+    # nothing in the working set has spent any, so the dashboard's TOKENS panel
+    # would be space a screenshot has better uses for.
     run("config", "set", "dashboard.panels", "tasks,projects,burndown,pulse,effort")
     print(OUT)
 
