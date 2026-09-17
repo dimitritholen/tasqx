@@ -58,6 +58,7 @@
   about        Who made tasqx, where to find it, and what build this is.
   manual       Browse the complete guide in your terminal.
   completions  Turn on Tab completion for your shell.
+  setup        Install the Claude Code integration: the MCP server and the bundled skills.
 
 ▸ Jump to a topic or command:  tasqx manual <name>
 ▸ Full browser guide:          tasqx docs
