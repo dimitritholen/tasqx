@@ -172,8 +172,8 @@ pub const TASK_CORE: &[FieldDoc] = &[
     n("priority", "string", "`H`, `M`, `L`, or null for none."),
     n("project", "string", "The project the task belongs to, or null."),
     n("due", "string", "When it is due, as an instant, or null."),
-    n("scheduled", "string", "When work is planned to start, or null. Until then a task that is not `active` is `backlog`, out of the working set, as with `wait`."),
-    n("wait", "string", "Hidden from the working set until this instant, or null. A running task stays `active` regardless."),
+    n("scheduled", "string", "When work is planned to start, or null. While it is in the future a `pending` task reads as `backlog`, out of the working set, as with `wait`; `active`, `done` and `cancelled` keep their status."),
+    n("wait", "string", "Holds the task out of the working set until this instant, or null. While it is in the future a `pending` task reads as `backlog`; `active`, `done` and `cancelled` keep their status."),
     n("estimate", "string", "The estimate as an ISO 8601 duration (`PT4H`), or null."),
     n("recurrence", "string", "The recurrence rule (`every 3 days`), or null."),
     n("remind", "string", "The reminder spec — an offset from `due` or an absolute instant — or null."),
@@ -181,9 +181,9 @@ pub const TASK_CORE: &[FieldDoc] = &[
     f("tags", "array", "Every tag on the task, as plain strings."),
     f("created", "string", "When the task was captured."),
     f("modified", "string", "When it last changed."),
-    n("completed", "string", "When `task.done` completed it, or null — on an open task, and on a cancelled one, which is never stamped."),
+    n("completed", "string", "When `task.done` completed it, or null. `task.reopen` clears it, and `task.cancel` does not set it."),
     n("budget_tokens", "integer", "The size gauge over FRESH tokens (D139), or null for no threshold. It stops nothing."),
-    f("_rev", "integer", "The task's revision counter, bumped by every change to the task or to its tags, notes, checks and dependencies — not by token spend or a fired reminder. Send it back as `expected_rev` to make a change conditional."),
+    f("_rev", "integer", "The task's revision counter. The methods that change the task or its tags, notes, checks and dependencies bump it; `token.add`, `token.remove` and `reminder.fire` leave it alone. Send it back as `expected_rev` to make a change conditional."),
 ];
 
 /// The live-read spelling of tracked time: an ISO duration plus the open interval's anchor.
@@ -314,7 +314,7 @@ pub const ANNOTATION_ROW: &[FieldDoc] = &[
     f(
         "body",
         "string",
-        "The note, stored and returned verbatim (D41).",
+        "The note, stored verbatim (D41). `task.get` and `task.brief` given `max_body_bytes` return a prefix of a longer body and mark it with `body_truncated` and `body_bytes` (D148).",
     ),
     f("created", "string", "When the note was written."),
 ];
@@ -537,7 +537,7 @@ pub const R_TASK_DONE: &[FieldDoc] = &[
 /// `task.modify`'s result.
 pub const R_TASK_MODIFY: &[FieldDoc] = &[
     f("short_id", "integer", "The task's short id — the small number every `ref` accepts and the CLI prints."),
-    f("_rev", "integer", "The task's revision counter, bumped by every change to the task or to its tags, notes, checks and dependencies — not by token spend or a fired reminder. Send it back as `expected_rev` to make a change conditional."),
+    f("_rev", "integer", "The task's revision counter. The methods that change the task or its tags, notes, checks and dependencies bump it; `token.add`, `token.remove` and `reminder.fire` leave it alone. Send it back as `expected_rev` to make a change conditional."),
     f("set", "object", "The RESOLVED value stored for each field this call named — `due: \"friday\"` comes back as its instant."),
 ];
 
@@ -1120,7 +1120,7 @@ pub const PROJECT_EXPORT_ROW: &[FieldDoc] = &[
 /// One row of the append-only audit log.
 pub const EVENT_ROW: &[FieldDoc] = &[
     f("id", "string", "The event's uuid."),
-    f("entity", "string", "What kind of thing it happened to: `task`, `project`, `memory`."),
+    f("entity", "string", "What kind of thing it happened to: `task`, `project` or `doc`."),
     f("entity_id", "string", "That thing's uuid."),
     f("op", "string", "What happened: `add`, `done`, `start`, `stop`, `tag.remove`, …"),
     n("payload", "object", "The op's own vocabulary. Null only for a row whose payload will not parse — a corrupt store."),
@@ -1157,7 +1157,7 @@ pub const R_EVENT_REVERT: &[FieldDoc] = &[
     f("short_id", "integer", "The task's short id — the small number every `ref` accepts and the CLI prints."),
     f("title", "string", "The title of the task the undo touched."),
     f("restored", "object", "What the inverse put back — per-op, the undo's own vocabulary."),
-    f("_rev", "integer", "The task's revision counter, bumped by every change to the task or to its tags, notes, checks and dependencies — not by token spend or a fired reminder. Send it back as `expected_rev` to make a change conditional."),
+    f("_rev", "integer", "The task's revision counter. The methods that change the task or its tags, notes, checks and dependencies bump it; `token.add`, `token.remove` and `reminder.fire` leave it alone. Send it back as `expected_rev` to make a change conditional."),
 ];
 
 /// The event an undo reversed.

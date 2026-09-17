@@ -6,7 +6,7 @@
 //! |---|---|
 //! | every field row | the `tasqx_core::docs` groups [`OBJECTS`] names, the same rows the API page renders |
 //! | the example object | a slice of one method's example on the API page — captured, or illustrative with its reason |
-//! | the operations list | every method whose namespace is the object's, or whose response shape carries one of its groups ([`objects_of`]) |
+//! | the operations list | every method whose namespace is the object's, or whose response shape carries one of its groups or a group it is `linked` to ([`objects_of`]) |
 //! | each operation's CLI verb and MCP tool | the API page's own `verbs_for` / `tool_for` |
 //!
 //! [`objects_of`] is also what the API page reads to link a method back to its
@@ -47,6 +47,10 @@ pub(super) struct Object {
     lead: &'static str,
     /// The API page's group prefixes whose methods act on this object.
     namespaces: &'static [&'static str],
+    /// Groups whose presence in a response links a method to this page
+    /// without making their fields this object's — a search hit may be a
+    /// document, but its row is the search's.
+    linked: &'static [&'static [FieldDoc]],
     /// `(table caption, row-name prefix, group)`. An empty caption is the
     /// object's own table; a prefix names a nested object's rows
     /// (`urgency_breakdown.priority`).
@@ -66,9 +70,11 @@ pub(super) const OBJECTS: [Object; 8] = [
         lead: "A task is one piece of work: a title, the dates and priority that score its \
                urgency, the time tracked against it, and everything hung off it — notes, \
                acceptance criteria, dependencies and token spend, each documented on its own page. \
-               It is never deleted: a finished task is <code>done</code>, an abandoned one \
-               <code>cancelled</code>, and both can be reopened.",
+               No method deletes a task, and <code>event.revert</code> refuses to undo its \
+               <code>add</code>: a finished task is <code>done</code>, an abandoned one \
+               <code>cancelled</code>, and <code>task.reopen</code> brings either back.",
         namespaces: &["task", "tag", "reminder"],
+        linked: &[],
         groups: &[
             ("", "", d::TASK_CORE),
             ("", "", d::TASK_STATUS_FLAG),
@@ -87,6 +93,7 @@ pub(super) const OBJECTS: [Object; 8] = [
                the store's default, where a task added without a project lands. Archiving hides a \
                project and removes nothing.",
         namespaces: &["project"],
+        linked: &[],
         groups: &[
             ("", "", d::PROJECT_LIST_ROW),
             ("", "", d::PROJECT_EXPORT_ROW),
@@ -103,6 +110,7 @@ pub(super) const OBJECTS: [Object; 8] = [
                undoing the <code>annotation.add</code> that wrote a note deletes it outright, \
                with no tombstone.",
         namespaces: &["annotation"],
+        linked: &[],
         groups: &[
             ("", "", d::ANNOTATION_ROW),
             ("", "", d::ANNOTATION_CAP),
@@ -117,10 +125,11 @@ pub(super) const OBJECTS: [Object; 8] = [
         id: "obj-check",
         name: "Check",
         lead: "A check is one acceptance criterion on a task (D138): a sentence tasqx stores and \
-               never runs. It starts <code>open</code>, and <code>check.set</code> moves it to \
+               does not execute. It starts <code>open</code>, and <code>check.set</code> moves it to \
                <code>passed</code>, <code>failed</code> or back to <code>open</code>, with the \
                evidence that decided it.",
         namespaces: &["check"],
+        linked: &[],
         groups: &[("", "", d::TASK_CHECK), (ON_A_TASK, "", d::TASK_CHECKS)],
         example: ("task.get", "/checks/0", &[]),
     },
@@ -134,6 +143,7 @@ pub(super) const OBJECTS: [Object; 8] = [
                task is <code>blocked</code> while it is open and at least one task it waits on is \
                neither <code>done</code> nor <code>cancelled</code>.",
         namespaces: &["dependency"],
+        linked: &[],
         groups: &[
             ("", "", d::TASK_DEPENDS_ON),
             ("", "", d::TASK_BLOCKS),
@@ -155,6 +165,7 @@ pub(super) const OBJECTS: [Object; 8] = [
                project and marked standing (D156). Importing a doc with a <code>source</code> \
                already stored replaces that doc in place; removing one is permanent.",
         namespaces: &["memory"],
+        linked: &[d::MEMORY_HIT_ROW],
         groups: &[("", "", d::DOC_EXPORT_ROW), ("", "", d::MEMORY_LIST_ROW)],
         example: ("memory.get", "", &[]),
     },
@@ -170,16 +181,18 @@ pub(super) const OBJECTS: [Object; 8] = [
                undoes the newest event by appending its inverse, and refuses by name the ops it \
                cannot reverse.",
         namespaces: &["event"],
+        linked: &[],
         groups: &[("", "", d::EVENT_ROW)],
         example: ("event.list", "/events/0", &[]),
     },
     Object {
         id: "obj-measurement",
         name: "Token measurement",
-        lead: "A token measurement is AI token spend banked against a task: four buckets that are \
-               never blended (D48), the tool and model that spent them, and how checkable the \
+        lead: "A token measurement is AI token spend banked against a task: four buckets kept \
+               apart (D48), the tool and model that spent them, and how checkable the \
                figure is. A task's measurements are read under <code>tokens</code>.",
         namespaces: &["token"],
+        linked: &[],
         groups: &[
             ("", "", d::MEASUREMENT_ROW),
             (ON_A_TASK, "", d::TASK_TOKENS),
@@ -198,7 +211,10 @@ fn same_group(a: &[FieldDoc], b: &[FieldDoc]) -> bool {
             .all(|(x, y)| x.key == y.key && x.desc == y.desc)
 }
 
-/// The objects a method acts on or answers with, in [`OBJECTS`] order.
+/// The objects a method acts on or answers with, in [`OBJECTS`] order: by
+/// namespace, by a group the page owns, or by a group the page is only
+/// `linked` to — `task.brief`'s memory hits link the Memory page without their
+/// search rows becoming document fields.
 ///
 /// The API page links a method section to exactly these pages, and each page
 /// lists exactly the methods that name it here.
@@ -208,9 +224,10 @@ pub(super) fn objects_of(method: &str) -> Vec<&'static Object> {
         .iter()
         .filter(|o| {
             o.namespaces.contains(&group_of(method))
-                || shape
-                    .iter()
-                    .any(|(_, g)| o.groups.iter().any(|(_, _, og)| same_group(g, og)))
+                || shape.iter().any(|(_, g)| {
+                    o.groups.iter().any(|(_, _, og)| same_group(g, og))
+                        || o.linked.iter().any(|lg| same_group(g, lg))
+                })
         })
         .collect()
 }
@@ -528,21 +545,22 @@ fn task_lifecycle() -> String {
         p("<code>backlog</code> and <code>pending</code> are one question asked of the clock \
            every time a task is read: a task is in <code>backlog</code> while its \
            <code>wait</code> or <code>scheduled</code> instant is still in the future, and in \
-           <code>pending</code> otherwise. An <code>active</code> task is never asked: a \
-           running clock stays <code>active</code> whatever its dates say. So every arrow into that box lands in whichever of the \
+           <code>pending</code> otherwise. Only those two statuses are read against the clock: \
+           <code>active</code>, <code>done</code> and <code>cancelled</code> keep their status \
+           whatever the task's dates say. So every arrow into that box lands in whichever of the \
            two the task's dates say — a task added, stopped or reopened with a future date is in \
            <code>backlog</code>, and moves to <code>pending</code> only once neither its \
            <code>wait</code> nor its <code>scheduled</code> is still in the future — each has \
-           passed or been cleared with <code>task.modify</code>. There is no separate waiting status. A backlog \
-           task cannot be started or completed. Starting a task without <code>keep</code> stops \
+           passed or been cleared with <code>task.modify</code>. There is no separate waiting status. <code>task.start</code> \
+           and <code>task.done</code> refuse a backlog task. Starting a task without <code>keep</code> stops \
            every task already running (D6), with one exception (D140): when the start names an \
            <code>actor</code> and the most recently started running clock was started under a \
-           different named actor, the start is refused instead. A start that names no actor — \
-           <code>tasqx start</code> never does — auto-stops regardless; an MCP call always names \
-           one, its connection's unless the caller gives its own. When the newest event is a \
+           different named actor, the start is refused instead. A start that names no actor, \
+           as <code>tasqx start</code> sends none, auto-stops as usual; the MCP server fills in \
+           its connection's id when a call names none. When the newest event is a \
            <code>task.stop</code>, <code>event.revert</code> takes it back, putting the task \
-           back to <code>active</code> if it is still <code>pending</code>. <code>task.modify</code> can set <code>status</code> only to \
-           <code>cancelled</code>."),
+           back to <code>active</code> if it is still <code>pending</code>. <code>task.modify</code> refuses a <code>status</code> \
+           other than <code>cancelled</code>."),
         p("<strong>Blocked</strong> is not a status either: it is the \
            <a href=\"#obj-dependency\"><code>blocked</code></a> flag, true while an open task \
            waits on a task that is neither done nor cancelled. <code>@working</code> is pending \
@@ -1139,6 +1157,123 @@ mod tests {
         assert!(
             !prose.contains("goes back to <code>pending</code>"),
             "the prose sends a stopped task to pending unconditionally"
+        );
+    }
+
+    /// A method answering with memory search hits links the Memory page, and
+    /// the page lists it, without the hit rows becoming document fields
+    /// (PR #59 review: `task.brief` linked neither way).
+    #[test]
+    fn a_method_answering_with_memory_hits_links_the_memory_page() {
+        let doc = super::super::generate();
+        let memory = page_html(&doc, "obj-memory");
+        let ops = &memory[memory.find("-ops\">").unwrap()..];
+        for method in ["task.brief", "memory.search"] {
+            assert!(
+                ops.contains(&format!("href=\"#api-{method}\"")),
+                "the Memory page does not list `{method}`"
+            );
+            assert!(
+                objects_of(method).iter().any(|o| o.id == "obj-memory"),
+                "`{method}` does not link the Memory page"
+            );
+        }
+        assert!(
+            rows_named(memory, "snippet").is_empty() && rows_named(memory, "rank").is_empty(),
+            "a search hit's fields are documented as memory-document fields"
+        );
+        // A linked-only group is linked, not owned: it is on no page's field
+        // list, and it is really in a response.
+        for o in &OBJECTS {
+            for g in o.linked {
+                assert!(
+                    OBJECTS
+                        .iter()
+                        .all(|p| p.groups.iter().all(|(_, _, pg)| !same_group(pg, g))),
+                    "`{}` links a group some page owns",
+                    o.id
+                );
+                assert!(
+                    !occurrences(g).is_empty(),
+                    "`{}` links a group no response carries",
+                    o.id
+                );
+            }
+        }
+    }
+
+    /// The backticked `entity` names the pages document are the ones the engine
+    /// writes and `event.list` accepts (PR #59 review: `memory` for `doc`).
+    #[test]
+    fn documented_event_entities_are_the_engines() {
+        let names = |text: &str| -> BTreeSet<String> {
+            text.split('`')
+                .skip(1)
+                .step_by(2)
+                .map(str::to_string)
+                .collect()
+        };
+        let engine: BTreeSet<String> = tasqx_core::types::Entity::ALL
+            .iter()
+            .map(|e| e.as_str().to_string())
+            .collect();
+        let row = d::EVENT_ROW.iter().find(|f| f.key == "entity").unwrap();
+        assert_eq!(names(row.desc), engine, "EVENT_ROW.entity");
+        let (_, _, param) = super::super::api_ref::param_doc("event.list", "entity");
+        assert_eq!(
+            names(&param.replace("<code>", "`").replace("</code>", "`")),
+            engine,
+            "event.list's `entity` parameter"
+        );
+    }
+
+    /// Descriptions that bind to engine behaviour say what the engine does.
+    #[test]
+    fn row_descriptions_match_the_engine() {
+        use serde_json::json;
+        let desc = |g: &[FieldDoc], k: &str| g.iter().find(|f| f.key == k).unwrap().desc;
+        // D148: the body is stored whole, and a capped read marks the cut.
+        let body = desc(d::ANNOTATION_ROW, "body");
+        for marker in ["max_body_bytes", "body_truncated", "body_bytes"] {
+            assert!(
+                body.contains(marker),
+                "ANNOTATION_ROW.body does not name `{marker}`"
+            );
+        }
+        let e = tasqx_core::Engine::open_in_memory().unwrap();
+        let call = |m: &str, p: Value| tasqx_core::dispatch(&e, m, &p).unwrap();
+        let id = call("task.add", json!({"title": "t"}))["short_id"].clone();
+        call(
+            "annotation.add",
+            json!({"ref": id, "body": "0123456789abcdef"}),
+        );
+        let got = call("task.get", json!({"ref": id, "max_body_bytes": 4}));
+        let note = &got["annotations"][0];
+        assert_eq!(note["body_truncated"], true);
+        assert_eq!(note["body_bytes"], 16);
+
+        // effective_status swaps only pending and backlog: a future date keeps
+        // active, done and cancelled as they are.
+        for key in ["scheduled", "wait"] {
+            let text = desc(d::TASK_CORE, key);
+            for kept in ["`active`", "`done`", "`cancelled`"] {
+                assert!(
+                    text.contains(kept),
+                    "TASK_CORE.{key} does not say `{kept}` is kept"
+                );
+            }
+        }
+        let far = "2999-01-01T00:00:00Z";
+        let done = call("task.add", json!({"title": "d"}))["short_id"].clone();
+        call("task.done", json!({"ref": done}));
+        call("task.modify", json!({"ref": done, "set": {"wait": far}}));
+        assert_eq!(call("task.get", json!({"ref": done}))["status"], "done");
+
+        // `completed` is scoped to the methods that set and clear it.
+        let completed = desc(d::TASK_CORE, "completed");
+        assert!(
+            completed.contains("task.cancel") && !completed.contains("never"),
+            "TASK_CORE.completed makes a store-wide promise"
         );
     }
 
