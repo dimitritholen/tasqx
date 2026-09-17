@@ -147,17 +147,35 @@ fn list_reads_the_mcp_registration_from_claude_json() {
         "a project-scoped registration is not the user-scope one: {out}"
     );
 
-    std::fs::write(
-        dir.join("home/.claude.json"),
-        r#"{"mcpServers":{"tasqx":{"command":"tasqx"}}}"#,
-    )
-    .unwrap();
-    let (_, out, _) = run(bin(&dir).args(["--list", "--only", "mcp"]));
-    let line = row(&out, "mcp");
-    assert!(
-        line.contains("installed") && !line.contains("not installed"),
-        "{out}"
-    );
+    for stale in [
+        r#"{"command":"tasqx"}"#,
+        r#"{"command":"tasqx","args":["mcp","serve"]}"#,
+        r#"{"command":"other","args":["mcp","serve","--scope","write"]}"#,
+    ] {
+        std::fs::write(
+            dir.join("home/.claude.json"),
+            format!(r#"{{"mcpServers":{{"tasqx":{stale}}}}}"#),
+        )
+        .unwrap();
+        let (_, out, _) = run(bin(&dir).args(["--list", "--only", "mcp"]));
+        assert!(row(&out, "mcp").contains("differs"), "{stale}: {out}");
+    }
+
+    for ours in ["tasqx", "/usr/local/bin/tasqx"] {
+        std::fs::write(
+            dir.join("home/.claude.json"),
+            format!(
+                r#"{{"mcpServers":{{"tasqx":{{"command":"{ours}","args":["mcp","serve","--scope","write"]}}}}}}"#
+            ),
+        )
+        .unwrap();
+        let (_, out, _) = run(bin(&dir).args(["--list", "--only", "mcp"]));
+        let line = row(&out, "mcp");
+        assert!(
+            line.contains("installed") && !line.contains("not installed"),
+            "{ours}: {out}"
+        );
+    }
 }
 
 #[test]
@@ -189,9 +207,9 @@ fn an_unknown_only_name_exits_2_naming_the_valid_ones() {
 
 /// A PATH holding only a fake `claude`. Each call appends its argv, space
 /// joined, as one line of `calls.txt`, and writes the `$HOME` it saw to
-/// `home.txt`.
+/// `home.txt`, then runs the shell line `then`.
 #[cfg(unix)]
-fn fake_claude(dir: &Path) -> (PathBuf, PathBuf, PathBuf) {
+fn fake_claude(dir: &Path, then: &str) -> (PathBuf, PathBuf, PathBuf) {
     use std::os::unix::fs::PermissionsExt;
     let bin_dir = dir.join("bin");
     std::fs::create_dir_all(&bin_dir).unwrap();
@@ -201,7 +219,7 @@ fn fake_claude(dir: &Path) -> (PathBuf, PathBuf, PathBuf) {
     std::fs::write(
         &script,
         format!(
-            "#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{}'\nprintf '%s' \"$HOME\" > '{}'\n",
+            "#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{}'\nprintf '%s' \"$HOME\" > '{}'\n{then}\n",
             calls.display(),
             home.display()
         ),
@@ -215,7 +233,7 @@ fn fake_claude(dir: &Path) -> (PathBuf, PathBuf, PathBuf) {
 #[test]
 fn yes_registers_mcp_through_claude_mcp_add_at_user_scope_under_the_given_home() {
     let dir = scratch("claude");
-    let (path, calls, home) = fake_claude(&dir);
+    let (path, calls, home) = fake_claude(&dir, "");
     let (code, out, err) = run(bin(&dir)
         .env("PATH", &path)
         .args(["--yes", "--only", "mcp"]));
@@ -234,6 +252,72 @@ fn yes_registers_mcp_through_claude_mcp_add_at_user_scope_under_the_given_home()
     assert!(
         !dir.join("home/.claude.json").exists(),
         "setup never writes ~/.claude.json itself"
+    );
+}
+
+/// A `tasqx mcp serve` (read-only) registration, the one earlier READMEs gave.
+#[cfg(unix)]
+fn read_only_registration(dir: &Path) {
+    std::fs::create_dir_all(dir.join("home")).unwrap();
+    std::fs::write(
+        dir.join("home/.claude.json"),
+        r#"{"mcpServers":{"tasqx":{"command":"tasqx","args":["mcp","serve"]}}}"#,
+    )
+    .unwrap();
+}
+
+#[cfg(unix)]
+#[test]
+fn a_differing_mcp_registration_is_kept_by_yes_and_replaced_with_force() {
+    let dir = scratch("mcpdiffers");
+    read_only_registration(&dir);
+    let (path, calls, home) = fake_claude(&dir, "");
+
+    let (code, out, err) = run(bin(&dir)
+        .env("PATH", &path)
+        .args(["--yes", "--only", "mcp"]));
+    assert_eq!(code, 0, "stdout: {out}\nstderr: {err}");
+    assert!(row(&out, "mcp").contains("--force"), "{out}");
+    assert!(!calls.exists(), "a kept registration must not call claude");
+
+    let (code, out, err) = run(bin(&dir)
+        .env("PATH", &path)
+        .args(["--yes", "--force", "--only", "mcp"]));
+    assert_eq!(code, 0, "stdout: {out}\nstderr: {err}");
+    assert_eq!(
+        std::fs::read_to_string(&calls)
+            .unwrap()
+            .lines()
+            .collect::<Vec<_>>(),
+        [
+            "mcp remove --scope user tasqx",
+            "mcp add --scope user tasqx -- tasqx mcp serve --scope write"
+        ]
+    );
+    assert_eq!(
+        std::fs::read_to_string(&home).unwrap(),
+        dir.join("home").display().to_string()
+    );
+    assert!(row(&out, "mcp").contains("updated"), "{out}");
+}
+
+#[cfg(unix)]
+#[test]
+fn a_failed_remove_reports_failure_and_adds_nothing() {
+    let dir = scratch("mcpremovefails");
+    read_only_registration(&dir);
+    let (path, calls, _) = fake_claude(&dir, "echo nope >&2; exit 1");
+    let (code, out, err) = run(bin(&dir)
+        .env("PATH", &path)
+        .args(["--yes", "--force", "--only", "mcp"]));
+    assert_ne!(code, 0, "stdout: {out}\nstderr: {err}");
+    assert!(err.contains("claude mcp remove"), "{err}");
+    assert_eq!(
+        std::fs::read_to_string(&calls)
+            .unwrap()
+            .lines()
+            .collect::<Vec<_>>(),
+        ["mcp remove --scope user tasqx"]
     );
 }
 
