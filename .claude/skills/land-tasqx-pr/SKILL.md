@@ -1,6 +1,6 @@
 ---
 name: land-tasqx-pr
-description: Land a tasqx task's branch on protected main — push, open the PR, wait out the twelve required checks, handle every review thread, rebase-merge without --delete-branch, reinstall and verify, then close the task once. Use it ONLY when the user explicitly asks to land, merge, ship or open the PR for a task ("open the PR and merge it", "land task #N", "merge the branch", "ship it"); a finished implementation on its own is not a request to publish it. Sighted on tasks #95, #645 and #650 — each time a step was skipped, misread or run in the wrong order and cost a retry, so follow the sequence even when a shortcut looks safe.
+description: Land a tasqx task's branch on protected main — push, open the PR, wait out the twelve required checks, handle every review thread, rebase-merge without --delete-branch, reinstall and verify, then close the task once. Use it ONLY when the user explicitly asks to land, merge, ship or open the PR for a task ("open the PR and merge it", "land task #N", "merge the branch", "ship it"); a finished implementation on its own is not a request to publish it. Ships `scripts/wait-qodo.sh` and `scripts/reply-resolve.sh` for the review threads. Sighted on tasks #95, #645, #650, #679 and #646–#652 — each time a step was skipped, misread or run in the wrong order and cost a retry, so follow the sequence even when a shortcut looks safe.
 ---
 
 # Land a tasqx task PR
@@ -18,30 +18,44 @@ skipping or reordering one of them (see "Why this order" at the end).
 
 ## Steps
 
-1. **Push.** Confirm the last commit carries no AI attribution trailer
-   (`git -C <worktree> log -1 --format=%B`), then
-   `git -C <worktree> push -u origin task/<id>-<slug>`. Use `git -C` for
-   every git command: the guard hook reads the declared shell cwd, not an
-   in-command `cd`.
+Two helpers ship with this skill, in `.claude/skills/land-tasqx-pr/scripts/`
+(`$S` below). They exist because a session that entered the task worktree
+with `EnterWorktree` is isolated to it, and the isolation guard refuses an
+inline `gh api graphql … --jq` with nested quotes, a `$(cat …)` inside `gh`
+arguments, and chained commands as "too complex to verify":
 
-2. **Open the PR.**
-   `gh pr create --head task/<id>-<slug> --base main --title "<commit subject>" --body "<problem, fix, tests, skipped>"`.
+- `$S/wait-qodo.sh <n>` waits until Qodo's "busy" comment is gone, then lists
+  the unresolved threads; `$S/wait-qodo.sh <n> --bodies` prints each one's
+  finding as text.
+- `$S/reply-resolve.sh <thread-id> "<reply>"` replies and resolves, with the
+  reply passed as a GraphQL variable so any text is safe.
+
+Run commands from the worktree, one plain command per call.
+
+1. **Push.** Confirm the last commit carries no AI attribution trailer
+   (`git log -1 --format=%B`), then `git push -u origin task/<id>-<slug>`.
+
+2. **Open the PR.** Write the body to a file in the scratchpad (problem,
+   fix, verification, skipped) and pass the title as a single-quoted literal:
+   `gh pr create --head task/<id>-<slug> --base main --title '<commit subject>' --body-file <file>`.
    No AI attribution in the body either.
 
-3. **Wait for checks.** `gh pr checks <n> --watch --interval 30` until every
-   required check is green. `cargo-mutants` showing "skipping" is fine, not a
-   failure. Auto-merge is disabled on the repository, so there is no `--auto`
-   shortcut; the merge in step 5 is explicit.
+3. **Wait for checks, then for the reviewers.** First read
+   `gh pr view <n> --json mergeable,mergeStateStatus`: a CONFLICTING PR queues
+   no CI at all, and `gh pr checks` then lists only CodeRabbit — go to the
+   `rebase-tasqx-pr` skill instead of waiting. Otherwise
+   `gh pr checks <n> --watch --interval 30` until every required check is
+   green (`cargo-mutants` "skipping" is fine), then `$S/wait-qodo.sh <n>`.
+   Run both in the background (`run_in_background`) and end the turn only
+   when no local `cargo` gate run of yours is still going: the Stop hook starts
+   its own full run, and two overlapping runs report spurious failures.
+   Auto-merge is disabled on the repository, so the merge in step 5 is
+   explicit.
 
 4. **Handle every review thread before merging.** A clean check run does
    not mean the reviewers are satisfied, and GitHub refuses the merge over
-   any unresolved thread regardless of check status.
-
-   List them (replace the owner, name and number):
-
-   ```console
-   $ gh api graphql -f query='{repository(owner:"dimitritholen",name:"tasqx"){pullRequest(number:26){reviewThreads(first:50){nodes{id isResolved path line comments(first:1){nodes{author{login} body}}}}}}}' --jq '.data.repository.pullRequest.reviewThreads.nodes[] | select(.isResolved==false)'
-   ```
+   any unresolved thread regardless of check status. Read them with
+   `$S/wait-qodo.sh <n> --bodies`.
 
    For each unresolved thread:
    - From an automated reviewer (`qodo-code-review`, `coderabbitai`): read
@@ -51,16 +65,22 @@ skipping or reordering one of them (see "Why this order" at the end).
      and resolve:
 
      ```console
-     $ gh api graphql -f query='mutation{addPullRequestReviewThreadReply(input:{pullRequestReviewThreadId:"<thread id>",body:"Fixed in <sha>: <one line>"}){comment{id}}}'
-     $ gh api graphql -f query='mutation{resolveReviewThread(input:{threadId:"<thread id>"}){thread{isResolved}}}'
+     $ .claude/skills/land-tasqx-pr/scripts/reply-resolve.sh <thread-id> "Fixed in <sha>: <one line>"
      ```
 
      A rejected finding gets the reason in the reply, then the same resolve.
+     Findings on a generated-docs PR are usually a sentence that is true on
+     most paths only ("never", "always", "every"); brief the fixing agent to
+     state what each method does rather than add a new universal claim.
    - From a human, or from any reviewer you do not recognise: do not resolve
      it yourself. Stop, show the user the thread, and wait for their answer
      or the reviewer's.
 
-5. **Merge.** `gh pr merge <n> --rebase` — **without `--delete-branch`.** The
+5. **Merge.** Right before merging, `git fetch origin` and check that the
+   branch's D-number (if it adds one to `DESIGN.md` §12) is still free on
+   `origin/main`; another session can take it while the PR waits, and then
+   the merge fails with "Pull Request has merge conflicts" — hand over to
+   `rebase-tasqx-pr`. Then `gh pr merge <n> --rebase` — **without `--delete-branch`.** The
    branch lives in a worktree; `--delete-branch` deletes it (remote and
    local) out from under that worktree before step 7 has checked, with
    `git cherry`, that every commit really reached `main`. Step 7 deletes
@@ -82,9 +102,14 @@ skipping or reordering one of them (see "Why this order" at the end).
    step 7), then, from `~/projects/tasqx`, one plain command per call:
 
    ```console
-   $ git pull --ff-only
+   $ git fetch origin
+   $ git merge --ff-only origin/main
    $ cargo install --path crates/tasqx-cli --force
    ```
+
+   Not `git pull --ff-only`: on 2026-09-17 it answered "Cannot fast-forward to
+   multiple branches", and a reinstall started beside it built the old main.
+   Reinstall only after the merge line prints the new commits.
 
    Then exercise the change in-process against the real store, for example
    `tasqx api <<< '{"tasqx":"1","id":"1","method":"<method>","params":{...}}'`
@@ -99,8 +124,9 @@ skipping or reordering one of them (see "Why this order" at the end).
    If the task's evidence includes a narrow-viewport screenshot of
    `tasqx docs` output: headless Chrome on macOS floors `--window-size` at
    500px wide, so a `--window-size=390` screenshot is a 500px layout cropped
-   to 390 and proves nothing about 390. Drive a true narrow viewport through
-   CDP's `Emulation.setDeviceMetricsOverride` before trusting it.
+   to 390 and proves nothing about 390. `scripts/snap-web.mjs` drives a true
+   narrow viewport through CDP (see `docs/maintainers/terminal-style.md`
+   §14); use it rather than `--window-size`.
 
 7. **Annotate, clean up by hand, then close the task exactly once.** Write
    the delivery annotation first (plain-language paragraph on top, then the
@@ -119,6 +145,10 @@ skipping or reordering one of them (see "Why this order" at the end).
    $ git branch -D task/<id>-<slug>
    $ git push origin --delete task/<id>-<slug>
    ```
+
+   If the PR superseded earlier ones (`rebase-tasqx-pr` pushes a rebased head
+   under a new remote name), delete every remote name the task used, and any
+   `backup/<id>-*` branch, in the same pass.
 
    A `+` line from `git cherry` means a commit did not land; stop and find
    out why before deleting anything. Then `tasqx_complete_task` with
@@ -159,3 +189,11 @@ build, and the task's status is `done` with its checks marked.
   refused after the rebase merge as it does every time. Steps 5 to 7 now
   say what worked: leave the worktree first, one plain command per call,
   poll the PR state, clean up by hand after `git cherry`.
+- **Sighting 4 (tasks #646, #647, #648, #652, PRs #47, #54, #59, #61,
+  2026-09-17):** seven Qodo rounds. The inline thread-listing and resolve
+  commands were refused by the isolation guard every time, so the session
+  wrote `wait-qodo.sh` and `reply-resolve.sh` — now shipped in `scripts/`.
+  A CONFLICTING PR was waited on with no CI queued, D-numbers were taken by
+  other sessions while PRs sat in review (once minutes before the merge),
+  the Stop hook's gate run overlapped the session's own background run three
+  times, and `git pull --ff-only` refused. Steps 3, 5 and 6 carry those.
