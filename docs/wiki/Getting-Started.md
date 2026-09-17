@@ -40,10 +40,10 @@ build from source with `cargo install --path crates/tasqx-cli`.
 ## Install fine print
 
 Both installer scripts pick the newest release, resolve your target triple,
-verify the archive against its published checksum, and write nothing outside
-the install directory (`~/.local/bin`, or
-`%LOCALAPPDATA%\Programs\tasqx\bin` on Windows, where that one directory is
-added to your user PATH and `-Uninstall` takes it back out). Neither touches a
+verify the archive against its published checksum, and put files only in the
+install directory: `~/.local/bin`, or `%LOCALAPPDATA%\Programs\tasqx\bin` on
+Windows. The Windows installer also adds that one directory to your user PATH,
+a setting outside it, and `-Uninstall` takes it back out. Neither touches a
 shell startup file unless you ask.
 
 A pipe passes no arguments, so flags need the longer form:
