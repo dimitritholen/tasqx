@@ -1731,8 +1731,10 @@ impl<'e> McpServer<'e> {
     ///
     /// Standing docs are never dropped: when their gists overflow
     /// [`STANDING_RULINGS_BUDGET`] every title is still listed, with a
-    /// warning to consolidate. It names no write tool, since read-only
-    /// sessions receive it too.
+    /// warning to consolidate. Topical fill, when any is shown, sits under
+    /// its own "Recent notes ... (context, not rulings)" heading, after
+    /// every standing entry (PR #48 review) — it never reads as one. It
+    /// names no write tool, since read-only sessions receive it too.
     fn rulings_section(&self) -> Option<String> {
         let r = self.engine.session_rulings(self.workdir.as_deref()).ok()?;
         if r.standing.is_empty() && r.topical.is_empty() {
@@ -1740,11 +1742,20 @@ impl<'e> McpServer<'e> {
         }
         const FOLLOW: &str = "Follow them: they were recorded by the user or an earlier \
             session and hold until cleared.";
-        let mut out = match &r.project {
-            Some((name, source)) => {
-                format!("Standing rulings for project {name} ({source}). {FOLLOW}\n")
+        // PR #48 review: the standing header names rulings, so it is emitted
+        // only when there is at least one standing doc to announce — a
+        // topical-only section must never read as though it carries any.
+        let mut out = if r.standing.is_empty() {
+            String::new()
+        } else {
+            match &r.project {
+                Some((name, source)) => {
+                    format!("Standing rulings for project {name} ({source}). {FOLLOW}\n")
+                }
+                None => {
+                    format!("Standing rulings (no project inferred, unscoped only). {FOLLOW}\n")
+                }
             }
-            None => format!("Standing rulings (no project inferred, unscoped only). {FOLLOW}\n"),
         };
         let one_line = |s: &str| s.split_whitespace().collect::<Vec<_>>().join(" ");
         let entry = |d: &crate::engine::SessionDoc, with_gist: bool| {
@@ -1789,11 +1800,16 @@ impl<'e> McpServer<'e> {
 
         // Topical docs exist only when a project was inferred.
         let name = r.project.as_ref().map_or("", |(n, _)| n.as_str());
+        // PR #48 review: topical fill is context, not a ruling, so it sits
+        // under its own heading rather than reading as more of the standing
+        // list above it.
+        let topical_header = format!("\n\nRecent notes for project {name} (context, not rulings):");
         let footer = |left: usize| {
             format!("\n{left} more docs for project {name}; tasqx_search_memory reaches them.")
         };
-        let total = r.topical.len();
+        let total = r.topical_total;
         let mut shown = 0;
+        let mut header_written = false;
         for d in &r.topical {
             let e = entry(d, true);
             let left_after = total - shown - 1;
@@ -1802,8 +1818,19 @@ impl<'e> McpServer<'e> {
             } else {
                 0
             };
-            if out.len() + e.len() + reserve > STANDING_RULINGS_BUDGET {
+            // PR #48 review: the heading costs budget too, reserved before
+            // the first topical entry the same way the footer is reserved.
+            let header_cost = if header_written {
+                0
+            } else {
+                topical_header.len()
+            };
+            if out.len() + header_cost + e.len() + reserve > STANDING_RULINGS_BUDGET {
                 break;
+            }
+            if !header_written {
+                out.push_str(&topical_header);
+                header_written = true;
             }
             out.push_str(&e);
             shown += 1;
@@ -1814,7 +1841,11 @@ impl<'e> McpServer<'e> {
         if shown < total && out.len() + f.len() <= STANDING_RULINGS_BUDGET {
             out.push_str(&f);
         }
-        Some(out)
+        // A topical-only section opens on the heading's own separator, which
+        // `initialize_result` already supplies; and a section where nothing
+        // fit is no section at all, so the instructions stay byte-identical.
+        let out = out.trim_start_matches('\n');
+        (!out.is_empty()).then(|| out.to_string())
     }
 
     /// Execute a `tools/call`. Always returns a CallToolResult value (never a

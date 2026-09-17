@@ -684,6 +684,84 @@ fn topical_fill_uses_only_the_projects_own_docs_and_stays_within_the_budget() {
     );
 }
 
+/// PR #48 review: topical fill reads as context, not as a ruling to follow
+/// — it sits under its own heading, after every standing entry.
+#[test]
+fn topical_entries_sit_under_their_own_heading_after_standing_entries() {
+    let engine = engine();
+    engine.project_create(&json!({ "name": "alpha" })).unwrap();
+    add_doc(&engine, "alpha rule", "scoped", Some("alpha"), true);
+    add_doc(
+        &engine,
+        "alpha note",
+        "unscoped context",
+        Some("alpha"),
+        false,
+    );
+
+    let text = rulings_of(&McpServer::new(&engine, Scope::Write));
+    let heading = text
+        .find("Recent notes for project alpha (context, not rulings):")
+        .unwrap_or_else(|| panic!("no topical heading:\n{text}"));
+    let standing_at = text.find("alpha rule").expect("standing title present");
+    let topical_at = text.find("alpha note").expect("topical title present");
+    assert!(standing_at < heading, "{text}");
+    assert!(topical_at > heading, "{text}");
+}
+
+/// PR #48 review: with nothing standing, the section must not announce
+/// rulings it does not have — only the "Recent notes" heading appears.
+#[test]
+fn with_only_topical_docs_the_section_carries_no_standing_rulings_heading() {
+    let engine = engine();
+    engine.project_create(&json!({ "name": "alpha" })).unwrap();
+    add_doc(
+        &engine,
+        "alpha note",
+        "unscoped context",
+        Some("alpha"),
+        false,
+    );
+
+    let text = rulings_of(&McpServer::new(&engine, Scope::Write));
+    assert!(!text.contains("Standing rulings"), "{text}");
+    assert!(
+        text.contains("Recent notes for project alpha (context, not rulings):"),
+        "{text}"
+    );
+    assert!(text.contains("alpha note"), "{text}");
+}
+
+/// PR #48 review: `session_rulings` bounds what one session reads with
+/// `LIMIT 256`, so the footer's count must come from a separate `COUNT(*)`
+/// (`topical_total`) rather than the length of what was actually fetched,
+/// once a project holds more than that.
+#[test]
+fn the_footer_counts_every_topical_doc_not_only_the_ones_read() {
+    let engine = engine();
+    engine.project_create(&json!({ "name": "alpha" })).unwrap();
+    for i in 0..300 {
+        add_doc(
+            &engine,
+            &format!("topical {i}"),
+            "short body",
+            Some("alpha"),
+            false,
+        );
+    }
+
+    let text = rulings_of(&McpServer::new(&engine, Scope::Write));
+    let shown = text.matches("\n- topical ").count();
+    assert!(shown > 0 && shown < 300, "{shown} shown:\n{text}");
+    assert!(
+        text.ends_with(&format!(
+            "\n{} more docs for project alpha; tasqx_search_memory reaches them.",
+            300 - shown
+        )),
+        "{text}"
+    );
+}
+
 /// #96/D157: standing docs are never dropped. When their gists overflow the
 /// budget every title is still listed, and the section says to consolidate.
 #[test]
