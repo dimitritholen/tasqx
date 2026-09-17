@@ -42,6 +42,7 @@ import { existsSync } from "node:fs";
 import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { pathToFileURL } from "node:url";
 
 const [, , siteArg, outArg, anchorArg] = process.argv;
 if (!siteArg) {
@@ -58,6 +59,16 @@ const WIDTHS = [
 ];
 const THEMES = ["light", "dark"];
 const MAX_VIEWPORTS = 4;
+// The site's page-switch fade is `animation: fade 0.18s ease-out`
+// (crates/tasqx-cli/src/docs.rs, `.js .page.active`). Waiting comfortably
+// past it avoids a half-transparent shot.
+const FADE_MS = 400;
+
+// Waits out the page's own fade-in after a hash change, before touching
+// emulation, diagnostics or the screenshot itself.
+async function settleFade() {
+    await new Promise((r) => setTimeout(r, FADE_MS));
+}
 
 function findChrome() {
     if (process.env.CHROME) return process.env.CHROME;
@@ -129,6 +140,17 @@ class Cdp {
                 if (fns) fns.forEach((fn) => fn(msg.params));
             }
         });
+        // Chrome dying mid-run (a crash, `--no-sandbox` getting killed) used
+        // to leave every in-flight `send()` waiting on a response that would
+        // never come — a silent hang instead of a failed run. Closing or
+        // erroring the socket now fails every pending request so `main`'s
+        // `await` chain unwinds into its `finally` cleanup instead.
+        const failPending = (err) => {
+            for (const { reject } of this.pending.values()) reject(err);
+            this.pending.clear();
+        };
+        ws.addEventListener("close", () => failPending(new Error("Chrome closed the CDP connection")));
+        ws.addEventListener("error", () => failPending(new Error("CDP websocket errored")));
     }
 
     static async connect(url) {
@@ -143,6 +165,9 @@ class Cdp {
     }
 
     send(method, params = {}) {
+        if (this.ws.readyState !== WebSocket.OPEN) {
+            return Promise.reject(new Error(`CDP websocket is not open (state ${this.ws.readyState})`));
+        }
         const id = this.nextId++;
         return new Promise((resolve, reject) => {
             this.pending.set(id, { resolve, reject });
@@ -158,6 +183,14 @@ class Cdp {
     close() {
         this.ws.close();
     }
+}
+
+// Drops one listener a caller registered with `cdp.on(...)`, once it is done
+// with that event — otherwise it keeps firing into a buffer nobody reads,
+// and a later listener for the same method fires alongside it.
+function removeListener(cdp, method, fn) {
+    const fns = cdp.listeners.get(method);
+    if (fns) fns.splice(fns.indexOf(fn), 1);
 }
 
 async function main() {
@@ -210,6 +243,23 @@ async function main() {
         await cdp.send("Page.enable");
         await cdp.send("Runtime.enable");
 
+        // Listening only starts once the per-page loop below does, so an
+        // error thrown while the site's own script first runs — before any
+        // page is ever hashed to — was silently dropped. Registering here,
+        // before `navigate`, catches those; they land in `report.json` as a
+        // `phase: "startup"` entry rather than nowhere.
+        const startupErrors = [];
+        const onStartupConsole = (p) => {
+            if (p.type === "error") {
+                startupErrors.push(p.args.map((a) => a.value ?? a.description ?? "").join(" "));
+            }
+        };
+        const onStartupException = (p) => {
+            startupErrors.push(p.exceptionDetails.text + ": " + (p.exceptionDetails.exception?.description ?? ""));
+        };
+        cdp.on("Runtime.consoleAPICalled", onStartupConsole);
+        cdp.on("Runtime.exceptionThrown", onStartupException);
+
         // The site is one HTML file: every `.page` section is already in the
         // DOM, and a click on a nav link (or setting `location.hash`) toggles
         // which one is visible (`SCRIPT`'s `go`/`show`, docs.rs). So this loads
@@ -217,7 +267,7 @@ async function main() {
         // does — by changing the hash — never re-navigating Chrome, which
         // would not even fire a fresh `Page.loadEventFired` for a same-document
         // hash change.
-        const fileUrl = `file://${sitePath}`;
+        const fileUrl = pathToFileURL(sitePath).href;
         await navigate(cdp, fileUrl);
 
         // Page ids come from the site itself — `<section class="page" id="…">`
@@ -233,8 +283,19 @@ async function main() {
             cdp,
             `Array.prototype.slice.call(document.querySelectorAll('.page')).map(function (p) { return p.id; })`,
         );
+        if (pageIds.length === 0) {
+            console.error(`snap-web.mjs: no .page sections found in ${sitePath} — is it a generated site?`);
+            process.exit(1);
+        }
 
-        const report = [];
+        // Startup listening ends here; each page below collects into its own
+        // buffer instead (finding: errors must not bleed across pages).
+        removeListener(cdp, "Runtime.consoleAPICalled", onStartupConsole);
+        removeListener(cdp, "Runtime.exceptionThrown", onStartupException);
+
+        const report = [
+            { page: null, width: null, phase: "startup", consoleErrors: startupErrors },
+        ];
         for (const pageId of pageIds) {
             const consoleErrors = [];
             const onConsole = (p) => {
@@ -249,8 +310,13 @@ async function main() {
             cdp.on("Runtime.exceptionThrown", onException);
 
             await gotoHash(cdp, pageId);
+            await settleFade();
 
             for (const { width, height } of WIDTHS) {
+                // Reset per viewport: an error is only ever reported under
+                // the width that actually produced it, not copied onto
+                // every width after (finding: errors copied across widths).
+                consoleErrors.length = 0;
                 await cdp.send("Emulation.setDeviceMetricsOverride", {
                     width,
                     height,
@@ -287,10 +353,8 @@ async function main() {
                 });
             }
 
-            const listeners = cdp.listeners.get("Runtime.consoleAPICalled");
-            if (listeners) listeners.splice(listeners.indexOf(onConsole), 1);
-            const exListeners = cdp.listeners.get("Runtime.exceptionThrown");
-            if (exListeners) exListeners.splice(exListeners.indexOf(onException), 1);
+            removeListener(cdp, "Runtime.consoleAPICalled", onConsole);
+            removeListener(cdp, "Runtime.exceptionThrown", onException);
         }
 
         await writeFile(join(outDir, "report.json"), JSON.stringify(report, null, 2));
@@ -305,8 +369,7 @@ async function main() {
 async function shootAnchors(cdp) {
     for (const id of anchors) {
         await gotoHash(cdp, id);
-        // Let the page's 0.18s fade-in finish, or the shot is half-transparent.
-        await new Promise((r) => setTimeout(r, 400));
+        await settleFade();
         for (const { width, height } of WIDTHS) {
             await cdp.send("Emulation.setDeviceMetricsOverride", {
                 width,
