@@ -326,6 +326,7 @@ which types into a real terminal and encodes what it draws (D163):
 | `docs/img/hero.gif` | `scripts/hero.tape` | `add`, `dep`, `pick` (search and card), short-id allocation |
 | `docs/img/deps.gif` | `scripts/deps.tape` | `init`, `add`, `dep`, `list`, `done`, `next`, short-id allocation |
 | `docs/img/memory.gif` | `scripts/memory.tape` | `memory import`, `memory search`, `scripts/demo-decisions/` |
+| `docs/img/brief.gif` | `scripts/brief.tape` | `annotate`, `done`, `brief --card`, #50/#51 in `scripts/demo-store.py` |
 | `docs/img/outcomes.gif` | `scripts/outcomes.tape` | `report --outcomes`, `outcomes()` in `scripts/demo-store.py` |
 
 The column names the commands on screen and the ones the tape's hidden setup

@@ -124,6 +124,24 @@ index, so what an agent decided last session is there for the next one.
 <tr>
 <td valign="top">
 
+### Briefed before it starts
+
+`tasqx brief` is the one read an agent makes before it starts a task (MCP's
+`tasqx_brief_task` is the same call): the task, what each prerequisite
+concluded when it was finished, and the memory that matches. Here #50 is done
+with a note on the real rate limit, and the brief for #51, which waited on it,
+hands that ruling over.
+
+</td>
+<td>
+
+![tasqx done 50 unblocks #51; tasqx brief 51 --card shows #51's card, #50's conclusion about the rate limit, and matching memory hits](docs/img/brief.gif)
+
+</td>
+</tr>
+<tr>
+<td valign="top">
+
 ### Outcomes, not just output
 
 `tasqx report --outcomes` asks whether finished work stayed finished: how much
