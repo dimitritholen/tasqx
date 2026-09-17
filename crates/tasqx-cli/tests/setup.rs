@@ -112,6 +112,32 @@ fn an_edited_skill_is_kept_unless_forced() {
     assert_eq!(std::fs::read(&path).unwrap(), repo_skill("retro"));
 }
 
+/// A SKILL.md symlinked into a dotfiles checkout that is not there right now
+/// is the user's, not a missing file to write over.
+#[cfg(unix)]
+#[test]
+fn a_dangling_skill_symlink_differs_and_is_kept() {
+    let dir = scratch("dangling");
+    let path = skill_path(&dir, "retro");
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::os::unix::fs::symlink(dir.join("dotfiles/retro/SKILL.md"), &path).unwrap();
+
+    let (code, out, _) = run(bin(&dir).args(["--list", "--only", "retro"]));
+    assert_eq!(code, 0);
+    assert!(row(&out, "retro").contains("differs"), "{out}");
+
+    let (code, out, err) = run(bin(&dir).args(["--yes", "--only", "retro"]));
+    assert_eq!(code, 0, "stdout: {out}\nstderr: {err}");
+    assert!(row(&out, "retro").contains("--force"), "{out}");
+    assert!(
+        std::fs::symlink_metadata(&path)
+            .unwrap()
+            .file_type()
+            .is_symlink(),
+        "the symlink must still be there"
+    );
+}
+
 /// No flags and no terminal: the list, exit 0, and never a screen, a hang or
 /// a store.
 #[test]

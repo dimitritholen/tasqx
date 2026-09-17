@@ -118,7 +118,14 @@ pub fn status(item: &Item, home: &Path) -> Status {
         Some(body) => match std::fs::read(skill_path(home, item.name)) {
             Ok(bytes) if bytes == body.as_bytes() => Status::Current,
             Ok(_) => Status::Differs,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Status::NotInstalled,
+            // A dangling symlink is the user's own link, not an absent file.
+            Err(e)
+                if e.kind() == std::io::ErrorKind::NotFound
+                    && !std::fs::symlink_metadata(skill_path(home, item.name))
+                        .is_ok_and(|m| m.file_type().is_symlink()) =>
+            {
+                Status::NotInstalled
+            }
             // Unreadable is not absent: never overwrite what cannot be compared.
             Err(_) => Status::Differs,
         },
