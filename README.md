@@ -15,7 +15,7 @@ One binary. One SQLite file on your disk. No account, no cloud.
 <!-- Pictures come from an invented demo store, never a real one:
      scripts/demo-store.py builds it, and its docstring has the render lines.
      The GIF is recorded by scripts/hero.tape (`vhs scripts/hero.tape`). -->
-![A terminal: tasqx add captures a task due Friday, tasqx next picks the overdue TLS renewal, and the dashboard opens with the new task in the website project](docs/img/hero.gif)
+![A terminal: tasqx add captures a task with project, due date, priority, tag and estimate in one line; a second task is added and made to wait on it; tasqx pick fuzzy-searches "new pricing" down to the first task and opens its card, which shows it blocks the second](docs/img/hero.gif)
 
 </div>
 
