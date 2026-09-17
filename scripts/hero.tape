@@ -26,7 +26,7 @@ Set Theme "Catppuccin Mocha"
 Hide
 Type "export TASQX_DB=$PWD/target/demo/tasks.db TASQX_CONFIG_DIR=$PWD/target/demo/config TASQX_NOW=2026-09-16T09:00:00Z TZ=UTC COLORTERM=truecolor"
 Enter
-Type "unset NO_COLOR CLICOLOR CLICOLOR_FORCE TASQX_THEME TASQX_SOCK"
+Type "unset NO_COLOR CLICOLOR CLICOLOR_FORCE TASQX_THEME TASQX_SOCK TASQX_DASHBOARD"
 Enter
 Type "python3 scripts/demo-store.py >/dev/null"
 Enter
