@@ -201,7 +201,17 @@ Write access is something you grant explicitly:
 tasqx mcp serve --scope write
 ```
 
-Wiring it into Claude Code is one line:
+Set it up in Claude Code, along with the `tasqx-workflow` and `retro` skills,
+with one command:
+
+```console
+tasqx setup
+```
+
+It's a checklist screen — Space toggles an item, Enter installs what's ticked,
+`--yes` installs everything not yet present without the screen. Run it again
+later and it shows what's already in place. Want only the server, wired by
+hand?
 
 ```console
 claude mcp add tasqx -- tasqx mcp serve --scope write
@@ -265,9 +275,10 @@ The server tells an agent what it can call, and also when: `initialize`
 carries a scope-aware `instructions` block that a host such as Claude Code
 puts in the agent's system prompt, so a fresh install already nudges the
 agent to search before deciding and to write as it works. The skill in
-[`.claude/skills/tasqx-workflow/`](.claude/skills/tasqx-workflow/SKILL.md) is
-the fuller version of how to *work* — Claude Code picks it up automatically
-inside this repo — and the paste-anywhere block in
+[`.claude/skills/tasqx-workflow/`](.claude/skills/tasqx-workflow/SKILL.md) —
+`tasqx setup` installs it for you, or Claude Code picks it up automatically
+inside this repo — is the fuller version of how to *work*, and the
+paste-anywhere block in
 [Giving an agent memory in any client](docs/guides/agent-starter-prompt.md)
 does the same for any other client. Scripts can skip MCP entirely and talk to
 the API directly:

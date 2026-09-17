@@ -148,6 +148,11 @@ const NO_SCREEN: &[(&str, &str)] = &[
         "it binds a socket and serves until it is stopped; there is no last line to capture.",
     ),
     (
+        "setup",
+        "it reports what is installed in the home directory of the machine it runs on, \
+         which the demo store knows nothing about.",
+    ),
+    (
         "watch",
         "it redraws until you leave it, and it needs a running daemon to follow.",
     ),

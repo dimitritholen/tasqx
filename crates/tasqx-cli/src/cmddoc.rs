@@ -1023,6 +1023,38 @@ pub const COMMAND_REF: &[CmdDoc] = &[
         // store. `tasqx manual completion` is where all of that lives.
         topic: Topic::Completion,
     },
+    CmdDoc {
+        verb: "setup",
+        aliases: &[],
+        method: "— (no store)",
+        summary: "Install the Claude Code integration: the MCP server and the bundled skills.",
+        usage: "tasqx setup [--list | --yes [--force]] [--only NAME]... [--home DIR]",
+        examples: &[
+            // Safe: `--list` only reads `~/.claude.json` and two skill files.
+            // Every example that installs is NoRun — `tests/help.rs` runs the
+            // Safe ones on the developer's own machine.
+            exn("tasqx setup --list", "what is installed; writes nothing"),
+            ex_norun(
+                "tasqx setup",
+                "a checklist: space ticks, enter installs what is ticked",
+            ),
+            ex_norun(
+                "tasqx setup --yes",
+                "installs everything not installed, and keeps a skill you edited",
+            ),
+            ex_norun(
+                "tasqx setup --yes --force --only retro",
+                "replaces the retro skill with the copy this build carries",
+            ),
+        ],
+        notes: &[
+            "Three items: `mcp` registers `tasqx mcp serve --scope write` with Claude Code at user scope by running `claude mcp add`; `tasqx-workflow` and `retro` are skills written to `~/.claude/skills/<name>/SKILL.md` from copies compiled into this binary, so they match the tasqx you run (D157).",
+            "A skill that exists and is not byte-equal to the bundled copy reads `differs` — an older copy and your own edit look the same — and is kept unless you pass --force or tick it on the screen.",
+            "It never writes `~/.claude.json` itself. Without the `claude` command on PATH, the mcp item prints the exact command to run instead. Piped, with no flags, it prints the list and exits 0.",
+        ],
+        see_also: &["mcp"],
+        topic: Topic::Automation,
+    },
 ];
 
 /// Resolve a verb or alias to its record.

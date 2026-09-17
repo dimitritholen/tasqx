@@ -570,7 +570,10 @@ enum Target {
 /// Files in the repository that a guide links to and that are not pages of this
 /// guide. Each one's link text already names the path, so dropping the link
 /// costs a reader nothing; inventing a page for it would cost them a wrong one.
-const REPO_FILES_WITHOUT_A_PAGE: &[&str] = &["../../.claude/skills/tasqx-workflow/SKILL.md"];
+const REPO_FILES_WITHOUT_A_PAGE: &[&str] = &[
+    "../../.claude/skills/tasqx-workflow/SKILL.md",
+    "../../.claude/skills/retro/SKILL.md",
+];
 
 fn resolve(file: &str, page_id: &str, dest: &str, ids: &BTreeMap<&'static str, String>) -> Target {
     if dest.starts_with("http://") || dest.starts_with("https://") {

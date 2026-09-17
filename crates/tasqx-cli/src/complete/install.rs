@@ -930,7 +930,7 @@ fn ask_at_the_terminal(what: &str, path: &Path) -> Option<String> {
 /// the other still held the original bytes. Fixing it means writing in place
 /// rather than renaming, which reopens the truncation window this function
 /// exists to close, so it stays unfixed and nothing guards it.
-fn write_atomically(path: &Path, text: &str) -> Result<(), ApiError> {
+pub(crate) fn write_atomically(path: &Path, text: &str) -> Result<(), ApiError> {
     // Through the link BEFORE anything else, so both the temp sibling and the
     // rename target are the real file. Only when the path already exists:
     // `canonicalize` fails on a path that does not, and creating a profile is

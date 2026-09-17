@@ -5,7 +5,17 @@ core API your shell uses. No glue code, no scraping `--json` output.
 
 ## Wire it up
 
-For Claude Code, one line:
+For Claude Code, one command sets up the server and installs the
+`tasqx-workflow` and `retro` skills:
+
+```console
+tasqx setup
+```
+
+It's a checklist screen — Space toggles an item, Enter installs what's
+ticked, `--yes` installs everything not yet present without the screen. Run
+it again later and it shows what's already in place. To wire up only the
+server by hand:
 
 ```console
 claude mcp add tasqx -- tasqx mcp serve --scope write

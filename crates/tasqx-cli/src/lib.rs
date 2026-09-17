@@ -34,6 +34,7 @@ mod pick_screen;
 mod render;
 mod serve;
 mod settings;
+mod setup;
 mod sugar;
 mod theme;
 mod tokens;
@@ -546,6 +547,7 @@ fn verb_name(command: &Option<Command>) -> Option<&'static str> {
         Some(Command::About) => Some("about"),
         Some(Command::Manual { .. }) => Some("manual"),
         Some(Command::Completions { .. }) => Some("completions"),
+        Some(Command::Setup { .. }) => Some("setup"),
         _ => None,
     }
 }
@@ -596,6 +598,9 @@ fn execute(cli: Cli) -> Exit {
             ),
             Some(Command::Completions { .. }) => {
                 Some("prints a shell registration line; it opens no store and no daemon")
+            }
+            Some(Command::Setup { .. }) => {
+                Some("installs files under your home directory; it opens no store and no daemon")
             }
             _ => None,
         };
@@ -732,6 +737,31 @@ fn execute(cli: Cli) -> Exit {
         let exit = Exit::self_framed("manual", cli.json);
         run_manual(&ctx, topic.as_deref());
         return exit;
+    }
+
+    // `setup` installs the Claude Code integration (D157). It needs the themed
+    // Ctx and no store, and it is dispatched ahead of `open_backend` for
+    // `pick`'s reason below: asking what setup would install must not create a
+    // database on a machine where tasqx has never run.
+    if let Some(Command::Setup {
+        list,
+        yes,
+        force,
+        only,
+        home,
+    }) = &cli.command
+    {
+        return Exit::Out(setup::run(
+            &ctx,
+            setup::Args {
+                list: *list,
+                yes: *yes,
+                force: *force,
+                only,
+                home: home.as_deref(),
+                json: cli.json,
+            },
+        ));
     }
 
     // `watch` is socket-only: it subscribes to a daemon and re-renders on push.
@@ -1097,6 +1127,7 @@ fn execute(cli: Cli) -> Exit {
         Some(Command::About) => unreachable!("handled above"),
         Some(Command::Manual { .. }) => unreachable!("handled above"),
         Some(Command::Completions { .. }) => unreachable!("handled above"),
+        Some(Command::Setup { .. }) => unreachable!("handled above"),
     })
 }
 
