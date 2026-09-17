@@ -4,9 +4,16 @@
 // two themes, so a product-owner pass can judge it as images rather than by
 // opening every hash route by hand (docs/maintainers/terminal-style.md §14).
 //
-//   node scripts/snap-web.mjs <site.html> [out-dir]
+//   node scripts/snap-web.mjs <site.html> [out-dir] [anchor,anchor,…]
 //
 //   node scripts/snap-web.mjs target/site.html target/snaps/site
+//   node scripts/snap-web.mjs target/site.html target/snaps/site api-task.done,obj-task-fields
+//
+// With the third argument, ONLY those in-page ids are shot — the part of a
+// long page the 4-viewport cap on full shots never reaches. Each is opened by
+// hash (the site reveals its page and scrolls it into view) and clipped from
+// the element's top, capped at 3 viewport heights:
+//   anchor-<id>-<width>-<theme>.png   (no report.json on an anchor run)
 //
 // Env:
 //   CHROME  headless browser (default: the macOS Google Chrome.app, else
@@ -36,13 +43,14 @@ import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
-const [, , siteArg, outArg] = process.argv;
+const [, , siteArg, outArg, anchorArg] = process.argv;
 if (!siteArg) {
     console.error("usage: node scripts/snap-web.mjs <site.html> [out-dir]");
     process.exit(2);
 }
 const sitePath = resolve(siteArg);
 const outDir = resolve(outArg || "target/snaps/site");
+const anchors = anchorArg ? anchorArg.split(",").filter(Boolean) : [];
 
 const WIDTHS = [
     { width: 1400, height: 900 },
@@ -180,7 +188,11 @@ async function main() {
     const cleanup = async () => {
         if (cleanedUp) return;
         cleanedUp = true;
+        // Wait for Chrome to exit before deleting its profile: it is still
+        // writing there while it shuts down, and rm fails with ENOTEMPTY.
+        const exited = proc.exitCode !== null ? null : new Promise((r) => proc.once("exit", r));
         proc.kill();
+        if (exited) await exited;
         await rm(profileDir, { recursive: true, force: true });
     };
     process.on("exit", () => {
@@ -211,6 +223,12 @@ async function main() {
         // Page ids come from the site itself — `<section class="page" id="…">`
         // is what crates/tasqx-cli/src/docs.rs::page_open emits for every page
         // — so a new page in the site is picked up with no change here.
+        if (anchors.length) {
+            await shootAnchors(cdp);
+            cdp.close();
+            return;
+        }
+
         const pageIds = await evalJs(
             cdp,
             `Array.prototype.slice.call(document.querySelectorAll('.page')).map(function (p) { return p.id; })`,
@@ -282,6 +300,44 @@ async function main() {
     } finally {
         await cleanup();
     }
+}
+
+async function shootAnchors(cdp) {
+    for (const id of anchors) {
+        await gotoHash(cdp, id);
+        // Let the page's 0.18s fade-in finish, or the shot is half-transparent.
+        await new Promise((r) => setTimeout(r, 400));
+        for (const { width, height } of WIDTHS) {
+            await cdp.send("Emulation.setDeviceMetricsOverride", {
+                width,
+                height,
+                deviceScaleFactor: 1,
+                mobile: width < 600,
+            });
+            const box = await evalJs(
+                cdp,
+                `(function () {
+                   var el = document.getElementById(${JSON.stringify(id)});
+                   if (!el) { return null; }
+                   el.scrollIntoView();
+                   var r = el.getBoundingClientRect();
+                   return { y: r.top + window.scrollY, h: r.height };
+                 }())`,
+            );
+            if (!box) throw new Error(`no element with id ${id}`);
+            for (const theme of THEMES) {
+                await setTheme(cdp, theme);
+                await screenshot(cdp, join(outDir, `anchor-${id}-${width}-${theme}.png`), {
+                    x: 0,
+                    y: box.y,
+                    width,
+                    height: Math.max(1, Math.min(box.h, height * 3)),
+                    scale: 1,
+                });
+            }
+        }
+    }
+    console.log(`wrote ${anchors.length} anchors to ${outDir}`);
 }
 
 function overflowDiagnosticJs() {
