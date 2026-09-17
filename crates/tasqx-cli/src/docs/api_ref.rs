@@ -239,7 +239,7 @@ fn methods_of(object: &str) -> Vec<&'static str> {
 }
 
 /// Which [`GROUPS`] prefix a method belongs to.
-fn group_of(method: &str) -> &str {
+pub(super) fn group_of(method: &str) -> &str {
     let head = method.split('.').next().unwrap_or(method);
     if head == "tokens" {
         "token"
@@ -270,6 +270,15 @@ fn method_section(method: &str) -> String {
     let (_, returns) = method_row(method);
 
     let mut left = p(returns);
+    // The objects this method acts on or answers with — the same function the
+    // object pages list their operations from, so the links run both ways.
+    let objects: Vec<String> = super::obj_ref::objects_of(method)
+        .iter()
+        .map(|o| format!("<a href=\"#{}\">{}</a>", o.id, esc(o.name)))
+        .collect();
+    if !objects.is_empty() {
+        left.push_str(&p(&format!("Objects: {}.", objects.join(" · "))));
+    }
     left.push_str("<h4>Parameters</h4>");
     let rows = params_of(method);
     if rows.is_empty() {
@@ -428,7 +437,7 @@ pub(super) fn schema_badge(prop: &Value) -> &'static str {
 }
 
 /// The tool that routes to `method`, or `None` for a method that has none.
-fn tool_for(method: &str) -> Option<&'static tasqx_core::mcp::ToolDoc> {
+pub(super) fn tool_for(method: &str) -> Option<&'static tasqx_core::mcp::ToolDoc> {
     TOOLS.iter().find(|t| t.method == method)
 }
 
@@ -488,7 +497,7 @@ fn shape_table(path: &str, rows: &[Vec<String>]) -> String {
 /// The three answers to "can I read this key without checking first?", spelled
 /// as the contract spells them: always there, always there and sometimes
 /// `null`, or sometimes not there at all.
-fn presence(null_ok: bool, optional: bool) -> &'static str {
+pub(super) fn presence(null_ok: bool, optional: bool) -> &'static str {
     match (null_ok, optional) {
         (_, true) => "<span class=\"pill opt\">optional</span>",
         (true, _) => "<span class=\"pill opt\">nullable</span>",
@@ -596,7 +605,7 @@ fn cli_tab(method: &str) -> String {
 /// expands against the object of the part before it. A cell that frames its own
 /// transport (`—`, `(any)`) names no method and is skipped, exactly as
 /// `verb_table_only_names_real_methods` skips it.
-fn verbs_for(method: &str) -> Vec<&'static str> {
+pub(super) fn verbs_for(method: &str) -> Vec<&'static str> {
     let mut out = Vec::new();
     for (verb, _, cell) in VERBS {
         if cell.starts_with('—') || cell.starts_with('(') {
@@ -626,7 +635,7 @@ fn verbs_for(method: &str) -> Vec<&'static str> {
 // ============================================================================
 
 /// One worked call per method.
-struct Example {
+pub(super) struct Example {
     method: &'static str,
     /// The request envelope, verbatim. For a captured row this is byte-for-byte
     /// the manifest's `stdin` column, and a test holds the two equal.
@@ -639,7 +648,7 @@ struct Example {
     /// Why this method's answer cannot be a fixture. Empty for a captured one;
     /// rendered on the page beside the example, because a reader must never
     /// mistake an invented response for a reproducible one.
-    why: &'static str,
+    pub(super) why: &'static str,
 }
 
 /// The `params` object of a method's example request, for the MCP page: the two
@@ -651,7 +660,7 @@ pub(super) fn example_params(method: &str) -> Value {
         .unwrap_or_else(|| serde_json::json!({}))
 }
 
-fn example(method: &str) -> &'static Example {
+pub(super) fn example(method: &str) -> &'static Example {
     EXAMPLES
         .iter()
         .find(|e| e.method == method)
@@ -664,7 +673,7 @@ fn example(method: &str) -> &'static Example {
 /// with this machine's own store path, so the page renders the handshake this
 /// build really emits with a plausible store substituted (D74), derived here
 /// exactly as the section at the top of the page derives it.
-fn response_json(ex: &Example) -> Value {
+pub(super) fn response_json(ex: &Example) -> Value {
     let text = if ex.fixture.is_empty() && ex.response.is_empty() {
         capabilities_snippet()
     } else if ex.fixture.is_empty() {
@@ -704,7 +713,7 @@ fn json_string(s: &str) -> String {
     esc(&serde_json::to_string(s).expect("a str always serializes"))
 }
 
-fn json_html(v: &Value, depth: usize) -> String {
+pub(super) fn json_html(v: &Value, depth: usize) -> String {
     let pad = "  ".repeat(depth + 1);
     let closing = "  ".repeat(depth);
     match v {
