@@ -1265,9 +1265,9 @@ const EXAMPLES: &[Example] = &[
     Example {
         method: "memory.import",
         request: r#"{"tasqx":"1","id":"mi1","method":"memory.import","params":{"docs":[{"title":"release-process","body":"Cut the release branch on Monday.","source":"docs/release.md"}]}}"#,
-        fixture: "",
-        response: r#"{"id":"mi1","ok":true,"result":{"docs":[{"_rev":1,"id":"eb864f1e-e68a-4d96-af89-597bd0d2d52e","replaced":true,"source":"docs/release.md","title":"release-process"}],"imported":1,"replaced":1},"tasqx":"1"}"#,
-        why: "a document with a source nobody has imported before is stored under a fresh v7 id, so the batch's answer is reproducible only for the rows it replaced.",
+        fixture: "api-memory-import",
+        response: "",
+        why: "",
     },
     Example {
         method: "memory.list",
