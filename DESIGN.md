@@ -4137,3 +4137,14 @@ are the product's integrity guarantee.
 **Why.** A visitor decides on the first screen, and a still cannot show capture, "what now?" and the overview as one sequence. D149's loop renders one fixture into one picture and has no notion of time, so motion needs a recorder. VHS is a second renderer — the thing D149 retired `freeze` for — and that is accepted for this one picture only: the GIF is re-recorded from a script rather than performed, it is judged by eye before commit, and nothing else (the site, `tasqx docs`, the other README pictures) reads from it. A drift between it and the fixtures is cosmetic and visible, not a claim a test relies on.
 
 **Extended (#701).** The README's feature rows may carry GIFs under the same rule, one tape each in `scripts/`, all starting from `scripts/demo-prelude.tape` so the store, the pin and `--no-daemon` are written once. `docs/maintainers/terminal-style.md` §14 lists each GIF with its tape.
+
+### D164 — the box card is for a task a person decides on; starting and completing a task is one line the agent writes (narrows the guidance of D146, D153)
+
+**Decision:** tasqx's own agent guidance — the `view` descriptions in `mcp.rs`, `docs/wiki/AI-Agents-and-Automation.md` and the `land-tasqx-pr` skill — recommends `view: "card"` only when a person must decide on a task: one the agent proposes adding, or one the person asked about. Starting a task prints `▶ #<id> <title> · <priority> · <estimate> · <passed>/<total> checks`; completing one prints `✔ #<id> done · <passed>/<total> checks · unblocked #<n>`. The agent composes both lines from what it already holds, `task.brief`'s answer and `task.done`'s `unblocked[]`. A subagent handed a task runs `tasqx show <id> --card` itself rather than receiving the card in its brief. Nothing renders differently: D146's card, D153's `view` on `tasqx_complete_task` and every frozen shape are unchanged.
+
+**Why.** A card is about 2 KB of output (2,087 bytes for this task's own card), and D153 made it the default ending of every completion — the closing card was the convention it measured. For a task that was only started or closed, a person reads two facts off it, whether it is done and what it freed, and a 60-byte line carries both. The card earns its geometry when someone has to weigh the whole task.
+
+**Rejected: `view: "line"` rendered by tasqx.** It would give every tool identical bytes, but the brief's reader is the agent, which still needs the markdown, so a line would be an extra block rather than a replacement, and on `tasqx_complete_task` it could only save tokens by displacing the JSON D153 keeps. Every field of the line already arrives in a response. If agents are seen to drift on the format, that is the measurement that reopens this.
+
+**Why a new entry and not an edit.** D146 and D153 rule what the transport renders, and that stands; this narrows only when an agent is told to ask for it.
+

@@ -165,8 +165,9 @@ Run commands from the worktree, one plain command per call.
    are already marked, so evidence alone is enough). Complete once — a
    second completion of a done task is refused.
 
-8. **Show the closing card.** `tasqx_get_task` with `view: "card"`, pasted
-   verbatim, with what the completion unblocked under it.
+8. **Report the close in one line.** No card — a landed task is a routine
+   event, not a decision (D164): `✔ #<id> done · <passed>/<total> checks ·
+   unblocked #<n>`, from the completion's `unblocked` list.
 
 ## Verifiable end
 
