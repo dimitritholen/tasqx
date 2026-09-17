@@ -97,8 +97,14 @@ pub struct SessionRulings {
     /// Standing docs: the project's first, then the unscoped ones, each
     /// newest-modified first.
     pub standing: Vec<SessionDoc>,
-    /// The project's own non-standing docs, newest-modified first.
+    /// The project's own non-standing docs, newest-modified first, capped at
+    /// 256 rows (PR #48 review) — the section's own budget can never render
+    /// that many anyway.
     pub topical: Vec<SessionDoc>,
+    /// How many non-standing docs the project actually has, independent of
+    /// the `topical` cap — the footer's "N more docs" count over `topical`
+    /// alone would undercount once a project passes 256 (PR #48 review).
+    pub topical_total: usize,
 }
 
 /// One doc as [`SessionRulings`] carries it.
@@ -748,9 +754,16 @@ impl Engine {
                 .find(|n| names.contains(*n))
                 .map(|n| (n.to_string(), "working directory"))
         });
+        // PR #48 review: a default naming a project this same query just
+        // proved archived (or gone) must not be trusted any further than
+        // `from_dir` is — checked against the same non-archived `names` set
+        // rather than taking `default_project` at its word.
         let project = match from_dir {
             Some(p) => Some(p),
-            None => self.default_project()?.map(|n| (n, "default project")),
+            None => self
+                .default_project()?
+                .filter(|n| names.contains(n))
+                .map(|n| (n, "default project")),
         };
         let name = project.as_ref().map(|(n, _)| n.as_str());
 
@@ -766,22 +779,36 @@ impl Engine {
         };
         // D144's newest-modified key. `project = NULL` matches nothing, so
         // with no project inferred only the unscoped standing docs remain.
+        // PR #48 review: `substr(body, 1, 4096)` — the gist this feeds is
+        // the first paragraph, cut at 240 bytes, and 4 KB comfortably covers
+        // a frontmatter block ahead of it without loading a doc whole.
         let standing = docs(
-            "SELECT title, body FROM docs \
+            "SELECT title, substr(body, 1, 4096) FROM docs \
              WHERE standing = 1 AND (project = ?1 OR project IS NULL) \
              ORDER BY project IS NULL, rtrim(modified, 'Z') DESC, id DESC",
         )?;
         // Never unscoped: `memory import` stores every ADR unscoped, so the
         // newest unscoped docs are an arbitrary slice (D157).
+        // PR #48 review: `LIMIT 256` bounds what session start ever reads —
+        // 256 is well above the most entries a 3,072-byte section could ever
+        // render, since every rendered entry is at least 4 bytes ("\n- " plus
+        // a title).
         let topical = docs(
-            "SELECT title, body FROM docs \
+            "SELECT title, substr(body, 1, 4096) FROM docs \
              WHERE standing = 0 AND project = ?1 \
-             ORDER BY rtrim(modified, 'Z') DESC, id DESC",
+             ORDER BY rtrim(modified, 'Z') DESC, id DESC \
+             LIMIT 256",
+        )?;
+        let topical_total: i64 = self.conn.query_row(
+            "SELECT COUNT(*) FROM docs WHERE standing = 0 AND project = ?1",
+            params![name],
+            |r| r.get(0),
         )?;
         Ok(SessionRulings {
             project,
             standing,
             topical,
+            topical_total: topical_total as usize,
         })
     }
 
@@ -1096,5 +1123,32 @@ mod tests {
         let page = e.memory_list(&json!({ "limit": 1 })).unwrap();
         let page_ids = listed_ids(&page);
         assert_eq!(page_ids, vec![ids[0].clone()]);
+    }
+
+    /// PR #48 review: `session_rulings` must not trust a default naming a
+    /// project the non-archived set no longer contains. `project.archive`
+    /// clears a default it owns (D22) and the storage-open repair fixes a
+    /// stale one, so reaching this state needs writing `config` directly —
+    /// the way a store predating either safeguard would carry it.
+    #[test]
+    fn session_rulings_ignores_a_default_project_that_no_longer_exists() {
+        let e = crate::Engine::open_in_memory().unwrap();
+        e.project_create(&json!({ "name": "alpha" })).unwrap();
+        e.memory_add(&json!({
+            "title": "alpha rule", "body": "scoped", "project": "alpha", "standing": true
+        }))
+        .unwrap();
+        e.project_archive(&json!({ "name": "alpha" })).unwrap();
+        e.conn
+            .execute(
+                "INSERT INTO config (key, value) VALUES ('default_project', 'alpha') \
+                 ON CONFLICT(key) DO UPDATE SET value = 'alpha'",
+                [],
+            )
+            .unwrap();
+
+        let r = e.session_rulings(None).unwrap();
+        assert!(r.project.is_none(), "stale default must not be trusted");
+        assert!(r.standing.is_empty());
     }
 }
