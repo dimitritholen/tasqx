@@ -294,6 +294,28 @@ A width the manifest does not carry is a manifest change, not a `snap.sh` flag:
 `list-narrow` is `list` at 80 columns, and a width you are judging gets a row
 the same way — added while you work on it, kept if the site should show it.
 
+Judging the whole generated site — every page, not one terminal screen — is a
+different job, and `scripts/snap-web.mjs` is for that: it reads the page ids
+out of the generated HTML itself, so a new page needs no change to the script,
+and shoots each one at a desktop and a mobile width in both themes. Headless
+Chrome on macOS floors `--window-size` at 500px, so a 390px screenshot taken
+that way is a cropped 500px layout wearing the right number — the script
+drives Chrome over CDP (the DevTools protocol) instead, which has no such
+floor, and switches theme by clicking the site's own header button so the page
+runs its own `applyTheme`/`localStorage` code rather than a stand-in for it.
+
+```console
+$ cargo build -p tasqx-cli
+$ TASQX_DB=$PWD/target/scratch.db target/debug/tasqx --no-daemon \
+      docs --stdout > target/site.html
+$ node scripts/snap-web.mjs target/site.html target/snaps/site
+```
+
+Output lands in `target/snaps/site/` (gitignored): a viewport screenshot and a
+full-page one (capped at four viewport heights) per page/width/theme, plus one
+`report.json` listing, per page and width, any element overflowing the
+viewport and any console error the page threw.
+
 ## 15. The fixtures the documentation ships
 
 One row of `crates/tasqx-cli/docs-fixtures/manifest.tsv` is one screen: a name,
