@@ -497,6 +497,15 @@ fn params_block(path: &[&str], cmd: &ClapCommand) -> String {
             id = section_id(&deeper),
             name = esc(&deeper.join(" ")),
         ));
+        // A nested alias (`check rm`, `memory get`) is accepted like a top-level
+        // one, so it is named here the way `verb_section` names those.
+        let aliases: Vec<String> = sub.get_all_aliases().map(esc).collect();
+        if !aliases.is_empty() {
+            s.push_str(&p(&format!(
+                "Also <code>{}</code>.",
+                aliases.join("</code>, <code>")
+            )));
+        }
         if let Some(about) = sub.get_about() {
             s.push_str(&p(&md(&about.to_string())));
         }
@@ -875,6 +884,38 @@ mod tests {
                 sub.get_name()
             );
         }
+    }
+
+    /// Every nested sub-command alias clap accepts is named under that
+    /// sub-command's heading, before the next heading.
+    #[test]
+    fn every_nested_alias_is_named_under_its_heading() {
+        let page = page();
+        let mut seen = 0;
+        for verb in crate::command::cli_command().get_subcommands() {
+            for sub in verb.get_subcommands() {
+                let id = section_id(&[verb.get_name(), sub.get_name()]);
+                let after = page
+                    .split(&format!("<h4 id=\"h-{id}\">"))
+                    .nth(1)
+                    .unwrap_or_else(|| panic!("no heading for {id}"));
+                let block = after.split("<h4 ").next().unwrap_or(after);
+                let block = block.split("</section>").next().unwrap_or(block);
+                for alias in sub.get_all_aliases() {
+                    seen += 1;
+                    assert!(
+                        block.contains(&format!("<code>{}</code>", esc(alias))),
+                        "`tasqx {} {}` accepts `{alias}`, which the page never names",
+                        verb.get_name(),
+                        sub.get_name()
+                    );
+                }
+            }
+        }
+        assert!(
+            seen > 0,
+            "no nested alias found: the guard is checking nothing"
+        );
     }
 
     /// Every parameter row on the page, by section.
