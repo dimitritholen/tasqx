@@ -449,31 +449,50 @@ fn readme_theme_count_matches_the_builtins() {
 /// Since D162 the README sends readers into the wiki for everything it no
 /// longer says (`Getting-Started.md#install-fine-print`, `Home.md#honest-edges`),
 /// so every relative target is checked, not just the ones under `docs/`, and
-/// an anchor is stripped before the file is looked up — a wrong anchor still
-/// lands the reader on the right page, a wrong file does not.
+/// an anchor must name a heading on the page it points at: the README's own
+/// `#install` row and the wiki sections are exactly what a heading rename
+/// would silently break.
 #[test]
 fn readme_relative_links_point_at_files_that_exist() {
     let readme = readme();
     let root = root();
     let mut guides = 0;
     let mut checked = 0;
+    let mut anchors = 0;
     let mut rest = readme.as_str();
     while let Some(i) = rest.find("](") {
         let tail = &rest[i + 2..];
         let Some(end) = tail.find(')') else { break };
         let target = &tail[..end];
         rest = &tail[end..];
-        // Relative repo paths only; http(s) targets and same-page anchors are
-        // not this test's claim.
-        if target.starts_with("http") || target.starts_with('#') || target.is_empty() {
+        // Relative repo paths and anchors only; http(s) is not this test's claim.
+        if target.starts_with("http") || target.is_empty() {
             continue;
         }
-        let path = target.split('#').next().unwrap_or(target);
-        assert!(
-            root.join(path).exists(),
-            "the README links {target:?}, and {path:?} does not exist"
-        );
-        checked += 1;
+        let (path, anchor) = match target.split_once('#') {
+            Some((p, a)) => (p, Some(a)),
+            None => (target, None),
+        };
+        let page = if path.is_empty() {
+            readme.clone()
+        } else {
+            assert!(
+                root.join(path).exists(),
+                "the README links {target:?}, and {path:?} does not exist"
+            );
+            checked += 1;
+            fs::read_to_string(root.join(path)).unwrap_or_default()
+        };
+        if let Some(anchor) = anchor {
+            assert!(
+                heading_slugs(&page).contains(anchor),
+                "the README links {target:?}, and no heading on that page has the anchor {anchor:?}"
+            );
+            anchors += 1;
+        }
+        if path.is_empty() {
+            continue;
+        }
         if path.starts_with("docs/guides/") {
             guides += 1;
         }
@@ -488,6 +507,39 @@ fn readme_relative_links_point_at_files_that_exist() {
         "the README links only {guides} guides under docs/guides/"
     );
     assert!(checked >= 7, "the link scan checked only {checked} paths");
+    assert!(anchors >= 4, "the link scan checked only {anchors} anchors");
+}
+
+/// GitHub's heading anchors: lowercased, punctuation other than `-` and `_`
+/// dropped, spaces turned into hyphens. Lines inside code fences are skipped.
+fn heading_slugs(page: &str) -> BTreeSet<String> {
+    let mut in_fence = false;
+    let mut slugs = BTreeSet::new();
+    for line in page.lines() {
+        if line.trim_start().starts_with("```") {
+            in_fence = !in_fence;
+            continue;
+        }
+        let Some(text) = line.strip_prefix('#') else {
+            continue;
+        };
+        if in_fence {
+            continue;
+        }
+        let slug: String = text
+            .trim_start_matches('#')
+            .trim()
+            .to_lowercase()
+            .chars()
+            .filter_map(|c| match c {
+                ' ' => Some('-'),
+                c if c.is_alphanumeric() || c == '-' || c == '_' => Some(c),
+                _ => None,
+            })
+            .collect();
+        slugs.insert(slug);
+    }
+    slugs
 }
 
 /// Neither the README nor the dashboard page may tell a reader that a bare
