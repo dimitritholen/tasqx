@@ -65,9 +65,11 @@ Install it with:
 tasqx setup --only retro
 ```
 
-The skill text is compiled into tasqx, so `~/.claude/skills/retro/SKILL.md`
-always matches the installed version — read it at
-[`.claude/skills/retro/SKILL.md`](../../.claude/skills/retro/SKILL.md). It
+The skill text is compiled into tasqx, so each release installs the version
+that matches it — read it at
+[`.claude/skills/retro/SKILL.md`](../../.claude/skills/retro/SKILL.md). A
+`~/.claude/skills/retro/SKILL.md` that differs from it, your own edit or an
+older copy, is kept; `tasqx setup --yes --only retro --force` replaces it. It
 runs once per session, on request (`/retro`), over every task the session
 completed — not after each `tasqx_complete_task`. Until 2026-09-16 a
 PostToolUse hook nudged a retro per completion; each run cost ~56k tokens, 14

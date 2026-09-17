@@ -18,7 +18,7 @@ it again later and it shows what's already in place. To wire up only the
 server by hand:
 
 ```console
-claude mcp add tasqx -- tasqx mcp serve --scope write
+claude mcp add --scope user tasqx -- tasqx mcp serve --scope write
 ```
 
 Any other MCP client takes the same command/args shape:
