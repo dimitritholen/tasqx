@@ -120,6 +120,16 @@ pub fn status(item: &Item, home: &Path) -> Status {
     }
 }
 
+/// `claude` with its home set to setup's, so `--home` reaches the profile
+/// Claude Code writes as well as the one setup reads.
+fn claude(home: &Path) -> std::process::Command {
+    let mut c = std::process::Command::new("claude");
+    c.env("HOME", home);
+    #[cfg(windows)]
+    c.env("USERPROFILE", home);
+    c
+}
+
 /// What installing one item did, as the word a result line prints.
 struct Outcome {
     said: String,
@@ -149,14 +159,14 @@ fn install(item: &Item, home: &Path, force: bool) -> Outcome {
                 },
             }
         }
-        (None, _) => register_mcp(),
+        (None, _) => register_mcp(home),
     }
 }
 
 // ponytail: `Command::new("claude")` finds `claude` and `claude.exe` but not an
 // npm `claude.cmd` shim on Windows; that user gets the printed command.
-fn register_mcp() -> Outcome {
-    match std::process::Command::new("claude").args(MCP_ADD).output() {
+fn register_mcp(home: &Path) -> Outcome {
+    match claude(home).args(MCP_ADD).output() {
         Ok(out) if out.status.success() => Outcome {
             said: "installed".to_string(),
             failed: false,
