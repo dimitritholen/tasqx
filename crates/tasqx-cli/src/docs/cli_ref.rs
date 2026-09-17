@@ -280,7 +280,7 @@ fn verb_index() -> String {
                 ),
                 aliases.to_string(),
                 method_cell(method),
-                esc(super::verb_summary(verb)),
+                md(super::verb_summary(verb)),
             ]
         })
         .collect();
@@ -1154,6 +1154,18 @@ mod tests {
             with_output.len() >= 30,
             "only {} verbs show captured output: {with_output:?}",
             with_output.len()
+        );
+    }
+
+    /// `cmddoc` spells identifiers in backticks; the verb table renders them
+    /// as code, never as a literal backtick.
+    #[test]
+    fn the_verb_table_renders_backticks_as_code() {
+        let index = verb_index();
+        assert!(!index.contains('`'), "a raw backtick in the verb table");
+        assert!(
+            index.contains("<code>list</code> ordered by time"),
+            "the agenda row lost its code span"
         );
     }
 }

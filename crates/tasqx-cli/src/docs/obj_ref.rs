@@ -32,7 +32,8 @@ use super::api_ref::{
 };
 use super::cli_ref::screen_cmd;
 use super::{
-    lead, note, p, page_close, page_open, pre_plain, ref_section, table_owned, term_screen,
+    field_list, lead, note, p, page_close, page_open, pre_plain, ref_section, table_owned,
+    term_screen,
 };
 use crate::html::esc;
 use tasqx_core::docs::{self as d, FieldDoc};
@@ -388,7 +389,7 @@ fn fields_html(o: &Object) -> String {
         if !caption.is_empty() {
             out.push_str(&format!("<div class=\"shapepath\">{}</div>", esc(caption)));
         }
-        let cells: Vec<Vec<String>> = rows
+        let cells: Vec<(String, String)> = rows
             .iter()
             .filter(|r| r.caption == caption)
             .map(|r| {
@@ -402,20 +403,20 @@ fn fields_html(o: &Object) -> String {
                         .iter()
                         .map(|m| format!("<a href=\"#api-{m}\"><code>{m}</code></a>"))
                         .collect();
-                    format!("<br><span class=\"muted\">in {}</span>", links.join(" · "))
+                    format!("<span class=\"pdef\">in {}</span>", links.join(" · "))
                 };
-                vec![
-                    format!("<code class=\"fname\">{}</code>{label}", esc(&r.name)),
-                    format!("<span class=\"badge\">{}</span>", esc(r.field.ty)),
-                    presence(r.field.null_ok, r.field.optional).to_string(),
+                (
+                    format!(
+                        "<code class=\"fname\">{}</code><span class=\"badge\">{}</span>{}{label}",
+                        esc(&r.name),
+                        esc(r.field.ty),
+                        presence(r.field.null_ok, r.field.optional),
+                    ),
                     describe(r.field.desc),
-                ]
+                )
             })
             .collect();
-        out.push_str(&table_owned(
-            &["Field", "Type", "Presence", "Description"],
-            &cells,
-        ));
+        out.push_str(&field_list(&cells));
     }
     out
 }
@@ -754,11 +755,16 @@ mod tests {
         assert!(positions > 20, "only {positions} object positions walked");
     }
 
-    /// The table rows of one page naming `field`, as HTML.
+    /// The field rows of one page naming `field`, as HTML.
+    ///
+    /// A row is `<div class="param field">` up to its first `</div></div>`:
+    /// the head's `</div>` is followed by the description's opening tag, so
+    /// the first adjacent pair closes the description and the row.
     fn rows_named<'a>(page: &'a str, field: &str) -> Vec<&'a str> {
         let needle = format!("<code class=\"fname\">{field}</code>");
-        page.split("<tr>")
-            .map(|r| r.split("</tr>").next().unwrap_or(r))
+        page.split(super::super::FIELD_ROW)
+            .skip(1)
+            .map(|r| r.split("</div></div>").next().unwrap_or(r))
             .filter(|r| r.contains(&needle))
             .collect()
     }
@@ -1316,6 +1322,23 @@ mod tests {
         let page = page(&OBJECTS[0]);
         for (name, _, w) in PRIORITY_TERMS {
             assert!(page.contains(&format!("<code>{name}</code> {w:.1}")));
+        }
+    }
+
+    /// An object's fields are stacked rows, not a four-column table: in the
+    /// half-width reference column a table let a long name push the
+    /// description off the edge at every width.
+    #[test]
+    fn object_fields_render_as_stacked_rows() {
+        for o in &OBJECTS {
+            let fields = fields_html(o);
+            assert!(!fields.contains("<table"), "`{}` fields are a table", o.id);
+            assert_eq!(
+                fields.matches(super::super::FIELD_ROW).count(),
+                field_rows(o).len(),
+                "`{}` renders a row per field",
+                o.id
+            );
         }
     }
 }

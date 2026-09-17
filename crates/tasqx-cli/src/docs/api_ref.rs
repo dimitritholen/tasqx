@@ -32,9 +32,9 @@
 use serde_json::Value;
 
 use super::{
-    capabilities_snippet, h3, lead, note, p, page_close, page_open, param_table, pre_plain,
-    ref_section, snippet, table, table_owned, tabs, term_block, term_screen, verb_summary, Param,
-    METHODS, VERBS,
+    capabilities_snippet, field_list, h3, lead, note, p, page_close, page_open, param_table,
+    pre_plain, ref_section, snippet, table, table_owned, tabs, term_block, term_screen,
+    verb_summary, Param, METHODS, VERBS,
 };
 use crate::html::esc;
 
@@ -51,18 +51,13 @@ pub(super) fn page() -> String {
     ));
 
     // Two-column: the sentence about the transport and the invocation of it,
-    // read side by side. The CLI tab carries the invocation, and under it the
-    // OTHER client of `task.list` — `tasqx list` — with the screen it really
-    // printed: a fixture captured from the real binary on the pinned day
-    // (`crates/tasqx-cli/docs-fixtures`, D149) put through `ansi_html`, which is
-    // text rather than a picture.
-    let cli_transport = format!(
-        "{}{}",
-        term_block(&esc(
-            "echo '{\"tasqx\":\"1\",\"method\":\"task.list\"}' | tasqx api",
-        )),
-        term_screen("tasqx list", "list"),
-    );
+    // read side by side. The CLI tab is the invocation alone. It used to carry
+    // the `tasqx list` table screen under it — another client of `task.list`,
+    // which says nothing about envelopes on stdin; the real `tasqx api`
+    // response is the captured one the Response section just below shows.
+    let cli_transport = term_block(&esc(
+        "echo '{\"tasqx\":\"1\",\"method\":\"task.list\"}' | tasqx api",
+    ));
     s.push_str(&ref_section(
         "api-transport",
         "The transport",
@@ -89,7 +84,7 @@ pub(super) fn page() -> String {
          \x20 \"tasqx\":  \"1\",            // API major. Required.\n\
          \x20 \"id\":     \"e1\",           // Optional. Echoed back if present.\n\
          \x20 \"method\": \"task.list\",    // Required.\n\
-         \x20 \"params\": { }              // Optional; defaults to {}.\n\
+         \x20 \"params\": { }             // Optional; defaults to {}.\n\
          }",
     ));
 
@@ -141,7 +136,8 @@ pub(super) fn page() -> String {
             ],
             ],
         ),
-        p("Version mismatches are caught before dispatch, and tell you what <em>is</em> supported:"),
+        p("Version mismatches are caught before dispatch, and the error's <code>data</code> names \
+           the major that <em>is</em> supported."),
     );
     let error_envelopes = format!(
         "{}{}",
@@ -460,7 +456,7 @@ fn response_tables(method: &str) -> String {
     );
     let mut out = String::new();
     let mut path = "";
-    let mut rows: Vec<Vec<String>> = Vec::new();
+    let mut rows: Vec<(String, String)> = Vec::new();
     for (p, group) in shape {
         // Consecutive groups under one path are ONE object, composed — the way
         // the freeze composes it — so they render as one table.
@@ -472,12 +468,15 @@ fn response_tables(method: &str) -> String {
             path = p;
         }
         for f in *group {
-            rows.push(vec![
-                format!("<code>{}</code>", esc(f.key)),
-                format!("<span class=\"badge\">{}</span>", esc(f.ty)),
-                presence(f.null_ok, f.optional).to_string(),
+            rows.push((
+                format!(
+                    "<code class=\"fname\">{}</code><span class=\"badge\">{}</span>{}",
+                    esc(f.key),
+                    esc(f.ty),
+                    presence(f.null_ok, f.optional),
+                ),
                 describe(f.desc),
-            ]);
+            ));
         }
     }
     if !rows.is_empty() {
@@ -486,11 +485,11 @@ fn response_tables(method: &str) -> String {
     out
 }
 
-fn shape_table(path: &str, rows: &[Vec<String>]) -> String {
+fn shape_table(path: &str, rows: &[(String, String)]) -> String {
     format!(
         "<div class=\"shapepath\"><code>{}</code></div>{}",
         esc(path),
-        table_owned(&["Field", "Type", "Presence", "Description"], rows),
+        field_list(rows),
     )
 }
 
@@ -591,7 +590,7 @@ fn cli_tab(method: &str) -> String {
         out.push_str(&term_block(&esc(&format!("tasqx {verb}"))));
         out.push_str(&p(&format!(
             "<a href=\"#cli-{verb}\"><code>{verb}</code></a> — {}",
-            esc(verb_summary(verb)),
+            describe(verb_summary(verb)),
         )));
     }
     out
@@ -1830,5 +1829,73 @@ mod tests {
         let back: Value = serde_json::from_str(&text)
             .unwrap_or_else(|e| panic!("rendered JSON does not parse ({e}):\n{text}"));
         assert_eq!(back, value);
+    }
+
+    /// A reference block's prose column never ends on a colon: what a colon
+    /// promises sits in the OTHER column, which on a wide screen is beside the
+    /// sentence, not under it — so the sentence dangles.
+    #[test]
+    fn no_prose_column_ends_promising_what_follows() {
+        let doc = super::super::generate();
+        for section in doc.split("<section class=\"ref\" id=\"").skip(1) {
+            let id = section.split('"').next().unwrap_or_default();
+            let prose = section
+                .split("<div class=\"ref-code\">")
+                .next()
+                .unwrap_or_default()
+                .trim_end()
+                .trim_end_matches("</div>");
+            assert!(
+                !prose.ends_with(":</p>"),
+                "`{id}`'s prose ends with a colon and nothing under it"
+            );
+        }
+    }
+
+    /// The request envelope's comments start in one column.
+    #[test]
+    fn the_request_envelope_comments_line_up() {
+        let page = page();
+        let block = page
+            .split("id=\"h-request\"")
+            .nth(1)
+            .and_then(|s| s.split("</pre>").next())
+            .expect("a Request block");
+        let columns: BTreeSet<usize> = block
+            .lines()
+            .map(|l| l.replace("&quot;", "\""))
+            .filter_map(|l| l.find("//").map(|i| l[..i].chars().count()))
+            .collect();
+        assert_eq!(columns.len(), 1, "comments start at columns {columns:?}");
+    }
+
+    /// The transport section shows the transport, not a table screen of some
+    /// other client of the same method.
+    #[test]
+    fn the_transport_section_shows_only_the_transport() {
+        let page = page();
+        let section = page
+            .split("<section class=\"ref\" id=\"api-transport\"")
+            .nth(1)
+            .and_then(|s| s.split("</section>").next())
+            .expect("a transport section");
+        assert!(
+            !section.contains("<code>tasqx list</code>"),
+            "the transport section shows the `tasqx list` screen"
+        );
+        assert!(section.contains("| tasqx api"));
+    }
+
+    /// Response shapes are stacked field rows, not a four-column table, which
+    /// in a half-width reference column crushed the description to one word a
+    /// line.
+    #[test]
+    fn response_shapes_render_as_field_rows() {
+        let out = response_tables("task.done");
+        assert!(!out.contains("<table"), "{out}");
+        assert!(
+            out.contains("<code class=\"fname\">blocked_by</code>"),
+            "{out}"
+        );
     }
 }

@@ -1000,7 +1000,7 @@ fn page_overview() -> String {
                 } else {
                     format!("<code>{}</code>", st.default)
                 },
-                esc(st.summary),
+                api_ref::describe(st.summary),
             ]
         })
         .collect();
@@ -1026,7 +1026,7 @@ fn page_overview() -> String {
 /// The Overview page's "How the pieces fit" picture, drawn as inline SVG so it
 /// scales with the column and takes its colours from the theme variables: no
 /// asset file, and the light/dark switch repaints it like any other element.
-const ARCH_SVG: &str = r##"<figure class="arch"><svg viewBox="0 0 820 244" role="img" aria-labelledby="arch-t arch-d">
+const ARCH_SVG: &str = r##"<figure class="arch"><figcaption class="scrollhint">Scroll sideways for the whole picture →</figcaption><svg viewBox="0 0 820 244" role="img" aria-labelledby="arch-t arch-d">
 <title id="arch-t">How the pieces fit</title>
 <desc id="arch-d">The tasqx CLI, the report, plugins and the MCP server each send one JSON envelope over stdio; a TUI or GUI talks to the daemon over a socket or named pipe. Both paths reach the same dispatch layer, which calls storage, which writes SQLite (tasks.db plus its WAL) and the append-only events log.</desc>
 <g class="wire">
@@ -2359,8 +2359,11 @@ fn table_owned(headers: &[&str], rows: &[Vec<String>]) -> String {
     let mut b = String::new();
     for row in rows {
         b.push_str("<tr>");
-        for cell in row {
-            b.push_str(&format!("<td>{cell}</td>"));
+        // `data-label` is the column header a cell shows under 60rem, where
+        // a row stacks into a card and the header row is hidden.
+        for (i, cell) in row.iter().enumerate() {
+            let label = headers.get(i).copied().unwrap_or_default();
+            b.push_str(&format!("<td data-label=\"{}\">{cell}</td>", esc(label)));
         }
         b.push_str("</tr>");
     }
@@ -2499,6 +2502,27 @@ fn param_table(section: &str, rows: &[Param]) -> String {
             slug = slug(r.name),
             ty = esc(r.ty),
             desc = r.html_desc,
+        ));
+    }
+    format!("<div class=\"params\">{out}</div>")
+}
+
+/// The opening tag of one [`field_list`] row, which tests split a page on.
+const FIELD_ROW: &str = "<div class=\"param field\">";
+
+/// A response field list: the [`param_table`] look for what comes back.
+///
+/// Each row is `(head, desc)`, both trusted markup — the head is the name, its
+/// type badge, presence pill and any variant label, the desc goes under them.
+/// A four-column table in the half-width reference column let a long field
+/// name push the description off the edge at every width; stacked, the name
+/// and the sentence each get the whole column. No id and no `data-param`: a
+/// response key is not what the sidebar search is for.
+fn field_list(rows: &[(String, String)]) -> String {
+    let mut out = String::new();
+    for (head, desc) in rows {
+        out.push_str(&format!(
+            "{FIELD_ROW}<div class=\"param-h\">{head}</div><div class=\"param-d\">{desc}</div></div>"
         ));
     }
     format!("<div class=\"params\">{out}</div>")
@@ -2726,6 +2750,10 @@ pre.plain { background: var(--card); border: 1px solid var(--line); border-radiu
 figure.arch { margin: 0 0 1.2rem; padding: 0.9rem; overflow-x: auto;
   background: var(--card); border: 1px solid var(--line); border-radius: 10px; }
 figure.arch svg { display: block; width: 100%; min-width: 36rem; height: auto; }
+/* Only where the picture is wider than its box (the 40rem query below): a
+   phone draws no scrollbar, so the cut-off edge would look like the end. */
+.scrollhint { display: none; position: sticky; left: 0; margin: 0 0 0.5rem;
+  font-size: 0.74rem; color: var(--muted); }
 figure.arch .wire path { fill: none; stroke: var(--muted); stroke-width: 1.5; }
 figure.arch .head path { fill: var(--muted); }
 figure.arch rect { fill: var(--bg); stroke: var(--line); stroke-width: 1.5; }
@@ -2800,7 +2828,7 @@ table.grid tr:last-child td { border-bottom: 0; }
 .param:last-child { border-bottom: 0; }
 .param:target { background: var(--hover); }
 .param-h { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0.45rem; }
-code.pname { font-size: 0.82rem; font-weight: 600; color: var(--fg);
+code.pname, .param-h code.fname { font-size: 0.82rem; font-weight: 600; color: var(--fg);
   background: none; border: 0; padding: 0; }
 .badge { font-family: ui-monospace, "SF Mono", Consolas, monospace; font-size: 0.68rem;
   color: var(--badge-fg); background: var(--badge-bg); border-radius: 5px;
@@ -2851,6 +2879,24 @@ footer { max-width: 78rem; margin: 0 auto; padding: 1.5rem 1.5rem 3rem;
   .pagenav { flex-direction: column; }
   .pagenav .next { margin-left: 0; }
   .pagenav a { flex: 1 1 auto; }
+  /* A grid table stacks into one card per row: side by side, the last column
+     (usually the sentence) sat off-screen and every row was a tall strip of
+     mostly empty cells. Each cell names its column from `data-label`, which
+     `table_owned` and the markdown table rewrite put on every `td`. */
+  table.grid { min-width: 0; }
+  table.grid thead { display: none; }
+  table.grid, table.grid tbody, table.grid tr, table.grid td { display: block; }
+  table.grid tr { padding: 0.55rem 0.8rem; border-bottom: 1px solid var(--line); }
+  table.grid tbody tr:last-child { border-bottom: 0; }
+  table.grid td { padding: 0.1rem 0; border-bottom: 0; }
+  table.grid td::before { content: attr(data-label); display: block; color: var(--muted);
+    font-size: 0.62rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.06em; }
+  /* A card is the column's width, so a long path wraps rather than runs off. */
+  table.grid td code { white-space: normal; overflow-wrap: anywhere; }
+}
+
+@media (max-width: 40rem) {
+  .scrollhint { display: block; }
 }
 
 /* ---- and on a small phone, the top bar sheds what it can spare ----
@@ -3508,7 +3554,7 @@ mod tests {
                 "verb `{verb}` renders an empty description — cmddoc has no summary for it"
             );
             assert!(
-                doc.contains(&esc(summary)),
+                doc.contains(&api_ref::describe(summary)),
                 "verb `{verb}`'s -h summary ({summary:?}) never reaches the Commands page"
             );
         }
@@ -3945,7 +3991,7 @@ mod tests {
             // exit cell. Pinning them ADJACENTLY is the point — asserting the
             // number appears somewhere on the page would pass on any table.
             let want = format!(
-                "<td><code>{}</code></td><td>{}</td>",
+                "<td data-label=\"Code\"><code>{}</code></td><td data-label=\"Exit\">{}</td>",
                 code.as_str(),
                 code.exit_code()
             );
@@ -5333,5 +5379,83 @@ mod tests {
             doc.contains("<button id=\"navtoggle\""),
             "no drawer button in the top bar"
         );
+    }
+
+    /// Every cell of every `table.grid` the site renders — the builders' and
+    /// the markdown pages' alike — names its column in `data-label`, because
+    /// under 60rem a row stacks into a card and the label is the only header a
+    /// reader still sees. A cell without one is a bare value with no name.
+    #[test]
+    fn every_grid_cell_is_labelled_with_its_column_header() {
+        fn text(html: &str) -> String {
+            let mut out = String::new();
+            let mut tag = false;
+            for c in html.chars() {
+                match c {
+                    '<' => tag = true,
+                    '>' => tag = false,
+                    _ if !tag => out.push(c),
+                    _ => {}
+                }
+            }
+            out.trim().to_string()
+        }
+        let doc = generate();
+        let mut cells = 0usize;
+        for table in doc.split("<table class=\"grid\">").skip(1) {
+            let table = table.split("</table>").next().expect("a closed table");
+            let (head, body) = table.split_once("</thead>").expect("a table head");
+            let headers: Vec<String> = head
+                .split("<th>")
+                .skip(1)
+                .map(|th| {
+                    let inner = th;
+                    text(inner.split("</th>").next().unwrap_or(inner))
+                })
+                .collect();
+            for row in body.split("<tr>").skip(1) {
+                for (i, td) in row.split("<td").skip(1).enumerate() {
+                    let label = td
+                        .split_once("data-label=\"")
+                        .filter(|(before, _)| !before.contains('>'))
+                        .and_then(|(_, rest)| rest.split('"').next())
+                        .unwrap_or_else(|| panic!("an unlabelled cell under {headers:?}: <td{td}"));
+                    assert!(!label.is_empty(), "an empty label under {headers:?}");
+                    // A backtick span a builder forgot to run through
+                    // `describe`/`md` shows up as a literal backtick.
+                    assert!(
+                        !td.contains('`'),
+                        "a raw backtick in a cell under {headers:?}: <td{td}"
+                    );
+                    assert_eq!(
+                        Some(label),
+                        headers.get(i).map(String::as_str),
+                        "cell {i} is labelled for the wrong column: <td{td}"
+                    );
+                    cells += 1;
+                }
+            }
+        }
+        assert!(cells > 500, "only {cells} grid cells checked");
+        let (_, narrow) = doc
+            .split_once("@media (max-width: 60rem) {")
+            .expect("no narrow breakpoint");
+        assert!(
+            narrow.contains("table.grid td::before { content: attr(data-label);"),
+            "a stacked cell does not show its label"
+        );
+    }
+
+    /// The architecture figure does not fit a phone at a legible size, so it
+    /// scrolls — and says so, since a phone draws no scrollbar to hint at it.
+    #[test]
+    fn the_architecture_figure_says_it_scrolls_on_a_phone() {
+        let doc = generate();
+        assert!(doc.contains("<figure class=\"arch\"><figcaption class=\"scrollhint\">"));
+        assert!(doc.contains(".scrollhint { display: none;"));
+        let (_, narrow) = doc
+            .split_once("@media (max-width: 40rem) {")
+            .expect("no figure breakpoint");
+        assert!(narrow.contains(".scrollhint { display: block;"));
     }
 }

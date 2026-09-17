@@ -53,7 +53,7 @@ pub(super) fn page() -> String {
         &p(
             "The least-privilege default is <strong>read-only</strong>. Write access is an explicit \
              operator choice for this local stdio process. Scope is configuration, not an \
-             authentication credential:",
+             authentication credential.",
         ),
         &tabs(&[
             ("CLI", &scope_runs),
