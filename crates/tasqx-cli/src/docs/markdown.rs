@@ -228,8 +228,14 @@ fn render(
     let mut link_closers: Vec<String> = Vec::new();
     // The open table's column headers, and where a body cell is: each `<td>`
     // carries its header as `data-label`, which is what a phone shows once
-    // the row stacks into a card (the builders' `table_owned` does the same).
+    // the row stacks into a card, and each `<th>`/`<td>` pair carries a
+    // matching id/`headers` for assistive tech (the builders' `table_owned`
+    // does both the same way — PR #61 review). `page_id` already makes the
+    // id unique to this page, so a per-page counter is enough to make it
+    // unique to this table too.
     let mut labels: Vec<String> = Vec::new();
+    let mut header_ids: Vec<String> = Vec::new();
+    let mut table_n = 0usize;
     let mut in_body = false;
     let mut col = 0usize;
 
@@ -329,6 +335,12 @@ fn render(
                         _ => {}
                     }
                 }
+                let table_id = format!("{page_id}-tbl{table_n}");
+                table_n += 1;
+                header_ids = (0..labels.len())
+                    .map(|n| format!("{table_id}-h{n}"))
+                    .collect();
+                col = 0;
                 out.push(events[i].clone());
             }
             Event::End(TagEnd::TableHead) => {
@@ -341,11 +353,23 @@ fn render(
             }
             Event::Start(Tag::TableCell) if in_body => {
                 let label = labels.get(col).map(String::as_str).unwrap_or_default();
-                out.push(html(format!("<td data-label=\"{}\">", esc(label))));
+                let hid = header_ids.get(col).map(String::as_str).unwrap_or_default();
+                out.push(html(format!(
+                    "<td data-label=\"{}\" headers=\"{hid}\">",
+                    esc(label)
+                )));
             }
             Event::End(TagEnd::TableCell) if in_body => {
                 col += 1;
                 out.push(html("</td>".to_string()));
+            }
+            Event::Start(Tag::TableCell) => {
+                let hid = header_ids.get(col).map(String::as_str).unwrap_or_default();
+                out.push(html(format!("<th id=\"{hid}\">")));
+            }
+            Event::End(TagEnd::TableCell) => {
+                col += 1;
+                out.push(html("</th>".to_string()));
             }
 
             Event::Start(Tag::BlockQuote(_)) => {
@@ -955,7 +979,14 @@ mod tests {
             body.matches("<table").count()
         );
         assert!(body.contains("</tbody></table></div>"), "{body}");
-        assert!(body.contains("<th>A</th>"), "{body}");
+        // The id is page-scoped so it stays unique across the whole
+        // single-file site (PR #61 review); `headers` on the body cell below
+        // points back at it for assistive tech.
+        assert!(body.contains("<th id=\"wiki-x-tbl0-h0\">A</th>"), "{body}");
+        assert!(
+            body.contains("<td data-label=\"A\" headers=\"wiki-x-tbl0-h0\">1</td>"),
+            "{body}"
+        );
     }
 
     #[test]

@@ -757,14 +757,14 @@ mod tests {
 
     /// The field rows of one page naming `field`, as HTML.
     ///
-    /// A row is `<div class="param field">` up to its first `</div></div>`:
-    /// the head's `</div>` is followed by the description's opening tag, so
-    /// the first adjacent pair closes the description and the row.
+    /// A row is `<div class="param field">` up to its first `</dd></div>`:
+    /// the description is a `<dd>`, so its close is immediately followed by
+    /// the row's own closing `</div>`.
     fn rows_named<'a>(page: &'a str, field: &str) -> Vec<&'a str> {
         let needle = format!("<code class=\"fname\">{field}</code>");
         page.split(super::super::FIELD_ROW)
             .skip(1)
-            .map(|r| r.split("</div></div>").next().unwrap_or(r))
+            .map(|r| r.split("</dd></div>").next().unwrap_or(r))
             .filter(|r| r.contains(&needle))
             .collect()
     }
