@@ -1076,7 +1076,8 @@ fn page_install() -> String {
     s.push_str(&h3("With a package manager"));
     s.push_str(&p(
         "Updates then come from <code>brew upgrade tasqx</code> / <code>scoop update tasqx</code>, \
-         and brew switches Tab completion on by itself. macOS and Linux, with Homebrew:",
+         and brew switches Tab completion on by itself. macOS and x86-64 Linux, with Homebrew \
+         (there is no prebuilt ARM Linux binary yet, so ARM Linux builds from source):",
     ));
     s.push_str(&snippet("brew install dimitritholen/tasqx/tasqx", ""));
     s.push_str(&p("Windows, with Scoop:"));
@@ -1086,7 +1087,7 @@ fn page_install() -> String {
     ));
 
     s.push_str(&h3("With the installer script"));
-    s.push_str(&p("Linux and macOS:"));
+    s.push_str(&p("macOS and x86-64 Linux:"));
     s.push_str(&snippet(
         "curl -fsSL https://raw.githubusercontent.com/dimitritholen/tasqx/main/install.sh | sh",
         "",
