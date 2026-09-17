@@ -279,7 +279,7 @@ so it has to be spelled on each line — these scripts do not relax the rule,
 they simply have nothing to read.
 
 `snap.sh` writes into `target/snaps/`, so pictures do not reach a commit. The
-three in `docs/img/` are the exception and the reason this path exists at all:
+PNGs in `docs/img/` are the exception and the reason this path exists at all:
 GitHub's markdown cannot carry a styled span, so the README's screens have to be
 raster — and they are rasterised from the same renderer the site uses, not from
 a second toolchain. `freeze` was that second toolchain, and it disagreed with
@@ -315,6 +315,26 @@ Output lands in `target/snaps/site/` (gitignored): a viewport screenshot and a
 full-page one (capped at four viewport heights) per page/width/theme, plus one
 `report.json` listing, per page and width, any element overflowing the
 viewport and any console error the page threw.
+
+The README's hero, `docs/img/hero.gif`, is the one picture that does not come
+through this loop, because it moves: a fixture is one screen, and the hero is
+three commands and a dashboard opening. `scripts/hero.tape` scripts it for
+[VHS](https://github.com/charmbracelet/vhs), which types into a real terminal
+and encodes what it draws (D163). Its hidden prelude rebuilds the demo store
+under the same pin as the capture and wraps `tasqx` in `--no-daemon`, so the
+installed binary records the demo and never the real store. Re-record it after
+a change to `add`, `next` or the dashboard, from the repo root, with the
+installed binary built from the tree:
+
+```console
+$ cargo install --path crates/tasqx-cli --force
+$ vhs scripts/hero.tape                                   # → docs/img/hero.gif
+```
+
+Use vhs 0.11.0: 0.12.0 prints "Creating docs/img/hero.gif...", exits 0 and
+writes nothing (charmbracelet/vhs#787). Keep it at 15 seconds or less and
+around 2 MB at most, and look at its last frame before committing — a GIF loops,
+and the last frame is the one a reader sits on.
 
 ## 15. The fixtures the documentation ships
 
