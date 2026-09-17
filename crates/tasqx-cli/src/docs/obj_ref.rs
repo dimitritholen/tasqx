@@ -97,8 +97,10 @@ pub(super) const OBJECTS: [Object; 8] = [
         id: "obj-annotation",
         name: "Annotation",
         lead: "An annotation is a note on a task, stored verbatim. Notes are added and removed, \
-               never edited. Removing one scrubs its text and leaves a tombstone — the note's id \
-               and when it went — under <code>annotations_removed</code>.",
+               never edited. <code>annotation.remove</code> scrubs a note's text and leaves a \
+               tombstone — its id and when it went — under <code>annotations_removed</code>; \
+               undoing the <code>annotation.add</code> that wrote a note deletes it outright, \
+               with no tombstone.",
         namespaces: &["annotation"],
         groups: &[
             ("", "", d::ANNOTATION_ROW),
@@ -209,21 +211,95 @@ pub(super) fn objects_of(method: &str) -> Vec<&'static Object> {
         .collect()
 }
 
-/// A page's field rows: `(caption, row name, field)`, the first row of a
-/// name winning.
+/// One row of an object's field table.
+pub(super) struct FieldRow {
+    pub(super) caption: &'static str,
+    pub(super) name: String,
+    pub(super) field: &'static FieldDoc,
+    /// The methods whose responses carry this contract of the field, in
+    /// `PARAMS` order. Empty when the field has one contract everywhere, so
+    /// only a field that really differs is labelled.
+    pub(super) contexts: Vec<&'static str>,
+}
+
+/// The same field, the same contract: type, nullability, optionality and
+/// description all equal.
+fn same_contract(a: &FieldDoc, b: &FieldDoc) -> bool {
+    a.ty == b.ty && a.null_ok == b.null_ok && a.optional == b.optional && a.desc == b.desc
+}
+
+/// The methods whose documented response carries `group`.
+fn methods_carrying(group: &[FieldDoc]) -> Vec<&'static str> {
+    tasqx_core::PARAMS
+        .iter()
+        .map(|(m, ..)| *m)
+        .filter(|m| d::result_shape(m).iter().any(|(_, g)| same_group(g, group)))
+        .collect()
+}
+
+/// A page's field rows: one per distinct contract of each name.
 ///
-/// A later group repeating a key describes the same field as another response
-/// spells it — `store.export`'s `active_since` beside `task.get`'s — and the
-/// API page carries that variant exactly; here the object gets one row.
-pub(super) fn field_rows(o: &Object) -> Vec<(&'static str, String, &'static FieldDoc)> {
-    let mut out: Vec<(&'static str, String, &'static FieldDoc)> = Vec::new();
+/// A later group repeating a key is the same field as another response spells
+/// it. Where its contract is identical the responses share one row; where it
+/// differs — `store.export` omits `active_since` and `tokens` where `task.get`
+/// sends them, and its `annotations` are never paged — each contract is its
+/// own row, labelled with the responses that carry it, rather than the first
+/// one silently standing for all. A name's variants are adjacent, in the order
+/// the name first appears.
+pub(super) fn field_rows(o: &Object) -> Vec<FieldRow> {
+    let mut rows: Vec<FieldRow> = Vec::new();
     for (caption, prefix, group) in o.groups {
+        let carriers = methods_carrying(group);
         for f in *group {
             let name = format!("{prefix}{}", f.key);
-            if !out.iter().any(|(c, n, _)| c == caption && *n == name) {
-                out.push((caption, name, f));
+            let same = rows
+                .iter_mut()
+                .find(|r| r.caption == *caption && r.name == name && same_contract(r.field, f));
+            match same {
+                Some(r) => {
+                    for m in &carriers {
+                        if !r.contexts.contains(m) {
+                            r.contexts.push(m);
+                        }
+                    }
+                }
+                None => rows.push(FieldRow {
+                    caption,
+                    name,
+                    field: f,
+                    contexts: carriers.clone(),
+                }),
             }
         }
+    }
+    let order = |r: &FieldRow| {
+        tasqx_core::PARAMS
+            .iter()
+            .position(|(m, ..)| r.contexts.first() == Some(m))
+            .unwrap_or(usize::MAX)
+    };
+    let mut out: Vec<FieldRow> = Vec::new();
+    while !rows.is_empty() {
+        let (caption, name) = (rows[0].caption, rows[0].name.clone());
+        let mut variants: Vec<FieldRow> = Vec::new();
+        let mut i = 0;
+        while i < rows.len() {
+            if rows[i].caption == caption && rows[i].name == name {
+                variants.push(rows.remove(i));
+            } else {
+                i += 1;
+            }
+        }
+        if variants.len() == 1 {
+            variants[0].contexts.clear();
+        } else {
+            for v in &mut variants {
+                v.contexts
+                    .sort_by_key(|m| tasqx_core::PARAMS.iter().position(|(p, ..)| p == m));
+            }
+            variants.sort_by_key(order);
+        }
+        out.extend(variants);
     }
     out
 }
@@ -253,9 +329,9 @@ pub(super) fn page(o: &Object) -> String {
 fn fields_html(o: &Object) -> String {
     let rows = field_rows(o);
     let mut captions: Vec<&str> = Vec::new();
-    for (c, ..) in &rows {
-        if !captions.contains(c) {
-            captions.push(c);
+    for r in &rows {
+        if !captions.contains(&r.caption) {
+            captions.push(r.caption);
         }
     }
     let mut out = String::new();
@@ -265,13 +341,25 @@ fn fields_html(o: &Object) -> String {
         }
         let cells: Vec<Vec<String>> = rows
             .iter()
-            .filter(|(c, ..)| *c == caption)
-            .map(|(_, name, f)| {
+            .filter(|r| r.caption == caption)
+            .map(|r| {
+                // A labelled row is one contract of a field that differs by
+                // response; the label names those responses and links them.
+                let label = if r.contexts.is_empty() {
+                    String::new()
+                } else {
+                    let links: Vec<String> = r
+                        .contexts
+                        .iter()
+                        .map(|m| format!("<a href=\"#api-{m}\"><code>{m}</code></a>"))
+                        .collect();
+                    format!("<br><span class=\"muted\">in {}</span>", links.join(" · "))
+                };
                 vec![
-                    format!("<code class=\"fname\">{}</code>", esc(name)),
-                    format!("<span class=\"badge\">{}</span>", esc(f.ty)),
-                    presence(f.null_ok, f.optional).to_string(),
-                    describe(f.desc),
+                    format!("<code class=\"fname\">{}</code>{label}", esc(&r.name)),
+                    format!("<span class=\"badge\">{}</span>", esc(r.field.ty)),
+                    presence(r.field.null_ok, r.field.optional).to_string(),
+                    describe(r.field.desc),
                 ]
             })
             .collect();
@@ -363,53 +451,62 @@ fn operations_html(o: &Object) -> String {
 // Task: lifecycle and urgency
 // ============================================================================
 
-/// The status machine, as `engine/task.rs` enforces it. A raw string, so
+/// The status machine, as `engine/task.rs` enforces it. `backlog` and
+/// `pending` are one box because every write that stores `pending` — stop,
+/// the D6 auto-stop, reopen — is read back through `effective_status`, so no
+/// arrow may end in `pending` alone (PR #56 review). A raw string, so
 /// the first line keeps its indentation (a `"\` continuation strips it).
 const LIFECYCLE: &str = r"
-                           task.add
+                          task.add
                               │
-    future wait or            │  otherwise
-    scheduled    ┌────────────┴────────────┐
-                 v                         v
-            ┌─────────┐  dates pass   ┌─────────┐
-            │ backlog │ ────────────> │ pending │
-            │         │ <──────────── │         │
-            └─────────┘ modify sets a └─────────┘
-                 │       future date    │    ^
-                 │           task.start │    │ task.stop
-                 │                      v    │
-                 │                    ┌─────────┐
-                 │                    │ active  │
-                 │                    └─────────┘
-                 │                         │
- task.cancel     │ from backlog,           │ task.done from
-                 │ pending, active         │ pending, active
-                 v                         v
-           ┌───────────┐              ┌─────────┐
-           │ cancelled │              │  done   │
-           └───────────┘              └─────────┘
-                 │                         │
-                 └─────────────────────────┴────> pending
-                         task.reopen";
+ ┌─ open ─────────────────────┼─────────────────────────────┐
+ │                            v                             │
+ │  ┌────────────────────────────────────────────────────┐  │
+ │  │ backlog  while a future wait or scheduled date     │  │
+ │  │          holds it                                  │  │
+ │  │ pending  otherwise — the clock and task.modify     │  │
+ │  │          move a task between the two               │  │
+ │  └────────────────────────────────────────────────────┘  │
+ │     │                  ^                          ^      │
+ │     │ task.start       │ task.stop, or            │      │
+ │     │ (pending only)   │ another task.start       │      │
+ │     v                  │ without keep (D6)        │      │
+ │  ┌──────────────────────────┐                     │      │
+ │  │          active          │                     │      │
+ │  └──────────────────────────┘                     │      │
+ └────────────┬──────────────────────┬───────────────┼──────┘
+              │ task.done from       │ task.cancel   │
+              │ pending or active    │ from any      │
+              │                      │ open status   │
+              v                      v               │
+         ┌─────────┐           ┌───────────┐         │
+         │  done   │           │ cancelled │         │
+         └─────────┘           └───────────┘         │
+              │                      │               │
+              └──────────────────────┴───────────────┘
+                            task.reopen";
 
 fn task_lifecycle() -> String {
     format!(
-        "<h3 id=\"obj-task-lifecycle\">Lifecycle</h3>{}{}{}",
+        "<h3 id=\"obj-task-lifecycle\">Lifecycle</h3>{}{}{}{}",
         p("A task has five statuses. Three are open — <code>backlog</code>, <code>pending</code> \
            and <code>active</code> — and two are closed: <code>done</code> and \
-           <code>cancelled</code>. Each arrow is labelled with the method that makes the move; \
-           the one between <code>backlog</code> and <code>pending</code> is also the clock."),
+           <code>cancelled</code>. Each arrow is labelled with the method that makes the move."),
         pre_plain(LIFECYCLE.trim_start_matches('\n')),
-        p("<code>backlog</code> and <code>pending</code> are the same question asked of the \
-           clock every time a task is read: a task is in <code>backlog</code> while its \
+        p("<code>backlog</code> and <code>pending</code> are one question asked of the clock \
+           every time a task is read: a task is in <code>backlog</code> while its \
            <code>wait</code> or <code>scheduled</code> instant is still in the future, and in \
-           <code>pending</code> otherwise. There is no separate waiting status — a future \
-           <code>wait</code> is what puts a task in <code>backlog</code>. A backlog task cannot \
-           be started or completed until its date passes or is cleared. Starting a task without \
-           <code>keep</code> stops the task already running, which goes back to \
-           <code>pending</code> (D6) — or refuses, when that clock belongs to another named \
-           session (D140). <code>task.modify</code> can set <code>status</code> only to \
-           <code>cancelled</code>. <strong>Blocked</strong> is not a status either: it is the \
+           <code>pending</code> otherwise. So every arrow into that box lands in whichever of the \
+           two the task's dates say — a task added, stopped or reopened with a future date is in \
+           <code>backlog</code>, and moves to <code>pending</code> when the date passes or \
+           <code>task.modify</code> clears it. There is no separate waiting status. A backlog \
+           task cannot be started or completed. Starting a task without <code>keep</code> stops \
+           the one already running (D6) — or refuses, when that clock belongs to another named \
+           session (D140). <code>event.revert</code> can take back the newest \
+           <code>task.stop</code>, putting a task that is still <code>pending</code> back to \
+           <code>active</code>. <code>task.modify</code> can set <code>status</code> only to \
+           <code>cancelled</code>."),
+        p("<strong>Blocked</strong> is not a status either: it is the \
            <a href=\"#obj-dependency\"><code>blocked</code></a> flag, true while an open task \
            waits on a task that is neither done nor cancelled. <code>@working</code> is pending \
            or active and not blocked, and <code>task.done</code> refuses a blocked task unless \
@@ -575,8 +672,11 @@ mod tests {
                         );
                         for (o, name) in &owners {
                             assert!(
-                                field_rows(o).iter().any(|(_, n, _)| n == name),
-                                "`{method}` {path}.{}: `{}` lists its group but has no `{name}` row",
+                                field_rows(o).iter().any(|r| r.name == *name
+                                    && same_contract(r.field, f)
+                                    && (r.contexts.is_empty() || r.contexts.contains(method))),
+                                "`{method}` {path}.{}: `{}` has no `{name}` row with this \
+                                 response's contract, labelled with `{method}` if it varies",
                                 f.key,
                                 o.id
                             );
@@ -597,6 +697,71 @@ mod tests {
             "a PAGING_KEYS entry no longer sits inside any object"
         );
         assert!(positions > 20, "only {positions} object positions walked");
+    }
+
+    /// The table rows of one page naming `field`, as HTML.
+    fn rows_named<'a>(page: &'a str, field: &str) -> Vec<&'a str> {
+        let needle = format!("<code class=\"fname\">{field}</code>");
+        page.split("<tr>")
+            .map(|r| r.split("</tr>").next().unwrap_or(r))
+            .filter(|r| r.contains(&needle))
+            .collect()
+    }
+
+    /// A field whose contract differs between responses shows every contract,
+    /// each labelled with the responses that carry it — never the first one
+    /// alone (PR #56 review: `store.export` omits `active_since` and `tokens`
+    /// where `task.get` sends them, and the page said nullable/always).
+    #[test]
+    fn a_field_whose_contract_differs_by_response_shows_each_variant() {
+        let doc = super::super::generate();
+        for (page, field, live, live_pill) in [
+            ("obj-task", "active_since", "task.get", "nullable"),
+            ("obj-measurement", "tokens", "task.get", "always"),
+            ("obj-annotation", "annotations", "task.get", "always"),
+        ] {
+            let rows = rows_named(page_html(&doc, page), field);
+            let export: Vec<&&str> = rows
+                .iter()
+                .filter(|r| r.contains("href=\"#api-store.export\""))
+                .collect();
+            assert_eq!(
+                export.len(),
+                1,
+                "`{page}` has no row for `{field}` as store.export sends it: {rows:?}"
+            );
+            let live_rows: Vec<&&str> = rows
+                .iter()
+                .filter(|r| r.contains(&format!("href=\"#api-{live}\"")))
+                .collect();
+            assert_eq!(
+                live_rows.len(),
+                1,
+                "`{page}` has no `{live}` row for `{field}`"
+            );
+            assert!(
+                live_rows[0].contains(&format!(">{live_pill}</span>")),
+                "`{page}`'s `{live}` row for `{field}` is not {live_pill}"
+            );
+            if field != "annotations" {
+                assert!(
+                    export[0].contains(">optional</span>"),
+                    "`{page}`'s store.export row for `{field}` does not say optional"
+                );
+            } else {
+                assert!(
+                    export[0].contains("unpaged") && !export[0].contains("annotations_offset"),
+                    "`{page}`'s store.export row for `annotations` carries the paging description"
+                );
+            }
+        }
+        // A field with one contract everywhere stays one unlabelled row.
+        let id_rows = rows_named(page_html(&doc, "obj-task"), "id");
+        assert_eq!(id_rows.len(), 1);
+        assert!(
+            !id_rows[0].contains("href=\"#api-"),
+            "a single contract is labelled"
+        );
     }
 
     /// Every group an object page lists is really in some response, so a page
@@ -690,7 +855,7 @@ mod tests {
     fn every_example_carries_only_documented_fields() {
         let names: BTreeSet<String> = OBJECTS
             .iter()
-            .flat_map(|o| field_rows(o).into_iter().map(|(_, n, _)| n))
+            .flat_map(|o| field_rows(o).into_iter().map(|r| r.name))
             .collect();
         for o in &OBJECTS {
             let v = example_value(o);
@@ -772,6 +937,52 @@ mod tests {
         call("task.cancel", json!({"ref": b})).unwrap();
         call("task.reopen", json!({"ref": b})).unwrap();
         assert_eq!(status(b), "pending");
+
+        // Every write that stores `pending` — reopen, stop, the D6 auto-stop —
+        // is read back through the clock rule, so a task still holding a
+        // future date lands in backlog (PR #56 review).
+        call("task.reopen", json!({"ref": parked})).unwrap();
+        assert_eq!(
+            status(parked),
+            "backlog",
+            "a reopened task with a future wait"
+        );
+        let c = add(json!({}));
+        let d = add(json!({}));
+        let later = json!({"scheduled": "2999-01-01T00:00:00Z"});
+        call("task.start", json!({"ref": c})).unwrap();
+        call("task.modify", json!({"ref": c, "set": later})).unwrap();
+        assert_eq!(status(c), "active", "a date does not interrupt a clock");
+        call("task.stop", json!({"ref": c})).unwrap();
+        assert_eq!(status(c), "backlog", "a stopped task with a future date");
+        call("task.modify", json!({"ref": c, "set": {"scheduled": null}})).unwrap();
+        call("task.start", json!({"ref": c})).unwrap();
+        call("task.modify", json!({"ref": c, "set": later})).unwrap();
+        call("task.start", json!({"ref": d})).unwrap();
+        assert_eq!(
+            status(c),
+            "backlog",
+            "an auto-stopped task with a future date"
+        );
+
+        // `event.revert` takes back the newest `task.stop`, on a task still pending.
+        let e2 = add(json!({}));
+        call("task.start", json!({"ref": e2})).unwrap();
+        call("task.stop", json!({"ref": e2})).unwrap();
+        call("event.revert", json!({})).unwrap();
+        assert_eq!(status(e2), "active", "undoing a stop restarts the clock");
+
+        // So the drawing may not send any arrow to `pending` alone, and the
+        // prose may not say a move ends there.
+        assert!(
+            !LIFECYCLE.contains("> pending"),
+            "an arrow ends in pending, which a future wait or scheduled overrides"
+        );
+        let prose = task_lifecycle();
+        assert!(
+            !prose.contains("goes back to <code>pending</code>"),
+            "the prose sends a stopped task to pending unconditionally"
+        );
     }
 
     /// The urgency terms the page prints are the ones the engine scores.
