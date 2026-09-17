@@ -124,6 +124,24 @@ index, so what an agent decided last session is there for the next one.
 <tr>
 <td valign="top">
 
+### Outcomes, not just output
+
+`tasqx report --outcomes` asks whether finished work stayed finished: how much
+came back as rework, how far tracked time ran over the estimate, which
+completions nobody documented, what was forced past a blocker or dropped after
+it was started, and what the tokens cost. Every rate stands beside the count it
+rests on.
+
+</td>
+<td>
+
+![tasqx report --outcomes: per project, rework, forced, silent, calibration, dropped, over-budget and unproven counts, each as a fraction over its sample, and token spend](docs/img/outcomes.gif)
+
+</td>
+</tr>
+<tr>
+<td valign="top">
+
 ### Reports you can send
 
 Throughput, heatmap and burndown charts drawn from the event log, or a themed
