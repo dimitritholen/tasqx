@@ -107,6 +107,23 @@ unblocked, so the order is kept for you, no board to drag cards across.
 <tr>
 <td valign="top">
 
+### Decisions you can find again
+
+`tasqx memory import` reads a folder of markdown (ADRs, notes, guides) into a
+local full-text index, and `tasqx memory search` finds a ruling by two words
+months later, with the file it came from. Every task note is in the same
+index, so what an agent decided last session is there for the next one.
+
+</td>
+<td>
+
+![tasqx memory import loads three decision docs; tasqx memory search failed charge finds the payment-retries ruling with its source file and a snippet](docs/img/memory.gif)
+
+</td>
+</tr>
+<tr>
+<td valign="top">
+
 ### Reports you can send
 
 Throughput, heatmap and burndown charts drawn from the event log, or a themed

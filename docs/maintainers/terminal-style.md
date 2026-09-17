@@ -325,6 +325,7 @@ which types into a real terminal and encodes what it draws (D163):
 |---|---|---|
 | `docs/img/hero.gif` | `scripts/hero.tape` | `add`, `next`, the dashboard |
 | `docs/img/deps.gif` | `scripts/deps.tape` | `init`, `add`, `dep`, `list`, `done`, `next`, short-id allocation |
+| `docs/img/memory.gif` | `scripts/memory.tape` | `memory import`, `memory search`, `scripts/demo-decisions/` |
 
 The column names the commands on screen and the ones the tape's hidden setup
 runs; a change to any command a tape types, or to `scripts/demo-store.py`, is
