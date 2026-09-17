@@ -66,6 +66,7 @@ task, and where to find help.
 | Command | What it does | Page |
 |---|---|---|
 | `memory` | Store and search knowledge | [Memory](Memory.md) |
+| `setup` | Connect tasqx to Claude Code: MCP server and skills | [AI Agents and Automation](AI-Agents-and-Automation.md#tasqx-setup) |
 | `mcp` | The built-in server for AI agents | [AI Agents and Automation](AI-Agents-and-Automation.md#tasqx-mcp) |
 | `api` | Call the JSON API directly | [AI Agents and Automation](AI-Agents-and-Automation.md#tasqx-api) |
 | `daemon` | A long-running server for live updates | [AI Agents and Automation](AI-Agents-and-Automation.md#tasqx-daemon) |

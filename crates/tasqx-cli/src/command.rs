@@ -1127,6 +1127,30 @@ pub(super) enum Command {
         #[arg(long, short = 'y')]
         yes: bool,
     },
+    /// Install the Claude Code integration: the MCP server and the bundled skills.
+    ///
+    /// On a terminal it opens a checklist of what is installed: tick what you
+    /// want and press enter. Piped, or with `--list`, it prints that list. The
+    /// skills are compiled into this binary, and the MCP server is registered
+    /// through `claude mcp add`. Needs no store.
+    #[command(after_help = crate::cmddoc::after_help("setup"))]
+    Setup {
+        /// Print each item and its status, then exit.
+        #[arg(long)]
+        list: bool,
+        /// Install every item that is not installed, without the screen.
+        #[arg(long, conflicts_with = "list")]
+        yes: bool,
+        /// With --yes, also replace a skill file that differs from the bundled one.
+        #[arg(long, requires = "yes")]
+        force: bool,
+        /// Only this item (mcp, tasqx-workflow, retro); repeat for more.
+        #[arg(long, value_name = "NAME")]
+        only: Vec<String>,
+        /// Treat DIR as the home directory, the one holding `.claude`.
+        #[arg(long, value_name = "DIR", value_hint = ValueHint::DirPath)]
+        home: Option<std::path::PathBuf>,
+    },
 }
 
 impl Command {

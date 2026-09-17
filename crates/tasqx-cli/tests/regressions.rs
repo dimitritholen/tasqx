@@ -4971,6 +4971,10 @@ fn theme_and_socket_are_noted_as_inert_the_way_json_already_is() {
         ("manual", &["manual"]),
         ("about", &["about"]),
         ("completions", &["completions", "bash"]),
+        (
+            "setup",
+            &["setup", "--list", "--home", "/nonexistent/tasqx-home"],
+        ),
     ];
     let known = tasqx_cli::subcommand_names();
     for (verb, _) in store_free {

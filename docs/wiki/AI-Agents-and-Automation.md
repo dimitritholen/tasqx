@@ -5,6 +5,28 @@ everything; the CLI is one client of it, and the built-in MCP server is
 another. An agent gets the same data, the same rules and the same safety
 properties you do.
 
+## tasqx setup
+
+Connects tasqx to Claude Code in one step: it registers the MCP server (user
+scope, write access) and installs the `tasqx-workflow` and `retro` skills.
+
+```console
+tasqx setup
+```
+
+It's a checklist screen — Space toggles an item, Enter installs what's
+ticked, q quits. Run it again later and it shows what's already in place.
+Without a terminal it prints that list and exits.
+
+- `tasqx setup --list`: what is installed, per item
+- `tasqx setup --yes`: install everything not yet present, no screen
+- `tasqx setup --only retro`: limit to one item (`mcp`, `tasqx-workflow`, `retro`); repeatable
+- `tasqx setup --yes --force`: also overwrite a skill file that differs from the one tasqx carries
+
+The skill text is compiled into tasqx, so an upgrade brings new skill text
+with it. A skill file you edited is kept unless you pass `--force` or tick it
+on the screen.
+
 ## tasqx mcp
 
 The built-in [MCP](https://modelcontextprotocol.io) server — the standard way
@@ -18,7 +40,8 @@ tasqx mcp serve
 tasqx mcp serve --scope write
 ```
 
-Wiring it into Claude Code is one line:
+To wire it into Claude Code by hand, without the skills that
+[`tasqx setup`](#tasqx-setup) adds:
 
 ```console
 claude mcp add tasqx -- tasqx mcp serve --scope write

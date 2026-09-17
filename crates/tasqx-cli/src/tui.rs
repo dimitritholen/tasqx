@@ -15,6 +15,7 @@ pub(crate) mod fuzzy;
 pub mod memory;
 pub mod pick;
 pub mod settings;
+pub mod setup;
 
 use std::io::{self, Write};
 use std::sync::atomic::{AtomicBool, Ordering};

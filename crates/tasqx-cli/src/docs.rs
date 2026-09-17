@@ -68,7 +68,7 @@ mod mcp_ref;
 /// which is unassertable prose-equivalence. So the column is gone and the page
 /// renders [`crate::cmddoc`]'s summary instead. One string per verb, used by
 /// both surfaces, with no second copy left to drift.
-const VERBS: [(&str, &str, &str); 43] = [
+const VERBS: [(&str, &str, &str); 44] = [
     ("init", "—", "project.create"),
     ("use", "—", "project.use"),
     ("archive", "—", "project.archive"),
@@ -137,6 +137,7 @@ const VERBS: [(&str, &str, &str); 43] = [
     ("daemon", "—", "(serves all)"),
     ("watch", "—", "task.list + push"),
     ("mcp", "—", "(subset)"),
+    ("setup", "—", "— (no store)"),
     ("docs", "—", "— (no store)"),
     ("manual", "<code>man</code>", "— (no store)"),
     ("about", "—", "— (no store)"),

@@ -194,6 +194,9 @@ fn cases(tmp: &str) -> Vec<(Case, Vec<String>)> {
         // The flag is answered by the same `Exit::Out` terminal either way, so
         // the printing case is what proves the contract.
         c("completions", &["completions", "bash"]),
+        // `--list` only reads, and `--home` keeps it off the developer's own
+        // `~/.claude`; installing is `tests/setup.rs`'s business.
+        c("setup", &["setup", "--list", "--home", "SETUP_HOME"]),
         c_fresh("import", &["import", "IMPORT_FILE"]),
     ];
     raw.into_iter()
@@ -203,6 +206,7 @@ fn cases(tmp: &str) -> Vec<(Case, Vec<String>)> {
                 .iter()
                 .map(|a| match *a {
                     "IMPORT_FILE" => format!("{tmp}/roundtrip.json"),
+                    "SETUP_HOME" => format!("{tmp}/home"),
                     other => other.to_string(),
                 })
                 .collect();
