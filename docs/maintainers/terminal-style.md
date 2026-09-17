@@ -316,15 +316,20 @@ full-page one (capped at four viewport heights) per page/width/theme, plus one
 `report.json` listing, per page and width, any element overflowing the
 viewport and any console error the page threw.
 
-The README's hero, `docs/img/hero.gif`, is the one picture that does not come
-through this loop, because it moves: a fixture is one screen, and the hero is
-three commands and a dashboard opening. `scripts/hero.tape` scripts it for
-[VHS](https://github.com/charmbracelet/vhs), which types into a real terminal
-and encodes what it draws (D163). Its hidden prelude rebuilds the demo store
-under the same pin as the capture and wraps `tasqx` in `--no-daemon`, so the
-installed binary records the demo and never the real store. Re-record it after
-a change to `add`, `next` or the dashboard, from the repo root, with the
-installed binary built from the tree:
+The README's GIFs are the pictures that do not come through this loop, because
+they move: a fixture is one screen, and a GIF is a few commands in sequence.
+Each is scripted by a tape for [VHS](https://github.com/charmbracelet/vhs),
+which types into a real terminal and encodes what it draws (D163):
+
+| GIF | Tape | Re-record after a change to |
+|---|---|---|
+| `docs/img/hero.gif` | `scripts/hero.tape` | `add`, `next`, the dashboard |
+| `docs/img/deps.gif` | `scripts/deps.tape` | `list`, `done`, `next` |
+
+Every tape starts with `Source scripts/demo-prelude.tape`, which rebuilds the
+demo store under the same pin as the capture and wraps `tasqx` in
+`--no-daemon`, so the installed binary records the demo and never the real
+store. Record from the repo root, with the installed binary built from the tree:
 
 ```console
 $ cargo install --path crates/tasqx-cli --force
@@ -332,7 +337,7 @@ $ vhs scripts/hero.tape                                   # → docs/img/hero.gi
 ```
 
 Use vhs 0.11.0: 0.12.0 prints "Creating docs/img/hero.gif...", exits 0 and
-writes nothing (charmbracelet/vhs#787). Keep it at 15 seconds or less and
+writes nothing (charmbracelet/vhs#787). Keep a GIF at 15 seconds or less and
 around 2 MB at most, and look at its last frame before committing — a GIF loops,
 and the last frame is the one a reader sits on.
 

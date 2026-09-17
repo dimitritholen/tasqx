@@ -91,6 +91,22 @@ and `export` included. Recurrence reads like speech (`every 3 days`,
 <tr>
 <td valign="top">
 
+### Work in the right order
+
+`tasqx dep 63 62` makes one task wait on another, and a waiting task stays out
+of `next` until its prerequisite is done. Finishing a task tells you what it
+unblocked, so the order is kept for you, no board to drag cards across.
+
+</td>
+<td>
+
+![tasqx list shows two blocked release tasks; tasqx done 62 reports that #63 is unblocked, and tasqx next then picks #63](docs/img/deps.gif)
+
+</td>
+</tr>
+<tr>
+<td valign="top">
+
 ### Reports you can send
 
 Throughput, heatmap and burndown charts drawn from the event log, or a themed

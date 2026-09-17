@@ -7,10 +7,7 @@
 # "Creating docs/img/hero.gif...", exits 0 and writes nothing
 # (charmbracelet/vhs#787); take 0.11.0 from its GitHub release until that ships.
 #
-# It records only the invented demo store: the hidden prelude rebuilds
-# target/demo/tasks.db under the same pinned clock as scripts/docs-capture.sh,
-# points every variable tasqx reads at it, and wraps `tasqx` so each call passes
-# --no-daemon — a reachable daemon would answer from the real store instead.
+# It records only the invented demo store, through scripts/demo-prelude.tape.
 
 Output docs/img/hero.gif
 
@@ -23,16 +20,8 @@ Set Framerate 12
 Set TypingSpeed 45ms
 Set Theme "Catppuccin Mocha"
 
-Hide
-Type "export TASQX_DB=$PWD/target/demo/tasks.db TASQX_CONFIG_DIR=$PWD/target/demo/config TASQX_NOW=2026-09-16T09:00:00Z TZ=UTC COLORTERM=truecolor"
-Enter
-Type "unset NO_COLOR CLICOLOR CLICOLOR_FORCE TASQX_THEME TASQX_SOCK TASQX_DASHBOARD"
-Enter
-Type "python3 scripts/demo-store.py >/dev/null"
-Enter
-Type `tasqx() { command tasqx --no-daemon "$@"; }`
-Enter
-Type "set +H; PS1='$ '; clear"
+Source scripts/demo-prelude.tape
+Type "clear"
 Enter
 Sleep 2s
 Show
