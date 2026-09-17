@@ -48,6 +48,7 @@ mod api_ref;
 mod cli_ref;
 mod markdown;
 mod mcp_ref;
+mod obj_ref;
 
 /// The verb table the Commands page renders: `(verb, aliases, method)`.
 ///
@@ -645,10 +646,10 @@ const ADD_FIELDS: [(&str, &str, &str); 9] = [
 /// A sidebar section: a heading in the nav, and the pages filed under it.
 ///
 /// The sections are the reader's mental model of the guide — learn it, use it,
-/// look it up — and they are deliberately declared even when empty. `guides`
-/// and `objects` have no pages yet; the heading still renders, so the shape of
-/// the finished guide is visible from the first screen and the pages that fill
-/// them later need no shell change.
+/// look it up — and they are deliberately declared even when empty: an empty
+/// section's heading still renders with a placeholder, so the shape of the
+/// finished guide is visible from the first screen and the pages that fill it
+/// later need no shell change.
 struct Section {
     id: &'static str,
     title: &'static str,
@@ -765,6 +766,16 @@ static PAGES: LazyLock<Vec<Page>> = LazyLock::new(|| {
                 });
             }
         }
+        // The object pages are titled from their own table (#648), so there is
+        // no second list of their ids to keep beside it.
+        for o in obj_ref::OBJECTS.iter().filter(|_| sec.id == "objects") {
+            out.push(Page {
+                id: o.id.to_string(),
+                section: sec.id,
+                label: esc(o.name),
+                title: o.name.to_string(),
+            });
+        }
         for md in markdown::PAGES.iter().filter(|p| p.section == sec.id) {
             out.push(Page {
                 id: md.id.clone(),
@@ -809,6 +820,9 @@ pub fn generate() -> String {
     body.push_str(&page_commands());
     body.push_str(&page_api());
     body.push_str(&page_mcp());
+    for o in &obj_ref::OBJECTS {
+        body.push_str(&obj_ref::page(o));
+    }
 
     body.push_str("</main></div>");
     body.push_str(&format!(
@@ -4431,11 +4445,9 @@ mod tests {
             .filter(|s| !PAGES.iter().any(|p| p.section == s.id))
             .map(|s| s.id)
             .collect();
-        assert!(
-            !empty.is_empty(),
-            "this guard is comparing nothing: every section has pages, so remove it \
-             or keep one section ahead of the writing"
-        );
+        // Every section has pages since the Objects section filled (#648), so
+        // this compares zero with zero until a section is declared ahead of
+        // its writing again — which is when it matters.
         assert_eq!(
             nav.matches("navsec-soon").count(),
             empty.len(),
