@@ -1351,7 +1351,8 @@ pub(super) enum MemoryAction {
         #[arg(long, add = crate::complete::candidates::projects())]
         project: Option<String>,
         /// Mark the doc standing: a ruling meant for every session of its
-        /// scope, kept until cleared (D156).
+        /// scope, kept until cleared and sent to MCP clients at session start
+        /// (D156, D157).
         #[arg(long)]
         standing: bool,
     },

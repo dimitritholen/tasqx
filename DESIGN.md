@@ -3714,7 +3714,7 @@ above.
 
 **Why scope-aware.** A read-only session told flatly to annotate would either fail loudly on every write attempt or, worse, drop the note silently. The read-only variant instead says once that the server is read-only and routes the content into the reply — the same rule the paste-anywhere starter prompt already gives an agent that finds `tasqx_add_memory` and `tasqx_annotate_task` missing from its tool list, now said by the server itself rather than left to a file the agent may never have been given.
 
-**What stays out.** No `prompts` or `resources` capability is added alongside it; `instructions` is a nudge toward the workflow, not the workflow itself. The paste-anywhere block and the repo's own skill remain the fuller version — the reasons behind each rule, and the placeholders an operator tunes — for hosts that ignore `instructions` or truncate it.
+**What stays out.** No `prompts` or `resources` capability is added alongside it; `instructions` is a nudge toward the workflow, not the workflow itself. The paste-anywhere block and the repo's own skill remain the fuller version — the reasons behind each rule, and the placeholders an operator tunes — for hosts that ignore `instructions` or truncate it. *Amended by D157: the session's standing rulings follow the workflow text.*
 
 ### D142 — Annotations are ordered by their UUIDv7 id, never by the `created` text (extends D59's ruling on events)
 
@@ -3914,3 +3914,17 @@ The reasoning is not lost, it is relocated: it lives in this §12 under the D-nu
 **Rejected: a hard cap.** The engine cannot pick which ruling is the redundant one; a refusal would block a real correction on a scope someone else filled with clutter.
 
 **Rejected: pinning by recency alone.** That is the exact failure this fixes — a standing ruling scrolls off once newer docs exist.
+
+### D157 — initialize appends the session's standing rulings to the D141 instructions: inferred from the working directory then the default project, standing docs first and never dropped, topical fill from the project's own docs, 3 KB budget (amends D141, extends D156)
+
+**Decision:** `initialize`'s `instructions` is D141's scope-aware text, then — only when there is something to show — a blank line and a rulings section. The project is inferred at `initialize` time: the nearest of `tasqx mcp serve`'s working directory and its ancestors whose directory name is a non-archived project, else the store's default project, else none. The section lists every standing doc (D156) for that project and every unscoped standing doc, project-scoped first and each newest-modified first (D144's key), as `- <title>: <gist>`, the gist being the body's first paragraph past any frontmatter, on one line, cut at 240 bytes. The rest of `mcp::STANDING_RULINGS_BUDGET` (3,072 bytes for the whole section) is filled with the project's own non-standing docs, newest first, ending with a count of the docs left out and `tasqx_search_memory`. When the standing set with gists alone overflows, every standing title is still listed, without gists or topical fill, followed by a warning to consolidate. A header names the project and the inference source. An empty result appends nothing, so the handshake stays byte-identical to D141's text; a store read that fails also appends nothing. The section names no write tool, since read-only sessions receive it too.
+
+**Why.** A correction given once has to reach every later session with no hook, skill or CLAUDE.md, and `initialize` is the one thing every MCP client shows the model before the first turn. `instructions` is charged on every prompt, so the budget is the design, not a safety margin. The working directory comes before the default because the server is launched inside the session's repo, while the default is one store-wide setting shared by every repo. Ancestors and not the basename alone because a task worktree lives at `worktrees/<repo>/<id>-<slug>`, whose own name never names the project. Topical fill never draws on unscoped docs: `memory import` stores every ADR unscoped, so the newest unscoped docs are an arbitrary slice.
+
+**Rejected: the default project first.** It names one project for every repo on the machine; a session in a second repo would be handed the first repo's rulings.
+
+**Rejected: the whole store.** Unbounded, and paid for on every prompt.
+
+**Rejected: recency only.** It drops a cross-cutting rule as soon as newer docs exist, which is exactly what D156's flag exists to prevent.
+
+**Rejected: a hard failure on a store read error.** A session that cannot connect is worse than one that starts without its rulings; the tools still reach the store.

@@ -15,7 +15,8 @@ tasqx memory add "Deploy runbook" "Deploys go through the blue-green pipeline"
 
 - `--standing` marks the doc as standing: a ruling that belongs in every
   session of its project (or every project, when unscoped) until it is
-  cleared, so a correction given once is not forgotten by recency. Past 15
+  cleared, so a correction given once is not forgotten by recency. MCP
+  clients receive standing docs when a session starts. Past 15
   standing docs in one scope, `add` answers with a hint to merge or retract.
 
 ## tasqx memory list

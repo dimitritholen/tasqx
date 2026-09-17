@@ -521,6 +521,257 @@ fn initialize_instructions_name_only_tools_that_exist() {
     }
 }
 
+// ---- initialize standing rulings (#96, D157) ----------------------------------
+
+/// [`instructions_of`] for a server the test built itself, so it can carry a
+/// store and a working directory.
+fn instructions_from(server: &McpServer) -> String {
+    let init = server
+        .handle_message(&json!({
+            "jsonrpc": "2.0", "id": 1, "method": "initialize",
+            "params": { "protocolVersion": "2025-06-18", "capabilities": {} }
+        }))
+        .expect("initialize is a request");
+    init["result"]["instructions"]
+        .as_str()
+        .expect("initialize carries instructions as a string")
+        .to_string()
+}
+
+/// The rulings section alone: what follows the D141 text and its blank line.
+fn rulings_of(server: &McpServer) -> String {
+    let text = instructions_from(server);
+    let base = format!("{}\n\n", tasqx_core::mcp::instructions(server.scope()));
+    text.strip_prefix(&base)
+        .unwrap_or_else(|| panic!("no rulings section after the D141 text:\n{text}"))
+        .to_string()
+}
+
+/// A real, freshly created directory under the system temp dir.
+fn temp_workdir(rel: &str) -> std::path::PathBuf {
+    let dir = std::env::temp_dir()
+        .join(format!("tasqx-mcp-96-{}", std::process::id()))
+        .join(rel);
+    std::fs::create_dir_all(&dir).expect("create the workdir");
+    dir
+}
+
+fn add_doc(engine: &Engine, title: &str, body: &str, project: Option<&str>, standing: bool) {
+    engine
+        .memory_add(&json!({
+            "title": title, "body": body, "project": project, "standing": standing
+        }))
+        .expect("memory.add");
+}
+
+/// #96/D157: with nothing standing and nothing topical to show, the handshake
+/// is exactly D141's text — a store full of unscoped imported docs must not
+/// start charging every prompt for them.
+#[test]
+fn initialize_instructions_on_an_empty_store_are_byte_identical_to_the_workflow_text() {
+    let dir = temp_workdir("empty/sub");
+    for filled in [false, true] {
+        let engine = engine();
+        if filled {
+            add_doc(&engine, "an imported adr", "not standing", None, false);
+        }
+        for scope in [Scope::Read, Scope::Write] {
+            for workdir in [None, Some(dir.clone())] {
+                let server = McpServer::new(&engine, scope).with_workdir(workdir);
+                assert_eq!(
+                    instructions_from(&server),
+                    tasqx_core::mcp::instructions(scope),
+                    "filled={filled}, scope={}",
+                    scope.as_str()
+                );
+            }
+        }
+    }
+}
+
+/// #96/D157: the server runs in the session's repo, so the directory names the
+/// project before the store-wide default does — through its ancestors, since
+/// a task worktree's own basename is `<id>-<slug>`.
+#[test]
+fn standing_rulings_follow_the_working_directory_before_the_default_project() {
+    let engine = engine();
+    engine.project_create(&json!({ "name": "alpha" })).unwrap();
+    engine.project_create(&json!({ "name": "beta" })).unwrap();
+    add_doc(&engine, "alpha rule", "alpha only", Some("alpha"), true);
+    add_doc(&engine, "beta rule", "beta only", Some("beta"), true);
+    add_doc(&engine, "global rule", "everywhere", None, true);
+
+    for rel in ["beta/sub", "worktrees/beta/96-something"] {
+        let server = McpServer::new(&engine, Scope::Write).with_workdir(Some(temp_workdir(rel)));
+        let text = rulings_of(&server);
+        assert!(
+            text.starts_with("Standing rulings for project beta (working directory)."),
+            "{rel}:\n{text}"
+        );
+        assert!(text.contains("- beta rule: beta only"), "{rel}:\n{text}");
+        assert!(text.contains("- global rule: everywhere"), "{rel}:\n{text}");
+        assert!(!text.contains("alpha rule"), "{rel}:\n{text}");
+        assert!(
+            text.find("beta rule") < text.find("global rule"),
+            "project-scoped rulings come first:\n{text}"
+        );
+    }
+
+    let server = McpServer::new(&engine, Scope::Write);
+    let text = rulings_of(&server);
+    assert!(
+        text.starts_with("Standing rulings for project alpha (default project)."),
+        "{text}"
+    );
+    assert!(
+        text.contains("alpha rule") && !text.contains("beta rule"),
+        "{text}"
+    );
+}
+
+#[test]
+fn with_no_project_inferred_only_unscoped_standing_docs_are_shown() {
+    let engine = engine();
+    engine.project_create(&json!({ "name": "alpha" })).unwrap();
+    engine.project_archive(&json!({ "name": "alpha" })).unwrap();
+    assert_eq!(engine.default_project().unwrap(), None);
+    add_doc(&engine, "alpha rule", "scoped", Some("alpha"), true);
+    add_doc(&engine, "global rule", "unscoped", None, true);
+
+    let text = rulings_of(&McpServer::new(&engine, Scope::Write));
+    assert!(text.contains("no project inferred"), "{text}");
+    assert!(text.contains("- global rule: unscoped"), "{text}");
+    assert!(!text.contains("alpha rule"), "{text}");
+}
+
+/// #96/D157: topical fill is the project's own docs only — `memory import`
+/// stores ADRs unscoped, so the newest unscoped docs are an arbitrary slice —
+/// and the whole section stays inside the per-prompt budget.
+#[test]
+fn topical_fill_uses_only_the_projects_own_docs_and_stays_within_the_budget() {
+    let engine = engine();
+    engine.project_create(&json!({ "name": "alpha" })).unwrap();
+    add_doc(&engine, "the one rule", "short", Some("alpha"), true);
+    let long = "word ".repeat(80);
+    for i in 0..40 {
+        add_doc(
+            &engine,
+            &format!("topical {i}"),
+            &long,
+            Some("alpha"),
+            false,
+        );
+        add_doc(&engine, &format!("stray {i}"), "unscoped", None, false);
+    }
+
+    let text = rulings_of(&McpServer::new(&engine, Scope::Write));
+    assert!(
+        text.len() <= tasqx_core::mcp::STANDING_RULINGS_BUDGET,
+        "{} bytes:\n{text}",
+        text.len()
+    );
+    assert!(text.contains("- the one rule: short"), "{text}");
+    assert!(!text.contains("stray"), "{text}");
+    assert!(text.contains("- topical 39: word"), "newest first:\n{text}");
+    let shown = text.matches("\n- topical ").count();
+    assert!(shown > 0 && shown < 40, "{shown} shown:\n{text}");
+    assert!(
+        text.ends_with(&format!(
+            "\n{} more docs for project alpha; tasqx_search_memory reaches them.",
+            40 - shown
+        )),
+        "{text}"
+    );
+}
+
+/// #96/D157: standing docs are never dropped. When their gists overflow the
+/// budget every title is still listed, and the section says to consolidate.
+#[test]
+fn an_oversized_standing_set_lists_every_title_and_warns() {
+    let engine = engine();
+    engine.project_create(&json!({ "name": "alpha" })).unwrap();
+    let long = "gisttext ".repeat(40);
+    for i in 0..20 {
+        add_doc(&engine, &format!("ruling {i}"), &long, Some("alpha"), true);
+    }
+    add_doc(&engine, "topical doc", "fill", Some("alpha"), false);
+
+    let text = rulings_of(&McpServer::new(&engine, Scope::Write));
+    for i in 0..20 {
+        assert!(
+            text.contains(&format!("\n- ruling {i}\n")),
+            "ruling {i}:\n{text}"
+        );
+    }
+    assert!(!text.contains("gisttext"), "{text}");
+    assert!(!text.contains("topical doc"), "{text}");
+    assert!(
+        text.ends_with(&format!(
+            "\n20 standing rulings exceed the {}-byte session budget, so only titles are \
+             shown; list them with `tasqx memory list --standing` and merge or clear some.",
+            tasqx_core::mcp::STANDING_RULINGS_BUDGET
+        )),
+        "{text}"
+    );
+}
+
+#[test]
+fn the_gist_is_the_first_paragraph_without_frontmatter() {
+    let engine = engine();
+    add_doc(
+        &engine,
+        "fm rule",
+        "---\nstatus: accepted\n---\n\nFirst   paragraph\nwraps here.\n\nSecond paragraph.",
+        None,
+        true,
+    );
+    // A body that is frontmatter alone has no gist: the entry is its title.
+    add_doc(
+        &engine,
+        "bare rule",
+        "---\nstatus: accepted\n---\n",
+        None,
+        true,
+    );
+    let text = rulings_of(&McpServer::new(&engine, Scope::Write));
+    // Newest first: the bare rule was written last.
+    assert!(
+        text.ends_with("\n- fm rule: First paragraph wraps here."),
+        "{text}"
+    );
+    assert!(text.contains("\n- bare rule\n"), "{text}");
+    assert!(!text.contains("---") && !text.contains("Second"), "{text}");
+}
+
+/// Read-only sessions get the rulings too: they are what an earlier session
+/// decided, and a read-only agent must follow them as much as any other. The
+/// section's own prose (here with its footer) names no tool this scope lacks.
+#[test]
+fn initialize_instructions_under_read_scope_carry_standing_rulings() {
+    let engine = engine();
+    engine.project_create(&json!({ "name": "alpha" })).unwrap();
+    add_doc(&engine, "global rule", "everywhere", None, true);
+    for i in 0..40 {
+        add_doc(
+            &engine,
+            &format!("topical {i}"),
+            &"word ".repeat(80),
+            Some("alpha"),
+            false,
+        );
+    }
+    let text = rulings_of(&McpServer::new(&engine, Scope::Read));
+    assert!(text.contains("- global rule: everywhere"), "{text}");
+    assert!(text.contains("more docs for project alpha"), "{text}");
+    let roster = tasqx_core::mcp::tool_roster();
+    for name in tool_names_in(&text) {
+        assert!(
+            roster.iter().any(|(n, w)| *n == name && !*w),
+            "the read-scope rulings name {name:?}, not a read tool:\n{text}"
+        );
+    }
+}
+
 // ---- annotation.add over MCP -------------------------------------------------
 
 #[test]
