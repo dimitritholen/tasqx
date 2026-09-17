@@ -739,7 +739,7 @@ fn execute(cli: Cli) -> Exit {
         return exit;
     }
 
-    // `setup` installs the Claude Code integration (D158). It needs the themed
+    // `setup` installs the Claude Code integration (D159). It needs the themed
     // Ctx and no store, and it is dispatched ahead of `open_backend` for
     // `pick`'s reason below: asking what setup would install must not create a
     // database on a machine where tasqx has never run.

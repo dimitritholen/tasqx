@@ -1,4 +1,4 @@
-//! `tasqx setup` through the real binary (D158).
+//! `tasqx setup` through the real binary (D159).
 //!
 //! Every case points `--home` at a scratch directory, so nothing here reads or
 //! writes the developer's own `~/.claude`, and `TASQX_DB` at a path that must
