@@ -12,9 +12,10 @@ One binary. One SQLite file on your disk. No account, no cloud.
 
 [Install](#install) · [Documentation](https://dimitritholen.github.io/tasqx/) · [Guides](#learn-more) · [Wiki](docs/wiki/Home.md)
 
-<!-- Screenshots come from an invented demo store, never a real one:
-     scripts/demo-store.py builds it, and its docstring has the render lines. -->
-![The tasqx dashboard: projects, a burndown, pulse and effort beside the working set grouped by project](docs/img/dashboard.png)
+<!-- Pictures come from an invented demo store, never a real one:
+     scripts/demo-store.py builds it, and its docstring has the render lines.
+     The GIF is recorded by scripts/hero.tape (`vhs scripts/hero.tape`). -->
+![A terminal: tasqx add captures a task due Friday, tasqx next picks the overdue TLS renewal, and the dashboard opens with the new task in the website project](docs/img/hero.gif)
 
 </div>
 
