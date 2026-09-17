@@ -1017,7 +1017,7 @@ const PARAM_DOCS: &[(&str, &str, &str, &str, &str)] = &[
         "entity",
         "string",
         "",
-        "Only events about this kind of thing: `task`, `project` or `memory`. An unknown name is refused, not read as a filter matching nothing.",
+        "Only events about this kind of thing: `task`, `project` or `doc`. An unknown name is refused, not read as a filter matching nothing.",
     ),
     (
         "event.list",
