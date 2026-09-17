@@ -1341,8 +1341,8 @@ pub(super) enum MemoryAction {
         /// Optional project scope. Omitted, the doc stays global.
         #[arg(long, add = crate::complete::candidates::projects())]
         project: Option<String>,
-        /// Mark the doc standing: re-read every session of its scope until
-        /// cleared (D156).
+        /// Mark the doc standing: a ruling meant for every session of its
+        /// scope, kept until cleared (D156).
         #[arg(long)]
         standing: bool,
     },
