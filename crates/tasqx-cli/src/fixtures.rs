@@ -95,6 +95,7 @@ screens![
     "api-memory-get",
     "api-memory-update",
     "api-memory-remove",
+    "api-memory-import",
     "api-tokens-recompute",
     "api-report-outcomes",
     "api-store-import",

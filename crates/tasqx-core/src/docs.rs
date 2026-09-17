@@ -1123,7 +1123,13 @@ pub const R_STORE_IMPORT: &[FieldDoc] = &[
 /// `event.list`'s result.
 pub const R_EVENT_LIST: &[FieldDoc] = &[
     f("count", "integer", "How many events came back."),
-    f("events", "array", "The events, newest first."),
+    f(
+        "events",
+        "array",
+        "The events, newest first for everything this engine wrote — `id` is a \
+         UUIDv7, time-ordered — but a row brought in by `store.import` keeps its \
+         document's id and can sort anywhere.",
+    ),
 ];
 
 /// `event.revert`'s result.
