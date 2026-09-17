@@ -1000,11 +1000,18 @@ pub(crate) fn run_memory(be: &mut Backend, ctx: &Ctx, action: &MemoryAction) -> 
                 params["standing"] = json!(true);
             }
             let result = be.call("memory.add", &params)?;
-            let text = format!(
+            let mut text = format!(
                 "Stored {}  ·  {}\n",
                 render::san(result["id"].as_str().unwrap_or("?")),
                 render::san(title)
             );
+            // D156: the soft-cap hint is the engine's only word that a scope
+            // is overfull, and it is present only past the cap — a JSON
+            // caller reads the key, a person reads this line (PR #46 review).
+            if let Some(hint) = result["hint"].as_str() {
+                text.push_str(&render::san(hint));
+                text.push('\n');
+            }
             Ok((result, text))
         }
         MemoryAction::Search {

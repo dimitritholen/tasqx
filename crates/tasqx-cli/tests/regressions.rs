@@ -4772,6 +4772,39 @@ fn a_tab_or_newline_in_a_title_becomes_a_space_not_a_vanished_separator() {
     );
 }
 
+/// D156: past `STANDING_SOFT_CAP` standing docs in one scope `memory.add`
+/// answers with a `hint`, and the plain text output has to say so too — the
+/// first cut printed only `Stored <id> · <title>`, so only `--json` callers
+/// ever learned the scope was overfull (PR #46 review).
+#[test]
+fn memory_add_prints_the_soft_cap_hint_once_a_scope_is_overfull() {
+    let dir = fresh_config_dir("memory-standing-hint");
+    let cap = tasqx_core::engine::STANDING_SOFT_CAP;
+    let mut outputs = Vec::new();
+    for i in 0..=cap {
+        let out = bin("memory-standing-hint", &dir)
+            .args(["memory", "add", "--standing", &format!("rule {i}"), "body"])
+            .output()
+            .expect("run memory add --standing");
+        assert!(
+            out.status.success(),
+            "add {i} failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        outputs.push(String::from_utf8_lossy(&out.stdout).to_string());
+    }
+    let at_cap = &outputs[cap - 1];
+    assert!(
+        at_cap.starts_with("Stored ") && !at_cap.contains("soft cap"),
+        "the add that reaches the cap is still a plain `Stored` line: {at_cap}"
+    );
+    let over = &outputs[cap];
+    assert!(
+        over.starts_with("Stored ") && over.contains("soft cap"),
+        "the add past the cap must print the engine's hint under the `Stored` line: {over}"
+    );
+}
+
 /// #229 item 7: the CLI, the API and MCP each name this operation
 /// differently — `memory show` (CLI), `memory.get` (`core.capabilities`),
 /// `tasqx_get_memory` (MCP) — while every other verb keeps one name across
