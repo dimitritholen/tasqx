@@ -1,13 +1,20 @@
-//! Drift guards for the workspace README.
+//! Drift guards for the workspace README, and for the claims that left it.
 //!
 //! The README is the one surface with no generator behind it: every figure in
 //! it is a restated copy of something the code owns, which is exactly the
 //! state the in-crate doc guards exist to forbid. These tests read the file a
 //! visitor reads and bind each restated claim to its source — the measured
-//! `rust-version`, the MCP roster, the theme table, the files the links name.
+//! `rust-version`, the theme table, the files the links name.
 //! Parsing is deliberately minimal (anchored phrases and backtick spans, no
 //! markdown model), and every scan pins a floor so an empty iteration cannot
 //! pass as a clean one.
+//!
+//! D162 made the README a pitch and moved the reference detail into the wiki.
+//! A guard follows its claim to its new home rather than leaving with it: the
+//! MCP roster is read out of `AI-Agents-and-Automation.md`, the activation
+//! lines out of `Shell-Completion.md`, the bare-`tasqx` condition out of
+//! `Dashboard-and-Live-View.md`. The exit-code and retired-panel guards had a
+//! wiki twin already, and that twin now scans the README too (`wiki.rs`).
 
 use std::collections::BTreeSet;
 use std::fs;
@@ -20,6 +27,12 @@ fn root() -> PathBuf {
 
 fn readme() -> String {
     fs::read_to_string(root().join("README.md")).expect("../../README.md is readable")
+}
+
+/// A wiki page by file name, for the claims D162 moved out of the README.
+fn wiki(page: &str) -> String {
+    fs::read_to_string(root().join("docs/wiki").join(page))
+        .unwrap_or_else(|e| panic!("docs/wiki/{page} is readable: {e}"))
 }
 
 /// The README names the platforms CI tests on, and that sentence must agree with
@@ -213,13 +226,15 @@ fn readme_rust_floor_equals_the_workspace_rust_version() {
     assert!(checked >= 1, "the version scan found no 'Rust N.M' claim");
 }
 
-/// The README's "For agents" section restates the whole MCP roster: the total,
-/// the read/write split, and every tool by name. All of it was free prose with
+/// The wiki's AI Agents page restates the whole MCP roster: the total, the
+/// read/write split, and every tool by name. All of it was free prose with
 /// nothing behind it — the same state the HTML guide's tool table was in, on
-/// the page most likely to be an agent operator's first contact with tasqx.
+/// the page the README's "Connect your agent" sends an agent operator to. The
+/// roster lived in the README itself until D162 moved it there.
 #[test]
-fn readme_mcp_tool_roster_matches_the_server() {
-    let readme = readme();
+fn the_agents_page_mcp_tool_roster_matches_the_server() {
+    const PAGE: &str = "AI-Agents-and-Automation.md";
+    let page = wiki(PAGE);
     let roster = tasqx_core::mcp::tool_roster();
     // Floor: fifteen tools shipped; a shrunken roster greening the loops below
     // would be a change worth failing on anyway.
@@ -246,29 +261,29 @@ fn readme_mcp_tool_roster_matches_the_server() {
     let writes_claim = format!("{} writes:", word(writes.len()));
     for claim in [&total_claim, &reads_claim, &writes_claim] {
         assert!(
-            readme.contains(claim.as_str()),
-            "the README no longer says {claim:?} — the roster moved and the prose did not"
+            page.contains(claim.as_str()),
+            "{PAGE} no longer says {claim:?} — the roster moved and the prose did not"
         );
     }
 
-    // The listed names, both directions. The README spells them unprefixed and
+    // The listed names, both directions. The page spells them unprefixed and
     // says "(all prefixed `tasqx_`)" once, so the prefix is restored before
     // comparing. The reads list runs from its claim to the writes claim; the
     // writes list runs to the prefix note that closes it.
-    let r0 = readme.find(&reads_claim).expect("a reads list") + reads_claim.len();
-    let r1 = readme[r0..]
+    let r0 = page.find(&reads_claim).expect("a reads list") + reads_claim.len();
+    let r1 = page[r0..]
         .find(&writes_claim)
         .expect("a writes list after the reads")
         + r0;
-    let w1 = readme[r1..]
+    let w1 = page[r1..]
         .find("(all prefixed")
         .expect("the prefix note that closes the writes list")
         + r1;
-    let mut listed_reads: Vec<String> = ticked(&readme[r0..r1])
+    let mut listed_reads: Vec<String> = ticked(&page[r0..r1])
         .into_iter()
         .map(|t| format!("tasqx_{t}"))
         .collect();
-    let mut listed_writes: Vec<String> = ticked(&readme[r1..w1])
+    let mut listed_writes: Vec<String> = ticked(&page[r1..w1])
         .into_iter()
         .map(|t| format!("tasqx_{t}"))
         .collect();
@@ -278,32 +293,36 @@ fn readme_mcp_tool_roster_matches_the_server() {
     writes.sort();
     assert_eq!(
         listed_reads, reads,
-        "the README's read-tool list has drifted from the roster"
+        "{PAGE}'s read-tool list has drifted from the roster"
     );
     assert_eq!(
         listed_writes, writes,
-        "the README's write-tool list has drifted from the roster"
+        "{PAGE}'s write-tool list has drifted from the roster"
     );
 
-    // Anywhere else the README names a tool by its full `tasqx_*` spelling,
-    // that tool must exist — a renamed tool leaves its old name behind in
-    // running prose, which the list comparison above cannot see.
-    for span in ticked(&readme) {
-        let Some(rest) = span.strip_prefix("tasqx_") else {
-            continue;
-        };
-        if rest.is_empty() || !rest.chars().all(|c| c.is_ascii_lowercase() || c == '_') {
-            continue; // `tasqx_` itself (the prefix note), or not a tool name
+    // Anywhere else the page, or the README that sends readers to it, names a
+    // tool by its full `tasqx_*` spelling, that tool must exist — a renamed
+    // tool leaves its old name behind in running prose, which the list
+    // comparison above cannot see.
+    for (name, text) in [(PAGE, page), ("README", readme())] {
+        for span in ticked(&text) {
+            let Some(rest) = span.strip_prefix("tasqx_") else {
+                continue;
+            };
+            if rest.is_empty() || !rest.chars().all(|c| c.is_ascii_lowercase() || c == '_') {
+                continue; // `tasqx_` itself (the prefix note), or not a tool name
+            }
+            assert!(
+                roster.iter().any(|(n, _)| *n == span),
+                "{name} names `{span}`, which the MCP server does not serve"
+            );
         }
-        assert!(
-            roster.iter().any(|(n, _)| *n == span),
-            "the README names `{span}`, which the MCP server does not serve"
-        );
     }
 }
 
-/// The README's Tab-completion section prints an activation line per shell, by
-/// hand, and that is the worst place in the file for a hand-kept copy.
+/// The wiki's Shell Completion page prints an activation line per shell, by
+/// hand, and that is the worst place in it for a hand-kept copy. (The README
+/// carried the same lines until D162; the page is where they live now.)
 ///
 /// The failure it invites is total and silent. A line carrying `clap_complete`'s
 /// generic `COMPLETE` instead of `TASQX_COMPLETE` looks right, is what every
@@ -319,7 +338,7 @@ fn readme_mcp_tool_roster_matches_the_server() {
 /// `Shells::builtins()` names — the same registry `tasqx completions` resolves
 /// its argument out of, and the same one `install::ACTIVATIONS` is guarded
 /// against. Upstream gaining a sixth shell, the activation shape changing, or a
-/// README line edited by hand all fail here.
+/// wiki line edited by hand all fail here.
 /// # Both documents, and both halves of each row
 ///
 /// The first version of this guard checked the README only, and only the LINE.
@@ -369,7 +388,8 @@ fn both_documents_carry_the_activation_lines_and_targets_the_binary_prints() {
             "`tasqx completions {shell}` reported no line to compare against"
         );
 
-        for (name, text) in [("README", &readme()), ("the manual", &manual)] {
+        let page = wiki("Shell-Completion.md");
+        for (name, text) in [("Shell-Completion.md", &page), ("the manual", &manual)] {
             assert!(
                 text.contains(line),
                 "{name} does not carry the {shell} activation line the binary \
@@ -425,6 +445,12 @@ fn readme_theme_count_matches_the_builtins() {
 /// list is the load-bearing case: a guide renamed or moved leaves the README
 /// 404-ing on the repo's own landing page, and nothing else reads those paths.
 /// This is also what pins `docs/guides/token-accounting.md`.
+///
+/// Since D162 the README sends readers into the wiki for everything it no
+/// longer says (`Getting-Started.md#install-fine-print`, `Home.md#honest-edges`),
+/// so every relative target is checked, not just the ones under `docs/`, and
+/// an anchor is stripped before the file is looked up — a wrong anchor still
+/// lands the reader on the right page, a wrong file does not.
 #[test]
 fn readme_relative_links_point_at_files_that_exist() {
     let readme = readme();
@@ -437,53 +463,64 @@ fn readme_relative_links_point_at_files_that_exist() {
         let Some(end) = tail.find(')') else { break };
         let target = &tail[..end];
         rest = &tail[end..];
-        // Relative repo paths only; http(s) targets are not this test's claim.
-        if target.starts_with("docs/") || target.starts_with(".claude/") || target == "LICENSE.md" {
-            assert!(
-                root.join(target).exists(),
-                "the README links {target:?}, which does not exist"
-            );
-            checked += 1;
-            if target.starts_with("docs/guides/") {
-                guides += 1;
-            }
+        // Relative repo paths only; http(s) targets and same-page anchors are
+        // not this test's claim.
+        if target.starts_with("http") || target.starts_with('#') || target.is_empty() {
+            continue;
+        }
+        let path = target.split('#').next().unwrap_or(target);
+        assert!(
+            root.join(path).exists(),
+            "the README links {target:?}, and {path:?} does not exist"
+        );
+        checked += 1;
+        if path.starts_with("docs/guides/") {
+            guides += 1;
         }
     }
-    // Floors: six worked guides plus the skill and the license. A scan that
-    // finds fewer has lost links, not gained tidiness — move these on purpose
-    // or not at all, in either direction: a floor left behind when a guide is
-    // added is a guide that can silently vanish again.
+    // Floors: the seven worked guides plus the wiki, the license and the three
+    // project documents. A scan that finds fewer has lost links, not gained
+    // tidiness — move these on purpose or not at all, in either direction: a
+    // floor left behind when a guide is added is a guide that can silently
+    // vanish again.
     assert!(
-        guides >= 6,
+        guides >= 7,
         "the README links only {guides} guides under docs/guides/"
     );
     assert!(checked >= 7, "the link scan checked only {checked} paths");
 }
 
-/// The README must not tell a reader that a bare `tasqx` prints the table.
+/// Neither the README nor the dashboard page may tell a reader that a bare
+/// `tasqx` prints the table.
 ///
-/// D58 gave that invocation a second meaning, and this file is the surface a
+/// D58 gave that invocation a second meaning, and the README is the surface a
 /// visitor reads first. It is pinned here because NOTHING else looks at prose:
 /// mutating any sentence in README.md or under `docs/` leaves the whole suite
 /// green — measured, by rewriting four of them in a scratch clone. That is the
 /// class of drift this repo otherwise has no answer to, and rather than pretend
 /// the general case is covered, this guard pins the one claim that just became
 /// wrong and the one word that makes it conditional.
+///
+/// The condition used to be stated in the README's own dashboard section. D162
+/// moved that detail to the wiki's dashboard page, so the condition is read
+/// there, and the stale spellings are refused in both files.
 #[test]
-fn the_readme_does_not_promise_a_table_from_a_bare_tasqx() {
-    let text = readme();
+fn the_dashboard_page_does_not_promise_a_table_from_a_bare_tasqx() {
+    const PAGE: &str = "Dashboard-and-Live-View.md";
+    const HEADING: &str = "## tasqx dashboard";
+    let page = wiki(PAGE);
 
     // The dashboard must be documented at all.
     assert!(
-        text.contains("## The dashboard"),
-        "the README must tell a reader what a bare `tasqx` now opens"
+        page.contains(HEADING),
+        "{PAGE} must tell a reader what a bare `tasqx` now opens"
     );
 
     // And the condition must be stated as the streams, not as a guess about
     // intent: nothing reads a `CI` variable, so a caller with a pty is on the
     // interactive side however unattended it is.
-    let dashboard = text
-        .split("## The dashboard")
+    let dashboard = page
+        .split(HEADING)
         .nth(1)
         .expect("checked above")
         .split("\n## ")
@@ -492,21 +529,23 @@ fn the_readme_does_not_promise_a_table_from_a_bare_tasqx() {
     for needed in ["stdin", "stdout", "pty", "tasqx list"] {
         assert!(
             dashboard.contains(needed),
-            "the dashboard section must mention {needed:?} — a reader who skips it \
-             and shells out from an agent gets a hang, not a table"
+            "{PAGE}'s dashboard section must mention {needed:?} — a reader who \
+             skips it and shells out from an agent gets a hang, not a table"
         );
     }
 
     // The old sentence, in any of its spellings, is now false.
-    for stale in [
-        "bare `tasqx` lists your working set",
-        "Bare `tasqx` is the working set",
-        "bare `tasqx` shows your working set",
-    ] {
-        assert!(
-            !text.contains(stale),
-            "README still says {stale:?}, which is only true off a terminal"
-        );
+    for (name, text) in [("README", readme()), (PAGE, page)] {
+        for stale in [
+            "bare `tasqx` lists your working set",
+            "Bare `tasqx` is the working set",
+            "bare `tasqx` shows your working set",
+        ] {
+            assert!(
+                !text.contains(stale),
+                "{name} still says {stale:?}, which is only true off a terminal"
+            );
+        }
     }
 }
 
@@ -995,111 +1034,6 @@ fn the_installers_map_only_targets_the_release_workflow_builds() {
             publish.trim()
         );
     }
-}
-
-/// Every exit code the CLI can leave with, derived from
-/// [`ErrorCode::exit_code`] — see the twin in `wiki.rs` for why the variants
-/// are spelled out rather than read from `ErrorCode::ALL`.
-fn expected_exit_codes() -> Vec<i32> {
-    use tasqx_core::ErrorCode;
-    // Membership derived from the enum, not retyped, and no floor — see the
-    // twin in `wiki.rs` for what both shortcuts let through.
-    let mut codes: Vec<i32> = ErrorCode::all().iter().map(|c| c.exit_code()).collect();
-    codes.push(0);
-    codes.sort_unstable();
-    codes.dedup();
-    codes
-}
-
-/// Paragraph-ish chunks, as in `wiki.rs`: blank-line blocks split again at
-/// bullet starts, so a claim in one bullet cannot satisfy a check aimed at
-/// another.
-fn chunks(text: &str) -> Vec<String> {
-    text.split("\n\n")
-        .flat_map(|para| para.split("\n- "))
-        .map(str::to_string)
-        .collect()
-}
-
-/// The README's exit-code roster must name `1`, and may keep promising the set
-/// does not change only while the set it prints is the whole one.
-///
-/// `tasqx --no-daemon watch` exits 1 ("watch requires a running daemon"); so
-/// does a store that will not open, and a failed write to stdout. The README
-/// listed 0/2/4/5 and added "and don't change", which is the sentence that
-/// makes the omission costly: a script author reads it as an enumeration they
-/// may rely on, and a `1` then looks like a tasqx bug rather than a documented
-/// outcome. D-free correction — the codes themselves are not renumbered.
-#[test]
-fn the_readme_exit_code_roster_names_every_code() {
-    let text = readme();
-    let codes = expected_exit_codes();
-    let mut rosters = 0;
-    for chunk in chunks(&text) {
-        let lower = chunk.to_lowercase();
-        if !lower.contains("exit code")
-            || !lower.contains("not found")
-            || !lower.contains("conflict")
-        {
-            continue;
-        }
-        rosters += 1;
-        for code in &codes {
-            assert!(
-                chunk.contains(&format!("`{code}`")),
-                "the README lists exit codes and never names `{code}`. The CLI \
-                 can leave with {codes:?}, and the sentence promises the set \
-                 does not change:\n{chunk}"
-            );
-        }
-    }
-    assert_eq!(
-        rosters, 1,
-        "expected exactly one README exit-code roster, found {rosters} — the \
-         scan is reading something other than the contract sentence"
-    );
-}
-
-/// The README may not present a panel D80 retired as a panel that ships.
-///
-/// "The BLOCKED panel earns its place" survived the commit that folded
-/// NOW/NEXT UP/DUE/BLOCKED/RECENT into one TASKS panel, so the landing page
-/// told every new reader to look for a panel the binary does not draw. Naming
-/// a retired panel is allowed — explaining the fold needs it — as long as the
-/// same chunk says that is what happened to it.
-#[test]
-fn the_readme_does_not_present_a_retired_panel_as_current() {
-    let retired = tasqx_cli::retired_dashboard_panel_names();
-    assert!(
-        retired.len() >= 5,
-        "only {} retired panel names — the derivation broke",
-        retired.len()
-    );
-
-    let text = readme();
-    let mut mentions = 0;
-    for chunk in chunks(&text) {
-        let lower = chunk.to_lowercase();
-        if !lower.contains("panel") {
-            continue;
-        }
-        for upper in retired.iter().map(|n| n.to_uppercase()) {
-            if !chunk.contains(&upper) {
-                continue;
-            }
-            mentions += 1;
-            assert!(
-                lower.contains("d80") || lower.contains("retired") || lower.contains("folded"),
-                "the README calls {upper} a panel without saying D80 folded it \
-                 into TASKS:\n{chunk}"
-            );
-        }
-    }
-    assert!(
-        mentions >= 1,
-        "no README chunk names a retired panel beside the word panel — this \
-         guard is checking nothing"
-    );
 }
 
 /// The README's `why` sample must use the rows `why` prints.

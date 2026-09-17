@@ -150,7 +150,7 @@ setopt err_exit no_unset
 # run. Source it earlier and zsh says `command not found: compdef`, registers
 # nothing, and exits 0 — so a driver that sourced first would be measuring a
 # setup the manual does not describe and that silently does not work. The
-# README and `tasqx manual completion` both say "after your compinit line";
+# The wiki and `tasqx manual completion` both say "after your compinit line";
 # this is that same order.
 autoload -Uz compinit
 compinit -u -d "${TMP_DIR}/zcompdump"

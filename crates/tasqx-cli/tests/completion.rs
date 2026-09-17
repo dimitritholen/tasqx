@@ -515,7 +515,7 @@ fn a_partial_subcommand_completes_from_claps_own_tree() {
 }
 
 /// Eighteen aliases come free from clap's tree, and they behave in a way
-/// worth pinning because it is not the obvious one and the README must not
+/// worth pinning because it is not the obvious one and the docs must not
 /// over-promise it.
 ///
 /// `#[command(alias = "…")]` declares a HIDDEN alias, and clap's engine emits

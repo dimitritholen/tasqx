@@ -47,6 +47,23 @@ fn pages() -> Vec<(String, String)> {
     pages
 }
 
+/// Every wiki page, plus the workspace README.
+///
+/// For the prose guards whose README twin D162 retired: the README stopped
+/// carrying an exit-code roster and the dashboard's panel history, and a guard
+/// that insisted on finding them there would have had to be deleted with them.
+/// Scanning the README beside the wiki keeps the rule on it — a roster or a
+/// retired panel that creeps back is judged exactly like one on a page — while
+/// the floors stay the wiki's.
+fn pages_and_readme() -> Vec<(String, String)> {
+    let mut all = pages();
+    let readme = wiki_dir().join("../../README.md");
+    let text = fs::read_to_string(&readme)
+        .unwrap_or_else(|e| panic!("{} is readable: {e}", readme.display()));
+    all.push(("README.md".to_string(), text));
+    all
+}
+
 /// Every CLI verb must have a heading in the wiki.
 ///
 /// The verb list comes from clap via [`tasqx_cli::subcommand_names`], the same
@@ -279,8 +296,8 @@ fn the_wiki_documents_every_memory_subcommand() {
     }
 }
 
-/// A wiki chunk that lists exit codes must list every code the CLI can leave
-/// with.
+/// A wiki (or README) chunk that lists exit codes must list every code the CLI
+/// can leave with.
 ///
 /// Two were missing, and for the same reason. `tasqx --no-daemon watch` exits
 /// 1; `echo '{"tasqx":"2",…}' | tasqx api` exits 6. Every roster jumped 0 → 2,
@@ -300,7 +317,7 @@ fn the_wiki_documents_every_memory_subcommand() {
 fn every_wiki_exit_code_roster_names_every_code() {
     let codes = expected_exit_codes();
     let mut rosters = 0;
-    for (name, text) in pages() {
+    for (name, text) in pages_and_readme() {
         for chunk in chunks(&text) {
             let lower = chunk.to_lowercase();
             if !lower.contains("exit code")
@@ -386,7 +403,8 @@ fn the_dashboard_page_says_what_the_json_document_carries() {
     }
 }
 
-/// No wiki chunk may present a panel D80 retired as a panel that ships.
+/// No wiki (or README) chunk may present a panel D80 retired as a panel that
+/// ships.
 ///
 /// Two pages sent readers hunting for a BLOCKED panel that D80 folded into
 /// TASKS. Naming one of the retired panels is fine — saying what happened to
@@ -402,7 +420,7 @@ fn no_wiki_chunk_presents_a_retired_panel_as_current() {
     );
 
     let mut mentions = 0;
-    for (name, text) in pages() {
+    for (name, text) in pages_and_readme() {
         for chunk in chunks(&text) {
             let lower = chunk.to_lowercase();
             if !lower.contains("panel") {

@@ -54,6 +54,7 @@ behind an off-by-default build feature (`notify-os`).
 tasqx add Water plants repeat:"every 3 days"
 tasqx add Standup repeat:"weekly on mon,wed,fri"
 tasqx add Pay rent due:"2026-09-01" repeat:"monthly on day 1"
+tasqx add Team retro repeat:"monthly on the 2nd tuesday"
 ```
 
 - Completing a recurring task spawns the next occurrence; the answer shows it.

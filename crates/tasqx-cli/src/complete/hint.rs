@@ -36,7 +36,7 @@
 //!
 //! [`state`] reads the ONE file `--install` would have edited for `$SHELL` and
 //! asks whether `TASQX_COMPLETE` appears in it. That catches both the marked
-//! block and a line the user pasted from the README by hand. It cannot see an
+//! block and a line the user pasted from the wiki by hand. It cannot see an
 //! activation line that lives anywhere else — `~/.zprofile`, an oh-my-zsh custom
 //! file, a system-wide `/etc` snippet, a Homebrew-managed completions directory
 //! — and there is no way for a process to ask the shell that spawned it whether

@@ -2,9 +2,10 @@
 //!
 //! tasqx audit 2026-09 #171: the skill's own MCP roster count ("fifteen
 //! `tasqx_*` tools") and its "the MCP deliberately lacks" fallback list both
-//! went stale independently of `README.md`, which carries the equivalent
-//! claim under a drift guard (`readme_mcp_tool_roster_matches_the_server`) and
-//! stayed correct. This file gives SKILL.md the same binding, read out of the
+//! went stale independently of the README's roster, which carried the
+//! equivalent claim under a drift guard and stayed correct (that roster now
+//! lives on the wiki's AI Agents page, D162, guarded by
+//! `the_agents_page_mcp_tool_roster_matches_the_server`). This file gives SKILL.md the same binding, read out of the
 //! live roster rather than trusted by eye — CLAUDE.md routes every session's
 //! task tracking through this file, so a stale count here misleads an agent
 //! that never opens a terminal to check.
@@ -66,7 +67,7 @@ fn word(n: usize) -> &'static str {
 
 /// The skill claims a specific tool count in prose ("an MCP server (fifteen
 /// `tasqx_*` tools)"); it must equal the roster the server actually answers
-/// `tools/list` with, spelled the same way the README counts it.
+/// `tools/list` with, spelled the same way the wiki's AI Agents page counts it.
 #[test]
 fn skill_tool_count_matches_the_mcp_roster() {
     let doc = skill();

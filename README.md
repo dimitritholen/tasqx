@@ -1,15 +1,51 @@
+<div align="center">
+
 # tasqx
 
-**Task management for your terminal — and for the AI agents working beside
-you.**
+**Your terminal task manager — and your AI agent's long-term memory.**
+
+One binary. One SQLite file on your disk. No account, no cloud.
+
+[![Latest release](https://img.shields.io/github/v/release/dimitritholen/tasqx)](https://github.com/dimitritholen/tasqx/releases/latest)
+[![CI](https://img.shields.io/github/actions/workflow/status/dimitritholen/tasqx/ci.yml?branch=main&label=CI)](https://github.com/dimitritholen/tasqx/actions/workflows/ci.yml)
+[![License: FSL-1.1-MIT](https://img.shields.io/badge/license-FSL--1.1--MIT-blue)](LICENSE.md)
+
+[Install](#install) · [Documentation](https://dimitritholen.github.io/tasqx/) · [Guides](#learn-more) · [Wiki](docs/wiki/Home.md)
 
 <!-- Screenshots come from an invented demo store, never a real one:
      scripts/demo-store.py builds it, and its docstring has the render lines. -->
 ![The tasqx dashboard: projects, a burndown, pulse and effort beside the working set grouped by project](docs/img/dashboard.png)
 
-One binary. One SQLite file on your own disk. No account, no cloud, no service
-reading your backlog. Capture a task in one line, ask what to do next, and get
-an answer you can interrogate:
+</div>
+
+<table>
+<tr>
+<th width="50%">For you</th>
+<th width="50%">For your agents</th>
+</tr>
+<tr>
+<td valign="top">
+
+- **Capture in one line:** `tasqx add Ship it due:friday +api !high`
+- **Ask "what now?"** `tasqx next` picks; `tasqx why` shows the arithmetic.
+- **See it all at once:** `tasqx dashboard` is a full-screen overview.
+- **Send a report:** terminal charts, or one self-contained HTML page.
+- **Own your data:** a file on your disk, and `cancel` and `undo` take changes back.
+
+</td>
+<td valign="top">
+
+- **A backlog over MCP**, read-only until you grant write access.
+- **One `brief` call** before starting: the task, what its prerequisites concluded, relevant memory.
+- **Long-term memory** across sessions, searched over your imported docs and every annotation.
+- **"Done" means something:** acceptance checks, and completion returns what it unblocked.
+- **Token spend per task**, so you can see what agent work cost.
+
+</td>
+</tr>
+</table>
+
+## See it
 
 ```console
 $ tasqx add Ship the release notes due:friday +docs !high --project work
@@ -30,44 +66,47 @@ $ tasqx why 42
   urgency                     13.5
 ```
 
-Urgency is recomputed on every read, so the deadline row — and the total it
-feeds — climb as Friday approaches. The scores in any capture, including this
-one, are an illustration; the rows are the contract.
+Urgency is recomputed on every read, so the deadline row climbs as Friday
+approaches. The scores in any capture are an illustration; the rows are the contract.
 
-And when you point an AI agent at the same backlog, it isn't scraping your
-CLI: tasqx ships an MCP server, and the agent becomes a first-class user of
-the same JSON API every other surface goes through.
+<table>
+<tr>
+<td width="45%" valign="top">
 
-## Why tasqx
+### Your working set, ranked
 
-- **It answers "what now?" and shows its work.** Every open task gets an
-  urgency score from priority, deadline pressure and age; `tasqx next` hands
-  you the top one, and `tasqx why` breaks the score into its components
-  instead of asking you to trust it.
-- **Your data is a file you own.** SQLite on your disk, offline by design.
-  Every change lands in an append-only event log in the same transaction —
-  which is why there is no destructive delete, why `cancel` is reversible,
-  and why `tasqx undo` can tell you exactly what it took back.
-- **AI agents are users, not an afterthought.** An agent reads the backlog,
-  completes a task, learns what that unblocked, and stores what it figured
-  out — searchable next session. `tasqx brief` hands it everything it needs
-  before starting, in one call, including what each prerequisite concluded.
-- **It measures whether the work worked, not just what it cost.**
-  `tasqx report --outcomes` reads your own history for rework, estimate
-  calibration, token spend, completions nobody documented, work that was
-  started and dropped, and completions that overrode open blockers. Every
-  rate arrives beside the `n` it was computed over, because a rework rate
-  over three completions is not evidence of anything.
-- **Capture in one line.**
-  `tasqx add Ship it due:friday +api !high est:4h` parses as it reads, dates
-  take natural language (`tomorrow`, `in 3 days`, `eom`), and Tab completion
-  knows your task ids, projects, tags and the whole filter grammar.
+Every row carries a priority, an urgency gauge and a date. One filter language
+(`project:work and (+api or +ui)`) works on every listing command, `report`
+and `export` included. Recurrence reads like speech (`every 3 days`,
+`monthly on the 2nd tuesday`), and reminders move when the due date moves.
 
-## Sixty seconds to a working setup
+</td>
+<td>
 
-Install with a package manager, which owns the update path from then on
-(`brew upgrade tasqx` / `scoop update tasqx`) and, through brew, switches Tab
-completion on without another step.
+![tasqx list: a running task and an overdue one, each row with a priority, an urgency gauge and a calendar date](docs/img/list.png)
+
+</td>
+</tr>
+<tr>
+<td valign="top">
+
+### Reports you can send
+
+Throughput, heatmap and burndown charts drawn from the event log, or a themed
+HTML page with zero external requests. Five built-in themes. `--outcomes`
+measures whether the work worked: rework, estimate calibration, completions
+nobody documented, abandoned work.
+
+</td>
+<td>
+
+![The HTML weekly review: headline counts, then what needs attention](docs/img/report.png)
+
+</td>
+</tr>
+</table>
+
+## Install
 
 macOS and Linux, with Homebrew:
 
@@ -82,8 +121,7 @@ scoop bucket add tasqx https://github.com/dimitritholen/scoop-tasqx
 scoop install tasqx
 ```
 
-No package manager? The scripts do the same job on a bare machine — Linux and
-macOS:
+No package manager? Linux and macOS:
 
 ```console
 curl -fsSL https://raw.githubusercontent.com/dimitritholen/tasqx/main/install.sh | sh
@@ -95,8 +133,11 @@ Windows (the first statement lets older PowerShell negotiate TLS at all):
 [Net.ServicePointManager]::SecurityProtocol=[Net.SecurityProtocolType]::Tls12; irm https://raw.githubusercontent.com/dimitritholen/tasqx/main/install.ps1 | iex
 ```
 
-Then create a project (just a name, no folder), add a task to it, ask what to
-do now, and complete it:
+Brew switches Tab completion on for you; anywhere else, `tasqx completions --install`
+does. Flags, checksums and what the scripts promise are in the
+[install fine print](docs/wiki/Getting-Started.md#install-fine-print).
+
+Then create a project, add a task, ask what to do now, and complete it:
 
 ```console
 tasqx init work
@@ -105,14 +146,11 @@ tasqx next
 tasqx done 1
 ```
 
-That's the whole loop. When you want depth: `tasqx manual` is a real manual in
-your terminal, every verb answers `-h` with copy-pasteable examples, and
-`tasqx docs` renders the full guide as one self-contained HTML page.
-`tasqx about` says who made it, where it lives, and which build you are on.
+That's the whole loop. `tasqx manual` is the full guide in your terminal, and
+every verb answers `-h` with examples you can paste.
 
-Prebuilt binaries for Linux, macOS and Windows are on the
-[Releases page](https://github.com/dimitritholen/tasqx/releases). Building
-from source needs Rust 1.95 or newer:
+Prebuilt binaries are on the [Releases page](https://github.com/dimitritholen/tasqx/releases).
+Building from source needs Rust 1.95 or newer:
 
 ```console
 git clone https://github.com/dimitritholen/tasqx.git
@@ -120,98 +158,16 @@ cd tasqx
 cargo install --path crates/tasqx-cli --force
 ```
 
-<details>
-<summary>Install fine print — flags, checksums, what is and isn't promised</summary>
+## Connect your agent
 
-Both installer scripts pick the newest release, resolve your target triple,
-verify the archive against its published checksum, and write nothing outside
-the install directory (`~/.local/bin`, or
-`%LOCALAPPDATA%\Programs\tasqx\bin` on Windows, where that one directory is
-added to your user PATH and `-Uninstall` takes it back out). Neither touches a
-shell startup file unless you ask.
-
-A pipe passes no arguments, so flags need the longer form:
-
-```console
-curl -fsSL https://raw.githubusercontent.com/dimitritholen/tasqx/main/install.sh | sh -s -- --dry-run
-```
-
-```console
-&([scriptblock]::Create((irm https://raw.githubusercontent.com/dimitritholen/tasqx/main/install.ps1))) -DryRun
-```
-
-The rest are `--uninstall`/`-Uninstall`, `--completions`/`-Completions` and
-`--help`/`-Help`; every switch also has an environment variable
-(`TASQX_UNINSTALL`, `TASQX_DRY_RUN`, …), `TASQX_VERSION` pins a tag, and
-`TASQX_INSTALL` moves the destination.
-
-Honesty about what that buys you:
-
-- **The checksum is integrity, not provenance.** It catches a truncated
-  transfer or a corrupt CDN object; it is served from the same host as the
-  archive, so it proves nothing about who built it. Nothing here is signed.
-- **The binaries are unsigned.** On macOS the curl route goes *around*
-  Gatekeeper rather than passing it — that is why the install just works.
-- **The Linux build links your system glibc** (SQLite is bundled; there is no
-  other runtime). The floor is whatever GitHub's current `ubuntu-latest`
-  provides; re-derive it from a release binary with
-  `objdump -T tasqx | grep -o 'GLIBC_[0-9.]*' | sort -uV | tail -1`. There is
-  no musl build — an older distro builds from source.
-
-All of it applies to the package-manager routes too: the Homebrew formula and
-the Scoop manifest are generated per release (`scripts/brew-formula.sh`,
-`scripts/scoop-manifest.sh`) from the same published checksums, and point at
-the same unsigned archives.
-
-</details>
-
-## The dashboard
-
-On a terminal, a bare `tasqx` opens a full-screen overview instead of printing
-a table: your working set, deadlines, blocked work, recent activity, projects,
-a burndown and token spend, under a header that counts what matters
-(`17 open · 1 active · 2 overdue · 3 blocked · 8 done/week`) and a footer that
-names every key. Blocked work earns its place there: the default list filter
-hides it, and the dashboard does not — D80 folded the old NOW, NEXT UP, DUE,
-BLOCKED and RECENT panels into one TASKS panel, where a blocked task keeps its
-row and the header counts it. So the dashboard is where work that is standing
-still stays visible. Press `p` to browse your tasks in `tasqx pick`, where Enter
-reads a task and `s` starts it; `q` closes.
-
-Anything that is *not* a person at a keyboard gets the plain table instead —
-the dashboard opens only when stdin and stdout are both interactive terminals,
-and `tasqx --json dashboard` returns all panels as one JSON document. One
-caveat for automation: a script or agent that allocates a pty looks
-interactive, and a bare `tasqx` there opens a screen that waits for a key. So
-in anything automated, spell the verb — `tasqx list` always means the table.
-
-![tasqx list: a running task and an overdue one, each row with a priority, an urgency gauge and a calendar date](docs/img/list.png)
-
-## Give your agent a backlog and a memory
-
-The MCP server is read-only by default:
-
-```console
-tasqx mcp serve
-```
-
-Write access is something you grant explicitly:
-
-```console
-tasqx mcp serve --scope write
-```
-
-Set it up in Claude Code, along with the `tasqx-workflow` and `retro` skills,
-with one command:
+One command registers the MCP server with Claude Code and installs the
+`tasqx-workflow` and `retro` skills:
 
 ```console
 tasqx setup
 ```
 
-It's a checklist screen — Space toggles an item, Enter installs what's ticked,
-`--yes` installs everything not yet present without the screen. Run it again
-later and it shows what's already in place. Want only the server, wired by
-hand?
+Or wire the server by hand:
 
 ```console
 claude mcp add --scope user tasqx -- tasqx mcp serve --scope write
@@ -227,152 +183,12 @@ Any other MCP client takes the same shape:
 }
 ```
 
-Twenty-nine tools, one verb each. Nine reads: `list_tasks`, `get_task`,
-`brief_task`, `summary`, `outcomes`, `list_projects`, `search_memory`,
-`get_memory`, `list_memory`.
-Twenty writes: `add_task`, `modify_task`, `complete_task`, `reopen_task`,
-`cancel_task`, `start_timer`, `stop_timer`, `tag_task`, `untag_task`,
-`annotate_task`, `remove_annotation`, `add_check`, `set_check`,
-`remove_check`, `add_dependency`, `remove_dependency`, `add_memory`,
-`update_memory`, `remove_memory`, `create_project` (all prefixed `tasqx_`).
+A bare `tasqx mcp serve` is read-only: the agent can search and read, and never
+sees a write tool. `--scope write` is the grant that lets it add, complete and
+remember. Every tool, and what makes it more than remote CRUD, is on the
+[AI Agents and Automation](docs/wiki/AI-Agents-and-Automation.md) page.
 
-What makes this more than remote CRUD:
-
-- **One call before starting, instead of five.** `brief_task` returns the task,
-  each prerequisite with **what that task concluded**, what this one blocks, and
-  relevant memory — under a query tasqx derives from the task's own title, tags
-  and project. The agent supplies no search terms, which matters because a
-  guessed term that finds nothing looks exactly like a store with nothing in it.
-- **Completing a task returns what it unblocked**, so an agent can decompose a
-  feature into a dependency chain with `add_dependency` and then walk it,
-  picking up each task the moment its prerequisites clear.
-- **"Done" can mean something.** Acceptance criteria are rows with a state and a
-  citation (`add_check`, `set_check`), not prose in an annotation that nothing
-  can ask about. tasqx never *runs* a check — the criterion is a claim and the
-  evidence is text it stores verbatim. Completing with one still open is not
-  refused; it is counted.
-- **The agent can read its own record.** `outcomes` is on the read scope, so
-  even a read-only session can ask what its rework rate on this project is
-  before deciding how carefully to work.
-- **Agents get long-term memory.** `search_memory` gives even a read-only
-  agent bm25-ranked retrieval over your imported docs *and* every task
-  annotation — feed it your ADRs with `tasqx memory import docs/`, and past
-  decisions surface while it works. Annotations feed the same index, so an
-  agent that documents its work is building the knowledge base as a side
-  effect.
-- **Token spend lands on the task.** `complete_task` takes token counts plus
-  who spent them; a log-parse fallback fills gaps and refuses contested
-  samples rather than guess. The table, the dashboard and the HTML report all
-  show what each task cost.
-- **Guardrails are structural.** A read-only session never sees the write
-  tools in its tool list, there is no bulk-delete tool, and cancelling goes
-  through the same reversible, logged path as everything else — an agent
-  cannot quietly destroy a week of work. The one permanent delete
-  (`remove_memory`, for retracting a wrongly stored document) says so in its
-  own description.
-
-The server tells an agent what it can call, and also when: `initialize`
-carries a scope-aware `instructions` block that a host such as Claude Code
-puts in the agent's system prompt, so a fresh install already nudges the
-agent to search before deciding and to write as it works. The skill in
-[`.claude/skills/tasqx-workflow/`](.claude/skills/tasqx-workflow/SKILL.md) —
-`tasqx setup` installs it for you, or Claude Code picks it up automatically
-inside this repo — is the fuller version of how to *work*, and the
-paste-anywhere block in
-[Giving an agent memory in any client](docs/guides/agent-starter-prompt.md)
-does the same for any other client. Scripts can skip MCP entirely and talk to
-the API directly:
-
-```console
-echo '{"tasqx":"1","method":"task.list","params":{"filter":"@working"}}' | tasqx api
-```
-
-## The details that add up
-
-- **Real scheduling, plain words.** Recurrence (`every 3 days`,
-  `weekly on mon,wed`, `monthly on the 2nd tuesday`), reminders anchored to
-  the due date so they move when it moves, and `wait:`/`scheduled:` dates
-  that keep future work out of today's view until it's actionable.
-- **A filter language, not a flag zoo.** `project:work and (+api or +ui)` —
-  with `and`, `or`, parentheses and `-tag` exclusions — works on every
-  listing command, `report` and `export` included.
-- **Reports you can send.** Grouped summaries in the terminal, throughput /
-  heatmap / burndown charts drawn from the event log, or a self-contained
-  themed HTML page with zero external requests. Five built-in themes, and
-  output degrades cleanly down to a colorless terminal. `--outcomes` reports
-  the other axis — rework, calibration, silent completions, abandoned work,
-  forced completions.
-
-  ![The HTML weekly review: headline counts, then what needs attention](docs/img/report.png)
-- **Built for scripts too.** Every command with a result takes `--json`, and
-  exit codes mean something and don't change: `0` ok, `1` failed before or
-  beneath the request (the store would not open, a write failed, `watch` had
-  no daemon to follow, or the engine returned `internal`), `2` bad request,
-  `4` not found, `5` conflict, `6` unsupported API version. A live daemon
-  (`tasqx daemon`) gives many concurrent clients one writer and pushes changes
-  to `tasqx watch`.
-- **Tab completion that knows your data.** bash, zsh, fish, elvish and
-  PowerShell: verbs, flags, file paths, your task ids (with titles where the
-  shell allows), projects, tags, the capture sugar and the filter grammar.
-  `tasqx completions --install` sets it up and asks before touching anything;
-  or add the line for your shell yourself.
-
-bash, in `~/.bashrc`:
-
-```console
-source <(TASQX_COMPLETE=bash tasqx)
-```
-
-zsh, in `~/.zshrc`, after your `compinit` line:
-
-```console
-source <(TASQX_COMPLETE=zsh tasqx)
-```
-
-fish, in `~/.config/fish/completions/tasqx.fish`:
-
-```console
-TASQX_COMPLETE=fish tasqx | source
-```
-
-elvish, in `~/.elvish/rc.elv`:
-
-```console
-eval (E:TASQX_COMPLETE=elvish tasqx | slurp)
-```
-
-PowerShell, in `$PROFILE`:
-
-```console
-$env:TASQX_COMPLETE = "powershell"; tasqx | Out-String | Invoke-Expression; Remove-Item Env:\TASQX_COMPLETE
-```
-
-Platform notes (zsh ordering, Windows profiles, execution policy) are in the
-[Shell Completion](docs/wiki/Shell-Completion.md) page.
-
-## Learn more
-
-The **[documentation site](https://dimitritholen.github.io/tasqx/)** is the guide `tasqx docs` opens offline, published from `main`.
-The **[wiki](docs/wiki/Home.md)** explains every command in plain language.
-The worked guides each take five minutes and end with commands you can paste:
-
-- [Feature development](docs/guides/feature-development.md) — a backlog per
-  feature, ordered by dependencies. The solo alternative to a board.
-- [Driving tasqx from an AI agent](docs/guides/ai-agent-workflow.md) — wire up
-  MCP and let an agent work the backlog end to end.
-- [A self-improving agent](docs/guides/self-improving-agent.md) — a session-end
-  retrospective skill that records what each task taught, run on an evidence
-  bundle rather than after every completion.
-- [Giving an agent memory in any client](docs/guides/agent-starter-prompt.md)
-  — a paste-anywhere block for clients without a tasqx skill.
-- [Personal task management](docs/guides/personal-gtd.md) — frictionless
-  capture and a five-minute weekly review.
-- [Standups and reports](docs/guides/standup-reporting.md) — yesterday's
-  output, terminal charts, an HTML review you can send.
-- [Token accounting](docs/guides/token-accounting.md) — measuring what agent
-  work costs, and how attribution decides who pays.
-
-## Under the hood
+## Built to be trusted
 
 There is one JSON API; the CLI, the MCP server and the HTML report are all
 clients of the same dispatch, so where surfaces overlap they behave
@@ -383,10 +199,26 @@ example must parse, and the safe ones are executed for real. `cargo mutants`
 breaks the code on purpose to check the tests notice; it once caught a
 one-line deletion that made `(a or b) and c` silently parse as
 `a or (b and c)` — a bug that would have returned a perfectly normal-looking
-table of exactly the wrong rows. [`DESIGN.md`](DESIGN.md) is the spec and
-carries the decision log explaining why things are the way they are;
-[`CONTRIBUTING.md`](CONTRIBUTING.md) covers building, the gates and releases,
-and [`CHANGELOG.md`](CHANGELOG.md) what changed in each version.
+table of exactly the wrong rows.
+
+[`DESIGN.md`](DESIGN.md) is the spec and its decision log;
+[`CONTRIBUTING.md`](CONTRIBUTING.md) covers building, the gates and releases;
+[`CHANGELOG.md`](CHANGELOG.md) says what changed in each version.
+
+## Learn more
+
+The **[documentation site](https://dimitritholen.github.io/tasqx/)** is the guide `tasqx docs` opens offline, published from `main`.
+The **[wiki](docs/wiki/Home.md)** explains every command in plain language, and
+says plainly [what tasqx does not do yet](docs/wiki/Home.md#honest-edges).
+The worked guides each take five minutes and end with commands you can paste:
+
+- [Feature development](docs/guides/feature-development.md) — a backlog per feature, ordered by dependencies.
+- [Driving tasqx from an AI agent](docs/guides/ai-agent-workflow.md) — let an agent work the backlog end to end.
+- [A self-improving agent](docs/guides/self-improving-agent.md) — a retrospective skill that records what each task taught.
+- [Giving an agent memory in any client](docs/guides/agent-starter-prompt.md) — a paste-anywhere block for clients without a tasqx skill.
+- [Personal task management](docs/guides/personal-gtd.md) — frictionless capture and a five-minute weekly review.
+- [Standups and reports](docs/guides/standup-reporting.md) — yesterday's output, terminal charts, an HTML review you can send.
+- [Token accounting](docs/guides/token-accounting.md) — what agent work costs, and who pays.
 
 ## License
 
@@ -394,14 +226,3 @@ and [`CHANGELOG.md`](CHANGELOG.md) what changed in each version.
 product, and every release automatically becomes plain MIT two years after it
 ships. Using it inside your company, scripting it, building on its API: all
 fine.
-
-## Honest edges
-
-`tasqx undo` is narrow on purpose: it reverses the newest event only, over
-four operations, and refuses everything else by name along with the verb that
-does take it back. `tasqx agenda` is a day-grouped list, not the week grid the
-spec sketched. There is no `unarchive` — importing a saved export is the way
-back. The rest of the TUI beyond `tasqx config edit`, plugins and sync are
-specified in `DESIGN.md` and don't exist yet; they were designed together so
-adding them later doesn't touch the data model, but "designed" is doing a lot
-of work in that sentence.
