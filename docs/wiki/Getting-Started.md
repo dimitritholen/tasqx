@@ -37,6 +37,48 @@ Prebuilt binaries for Linux, macOS and Windows are also on the
 [Releases page](https://github.com/dimitritholen/tasqx/releases), and you can
 build from source with `cargo install --path crates/tasqx-cli`.
 
+## Install fine print
+
+Both installer scripts pick the newest release, resolve your target triple,
+verify the archive against its published checksum, and write nothing outside
+the install directory (`~/.local/bin`, or
+`%LOCALAPPDATA%\Programs\tasqx\bin` on Windows, where that one directory is
+added to your user PATH and `-Uninstall` takes it back out). Neither touches a
+shell startup file unless you ask.
+
+A pipe passes no arguments, so flags need the longer form:
+
+```console
+curl -fsSL https://raw.githubusercontent.com/dimitritholen/tasqx/main/install.sh | sh -s -- --dry-run
+```
+
+```console
+&([scriptblock]::Create((irm https://raw.githubusercontent.com/dimitritholen/tasqx/main/install.ps1))) -DryRun
+```
+
+The rest are `--uninstall`/`-Uninstall`, `--completions`/`-Completions` and
+`--help`/`-Help`; every switch also has an environment variable
+(`TASQX_UNINSTALL`, `TASQX_DRY_RUN`, …), `TASQX_VERSION` pins a tag, and
+`TASQX_INSTALL` moves the destination.
+
+Honesty about what that buys you:
+
+- **The checksum is integrity, not provenance.** It catches a truncated
+  transfer or a corrupt CDN object; it is served from the same host as the
+  archive, so it proves nothing about who built it. Nothing here is signed.
+- **The binaries are unsigned.** On macOS the curl route goes *around*
+  Gatekeeper rather than passing it — that is why the install just works.
+- **The Linux build links your system glibc** (SQLite is bundled; there is no
+  other runtime). The floor is whatever GitHub's current `ubuntu-latest`
+  provides; re-derive it from a release binary with
+  `objdump -T tasqx | grep -o 'GLIBC_[0-9.]*' | sort -uV | tail -1`. There is
+  no musl build — an older distro builds from source.
+
+All of it applies to the package-manager routes too: the Homebrew formula and
+the Scoop manifest are generated per release (`scripts/brew-formula.sh`,
+`scripts/scoop-manifest.sh`) from the same published checksums, and point at
+the same unsigned archives.
+
 ## The whole loop is four commands
 
 - `tasqx init work`: create a project — just a name, no folder

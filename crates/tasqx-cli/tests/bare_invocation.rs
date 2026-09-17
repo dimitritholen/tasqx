@@ -2,7 +2,7 @@
 //!
 //! Bare `tasqx` prints the working set, and that is not an implementation
 //! detail anybody may quietly reinterpret: DESIGN.md §5 shows it, `README.md`
-//! shows it, both guides show it, and it is in the shell history of everyone
+//! showed it, both guides show it, and it is in the shell history of everyone
 //! who has ever used this tool. D58 gives it a second meaning — a full-screen
 //! dashboard — on exactly one condition, `is_interactive && !json &&
 //! dashboard.enabled`. This file is the other side of that condition: the set

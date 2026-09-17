@@ -104,3 +104,14 @@ task, and where to find help.
   releases.
 - **Nothing is silently destroyed.** There is no hard delete. `cancel` is
   reversible with `reopen`, and every change lands in an append-only event log.
+
+## Honest edges
+
+`tasqx undo` is narrow on purpose: it reverses the newest event only, over
+four operations, and refuses everything else by name along with the verb that
+does take it back. `tasqx agenda` is a day-grouped list, not the week grid the
+spec sketched. There is no `unarchive` — importing a saved export is the way
+back. The rest of the TUI beyond `tasqx config edit`, plugins and sync are
+specified in `DESIGN.md` and don't exist yet; they were designed together so
+adding them later doesn't touch the data model, but "designed" is doing a lot
+of work in that sentence.

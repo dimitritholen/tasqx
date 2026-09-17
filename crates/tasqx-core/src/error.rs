@@ -40,7 +40,7 @@ impl ErrorCode {
     /// `pub` because there are consumers now. The note that used to sit on the
     /// test-local `ALL` said a public list "would be API surface with no
     /// consumer", which was true when it was written; the guide's two
-    /// exit-code tables and the prose guards over the README and the wiki are
+    /// exit-code tables and the prose guards over the wiki and the README are
     /// three consumers that cannot derive membership any other way.
     pub fn all() -> Vec<ErrorCode> {
         fn next(c: ErrorCode) -> Option<ErrorCode> {

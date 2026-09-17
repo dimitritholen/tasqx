@@ -62,6 +62,44 @@ them (and learn what that unblocked), start and stop timers, tag, annotate,
 wire up dependencies, create projects, and search and store
 [memory](Memory.md).
 
+Twenty-nine tools, one verb each. Nine reads: `list_tasks`, `get_task`,
+`brief_task`, `summary`, `outcomes`, `list_projects`, `search_memory`,
+`get_memory`, `list_memory`.
+Twenty writes: `add_task`, `modify_task`, `complete_task`, `reopen_task`,
+`cancel_task`, `start_timer`, `stop_timer`, `tag_task`, `untag_task`,
+`annotate_task`, `remove_annotation`, `add_check`, `set_check`,
+`remove_check`, `add_dependency`, `remove_dependency`, `add_memory`,
+`update_memory`, `remove_memory`, `create_project` (all prefixed `tasqx_`).
+
+What makes this more than remote CRUD:
+
+- **One call before starting, instead of five.** `brief_task` returns the task,
+  each prerequisite with **what that task concluded**, what this one blocks, and
+  relevant memory — under a query tasqx derives from the task's own title, tags
+  and project. The agent supplies no search terms, which matters because a
+  guessed term that finds nothing looks exactly like a store with nothing in it.
+- **Completing a task returns what it unblocked**, so an agent can decompose a
+  feature into a dependency chain with `add_dependency` and then walk it,
+  picking up each task the moment its prerequisites clear.
+- **"Done" can mean something.** Acceptance criteria are rows with a state and a
+  citation (`add_check`, `set_check`), not prose in an annotation that nothing
+  can ask about. tasqx never *runs* a check — the criterion is a claim and the
+  evidence is text it stores verbatim. Completing with one still open is not
+  refused; it is counted.
+- **The agent can read its own record.** `outcomes` is on the read scope, so
+  even a read-only session can ask what its rework rate on this project is
+  before deciding how carefully to work.
+- **Agents get long-term memory.** `search_memory` gives even a read-only
+  agent bm25-ranked retrieval over your imported docs *and* every task
+  annotation — feed it your ADRs with `tasqx memory import docs/`, and past
+  decisions surface while it works. Annotations feed the same index, so an
+  agent that documents its work is building the knowledge base as a side
+  effect.
+- **Token spend lands on the task.** `complete_task` takes token counts plus
+  who spent them; a log-parse fallback fills gaps and refuses contested
+  samples rather than guess. The table, the dashboard and the HTML report all
+  show what each task cost.
+
 Safety properties worth knowing:
 
 - **Read-only sessions can't see the write tools at all** — an agent can't
@@ -145,6 +183,13 @@ want to act on:
   in the annotation row *and* in the original write's audit event, in one
   transaction, so a secret pasted into a note is also gone from an export.
   `tasqx undo` cannot bring it back.
+
+The server's `instructions` block is the short version of how to work, so a
+fresh install already nudges the agent to search before deciding and to write
+as it works. The skill in
+[`.claude/skills/tasqx-workflow/`](../../.claude/skills/tasqx-workflow/SKILL.md)
+— `tasqx setup` installs it for you, or Claude Code picks it up automatically
+inside the tasqx repository — is the fuller version.
 
 For the full workflow — what deserves a backlog entry, searching memory before
 starting, annotating before completing — see the
