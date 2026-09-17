@@ -1,4 +1,4 @@
-//! The `tasqx setup` checklist (D157).
+//! The `tasqx setup` checklist (D158).
 //!
 //! Same split as every screen on the `tui` foundation (D26): [`App`] folds a
 //! key into state and answers with an [`Action`]; [`render`] draws it and
