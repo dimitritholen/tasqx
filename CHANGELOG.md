@@ -4,6 +4,94 @@ What changed in each tasqx release, newest first. Every release also lists its
 commits on the [releases page](https://github.com/dimitritholen/tasqx/releases),
 where the binaries, checksums and installers are.
 
+## 0.10.0
+
+This release is mostly about AI agents. A correction you give once is now
+remembered: a memory doc can be marked standing, and every new MCP session
+starts with that project's standing rulings. The tool list an agent pays for
+on every prompt is about a quarter smaller, and a task can be shown as a card.
+Two defaults changed in ways a script or an agent setup can notice, so read
+the first section before upgrading.
+
+### Changed: check these before upgrading
+
+- **`tasqx done` refuses a task that still has open blockers.** It used to
+  complete it silently, which left a dependent done ahead of the work it
+  depended on. It now exits with `conflict` (exit 5) and names each open
+  blocker. `--force` (MCP `force: true`) completes it anyway, the override is
+  recorded on the event, and `tasqx report --outcomes` counts it under a new
+  `forced` metric. A script that completes tasks out of dependency order needs
+  `--force` or a reorder.
+- **MCP reads answer less by default.** `tasqx_get_task` and `tasqx_brief_task`
+  send the rendered view only, and `include_json: true` brings back the JSON
+  block. `tasqx_list_tasks` sends nine fields per row with null keys left out,
+  and `fields: []` returns the whole row. `tasqx_search_memory` and the brief
+  leave out each hit's bm25 `rank`, and `include_rank: true` restores it.
+  `tasqx_list_memory` pages twenty rows of `id`, `title`, `source` and
+  `modified`, and `include_preview: true` restores the rest. The JSON API and
+  the CLI still return every field, so this affects only agents that parsed
+  the dropped ones.
+- **The brief shows five memory hits instead of ten,** in the CLI, the JSON
+  API and MCP alike. `--memory-limit` (`memory_limit`) still asks for more.
+
+### Added
+
+- **Standing memory.** `tasqx memory add --standing` marks a doc as a ruling
+  for every session of its project, or of every project when it has none.
+  `memory update --standing true|false` sets or clears the mark, and
+  `memory list --standing` shows the marked docs. Over MCP, `tasqx_add_memory`,
+  `tasqx_update_memory` and `tasqx_list_memory` take `standing`. An existing
+  store gains the flag when it is opened, and exports carry it. Past fifteen
+  standing docs in one project, `add` answers with a hint to merge or clear
+  some.
+- **New MCP sessions start with the project's standing rulings.** The
+  `initialize` instructions now end with them. The project is taken from the
+  folder `tasqx mcp serve` runs in, or the nearest parent folder named after a
+  project, so a git worktree finds its repo. Failing that, the default project
+  is used. Standing rulings come first and are never dropped. The project's
+  newest other docs fill the rest of a 3 KB budget, under a separate heading
+  that marks them as context rather than rules. With nothing to show, the
+  instructions are exactly what 0.9.0 sent.
+- **Task cards.** `tasqx show`, `brief`, `next` and `why` take `--card` and
+  print a task as a fixed 72-column box, with `--ascii` for plain borders.
+  `tasqx_get_task`, `tasqx_brief_task` and `tasqx_complete_task` take
+  `view: "card"`, so an agent can hand a person the same box. A completion
+  asked for the card answers with the closing card, which saves a second read.
+- **Shorter tool descriptions.** Every MCP tool description now states only
+  its contract. The whole tool list shrank from 42.7 KB to about 31 KB, which
+  is roughly 3,000 fewer tokens on every prompt for clients that load all
+  tools up front. The reasoning moved to DESIGN.md, where
+  `tasqx_search_memory` finds it once the docs are imported.
+- **The brief keeps room for rulings.** Half of the brief's memory hits are
+  reserved for knowledge docs, so a project's many task notes can no longer
+  bury the decisions that govern it.
+- **A documentation site.** The guide `tasqx docs` opens offline is also
+  published at https://dimitritholen.github.io/tasqx/ on every push to `main`.
+  Its screens are real captured terminal output shown as text, and CI fails
+  when a screen no longer matches what the binary prints.
+- **`TASQX_NOW` pins the clock.** Set it to an RFC 3339 instant and every date
+  tasqx prints or stores uses that instant. It exists for reproducible
+  screenshots and tests, and `tasqx about` says when a pin is active. An
+  invalid value exits 2 before anything is written.
+
+### Fixed
+
+- **A done task could still report unmet blockers,** so `task.get` answered
+  `blocked: false` next to a non-empty blocker list. A closed task now has
+  none, and every reader uses the same rule.
+- **`tasqx_get_task` could exceed the MCP response budget** when the caller
+  named its own page size. The budget now always holds. An oversized note is
+  cut in the response with a marker, the store keeps it whole, and
+  `max_body_bytes` raises the cap.
+- **`memory list` could show an older doc above a newer one** when their
+  timestamps had different lengths. It now orders by the actual instant.
+- **Re-importing a markdown folder did not bump a doc's revision,** so an
+  update holding the old revision could overwrite the import. The import now
+  bumps it, and that update gets a conflict instead.
+- **An MCP call with `arguments: null` skipped `tasqx_list_tasks`' defaults.**
+- **`tasqx docs` could exit outside its JSON envelope** when the page could
+  not be written.
+
 ## 0.9.0
 
 One addition aimed at the first minute after `claude mcp add tasqx` — the
