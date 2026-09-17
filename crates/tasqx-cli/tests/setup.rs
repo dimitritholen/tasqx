@@ -187,39 +187,48 @@ fn an_unknown_only_name_exits_2_naming_the_valid_ones() {
     );
 }
 
-/// A PATH holding only a fake `claude` that writes its argv, one per line.
+/// A PATH holding only a fake `claude`. Each call appends its argv, space
+/// joined, as one line of `calls.txt`, and writes the `$HOME` it saw to
+/// `home.txt`.
 #[cfg(unix)]
-fn fake_claude(dir: &Path) -> (PathBuf, PathBuf) {
+fn fake_claude(dir: &Path) -> (PathBuf, PathBuf, PathBuf) {
     use std::os::unix::fs::PermissionsExt;
     let bin_dir = dir.join("bin");
     std::fs::create_dir_all(&bin_dir).unwrap();
-    let argv = dir.join("argv.txt");
+    let calls = dir.join("calls.txt");
+    let home = dir.join("home.txt");
     let script = bin_dir.join("claude");
     std::fs::write(
         &script,
-        format!("#!/bin/sh\nprintf '%s\\n' \"$@\" > '{}'\n", argv.display()),
+        format!(
+            "#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{}'\nprintf '%s' \"$HOME\" > '{}'\n",
+            calls.display(),
+            home.display()
+        ),
     )
     .unwrap();
     std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
-    (bin_dir, argv)
+    (bin_dir, calls, home)
 }
 
 #[cfg(unix)]
 #[test]
-fn yes_registers_mcp_through_claude_mcp_add_at_user_scope() {
+fn yes_registers_mcp_through_claude_mcp_add_at_user_scope_under_the_given_home() {
     let dir = scratch("claude");
-    let (path, argv) = fake_claude(&dir);
+    let (path, calls, home) = fake_claude(&dir);
     let (code, out, err) = run(bin(&dir)
         .env("PATH", &path)
         .args(["--yes", "--only", "mcp"]));
     assert_eq!(code, 0, "stdout: {out}\nstderr: {err}");
-    let called = std::fs::read_to_string(&argv).expect("claude was called");
+    let called = std::fs::read_to_string(&calls).expect("claude was called");
     assert_eq!(
         called.lines().collect::<Vec<_>>(),
-        [
-            "mcp", "add", "--scope", "user", "tasqx", "--", "tasqx", "mcp", "serve", "--scope",
-            "write"
-        ]
+        ["mcp add --scope user tasqx -- tasqx mcp serve --scope write"]
+    );
+    assert_eq!(
+        std::fs::read_to_string(&home).unwrap(),
+        dir.join("home").display().to_string(),
+        "claude must register into the --home profile, not the real one"
     );
     assert!(row(&out, "mcp").contains("installed"), "{out}");
     assert!(
