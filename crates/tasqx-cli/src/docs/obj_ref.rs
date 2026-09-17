@@ -528,7 +528,8 @@ fn task_lifecycle() -> String {
         p("<code>backlog</code> and <code>pending</code> are one question asked of the clock \
            every time a task is read: a task is in <code>backlog</code> while its \
            <code>wait</code> or <code>scheduled</code> instant is still in the future, and in \
-           <code>pending</code> otherwise. So every arrow into that box lands in whichever of the \
+           <code>pending</code> otherwise. An <code>active</code> task is never asked: a \
+           running clock stays <code>active</code> whatever its dates say. So every arrow into that box lands in whichever of the \
            two the task's dates say — a task added, stopped or reopened with a future date is in \
            <code>backlog</code>, and moves to <code>pending</code> only once neither its \
            <code>wait</code> nor its <code>scheduled</code> is still in the future — each has \
@@ -1069,6 +1070,15 @@ mod tests {
             status(held),
             "pending",
             "released once neither is in the future"
+        );
+        // The rule never touches a running clock: effective_status leaves
+        // Active alone (PR #58 review).
+        call("task.start", json!({"ref": held, "keep": true})).unwrap();
+        call("task.modify", json!({"ref": held, "set": {"wait": far}})).unwrap();
+        assert_eq!(
+            status(held),
+            "active",
+            "a future date does not park a running task"
         );
 
         // D140 refuses only when BOTH the incoming start and the running
