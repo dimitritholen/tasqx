@@ -44,7 +44,7 @@ To wire it into Claude Code by hand, without the skills that
 [`tasqx setup`](#tasqx-setup) adds:
 
 ```console
-claude mcp add tasqx -- tasqx mcp serve --scope write
+claude mcp add --scope user tasqx -- tasqx mcp serve --scope write
 ```
 
 Any other MCP client takes the same shape in its config:

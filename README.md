@@ -214,7 +214,7 @@ later and it shows what's already in place. Want only the server, wired by
 hand?
 
 ```console
-claude mcp add tasqx -- tasqx mcp serve --scope write
+claude mcp add --scope user tasqx -- tasqx mcp serve --scope write
 ```
 
 Any other MCP client takes the same shape:
