@@ -226,6 +226,12 @@ fn render(
     // What to emit when a link closes: `</a>` for a rewritten one, the URL for
     // an external one, nothing for a link that became plain text.
     let mut link_closers: Vec<String> = Vec::new();
+    // The open table's column headers, and where a body cell is: each `<td>`
+    // carries its header as `data-label`, which is what a phone shows once
+    // the row stacks into a card (the builders' `table_owned` does the same).
+    let mut labels: Vec<String> = Vec::new();
+    let mut in_body = false;
+    let mut col = 0usize;
 
     let mut i = 0;
     while i < events.len() {
@@ -307,7 +313,39 @@ fn render(
                 out.push(html("<div class=\"tw\"><table class=\"grid\">".to_string()));
             }
             Event::End(TagEnd::Table) => {
+                in_body = false;
                 out.push(html("</tbody></table></div>".to_string()));
+            }
+            Event::Start(Tag::TableHead) => {
+                labels.clear();
+                let mut start = 0;
+                for (j, ev) in events.iter().enumerate().skip(i + 1) {
+                    match ev {
+                        Event::Start(Tag::TableCell) => start = j + 1,
+                        Event::End(TagEnd::TableCell) => {
+                            labels.push(inline_text(&events[start..j]).trim().to_string());
+                        }
+                        Event::End(TagEnd::TableHead) => break,
+                        _ => {}
+                    }
+                }
+                out.push(events[i].clone());
+            }
+            Event::End(TagEnd::TableHead) => {
+                in_body = true;
+                out.push(events[i].clone());
+            }
+            Event::Start(Tag::TableRow) => {
+                col = 0;
+                out.push(events[i].clone());
+            }
+            Event::Start(Tag::TableCell) if in_body => {
+                let label = labels.get(col).map(String::as_str).unwrap_or_default();
+                out.push(html(format!("<td data-label=\"{}\">", esc(label))));
+            }
+            Event::End(TagEnd::TableCell) if in_body => {
+                col += 1;
+                out.push(html("</td>".to_string()));
             }
 
             Event::Start(Tag::BlockQuote(_)) => {
