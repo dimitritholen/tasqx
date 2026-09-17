@@ -96,8 +96,9 @@ pub(super) const OBJECTS: [Object; 8] = [
     Object {
         id: "obj-annotation",
         name: "Annotation",
-        lead: "An annotation is a note on a task, stored verbatim. Notes are added and removed, \
-               never edited. <code>annotation.remove</code> scrubs a note's text and leaves a \
+        lead: "An annotation is a note on a task, stored verbatim. No method edits a note: notes \
+               are added and removed, and <code>store.import</code> replaces an imported task's \
+               notes with the document's. <code>annotation.remove</code> scrubs a note's text and leaves a \
                tombstone — its id and when it went — under <code>annotations_removed</code>; \
                undoing the <code>annotation.add</code> that wrote a note deletes it outright, \
                with no tombstone.",
@@ -150,7 +151,7 @@ pub(super) const OBJECTS: [Object; 8] = [
         id: "obj-memory",
         name: "Memory document",
         lead: "A memory document is a piece of knowledge the store keeps beside the tasks: a \
-               title and a body, searchable together with every annotation. It can be scoped to a \
+               title and a body, searchable together with the notes on tasks. It can be scoped to a \
                project and marked standing (D156). Importing a doc with a <code>source</code> \
                already stored replaces that doc in place; removing one is permanent.",
         namespaces: &["memory"],
@@ -160,11 +161,14 @@ pub(super) const OBJECTS: [Object; 8] = [
     Object {
         id: "obj-event",
         name: "Event",
-        lead: "An event is one row of the append-only audit log. Writes to tasks — their notes, \
-               checks, dependencies and measurements included — to projects and to memory \
-               documents append one. Events are never edited: <code>event.revert</code> undoes \
-               the newest by appending its inverse, and refuses by name the ops it cannot \
-               reverse.",
+        lead: "An event is one row of the audit log. Writes to tasks — their notes, checks, \
+               dependencies and measurements included — to projects and to memory documents \
+               append one. Events are not edited, with one narrow exception: \
+               <code>annotation.remove</code> redacts the body out of the \
+               <code>annotation.add</code> event that wrote the note, so a removed note's text \
+               does not survive in the log. <code>event.revert</code> rewrites nothing either: it \
+               undoes the newest event by appending its inverse, and refuses by name the ops it \
+               cannot reverse.",
         namespaces: &["event"],
         groups: &[("", "", d::EVENT_ROW)],
         example: ("event.list", "/events/0", &[]),
@@ -214,11 +218,16 @@ pub(super) fn objects_of(method: &str) -> Vec<&'static Object> {
 /// One row of an object's field table.
 pub(super) struct FieldRow {
     pub(super) caption: &'static str,
+    /// The field as the page names it: the group's page prefix plus its key.
+    /// Variants of one field share it.
+    pub(super) base: String,
+    /// The field as the responses in `contexts` spell it — `base`, unless a
+    /// response carries the group under a container of its own.
     pub(super) name: String,
     pub(super) field: &'static FieldDoc,
-    /// The methods whose responses carry this contract of the field, in
-    /// `PARAMS` order. Empty when the field has one contract everywhere, so
-    /// only a field that really differs is labelled.
+    /// The methods whose responses carry this spelling and contract of the
+    /// field, in `PARAMS` order. Empty when the field has one spelling and one
+    /// contract everywhere, so only a field that really differs is labelled.
     pub(super) contexts: Vec<&'static str>,
 }
 
@@ -228,63 +237,87 @@ fn same_contract(a: &FieldDoc, b: &FieldDoc) -> bool {
     a.ty == b.ty && a.null_ok == b.null_ok && a.optional == b.optional && a.desc == b.desc
 }
 
-/// The methods whose documented response carries `group`.
-fn methods_carrying(group: &[FieldDoc]) -> Vec<&'static str> {
+/// Every `(method, path)` whose documented response carries `group`, in
+/// `PARAMS` order.
+fn occurrences(group: &[FieldDoc]) -> Vec<(&'static str, &'static str)> {
     tasqx_core::PARAMS
         .iter()
-        .map(|(m, ..)| *m)
-        .filter(|m| d::result_shape(m).iter().any(|(_, g)| same_group(g, group)))
+        .flat_map(|(m, ..)| {
+            d::result_shape(m)
+                .iter()
+                .filter(|(_, g)| same_group(g, group))
+                .map(move |(path, _)| (*m, *path))
+        })
         .collect()
 }
 
-/// A page's field rows: one per distinct contract of each name.
+/// How a response at `path` spells a key of a group the page lists under
+/// `prefix`.
 ///
-/// A later group repeating a key is the same field as another response spells
-/// it. Where its contract is identical the responses share one row; where it
-/// differs — `store.export` omits `active_since` and `tokens` where `task.get`
-/// sends them, and its `annotations` are never paged — each contract is its
-/// own row, labelled with the responses that carry it, rather than the first
-/// one silently standing for all. A name's variants are adjacent, in the order
-/// the name first appears.
+/// An empty prefix is a field of the object itself, wherever the object sits.
+/// A prefix names a container (`unmet_blockers[].`): a response carrying the
+/// group inside that container spells it that way, and one carrying it
+/// anywhere else spells it under its own last path segment —
+/// `task.done`'s `result.blocked_by[]` gives `blocked_by[].short_id`.
+pub(super) fn spelling(prefix: &str, path: &str, key: &str) -> String {
+    let Some(container) = prefix.strip_suffix('.') else {
+        return format!("{prefix}{key}");
+    };
+    if path == container || path.ends_with(&format!(".{container}")) {
+        return format!("{prefix}{key}");
+    }
+    let last = path.rsplit('.').next().unwrap_or(path);
+    format!("{last}.{key}")
+}
+
+/// A page's field rows: one per distinct spelling and contract of each field.
+///
+/// A later group repeating a key is the same field as another response carries
+/// it. Where the spelling and the contract are identical the responses share
+/// one row; where either differs — `store.export` omits `active_since` and
+/// `tokens` where `task.get` sends them, `task.done` carries blocker rows under
+/// `blocked_by[]` rather than `unmet_blockers[]` — each is its own row,
+/// labelled with the responses that carry it, rather than the first one
+/// silently standing for all. A field's variants are adjacent, in the order
+/// the field first appears.
 pub(super) fn field_rows(o: &Object) -> Vec<FieldRow> {
     let mut rows: Vec<FieldRow> = Vec::new();
     for (caption, prefix, group) in o.groups {
-        let carriers = methods_carrying(group);
-        for f in *group {
-            let name = format!("{prefix}{}", f.key);
-            let same = rows
-                .iter_mut()
-                .find(|r| r.caption == *caption && r.name == name && same_contract(r.field, f));
-            match same {
-                Some(r) => {
-                    for m in &carriers {
-                        if !r.contexts.contains(m) {
-                            r.contexts.push(m);
+        for (method, path) in occurrences(group) {
+            for f in *group {
+                let base = format!("{prefix}{}", f.key);
+                let name = spelling(prefix, path, f.key);
+                let same = rows.iter_mut().find(|r| {
+                    r.caption == *caption
+                        && r.base == base
+                        && r.name == name
+                        && same_contract(r.field, f)
+                });
+                match same {
+                    Some(r) => {
+                        if !r.contexts.contains(&method) {
+                            r.contexts.push(method);
                         }
                     }
+                    None => rows.push(FieldRow {
+                        caption,
+                        base,
+                        name,
+                        field: f,
+                        contexts: vec![method],
+                    }),
                 }
-                None => rows.push(FieldRow {
-                    caption,
-                    name,
-                    field: f,
-                    contexts: carriers.clone(),
-                }),
             }
         }
     }
-    let order = |r: &FieldRow| {
-        tasqx_core::PARAMS
-            .iter()
-            .position(|(m, ..)| r.contexts.first() == Some(m))
-            .unwrap_or(usize::MAX)
-    };
+    let rank = |m: &str| tasqx_core::PARAMS.iter().position(|(p, ..)| *p == m);
     let mut out: Vec<FieldRow> = Vec::new();
     while !rows.is_empty() {
-        let (caption, name) = (rows[0].caption, rows[0].name.clone());
+        let (caption, base) = (rows[0].caption, rows[0].base.clone());
         let mut variants: Vec<FieldRow> = Vec::new();
         let mut i = 0;
         while i < rows.len() {
-            if rows[i].caption == caption && rows[i].name == name {
+            if rows[i].caption == caption && rows[i].base == base {
                 variants.push(rows.remove(i));
             } else {
                 i += 1;
@@ -294,10 +327,9 @@ pub(super) fn field_rows(o: &Object) -> Vec<FieldRow> {
             variants[0].contexts.clear();
         } else {
             for v in &mut variants {
-                v.contexts
-                    .sort_by_key(|m| tasqx_core::PARAMS.iter().position(|(p, ..)| p == m));
+                v.contexts.sort_by_key(|m| rank(m));
             }
-            variants.sort_by_key(order);
+            variants.sort_by_key(|v| v.contexts.first().and_then(|m| rank(m)));
         }
         out.extend(variants);
     }
@@ -498,13 +530,17 @@ fn task_lifecycle() -> String {
            <code>wait</code> or <code>scheduled</code> instant is still in the future, and in \
            <code>pending</code> otherwise. So every arrow into that box lands in whichever of the \
            two the task's dates say — a task added, stopped or reopened with a future date is in \
-           <code>backlog</code>, and moves to <code>pending</code> when the date passes or \
-           <code>task.modify</code> clears it. There is no separate waiting status. A backlog \
+           <code>backlog</code>, and moves to <code>pending</code> only once neither its \
+           <code>wait</code> nor its <code>scheduled</code> is still in the future — each has \
+           passed or been cleared with <code>task.modify</code>. There is no separate waiting status. A backlog \
            task cannot be started or completed. Starting a task without <code>keep</code> stops \
-           the one already running (D6) — or refuses, when that clock belongs to another named \
-           session (D140). <code>event.revert</code> can take back the newest \
-           <code>task.stop</code>, putting a task that is still <code>pending</code> back to \
-           <code>active</code>. <code>task.modify</code> can set <code>status</code> only to \
+           every task already running (D6), with one exception (D140): when the start names an \
+           <code>actor</code> and the most recently started running clock was started under a \
+           different named actor, the start is refused instead. A start that names no actor — \
+           <code>tasqx start</code> never does — auto-stops regardless; an MCP call always names \
+           one, its connection's unless the caller gives its own. When the newest event is a \
+           <code>task.stop</code>, <code>event.revert</code> takes it back, putting the task \
+           back to <code>active</code> if it is still <code>pending</code>. <code>task.modify</code> can set <code>status</code> only to \
            <code>cancelled</code>."),
         p("<strong>Blocked</strong> is not a status either: it is the \
            <a href=\"#obj-dependency\"><code>blocked</code></a> flag, true while an open task \
@@ -652,7 +688,7 @@ mod tests {
                             .iter()
                             .filter(|g2| g2.iter().any(|f2| f2.key == f.key))
                             .flat_map(|g2| owners_of(g2))
-                            .map(|(o, prefix)| (o, format!("{prefix}{}", f.key)))
+                            .map(|(o, prefix)| (o, spelling(prefix, path, f.key)))
                             .collect();
                         let pages: BTreeSet<&str> = owners.iter().map(|(o, _)| o.id).collect();
                         if PAGING_KEYS.contains(&f.key) {
@@ -762,6 +798,48 @@ mod tests {
             !id_rows[0].contains("href=\"#api-"),
             "a single contract is labelled"
         );
+    }
+
+    /// A group reused at another path is spelled at that path, with the method
+    /// that carries it there — not under the page's own prefix (PR #58 review:
+    /// `task.done` carries blocker rows under `blocked_by[]`, and
+    /// `annotation.remove` a tombstone under `removed`).
+    #[test]
+    fn a_group_reused_at_another_path_is_spelled_where_it_sits() {
+        let doc = super::super::generate();
+        for (page, spelled, method, not_under) in [
+            (
+                "obj-dependency",
+                "blocked_by[].short_id",
+                "task.done",
+                "unmet_blockers[].short_id",
+            ),
+            (
+                "obj-annotation",
+                "removed.id",
+                "annotation.remove",
+                "annotations_removed[].id",
+            ),
+        ] {
+            let html = page_html(&doc, page);
+            let link = format!("href=\"#api-{method}\"");
+            let rows = rows_named(html, spelled);
+            assert_eq!(
+                rows.len(),
+                1,
+                "`{page}` has no `{spelled}` row for `{method}`"
+            );
+            assert!(
+                rows[0].contains(&link),
+                "`{page}`'s `{spelled}` row does not name `{method}`"
+            );
+            assert!(
+                rows_named(html, not_under)
+                    .iter()
+                    .all(|r| !r.contains(&link)),
+                "`{page}` still files `{method}` under `{not_under}`"
+            );
+        }
     }
 
     /// Every group an object page lists is really in some response, so a page
@@ -971,6 +1049,75 @@ mod tests {
         call("task.stop", json!({"ref": e2})).unwrap();
         call("event.revert", json!({})).unwrap();
         assert_eq!(status(e2), "active", "undoing a stop restarts the clock");
+
+        // Either future date holds a task in backlog; clearing one of two
+        // releases nothing (PR #58 review, types.rs effective_status).
+        let far = "2999-01-01T00:00:00Z";
+        let held = add(json!({"wait": far, "scheduled": far}));
+        call("task.modify", json!({"ref": held, "set": {"wait": null}})).unwrap();
+        assert_eq!(
+            status(held),
+            "backlog",
+            "the future scheduled still holds it"
+        );
+        call(
+            "task.modify",
+            json!({"ref": held, "set": {"scheduled": null}}),
+        )
+        .unwrap();
+        assert_eq!(
+            status(held),
+            "pending",
+            "released once neither is in the future"
+        );
+
+        // D140 refuses only when BOTH the incoming start and the running
+        // clock's start named an actor, and they differ (PR #58 review).
+        let f = add(json!({}));
+        let g = add(json!({}));
+        call("task.start", json!({"ref": f, "actor": "a"})).unwrap();
+        assert!(
+            call("task.start", json!({"ref": g, "actor": "b"})).is_err(),
+            "a start naming another actor is refused"
+        );
+        assert_eq!(status(f), "active");
+        call("task.start", json!({"ref": g})).unwrap();
+        assert_eq!(
+            status(f),
+            "pending",
+            "an actor-less start auto-stops a named clock"
+        );
+        call("task.start", json!({"ref": f, "actor": "b"})).unwrap();
+        assert_eq!(
+            status(g),
+            "pending",
+            "a named start auto-stops an actor-less clock"
+        );
+        // The Task page's `_rev` and `completed` rows (PR #58 re-read): token
+        // spend leaves the revision alone, and a cancelled task is never
+        // stamped `completed`.
+        let get = |id: i64| call("task.get", json!({"ref": id})).unwrap();
+        let rev = get(g)["_rev"].clone();
+        call(
+            "token.add",
+            json!({"ref": g, "tool": "t", "source": "self-report", "confidence": "low",
+                   "input_tokens": 1}),
+        )
+        .unwrap();
+        assert_eq!(get(g)["_rev"], rev, "token spend bumped the task's _rev");
+        call("tag.add", json!({"ref": g, "tags": ["x"]})).unwrap();
+        assert_ne!(get(g)["_rev"], rev, "a tag change left _rev alone");
+        call("task.cancel", json!({"ref": g})).unwrap();
+        assert!(
+            get(g)["completed"].is_null(),
+            "a cancelled task was stamped"
+        );
+
+        let prose = task_lifecycle();
+        assert!(
+            prose.contains("once neither") && prose.contains("names an <code>actor</code>"),
+            "the prose does not state the two-date hold or the two-actor refusal"
+        );
 
         // So the drawing may not send any arrow to `pending` alone, and the
         // prose may not say a move ends there.

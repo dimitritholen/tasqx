@@ -181,9 +181,9 @@ pub const TASK_CORE: &[FieldDoc] = &[
     f("tags", "array", "Every tag on the task, as plain strings."),
     f("created", "string", "When the task was captured."),
     f("modified", "string", "When it last changed."),
-    n("completed", "string", "When it was completed, or null while it is open."),
+    n("completed", "string", "When `task.done` completed it, or null — on an open task, and on a cancelled one, which is never stamped."),
     n("budget_tokens", "integer", "The size gauge over FRESH tokens (D139), or null for no threshold. It stops nothing."),
-    f("_rev", "integer", "The row's revision counter, bumped by every write. Send it back as `expected_rev` to make a change conditional."),
+    f("_rev", "integer", "The task's revision counter, bumped by every change to the task or to its tags, notes, checks and dependencies — not by token spend or a fired reminder. Send it back as `expected_rev` to make a change conditional."),
 ];
 
 /// The live-read spelling of tracked time: an ISO duration plus the open interval's anchor.
@@ -537,7 +537,7 @@ pub const R_TASK_DONE: &[FieldDoc] = &[
 /// `task.modify`'s result.
 pub const R_TASK_MODIFY: &[FieldDoc] = &[
     f("short_id", "integer", "The task's short id — the small number every `ref` accepts and the CLI prints."),
-    f("_rev", "integer", "The row's revision counter, bumped by every write. Send it back as `expected_rev` to make a change conditional."),
+    f("_rev", "integer", "The task's revision counter, bumped by every change to the task or to its tags, notes, checks and dependencies — not by token spend or a fired reminder. Send it back as `expected_rev` to make a change conditional."),
     f("set", "object", "The RESOLVED value stored for each field this call named — `due: \"friday\"` comes back as its instant."),
 ];
 
@@ -882,7 +882,7 @@ pub const MEMORY_LIST_ROW: &[FieldDoc] = &[
     f("created", "string", "When it was stored."),
     f("modified", "string", "When it last changed — the column this list sorts by."),
     f("_rev", "integer", "The row's revision counter, bumped by every write. Send it back as `expected_rev` to make a change conditional."),
-    f("body_preview", "string", "The opening of the body, not the whole of it — browsing pays for a preview, not a payload."),
+    f("body_preview", "string", "The opening of the body, or all of it when the body is short (`body_truncated` says which) — browsing pays for a preview, not a payload."),
     f("body_truncated", "boolean", "Whether the preview is shorter than the body."),
     f("standing", "boolean", "Whether it is a standing ruling (D156) — on every row, not only on a page filtered by `standing`."),
 ];
@@ -1157,7 +1157,7 @@ pub const R_EVENT_REVERT: &[FieldDoc] = &[
     f("short_id", "integer", "The task's short id — the small number every `ref` accepts and the CLI prints."),
     f("title", "string", "The title of the task the undo touched."),
     f("restored", "object", "What the inverse put back — per-op, the undo's own vocabulary."),
-    f("_rev", "integer", "The row's revision counter, bumped by every write. Send it back as `expected_rev` to make a change conditional."),
+    f("_rev", "integer", "The task's revision counter, bumped by every change to the task or to its tags, notes, checks and dependencies — not by token spend or a fired reminder. Send it back as `expected_rev` to make a change conditional."),
 ];
 
 /// The event an undo reversed.
