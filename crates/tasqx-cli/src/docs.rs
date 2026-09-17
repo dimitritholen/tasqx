@@ -1055,13 +1055,7 @@ fn page_overview() -> String {
          layer, so \"call a function\" and \"send a JSON command\" run identical code. There is \
          exactly one dispatch table.",
     ));
-    s.push_str(&pre_plain(
-        "  tasqx CLI ─┐\n\
-         \x20 report   ─┼─→ stdio: one JSON envelope ─┐\n\
-         \x20 plugins  ─┤                             ├─→ dispatch ─→ storage ─→ SQLite (tasks.db + WAL)\n\
-         \x20 MCP      ─┘                             │                        └─→ events (append-only log)\n\
-         \x20 TUI/GUI  ───→ socket / named pipe ─→ daemon ─┘",
-    ));
+    s.push_str(ARCH_SVG);
 
     s.push_str(&h3("Every mutation is logged, in the same transaction"));
     s.push_str(&p(
@@ -1135,6 +1129,44 @@ fn page_overview() -> String {
     s.push_str(&page_close("overview"));
     s
 }
+
+/// The Overview page's "How the pieces fit" picture, drawn as inline SVG so it
+/// scales with the column and takes its colours from the theme variables: no
+/// asset file, and the light/dark switch repaints it like any other element.
+const ARCH_SVG: &str = r##"<figure class="arch"><svg viewBox="0 0 820 244" role="img" aria-labelledby="arch-t arch-d">
+<title id="arch-t">How the pieces fit</title>
+<desc id="arch-d">The tasqx CLI, the report, plugins and the MCP server each send one JSON envelope over stdio; a TUI or GUI talks to the daemon over a socket or named pipe. Both paths reach the same dispatch layer, which calls storage, which writes SQLite (tasks.db plus its WAL) and the append-only events log.</desc>
+<g class="wire">
+<path d="M110,31 C130,31 130,94 150,94"/><path d="M110,73 C130,73 130,94 150,94"/>
+<path d="M110,115 C130,115 130,94 150,94"/><path d="M110,157 C130,157 130,94 150,94"/>
+<path d="M110,217 H150"/><path d="M320,94 H370"/><path d="M320,217 H375"/>
+<path d="M420,200 V114"/><path d="M470,94 H510"/><path d="M610,94 H650"/>
+<path d="M560,114 V202 H650"/>
+</g>
+<g class="head">
+<path d="M142,90 L150,94 L142,98 z"/><path d="M142,213 L150,217 L142,221 z"/><path d="M362,90 L370,94 L362,98 z"/>
+<path d="M367,213 L375,217 L367,221 z"/><path d="M416,122 L420,114 L424,122 z"/><path d="M502,90 L510,94 L502,98 z"/>
+<path d="M642,90 L650,94 L642,98 z"/><path d="M642,198 L650,202 L642,206 z"/>
+</g>
+<g class="box">
+<rect x="0" y="14" width="110" height="34" rx="7"/><rect x="0" y="56" width="110" height="34" rx="7"/>
+<rect x="0" y="98" width="110" height="34" rx="7"/><rect x="0" y="140" width="110" height="34" rx="7"/>
+<rect x="0" y="200" width="110" height="34" rx="7"/>
+<rect x="150" y="74" width="170" height="40" rx="7"/><rect x="150" y="200" width="170" height="34" rx="7"/>
+<rect x="375" y="200" width="90" height="34" rx="7"/><rect x="510" y="74" width="100" height="40" rx="7"/>
+<rect x="650" y="60" width="170" height="68" rx="7"/><rect x="650" y="176" width="170" height="52" rx="7"/>
+<rect class="hub" x="370" y="74" width="100" height="40" rx="7"/>
+</g>
+<g class="label">
+<text x="55" y="36">tasqx CLI</text><text x="55" y="78">report</text><text x="55" y="120">plugins</text>
+<text x="55" y="162">MCP</text><text x="55" y="222">TUI / GUI</text>
+<text x="235" y="91">stdio</text><text class="sub" x="235" y="106">one JSON envelope</text>
+<text x="235" y="222">socket / named pipe</text><text x="420" y="222">daemon</text>
+<text class="hub" x="420" y="99">dispatch</text><text x="560" y="99">storage</text>
+<text x="735" y="90">SQLite</text><text class="sub" x="735" y="108">tasks.db + WAL</text>
+<text x="735" y="199">events</text><text class="sub" x="735" y="216">append-only log</text>
+</g>
+</svg></figure>"##;
 
 // ============================================================================
 // Page 2 — Install & quickstart
@@ -3123,6 +3155,17 @@ li { margin: 0 0 0.3rem; }
 pre.plain { background: var(--card); border: 1px solid var(--line); border-radius: 10px;
   padding: 0.8rem 0.9rem; margin: 0 0 1.2rem; overflow-x: auto;
   font-size: 0.82rem; line-height: 1.5; color: var(--fg); }
+figure.arch { margin: 0 0 1.2rem; padding: 0.9rem; overflow-x: auto;
+  background: var(--card); border: 1px solid var(--line); border-radius: 10px; }
+figure.arch svg { display: block; width: 100%; min-width: 36rem; height: auto; }
+figure.arch .wire path { fill: none; stroke: var(--muted); stroke-width: 1.5; }
+figure.arch .head path { fill: var(--muted); }
+figure.arch rect { fill: var(--bg); stroke: var(--line); stroke-width: 1.5; }
+figure.arch rect.hub { stroke: var(--accent); stroke-width: 2; }
+figure.arch text { fill: var(--fg); font-size: 13px; font-weight: 600; text-anchor: middle;
+  font-family: ui-monospace, "Cascadia Code", "SF Mono", Consolas, "Liberation Mono", monospace; }
+figure.arch text.sub { fill: var(--muted); font-size: 11px; font-weight: 400; }
+figure.arch text.hub { fill: var(--accent); }
 pre code { background: none; border: 0; padding: 0; white-space: pre; }
 .termbox { margin: 0 0 1.2rem; border: 1px solid var(--line);
   border-radius: 10px; overflow: hidden; background: var(--term-bg); }
