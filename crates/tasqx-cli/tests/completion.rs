@@ -1188,10 +1188,14 @@ fn the_escape_hatch_turns_off_values_and_leaves_the_structure() {
 ///
 /// The narrow half asks for **zero** milliseconds rather than a small number,
 /// and the difference is the whole reason this test is not itself a stopwatch:
-/// `recv_timeout` with a zero duration cannot wait, so the empty answer is a
-/// property of the code rather than of how fast the disk was. A one-millisecond
-/// budget would assert that an open is slower than a millisecond, which is a
-/// thing about the machine.
+/// `lookup` refuses to even start the worker on a zero budget (#683), so the
+/// empty answer is a property of the code rather than of how fast the disk
+/// was. A `recv_timeout` of zero on its own is not enough — a worker that
+/// opens the store and sends before the main thread reaches the timeout wins
+/// that race regardless of the duration — which is why the check has to come
+/// before the spawn rather than living in the wait. A one-millisecond budget
+/// would assert that an open is slower than a millisecond, which is a thing
+/// about the machine.
 ///
 /// # What it cannot see
 ///

@@ -709,7 +709,17 @@ where
     if std::env::var_os(NO_LOOKUP_VAR).is_some_and(|v| !v.is_empty()) {
         return None;
     }
-    guarded(budget(), move || {
+    let budget = budget();
+    // A zero budget means there is no time to look anything up, so starting
+    // the worker at all is wasted work — and worse, a race: a worker that
+    // opens the store and sends before this thread reaches `recv_timeout`
+    // hands back an answer a zero-duration wait was supposed to make
+    // impossible (#683). Bailing out here, before `guarded` spawns anything,
+    // is what actually makes the empty answer a property of the code.
+    if budget.is_zero() {
+        return None;
+    }
+    guarded(budget, move || {
         let mut backend = read_only_backend()?;
         f(&mut backend)
     })
