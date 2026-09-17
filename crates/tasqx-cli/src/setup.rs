@@ -1,4 +1,4 @@
-//! `tasqx setup` (DESIGN.md D157): the Claude Code integration, installed from
+//! `tasqx setup` (DESIGN.md D158): the Claude Code integration, installed from
 //! what this binary carries.
 //!
 //! Three items. `mcp` is the user-scope MCP registration, read out of
