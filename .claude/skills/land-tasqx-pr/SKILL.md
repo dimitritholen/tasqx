@@ -150,9 +150,9 @@ Run commands from the worktree, one plain command per call.
    are already marked, so evidence alone is enough). Complete once — a
    second completion of a done task is refused.
 
-7. **Print one closing line, no card.** Checks ticked or left open
-   honestly, and what the completion unblocked. The counts come from the
-   completed task's checks:
+7. **Print one closing line, no card.** A landed task is a routine event,
+   not a decision (D164). Checks ticked or left open honestly, and what the
+   completion unblocked. The counts come from the completed task's checks:
    `✔ #<id> done · <passed>/<total> checks · unblocked #<next>`.
 
 ## Verifiable end

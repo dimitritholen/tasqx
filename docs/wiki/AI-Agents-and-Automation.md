@@ -118,11 +118,23 @@ Safety properties worth knowing:
   parents), else the default project, within a 3 KB budget.
 
 `tasqx_get_task` and `tasqx_brief_task` take a `view` argument, `"markdown"`
-by default. Pass `view: "card"` when the task is going in front of a person
-rather than being read by the agent itself: the rendered block becomes a
-fixed-width, box-drawn card meant to be pasted whole into a chat reply or a
+by default. Pass `view: "card"` when a person has to decide on the task — one
+the agent proposes adding, or one they asked about: the rendered block becomes
+a fixed-width, box-drawn card meant to be pasted whole into a chat reply or a
 document, instead of the usual prose. The same card is available from a
 shell: `tasqx show 42 --card` prints the identical bytes.
+
+Routine events do not need a card. Starting or completing a task is one line
+the agent writes from what it already read — the brief and the completion's
+`unblocked` list:
+
+```text
+▶ #711 Add unc output style · M · 20m · 0/2 checks
+✔ #711 done · 2/2 checks · unblocked #712
+```
+
+A subagent handed a task runs `tasqx show <id> --card` itself instead of
+receiving the card pasted into its brief.
 
 Both tools answer the rendered view and nothing else. The machine-readable
 JSON block is the same result a second time, so it is sent only when you ask
@@ -138,9 +150,10 @@ paying for it:
   included, returns the engine's own full row.
 - **`tasqx_complete_task`** refuses a task with open blockers and names them;
   `force: true` completes it anyway, and the override is recorded and counted
-  in `tasqx_outcomes`. Pass `view: "card"` when a person will read the
-  outcome: the answer then leads with the box card of the task as completed,
-  so no `tasqx_get_task` re-read is needed.
+  in `tasqx_outcomes`. Pass `view: "card"` when a person has to decide on
+  the outcome: the answer then leads with the box card of the task as
+  completed, so no `tasqx_get_task` re-read is needed. A routine completion
+  leaves it out and prints the one `✔` line above.
 - A long annotation body is cut in a `tasqx_get_task`/`tasqx_brief_task`
   response with a marker naming its real size; `max_body_bytes` raises the
   cap, and a removed annotation is listed as a tombstone rather than
