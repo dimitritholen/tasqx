@@ -18,15 +18,15 @@ Set TypingSpeed 45ms
 Set Theme "Catppuccin Mocha"
 
 Source scripts/demo-prelude.tape
-Type "tasqx init release >/dev/null"
+Type "tasqx init release >/dev/null &&"
 Enter
-Type 'tasqx add "Freeze the v2 API" project:release !H >/dev/null'
+Type 'tasqx add "Freeze the v2 API" project:release !H >/dev/null &&'
 Enter
-Type 'tasqx add "Tag v2.0.0" project:release !H >/dev/null'
+Type 'tasqx add "Tag v2.0.0" project:release !H >/dev/null &&'
 Enter
-Type 'tasqx add "Announce the release" project:release !M >/dev/null'
+Type 'tasqx add "Announce the release" project:release !M >/dev/null &&'
 Enter
-Type "tasqx dep 63 62 >/dev/null; tasqx dep 64 63 >/dev/null; clear"
+Type `tasqx dep 63 62 >/dev/null && tasqx dep 64 63 >/dev/null && [ "$ready" ] && clear`
 Enter
 Sleep 2s
 Show

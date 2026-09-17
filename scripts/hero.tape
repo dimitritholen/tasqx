@@ -21,7 +21,7 @@ Set TypingSpeed 45ms
 Set Theme "Catppuccin Mocha"
 
 Source scripts/demo-prelude.tape
-Type "clear"
+Type `[ "$ready" ] && clear`
 Enter
 Sleep 2s
 Show
