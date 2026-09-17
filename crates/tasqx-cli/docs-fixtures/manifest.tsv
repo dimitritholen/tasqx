@@ -128,6 +128,7 @@ api-dependency-remove	pipe-mut	100	-	api	-	{"tasqx":"1","id":"dr1","method":"dep
 api-memory-get	pipe	100	-	api	-	{"tasqx":"1","id":"mg1","method":"memory.get","params":{"id":"eb864f1e-e68a-4d96-af89-597bd0d2d52e"}}
 api-memory-update	pipe-mut	100	-	api	-	{"tasqx":"1","id":"mu1","method":"memory.update","params":{"id":"1bce1a9b-5134-4ab7-8665-34cd79fe0c5f","body":"The handover happens Friday at 16:00, in the on-call channel."}}
 api-memory-remove	pipe-mut	100	-	api	-	{"tasqx":"1","id":"mr1","method":"memory.remove","params":{"id":"091eb5ff-05d5-4cb2-ba2f-0afdc77f7935"}}
+api-memory-import	pipe-mut	100	-	api	-	{"tasqx":"1","id":"mi1","method":"memory.import","params":{"docs":[{"title":"release-process","body":"Cut the release branch on Monday.","source":"docs/release.md"}]}}
 api-tokens-recompute	pipe	100	-	api	-	{"tasqx":"1","id":"rc1","method":"tokens.recompute"}
 api-report-outcomes	pipe	100	-	api	-	{"tasqx":"1","id":"ro1","method":"report.outcomes","params":{"group_by":"project","metrics":["rework","calibration"]}}
 api-store-import	pipe-mut	100	-	api	-	{"tasqx":"1","id":"si1","method":"store.import","params":{"tasks":[{"id":"9a1f3c52-0b44-4a2e-9d6f-7c5b1e08a4d1","short_id":900,"title":"Restore the incident timeline","status":"pending","priority":"M","project":"infra","created":"2026-09-10T08:00:00Z","modified":"2026-09-10T08:00:00Z","_rev":1,"tags":["ops"],"depends_on":[],"annotations":[]}]}}
