@@ -570,7 +570,11 @@ pub(crate) fn run_mcp_serve(scope: Scope) {
     };
     eprintln!("tasqx mcp: serving over stdio (scope={})", scope.as_str());
 
-    let server = McpServer::new(&engine, scope).with_time_format(config_detail_time_format());
+    // #96/D157: the launch directory names the project whose standing
+    // rulings the handshake carries.
+    let server = McpServer::new(&engine, scope)
+        .with_time_format(config_detail_time_format())
+        .with_workdir(std::env::current_dir().ok());
     let stdin = std::io::stdin();
     let stdout = std::io::stdout();
     // Hold both locks for the whole session: this process writes nothing else

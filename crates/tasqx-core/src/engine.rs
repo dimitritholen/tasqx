@@ -24,7 +24,7 @@ mod tokens;
 mod transfer;
 mod undo;
 
-pub use memory::MEMORY_SCOPES;
+pub use memory::{SessionDoc, SessionRulings, MEMORY_SCOPES};
 pub use undo::{NOT_UNDOABLE, UNDOABLE_OPS};
 
 use std::collections::{HashMap, HashSet};

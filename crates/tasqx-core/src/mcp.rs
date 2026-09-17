@@ -1568,6 +1568,12 @@ pub fn instructions(scope: Scope) -> String {
     parts.join("\n\n")
 }
 
+/// The byte budget of the standing-rulings section `initialize` appends to
+/// [`instructions`] (#96, D157): header, entries and footer or warning, not
+/// the separating blank line. `instructions` is charged on every prompt, so
+/// the budget is the design, not a safety margin.
+pub const STANDING_RULINGS_BUDGET: usize = 3_072;
+
 /// The methods deliberately left off the tool surface, as `(method, why)`.
 ///
 /// Public for the same reason [`tool_roster`] is: the guards that hold this
@@ -1609,6 +1615,10 @@ pub struct McpServer<'e> {
     /// that could change mid-session would mean two `get_task` calls in one
     /// conversation disagreeing about the same task.
     time_format: crate::markdown::TimeFormat,
+    /// The directory the session was launched in, which names its project
+    /// for the standing rulings `initialize` appends (#96, D157). `None`
+    /// infers from the default project alone.
+    workdir: Option<std::path::PathBuf>,
 }
 
 impl<'e> McpServer<'e> {
@@ -1623,7 +1633,16 @@ impl<'e> McpServer<'e> {
             client_info: std::cell::RefCell::new(None),
             connection_id: format!("mcp:{}", crate::clock::uuid_v7()),
             time_format: crate::markdown::TimeFormat::Both,
+            workdir: None,
         }
+    }
+
+    /// Set the working directory whose ancestors name the session's project
+    /// for the standing rulings `initialize` appends (#96, D157). A builder
+    /// for the reason [`McpServer::with_time_format`] is one.
+    pub fn with_workdir(mut self, dir: Option<std::path::PathBuf>) -> Self {
+        self.workdir = dir;
+        self
     }
 
     /// Choose how the detail view writes time. A builder rather than a third
@@ -1697,9 +1716,105 @@ impl<'e> McpServer<'e> {
             },
             // D141: what to do with the tools, not just which ones exist. Read
             // off the session's own scope, because the read variant may not
-            // name a tool this server will refuse.
-            "instructions": instructions(self.scope)
+            // name a tool this server will refuse. D157 appends the session's
+            // standing rulings, and only when there are any.
+            "instructions": match self.rulings_section() {
+                Some(section) => format!("{}\n\n{section}", instructions(self.scope)),
+                None => instructions(self.scope),
+            }
         })
+    }
+
+    /// The standing-rulings section `initialize` appends (#96, D157), or
+    /// `None` when there is nothing to show or the store cannot be read —
+    /// the handshake must never fail on account of this section.
+    ///
+    /// Standing docs are never dropped: when their gists overflow
+    /// [`STANDING_RULINGS_BUDGET`] every title is still listed, with a
+    /// warning to consolidate. It names no write tool, since read-only
+    /// sessions receive it too.
+    fn rulings_section(&self) -> Option<String> {
+        let r = self.engine.session_rulings(self.workdir.as_deref()).ok()?;
+        if r.standing.is_empty() && r.topical.is_empty() {
+            return None;
+        }
+        const FOLLOW: &str = "Follow them: they were recorded by the user or an earlier \
+            session and hold until cleared.";
+        let mut out = match &r.project {
+            Some((name, source)) => {
+                format!("Standing rulings for project {name} ({source}). {FOLLOW}\n")
+            }
+            None => format!("Standing rulings (no project inferred, unscoped only). {FOLLOW}\n"),
+        };
+        let one_line = |s: &str| s.split_whitespace().collect::<Vec<_>>().join(" ");
+        let entry = |d: &crate::engine::SessionDoc, with_gist: bool| {
+            let title = one_line(&d.title);
+            let rest = crate::frontmatter::block(&d.body).map_or(d.body.as_str(), |(_, r)| r);
+            let para: Vec<&str> = rest
+                .lines()
+                .skip_while(|l| l.trim().is_empty())
+                .take_while(|l| !l.trim().is_empty())
+                .collect();
+            let mut gist = one_line(&para.join(" "));
+            if gist.len() > 240 {
+                let mut cut = 240;
+                while !gist.is_char_boundary(cut) {
+                    cut -= 1;
+                }
+                gist.truncate(cut);
+                gist.push('…');
+            }
+            if with_gist && !gist.is_empty() {
+                format!("\n- {title}: {gist}")
+            } else {
+                format!("\n- {title}")
+            }
+        };
+
+        let standing: Vec<String> = r.standing.iter().map(|d| entry(d, true)).collect();
+        let standing_len: usize = standing.iter().map(String::len).sum();
+        if out.len() + standing_len > STANDING_RULINGS_BUDGET {
+            for d in &r.standing {
+                out.push_str(&entry(d, false));
+            }
+            out.push_str(&format!(
+                "\n{} standing rulings exceed the {STANDING_RULINGS_BUDGET}-byte session budget, \
+                 so only titles are shown; list them with `tasqx memory list --standing` and \
+                 merge or clear some.",
+                r.standing.len()
+            ));
+            return Some(out);
+        }
+        out.extend(standing);
+
+        // Topical docs exist only when a project was inferred.
+        let name = r.project.as_ref().map_or("", |(n, _)| n.as_str());
+        let footer = |left: usize| {
+            format!("\n{left} more docs for project {name}; tasqx_search_memory reaches them.")
+        };
+        let total = r.topical.len();
+        let mut shown = 0;
+        for d in &r.topical {
+            let e = entry(d, true);
+            let left_after = total - shown - 1;
+            let reserve = if left_after > 0 {
+                footer(left_after).len()
+            } else {
+                0
+            };
+            if out.len() + e.len() + reserve > STANDING_RULINGS_BUDGET {
+                break;
+            }
+            out.push_str(&e);
+            shown += 1;
+        }
+        // The previous entry reserved this footer's room; only when not even
+        // the first topical entry fit can it overflow, and then it is left off.
+        let f = footer(total - shown);
+        if shown < total && out.len() + f.len() <= STANDING_RULINGS_BUDGET {
+            out.push_str(&f);
+        }
+        Some(out)
     }
 
     /// Execute a `tools/call`. Always returns a CallToolResult value (never a

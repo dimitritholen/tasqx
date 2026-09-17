@@ -52,7 +52,9 @@ Safety properties worth knowing:
   applies.
 - **`initialize` answers with `instructions`,** a scope-aware workflow the
   host may inject into the agent's system prompt; under read-only scope it
-  names no write tool.
+  names no write tool. It also carries the session's standing memory docs,
+  for the project named by the directory `mcp serve` runs in (or one of its
+  parents), else the default project, within a 3 KB budget.
 
 `tasqx_get_task` and `tasqx_brief_task` take a `view` argument, `"markdown"`
 by default. Pass `view: "card"` when the task is going in front of a person

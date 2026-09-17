@@ -88,6 +88,27 @@ fn raw_fts5_error(e: &rusqlite::Error, scope: &str) -> String {
     format!("invalid FTS5 query: {msg}")
 }
 
+/// What [`Engine::session_rulings`] reads for an MCP session's `initialize`
+/// (#96, D157).
+pub struct SessionRulings {
+    /// The inferred project and how it was inferred (`working directory` or
+    /// `default project`); `None` when neither names one.
+    pub project: Option<(String, &'static str)>,
+    /// Standing docs: the project's first, then the unscoped ones, each
+    /// newest-modified first.
+    pub standing: Vec<SessionDoc>,
+    /// The project's own non-standing docs, newest-modified first.
+    pub topical: Vec<SessionDoc>,
+}
+
+/// One doc as [`SessionRulings`] carries it.
+pub struct SessionDoc {
+    /// The doc's title.
+    pub title: String,
+    /// The doc's whole body, frontmatter included.
+    pub body: String,
+}
+
 impl Engine {
     // ---- memory.add ----------------------------------------------------------
 
@@ -698,6 +719,70 @@ impl Engine {
             "next_offset": next_offset,
             "docs": docs,
         }))
+    }
+
+    // ---- session rulings (#96, D157) ----------------------------------------
+
+    /// The docs an MCP session is handed at `initialize` (#96, D157): the
+    /// inferred project, its standing docs plus the unscoped standing ones,
+    /// and the project's own non-standing docs as topical fill.
+    ///
+    /// The project is the nearest of `workdir` and its ancestors whose
+    /// directory name is a non-archived project — ancestors because a task
+    /// worktree (`worktrees/<repo>/<id>-<slug>`) never carries the project in
+    /// its own basename — else the store's default project, else none.
+    /// Not a dispatched method: its one reader is the MCP handshake.
+    pub fn session_rulings(
+        &self,
+        workdir: Option<&std::path::Path>,
+    ) -> Result<SessionRulings, ApiError> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT name FROM projects WHERE archived = 0")?;
+        let names: HashSet<String> = stmt
+            .query_map([], |r| r.get(0))?
+            .collect::<Result<_, _>>()?;
+        let from_dir = workdir.and_then(|dir| {
+            dir.ancestors()
+                .filter_map(|a| a.file_name()?.to_str())
+                .find(|n| names.contains(*n))
+                .map(|n| (n.to_string(), "working directory"))
+        });
+        let project = match from_dir {
+            Some(p) => Some(p),
+            None => self.default_project()?.map(|n| (n, "default project")),
+        };
+        let name = project.as_ref().map(|(n, _)| n.as_str());
+
+        let docs = |sql: &str| -> Result<Vec<SessionDoc>, ApiError> {
+            let mut stmt = self.conn.prepare(sql)?;
+            let rows = stmt.query_map(params![name], |r| {
+                Ok(SessionDoc {
+                    title: r.get(0)?,
+                    body: r.get(1)?,
+                })
+            })?;
+            Ok(rows.collect::<Result<_, _>>()?)
+        };
+        // D144's newest-modified key. `project = NULL` matches nothing, so
+        // with no project inferred only the unscoped standing docs remain.
+        let standing = docs(
+            "SELECT title, body FROM docs \
+             WHERE standing = 1 AND (project = ?1 OR project IS NULL) \
+             ORDER BY project IS NULL, rtrim(modified, 'Z') DESC, id DESC",
+        )?;
+        // Never unscoped: `memory import` stores every ADR unscoped, so the
+        // newest unscoped docs are an arbitrary slice (D157).
+        let topical = docs(
+            "SELECT title, body FROM docs \
+             WHERE standing = 0 AND project = ?1 \
+             ORDER BY rtrim(modified, 'Z') DESC, id DESC",
+        )?;
+        Ok(SessionRulings {
+            project,
+            standing,
+            topical,
+        })
     }
 
     // ---- memory.update -----------------------------------------------------
