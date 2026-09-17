@@ -695,6 +695,15 @@ fn response_json(ex: &Example) -> Value {
 /// (and usually a download) for four token kinds on a page that refuses both.
 /// Every string goes through [`esc`]; nothing here can emit markup a value
 /// carried.
+/// A string key or value as a JSON token, quotes included, made safe for HTML.
+///
+/// serde_json does the JSON escaping, so every control character becomes an
+/// escape sequence before [`esc`] runs — `esc` drops raw control bytes, and a
+/// hand-rolled escaper that missed one showed a value the API never sent.
+fn json_string(s: &str) -> String {
+    esc(&serde_json::to_string(s).expect("a str always serializes"))
+}
+
 fn json_html(v: &Value, depth: usize) -> String {
     let pad = "  ".repeat(depth + 1);
     let closing = "  ".repeat(depth);
@@ -702,13 +711,7 @@ fn json_html(v: &Value, depth: usize) -> String {
         Value::Null => "<span class=\"j-b\">null</span>".to_string(),
         Value::Bool(b) => format!("<span class=\"j-b\">{b}</span>"),
         Value::Number(n) => format!("<span class=\"j-n\">{n}</span>"),
-        Value::String(s) => format!(
-            "<span class=\"j-s\">\"{}\"</span>",
-            esc(&s
-                .replace('\\', "\\\\")
-                .replace('"', "\\\"")
-                .replace('\n', "\\n"))
-        ),
+        Value::String(s) => format!("<span class=\"j-s\">{}</span>", json_string(s)),
         Value::Array(items) if items.is_empty() => "[]".to_string(),
         Value::Array(items) => {
             let body: Vec<String> = items
@@ -723,8 +726,8 @@ fn json_html(v: &Value, depth: usize) -> String {
                 .iter()
                 .map(|(k, val)| {
                     format!(
-                        "{pad}<span class=\"j-k\">\"{}\"</span>: {}",
-                        esc(k),
+                        "{pad}<span class=\"j-k\">{}</span>: {}",
+                        json_string(k),
                         json_html(val, depth + 1)
                     )
                 })
@@ -1759,7 +1762,7 @@ mod tests {
         )
         .expect("valid JSON");
         let html = json_html(&v, 0);
-        assert!(html.contains("<span class=\"j-k\">\"title\"</span>"));
+        assert!(html.contains("<span class=\"j-k\">&quot;title&quot;</span>"));
         assert!(html.contains("<span class=\"j-n\">3</span>"));
         assert!(html.contains("<span class=\"j-b\">true</span>"));
         assert!(html.contains("<span class=\"j-b\">null</span>"));
@@ -1784,5 +1787,39 @@ mod tests {
                 "`{class}` is used by the API page and styled nowhere"
             );
         }
+    }
+
+    /// The highlighted JSON is still JSON once the markup is peeled off.
+    ///
+    /// A response body is the store's text, and a note can carry a tab, a
+    /// carriage return or an escape byte. Hand-escaping only `\`, `"` and `\n`
+    /// left the rest raw, where [`esc`] then dropped them — so the page showed
+    /// a value the API never sent, and a copied example did not parse back.
+    #[test]
+    fn highlighted_json_parses_back_to_the_value_it_rendered() {
+        let nasty = "tab\t cr\r bs\u{8} ff\u{c} esc\u{1b} quote\" slash\\ nl\n <b>&";
+        let value = serde_json::json!({ nasty: [nasty, { "k": nasty }], "plain": 1 });
+
+        let html = json_html(&value, 0);
+        let mut text = String::new();
+        let mut in_tag = false;
+        for c in html.chars() {
+            match c {
+                '<' => in_tag = true,
+                '>' => in_tag = false,
+                _ if !in_tag => text.push(c),
+                _ => {}
+            }
+        }
+        let text = text
+            .replace("&lt;", "<")
+            .replace("&gt;", ">")
+            .replace("&quot;", "\"")
+            .replace("&#39;", "'")
+            .replace("&amp;", "&");
+
+        let back: Value = serde_json::from_str(&text)
+            .unwrap_or_else(|e| panic!("rendered JSON does not parse ({e}):\n{text}"));
+        assert_eq!(back, value);
     }
 }
