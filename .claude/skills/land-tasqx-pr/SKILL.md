@@ -64,8 +64,11 @@ Run commands from the worktree, one plain command per call.
 
 4. **At the next task boundary, check the PR.**
    First read the review threads without waiting: `WAIT_QODO_TRIES=1
-   $S/wait-qodo.sh <n> --bodies`. On exit 3 Qodo has not finished; leave
-   the PR for the next boundary rather than waiting.
+   $S/wait-qodo.sh <n> --bodies`. On exit 3 Qodo has not finished: still
+   run the state check below. A `MERGED` PR goes on to step 5 with
+   "Qodo review unavailable" in its delivery annotation; every other state
+   follows its bullet below, and the threads are read again at the next
+   boundary.
    Findings from `qodo-code-review` or `coderabbitai` are advisory: verify
    each against the code, and act only on a real defect — a builder fix on
    the branch while the PR is open, a new tasqx task naming the PR and file
