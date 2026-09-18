@@ -63,16 +63,9 @@ Run commands from the worktree, one plain command per call.
    task open and start the next one.
 
 4. **At the next task boundary, check the PR.**
-   `gh pr view <n> --json state,mergeStateStatus,autoMergeRequest` and
-   `gh pr checks <n>`:
-   - `MERGED` → step 5.
-   - A required check failed → brief a builder with the failing output to
-     fix it on the branch, in the worktree, and push. Auto-merge stays armed
-     on the new head; confirm `autoMergeRequest` is not null.
-   - CONFLICTING → `rebase-tasqx-pr`, then arm the replacement PR (step 3).
-   - Checks still running → leave it for the next boundary.
-
-   Then read the review threads once with `$S/wait-qodo.sh <n> --bodies`.
+   First read the review threads without waiting: `WAIT_QODO_TRIES=1
+   $S/wait-qodo.sh <n> --bodies`. On exit 3 Qodo has not finished; leave
+   the PR for the next boundary rather than waiting.
    Findings from `qodo-code-review` or `coderabbitai` are advisory: verify
    each against the code, and act only on a real defect — a builder fix on
    the branch while the PR is open, a new tasqx task naming the PR and file
@@ -81,6 +74,15 @@ Run commands from the worktree, one plain command per call.
    usually a sentence true on most paths only ("never", "always", "every");
    brief the fix to state what each method does. A thread from a human, or
    a reviewer you do not recognise, goes to the user before anything else.
+
+   Then `gh pr view <n> --json state,mergeStateStatus,autoMergeRequest` and
+   `gh pr checks <n>`:
+   - `MERGED` → step 5.
+   - A required check failed → brief a builder with the failing output to
+     fix it on the branch, in the worktree, and push. Auto-merge stays armed
+     on the new head; confirm `autoMergeRequest` is not null.
+   - CONFLICTING → `rebase-tasqx-pr`, then arm the replacement PR (step 3).
+   - Checks still running → leave it for the next boundary.
 
 5. **Leave the worktree, then reinstall and verify from the primary
    checkout.** A session that entered the task worktree with `EnterWorktree`
@@ -146,8 +148,9 @@ Run commands from the worktree, one plain command per call.
    second completion of a done task is refused.
 
 7. **Print one closing line, no card.** Checks ticked or left open
-   honestly, and what the completion unblocked:
-   `✔ #<id> done · 2/2 checks · unblocked #<next>`.
+   honestly, and what the completion unblocked. The counts come from the
+   completed task's checks:
+   `✔ #<id> done · <passed>/<total> checks · unblocked #<next>`.
 
 ## Verifiable end
 
