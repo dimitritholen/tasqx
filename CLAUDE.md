@@ -25,27 +25,25 @@ The installed binary is a build of this tree. After changing anything under
 `crates/`, `cargo install --path crates/tasqx-cli --force` makes it reflect your
 edits.
 
-## Every change to main goes through a pull request
-
-`main` is protected: pull request required, linear history, twelve required
-status checks, no force pushes. Never merge a branch into `main` locally and
-never push to `main` directly, even when the push would be accepted. The flow
-is: branch from `main` as `task/<id>-<slug>`, commit there, push the branch,
-open a PR with `gh pr create`, wait for the checks, and merge through the PR
-(`gh pr merge --rebase` keeps the history linear). Delete the branch after
-the merge and pull `main` before starting the next task.
-
-## Releases and pushes are the user's call
-
-Do not push tags, create GitHub releases or `cargo publish` unless the user has
-asked for that release in this conversation. The guard blocks `gh release` and
-`cargo publish` outright. The release procedure is in `CONTRIBUTING.md`.
-
 ## Task tracking
 
 Work is tracked in tasqx itself — see `.claude/skills/tasqx-workflow/SKILL.md`.
 No `TODO.md`, no checklists, plans or session notes committed to the repo; they
 are what the tasqx backlog and its annotations are for.
+
+## One task, one branch, one builder, one review
+
+Each task gets its own feature branch, `task/<id>-<slug>`, cut from `main`.
+A builder agent does the implementation on that branch. When it finishes,
+review the branch diff with `/ponytail:ponytail-review` plus your own judgement
+on correctness, and send the findings back to the builder until the diff is
+clean and all four gates pass. Then merge it to `main` without asking first.
+This rule is standing permission for that merge. `main` requires a PR and the
+twelve CI checks, but nobody waits on them: push the branch, `gh pr create`,
+then `gh pr merge --auto --rebase`, and move straight on to the next task.
+GitHub merges it when the checks pass. At the next task boundary, check the
+previous PR: a failed check or a Qodo comment worth acting on goes back to a
+builder on that branch; the rest is advisory and needs no reply.
 
 ## Docs are public
 
