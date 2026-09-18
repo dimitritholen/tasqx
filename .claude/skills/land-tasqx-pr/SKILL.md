@@ -1,20 +1,20 @@
 ---
 name: land-tasqx-pr
-description: Land a tasqx task's branch on protected main — push, open the PR, wait out the twelve required checks, handle every review thread, rebase-merge without --delete-branch, reinstall and verify, then close the task once. Use it ONLY when the user explicitly asks to land, merge, ship or open the PR for a task ("open the PR and merge it", "land task #N", "merge the branch", "ship it"); a finished implementation on its own is not a request to publish it. Ships `scripts/wait-qodo.sh` and `scripts/reply-resolve.sh` for the review threads. Sighted on tasks #95, #645, #650, #679 and #646–#652 — each time a step was skipped, misread or run in the wrong order and cost a retry, so follow the sequence even when a shortcut looks safe.
+description: Land a tasqx task's branch on protected main without waiting on it — push, open the PR, arm auto-merge (rebase, without --delete-branch) and move on to the next task; at the next task boundary check the PR, send failed checks or real Qodo findings back to a builder, and once it is MERGED reinstall, verify, clean up and close the task once. Use it when a task's branch has passed review under CLAUDE.md's "One task, one branch" rule, or when the user asks to land, merge, ship or open the PR for a task ("land task #N", "merge the branch", "ship it"). Ships `scripts/wait-qodo.sh` and `scripts/reply-resolve.sh` for the review threads. Sighted on tasks #95, #645, #650, #679 and #646–#652 — each time a step was skipped, misread or run in the wrong order and cost a retry, so follow the sequence even when a shortcut looks safe.
 ---
 
 # Land a tasqx task PR
 
 `main` in tasqx is protected: pull request required, linear history, twelve
-required status checks, no force pushes, every review thread resolved before
-merge. This is the checklist that gets a task's branch through that gate
-without a wasted round trip. It assumes the task branch `task/<id>-<slug>`
-lives in a worktree under `~/projects/worktrees/tasqx/` and that the user
-asked for the landing; if they only asked for the implementation, stop after
-the work is committed and ask before pushing.
+required status checks, no force pushes. Auto-merge is on and open review
+threads do not block a merge (both since 2026-09-18), so nobody waits on CI:
+steps 1–3 arm the PR and the session moves on to the next task, and steps 4–7
+run at the next task boundary. It assumes the task branch `task/<id>-<slug>`
+lives in a worktree under `~/projects/worktrees/tasqx/` and has passed the
+review in `CLAUDE.md` ("One task, one branch, one builder, one review").
 
-Work through the steps in order — three prior runs each lost time to
-skipping or reordering one of them (see "Why this order" at the end).
+Work through the steps in order — earlier runs each lost time to skipping or
+reordering one of them (see "Why this order" at the end).
 
 ## Steps
 
@@ -47,68 +47,48 @@ Run commands from the worktree, one plain command per call.
    `$S/open-pr.sh task/<id>-<slug> <title-file> <body-file>`.
    No AI attribution in the body either.
 
-3. **Wait for checks, then for the reviewers.** First read
-   `gh pr view <n> --json mergeable,mergeStateStatus`: a CONFLICTING PR queues
-   no CI at all, and `gh pr checks` then lists only CodeRabbit — go to the
-   `rebase-tasqx-pr` skill instead of waiting. Otherwise
-   `gh pr checks <n> --watch --interval 30` until every required check is
-   green (`cargo-mutants` "skipping" is fine), then `$S/wait-qodo.sh <n>`;
-   on exit 3 run it again later rather than moving on.
-   Run both in the background (`run_in_background`) and end the turn only
-   when no local `cargo` gate run of yours is still going: the Stop hook starts
-   its own full run, and two overlapping runs report spurious failures.
-   Auto-merge is disabled on the repository, so the merge in step 5 is
-   explicit.
-
-4. **Handle every review thread before merging.** A clean check run does
-   not mean the reviewers are satisfied, and GitHub refuses the merge over
-   any unresolved thread regardless of check status. Read them with
-   `$S/wait-qodo.sh <n> --bodies`.
-
-   For each unresolved thread:
-   - From an automated reviewer (`qodo-code-review`, `coderabbitai`): read
-     the whole finding, verify it against the code, and decide fix or
-     reject. A fix is committed in the worktree — never the primary
-     checkout — pushed, and step 3 repeats against the new head. Then reply
-     and resolve: write "Fixed in <sha>: <one line>" to a file with the Write
-     tool, then
-
-     ```console
-     $ .claude/skills/land-tasqx-pr/scripts/reply-resolve.sh <thread-id> <reply-file>
-     ```
-
-     A rejected finding gets the reason in the reply, then the same resolve.
-     Findings on a generated-docs PR are usually a sentence that is true on
-     most paths only ("never", "always", "every"); brief the fixing agent to
-     state what each method does rather than add a new universal claim.
-   - From a human, or from any reviewer you do not recognise: do not resolve
-     it yourself. Stop, show the user the thread, and wait for their answer
-     or the reviewer's.
-
-5. **Merge.** Right before merging, `git fetch origin` and check that the
-   branch's D-number (if it adds one to `DESIGN.md` §12) is still free on
-   `origin/main`; another session can take it while the PR waits, and then
-   the merge fails with "Pull Request has merge conflicts" — hand over to
-   `rebase-tasqx-pr`. Then `gh pr merge <n> --rebase` — **without `--delete-branch`.** The
+3. **Arm auto-merge, then move on.** Read
+   `gh pr view <n> --json mergeable,mergeStateStatus` (`UNKNOWN` right after
+   opening: read it again a few seconds later). A CONFLICTING PR queues no CI
+   and never merges — go to the `rebase-tasqx-pr` skill, then arm the
+   replacement PR. If the branch adds a D-number to `DESIGN.md` §12,
+   `git fetch origin` and check it is still free on `origin/main`; if another
+   session took it, `rebase-tasqx-pr` too. Then
+   `gh pr merge <n> --auto --rebase` — **without `--delete-branch`.** The
    branch lives in a worktree; `--delete-branch` deletes it (remote and
-   local) out from under that worktree before step 7 has checked, with
-   `git cherry`, that every commit really reached `main`. Step 7 deletes
-   the branch after that check.
-   If GitHub answers "the base branch policy prohibits the merge" while the
-   checks are green, a thread is still unresolved — go back to step 4, do
-   not retry the merge blind. If it answers with an HTTP 502, or a retry
-   says "Merge already in progress", the merge is usually running — another
-   PR landing on `main` at the same moment makes it wait. Poll
-   `gh pr view <n> --json state --jq .state` every ten seconds until it
-   says `MERGED` instead of issuing the merge again.
+   local) out from under that worktree before step 6 has checked, with
+   `git cherry`, that every commit really reached `main`.
+   GitHub merges once the twelve checks are green (`cargo-mutants`
+   "skipping" is fine). Do not watch the checks or wait for Qodo: leave the
+   task open and start the next one.
 
-6. **Leave the worktree, then reinstall and verify from the primary
+4. **At the next task boundary, check the PR.**
+   `gh pr view <n> --json state,mergeStateStatus,autoMergeRequest` and
+   `gh pr checks <n>`:
+   - `MERGED` → step 5.
+   - A required check failed → brief a builder with the failing output to
+     fix it on the branch, in the worktree, and push. Auto-merge stays armed
+     on the new head; confirm `autoMergeRequest` is not null.
+   - CONFLICTING → `rebase-tasqx-pr`, then arm the replacement PR (step 3).
+   - Checks still running → leave it for the next boundary.
+
+   Then read the review threads once with `$S/wait-qodo.sh <n> --bodies`.
+   Findings from `qodo-code-review` or `coderabbitai` are advisory: verify
+   each against the code, and act only on a real defect — a builder fix on
+   the branch while the PR is open, a new tasqx task naming the PR and file
+   once it has merged. No reply or resolve is needed; `$S/reply-resolve.sh`
+   is there when the user asks for one. Findings on a generated-docs PR are
+   usually a sentence true on most paths only ("never", "always", "every");
+   brief the fix to state what each method does. A thread from a human, or
+   a reviewer you do not recognise, goes to the user before anything else.
+
+5. **Leave the worktree, then reinstall and verify from the primary
    checkout.** A session that entered the task worktree with `EnterWorktree`
    is isolated to it: the harness refuses any git command aimed at the
    shared checkout, `git -C ~/projects/tasqx pull` included, and refuses a
    chained command it cannot verify stays inside the worktree. So first
    `ExitWorktree` with `action: "keep"` (the worktree stays on disk for
-   step 7), then, from `~/projects/tasqx`, one plain command per call:
+   step 6), then, from `~/projects/tasqx`, one plain command per call:
 
    ```console
    $ git fetch origin
@@ -137,7 +117,7 @@ Run commands from the worktree, one plain command per call.
    narrow viewport through CDP (see `docs/maintainers/terminal-style.md`
    §14); use it rather than `--window-size`.
 
-7. **Annotate, clean up by hand, then close the task exactly once.** Write
+6. **Annotate, clean up by hand, then close the task exactly once.** Write
    the delivery annotation first (plain-language paragraph on top, then the
    commit hashes, the diff stat, what was deliberately skipped) and mark the
    checks with `tasqx_set_check` (`check_id`, `state: "passed"`, `evidence`).
@@ -165,8 +145,9 @@ Run commands from the worktree, one plain command per call.
    are already marked, so evidence alone is enough). Complete once — a
    second completion of a done task is refused.
 
-8. **Show the closing card.** `tasqx_get_task` with `view: "card"`, pasted
-   verbatim, with what the completion unblocked under it.
+7. **Print one closing line, no card.** Checks ticked or left open
+   honestly, and what the completion unblocked:
+   `✔ #<id> done · 2/2 checks · unblocked #<next>`.
 
 ## Verifiable end
 
@@ -206,3 +187,8 @@ build, and the task's status is `done` with its checks marked.
   other sessions while PRs sat in review (once minutes before the merge),
   the Stop hook's gate run overlapped the session's own background run three
   times, and `git pull --ff-only` refused. Steps 3, 5 and 6 carry those.
+- **2026-09-18, auto-merge:** the user found landing too slow — each task
+  waited ~4 minutes of CI plus Qodo rounds before the next could start. Auto-merge
+  was turned on and required conversation resolution off; the old explicit
+  merge step and the reply-and-resolve round went away. The sightings above
+  cite the step numbers of that older eight-step order.
