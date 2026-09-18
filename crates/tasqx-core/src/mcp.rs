@@ -3251,6 +3251,99 @@ mod tests {
         }
     }
 
+    /// Every key in a `required` list is refused BY NAME when it alone is
+    /// missing from an otherwise-valid call.
+    ///
+    /// The test above dispatches `{}` and accepts a refusal naming any required
+    /// key, so on a method with two or more only the first one read was ever
+    /// probed. Found by probing: `check.set` reading `state` as optional with a
+    /// `"passed"` default survived the whole workspace, so `check.set {ref,
+    /// check_id}` would have silently marked a criterion met. Real fixtures, and
+    /// the full call is asserted to succeed, so a refusal cannot pass for the
+    /// wrong reason — a `not_found` on a made-up id is not "the key was missing".
+    #[test]
+    fn each_required_key_is_refused_by_name_when_only_it_is_missing() {
+        for spec in tool_specs() {
+            let required: Vec<&str> = spec.schema["required"]
+                .as_array()
+                .map(|a| a.iter().filter_map(Value::as_str).collect())
+                .unwrap_or_default();
+            if required.is_empty() {
+                continue;
+            }
+            // A fresh store per tool, so one tool's full call cannot spend a
+            // fixture another tool's call needs.
+            let e = engine();
+            for title in ["a", "b", "c"] {
+                dispatch(&e, "task.add", &json!({ "title": title })).expect("seed a task");
+            }
+            let check = dispatch(&e, "check.add", &json!({ "ref": 1, "body": "c" }))
+                .expect("seed a check")["check"]["id"]
+                .clone();
+            let note = dispatch(&e, "annotation.add", &json!({ "ref": 1, "body": "n" }))
+                .expect("seed a note")["annotation"]["id"]
+                .clone();
+            dispatch(&e, "dependency.add", &json!({ "ref": 3, "depends_on": 1 }))
+                .expect("seed a dependency");
+            dispatch(&e, "tag.add", &json!({ "ref": 1, "tags": ["x"] })).expect("seed a tag");
+            let doc = dispatch(&e, "memory.add", &json!({ "title": "t", "body": "b" }))
+                .expect("seed a doc")["id"]
+                .clone();
+
+            let full = match spec.method {
+                "task.get" | "task.brief" | "task.done" | "task.cancel" | "task.reopen"
+                | "task.start" | "task.stop" => json!({ "ref": 1 }),
+                "task.add" => json!({ "title": "t" }),
+                "task.modify" => json!({ "ref": 1, "set": { "priority": "H" } }),
+                "tag.add" => json!({ "ref": 1, "tags": ["y"] }),
+                "tag.remove" => json!({ "ref": 1, "tags": ["x"] }),
+                "check.add" | "annotation.add" => json!({ "ref": 1, "body": "b" }),
+                "check.set" => json!({ "ref": 1, "check_id": check, "state": "passed" }),
+                "check.remove" => json!({ "ref": 1, "check_id": check }),
+                "annotation.remove" => json!({ "ref": 1, "annotation_id": note }),
+                "dependency.add" => json!({ "ref": 1, "depends_on": 2 }),
+                "dependency.remove" => json!({ "ref": 3, "depends_on": 1 }),
+                "memory.search" => json!({ "query": "t" }),
+                "memory.get" | "memory.update" | "memory.remove" => json!({ "id": doc }),
+                "memory.add" => json!({ "title": "t", "body": "b" }),
+                "project.create" => json!({ "name": "p" }),
+                other => panic!(
+                    "tool `{}` requires {required:?} of `{other}`, which this fixture has no \
+                     valid call for — extend it rather than skip the tool",
+                    spec.name
+                ),
+            };
+            for key in &required {
+                let mut call = full.clone();
+                call.as_object_mut().unwrap().remove(*key);
+                let err = dispatch(&e, spec.method, &call).expect_err(&format!(
+                    "tool `{}` declares `{key}` required, but {} accepts {call} without it",
+                    spec.name, spec.method
+                ));
+                // The key as the refusal spells it, not a substring: a bare `id`
+                // is inside "invalid" and `ref` inside "refused". The readers say
+                // `(missing|missing or empty) required field: KEY`; `tag.add`
+                // and `tag.remove` quote it as `` `tags` ``.
+                let named = err.message.contains(&format!("required field: {key}"))
+                    || err.message.contains(&format!("`{key}`"));
+                assert!(
+                    err.code == crate::error::ErrorCode::BadRequest && named,
+                    "tool `{}`: {} without `{key}` was refused over something else: {:?} {}",
+                    spec.name,
+                    spec.method,
+                    err.code,
+                    err.message
+                );
+            }
+            // Only meaningful with a second required key: with one, the
+            // omission above is `{}` whatever the fixture says.
+            if required.len() > 1 {
+                dispatch(&e, spec.method, &full)
+                    .unwrap_or_else(|err| panic!("{} {full}: {}", spec.method, err.message));
+            }
+        }
+    }
+
     /// A numeric bound in a schema must be the engine's own floor, probed at the
     /// boundary from both sides.
     ///

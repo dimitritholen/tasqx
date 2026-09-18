@@ -679,6 +679,36 @@ mod tests {
         );
     }
 
+    /// D33's gate, row by row: every request method refuses a key it does not
+    /// read, by name, through `dispatch` itself.
+    ///
+    /// The failure this guards was found by probing: flipping the `document`
+    /// flag to `true` on 25 of the 42 rows — the one-token regression that
+    /// switches the unknown-key scan off for a method — survived the whole
+    /// workspace suite, because coverage was a ten-row table and a handful of
+    /// one-offs. `check_params` runs before the handler, so an empty store and
+    /// no other params are enough to reach it for every method.
+    #[test]
+    fn every_request_method_refuses_an_unknown_params_key() {
+        let documents: Vec<&str> = PARAMS.iter().filter(|r| r.2).map(|r| r.0).collect();
+        assert_eq!(
+            documents,
+            ["store.import"],
+            "the D12 carve-out is for the one params object that is a data document"
+        );
+        let engine = crate::engine::Engine::open_in_memory().unwrap();
+        for (method, _, _) in PARAMS.iter().filter(|r| r.0 != "store.import") {
+            let e = dispatch(&engine, method, &json!({ "zz_bogus": 1 }))
+                .expect_err(&format!("{method} accepted an unknown params key"));
+            assert_eq!(e.code, crate::error::ErrorCode::BadRequest, "{method}");
+            assert!(
+                e.message.contains("unknown params key `zz_bogus`"),
+                "{method} refused the unknown key over something else: {}",
+                e.message
+            );
+        }
+    }
+
     /// The gate must not have quietly turned an optional param into a required
     /// one, and `params: null` (a client with nothing to say) must still work.
     #[test]
