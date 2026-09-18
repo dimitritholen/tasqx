@@ -1443,6 +1443,75 @@ fn completing_monthly_day_31_clamps_to_month_end() {
     assert_eq!(d.day(), expected, "day-31 rule clamps to month end");
 }
 
+/// #73: the occurrence `spawn_next` inserts is built field-by-field off the
+/// template, so any one of `project`/`priority`/`estimate`/`budget_tokens`
+/// silently dropping to `None`, or the tag-copy loop silently doing nothing,
+/// left the whole workspace suite green. Pins the carry, and pins the other
+/// half of the same shape on purpose: the occurrence is a fresh task, not a
+/// clone, so its annotations/dependencies/checks belong to the instance that
+/// was just completed and do not ride along.
+#[test]
+fn completing_recurring_carries_fields_but_not_relationships() {
+    let e = engine();
+    e.project_create(&json!({ "name": "ops" })).unwrap();
+    let blocker = e.task_add(&json!({ "title": "blocker" })).unwrap();
+    let bsid = blocker["short_id"].clone();
+
+    let a = e
+        .task_add(&json!({
+            "title": "weekly review",
+            "project": "ops",
+            "tags": ["urgent", "review"],
+            "priority": "H",
+            "estimate": "PT2H",
+            "budget_tokens": 50_000,
+            "due": plus_hours(48), // future, so completion is "on time"
+            "recurrence": "every 3 days",
+        }))
+        .unwrap();
+    let sid = a["short_id"].clone();
+
+    e.annotation_add(&json!({ "ref": sid, "body": "carried context" }))
+        .unwrap();
+    e.dependency_add(&json!({ "ref": sid, "depends_on": bsid }))
+        .unwrap();
+    e.check_add(&json!({ "ref": sid, "body": "reviewed" }))
+        .unwrap();
+
+    // The dependency is still open, so completion needs D150's override.
+    let done = e.task_done(&json!({ "ref": sid, "force": true })).unwrap();
+    let spawned_sid = done["spawned"]["short_id"].clone();
+    let occ = e.task_get(&json!({ "ref": spawned_sid })).unwrap();
+
+    // The five fields the audit found unasserted.
+    assert_eq!(occ["project"], "ops", "project carries to the occurrence");
+    let mut tags: Vec<&str> = occ["tags"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_str().unwrap())
+        .collect();
+    tags.sort_unstable();
+    assert_eq!(tags, ["review", "urgent"], "tags carry to the occurrence");
+    assert_eq!(occ["priority"], "H", "priority carries to the occurrence");
+    assert_eq!(
+        occ["estimate"], "PT2H",
+        "estimate carries to the occurrence"
+    );
+    assert_eq!(
+        occ["budget_tokens"], 50_000,
+        "budget_tokens carries to the occurrence"
+    );
+
+    // The deliberate non-carry: a fresh occurrence starts with none of these.
+    for key in ["annotations", "depends_on", "checks"] {
+        assert!(
+            occ[key].as_array().unwrap().is_empty(),
+            "no {key} carry over"
+        );
+    }
+}
+
 #[test]
 fn modify_can_set_and_clear_recurrence() {
     let e = engine();
