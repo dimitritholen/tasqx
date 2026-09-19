@@ -392,3 +392,16 @@ fn why_without_card_is_unchanged_by_the_split() {
         "`why` without --card must be byte-identical to before the render::why split"
     );
 }
+
+/// #624: an all-digit check word is the check's 1-based position in `show`,
+/// so marking one needs no uuid copied out of a card.
+#[test]
+fn check_set_takes_a_position_in_place_of_the_id() {
+    let store = Store::new("check-position");
+    let id = seeded_task(&store);
+    store.plain(&["check", "set", &id, "2", "passed"]);
+    let task: serde_json::Value =
+        serde_json::from_str(&store.plain(&["show", &id, "--json"])).expect("json");
+    assert_eq!(task["checks"][0]["state"], "open", "{task}");
+    assert_eq!(task["checks"][1]["state"], "passed", "{task}");
+}

@@ -55,6 +55,11 @@
 
 use tasqx_core::{ApiError, Priority};
 
+// The token recogniser lives in core so `task.add`/`task.modify` can name the
+// sugar an MCP/JSON title carries without restating its grammar (#621).
+pub(crate) use tasqx_core::sugar::ValueKey;
+use tasqx_core::sugar::{is_sugar_token, split_key, tag_of, VALUE_KEYS};
+
 pub struct ParsedAdd {
     pub title: String,
     pub project: Option<String>,
@@ -138,58 +143,6 @@ pub struct AddFlags {
     /// day, and a token budget is not that.
     pub budget_tokens: Option<i64>,
 }
-
-/// Which field a value key fills.
-///
-/// The key's *spelling* is data; the field it fills is a type. Dispatching on
-/// this rather than on the string is what makes the loop's arm list exhaustive
-/// — the compiler checks every key has a home, so an alias cannot be added to
-/// the table and then quietly go nowhere.
-/// `Copy` so the table can be read by value; the loop matches on patterns and
-/// needs no `PartialEq`.
-///
-/// `pub(crate)` since the shell-completion dispatcher branches on it. That is
-/// the point of the type rather than a leak of it: `complete::candidates` has
-/// to answer "what can follow `project:`?" differently from "what can follow
-/// `due:`?", and matching the VARIANT means the compiler asks that question
-/// again for every key added to [`VALUE_KEYS`]. Matching the spelling would let
-/// a new key quietly inherit whichever arm its string happened to fall into.
-#[derive(Clone, Copy)]
-pub(crate) enum ValueKey {
-    Project,
-    Due,
-    Scheduled,
-    Wait,
-    /// The value IS the rule (`repeat:`/`recur:`).
-    Repeat,
-    /// The value is the rule's tail; `every ` is prepended (`every:`).
-    Every,
-    Remind,
-    Estimate,
-}
-
-/// Sugar keys that take a *value*, longest-first so `estimate:` is tested before
-/// `est:` and `project:` before `proj:`. Used to spot an argv element the shell
-/// already quoted for us, and — via [`split_key`] — to dispatch the parse loop,
-/// so the two cannot disagree about what counts as sugar (D30).
-///
-/// Longest-first is not cosmetic: it is the ONLY thing that stops `estimate:x`
-/// being read as the estimate `imate:x`, and it is load-bearing again now that a
-/// declined key must not fall through to its own shorter alias. See [`split_key`].
-const VALUE_KEYS: [(&str, ValueKey); 12] = [
-    ("scheduled:", ValueKey::Scheduled),
-    ("estimate:", ValueKey::Estimate),
-    ("project:", ValueKey::Project),
-    ("remind:", ValueKey::Remind),
-    ("repeat:", ValueKey::Repeat),
-    ("every:", ValueKey::Every),
-    ("recur:", ValueKey::Repeat),
-    ("sched:", ValueKey::Scheduled),
-    ("proj:", ValueKey::Project),
-    ("wait:", ValueKey::Wait),
-    ("due:", ValueKey::Due),
-    ("est:", ValueKey::Estimate),
-];
 
 /// The key spellings alone, for the docs drift guard: the guide's `add` table
 /// restates these, and a restated list nothing compares is how `recur:` shipped
@@ -381,14 +334,6 @@ fn set_if_empty(slot: &mut Option<String>, v: &str) {
     }
 }
 
-/// The tag a `+` token names, or `None` if it names none.
-///
-/// C6's rule for `+`: a token this declines must reach the TITLE. A bare `+`
-/// used to be claimed by the tag branch, fail the non-empty check, and then be
-/// unreachable by the title branch — pure deletion, at exit 0, with no warning.
-/// `tasqx add -- "Implement Display + std::error::Error"` stored a title with no
-/// `+` in it and created no tag. `+` is ordinary prose in a technical title
-/// ("Display + Error", "C++", "a + b"), so the loss is not exotic.
 /// A token opening with `\!` or `\+` — an escaped sugar character — with the
 /// one leading backslash consumed, or `None` if it names no escape.
 ///
@@ -402,10 +347,6 @@ fn set_if_empty(slot: &mut Option<String>, v: &str) {
 fn escaped_sugar_char(tok: &str) -> Option<&str> {
     let rest = tok.strip_prefix('\\')?;
     rest.starts_with(['!', '+']).then_some(rest)
-}
-
-fn tag_of(tok: &str) -> Option<&str> {
-    tok.strip_prefix('+').filter(|t| !t.is_empty())
 }
 
 /// The tag names a `tasqx tag` / `tasqx untag` argument list denotes.
@@ -451,33 +392,6 @@ pub fn tag_arguments(words: &[String]) -> Result<Vec<String>, ApiError> {
         }
     }
     Ok(out)
-}
-
-/// The value key a token opens with, and the value after it — or `None` when the
-/// token is not sugar at all and belongs to the title.
-///
-/// Two refusals, both of which used to be silent corruption:
-///
-/// **`::` is a path separator, not a key.** Every value key is also a plausible
-/// first segment of a Rust module path, which is this project's own task
-/// vocabulary. A bare `strip_prefix` read `recur::advance_once` as the
-/// recurrence rule `":advance_once"` and refused the whole command, naming a
-/// rule the user never wrote; `project::config` was worse — accepted, project
-/// silently set to `:config`, and the word removed from the title.
-///
-/// **An empty value names nothing**, so `due:` alone is a word. It used to be
-/// claimed by its branch and then dropped, exactly like the bare `+`.
-///
-/// The key is resolved ONCE, by first prefix match against [`VALUE_KEYS`], and
-/// only then judged. Chaining `strip_prefix` per alias instead — the shape this
-/// replaced — re-tested the shorter alias against a token the longer one had
-/// already declined, so `project::config` failed `project:` and then matched
-/// `proj:`, setting the project to `ect::config`.
-fn split_key(tok: &str) -> Option<(ValueKey, &str)> {
-    let (key, value) = VALUE_KEYS
-        .iter()
-        .find_map(|&(spelling, key)| Some((key, tok.strip_prefix(spelling)?)))?;
-    (!value.is_empty() && !value.starts_with(':')).then_some((key, value))
 }
 
 /// The sugar VALUE this module would take out of a FINISHED word, or `None` if
@@ -663,26 +577,6 @@ fn tokenize_argv(args: &[String]) -> Result<Vec<SugarTok>, ApiError> {
 struct SugarTok {
     text: String,
     quoted: bool,
-}
-
-/// Does this token reach a sugar branch of [`parse_add`]'s loop rather than the
-/// title branch?
-///
-/// Derived from the very functions the loop dispatches on — [`tag_of`],
-/// [`split_key`], and the colon-less `!` — so a new sugar key joins this answer
-/// by being added to [`VALUE_KEYS`], not by someone remembering a second list,
-/// and a token one of them DECLINES is title text here too. That is D30's rule
-/// ("when a fix can be spelled 'derive it' or 'keep a list in sync', derive it")
-/// at the one place where getting it wrong decides between storing an element
-/// verbatim and rejoining its words.
-///
-/// It matters in both directions. When this said `starts_with('+')` while the
-/// loop required a non-empty tag, `add "Display + Error"` was denied the
-/// verbatim path AND had its `+` eaten by the loop. When it said
-/// `starts_with("recur:")`, `add "fix recur::advance_once"` was likewise denied
-/// it and lost the word.
-fn is_sugar_token(t: &str) -> bool {
-    tag_of(t).is_some() || t.starts_with('!') || split_key(t).is_some()
 }
 
 /// Could ANY word inside `arg` possibly be sugar? A cheap, purely syntactic

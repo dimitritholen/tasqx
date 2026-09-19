@@ -79,6 +79,7 @@ pub mod recur;
 pub mod remind;
 pub mod scheduler;
 pub mod storage;
+pub mod sugar;
 pub mod tokens;
 pub mod types;
 pub mod urgency;

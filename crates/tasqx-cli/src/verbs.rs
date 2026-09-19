@@ -663,6 +663,17 @@ fn card_opts(ctx: &Ctx, ascii: bool) -> CardOpts {
     }
 }
 
+/// #624: an all-digit word is a check's 1-based `position` — a uuid never is —
+/// so `tasqx check set 42 2 passed` works without copying an id.
+fn check_named(r#ref: &str, check_id: &str) -> Value {
+    match check_id.parse::<i64>() {
+        Ok(n) if check_id.bytes().all(|b| b.is_ascii_digit()) => {
+            json!({ "ref": r#ref, "position": n })
+        }
+        _ => json!({ "ref": r#ref, "check_id": check_id }),
+    }
+}
+
 /// `tasqx check add|set|rm` (D138) — acceptance criteria on a task.
 pub(crate) fn run_check(be: &mut Backend, ctx: &Ctx, action: &CheckAction) -> CmdOutcome {
     let (method, params) = match action {
@@ -681,16 +692,14 @@ pub(crate) fn run_check(be: &mut Backend, ctx: &Ctx, action: &CheckAction) -> Cm
             state,
             evidence,
         } => {
-            let mut p = json!({ "ref": r#ref, "check_id": check_id, "state": state });
+            let mut p = check_named(r#ref, check_id);
+            p["state"] = json!(state);
             if let Some(e) = evidence {
                 p["evidence"] = Value::String(e.clone());
             }
             ("check.set", p)
         }
-        CheckAction::Remove { r#ref, check_id } => (
-            "check.remove",
-            json!({ "ref": r#ref, "check_id": check_id }),
-        ),
+        CheckAction::Remove { r#ref, check_id } => ("check.remove", check_named(r#ref, check_id)),
     };
     let result = be.call(method, &params)?;
     // The echo is the task's card (D126), like every other write on a task:

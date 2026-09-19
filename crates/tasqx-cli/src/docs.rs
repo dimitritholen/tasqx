@@ -178,7 +178,9 @@ const METHODS: [(&str, &str, &str); 42] = [
         "The new task, incl. the <code>project</code> it landed in (the default, if none given). \
          <code>budget_tokens</code> (D139) is a size gauge over FRESH tokens — input, output and \
          cache creation, never cache reads — which stops nothing and is read back as \
-         <code>fresh_tokens</code> and <code>over</code> on <code>task.get</code>.",
+         <code>fresh_tokens</code> and <code>over</code> on <code>task.get</code>. The title \
+         is stored verbatim: a title carrying the CLI's inline sugar (<code>+tag</code>, \
+         <code>due:</code>, <code>!prio</code>…) adds a <code>warnings</code> entry naming it.",
     ),
     (
         "task.list",
@@ -254,7 +256,9 @@ const METHODS: [(&str, &str, &str); 42] = [
         "<code>{short_id, _rev, set}</code>; <code>set</code> echoes the RESOLVED value \
          actually stored for each field this call named (e.g. <code>due:\"friday\"</code> \
          comes back as its ISO instant). <code>null</code> in the request's own \
-         <code>set</code> clears a field.",
+         <code>set</code> clears a field. A stale <code>expected_rev</code> is a \
+         <code>conflict</code> carrying the current rev; a <code>set.title</code> carrying \
+         inline sugar adds <code>warnings</code>, as on <code>task.add</code>.",
     ),
     (
         "task.cancel",
@@ -295,18 +299,22 @@ const METHODS: [(&str, &str, &str); 42] = [
     ),
     (
         "check.set",
-        "<code>ref</code>, <code>check_id</code>, <code>state</code>, <code>evidence?</code>",
+        "<code>ref</code>, <code>check_id</code> or <code>position</code>, <code>state</code>, \
+         <code>evidence?</code>",
         "<code>{short_id, check_id, state}</code>. <code>state</code> is \
          <code>open|passed|failed</code>; <code>failed</code> is a normal outcome, not an error. \
          <code>evidence</code> is optional — some criteria are met by something nobody can \
-         quote, and inventing a citation is worse than an unproven pass.",
+         quote, and inventing a citation is worse than an unproven pass. Name the check by \
+         exactly one of <code>check_id</code> or <code>position</code> (1-based, in the order \
+         <code>task.get</code> lists them); an unknown one is <code>not_found</code> listing the \
+         task's checks.",
     ),
     (
         "check.remove",
-        "<code>ref</code>, <code>check_id</code>",
+        "<code>ref</code>, <code>check_id</code> or <code>position</code>",
         "<code>{short_id, check_id, removed}</code>. For a criterion that was the wrong thing to \
          ask; use <code>check.set failed</code> when the criterion was right and the work did \
-         not meet it.",
+         not meet it. The check is named as on <code>check.set</code>.",
     ),
     (
         "annotation.remove",

@@ -2273,6 +2273,44 @@ fn annotation_remove_of_an_unknown_or_already_removed_id_is_not_found() {
     );
 }
 
+/// #624: a mistyped annotation id on a HARD delete must list what is there,
+/// so the retry names the right row instead of guessing. Live notes only — a
+/// removed note has no text to quote and nothing left to remove.
+#[test]
+fn annotation_remove_of_an_unknown_id_lists_the_tasks_live_annotations() {
+    let e = engine();
+    let sid = e.task_add(&json!({ "title": "t" })).expect("add")["short_id"].clone();
+    let keep = e
+        .annotation_add(&json!({ "ref": sid.clone(), "body": "the ruling on the cache key" }))
+        .expect("annotate")["annotation"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let gone = e
+        .annotation_add(&json!({ "ref": sid.clone(), "body": "sk-secret" }))
+        .expect("annotate")["annotation"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    e.annotation_remove(&json!({ "ref": sid.clone(), "annotation_id": gone.clone() }))
+        .expect("remove");
+
+    let err = e
+        .annotation_remove(&json!({ "ref": sid, "annotation_id": "not-a-real-id" }))
+        .expect_err("unknown id");
+    assert_eq!(err.code, ErrorCode::NotFound);
+    assert!(
+        err.message.contains(&keep) && err.message.contains("the ruling on"),
+        "the refusal must list the live annotation's id and first words: {}",
+        err.message
+    );
+    assert!(
+        !err.message.contains(&gone),
+        "a removed annotation is not a candidate: {}",
+        err.message
+    );
+}
+
 /// Rule 2's refusal path, and the reason it names the op rather than saying
 /// "cannot undo that": every one of these has a different way back, and a
 /// refusal that does not say which one leaves the user guessing at a store they

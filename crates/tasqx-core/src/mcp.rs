@@ -946,7 +946,8 @@ fn build_tool_specs() -> Vec<ToolSpec> {
                 not `pending`, when `scheduled` or `wait` is in the future, which holds the \
                 task outside `@working` until then — plus the stored title, due, tags and \
                 resolved `scheduled`, so an ambiguous date or sugar captured into the title \
-                can be checked against what was stored.",
+                can be checked against what was stored. A title carrying CLI sugar adds a \
+                `warnings` entry naming it.",
             schema: json!({
                 "type": "object",
                 "properties": {
@@ -1253,6 +1254,7 @@ fn build_tool_specs() -> Vec<ToolSpec> {
                 "properties": {
                     "ref": ref_schema(),
                     "check_id": { "type": "string", "description": "The check's id, from `tasqx_get_task` or the add." },
+                    "position": { "type": "integer", "description": "Or its 1-based place in tasqx_get_task's list." },
                     "state": {
                         "type": "string",
                         "enum": enum_of(crate::engine::CHECK_STATES),
@@ -1265,7 +1267,7 @@ fn build_tool_specs() -> Vec<ToolSpec> {
                             `passed`."
                     }
                 },
-                "required": ["ref", "check_id", "state"]
+                "required": ["ref", "state"]
             }),
         },
         ToolSpec {
@@ -1281,9 +1283,10 @@ fn build_tool_specs() -> Vec<ToolSpec> {
                 "type": "object",
                 "properties": {
                     "ref": ref_schema(),
-                    "check_id": { "type": "string", "description": "The check's id." }
+                    "check_id": { "type": "string", "description": "The check's id." },
+                    "position": { "type": "integer", "description": "Or its 1-based place in tasqx_get_task's list." }
                 },
-                "required": ["ref", "check_id"]
+                "required": ["ref"]
             }),
         },
         ToolSpec {
@@ -2975,8 +2978,9 @@ const MCP_REMEDY_REWRITES: &[(&str, &str)] = &[
     ),
 ];
 
-/// Apply [`MCP_REMEDY_REWRITES`], then the one rewrite that needs the error's
-/// own `data` rather than a fixed phrase: `require_live_project`'s refusal
+/// Apply [`MCP_REMEDY_REWRITES`], then the rewrites that need the error's own
+/// `data` rather than a fixed phrase: a stale `expected_rev` (#613), and
+/// `require_live_project`'s refusal
 /// names `tasqx init NAME`, a CLI verb with no MCP equivalent and no shell to
 /// run it in. `data.name` carries the same name the message embeds, so the
 /// CLI-specific clause is replaced exactly rather than guessed at from prose.
@@ -2985,6 +2989,30 @@ fn mcp_surface_message(message: String, data: Option<&Value>) -> String {
     for (from, to) in MCP_REMEDY_REWRITES {
         if out.contains(from) {
             out = out.replace(from, to);
+        }
+    }
+    // #613: a stale `expected_rev` names the CLI's re-read and flag in the
+    // core message. `data` carries the rev and the entity, so both clauses are
+    // rebuilt exactly and replaced with the tool and parameter MCP has.
+    if let Some(cur) = data.and_then(|d| d.get("current")).and_then(Value::as_i64) {
+        let re_read = match data.map(|d| (&d["task"]["short_id"], &d["id"])) {
+            Some((Value::Number(sid), _)) => Some((
+                format!("re-read with `tasqx show {sid} --json`"),
+                "re-read with tasqx_get_task",
+            )),
+            Some((_, Value::String(id))) => Some((
+                format!("re-read it with `tasqx memory show {id} --json`"),
+                "re-read it with tasqx_get_memory",
+            )),
+            _ => None,
+        };
+        let retry = format!("retry with --expected-rev {cur}");
+        if let Some((cli, mcp)) = re_read {
+            if out.contains(&cli) && out.contains(&retry) {
+                out = out
+                    .replace(&cli, mcp)
+                    .replace(&retry, &format!("retry with expected_rev {cur}"));
+            }
         }
     }
     if let Some(name) = data.and_then(|d| d.get("name")).and_then(Value::as_str) {

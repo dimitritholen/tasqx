@@ -73,6 +73,10 @@ tasqx check set 42 <id> passed --evidence "cargo test: 0 failed"
 tasqx check rm 42 <id>
 ```
 
+`<id>` is the check's id from `tasqx show`, or its position in that list
+counting from 1: `tasqx check set 42 2 failed` marks the second one. A
+mistyped id is refused with the task's real checks listed.
+
 **tasqx never runs a check.** The criterion is a claim and the evidence is a
 citation — both are stored exactly as you typed them and neither is
 interpreted. If you want something run, a hook you installed runs it and calls

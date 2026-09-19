@@ -587,6 +587,9 @@ const R_TASK_ADD: Shape = &[&[
     // resolved instant the caller could not have predicted. Additive per
     // D56, the same move D85 already made for `due`.
     nul("scheduled", Ty::Str),
+    // #621/D169, additive: this door parses none of the CLI's inline sugar,
+    // so a title carrying it is named here. Absent when there is none.
+    opt("warnings", Ty::Array),
 ]];
 
 const R_TASK_LIST: Shape = &[&[
@@ -731,6 +734,9 @@ const R_TASK_MODIFY: Shape = &[&[
     // `memory.search`. Its own keys are not frozen here: they vary with
     // whatever `set` named on a given call, exactly as `set`'s own keys do.
     req("set", Ty::Object),
+    // #621/D169: the same title warning `task.add` carries, when `set` names
+    // a title holding CLI inline sugar. Absent otherwise.
+    opt("warnings", Ty::Array),
 ]];
 
 const R_TASK_CANCEL: Shape = &[&[
@@ -1410,6 +1416,12 @@ fn cases() -> Vec<Case> {
             R_TASK_ADD,
         ),
         case(
+            "task.add",
+            "#621: a title carrying CLI inline sugar, so `warnings` is observed",
+            |_| json!({ "title": "fix crash +bug due:friday" }),
+            R_TASK_ADD,
+        ),
+        case(
             "task.list",
             "the default projection (no `fields`), with a blocked row",
             |e| {
@@ -1592,6 +1604,15 @@ fn cases() -> Vec<Case> {
             |e| {
                 plain_task(e);
                 json!({ "ref": 1, "set": { "priority": "M" }, "expected_rev": 1 })
+            },
+            R_TASK_MODIFY,
+        ),
+        case(
+            "task.modify",
+            "#621: a `set` title carrying CLI inline sugar, so `warnings` is observed",
+            |e| {
+                plain_task(e);
+                json!({ "ref": 1, "set": { "title": "fix it !H est:2h" } })
             },
             R_TASK_MODIFY,
         ),
