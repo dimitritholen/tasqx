@@ -1,0 +1,101 @@
+name: Desktop
+
+# apps/tasqx-desktop is its own npm project and its own Cargo workspace
+# (src-tauri/Cargo.toml carries an empty `[workspace]`), so CI.yml never sees
+# it: neither `cargo fmt --all` nor `cargo test --workspace` at the root reach
+# the host crate. This workflow is the only thing that builds it.
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'apps/tasqx-desktop/**'
+      - '.github/workflows/desktop.yml'
+  pull_request:
+    paths:
+      - 'apps/tasqx-desktop/**'
+      - '.github/workflows/desktop.yml'
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+# A second push to the same branch makes the first bundle build pointless, and
+# a Tauri bundle build is the most expensive job in this repo.
+concurrency:
+  group: desktop-${{ github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    working-directory: apps/tasqx-desktop
+
+jobs:
+  build:
+    name: desktop (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: apps/tasqx-desktop/package-lock.json
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: apps/tasqx-desktop/src-tauri
+
+      # Tauri 2 on Linux links against WebKitGTK 4.1; the rest are what its
+      # bundler and the appindicator/SVG paths need.
+      - name: Install Linux dependencies
+        if: matrix.os == 'ubuntu-latest'
+        working-directory: .
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            build-essential \
+            curl \
+            wget \
+            file \
+            libxdo-dev \
+            libssl-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev
+
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm run lint
+      - run: npm test -- --run
+      - run: npm run build
+
+      - name: cargo fmt
+        working-directory: apps/tasqx-desktop/src-tauri
+        run: cargo fmt --check
+
+      - name: cargo clippy
+        working-directory: apps/tasqx-desktop/src-tauri
+        run: cargo clippy -- -D warnings
+
+      - run: npm run tauri:build
+
+      # `shell: bash` because on the Windows runner the default PowerShell
+      # resolves `ls -R` against Get-ChildItem, where `-R` is an ambiguous
+      # prefix and the step fails before it lists anything.
+      - name: Bundle check
+        shell: bash
+        run: ls -R src-tauri/target/release/bundle
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tasqx-desktop-${{ matrix.os }}
+          path: apps/tasqx-desktop/src-tauri/target/release/bundle

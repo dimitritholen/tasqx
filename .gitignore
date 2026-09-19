@@ -59,3 +59,10 @@ __pycache__/
 
 # Finder metadata macOS drops into any directory it opens.
 .DS_Store
+
+# Tasqx Desktop (apps/tasqx-desktop): npm and Tauri build output. `gen/` holds
+# the capability schemas tauri-build regenerates on every build.
+node_modules/
+apps/tasqx-desktop/dist/
+apps/tasqx-desktop/src-tauri/target/
+apps/tasqx-desktop/src-tauri/gen/
