@@ -413,6 +413,25 @@ const METHODS: [(&str, &str, &str); 999] = [
          <code>limit</code> defaults to 100 and a named one is clamped to 1,000.",
     ),
     (
+        "graph.query",
+        "<code>root</code>, <code>depth?</code>, <code>node_types?</code>, \
+         <code>relation_types?</code>, <code>project?</code>, <code>status?</code>, \
+         <code>tags?</code>, <code>modified_after?</code>, <code>modified_before?</code>, \
+         <code>include_inferred?</code>, <code>max_nodes?</code>, <code>max_edges?</code>",
+        "<code>{root, depth, nodes, edges, node_count, edge_count, truncated, omitted_nodes, \
+         omitted_edges, include_inferred}</code> — one bounded projection of the knowledge graph \
+         around <code>root</code> (D160), which is a node reference in <code>link.add</code>'s \
+         grammar. Nodes come back ordered by depth, kind then id and edges by relation, \
+         <code>from</code> then <code>to</code>, so the same call twice is the same JSON. \
+         <code>depth</code> is 0–4 (default 2), <code>max_nodes</code> 1–1,000 (default 250) and \
+         <code>max_edges</code> 1–5,000 (default 750), each refused by name rather than clamped; \
+         <code>truncated</code> and the two omitted counts say when a cap bit. Every edge names \
+         its <code>kind</code> and <code>source</code>: <code>structural</code> for one read out \
+         of the store, <code>inferred</code> with a <code>confidence</code> for the \
+         <code>search_match</code> and <code>shared_tag</code> edges \
+         <code>include_inferred</code> computes and nothing stores.",
+    ),
+    (
         "memory.add",
         "<code>title</code>, <code>body</code>, <code>source?</code>, <code>project?</code>, \
          <code>standing?</code>",
@@ -2387,14 +2406,29 @@ fn p(html: &str) -> String {
 /// written for a word — extending it is a one-line edit the day a roster grows
 /// that far, which is cheaper than the sentence going stale unwatched.
 fn count_word(n: usize) -> &'static str {
-    const WORDS: [&str; 17] = [
-        "zero", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten",
-        "eleven", "twelve",
+    const WORDS: [&str; 18] = [
+        "zero",
+        "one",
+        "two",
+        "three",
+        "four",
+        "five",
+        "six",
+        "seven",
+        "eight",
+        "nine",
+        "ten",
+        "eleven",
+        "twelve",
         // The thirteenth: the methods the MCP page says an agent cannot reach
         // (#647). Extending the table is the one-line edit this panic asks for.
         "thirteen",
-        // Sixteen the day D160's three `link.*` methods joined that list.
-        "fourteen", "fifteen", "sixteen",
+        // Sixteen the day D160's three `link.*` methods joined that list,
+        // seventeen when `graph.query` did.
+        "fourteen",
+        "fifteen",
+        "sixteen",
+        "seventeen",
     ];
     WORDS
         .get(n)

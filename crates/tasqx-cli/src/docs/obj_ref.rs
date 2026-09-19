@@ -63,8 +63,8 @@ pub(super) struct Object {
 
 const ON_A_TASK: &str = "On a task";
 
-/// The nine objects, in sidebar order.
-pub(super) const OBJECTS: [Object; 9] = [
+/// The ten objects, in sidebar order.
+pub(super) const OBJECTS: [Object; 10] = [
     Object {
         id: "obj-task",
         name: "Task",
@@ -189,6 +189,24 @@ pub(super) const OBJECTS: [Object; 9] = [
         linked: &[],
         groups: &[("", "", d::LINK_ROW)],
         example: ("link.list", "/links/0", &[]),
+    },
+    Object {
+        id: "obj-graph",
+        name: "Graph",
+        lead: "A graph projection is what <code>graph.query</code> hands back: the nodes around \
+               one root and the edges between them, bounded and deterministically ordered so the \
+               same call twice is the same picture. A node is a task, a memory document, an \
+               annotation or a project, wearing the id a link's endpoints use. An edge is either \
+               <em>structural</em> — read out of a table, and naming that table as its \
+               <code>source</code> — or <em>inferred</em>, computed for that one call from an \
+               FTS search on the root's title or from the tags two tasks share, carrying a \
+               <code>confidence</code> and stored nowhere. Nothing here is a row in the store: a \
+               projection is a view, and the durable edges it draws are <a \
+               href=\"#obj-link\">links</a>.",
+        namespaces: &["graph"],
+        linked: &[],
+        groups: &[("", "", d::GRAPH_NODE), ("Edges", "", d::GRAPH_EDGE)],
+        example: ("graph.query", "/nodes/0", &[]),
     },
     Object {
         id: "obj-event",

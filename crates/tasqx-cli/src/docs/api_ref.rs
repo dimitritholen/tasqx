@@ -208,7 +208,7 @@ pub(super) fn page() -> String {
 /// `tokens.recompute` files under `token` with `token.add`/`token.remove` — the
 /// two spellings are one subject, and a reader looking for "what tasqx knows
 /// about token spend" should not have to know that one of the three is plural.
-const GROUPS: [(&str, &str); 15] = [
+const GROUPS: [(&str, &str); 16] = [
     ("project", "Project methods"),
     ("task", "Task methods"),
     ("tag", "Tag methods"),
@@ -216,6 +216,7 @@ const GROUPS: [(&str, &str); 15] = [
     ("check", "Check methods"),
     ("dependency", "Dependency methods"),
     ("link", "Link methods"),
+    ("graph", "Graph methods"),
     ("memory", "Memory methods"),
     ("token", "Token methods"),
     ("report", "Report methods"),
@@ -1083,6 +1084,90 @@ const PARAM_DOCS: &[(&str, &str, &str, &str, &str)] = &[
         "Where the page starts. `next_offset` from the previous page keeps the walk going.",
     ),
     (
+        "graph.query",
+        "root",
+        "integer or string",
+        "",
+        "The node the projection is anchored at, in `link.add`'s reference grammar: a task short id (`42`), a bare uuid, or `task:`/`memory:`/`annotation:`/`project:` plus an id. It is returned resolved as `<type>:<uuid>`, and it is kept whatever the filters below say — a projection with no anchor in it has nothing to project from.",
+    ),
+    (
+        "graph.query",
+        "depth",
+        "integer",
+        "2",
+        "How many hops to walk, 0 to 4. Out of range is refused, never clamped: a caller who asked for 5 cannot tell a clamped answer from the graph really ending there.",
+    ),
+    (
+        "graph.query",
+        "node_types",
+        "array of string",
+        "",
+        "Keep only these kinds of node: `task`, `memory`, `annotation`, `project`. A dropped node is not expanded either, so this bounds the cost as well as the answer. An empty array filters nothing.",
+    ),
+    (
+        "graph.query",
+        "relation_types",
+        "array of string",
+        "",
+        "Only cross these relations: `depends_on`, `has_annotation`, `belongs_to_project`, the five link relations, and `search_match`/`shared_tag` for the inferred ones. An unknown name is refused with the list. An empty array crosses every relation.",
+    ),
+    (
+        "graph.query",
+        "project",
+        "string",
+        "",
+        "Keep only the nodes filed under this project — tasks and memory documents. A project node and the notes on a kept task pass through, because neither is filed anywhere of its own.",
+    ),
+    (
+        "graph.query",
+        "status",
+        "string",
+        "",
+        "Keep only tasks in this status, read the way every other surface reads it (a future `wait` shows `backlog`). Nodes that are not tasks are unaffected.",
+    ),
+    (
+        "graph.query",
+        "tags",
+        "array of string",
+        "",
+        "Keep only tasks carrying at least one of these tags. Nodes that are not tasks are unaffected.",
+    ),
+    (
+        "graph.query",
+        "modified_after",
+        "string",
+        "",
+        "An RFC 3339 lower bound on a task's or document's `modified` and a note's `created`. A project carries no such date and is never excluded by the window.",
+    ),
+    (
+        "graph.query",
+        "modified_before",
+        "string",
+        "",
+        "The upper bound of the same window, also RFC 3339.",
+    ),
+    (
+        "graph.query",
+        "include_inferred",
+        "boolean",
+        "false",
+        "Add the computed edges: up to ten `search_match` hits for the root's own title, and a `shared_tag` edge between every pair of returned tasks sharing a tag. Each carries a `confidence` and the `source` that produced it, and none of them is ever stored.",
+    ),
+    (
+        "graph.query",
+        "max_nodes",
+        "integer",
+        "250",
+        "How many nodes the answer may carry, 1 to 1,000. Applied to the deterministic order, so the cut is the same every time; `omitted_nodes` says how many went.",
+    ),
+    (
+        "graph.query",
+        "max_edges",
+        "integer",
+        "750",
+        "How many edges the answer may carry, 1 to 5,000. Applied after the edges whose endpoints were cut have already gone; `omitted_edges` says how many were left out.",
+    ),
+    (
         "memory.import",
         "docs",
         "array of object",
@@ -1343,6 +1428,13 @@ const EXAMPLES: &[Example] = &[
         fixture: "",
         response: r#"{"id":"ll1","ok":true,"result":{"count":1,"links":[{"created_at":"2026-09-17T09:12:04Z","from":"task:019f7c0a-3d51-7c42-9a08-1f0c4e5b62d7","id":"019f8b31-77a4-7f10-8c55-2d7e9a13b004","metadata":null,"relation":"implements_decision","to":"memory:eb864f1e-e68a-4d96-af89-597bd0d2d52e"}],"next_offset":null,"total":1},"tasqx":"1"}"#,
         why: "every row carries the link's own v7 id and the uuid of each endpoint, all minted when the fixture store was built — half clock, half entropy, so no pin reproduces the row.",
+    },
+    Example {
+        method: "graph.query",
+        request: r#"{"tasqx":"1","id":"gq1","method":"graph.query","params":{"root":"51","depth":1}}"#,
+        fixture: "api-graph-query",
+        response: "",
+        why: "",
     },
     Example {
         method: "memory.add",
@@ -1772,7 +1864,7 @@ mod tests {
         }
     }
 
-    /// The methods no CLI verb reaches are the eight we know about.
+    /// The methods no CLI verb reaches are the nine we know about.
     ///
     /// Read in both directions from [`super::VERBS`]' Method column, because
     /// that column is prose a human maintains: a mapping lost to a typo would
@@ -1801,6 +1893,10 @@ mod tests {
             "link.add",
             "link.remove",
             "link.list",
+            // D160's projection is drawn, not printed: its consumer is the
+            // desktop client, and `tasqx api graph.query` is the way from a
+            // terminal.
+            "graph.query",
         ]
         .into_iter()
         .collect();

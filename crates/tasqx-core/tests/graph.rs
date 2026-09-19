@@ -1,5 +1,6 @@
-//! Tests for the D160 graph layer: the shared node-reference parser and the
-//! explicit `link.add` / `link.remove` / `link.list` family.
+//! Tests for the D160 graph layer: the shared node-reference parser, the
+//! explicit `link.add` / `link.remove` / `link.list` family, and the bounded
+//! `graph.query` projection built over both.
 //!
 //! Driven through `dispatch` so the D33 params gate is exercised with the
 //! engine, the way `tests/memory.rs` drives the memory subsystem.
@@ -599,5 +600,576 @@ fn link_writes_append_events_under_the_link_entity() {
     assert_eq!(
         events["events"][1]["payload"]["relation"],
         json!("references")
+    );
+}
+
+// ---- graph.query: the fixtures ----------------------------------------------
+
+/// A chain of four tasks, a note, a doc and one explicit link — one of every
+/// structural edge D160 names except `belongs_to_project`, which is left out on
+/// purpose: nothing here carries a project, because a project node expands to
+/// everything filed under it and that fan-out is noise in a test about hops.
+fn chain(e: &Engine) -> String {
+    for title in [
+        "the root task",
+        "the blocker",
+        "the far blocker",
+        "the distant one",
+    ] {
+        ok(e, "task.add", json!({ "title": title, "tags": ["alpha"] }));
+    }
+    for (dependent, blocker) in [(1, 2), (2, 3), (3, 4)] {
+        ok(
+            e,
+            "dependency.add",
+            json!({ "ref": dependent, "depends_on": blocker }),
+        );
+    }
+    ok(
+        e,
+        "annotation.add",
+        json!({ "ref": 1, "body": "the opening note" }),
+    );
+    let doc = ok(
+        e,
+        "memory.add",
+        json!({ "title": "the ruling", "body": "links are D160" }),
+    )["id"]
+        .as_str()
+        .expect("doc id")
+        .to_string();
+    ok(
+        e,
+        "link.add",
+        json!({ "from": 1, "to": format!("memory:{doc}"), "relation": "references" }),
+    );
+    doc
+}
+
+/// Every node's `label`, in the order the projection returned them.
+fn labels(g: &Value) -> Vec<String> {
+    g["nodes"]
+        .as_array()
+        .expect("nodes")
+        .iter()
+        .map(|n| n["label"].as_str().expect("label").to_string())
+        .collect()
+}
+
+/// Every edge as `(relation, source)`, deduplicated and sorted — what a test
+/// about provenance asks, without pinning uuids.
+fn provenance(g: &Value) -> Vec<(String, String)> {
+    let mut out: Vec<(String, String)> = g["edges"]
+        .as_array()
+        .expect("edges")
+        .iter()
+        .map(|e| {
+            (
+                e["relation"].as_str().expect("relation").to_string(),
+                e["source"].as_str().expect("source").to_string(),
+            )
+        })
+        .collect();
+    out.sort();
+    out.dedup();
+    out
+}
+
+// ---- graph.query: depth -----------------------------------------------------
+
+/// Depth 0 is the root and nothing else — the degenerate projection a client
+/// asks for when it wants the node's own fields in the graph's vocabulary.
+#[test]
+fn depth_zero_returns_the_root_and_nothing_else() {
+    let e = engine();
+    chain(&e);
+    let g = ok(&e, "graph.query", json!({ "root": 1, "depth": 0 }));
+    assert_eq!(g["depth"], json!(0));
+    assert_eq!(g["node_count"], json!(1));
+    assert_eq!(g["edge_count"], json!(0));
+    assert_eq!(g["nodes"][0]["id"], g["root"]);
+    assert_eq!(g["nodes"][0]["type"], json!("task"));
+    assert_eq!(g["nodes"][0]["short_id"], json!(1));
+    assert_eq!(g["nodes"][0]["label"], json!("the root task"));
+    assert_eq!(g["truncated"], json!(false));
+    assert_eq!(g["omitted_nodes"], json!(0));
+    assert_eq!(g["omitted_edges"], json!(0));
+    assert_eq!(g["include_inferred"], json!(false));
+}
+
+/// The default is two hops, and every structural edge is walked on the way —
+/// each one naming the table it was read out of, so a reader can tell a stored
+/// fact from a computed one without knowing how the engine is built.
+#[test]
+fn the_default_depth_is_two_hops_over_every_structural_edge() {
+    let e = engine();
+    chain(&e);
+    let g = ok(&e, "graph.query", json!({ "root": 1 }));
+    assert_eq!(g["depth"], json!(2));
+
+    let seen = labels(&g);
+    for reached in [
+        "the root task",
+        "the blocker",      // one hop, `dependencies`
+        "the far blocker",  // two hops
+        "the opening note", // `annotations`
+        "the ruling",       // an explicit link
+    ] {
+        assert!(seen.contains(&reached.to_string()), "{reached} in {seen:?}");
+    }
+    assert!(
+        !seen.contains(&"the distant one".to_string()),
+        "three hops is past the default depth: {seen:?}"
+    );
+
+    assert_eq!(
+        provenance(&g),
+        [
+            ("depends_on".to_string(), "dependencies".to_string()),
+            ("has_annotation".to_string(), "annotations".to_string()),
+            ("references".to_string(), "links".to_string()),
+        ]
+    );
+    for edge in g["edges"].as_array().expect("edges") {
+        assert_eq!(edge["kind"], json!("structural"));
+        assert_eq!(
+            edge["confidence"],
+            Value::Null,
+            "a stored edge carries no confidence"
+        );
+    }
+}
+
+/// An explicit link is a first-class structural edge: the relation as stored,
+/// and `links` as the table it came from, so a curated edge reads the same way
+/// as one the engine derives.
+#[test]
+fn an_explicit_link_is_a_structural_edge_sourced_from_links() {
+    let e = engine();
+    let doc = chain(&e);
+    let g = ok(
+        &e,
+        "graph.query",
+        json!({ "root": 1, "depth": 1, "relation_types": ["references"] }),
+    );
+    let edges = g["edges"].as_array().expect("edges");
+    assert_eq!(edges.len(), 1);
+    assert_eq!(edges[0]["relation"], json!("references"));
+    assert_eq!(edges[0]["source"], json!("links"));
+    assert_eq!(edges[0]["kind"], json!("structural"));
+    assert_eq!(edges[0]["to"], json!(format!("memory:{doc}")));
+    assert!(
+        edges[0]["id"]
+            .as_str()
+            .expect("edge id")
+            .starts_with("link:"),
+        "a link edge is named by the link it is: {}",
+        edges[0]["id"]
+    );
+}
+
+/// Project membership is walked in both directions: a task reaches the project
+/// it is filed under, and a project root reaches everything filed under it —
+/// which is the whole of what a project node is for.
+#[test]
+fn belongs_to_project_is_walked_from_both_ends() {
+    let e = engine();
+    ok(&e, "project.create", json!({ "name": "work" }));
+    ok(
+        &e,
+        "task.add",
+        json!({ "title": "the filed task", "project": "work" }),
+    );
+    ok(
+        &e,
+        "memory.add",
+        json!({ "title": "the filed doc", "body": "notes", "project": "work" }),
+    );
+
+    let from_task = ok(&e, "graph.query", json!({ "root": 1, "depth": 1 }));
+    assert!(labels(&from_task).contains(&"work".to_string()));
+    assert_eq!(
+        provenance(&from_task),
+        [(
+            "belongs_to_project".to_string(),
+            "tasks.project".to_string()
+        )]
+    );
+
+    let from_project = ok(
+        &e,
+        "graph.query",
+        json!({ "root": "project:work", "depth": 1 }),
+    );
+    let seen = labels(&from_project);
+    assert!(seen.contains(&"the filed task".to_string()), "{seen:?}");
+    assert!(seen.contains(&"the filed doc".to_string()), "{seen:?}");
+    assert_eq!(
+        provenance(&from_project),
+        [
+            ("belongs_to_project".to_string(), "docs.project".to_string()),
+            (
+                "belongs_to_project".to_string(),
+                "tasks.project".to_string()
+            ),
+        ]
+    );
+}
+
+// ---- graph.query: filters ---------------------------------------------------
+
+/// `node_types` and `relation_types` narrow what the walk keeps and what it
+/// crosses. A node the filter drops is neither returned nor expanded, so the
+/// filter bounds the cost as well as the answer.
+#[test]
+fn node_types_and_relation_types_narrow_the_walk() {
+    let e = engine();
+    chain(&e);
+
+    let tasks_only = ok(
+        &e,
+        "graph.query",
+        json!({ "root": 1, "depth": 1, "node_types": ["task"] }),
+    );
+    assert_eq!(
+        labels(&tasks_only),
+        ["the root task", "the blocker"],
+        "the note and the doc are not tasks"
+    );
+
+    let deps_only = ok(
+        &e,
+        "graph.query",
+        json!({ "root": 1, "depth": 1, "relation_types": ["depends_on"] }),
+    );
+    assert_eq!(labels(&deps_only), ["the root task", "the blocker"]);
+    assert_eq!(
+        provenance(&deps_only),
+        [("depends_on".to_string(), "dependencies".to_string())]
+    );
+}
+
+/// `status` and `tags` narrow the tasks and leave every other kind of node
+/// alone: a note has no status to match and a project carries no tags, so
+/// applying either to them would answer an empty graph for a live store.
+#[test]
+fn the_status_and_tag_filters_apply_to_tasks_only() {
+    let e = engine();
+    chain(&e);
+    ok(&e, "tag.add", json!({ "ref": 2, "tags": ["beta"] }));
+    ok(&e, "task.done", json!({ "ref": 2, "force": true }));
+
+    let pending = ok(
+        &e,
+        "graph.query",
+        json!({ "root": 1, "depth": 1, "status": "pending" }),
+    );
+    let seen = labels(&pending);
+    assert!(!seen.contains(&"the blocker".to_string()), "{seen:?}");
+    assert!(seen.contains(&"the opening note".to_string()), "{seen:?}");
+    assert!(seen.contains(&"the ruling".to_string()), "{seen:?}");
+
+    let tagged = ok(
+        &e,
+        "graph.query",
+        json!({ "root": 1, "depth": 2, "tags": ["beta"] }),
+    );
+    let seen = labels(&tagged);
+    assert!(seen.contains(&"the blocker".to_string()), "{seen:?}");
+    assert!(
+        !seen.contains(&"the far blocker".to_string()),
+        "a task the filter dropped is not expanded either: {seen:?}"
+    );
+}
+
+/// `project` keeps the things that carry a project — tasks and docs — and lets
+/// a project node and the notes on a kept task through, because neither is
+/// filed anywhere of its own.
+#[test]
+fn the_project_filter_keeps_what_carries_a_project() {
+    let e = engine();
+    ok(&e, "project.create", json!({ "name": "work" }));
+    ok(&e, "project.create", json!({ "name": "play" }));
+    ok(
+        &e,
+        "task.add",
+        json!({ "title": "the filed task", "project": "work" }),
+    );
+    // Filed elsewhere, explicitly: the first project a store creates becomes
+    // its default, so a bare `task.add` would land in `work` too.
+    ok(
+        &e,
+        "task.add",
+        json!({ "title": "the other task", "project": "play" }),
+    );
+    ok(&e, "dependency.add", json!({ "ref": 1, "depends_on": 2 }));
+    ok(
+        &e,
+        "annotation.add",
+        json!({ "ref": 1, "body": "the opening note" }),
+    );
+
+    let g = ok(
+        &e,
+        "graph.query",
+        json!({ "root": 1, "depth": 1, "project": "work" }),
+    );
+    let seen = labels(&g);
+    assert!(!seen.contains(&"the other task".to_string()), "{seen:?}");
+    assert!(seen.contains(&"work".to_string()), "{seen:?}");
+    assert!(seen.contains(&"the opening note".to_string()), "{seen:?}");
+}
+
+/// The date window reads a task's and a doc's `modified` and a note's
+/// `created`. A project has no date at all, so the window cannot exclude one —
+/// a filter that silently dropped every project would make a project root
+/// answer with itself and nothing else.
+#[test]
+fn the_date_window_bounds_what_carries_a_date() {
+    let e = engine();
+    ok(&e, "project.create", json!({ "name": "work" }));
+    ok(
+        &e,
+        "task.add",
+        json!({ "title": "the root task", "project": "work" }),
+    );
+    ok(&e, "task.add", json!({ "title": "the blocker" }));
+    ok(&e, "dependency.add", json!({ "ref": 1, "depends_on": 2 }));
+
+    let future = ok(
+        &e,
+        "graph.query",
+        json!({ "root": 1, "depth": 1, "modified_after": "2099-01-01T00:00:00Z" }),
+    );
+    assert_eq!(
+        labels(&future),
+        ["the root task", "work"],
+        "the root is the anchor and a project carries no date"
+    );
+
+    let past = ok(
+        &e,
+        "graph.query",
+        json!({ "root": 1, "depth": 1, "modified_before": "2000-01-01T00:00:00Z" }),
+    );
+    assert_eq!(labels(&past), ["the root task", "work"]);
+
+    let open = ok(
+        &e,
+        "graph.query",
+        json!({ "root": 1, "depth": 1, "modified_after": "2000-01-01T00:00:00Z" }),
+    );
+    assert!(labels(&open).contains(&"the blocker".to_string()));
+}
+
+// ---- graph.query: caps ------------------------------------------------------
+
+/// The caps bite deterministically: the same call twice is the same JSON, and
+/// what was cut is COUNTED rather than silently absent — a client that cannot
+/// tell a small graph from a truncated one will draw the wrong picture.
+#[test]
+fn the_caps_truncate_and_a_repeat_is_byte_identical() {
+    let e = engine();
+    ok(&e, "project.create", json!({ "name": "work" }));
+    for n in 0..12 {
+        ok(
+            &e,
+            "task.add",
+            json!({ "title": format!("task {n:02}"), "project": "work" }),
+        );
+    }
+
+    let g = ok(
+        &e,
+        "graph.query",
+        json!({ "root": 1, "depth": 2, "max_nodes": 5 }),
+    );
+    assert_eq!(g["node_count"], json!(5));
+    assert_eq!(g["nodes"].as_array().expect("nodes").len(), 5);
+    assert_eq!(g["truncated"], json!(true));
+    assert!(g["omitted_nodes"].as_i64().expect("omitted") > 0);
+    assert_eq!(
+        g,
+        ok(
+            &e,
+            "graph.query",
+            json!({ "root": 1, "depth": 2, "max_nodes": 5 })
+        )
+    );
+
+    let few = ok(
+        &e,
+        "graph.query",
+        json!({ "root": 1, "depth": 2, "max_edges": 3 }),
+    );
+    assert_eq!(few["edge_count"], json!(3));
+    assert_eq!(few["truncated"], json!(true));
+    assert!(few["omitted_edges"].as_i64().expect("omitted") > 0);
+    assert_eq!(
+        few,
+        ok(
+            &e,
+            "graph.query",
+            json!({ "root": 1, "depth": 2, "max_edges": 3 })
+        )
+    );
+}
+
+// ---- graph.query: inferred edges --------------------------------------------
+
+/// The inferred half is opt-in and labelled: every edge it adds says how
+/// confident it is and what computed it, so nothing derived can be mistaken for
+/// something the store was told.
+#[test]
+fn inferred_edges_are_off_by_default_and_carry_a_confidence_when_on() {
+    let e = engine();
+    ok(&e, "task.add", json!({ "title": "rate limit ceiling" }));
+    ok(
+        &e,
+        "task.add",
+        json!({ "title": "the neighbour", "tags": ["api"] }),
+    );
+    ok(&e, "tag.add", json!({ "ref": 1, "tags": ["api"] }));
+    ok(&e, "dependency.add", json!({ "ref": 1, "depends_on": 2 }));
+    ok(
+        &e,
+        "memory.add",
+        json!({ "title": "rate limit ceiling", "body": "60 requests a minute per key." }),
+    );
+
+    let off = ok(&e, "graph.query", json!({ "root": 1, "depth": 1 }));
+    assert_eq!(off["include_inferred"], json!(false));
+    for edge in off["edges"].as_array().expect("edges") {
+        assert_eq!(edge["kind"], json!("structural"));
+    }
+
+    let on = ok(
+        &e,
+        "graph.query",
+        json!({ "root": 1, "depth": 1, "include_inferred": true }),
+    );
+    assert_eq!(on["include_inferred"], json!(true));
+    let inferred: Vec<&Value> = on["edges"]
+        .as_array()
+        .expect("edges")
+        .iter()
+        .filter(|e| e["kind"] == json!("inferred"))
+        .collect();
+    assert!(!inferred.is_empty(), "nothing was inferred: {on}");
+    for edge in &inferred {
+        let c = edge["confidence"].as_f64().expect("confidence");
+        assert!((0.0..=1.0).contains(&c), "confidence {c} is out of range");
+        assert!(!edge["source"].as_str().expect("source").is_empty());
+    }
+    let relations: Vec<&str> = inferred
+        .iter()
+        .map(|e| e["relation"].as_str().expect("relation"))
+        .collect();
+    assert!(relations.contains(&"search_match"), "{relations:?}");
+    assert!(relations.contains(&"shared_tag"), "{relations:?}");
+    assert!(
+        labels(&on).contains(&"rate limit ceiling".to_string()),
+        "the matching doc joined the projection: {:?}",
+        labels(&on)
+    );
+}
+
+// ---- graph.query: refusals --------------------------------------------------
+
+/// Every bound is refused BY NAME rather than clamped: a caller who asked for
+/// depth 5 wants five, and quietly serving two is an answer they cannot tell
+/// from the graph really ending there.
+#[test]
+fn an_out_of_range_bound_or_an_unknown_name_is_refused() {
+    let e = engine();
+    chain(&e);
+    for (params, needle) in [
+        (json!({ "root": 1, "depth": 5 }), "depth"),
+        (json!({ "root": 1, "depth": -1 }), "depth"),
+        (json!({ "root": 1, "max_nodes": 0 }), "max_nodes"),
+        (json!({ "root": 1, "max_nodes": 1001 }), "max_nodes"),
+        (json!({ "root": 1, "max_edges": 5001 }), "max_edges"),
+        (json!({ "root": 1, "node_types": ["doc"] }), "doc"),
+        (
+            json!({ "root": 1, "relation_types": ["mentions"] }),
+            "mentions",
+        ),
+        (json!({ "root": 1, "status": "finished" }), "finished"),
+        (
+            json!({ "root": 1, "modified_after": "yesterday" }),
+            "modified_after",
+        ),
+    ] {
+        let err = call(&e, "graph.query", params.clone())
+            .err()
+            .unwrap_or_else(|| panic!("{params} was accepted"));
+        assert_eq!(err.code, ErrorCode::BadRequest, "{params}");
+        assert!(
+            err.message.contains(needle),
+            "the refusal must name `{needle}`: {}",
+            err.message
+        );
+    }
+}
+
+/// A root that names nothing is `not_found`, the same split every node
+/// reference makes: a typo is exit 2 and an absent node is exit 4.
+#[test]
+fn a_missing_root_is_not_found() {
+    let e = engine();
+    chain(&e);
+    let err = call(&e, "graph.query", json!({ "root": 9999 })).expect_err("no task #9999");
+    assert_eq!(err.code, ErrorCode::NotFound);
+    assert!(err.message.contains("9999"), "{}", err.message);
+
+    let missing = call(&e, "graph.query", json!({})).expect_err("`root` is required");
+    assert_eq!(missing.code, ErrorCode::BadRequest);
+    assert!(missing.message.contains("root"), "{}", missing.message);
+}
+
+// ---- graph.query: the bound holds at store scale ----------------------------
+
+/// The default cap is what stands between a graph call and a whole store.
+///
+/// Twelve hundred tasks in one project, so the project node at depth 1 expands
+/// to every one of them at depth 2: the answer must be exactly the 250 the
+/// default allows, say that it was cut, and come back fast enough that a UI can
+/// call it on a keystroke. The bound is generous on purpose — this runs in a
+/// debug build, and the failure it is watching for is a per-node query, which
+/// is two orders of magnitude away rather than a few percent.
+#[test]
+fn a_twelve_hundred_task_store_clamps_to_the_default_cap_quickly() {
+    let e = engine();
+    ok(&e, "project.create", json!({ "name": "bulk" }));
+    for n in 0..1200 {
+        ok(
+            &e,
+            "task.add",
+            json!({ "title": format!("bulk task {n:04}"), "project": "bulk", "tags": ["shared"] }),
+        );
+    }
+    // A chain over the first slice only: `dependency.add` walks the graph it
+    // already has to refuse a cycle, so a 1,200-long chain is quadratic in the
+    // FIXTURE and measures nothing about the query under test.
+    for n in 1..60 {
+        ok(
+            &e,
+            "dependency.add",
+            json!({ "ref": n, "depends_on": n + 1 }),
+        );
+    }
+
+    let started = std::time::Instant::now();
+    let g = ok(&e, "graph.query", json!({ "root": 1 }));
+    let elapsed = started.elapsed();
+
+    assert_eq!(g["node_count"], json!(250), "the default max_nodes");
+    assert_eq!(g["nodes"].as_array().expect("nodes").len(), 250);
+    assert_eq!(g["truncated"], json!(true));
+    assert!(g["omitted_nodes"].as_i64().expect("omitted") > 900);
+    assert!(
+        elapsed < std::time::Duration::from_secs(2),
+        "graph.query over 1,200 tasks took {elapsed:?} — a batched lookup became a \
+         per-node query"
     );
 }

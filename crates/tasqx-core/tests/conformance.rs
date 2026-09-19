@@ -922,6 +922,53 @@ const R_LINK_LIST: Shape = &[&[
     req_of("links", Ty::Array, &[LINK_ROW]),
 ]];
 
+/// One node of a `graph.query` projection (D160).
+///
+/// `short_id` and `task` are nullable rather than optional although only one
+/// kind of node carries each: a key that appears and disappears by node type
+/// makes a renderer branch on presence four ways to lay out one table, and the
+/// answer "this node has no short id" is exactly what `null` says.
+const GRAPH_NODE: &[Field] = &[
+    req("id", Ty::Str),
+    req("type", Ty::Str),
+    req("label", Ty::Str),
+    nul("summary", Ty::Str),
+    nul("project", Ty::Str),
+    nul("status", Ty::Str),
+    nul("modified", Ty::Str),
+    nul("short_id", Ty::Int),
+    nul("task", Ty::Str),
+];
+
+/// One edge of a projection. `confidence` is `Num` and not `Int` for the reason
+/// `urgency` is: it is a computed fraction, and a run that happened to produce
+/// exactly 1 must not read as a type change.
+const GRAPH_EDGE: &[Field] = &[
+    req("id", Ty::Str),
+    req("from", Ty::Str),
+    req("to", Ty::Str),
+    req("relation", Ty::Str),
+    req("kind", Ty::Str),
+    nul("confidence", Ty::Num),
+    req("source", Ty::Str),
+];
+
+/// The counts and the omitted figures are always present, including on an
+/// untruncated answer: a client cannot tell a graph that ends from one that was
+/// cut unless both answers carry the same keys.
+const R_GRAPH_QUERY: Shape = &[&[
+    req("root", Ty::Str),
+    req("depth", Ty::Int),
+    req_of("nodes", Ty::Array, &[GRAPH_NODE]),
+    req_of("edges", Ty::Array, &[GRAPH_EDGE]),
+    req("node_count", Ty::Int),
+    req("edge_count", Ty::Int),
+    req("truncated", Ty::Bool),
+    req("omitted_nodes", Ty::Int),
+    req("omitted_edges", Ty::Int),
+    req("include_inferred", Ty::Bool),
+]];
+
 const R_MEMORY_ADD: Shape = &[&[
     req("id", Ty::Str),
     req("title", Ty::Str),
@@ -1939,6 +1986,64 @@ fn cases() -> Vec<Case> {
                 json!({ "ref": 1, "limit": 10, "offset": 0 })
             },
             R_LINK_LIST,
+        ),
+        case(
+            "graph.query",
+            "a task root reaching a dependency, a note, its project and a linked doc",
+            |e| {
+                e.project_create(&json!({ "name": "work" }))
+                    .expect("project");
+                e.task_add(&json!({
+                    "title": "the root task",
+                    "project": "work",
+                    "priority": "H",
+                    "tags": ["alpha"],
+                }))
+                .expect("task");
+                e.task_add(
+                    &json!({ "title": "the blocker", "project": "work", "tags": ["alpha"] }),
+                )
+                .expect("task");
+                e.dependency_add(&json!({ "ref": 1, "depends_on": 2 }))
+                    .expect("dependency");
+                e.annotation_add(&json!({ "ref": 1, "body": "the opening note" }))
+                    .expect("note");
+                let doc = e
+                    .memory_add(&json!({
+                        "title": "the root task",
+                        "body": "the ruling behind it",
+                        "project": "work",
+                    }))
+                    .expect("doc");
+                e.link_add(&json!({
+                    "from": 1,
+                    "to": format!("memory:{}", doc["id"].as_str().expect("id")),
+                    "relation": "references",
+                }))
+                .expect("link");
+                // Every optional param at once, so the frozen shape is pinned
+                // on the answer a client that sends all of them receives — an
+                // inferred edge included, which is the only way `confidence`
+                // is seen on its non-null branch.
+                json!({
+                    "root": 1,
+                    "depth": 2,
+                    "node_types": ["task", "memory", "annotation", "project"],
+                    "relation_types": [
+                        "depends_on", "has_annotation", "belongs_to_project",
+                        "references", "search_match", "shared_tag",
+                    ],
+                    "project": "work",
+                    "status": "pending",
+                    "tags": ["alpha"],
+                    "modified_after": "2000-01-01T00:00:00Z",
+                    "modified_before": "2099-01-01T00:00:00Z",
+                    "include_inferred": true,
+                    "max_nodes": 100,
+                    "max_edges": 100,
+                })
+            },
+            R_GRAPH_QUERY,
         ),
         case(
             "memory.add",
