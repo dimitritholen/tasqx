@@ -19,6 +19,18 @@ tasqx export project:work > work.json
 - A filtered export that cuts across a dependency (one task in, its
   prerequisite out) drops that edge and *says so* in the answer
   (`dropped_dependencies`), rather than exporting a broken reference.
+- **An unfiltered export carries every project, every memory doc and the
+  whole event log** — the full backup. Any *other* filter scopes those three
+  to what the exported tasks actually need, and reports what it left out
+  (`dropped_projects`, `dropped_docs`, `dropped_events`): sharing
+  `tasqx export project:ledger` no longer ships every other project's
+  knowledge along with it. A doc that carries no project ships only with
+  `--include-unscoped`, which is refused on an unfiltered export — there is
+  nothing to widen from.
+
+```console
+tasqx export project:work --include-unscoped > work-and-global.json
+```
 
 ## tasqx import
 

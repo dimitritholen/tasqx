@@ -2069,6 +2069,228 @@ fn import_wires_edges_regardless_of_payload_order() {
     assert_eq!(got["blocked"], json!(true));
 }
 
+// ---- store.export scoping: docs/projects/events follow a project filter
+// (finding #627, DESIGN.md D171) -------------------------------------------
+//
+// `tasqx export project:ledger` used to filter `tasks` but still ship every
+// memory doc, every project row and the whole event log regardless of the
+// filter — a data leak when the file is shared. A `project:`-naming filter
+// now scopes `docs`/`projects`/`events` to what the export's own tasks need.
+
+/// Two projects, a doc scoped to each, one unscoped doc, and one task per
+/// project — the minimum fixture with something to leak across every axis
+/// this section guards.
+fn two_projects_with_docs() -> (Engine, Value, Value) {
+    let e = engine();
+    e.project_create(&json!({ "name": "A" })).unwrap();
+    e.project_create(&json!({ "name": "B" })).unwrap();
+    let task_a = e
+        .task_add(&json!({ "title": "task in A", "project": "A" }))
+        .unwrap();
+    let task_b = e
+        .task_add(&json!({ "title": "task in B", "project": "B" }))
+        .unwrap();
+    e.memory_add(&json!({ "title": "doc A", "body": "a's own", "project": "A" }))
+        .unwrap();
+    e.memory_add(&json!({ "title": "doc B", "body": "b's own", "project": "B" }))
+        .unwrap();
+    e.memory_add(&json!({ "title": "doc none", "body": "belongs nowhere" }))
+        .unwrap();
+    (e, task_a, task_b)
+}
+
+#[test]
+fn a_project_filter_scopes_docs_projects_and_events_to_that_project() {
+    let (e, task_a, task_b) = two_projects_with_docs();
+
+    let ex = e.store_export(&json!({ "filter": "project:A" })).unwrap();
+    let tasks = ex["tasks"].as_array().unwrap();
+    assert_eq!(tasks.len(), 1, "only A's task: {tasks:?}");
+    assert_eq!(tasks[0]["id"], task_a["id"]);
+
+    let docs = ex["docs"].as_array().unwrap();
+    let doc_titles: Vec<&str> = docs.iter().map(|d| d["title"].as_str().unwrap()).collect();
+    assert_eq!(
+        doc_titles,
+        vec!["doc A"],
+        "only A's doc, unscoped left out: {docs:?}"
+    );
+
+    let projects = ex["projects"].as_array().unwrap();
+    let project_names: Vec<&str> = projects
+        .iter()
+        .map(|p| p["name"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        project_names,
+        vec!["A"],
+        "only A's project row: {projects:?}"
+    );
+
+    // Every event this export carries must belong to something the export
+    // itself carries: B's `task.add` and B's `memory.add` must not leak
+    // through the audit log after `tasks`/`docs` correctly left them out.
+    let events = ex["events"].as_array().unwrap();
+    let b_task_id = task_b["id"].as_str().unwrap();
+    for ev in events {
+        if ev["entity"] == "task" {
+            assert_ne!(
+                ev["entity_id"],
+                json!(b_task_id),
+                "B's task event leaked: {ev}"
+            );
+        }
+    }
+    assert!(
+        !events
+            .iter()
+            .any(|ev| ev["payload"]["title"] == json!("doc B")),
+        "B's doc event leaked: {events:?}"
+    );
+
+    // The header states what it left out.
+    assert_eq!(
+        ex["dropped_docs"],
+        json!(2),
+        "doc B + the unscoped doc: {ex}"
+    );
+    assert_eq!(ex["dropped_projects"], json!(1), "project B: {ex}");
+    assert!(
+        ex["dropped_events"].as_i64().unwrap() > 0,
+        "B's events must be counted as dropped: {ex}"
+    );
+    assert_eq!(ex["dropped_dependencies"], json!(0));
+}
+
+#[test]
+fn include_unscoped_widens_a_project_filtered_export_to_unscoped_docs() {
+    let (e, _task_a, _task_b) = two_projects_with_docs();
+
+    let ex = e
+        .store_export(&json!({ "filter": "project:A", "include_unscoped": true }))
+        .unwrap();
+    let doc_titles: Vec<&str> = ex["docs"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|d| d["title"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        doc_titles
+            .into_iter()
+            .collect::<std::collections::BTreeSet<_>>(),
+        std::collections::BTreeSet::from(["doc A", "doc none"]),
+        "A's doc plus the unscoped one, B's still left out: {}",
+        ex["docs"]
+    );
+    assert_eq!(ex["dropped_docs"], json!(1), "only B's doc now: {ex}");
+}
+
+/// `include_unscoped` on an unfiltered export has nothing to widen — the
+/// whole store already comes back — so it is refused on D33's precedent
+/// (`memory.search` refuses the same shape for the same reason).
+#[test]
+fn include_unscoped_is_refused_without_scoping_to_widen_from() {
+    let e = engine();
+    let err = e
+        .store_export(&json!({ "include_unscoped": true }))
+        .unwrap_err();
+    assert_eq!(err.code, ErrorCode::BadRequest);
+    assert!(err.message.contains("include_unscoped"), "{}", err.message);
+}
+
+/// An unfiltered export is unchanged (D12): every doc, every project, the
+/// whole event log, and the new dropped_* counters read zero.
+#[test]
+fn an_unfiltered_export_carries_every_doc_and_project_with_nothing_dropped() {
+    let (e, _task_a, _task_b) = two_projects_with_docs();
+
+    let ex = e.store_export(&json!({})).unwrap();
+    assert_eq!(ex["docs"].as_array().unwrap().len(), 3);
+    assert_eq!(ex["projects"].as_array().unwrap().len(), 2);
+    assert_eq!(ex["dropped_docs"], json!(0));
+    assert_eq!(ex["dropped_projects"], json!(0));
+    assert_eq!(ex["dropped_events"], json!(0));
+}
+
+/// A filter that names no project at all (a tag filter spanning both
+/// projects) still must not leak the OTHER project's knowledge: the needed
+/// set is derived from what the SELECTED tasks actually reference.
+#[test]
+fn a_filter_naming_no_project_scopes_by_the_selected_tasks_own_projects() {
+    let e = engine();
+    e.project_create(&json!({ "name": "A" })).unwrap();
+    e.project_create(&json!({ "name": "B" })).unwrap();
+    e.task_add(&json!({ "title": "tagged in A", "project": "A", "tags": ["keep"] }))
+        .unwrap();
+    e.task_add(&json!({ "title": "untagged in B", "project": "B" }))
+        .unwrap();
+    e.memory_add(&json!({ "title": "doc A", "body": "x", "project": "A" }))
+        .unwrap();
+    e.memory_add(&json!({ "title": "doc B", "body": "x", "project": "B" }))
+        .unwrap();
+
+    let ex = e.store_export(&json!({ "filter": "+keep" })).unwrap();
+    let project_names: Vec<&str> = ex["projects"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|p| p["name"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        project_names,
+        vec!["A"],
+        "only the project the selected task actually names: {ex}"
+    );
+    let doc_titles: Vec<&str> = ex["docs"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|d| d["title"].as_str().unwrap())
+        .collect();
+    assert_eq!(doc_titles, vec!["doc A"], "{ex}");
+}
+
+/// Round trip: exporting `project:A` and importing it into a fresh store
+/// reproduces exactly project A — its task, its doc, its project row — and
+/// nothing of B.
+#[test]
+fn a_project_filtered_export_round_trips_into_exactly_that_project() {
+    let (a, task_a, _task_b) = two_projects_with_docs();
+    let ex = a.store_export(&json!({ "filter": "project:A" })).unwrap();
+
+    let b = engine();
+    let imp = b.store_import(&ex).unwrap();
+    assert_eq!(imp["imported"], json!(1));
+
+    let list: Value = b.task_list(&json!({})).unwrap();
+    let titles: Vec<&str> = list["tasks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|t| t["title"].as_str().unwrap())
+        .collect();
+    assert_eq!(titles, vec![task_a["title"].as_str().unwrap()]);
+
+    let projects = b
+        .project_list(&json!({ "include_archived": true }))
+        .unwrap();
+    let names: Vec<&str> = projects["projects"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|p| p["name"].as_str().unwrap())
+        .collect();
+    assert_eq!(names, vec!["A"]);
+
+    let re = b.store_export(&json!({})).unwrap();
+    assert_eq!(
+        re["docs"].as_array().unwrap().len(),
+        1,
+        "only A's doc restored: {re}"
+    );
+}
+
 // ---- modify: set + clear round-trip (DESIGN §5, §12-D13) --------------------
 
 /// Every field the CLI's `modify` steers must survive a set → read → clear →

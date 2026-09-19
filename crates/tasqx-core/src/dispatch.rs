@@ -255,7 +255,7 @@ pub const PARAMS: &[(&str, &[&str], bool)] = &[
         &["group_by", "filter", "metrics", "since", "until"],
         false,
     ),
-    ("store.export", &["filter"], false),
+    ("store.export", &["filter", "include_unscoped"], false),
     (
         "store.import",
         &["tasks", "projects", "default_project", "docs", "events"],

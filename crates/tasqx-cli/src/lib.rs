@@ -1108,7 +1108,10 @@ fn execute(cli: Cli) -> Exit {
         Some(Command::Check { action }) => run_check(&mut backend, &ctx, &action),
         Some(Command::Memory { action }) => run_memory(&mut backend, &ctx, &action),
         Some(Command::Tokens { action }) => run_tokens(&mut backend, &ctx, &action),
-        Some(Command::Export { filter }) => run_export(&mut backend, &filter),
+        Some(Command::Export {
+            filter,
+            include_unscoped,
+        }) => run_export(&mut backend, &filter, include_unscoped),
         Some(Command::Import { file }) => run_import(&mut backend, &ctx, file),
         Some(Command::Next {
             filter,

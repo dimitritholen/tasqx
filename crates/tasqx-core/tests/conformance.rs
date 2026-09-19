@@ -1184,11 +1184,20 @@ const R_STORE_EXPORT: Shape = &[&[
     ),
     req("dropped_dependencies", Ty::Int),
     req_of("projects", Ty::Array, &[PROJECT_EXPORT_ROW]),
+    // D171: how many project rows a filtered export left out because no
+    // selected task and no `project:`/`proj:` filter term named them.
+    req("dropped_projects", Ty::Int),
     req_of("docs", Ty::Array, &[DOC_EXPORT_ROW]),
+    // D171: how many memory docs a filtered export left out — scoped to a
+    // project it does not carry, or unscoped without `include_unscoped`.
+    req("dropped_docs", Ty::Int),
     // The whole audit log (minus the bookkeeping `store.import` itself
     // writes, #176) — the SAME row shape `event.list` freezes, because it is
     // the same table.
     req_of("events", Ty::Array, &[EVENT_ROW]),
+    // D171: how many events a filtered export left out because they belong
+    // to a task, doc or project this document does not carry.
+    req("dropped_events", Ty::Int),
     nul("default_project", Ty::Str),
 ]];
 
