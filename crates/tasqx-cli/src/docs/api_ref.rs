@@ -1030,7 +1030,7 @@ const PARAM_DOCS: &[(&str, &str, &str, &str, &str)] = &[
         "docs",
         "array of object",
         "",
-        "The documents to store, each `{title, body, source?, project?}`. One transaction: same `source` replaces in place, keeping the doc's id and creation date (D143).",
+        "The documents to store, each `{title, body, source?, project?}`. One transaction: same `source` replaces in place, keeping the doc's id and creation date (D143); a batch naming one `source` twice is refused whole (D174).",
     ),
     (
         "reminder.fire",

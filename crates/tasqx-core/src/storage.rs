@@ -606,6 +606,32 @@ fn migrate_memory(conn: &Connection) -> Result<(), ApiError> {
     if !fts_existed || annotations_needs_porter {
         tx.execute_batch("INSERT INTO annotations_fts(annotations_fts) VALUES('rebuild');")?;
     }
+
+    // D174: `source` is a doc's identity, held by at most one row. A store
+    // written before this may already have two on one source, so they are
+    // resolved first — once, gated on the index being absent — without
+    // deleting anything: the most recently modified row keeps the source and
+    // the older ones keep their title and body with the source cleared.
+    // `rtrim(modified, 'Z')` is `memory.list`'s own normalisation of a
+    // trimmed-fraction stamp (D142's trap), `id` the tie-break. The UPDATE
+    // runs after `docs_fts` and its triggers exist, so `docs_fts_au`
+    // re-indexes each touched row with the same text it already had.
+    let has_source_index: bool = tx.query_row(
+        "SELECT EXISTS (SELECT 1 FROM sqlite_master \
+         WHERE type = 'index' AND name = 'idx_docs_source')",
+        [],
+        |r| r.get(0),
+    )?;
+    if !has_source_index {
+        tx.execute_batch(
+            "UPDATE docs SET source = NULL \
+             WHERE source IS NOT NULL AND id <> ( \
+                 SELECT d.id FROM docs d WHERE d.source = docs.source \
+                 ORDER BY rtrim(d.modified, 'Z') DESC, d.id DESC LIMIT 1); \
+             CREATE UNIQUE INDEX idx_docs_source ON docs(source) \
+                 WHERE source IS NOT NULL;",
+        )?;
+    }
     tx.commit()?;
     Ok(())
 }
@@ -1638,6 +1664,73 @@ mod tests {
 
         drop(e);
         let _ = std::fs::remove_file(&path);
+    }
+
+    /// D174 (task #85): `docs.source` is a doc's identity, backed by a partial
+    /// UNIQUE index — but a store written before it can already hold two rows
+    /// on one source. The migration must resolve them WITHOUT deleting
+    /// anything: the most recently modified row keeps the source, the older
+    /// ones keep their title and body with the source cleared, and only then
+    /// does the index go on.
+    #[test]
+    fn migration_resolves_duplicate_doc_sources_and_adds_the_unique_index() {
+        let conn = Connection::open_in_memory().unwrap();
+        configure(&conn).unwrap();
+        migrate(&conn).unwrap();
+        // The pre-D174 shape: every column, no index on `source`.
+        conn.execute_batch("DROP INDEX IF EXISTS idx_docs_source;")
+            .unwrap();
+        // `newest`'s whole-second stamp against `mid`'s trimmed fraction is
+        // the D142 trap: as raw text `...10Z` sorts ABOVE `...10.5Z`.
+        for (id, source, modified) in [
+            ("old", Some("deploy.md"), "2026-09-01T09:00:00Z"),
+            ("newest", Some("deploy.md"), "2026-09-10T10:00:11Z"),
+            ("mid", Some("deploy.md"), "2026-09-10T10:00:10.5Z"),
+            ("alone", Some("other.md"), "2026-09-01T09:00:00Z"),
+            ("loose", None, "2026-09-01T09:00:00Z"),
+        ] {
+            conn.execute(
+                "INSERT INTO docs (id, source, title, body, created, modified) \
+                 VALUES (?1, ?2, ?1, 'body of ' || ?1, 't', ?3)",
+                params![id, source, modified],
+            )
+            .unwrap();
+        }
+
+        migrate(&conn).unwrap();
+
+        let rows: Vec<(String, Option<String>, String)> = conn
+            .prepare("SELECT id, source, body FROM docs ORDER BY id")
+            .unwrap()
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        let src = |id: &str| rows.iter().find(|r| r.0 == id).unwrap().1.clone();
+        assert_eq!(rows.len(), 5, "nothing may be deleted: {rows:?}");
+        assert_eq!(src("newest").as_deref(), Some("deploy.md"), "{rows:?}");
+        assert_eq!(src("mid"), None, "{rows:?}");
+        assert_eq!(src("old"), None, "{rows:?}");
+        assert_eq!(src("alone").as_deref(), Some("other.md"), "{rows:?}");
+        assert!(
+            rows.iter().all(|r| r.2 == format!("body of {}", r.0)),
+            "every body must survive: {rows:?}"
+        );
+
+        let dup = conn.execute(
+            "INSERT INTO docs (id, source, title, body, created, modified) \
+             VALUES ('late', 'deploy.md', 't', 'b', 't', 't')",
+            [],
+        );
+        assert!(dup.is_err(), "the index must refuse a second holder");
+        conn.execute(
+            "INSERT INTO docs (id, source, title, body, created, modified) \
+             VALUES ('loose2', NULL, 't', 'b', 't', 't')",
+            [],
+        )
+        .expect("the index is partial: many docs may have no source");
+
+        migrate(&conn).expect("the migration is idempotent");
     }
 
     /// A YAML list item or a folded block scalar's continuation line has no

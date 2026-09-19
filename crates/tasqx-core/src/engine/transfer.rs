@@ -690,6 +690,7 @@ impl Engine {
                              drop this doc from the payload)"
                     )));
                 }
+                super::memory::refuse_source_held_elsewhere(&tx, source.as_deref(), &did)?;
                 tx.execute(
                     "INSERT INTO docs \
                      (id, source, title, body, search_body, project, rev, standing, \

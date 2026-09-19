@@ -433,7 +433,7 @@ tasqx [GLOBAL-FLAGS] [VERB] [REF...] [ARGS / FILTER] [--flags]
 | `tasqx 42 annotate "…"` | `annotation.add` | — |
 | `tasqx unannotate 42 <id>` | `annotation.remove` | Hard-deletes the body, keeps a tombstone; unknown/already-removed id → exit 4. Not undo-reversible (D113). |
 | `tasqx 42 dep 43` | `dependency.add` | Cycle → exit 5 (`conflict`). |
-| `tasqx memory add/search/show/rm/import` | `memory.add` / `memory.search` / `memory.get` / `memory.remove` / `memory.import` | D41, `show` from D71. `import`: one doc per `.md` file, one transaction, same `source` replaces in place and bumps its rev (D143). |
+| `tasqx memory add/search/show/rm/import` | `memory.add` / `memory.search` / `memory.get` / `memory.remove` / `memory.import` | D41, `show` from D71. `import`: one doc per `.md` file, one transaction, same `source` replaces in place and bumps its rev (D143); a source names one doc, so a batch naming one twice is refused and `add`/`update` refuse a source another doc holds (D174). |
 | `tasqx pick [filter]` | `task.list` → `task.get` → `task.start` | Fetches every candidate with the same default filter as `list` (`@working`), reads a task's card when the user opens it, then starts the one the user selects with `s`. One verb with an effect, not a menu of them (D55, D124). |
 | `tasqx agenda [filter] [--days N]` | `task.list` | No `agenda` method: the grouping, the horizon and the earlier-of-two-dates ordering are all rendering over fields the row already carries (D53). The filter defaults to every OPEN status, not `@working` — a future `scheduled` parks a task in `backlog`, which `@working` excludes. |
 | `tasqx report <name>` | `report.summary` | Feeds charts (§8) and HTML export. |
@@ -4150,3 +4150,13 @@ are the product's integrity guarantee.
 
 **Why a new entry and not an edit.** D146 and D153 rule what the transport renders, and that stands; this narrows only when an agent is told to ask for it.
 
+
+### D174 — a doc's `source` is its identity: one doc per source, enforced at every write door and by a partial UNIQUE index (task #85; extends D143)
+
+**Decision:** a non-null `docs.source` belongs to at most one doc. `memory.add`, `memory.update` and `store.import` refuse a source a DIFFERENT doc id already holds with `conflict`, naming that doc's id and the source; re-stating a doc's own source is not a conflict, and any number of docs may have no source. `memory.import` refuses a batch that names the same source twice with `bad_request` listing the duplicated sources, before the write lock is taken, so nothing from it lands. The store backs the rule with `CREATE UNIQUE INDEX idx_docs_source ON docs(source) WHERE source IS NOT NULL`, added by the idempotent `migrate_memory`. Before creating it, the migration resolves existing duplicates without deleting anything: the most recently modified row (`rtrim(modified, 'Z')`, D144's normalisation, `id` as tie-break) keeps the source, and the older rows keep their title and body with `source` set to NULL. The resolution runs once, gated on the index being absent, and writes no event, like the other schema repairs.
+
+**Why:** `memory.import` replaces by source (D143), so the import's lookup assumes one row per source. With no constraint, `memory.add` or `memory.update` could create a second holder, and the lookup then picked whichever row SQLite scanned first, leaving the other at stale text and rev. A single batch naming one source twice inserted the first entry and replaced it with the second, answering `imported: 2, replaced: 1` for one id.
+
+**Rejected: make `memory.add` with a held source a replace.** That would silently overwrite a doc from a door whose contract is "store one new doc", and would move the id a caller is about to be handed. **Rejected: deduplicate a batch (last one wins).** Two entries for one file in one batch is a caller bug. Refusing it names the bug; picking one hides it. **Rejected: delete the older duplicates in the migration.** A doc can hold the only copy of a ruling, and removal is permanent. Clearing the source keeps it searchable and loses only the key that was ambiguous anyway.
+
+**What does not change.** A source-replace through `memory.import` still keeps id and `created` and bumps `rev` (D143). The index covers only non-null sources, so it adds no cost to unsourced docs. The engine checks before the write, so a caller gets the `conflict` naming the other doc, not a raw constraint failure.

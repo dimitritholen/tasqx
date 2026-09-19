@@ -115,6 +115,36 @@ pub struct SessionDoc {
     pub body: String,
 }
 
+/// D174: a doc's `source` is its identity — the key `memory.import` replaces
+/// by — so a write that would give `id` a source a DIFFERENT doc already holds
+/// is a `conflict` naming that doc, never a second holder. Every door that
+/// sets `source` from a caller (`memory.add`, `memory.update`, `store.import`)
+/// asks here first; the partial UNIQUE index `idx_docs_source` is the
+/// backstop that would otherwise answer with a raw constraint failure.
+pub(crate) fn refuse_source_held_elsewhere(
+    conn: &Connection,
+    source: Option<&str>,
+    id: &str,
+) -> Result<(), ApiError> {
+    let Some(source) = source else {
+        return Ok(());
+    };
+    let holder: Option<String> = conn
+        .query_row(
+            "SELECT id FROM docs WHERE source = ?1 AND id <> ?2",
+            params![source, id],
+            |r| r.get(0),
+        )
+        .optional()?;
+    match holder {
+        None => Ok(()),
+        Some(other) => Err(ApiError::conflict(format!(
+            "source {source:?} already belongs to memory doc {other}: a source names one \
+             doc (D174) — update {other} instead, or give {id} another source"
+        ))),
+    }
+}
+
 impl Engine {
     // ---- memory.add ----------------------------------------------------------
 
@@ -158,6 +188,7 @@ impl Engine {
         let id = crate::clock::uuid_v7().to_string();
         let ts = now();
         let tx = self.begin_mutation()?;
+        refuse_source_held_elsewhere(&tx, source.as_deref(), &id)?;
         tx.execute(
             "INSERT INTO docs \
              (id, source, title, body, search_body, project, standing, created, modified) \
@@ -217,6 +248,26 @@ impl Engine {
                 e.message
             ))
         })?;
+
+        // D174: a source names one doc, so a batch naming it twice asks for
+        // two docs on one identity — it used to insert the first and replace
+        // it with the second, reporting two entries for one id. Refused whole,
+        // before the write lock is taken. A malformed `source` is left to the
+        // per-doc validation below.
+        let mut seen = HashSet::new();
+        let mut twice: Vec<&str> = Vec::new();
+        for src in docs.iter().filter_map(|d| d.get("source")?.as_str()) {
+            if !seen.insert(src) && !twice.contains(&src) {
+                twice.push(src);
+            }
+        }
+        if !twice.is_empty() {
+            return Err(ApiError::bad_request(format!(
+                "memory.import names the same source more than once: {} — a source \
+                 names one doc (D174), so send each file once",
+                twice.join(", ")
+            )));
+        }
 
         let ts = now();
         let tx = self.begin_mutation()?;
@@ -902,6 +953,7 @@ impl Engine {
         let new_body = body.clone().unwrap_or(cur_body);
         let new_search_body = crate::frontmatter::flatten(&new_body).into_owned();
         let new_source = source.clone().or(cur_source);
+        refuse_source_held_elsewhere(&tx, new_source.as_deref(), &id)?;
         let new_project = project.clone().or(cur_project);
         // #101: unnamed leaves the flag exactly as it was — the same "absent
         // is not `false`" the four fields above hold.

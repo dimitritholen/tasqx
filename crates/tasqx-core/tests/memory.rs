@@ -1757,3 +1757,163 @@ fn memory_import_by_source_keeps_the_standing_flag_on_a_replace() {
         "a source-replace is still a revision (D143): {after}"
     );
 }
+
+/// D174 (task #85): `source` is a doc's identity, so `memory.add` refuses a
+/// source another doc already holds — before it, the second add landed and
+/// `memory.import`'s replace lookup then picked one of the two at random,
+/// leaving the other at stale text and rev.
+#[test]
+fn memory_add_refuses_a_source_another_doc_already_holds() {
+    let e = engine();
+    let first = call(
+        &e,
+        "memory.add",
+        json!({ "title": "Deploy", "body": "v1", "source": "docs/deploy.md" }),
+    )
+    .unwrap();
+    let first_id = first["id"].as_str().unwrap();
+
+    let err = call(
+        &e,
+        "memory.add",
+        json!({ "title": "Deploy again", "body": "v2", "source": "docs/deploy.md" }),
+    )
+    .expect_err("a second doc must not take a source another doc holds");
+    assert_eq!(err.code, ErrorCode::Conflict, "{}", err.message);
+    assert!(
+        err.message.contains(first_id) && err.message.contains("docs/deploy.md"),
+        "the refusal must name the holder and the source: {}",
+        err.message
+    );
+    let listed = call(&e, "memory.list", json!({})).unwrap();
+    assert_eq!(
+        listed["total"], 1,
+        "the refused add wrote nothing: {listed}"
+    );
+
+    // No source at all is not an identity: any number of those coexist.
+    for _ in 0..2 {
+        call(
+            &e,
+            "memory.add",
+            json!({ "title": "loose", "body": "note" }),
+        )
+        .unwrap();
+    }
+}
+
+/// D174: `memory.update` refuses to move a doc onto a source a DIFFERENT doc
+/// holds, and re-stating the doc's own source is not a conflict.
+#[test]
+fn memory_update_refuses_a_source_another_doc_already_holds() {
+    let e = engine();
+    let a = call(
+        &e,
+        "memory.add",
+        json!({ "title": "A", "body": "a", "source": "a.md" }),
+    )
+    .unwrap();
+    let a_id = a["id"].as_str().unwrap();
+    let b = call(
+        &e,
+        "memory.add",
+        json!({ "title": "B", "body": "b", "source": "b.md" }),
+    )
+    .unwrap();
+    let b_id = b["id"].as_str().unwrap();
+
+    let err = call(&e, "memory.update", json!({ "id": b_id, "source": "a.md" }))
+        .expect_err("B must not take A's source");
+    assert_eq!(err.code, ErrorCode::Conflict, "{}", err.message);
+    assert!(
+        err.message.contains(a_id) && err.message.contains("a.md"),
+        "the refusal must name the holder and the source: {}",
+        err.message
+    );
+    let b_after = call(&e, "memory.get", json!({ "id": b_id })).unwrap();
+    assert_eq!(b_after["source"], "b.md", "{b_after}");
+    assert_eq!(
+        b_after["_rev"], 0,
+        "a refused update is no revision: {b_after}"
+    );
+
+    let same = call(
+        &e,
+        "memory.update",
+        json!({ "id": a_id, "source": "a.md", "body": "a2" }),
+    )
+    .expect("a doc keeps its own source");
+    assert_eq!(same["source"], "a.md", "{same}");
+}
+
+/// D174: one `memory.import` batch naming the same source twice used to
+/// insert the first entry and then replace it with the second, answering
+/// `imported: 2, replaced: 1` for ONE id. The batch is refused instead,
+/// naming the source, and nothing from it lands.
+#[test]
+fn memory_import_refuses_a_batch_that_names_one_source_twice() {
+    let e = engine();
+    let err = call(
+        &e,
+        "memory.import",
+        json!({ "docs": [
+            { "title": "one", "body": "first", "source": "dup.md" },
+            { "title": "other", "body": "fine", "source": "ok.md" },
+            { "title": "two", "body": "second", "source": "dup.md" }
+        ] }),
+    )
+    .expect_err("a batch carrying one source twice must be refused");
+    assert_eq!(err.code, ErrorCode::BadRequest, "{}", err.message);
+    assert!(
+        err.message.contains("dup.md") && !err.message.contains("ok.md"),
+        "the refusal must name the duplicated source and only it: {}",
+        err.message
+    );
+    let listed = call(&e, "memory.list", json!({})).unwrap();
+    assert_eq!(
+        listed["total"], 0,
+        "a refused batch writes nothing: {listed}"
+    );
+}
+
+/// D174: `store.import` restoring a doc whose source a DIFFERENT id already
+/// holds is a clean `conflict` naming both, not a raw SQLite constraint
+/// failure; re-importing the holder itself (same id) still upserts.
+#[test]
+fn store_import_refuses_a_doc_whose_source_another_id_holds() {
+    let e = engine();
+    let mine = call(
+        &e,
+        "memory.add",
+        json!({ "title": "Deploy", "body": "here", "source": "docs/deploy.md" }),
+    )
+    .unwrap();
+    let mine_id = mine["id"].as_str().unwrap().to_string();
+
+    const THEIRS: &str = "0193aaaa-0000-7000-8000-00000000d0c5";
+    let err = call(
+        &e,
+        "store.import",
+        json!({ "tasks": [], "docs": [
+            { "id": THEIRS, "title": "Deploy", "body": "there", "source": "docs/deploy.md" }
+        ] }),
+    )
+    .expect_err("a second id must not take the source");
+    assert_eq!(err.code, ErrorCode::Conflict, "{}", err.message);
+    for needle in [mine_id.as_str(), THEIRS, "docs/deploy.md"] {
+        assert!(
+            err.message.contains(needle),
+            "the refusal must name {needle}: {}",
+            err.message
+        );
+    }
+
+    call(
+        &e,
+        "store.import",
+        json!({ "tasks": [], "docs": [
+            { "id": mine_id, "title": "Deploy", "body": "restored", "source": "docs/deploy.md" }
+        ] }),
+    )
+    .expect("the holder itself re-imports over its own row");
+}
