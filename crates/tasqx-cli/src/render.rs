@@ -2941,7 +2941,17 @@ fn task_detail_card(ctx: &Ctx, result: &Value, now: Timestamp) -> String {
         let cw = avail.saturating_sub(4).max(10);
         for (mark, body) in &checks {
             let evidence = mark.trim().is_empty();
-            for (j, line) in wrap_words(body, cw).iter().enumerate() {
+            // Each source line wraps on its own, as the plain layout keeps
+            // them, and an empty one is still a row so its marker shows.
+            let lines = body.split('\n').flat_map(|l| {
+                let w = wrap_words(l, cw);
+                if w.is_empty() {
+                    vec![String::new()]
+                } else {
+                    w
+                }
+            });
+            for (j, line) in lines.enumerate() {
                 if j == 0 && !evidence {
                     let role = match *mark {
                         "[x]" => "ok",
@@ -5838,6 +5848,8 @@ mod tests {
                 { "body": "Every renamed symbol has a row in the table", "state": "passed", "evidence": "the proof" },
                 { "body": "ok", "state": "open", "evidence": null },
                 { "body": "tests", "state": "failed", "evidence": null },
+                { "body": "first\nsecond", "state": "open", "evidence": null },
+                { "body": "", "state": "open", "evidence": null },
             ],
             "annotations": [{ "body": "a note" }],
         });
@@ -5863,6 +5875,17 @@ mod tests {
                     "{needle:?} not on its own line below the facts at {cols} cols:\n{out}"
                 );
             }
+            // PR #78 review: a check body keeps its line breaks, as the
+            // plain layout does, and an empty one still shows its marker.
+            let second = body.iter().position(|l| *l == "second");
+            assert!(
+                second.is_some_and(|i| body[i - 1] == "[ ] first"),
+                "a multi-line check body lost its break at {cols} cols:\n{out}"
+            );
+            assert!(
+                body.iter().filter(|l| l.trim_end() == "[ ]").count() == 1,
+                "an empty check lost its marker at {cols} cols:\n{out}"
+            );
         }
     }
 
