@@ -493,6 +493,10 @@ impl Engine {
                 Some(Entity::Task) => present.contains(entity_id.as_str()),
                 Some(Entity::Doc) => doc_ids.contains(entity_id.as_str()),
                 Some(Entity::Project) => project_ids.contains(entity_id.as_str()),
+                // Links are not scoped by this export yet (the `links` table
+                // is not part of the archive), so their events travel whole,
+                // like an entity kind this build does not know.
+                Some(Entity::Link) => true,
                 // A future entity kind this build does not know: pass it
                 // through rather than silently dropping history it cannot
                 // scope — the same "refuse or widen, never guess" stance as
