@@ -256,6 +256,11 @@ export function selectRow(state: DashboardState, shortId: number): TaskRow | und
   return state.tasks.data.find((row) => row.short_id === shortId);
 }
 
+/** A loaded row by its uuid, the way an event names its entity. */
+export function selectRowById(state: DashboardState, id: string): TaskRow | undefined {
+  return state.tasks.data.find((row) => row.id === id);
+}
+
 /** The five summary cards, derived from the one summary slice. */
 export interface Cards {
   open: number;

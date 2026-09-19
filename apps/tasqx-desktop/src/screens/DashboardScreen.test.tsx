@@ -67,6 +67,28 @@ describe('DashboardScreen', () => {
     expect(items[1]).toHaveTextContent('uuid-e1');
   });
 
+  it('names an event by a loaded row when its entity_id matches one', async () => {
+    const rows = taskList([taskRow({ short_id: 51, id: 'row-uuid-51' })], { total: 1 });
+    const matched = event('e3', 'update', null);
+    matched.entity_id = 'row-uuid-51';
+    const it = await live(baselineScript(rows, { 'event.list': { count: 1, events: [matched] } }));
+
+    const panel = screen.getByRole('region', { name: 'Recent activity' });
+    await waitFor(() => expect(it.transport.countOf('event.list')).toBe(1));
+    expect(within(panel).getByText('#51')).toBeInTheDocument();
+  });
+
+  it('falls back to the first eight characters of the uuid, with the whole thing in the title', async () => {
+    const unmatched = event('e4', 'update', null);
+    unmatched.entity_id = 'stray-00000000-0000-0000-0000-000000000000';
+    const it = await live(baselineScript(PAGE, { 'event.list': { count: 1, events: [unmatched] } }));
+
+    const panel = screen.getByRole('region', { name: 'Recent activity' });
+    await waitFor(() => expect(it.transport.countOf('event.list')).toBe(1));
+    const cell = within(panel).getByText('stray-00');
+    expect(cell).toHaveAttribute('title', unmatched.entity_id);
+  });
+
   it('says so rather than showing an empty activity list', async () => {
     await live(baselineScript(PAGE));
     const panel = screen.getByRole('region', { name: 'Recent activity' });
