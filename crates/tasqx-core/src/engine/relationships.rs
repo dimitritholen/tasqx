@@ -527,19 +527,7 @@ impl Engine {
         let task = self.resolve_ref_on(&tx, p)?;
         if let Some(exp) = expected_rev {
             if exp != task.rev {
-                return Err(ApiError::new(
-                    crate::ErrorCode::Conflict,
-                    format!(
-                        "expected_rev {exp} but task is at rev {}: re-read with \
-                         `tasqx show {} --json` and retry with expected_rev {}",
-                        task.rev, task.short_id, task.rev
-                    ),
-                    Some(json!({
-                        "expected": exp,
-                        "current": task.rev,
-                        "task": { "short_id": task.short_id, "title": task.title },
-                    })),
-                ));
+                return Err(super::task::stale_rev(exp, &task));
             }
         }
 
