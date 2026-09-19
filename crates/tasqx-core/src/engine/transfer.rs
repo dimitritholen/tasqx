@@ -655,8 +655,19 @@ impl Engine {
                     ))
                 })?;
                 let source = opt_str_nonempty(dv, "source")?;
-                let created = opt_str_nonempty(dv, "created")?.unwrap_or_else(now);
-                let modified = opt_str_nonempty(dv, "modified")?.unwrap_or_else(now);
+                // #88: through the same date gate as a task's created/modified
+                // (opt_when/parse_when), not stored verbatim — a hand-written
+                // import carrying a lowercase `z`, an explicit offset or a
+                // date-only stamp used to escape D144's `rtrim(modified, 'Z')`
+                // and sort by raw bytes instead of by instant. parse_when
+                // short-circuits on RFC3339 so D12's byte-identical round trip
+                // of a tasqx-produced export still holds.
+                let now_ts = crate::clock::now();
+                let created = import_doc_field(&did, "created", opt_when(dv, "created", now_ts))?
+                    .unwrap_or_else(now);
+                let modified =
+                    import_doc_field(&did, "modified", opt_when(dv, "modified", now_ts))?
+                        .unwrap_or_else(now);
                 // #134/#135: additive, so a legacy export (or hand-written
                 // import) carrying neither key still imports — an unscoped
                 // doc at rev 0, exactly what a fresh `memory.add` would mint.
@@ -1705,6 +1716,109 @@ mod tests {
         let after = e.store_export(&json!({})).expect("export");
         assert_eq!(after["docs"][0]["_rev"], json!(5), "{after}");
         assert_eq!(after["docs"][0]["body"], json!("v2"), "{after}");
+    }
+
+    /// #88: a doc's `created`/`modified` used to be stored verbatim
+    /// (`opt_str_nonempty`), while a task's went through `opt_when`/
+    /// `parse_when` and landed in `util::now`'s spelling. D144's
+    /// `memory.list` sorts on `rtrim(modified, 'Z')`, which only normalises
+    /// that one spelling: a lowercase `z` (rtrim's set is case-sensitive)
+    /// left as written compares by raw bytes against a canonical stamp, so
+    /// the earlier instant sorted above the later one. This pins that
+    /// `store.import` now normalises the doc the same way tasks already
+    /// were, so `memory.list` orders by instant regardless of the stamp's
+    /// original spelling.
+    #[test]
+    fn store_import_normalises_a_foreign_doc_stamp_so_memory_list_orders_by_instant() {
+        let e = Engine::open_in_memory().expect("open");
+        e.store_import(&json!({
+            "tasks": [],
+            "docs": [
+                {
+                    "id": "0193aaaa-0000-7000-8000-00000000000a",
+                    "title": "earlier, lowercase z",
+                    "body": "a",
+                    "modified": "2026-01-01T00:00:10z",
+                },
+                {
+                    "id": "0193aaaa-0000-7000-8000-00000000000b",
+                    "title": "later, canonical",
+                    "body": "b",
+                    "modified": "2026-01-01T00:00:10.1Z",
+                },
+            ],
+        }))
+        .expect("import");
+
+        let listed = e.memory_list(&json!({})).expect("list");
+        let ids: Vec<&str> = listed["docs"]
+            .as_array()
+            .expect("docs")
+            .iter()
+            .map(|d| d["id"].as_str().expect("id"))
+            .collect();
+        assert_eq!(
+            ids,
+            vec![
+                "0193aaaa-0000-7000-8000-00000000000b",
+                "0193aaaa-0000-7000-8000-00000000000a",
+            ],
+            "the doc modified later must list first, regardless of the imported stamp's case: \
+             {listed}"
+        );
+    }
+
+    /// #88: an offset stamp (`+00:00` rather than `Z`) is unambiguous —
+    /// `parse_when`'s RFC3339 branch reads it and re-serializes to the
+    /// canonical form, the same as a task's `created`/`modified` already do.
+    #[test]
+    fn store_import_normalises_a_doc_stamp_carrying_an_explicit_offset() {
+        let e = Engine::open_in_memory().expect("open");
+        e.store_import(&json!({
+            "tasks": [],
+            "docs": [{
+                "id": "0193aaaa-0000-7000-8000-00000000000c",
+                "title": "offset stamp",
+                "body": "c",
+                "created": "2026-01-01T02:00:10+02:00",
+                "modified": "2026-01-01T02:00:10+02:00",
+            }],
+        }))
+        .expect("import");
+
+        let after = e.store_export(&json!({})).expect("export");
+        assert_eq!(
+            after["docs"][0]["created"],
+            json!("2026-01-01T00:00:10Z"),
+            "an offset stamp must normalise to the UTC instant it names: {after}"
+        );
+        assert_eq!(after["docs"][0]["modified"], json!("2026-01-01T00:00:10Z"));
+    }
+
+    /// #88: unparsable is refused the same way a task's `created`/`modified`
+    /// already are (`import_field`) — not silently stored and not silently
+    /// replaced with `now`.
+    #[test]
+    fn store_import_refuses_a_doc_with_an_unparsable_modified_stamp() {
+        let e = Engine::open_in_memory().expect("open");
+        let err = e
+            .store_import(&json!({
+                "tasks": [],
+                "docs": [{ "title": "bad stamp", "body": "d", "modified": "not-a-date" }],
+            }))
+            .expect_err("an unparsable modified stamp must be refused");
+        assert_eq!(err.code, ErrorCode::BadRequest, "{}", err.message);
+        assert!(
+            err.message.contains("modified"),
+            "must name the field: {}",
+            err.message
+        );
+        let after = e.store_export(&json!({})).expect("export");
+        assert_eq!(
+            after["docs"].as_array().map(Vec::len),
+            Some(0),
+            "a refused import must write nothing: {after}"
+        );
     }
 
     /// #176: `store.export` carried no event log at all, so a store restored
