@@ -673,6 +673,36 @@ impl Engine {
                 // `memory.add`/`memory.import` compute it at their own write
                 // doors, so a restored store's index matches its content.
                 let search_body = crate::frontmatter::flatten(&body).into_owned();
+                // #84: the doc-branch counterpart to the #177 guard just
+                // above for tasks — a doc ALREADY in this store, at a HIGHER
+                // `_rev` than the payload's, means the payload is a stale
+                // copy of this very doc. Without this check the upsert wrote
+                // `rev=excluded.rev` unconditionally, so restoring an older
+                // export silently rolled the doc's title and body back AND
+                // lowered its `rev`, which reopened the stale-`expected_rev`
+                // clobber D143 closed for `memory.import`: a writer still
+                // holding the doc's old `expected_rev` would pass
+                // `memory.update`'s guard against a body it never read.
+                // Refused by name, the same shape the task branch already
+                // gets; a payload at or ahead of the stored rev still
+                // passes, which is what keeps re-importing a store's own
+                // export (D12's round trip) a no-op rather than a refusal.
+                let stored_rev: Option<i64> = tx
+                    .query_row("SELECT rev FROM docs WHERE id = ?1", params![did], |r| {
+                        r.get(0)
+                    })
+                    .optional()?;
+                if let Some(stored) = stored_rev {
+                    if stored > rev {
+                        return Err(ApiError::conflict(format!(
+                            "store.import: doc {did} carries _rev {rev}, but the store already \
+                             holds it at _rev {stored} — this payload is older than what is \
+                             already here, and importing it would roll its title and body back \
+                             to a stale copy (run `tasqx export` first for a merge target, or \
+                             drop this doc from the payload)"
+                        )));
+                    }
+                }
                 tx.execute(
                     "INSERT INTO docs \
                      (id, source, title, body, search_body, project, rev, standing, \
@@ -1606,6 +1636,87 @@ mod tests {
         // of work" are exactly as they were.
         let after = e.store_export(&json!({})).expect("export");
         assert_eq!(after, live, "a refused import must not touch the store");
+    }
+
+    /// #84: the doc-branch counterpart to the test above. Restoring an OLDER
+    /// export over a store whose doc has since been edited used to silently
+    /// roll the doc's title, body and `rev` back to the stale snapshot — the
+    /// upsert wrote `rev=excluded.rev` with no rewind guard, reopening the
+    /// stale-`expected_rev` clobber D143 closed for `memory.import`. This
+    /// pins that a stale doc payload is refused by name instead, and that
+    /// the refusal writes NOTHING — the doc survives exactly as it was.
+    #[test]
+    fn store_import_refuses_a_stale_doc_rev_that_would_roll_back_its_body() {
+        let e = Engine::open_in_memory().expect("open");
+        let added = e
+            .memory_add(&json!({ "title": "note", "body": "original text" }))
+            .expect("add");
+        let id = added["id"].as_str().expect("id").to_string();
+
+        // The "monday" backup: rev 0 (just added).
+        let monday = e.store_export(&json!({})).expect("export");
+        assert_eq!(monday["docs"][0]["_rev"], json!(0), "{monday}");
+
+        // Two edits happen, each bumping `rev` past what the backup carries.
+        e.memory_update(&json!({ "id": id, "body": "edit one" }))
+            .expect("update");
+        e.memory_update(&json!({ "id": id, "body": "edit two" }))
+            .expect("update");
+        let live = e.store_export(&json!({})).expect("export");
+        assert_eq!(live["docs"][0]["_rev"], json!(2), "{live}");
+        assert_eq!(live["docs"][0]["body"], json!("edit two"), "{live}");
+
+        // Restoring the older backup must be refused, not silently applied.
+        let err = e
+            .store_import(&monday)
+            .expect_err("an older doc _rev must not overwrite a newer one");
+        assert_eq!(err.code, ErrorCode::Conflict, "{}", err.message);
+        for needle in ["_rev 0", "_rev 2"] {
+            assert!(err.message.contains(needle), "{}: {}", needle, err.message);
+        }
+
+        // The refusal wrote NOTHING: the doc's body and rev are exactly as
+        // they were.
+        let after = e.store_export(&json!({})).expect("export");
+        assert_eq!(after, live, "a refused import must not touch the store");
+    }
+
+    /// #84: an import at the SAME rev (re-importing a store's own export,
+    /// D12) or a HIGHER one (a merge-target export carrying more edits than
+    /// this store has seen) must still apply — the guard above only refuses
+    /// a rev that would go BACKWARDS.
+    #[test]
+    fn store_import_still_accepts_a_doc_at_the_same_or_a_higher_rev() {
+        let e = Engine::open_in_memory().expect("open");
+        let added = e
+            .memory_add(&json!({ "title": "note", "body": "v1" }))
+            .expect("add");
+        let id = added["id"].as_str().expect("id").to_string();
+
+        // Same rev: re-importing a store's own export is a no-op, D12's
+        // round trip.
+        let doc = e.store_export(&json!({})).expect("export");
+        e.store_import(&doc)
+            .expect("an import at the same rev must still apply");
+        assert_eq!(
+            e.store_export(&json!({})).expect("export"),
+            doc,
+            "export -> import -> export stays identity"
+        );
+
+        // Higher rev: a payload naming the SAME doc at a rev ahead of what
+        // is stored (the merge-target case: it came from a branch of this
+        // same store that has since moved on) must apply too, updating the
+        // row in place.
+        let ahead = json!({
+            "tasks": [],
+            "docs": [{ "id": id, "title": "note", "body": "v2", "_rev": 5 }],
+        });
+        e.store_import(&ahead)
+            .expect("an import at a higher rev must still apply");
+        let after = e.store_export(&json!({})).expect("export");
+        assert_eq!(after["docs"][0]["_rev"], json!(5), "{after}");
+        assert_eq!(after["docs"][0]["body"], json!("v2"), "{after}");
     }
 
     /// #176: `store.export` carried no event log at all, so a store restored

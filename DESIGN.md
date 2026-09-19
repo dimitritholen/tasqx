@@ -3734,7 +3734,7 @@ above.
 
 **Why not leave import out of the guard's reach:** rejected because the guard's promise is per-id, not per-route — a door that changes the text without moving the counter makes "your `expected_rev` protects you" false for every caller of `memory.update`, not just the one who happened to re-import.
 
-**What does not change.** id and `created` still survive a source-replace (#178, #198). The row is still reached with `ON CONFLICT DO UPDATE`, never DELETE+INSERT (D41). No schema change, no migration. `memory.update`'s own rev bump and its `conflict` error shape are unchanged. `store.import` is unchanged — it already wrote `rev`.
+**What does not change.** id and `created` still survive a source-replace (#178, #198). The row is still reached with `ON CONFLICT DO UPDATE`, never DELETE+INSERT (D41). No schema change, no migration. `memory.update`'s own rev bump and its `conflict` error shape are unchanged. `store.import`'s doc branch wrote `rev` from the payload all along, but carried no floor on it until task #84 closed the gap this decision's "Why" paragraph flagged: it now refuses a doc whose payload `_rev` is behind what the store already holds, the same `stored > rev` conflict its task branch (#177) already returned, so restoring an older export can no longer rewind a doc's rev and reopen this decision's own guard.
 
 ### D144 — `memory.list` orders by the `modified` instant with its terminator stripped, because `id` cannot carry recency-of-change (D142's defect on docs, D115 #133's promise kept)
 
