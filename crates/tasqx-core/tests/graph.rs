@@ -697,6 +697,52 @@ fn depth_zero_returns_the_root_and_nothing_else() {
     assert_eq!(g["include_inferred"], json!(false));
 }
 
+/// The last level a walk reaches is kept but never expanded — yet an edge
+/// between two of its own members belongs to the neighbourhood just as much as
+/// one crossing into it does. #1 depends on #2 and #3, and #3 also depends on
+/// #2: at `depth: 1` all three are kept, and #3→#2 must still be drawn even
+/// though neither end started a new hop.
+#[test]
+fn leaf_to_leaf_edges_inside_the_neighbourhood_are_drawn() {
+    let e = engine();
+    ok(&e, "task.add", json!({ "title": "the root task" }));
+    let t2 = ok(&e, "task.add", json!({ "title": "the blocker" }))["id"]
+        .as_str()
+        .expect("task id")
+        .to_string();
+    let t3 = ok(&e, "task.add", json!({ "title": "the other blocker" }))["id"]
+        .as_str()
+        .expect("task id")
+        .to_string();
+    ok(&e, "task.add", json!({ "title": "the far blocker" })); // #4, past depth 1
+    ok(&e, "dependency.add", json!({ "ref": 1, "depends_on": 2 }));
+    ok(&e, "dependency.add", json!({ "ref": 1, "depends_on": 3 }));
+    ok(&e, "dependency.add", json!({ "ref": 3, "depends_on": 2 }));
+    ok(&e, "dependency.add", json!({ "ref": 3, "depends_on": 4 }));
+
+    let g = ok(&e, "graph.query", json!({ "root": 1, "depth": 1 }));
+    assert_eq!(
+        g["node_count"],
+        json!(3),
+        "the extra pass adds edges, never nodes: {g}"
+    );
+    assert_eq!(g["edge_count"], json!(3));
+    let ids: Vec<&str> = g["edges"]
+        .as_array()
+        .expect("edges")
+        .iter()
+        .map(|edge| edge["id"].as_str().expect("id"))
+        .collect();
+    assert!(
+        ids.contains(&format!("dep:task:{t3}:task:{t2}").as_str()),
+        "#3's edge to its sibling #2: {ids:?}"
+    );
+
+    let zero = ok(&e, "graph.query", json!({ "root": 1, "depth": 0 }));
+    assert_eq!(zero["node_count"], json!(1));
+    assert_eq!(zero["edge_count"], json!(0));
+}
+
 /// The default is two hops, and every structural edge is walked on the way —
 /// each one naming the table it was read out of, so a reader can tell a stored
 /// fact from a computed one without knowing how the engine is built.
