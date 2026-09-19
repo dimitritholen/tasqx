@@ -216,7 +216,23 @@ fn removing_an_edited_note_redacts_the_edit_events_too() {
         "annotation.remove",
         json!({ "ref": 1, "annotation_id": id }),
     );
-    let log = call(&e, "event.list", json!({ "ref": 1 })).to_string();
-    assert!(!log.contains("secretone"), "{log}");
-    assert!(!log.contains("secrettwo"), "{log}");
+    for dump in [
+        call(&e, "event.list", json!({ "ref": 1 })),
+        call(&e, "store.export", json!({})),
+    ] {
+        let text = dump.to_string();
+        assert!(!text.contains("secretone"), "{text}");
+        assert!(!text.contains("secrettwo"), "{text}");
+    }
+    // The update event survives as a record, its two bodies nulled.
+    let events = call(&e, "event.list", json!({ "ref": 1 }));
+    let update = events["events"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|ev| ev["op"] == "annotation.update")
+        .expect("the edit is still in the log");
+    assert!(update["payload"]["body"].is_null(), "{update}");
+    assert!(update["payload"]["previous"].is_null(), "{update}");
+    assert_eq!(update["payload"]["redacted"], true, "{update}");
 }

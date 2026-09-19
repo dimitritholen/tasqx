@@ -1258,19 +1258,7 @@ impl Engine {
                 // four sentences of it); this one named two numbers. `data`
                 // carries the current row so a retry costs one round trip —
                 // `set` again with `expected_rev` bumped — not a `show` first.
-                return Err(ApiError::new(
-                    crate::ErrorCode::Conflict,
-                    format!(
-                        "expected_rev {exp} but task is at rev {}: re-read with \
-                         `tasqx show {} --json` and retry with --expected-rev {}",
-                        task.rev, task.short_id, task.rev
-                    ),
-                    Some(json!({
-                        "expected": exp,
-                        "current": task.rev,
-                        "task": { "short_id": task.short_id, "title": task.title },
-                    })),
-                ));
+                return Err(stale_rev(exp, &task));
             }
         }
 
@@ -3066,6 +3054,26 @@ pub(super) fn derive_match_expr(
         .map(|t| format!("\"{}\"", t.replace('"', "\"\"")))
         .collect();
     Some(quoted.join(" OR "))
+}
+
+/// The conflict a stale `expected_rev` on a task answers with, in the CLI's
+/// words; `mcp_surface_message` rewrites both remedies from `data` (D169).
+/// Shared by `task.modify` and `annotation.update` (D165), which guard the
+/// same `_rev`.
+pub(super) fn stale_rev(exp: i64, task: &Task) -> ApiError {
+    ApiError::new(
+        crate::ErrorCode::Conflict,
+        format!(
+            "expected_rev {exp} but task is at rev {}: re-read with \
+             `tasqx show {} --json` and retry with --expected-rev {}",
+            task.rev, task.short_id, task.rev
+        ),
+        Some(json!({
+            "expected": exp,
+            "current": task.rev,
+            "task": { "short_id": task.short_id, "title": task.title },
+        })),
+    )
 }
 
 /// One `SELECT id, body, created FROM annotations` row as the ANNOTATION

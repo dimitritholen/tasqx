@@ -3954,3 +3954,32 @@ fn brief_include_rank_description_names_include_json_as_where_it_shows() {
          the rank appears in: {desc}"
     );
 }
+
+/// D165 on D169: `tasqx_update_annotation` guards the same task `_rev` and
+/// its stale-rev conflict is `task.modify`'s, so it gets the same MCP remedy.
+#[test]
+fn an_mcp_stale_rev_on_update_annotation_names_get_task_and_expected_rev() {
+    let engine = engine();
+    engine.task_add(&json!({ "title": "t" })).expect("add");
+    let note = engine
+        .annotation_add(&json!({ "ref": 1, "body": "first" }))
+        .expect("note")["annotation"]["id"]
+        .clone();
+    let server = McpServer::new(&engine, Scope::Write);
+    let resp = call(
+        &server,
+        1,
+        "tasqx_update_annotation",
+        json!({ "ref": 1, "annotation_id": note, "body": "second", "expected_rev": 1 }),
+    );
+    assert!(is_error(&resp));
+    let text = resp["result"]["content"][0]["text"].as_str().unwrap();
+    assert!(
+        text.contains("tasqx_get_task") && text.contains("expected_rev 2"),
+        "the MCP remedy must name the tool and parameter an agent has: {text}"
+    );
+    assert!(
+        !text.contains("tasqx show") && !text.contains("--expected-rev"),
+        "the MCP remedy still names the CLI: {text}"
+    );
+}
