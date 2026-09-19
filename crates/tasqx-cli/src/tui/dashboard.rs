@@ -1183,16 +1183,28 @@ fn draw_detail(
     // The reason this overlay exists. It is drawn before the dates, and in
     // `danger`, because a reader who pressed ⏎ on a BLOCKED row asked exactly
     // one question.
-    if !card.depends_on().is_empty() {
-        let ids: Vec<String> = card.depends_on().iter().map(|n| format!("#{n}")).collect();
+    // D145: blocked is exactly `unmet_blockers` non-empty, so a satisfied
+    // edge draws nothing. `blocked` with that list empty is an older daemon
+    // that does not send it; `show`'s blocked row falls back to `depends_on`
+    // the same way (render.rs).
+    let blockers = if !card.unmet_blockers().is_empty() {
+        card.unmet_blockers()
+    } else if card.blocked {
+        card.depends_on()
+    } else {
+        &[]
+    };
+    if !blockers.is_empty() {
+        let ids: Vec<String> = blockers.iter().map(|n| format!("#{n}")).collect();
         lines.push(Line::from(vec![
             Span::styled("  blocked by ".to_string(), danger),
             Span::styled(ids.join(" "), accent),
         ]));
     } else if card.blocked {
-        // `blocked` and no edges is not a contradiction to hide: D11 computes
-        // it, and a reader looking at a BLOCKED row deserves to be told the
-        // panel and the task disagree rather than shown a card with a gap.
+        // `blocked` and no edges at all is not a contradiction to hide: D11
+        // computes it, and a reader looking at a BLOCKED row deserves to be
+        // told the panel and the task disagree rather than shown a card with
+        // a gap.
         lines.push(Line::from(Span::styled(
             "  blocked, with no dependency recorded".to_string(),
             danger,

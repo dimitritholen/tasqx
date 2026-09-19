@@ -1583,6 +1583,7 @@ pub struct TaskDetail {
     pub tracked_secs: i64,
     recurrence: Option<String>,
     depends_on: Vec<i64>,
+    unmet_blockers: Vec<i64>,
     tags: Vec<String>,
     annotations: Vec<Note>,
 }
@@ -1606,6 +1607,15 @@ impl TaskDetail {
     /// The short_ids this task waits on — the answer BLOCKED could never give.
     pub fn depends_on(&self) -> &[i64] {
         &self.depends_on
+    }
+
+    /// The short_ids of `depends_on` edges still unmet (D145: `blocked` is
+    /// exactly this list being non-empty). Unlike `depends_on`, a done or
+    /// cancelled blocker does not appear here, so this is what "blocked by"
+    /// must be drawn from — `depends_on` alone cannot tell a live block from
+    /// a satisfied edge the task never dropped.
+    pub fn unmet_blockers(&self) -> &[i64] {
+        &self.unmet_blockers
     }
 
     /// Sanitised tag names.
@@ -1666,6 +1676,15 @@ impl TaskDetail {
                 .get("depends_on")
                 .and_then(Value::as_array)
                 .map(|a| a.iter().filter_map(Value::as_i64).collect())
+                .unwrap_or_default(),
+            unmet_blockers: v
+                .get("unmet_blockers")
+                .and_then(Value::as_array)
+                .map(|a| {
+                    a.iter()
+                        .filter_map(|b| b.get("short_id").and_then(Value::as_i64))
+                        .collect()
+                })
                 .unwrap_or_default(),
             tags: v
                 .get("tags")

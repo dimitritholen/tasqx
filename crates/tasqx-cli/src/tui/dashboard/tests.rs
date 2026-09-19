@@ -1395,6 +1395,10 @@ fn blocked_card() -> model::TaskDetail {
         "estimate": "PT2H", "tracked": "PT0S", "recurrence": null,
         "completed": null, "active_since": null,
         "depends_on": [1, 3],
+        "unmet_blockers": [
+            { "short_id": 1, "title": "the first blocker" },
+            { "short_id": 3, "title": "the second blocker" },
+        ],
         "tags": ["api"],
         "annotations": [{ "created": "2026-08-02T09:00:00Z", "body": "waiting on the API freeze" }],
     }))
@@ -1433,6 +1437,100 @@ fn the_detail_overlay_answers_why_a_task_is_blocked() {
     assert!(
         text.contains("esc/q closes this"),
         "the overlay must say how it actually closes:\n{text}"
+    );
+}
+
+/// #89 / D145: `blocked` is exactly `unmet_blockers` non-empty, and the
+/// overlay must agree — `depends_on` alone keeps every edge a task ever had,
+/// done blockers included, so it can never be the source for a red "blocked
+/// by" line.
+#[test]
+fn a_done_task_with_a_satisfied_edge_shows_no_blocked_by() {
+    let card = model::TaskDetail::from_json(&json!({
+        "short_id": 2, "id": "019fd213-0000-7000-8000-000000000002",
+        "title": "the done one", "project": "work",
+        "status": "done", "priority": "M", "urgency": 2.0, "blocked": false,
+        "created": "2026-08-01T09:00:00Z", "modified": "2026-08-01T09:00:00Z",
+        "due": null, "scheduled": null, "wait": null,
+        "estimate": "PT2H", "tracked": "PT0S", "recurrence": null,
+        "completed": "2026-08-03T09:00:00Z", "active_since": null,
+        "depends_on": [1],
+        "unmet_blockers": [],
+        "tags": [],
+        "annotations": [],
+    }))
+    .expect("the fixture payload must parse");
+
+    let mut a = app();
+    a.observe(&all_panels(), false);
+    a.show_detail(card);
+    let text = all_text(&draw_at(&a, 120, 32, &caps()));
+    assert!(
+        !text.contains("blocked by"),
+        "a done task must not be shown as blocked, even with a recorded edge:\n{text}"
+    );
+}
+
+/// #89 / D145: an open task whose sole blocker already finished is not
+/// blocked either — `blocked` says so, and `unmet_blockers` is empty even
+/// though `depends_on` still names the edge.
+#[test]
+fn an_open_task_whose_blocker_is_done_shows_no_blocked_by() {
+    let card = model::TaskDetail::from_json(&json!({
+        "short_id": 2, "id": "019fd213-0000-7000-8000-000000000002",
+        "title": "waiting on nothing now", "project": "work",
+        "status": "pending", "priority": "M", "urgency": 2.0, "blocked": false,
+        "created": "2026-08-01T09:00:00Z", "modified": "2026-08-01T09:00:00Z",
+        "due": null, "scheduled": null, "wait": null,
+        "estimate": "PT2H", "tracked": "PT0S", "recurrence": null,
+        "completed": null, "active_since": null,
+        "depends_on": [1],
+        "unmet_blockers": [],
+        "tags": [],
+        "annotations": [],
+    }))
+    .expect("the fixture payload must parse");
+
+    let mut a = app();
+    a.observe(&all_panels(), false);
+    a.show_detail(card);
+    let text = all_text(&draw_at(&a, 120, 32, &caps()));
+    assert!(
+        !text.contains("blocked by"),
+        "a satisfied edge must not read as blocked:\n{text}"
+    );
+}
+
+/// #89 / D145: the counter-case — an open blocker still must print the red
+/// line, so the fix above cannot have been to just stop drawing it.
+#[test]
+fn an_open_task_with_an_open_blocker_still_shows_blocked_by() {
+    let card = model::TaskDetail::from_json(&json!({
+        "short_id": 2, "id": "019fd213-0000-7000-8000-000000000002",
+        "title": "still waiting", "project": "work",
+        "status": "pending", "priority": "M", "urgency": 2.0, "blocked": true,
+        "created": "2026-08-01T09:00:00Z", "modified": "2026-08-01T09:00:00Z",
+        "due": null, "scheduled": null, "wait": null,
+        "estimate": "PT2H", "tracked": "PT0S", "recurrence": null,
+        "completed": null, "active_since": null,
+        "depends_on": [1],
+        "unmet_blockers": [{ "short_id": 1, "title": "the open blocker" }],
+        "tags": [],
+        "annotations": [],
+    }))
+    .expect("the fixture payload must parse");
+
+    let mut a = app();
+    a.observe(&all_panels(), false);
+    a.show_detail(card);
+    let text = all_text(&draw_at(&a, 120, 32, &caps()));
+    let cause = text
+        .lines()
+        .find(|l| l.contains("blocked by"))
+        .unwrap_or_else(|| panic!("an open blocker must still be named:\n{text}"));
+    assert!(
+        cause.contains("#1"),
+        "the blocker id must be named, got {cause:?}"
     );
 }
 
