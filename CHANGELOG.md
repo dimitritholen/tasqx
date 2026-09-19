@@ -4,6 +4,154 @@ What changed in each tasqx release, newest first. Every release also lists its
 commits on the [releases page](https://github.com/dimitritholen/tasqx/releases),
 where the binaries, checksums and installers are.
 
+## 0.12.0
+
+This release is mostly about what tasqx reports back, and about being able to
+correct it. A running clock now counts toward tracked time, a total that went
+wrong can be adjusted with the reason on the record, a note can be edited in
+place instead of deleted and retyped, and a harness that reports a single
+token number finally has somewhere to put it. Exports stop over-sharing: a
+filtered one carries only what its tasks need. Tags become lowercase
+everywhere, which merges duplicates in an existing store the first time 0.12.0
+opens it, so read the first Changed entry before upgrading.
+
+### Added
+
+- **A token count that isn't split into input and output.** Many agent
+  harnesses report one number, and there was nowhere to put it: the whole
+  count had to go in `input_tokens` or be dropped. `total_tokens` is now its
+  own kind of measurement, taken by `tasqx done` and `tasqx_complete_task`
+  and refused beside a split count. It is never folded into the four buckets,
+  shows as "total (unsplit)" wherever a task's tokens are shown, and counts in
+  full toward the budget gauge.
+- **Recording a token count after the fact.** `tasqx tokens add 602 --total
+  37898` and the new MCP tool `tasqx_add_tokens` attach a count to a task that
+  is already done, without hand-building an API envelope. Over MCP the
+  measurement is always recorded as a self-report at medium confidence — an
+  agent cannot certify its own count as telemetry-grade — and what each
+  confidence grade means is now written down in the tool descriptions and the
+  token-accounting guide.
+- **Correcting tracked time, with a reason.** `tasqx adjust <ref> <delta>
+  --reason <text>` (MCP `tasqx_adjust_tracked`) folds a signed amount into a
+  task's tracked total instead of overwriting it, records the delta and the
+  reason on an event, and can be taken back with `tasqx undo`. The task shows
+  the running correction beside its tracked time, so hours banked by a stalled
+  harness no longer quietly skew what a task cost. An adjustment that would
+  take the total below zero, or that carries no reason, is refused.
+- **Editing an annotation in place.** `tasqx annotate <ref> --edit <id>
+  <text>` (MCP `tasqx_update_annotation`) replaces a note's body and keeps its
+  id, its position and when it was written, so correcting a wrong description
+  no longer means deleting the note and promoting the next one into its place.
+  Search re-indexes the new text, `--expected-rev` guards against a concurrent
+  edit, and the change is undoable.
+- **Sorting by estimate or tracked time.** `tasqx list --sort estimate` and
+  `--sort tracked` (also `sort` over the API and MCP) rank the biggest items
+  first, which is what grooming a backlog actually needs and what urgency
+  cannot answer. Both compare real durations rather than the stored text, so
+  four hours outranks ninety minutes, and a task with no estimate — or one
+  never started — sorts last whichever direction you ask for.
+- **Charts take the same filter as everything else.** `tasqx chart
+  throughput`, `heatmap` and `burndown` now accept the filter language
+  `list`, `report` and `agenda` already take, so `tasqx chart burndown
+  project:work +urgent` draws the chart for one project's urgent work instead
+  of the whole store. `chart burndown --project <name>` still works and means
+  the same thing.
+- **Scoping a whole imported folder.** `tasqx memory import <dir> --project
+  <name>` files every document in that folder under one project in a single
+  call, which is what an agent reaching tasqx through the CLI alone needed to
+  land its imports scoped. Re-importing without the flag leaves a document's
+  project alone; naming one moves it. Every memory hit now also says which
+  project it came from, so a cross-project result is recognisable.
+
+### Changed
+
+- **Tags are lowercase and cannot contain whitespace.** `+Perf` and `+perf`
+  used to be two different tags, and `+has space` needed quoting everywhere it
+  was named. A tag is now stored in one spelling — lowercased — by every door
+  that writes one, filters lowercase what they match against, and whitespace
+  is refused with the hyphenated form suggested. An existing store is migrated
+  the first time 0.12.0 opens it: names are lowercased, runs of whitespace
+  become a hyphen, and duplicates are merged with no task losing a tag. Each
+  task touched records an event listing what changed, which `tasqx undo`
+  deliberately refuses to reverse.
+- **A filtered export carries only what its tasks need.** `tasqx export
+  project:ledger` used to filter the tasks and then ship every memory
+  document from every project, every project row and the entire event log —
+  a leak the moment the file is shared. It now carries only the projects the
+  filter names or its tasks reference, only the documents scoped to those
+  projects, and only the events of what it exports; the header reports what
+  was dropped. `--include-unscoped` widens it to documents that belong to no
+  project, and is refused when there is no filter to widen. An unfiltered
+  export is byte-for-byte what it always was.
+- **A recurring task's next occurrence keeps its description and its checks.**
+  A spawn used to come back with its fields only: no description note, no
+  acceptance checks, and nothing saying which task it followed. It now copies
+  the description verbatim and every check, reset to open, and records the
+  task it came from — shown as "every week from #604" on the card. A brief on
+  a spawn also opens with a "Last time" section quoting the previous
+  occurrence's delivery note.
+- **Errors over MCP name MCP remedies.** A stale-revision conflict used to
+  tell an agent to run `tasqx show 1 --json` and retry with `--expected-rev`,
+  a shell command and a flag over a transport that has neither. It now names
+  `tasqx_get_task` or `tasqx_get_memory` and `expected_rev`, and the CLI keeps
+  its own wording — including for `memory update`, which had the fault the
+  other way round and printed an MCP tool name at a shell.
+- **A check can be named by its position.** `check.set` and `check.remove`
+  take either a check id or a 1-based position in the order the task lists
+  them, and on the CLI an all-digit word is read as a position. A miss no
+  longer answers with the id you mistyped and nothing else: it lists every
+  check by position, id and first words, as does removing an annotation that
+  is not there, and completing a task with a check name that matches none.
+- **A title with CLI shorthand in it comes back with a warning.** Adding a
+  task titled `fix crash +bug due:friday` over the API or MCP stored the whole
+  line as the title, with no tag, no due date and nothing said. The title is
+  still stored as written — only the CLI expands shorthand — but the response
+  now names the words that looked like shorthand.
+
+### Fixed
+
+- **A task card could lose its Description and Delivered rows,** because both
+  were read from whichever page of annotations the call happened to ask for:
+  asking for no annotations dropped both. They are now read independently of
+  the page. Completion also pins the delivery note, so a remark written
+  afterwards no longer replaces it in the Delivered row; reopening a task
+  clears the pin.
+- **`tasqx brief` handed the task's own notes back as memory hits,** verbatim,
+  below the card that had already printed them in full. They are now excluded
+  from the search itself rather than after the fact, so the hits a brief shows
+  are all from elsewhere and a sibling task's ruling can no longer be crowded
+  off the page by notes that were never going to be shown.
+- **Tracked time read as zero while a clock was running.** Starting a task and
+  working for two hours left `list`, `show`, `brief`, the card and the report
+  summary all reporting no tracked time at all, because only closed intervals
+  counted. Every one of them now includes the interval still open, and the
+  card's status row says so: `tracked 4m (running)`. The dashboard, which was
+  adding the elapsed time itself, no longer counts it twice.
+- **Importing a store could roll a memory document back to an older
+  revision.** Restoring an export taken before a document was edited replaced
+  its title and body with the stale snapshot, silently, and reopened the
+  overwrite that the revision guard exists to prevent. The import now refuses
+  with a conflict, the same way it already did for a task.
+- **An imported document's timestamps were stored exactly as written,** so a
+  hand-written import with a lowercase `z` or a UTC offset sorted by its own
+  characters and `memory list` could show an older document above a newer one.
+  Document timestamps now pass the same date check a task's do, and an
+  unreadable one is refused by name.
+- **Two memory documents could claim the same source.** Re-importing a folder
+  then replaced whichever one the database happened to find first, leaving the
+  other stale, and a single import naming one source twice reported two
+  documents where it had written one. A source now names exactly one document:
+  adding, updating or importing onto a source another document holds is a
+  conflict that names it, and an import naming a source twice is refused
+  before anything is written. An existing store keeps the source on the most
+  recently modified of a set of duplicates and clears it on the others,
+  deleting nothing.
+- **Two gaps in the telemetry tests,** neither of which changed how tasqx
+  behaves: a test could fail on Windows CI because it raced the daemon's idle
+  shutdown rather than anything it was meant to check, and the warning that
+  fires when OpenTelemetry is enabled with no daemon reachable was only ever
+  tested for the case where nothing answers.
+
 ## 0.11.0
 
 This release is mostly about getting tasqx set up and understood. `tasqx setup`
