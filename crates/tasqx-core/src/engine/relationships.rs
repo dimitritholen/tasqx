@@ -375,7 +375,7 @@ impl Engine {
             // remove), newest first and capped, since a task can carry many.
             let mut stmt = tx.prepare(
                 "SELECT id, body FROM annotations WHERE task_id = ?1 AND removed IS NULL \
-                 ORDER BY created DESC, id DESC LIMIT 11",
+                 ORDER BY id DESC LIMIT 11",
             )?;
             let live: Vec<(String, String)> = stmt
                 .query_map(params![task.id], |r| Ok((r.get(0)?, r.get(1)?)))?
