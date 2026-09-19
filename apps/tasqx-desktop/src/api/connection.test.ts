@@ -110,6 +110,34 @@ describe('ConnectionController', () => {
     expect(controller.resyncReasons).toEqual(['gap: 3 dropped']);
   });
 
+  it('a gap during the baseline starts the baseline over and drops the partial buffer', async () => {
+    const gate = deferred();
+    let calls = 0;
+    const { transport, baseline, controller } = make(async () => {
+      calls += 1;
+      if (calls === 1) await gate.promise;
+    });
+    const seen: EventFrame[] = [];
+    controller.onEvent((event) => seen.push(event));
+    void controller.start();
+    await flush();
+    expect(controller.getState().status).toBe('synchronizing');
+
+    transport.pushLine(changed(1));
+    transport.pushLine(JSON.stringify({ event: 'task.changed.gap', dropped: 2 }));
+    await flush();
+
+    expect(baseline).toHaveBeenCalledTimes(2);
+    expect(controller.getState().status).toBe('live');
+    // The event buffered before the gap is stale by definition and never replayed.
+    expect(seen).toEqual([]);
+
+    gate.resolve();
+    await flush();
+    expect(controller.getState().status).toBe('live');
+    expect(baseline).toHaveBeenCalledTimes(2);
+  });
+
   it('reloads the baseline on a frame it cannot read', async () => {
     const { transport, baseline, controller } = make();
     await controller.start();

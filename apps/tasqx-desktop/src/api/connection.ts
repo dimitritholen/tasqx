@@ -181,6 +181,7 @@ export class ConnectionController {
   /** Load the baseline with events buffered, then go live and replay them. */
   private async synchronize(generation: number): Promise<void> {
     this.buffering = true;
+    this.buffer = [];
     this.set({ status: 'synchronizing', stale: true });
     await this.loadBaseline(this.client);
     if (generation !== this.generation) return;
@@ -201,8 +202,9 @@ export class ConnectionController {
 
   /**
    * The stream can no longer be trusted. A dropped transport has to reconnect
-   * first; a gap or an unreadable frame only needs a fresh baseline, and the
-   * baseline already in flight is at least as new as the event we lost. The
+   * first; a gap or an unreadable frame needs a fresh baseline — even one
+   * already in flight starts over, since its early replies may predate the
+   * events that were lost (D160: a gap always repeats the complete set). The
    * refresh key calls this with its own reason.
    */
   resync(why: string, reconnect = false): void {
@@ -212,7 +214,6 @@ export class ConnectionController {
       this.scheduleRetry();
       return;
     }
-    if (this.state.status === 'synchronizing') return;
     const generation = ++this.generation;
     this.synchronize(generation).catch((err: unknown) => {
       if (generation === this.generation) this.fail(`baseline failed: ${reason(err)}`);
