@@ -387,7 +387,7 @@ impl Engine {
         tx.execute(
             &format!(
                 "INSERT INTO tasks ({TASK_COLS}) VALUES \
-                 (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21)"
+                 (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22)"
             ),
             params![
                 id,
@@ -411,6 +411,7 @@ impl Engine {
                 remind,
                 budget_tokens,
                 Option::<String>::None, // delivered_annotation_id
+                0i64,                   // tracked_adjustment_seconds
             ],
         )?;
         for tag in &tags {
@@ -700,6 +701,75 @@ impl Engine {
             title: task.title,
         }
         .into())
+    }
+
+    // ---- task.adjust_tracked --------------------------------------------------
+
+    /// `task.adjust_tracked` — correct a task's tracked total by a signed
+    /// `delta` (`-2h25m`, `+30m`), with a required `reason` (D166).
+    ///
+    /// The delta is folded into `tracked_seconds`, so every reader of the total
+    /// — `report.outcomes`' calibration first — sees the corrected figure with
+    /// no change of its own, and into `tracked_adjustment_seconds`, so a read
+    /// can say how much of it is correction. It writes its own
+    /// `adjust_tracked` event carrying the delta in seconds and the reason,
+    /// which is what makes `undo` exact for it. Any status, `done` included:
+    /// the time a stalled harness banked is found after the task closed.
+    ///
+    /// Refuses (`bad_request`) a delta that would take the STORED total below
+    /// zero. A running interval does not count toward that floor — it is not
+    /// banked yet, and a negative column would fail `store.import`'s own check
+    /// on the next restore.
+    pub fn task_adjust_tracked(&self, p: &Value) -> Result<Value, ApiError> {
+        let command = commands::parse_task_target(p)?;
+        let raw = req_str(p, "delta")?;
+        let reason = req_str(p, "reason")?;
+        let reason = reason.trim();
+        if reason.is_empty() {
+            return Err(ApiError::bad_request(
+                "reason must say why tracked time is being corrected",
+            ));
+        }
+        let delta = datetime::parse_signed_duration(&raw)?;
+
+        let tx = self.begin_mutation()?;
+        let task = self.resolve_ref_value_on(&tx, &command.value)?;
+        let total = task.tracked_seconds.saturating_add(delta);
+        if total < 0 {
+            return Err(ApiError::bad_request(format!(
+                "#{} has {} of tracked time banked, so {raw} would take it below zero",
+                task.short_id,
+                iso_duration(task.tracked_seconds)
+            )));
+        }
+        let adjustment = task.tracked_adjustment_seconds.saturating_add(delta);
+        let ts = now();
+        tx.execute(
+            "UPDATE tasks SET tracked_seconds=?1, tracked_adjustment_seconds=?2, \
+             rev=?3, modified=?4 WHERE id=?5",
+            params![total, adjustment, task.rev + 1, ts, task.id],
+        )?;
+        insert_event(
+            &tx,
+            Entity::Task,
+            &task.id,
+            "adjust_tracked",
+            &json!({ "delta_seconds": delta, "reason": reason }),
+        )?;
+        tx.commit()?;
+
+        // As `task.get` would answer it: the running interval included.
+        let reported = task
+            .tracked_at(parse_ts(&ts).unwrap_or_else(crate::clock::now))
+            .saturating_add(delta);
+        Ok(json!({
+            "short_id": task.short_id,
+            "title": task.title,
+            "delta": signed_iso_duration(delta),
+            "tracked": iso_duration(reported),
+            "tracked_adjustment": signed_iso_duration(adjustment),
+            "_rev": task.rev + 1,
+        }))
     }
 
     // ---- task.done -----------------------------------------------------------
@@ -1076,7 +1146,7 @@ impl Engine {
         tx.execute(
             &format!(
                 "INSERT INTO tasks ({TASK_COLS}) VALUES \
-                 (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21)"
+                 (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22)"
             ),
             params![
                 new_id,
@@ -1103,6 +1173,7 @@ impl Engine {
                 // work again and is the same size.
                 template.budget_tokens,
                 Option::<String>::None, // delivered_annotation_id
+                0i64, // tracked_adjustment_seconds: the next occurrence has no time yet
             ],
         )?;
         for tag in template_tags {
@@ -1509,7 +1580,9 @@ impl Engine {
         // rather than one silently overwriting the other.
         if let Some(secs) = new_tracked_seconds {
             tx.execute(
-                "UPDATE tasks SET tracked_seconds=?1 WHERE id=?2",
+                // D166: an absolute total replaces whatever the corrections
+                // added up to, so there is no adjustment left to report.
+                "UPDATE tasks SET tracked_seconds=?1, tracked_adjustment_seconds=0 WHERE id=?2",
                 params![secs, task.id],
             )?;
         }
@@ -1958,6 +2031,7 @@ impl Engine {
                 snapshot.blocked,
                 deps.as_deref(),
                 token_field.as_ref(),
+                now_ts,
             );
             match &fields {
                 Some(keys) => {
@@ -2341,7 +2415,7 @@ impl Engine {
     fn task_detail_within_snapshot(&self, p: &Value) -> Result<Value, ApiError> {
         let task = self.resolve_ref(p)?;
         let tags = task_tags(&self.conn, &task.id)?;
-        let mut obj = task_to_json(&task, &tags);
+        let mut obj = task_to_json(&task, &tags, crate::clock::now());
         // Recompute urgency for a live read (list does the same).
         obj["urgency"] = json!(urgency::score(
             task.priority,

@@ -62,11 +62,11 @@ them (and learn what that unblocked), start and stop timers, tag, annotate,
 wire up dependencies, create projects, and search and store
 [memory](Memory.md).
 
-Thirty-one tools, one verb each. Nine reads: `list_tasks`, `get_task`,
+Thirty-two tools, one verb each. Nine reads: `list_tasks`, `get_task`,
 `brief_task`, `summary`, `outcomes`, `list_projects`, `search_memory`,
 `get_memory`, `list_memory`.
-Twenty-two writes: `add_task`, `modify_task`, `complete_task`, `reopen_task`,
-`cancel_task`, `start_timer`, `stop_timer`, `tag_task`, `untag_task`,
+Twenty-three writes: `add_task`, `modify_task`, `complete_task`, `reopen_task`,
+`cancel_task`, `start_timer`, `stop_timer`, `adjust_tracked`, `tag_task`, `untag_task`,
 `annotate_task`, `update_annotation`, `remove_annotation`, `add_tokens`, `add_check`, `set_check`,
 `remove_check`, `add_dependency`, `remove_dependency`, `add_memory`,
 `update_memory`, `remove_memory`, `create_project` (all prefixed `tasqx_`).

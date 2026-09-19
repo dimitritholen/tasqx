@@ -35,6 +35,7 @@
   "title": "Move nightly backups to object storage",
   "tokens": [],
   "tracked": "PT0S",
+  "tracked_adjustment": "PT0S",
   "unmet_blockers": [],
   "urgency": 4.2,
   "wait": null

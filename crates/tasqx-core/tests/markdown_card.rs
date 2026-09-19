@@ -780,3 +780,37 @@ fn a_snippet_with_line_breaks_renders_on_one_line() {
 - **release-process** · `docs/release.md`\n  description How an SDK release is cut Cut the release branch…\n"
     );
 }
+
+/// D166: `tracked` on a running task already includes the open interval, and
+/// the Status row says so; a correction says how much of the total it is.
+#[test]
+fn the_status_row_marks_a_running_total_and_a_corrected_one() {
+    let mut running = minimal();
+    running["status"] = json!("active");
+    running["active_since"] = json!("2026-09-15T17:56:00Z");
+    running["tracked"] = json!("PT4M");
+    running["tracked_adjustment"] = json!("PT0S");
+    let mut corrected = minimal();
+    corrected["status"] = json!("done");
+    corrected["tracked"] = json!("PT2H30M");
+    corrected["tracked_adjustment"] = json!("-PT2H25M");
+    assert_eq!(
+        format!(
+            "{}{}",
+            task_card(&running, &ascii()),
+            task_card(&corrected, &ascii())
+        ),
+        "\
++-------------+--------------------------------------------------------+
+| Task #76    | Three field-test papercuts                             |
++-------------+--------------------------------------------------------+
+| Status      | active · L · tracked 4m (running) · project tasqx      |
++-------------+--------------------------------------------------------+
++-------------+--------------------------------------------------------+
+| Task #76    | Three field-test papercuts                             |
++-------------+--------------------------------------------------------+
+| Status      | done · L · tracked 3h (adjusted -2h) · project tasqx   |
++-------------+--------------------------------------------------------+
+"
+    );
+}

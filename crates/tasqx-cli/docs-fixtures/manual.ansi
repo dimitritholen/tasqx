@@ -27,6 +27,7 @@
   why          Explain a task's urgency score.
   start        Mark a task active.
   stop         Pause an active task.
+  adjust       Correct a task's tracked time.
   done         Complete a task.
   cancel       Cancel a task.
   reopen       Reopen a completed or cancelled task.

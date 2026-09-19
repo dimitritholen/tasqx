@@ -369,6 +369,28 @@ fn short_offset(tok: &str, today: Date) -> Option<Date> {
     add_units(today, sign.checked_mul(n)?, unit)
 }
 
+/// A signed duration in whole seconds: [`parse_duration`]'s grammar behind an
+/// optional `+` or `-` (`-2h25m`, `+30m`, `90m`, `-PT1H`). For a correction
+/// (`task.adjust_tracked`, D166), which goes either way; zero is refused,
+/// since a correction of nothing records an event that changed nothing.
+pub fn parse_signed_duration(input: &str) -> Result<i64, ApiError> {
+    let raw = input.trim();
+    let (sign, rest) = match raw.strip_prefix('-') {
+        Some(r) => (-1, r),
+        None => (1, raw.strip_prefix('+').unwrap_or(raw)),
+    };
+    let bad = || {
+        ApiError::bad_request(format!(
+            "could not parse {raw:?} as a signed, non-zero duration (try e.g. -2h25m, +30m, or ISO -PT1H)"
+        ))
+    };
+    let iso = parse_duration(rest).map_err(|_| bad())?;
+    match crate::util::duration_secs(&iso) {
+        Some(n) if n > 0 => Ok(sign * n),
+        _ => Err(bad()),
+    }
+}
+
 /// Parse a human duration (`4h`, `90m`, `2d`, `1h30m`, `1w`) into the ISO-8601
 /// form the store keeps (`PT4H`, `PT90M`, `P2D`). A value that is already ISO
 /// (`PT4H`) passes through validated.

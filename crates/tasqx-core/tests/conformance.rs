@@ -331,13 +331,23 @@ const TASK_STATUS_FLAG: &[Field] = &[opt("status_unrecognized", Ty::Bool)];
 
 /// The live-read spelling of tracked time: an ISO duration, plus the open
 /// interval's anchor — always present, `null` when there is no open interval.
-const TASK_LIVE_TIME: &[Field] = &[req("tracked", Ty::Str), nul("active_since", Ty::Str)];
+///
+/// D166: `tracked` includes the running interval, and `tracked_adjustment` is
+/// the net of the `task.adjust_tracked` corrections inside it (`PT0S` when
+/// none).
+const TASK_LIVE_TIME: &[Field] = &[
+    req("tracked", Ty::Str),
+    req("tracked_adjustment", Ty::Str),
+    nul("active_since", Ty::Str),
+];
 
 /// The restore spelling (D42): raw seconds, and both keys omitted when they
 /// would be zero/absent — `IMPORT_TASK_KEYS` is a closed gate, so an
 /// always-present key would make every new export unreadable to an older tasqx.
 const TASK_EXPORT_TIME: &[Field] = &[
     opt("tracked_seconds", Ty::Int),
+    // D166: the net correction inside `tracked_seconds`, on the same rule.
+    opt("tracked_adjustment_seconds", Ty::Int),
     opt("active_since", Ty::Str),
 ];
 
@@ -718,6 +728,16 @@ const R_TASK_STOP: Shape = &[&[
     req("tracked", Ty::Str),
     req("short_id", Ty::Int),
     req("title", Ty::Str),
+]];
+
+/// D166: the correction, the total it left and the net of every correction.
+const R_TASK_ADJUST_TRACKED: Shape = &[&[
+    req("short_id", Ty::Int),
+    req("title", Ty::Str),
+    req("delta", Ty::Str),
+    req("tracked", Ty::Str),
+    req("tracked_adjustment", Ty::Str),
+    req("_rev", Ty::Int),
 ]];
 
 const R_TASK_DONE: Shape = &[&[
@@ -1605,6 +1625,18 @@ fn cases() -> Vec<Case> {
             R_TASK_STOP,
         ),
         case(
+            "task.adjust_tracked",
+            "a negative correction on a done task (D166)",
+            |e| {
+                plain_task(e);
+                e.task_modify(&json!({ "ref": 1, "set": { "tracked": "3h" } }))
+                    .expect("tracked");
+                e.task_done(&json!({ "ref": 1 })).expect("done");
+                json!({ "ref": 1, "delta": "-2h25m", "reason": "idle gap" })
+            },
+            R_TASK_ADJUST_TRACKED,
+        ),
+        case(
             "task.done",
             "a recurring completion: `spawned` present, `tokens_hint` present (D50)",
             |e| {
@@ -2088,6 +2120,10 @@ fn cases() -> Vec<Case> {
                     .expect("the completed task is in the export");
                 task["tracked_seconds"] = json!(3600);
                 e.store_import(&doc).expect("re-import with banked time");
+                // D166's `tracked_adjustment_seconds` is conditional on the
+                // same rule; a correction on the done task makes it appear.
+                e.task_adjust_tracked(&json!({ "ref": 2, "delta": "-10m", "reason": "idle gap" }))
+                    .expect("adjust");
                 // A measurement, because `tokens` is a THIRD conditional export
                 // key beside `tracked_seconds` and `active_since`, and this
                 // fixture seeded no measurement at all — so the key appeared on

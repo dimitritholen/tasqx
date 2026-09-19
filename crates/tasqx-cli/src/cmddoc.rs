@@ -390,7 +390,34 @@ pub const COMMAND_REF: &[CmdDoc] = &[
         usage: "tasqx stop <ref>",
         examples: &[ex_norun_plain("tasqx stop 1")],
         notes: &[],
-        see_also: &["start", "done"],
+        see_also: &["start", "done", "adjust"],
+        topic: Topic::Capturing,
+    },
+    CmdDoc {
+        verb: "adjust",
+        aliases: &[],
+        method: "task.adjust_tracked",
+        summary: "Correct a task's tracked time.",
+        usage: "tasqx adjust <ref> <delta> --reason TEXT",
+        examples: &[
+            ex_norun(
+                "tasqx adjust 1 -2h25m --reason 'idle gap'",
+                "take off time the clock ran while nobody worked",
+            ),
+            ex_norun(
+                "tasqx adjust 1 +30m --reason 'forgot to start'",
+                "add time that never reached the clock",
+            ),
+        ],
+        notes: &[
+            "Works on any task, done included, so calibration in `report --outcomes` \
+             can be corrected after the fact. A correction that would take the banked \
+             total below zero is refused.",
+            "Each correction is its own event with its reason, and `tasqx undo` takes \
+             the newest one back. `show` prints the net of every correction beside the \
+             total: `tracked 2h30m (adjusted -2h25m)`.",
+        ],
+        see_also: &["stop", "undo", "report"],
         topic: Topic::Capturing,
     },
     CmdDoc {
@@ -479,7 +506,7 @@ pub const COMMAND_REF: &[CmdDoc] = &[
         ],
         notes: &[
             "It takes no ref, and that is the design: only the NEWEST event can be reversed exactly, because nothing has happened since to have read or overwritten what the inverse puts back.",
-            "Five operations are undoable — `stop`, `untag`, `undep`, `annotate` and `annotate --edit`. Every other one exits 5 naming itself and the verb that does take it back (`done` -> `tasqx reopen`, `modify` -> `tasqx show` then a second `modify`).",
+            "Six operations are undoable — `stop`, `untag`, `undep`, `annotate`, `annotate --edit` and `adjust`. Every other one exits 5 naming itself and the verb that does take it back (`done` -> `tasqx reopen`, `modify` -> `tasqx show` then a second `modify`).",
             "Undo APPENDS: the event it reverses stays in the log and a new `undo` event lands behind it, so `tasqx chart` and the audit trail read `X happened, then it was undone`.",
             "There is no redo, so `tasqx undo` twice in a row exits 5: the second one would find the first undo as the newest event and the pair would toggle forever.",
             "It reverses the newest RECORDED event, which is not always the last command you typed. A command that changed nothing records nothing — `tasqx undep 1 2` where no such edge exists, or `tasqx start` on a task already running — so `undo` reaches past it to the previous change. That is why the answer names what it undid: read it before assuming it hit what you were aiming at.",

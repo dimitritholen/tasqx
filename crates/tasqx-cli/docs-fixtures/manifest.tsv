@@ -68,6 +68,7 @@ check-echo	pipe-mut	100	-	check add 50 "p99 stays under 200ms at the new ceiling
 cancel-echo	pipe-mut	100	-	cancel 59	-	-
 reopen-echo	pipe-mut	100	-	reopen 46	-	-
 stop-echo	pipe-mut	100	-	stop 48	-	-
+adjust-echo	pipe-mut	100	-	adjust 42 -2h25m --reason "idle gap"	-	-
 config-list	pipe	100	-	config list	-	-
 #
 list	pipe	100	-	list	-	-
@@ -115,6 +116,7 @@ api-project-use	pipe-mut	100	-	api	-	{"tasqx":"1","id":"pu1","method":"project.u
 api-project-archive	pipe-mut	100	-	api	-	{"tasqx":"1","id":"pa1","method":"project.archive","params":{"name":"mobile"}}
 api-task-start	pipe-mut	100	-	api	-	{"tasqx":"1","id":"s1","method":"task.start","params":{"ref":"50"}}
 api-task-stop	pipe-mut	100	-	api	-	{"tasqx":"1","id":"st1","method":"task.stop","params":{"ref":"48"}}
+api-task-adjust-tracked	pipe-mut	100	-	api	-	{"tasqx":"1","id":"at1","method":"task.adjust_tracked","params":{"ref":"42","delta":"-2h25m","reason":"idle gap"}}
 api-task-modify	pipe-mut	100	-	api	-	{"tasqx":"1","id":"m1","method":"task.modify","params":{"ref":"52","set":{"priority":"H","due":"friday"}}}
 api-task-cancel	pipe-mut	100	-	api	-	{"tasqx":"1","id":"c1","method":"task.cancel","params":{"ref":"60"}}
 api-task-reopen	pipe-mut	100	-	api	-	{"tasqx":"1","id":"ro1","method":"task.reopen","params":{"ref":"12"}}

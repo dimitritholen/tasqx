@@ -574,7 +574,11 @@ const RENDERED_AS: &[(&str, Shows)] = &[
     ("project", Shows::Row("project")),
     ("tags", Shows::Cell("| tags | a, b |")),
     ("estimate", Shows::Row("estimate")),
-    ("tracked", Shows::Row("tracked")),
+    (
+        "tracked",
+        Shows::Cell("| tracked | PT1H (adjusted +PT1H) |"),
+    ),
+    ("tracked_adjustment", Shows::Cell("(adjusted +PT1H)")),
     ("due", Shows::Row("due")),
     ("scheduled", Shows::Row("scheduled")),
     ("wait", Shows::Row("wait")),
@@ -760,6 +764,11 @@ fn every_field_task_get_returns_is_accounted_for_in_the_view() {
     // purpose (it is what makes `blocked`/`unmet_blockers` non-empty above),
     // and D150 refuses that completion without the override.
     d("task.done", &json!({ "ref": 2, "force": true }));
+    // D166: a correction, so `tracked_adjustment` carries a value to render.
+    d(
+        "task.adjust_tracked",
+        &json!({ "ref": 2, "delta": "+1h", "reason": "forgot to start" }),
+    );
     let finished = d("task.get", &json!({ "ref": 2 }));
     // `status_unrecognized` is emitted for a status no writer of THIS build
     // could have produced (D28), so a fixture that only drives the state

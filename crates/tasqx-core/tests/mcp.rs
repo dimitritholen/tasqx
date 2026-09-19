@@ -83,12 +83,12 @@ fn full_protocol_sequence() {
     }));
     assert!(note.is_none(), "notifications must not produce a response");
 
-    // 3. tools/list — all 31 tools present, each with an inputSchema.
+    // 3. tools/list — all 32 tools present, each with an inputSchema.
     let listed = server
         .handle_message(&json!({ "jsonrpc": "2.0", "id": 2, "method": "tools/list" }))
         .expect("tools/list is a request");
     let tools = listed["result"]["tools"].as_array().expect("tools array");
-    assert_eq!(tools.len(), 31, "expected 31 tools");
+    assert_eq!(tools.len(), 32, "expected 32 tools");
     let names: Vec<&str> = tools.iter().map(|t| t["name"].as_str().unwrap()).collect();
     for expected in [
         "tasqx_list_tasks",
@@ -105,6 +105,7 @@ fn full_protocol_sequence() {
         "tasqx_cancel_task",
         "tasqx_start_timer",
         "tasqx_stop_timer",
+        "tasqx_adjust_tracked",
         "tasqx_tag_task",
         "tasqx_untag_task",
         "tasqx_annotate_task",
@@ -3377,6 +3378,10 @@ fn the_read_only_refusal_names_the_flag_that_fixes_it() {
 /// argument on `tasqx_complete_task`. Measured with both tools present: 31
 /// tools, 34,000 bytes, so the roster cap moved from 32,768 to 34,304.
 ///
+/// D166 added `tasqx_adjust_tracked`. Measured with it beside D165's and
+/// D167's tools: 32 tools, 34,704 bytes, so the cap moved from 34,304 to
+/// 34,816.
+///
 /// The floor is not zero. With every `description` key removed from the roster
 /// the same serialization is 11,597 bytes of schema skeleton — property names,
 /// `type`, the closed `enum` lists D30 renders from the engine's own consts,
@@ -3387,7 +3392,7 @@ fn the_read_only_refusal_names_the_flag_that_fixes_it() {
 fn the_whole_tool_roster_stays_inside_its_per_prompt_budget() {
     const MAX_DESCRIPTION: usize = 800;
     const MAX_ENTRY: usize = 3_072;
-    const MAX_ROSTER: usize = 34_304;
+    const MAX_ROSTER: usize = 34_816;
 
     let engine = engine();
     let server = McpServer::new(&engine, Scope::Write);

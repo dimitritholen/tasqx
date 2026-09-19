@@ -115,6 +115,8 @@ pub const PARAMS: &[(&str, &[&str], bool)] = &[
         false,
     ),
     ("task.stop", &["ref"], false),
+    // D166: an auditable correction to tracked time, undoable by `undo`.
+    ("task.adjust_tracked", &["ref", "delta", "reason"], false),
     // task.done additionally takes the #13 self-report params: any present
     // token count records one self-report measurement in the completing
     // transaction, echoed in the done event payload.
@@ -342,6 +344,7 @@ pub fn dispatch(engine: &Engine, method: &str, params: &Value) -> Result<Value, 
         "task.list" => engine.task_list(params),
         "task.start" => engine.task_start(params),
         "task.stop" => engine.task_stop(params),
+        "task.adjust_tracked" => engine.task_adjust_tracked(params),
         "task.done" => engine.task_done(params),
         "task.modify" => engine.task_modify(params),
         "task.get" => engine.task_get(params),

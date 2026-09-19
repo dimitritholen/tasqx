@@ -69,7 +69,7 @@ mod obj_ref;
 /// which is unassertable prose-equivalence. So the column is gone and the page
 /// renders [`crate::cmddoc`]'s summary instead. One string per verb, used by
 /// both surfaces, with no second copy left to drift.
-const VERBS: [(&str, &str, &str); 44] = [
+const VERBS: [(&str, &str, &str); 45] = [
     ("init", "—", "project.create"),
     ("use", "—", "project.use"),
     ("archive", "—", "project.archive"),
@@ -96,6 +96,7 @@ const VERBS: [(&str, &str, &str); 44] = [
     ("why", "—", "task.get"),
     ("start", "<code>s</code>", "task.start"),
     ("stop", "<code>st</code>", "task.stop"),
+    ("adjust", "—", "task.adjust_tracked"),
     (
         "done",
         "<code>d</code>, <code>x</code>, <code>complete</code>",
@@ -153,7 +154,7 @@ const VERBS: [(&str, &str, &str); 44] = [
 
 /// The method table the JSON API page renders: `(method, params, returns)`.
 /// Single source, same reason as [`VERBS`].
-const METHODS: [(&str, &str, &str); 43] = [
+const METHODS: [(&str, &str, &str); 44] = [
     (
         "project.create",
         "<code>name</code>, <code>description?</code>",
@@ -237,6 +238,14 @@ const METHODS: [(&str, &str, &str); 43] = [
         "<code>{status, interval, tracked}</code>. <code>interval</code> is the duration just \
          closed; <code>tracked</code> is the running total, the same word <code>task.get</code> \
          uses for it.",
+    ),
+    (
+        "task.adjust_tracked",
+        "<code>ref</code>, <code>delta</code>, <code>reason</code>",
+        "<code>{short_id, title, delta, tracked, tracked_adjustment, _rev}</code>. A signed \
+         correction (<code>-2h25m</code>, <code>+30m</code>) to tracked time, in any status; \
+         a total below zero or an empty reason is <code>bad_request</code>. Recorded as its \
+         own event, which <code>event.revert</code> takes back (D166).",
     ),
     (
         "task.done",
@@ -532,9 +541,9 @@ const METHODS: [(&str, &str, &str); 43] = [
         "—",
         "<code>{reverted, short_id, title, restored}</code> — <code>reverted</code> carries \
          the event id, its op and its timestamp. Undoes the <em>newest</em> event by \
-         APPENDING a compensating one, so the reversed event stays in the log. Five ops are \
+         APPENDING a compensating one, so the reversed event stays in the log. Six ops are \
          undoable (<code>stop</code>, <code>tag.remove</code>, <code>dependency.remove</code>, \
-         <code>annotation.add</code>, <code>annotation.update</code>); every other one is <code>conflict</code> naming itself \
+         <code>annotation.add</code>, <code>annotation.update</code>, <code>adjust_tracked</code>); every other one is <code>conflict</code> naming itself \
          and what does take it back. The newest <em>event</em>, not the last call you made: a \
          call that changed nothing writes no event, so undo reaches past it — which is why the \
          answer names what it undid instead of saying ok.",

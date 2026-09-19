@@ -114,18 +114,23 @@ use super::*;
 ///  * **`annotation.update`** (D165) — the payload carries the body the edit
 ///    replaced as `previous`, and the edit touched nothing but that body (and
 ///    the task's `rev`, which undo bumps anyway).
+///  * **`adjust_tracked`** (D166) — the payload carries `delta_seconds`, the
+///    exact figure added to both `tracked_seconds` and
+///    `tracked_adjustment_seconds`, so subtracting it restores both to the
+///    second. It exists to be the correction that can itself be corrected.
 ///
 /// A sixth entry needs the same proof, in writing, before it joins them: the
 /// guard `every_event_op_the_engine_writes_is_either_undoable_or_refused_by_name`
 /// (tests/engine.rs) forces every op the engine can write into this list or into
 /// [`NOT_UNDOABLE`], so the choice is always made deliberately — but it cannot
 /// check that a listed inverse is *correct*.
-pub const UNDOABLE_OPS: [&str; 5] = [
+pub const UNDOABLE_OPS: [&str; 6] = [
     "stop",
     "tag.remove",
     "dependency.remove",
     "annotation.add",
     "annotation.update",
+    "adjust_tracked",
 ];
 
 /// Every other op the engine writes, paired with the reason `undo` refuses it
@@ -404,6 +409,7 @@ impl Engine {
             "dependency.remove" => revert_dependency_remove(&tx, &task, &payload)?,
             "annotation.add" => revert_annotation_add(&tx, &task, &payload)?,
             "annotation.update" => revert_annotation_update(&tx, &task, &payload)?,
+            "adjust_tracked" => revert_adjust_tracked(&tx, &task, &payload)?,
             // Unreachable while this match covers UNDOABLE_OPS, and an error
             // rather than a fallthrough precisely so that if the two ever drift
             // the store is left alone instead of being told the undo happened.
@@ -775,4 +781,47 @@ fn revert_annotation_update(
         )));
     }
     Ok(json!({ "annotation_id": id }))
+}
+
+/// Take back a `task.adjust_tracked`: subtract the payload's `delta_seconds`
+/// from both the total and the net adjustment it was added to (D166).
+///
+/// Any status, as the adjustment itself allows. Refuses when the subtraction
+/// would leave a negative total — nothing can have happened since, so that
+/// means the row was edited outside the log.
+fn revert_adjust_tracked(
+    tx: &Transaction,
+    task: &Task,
+    payload: &Value,
+) -> Result<Value, ApiError> {
+    let delta = payload
+        .get("delta_seconds")
+        .and_then(Value::as_i64)
+        .ok_or_else(|| {
+            ApiError::conflict(
+                "this `adjust_tracked` event carries no `delta_seconds`, so the log does not say \
+                 how much the correction moved the total. Nothing was changed; `tasqx adjust` \
+                 corrects it again.",
+            )
+        })?;
+    let total = task.tracked_seconds.saturating_sub(delta);
+    if total < 0 {
+        return Err(ApiError::conflict(format!(
+            "#{} has {}s of tracked time, and taking back this {delta}s adjustment would leave \
+             a negative total — the row has been edited outside the log. Nothing was undone.",
+            task.short_id, task.tracked_seconds
+        )));
+    }
+    tx.execute(
+        "UPDATE tasks SET tracked_seconds=?1, tracked_adjustment_seconds=?2 WHERE id=?3",
+        params![
+            total,
+            task.tracked_adjustment_seconds.saturating_sub(delta),
+            task.id
+        ],
+    )?;
+    Ok(json!({
+        "delta": signed_iso_duration(delta),
+        "tracked": iso_duration(total),
+    }))
 }

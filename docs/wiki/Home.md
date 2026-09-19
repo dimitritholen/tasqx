@@ -108,7 +108,7 @@ task, and where to find help.
 ## Honest edges
 
 `tasqx undo` is narrow on purpose: it reverses the newest event only, over
-five operations, and refuses everything else by name along with the verb that
+six operations, and refuses everything else by name along with the verb that
 does take it back. `tasqx agenda` is a day-grouped list, not the week grid the
 spec sketched. There is no `unarchive` — importing a saved export is the way
 back. The full-screen views (`tasqx dashboard`, `tasqx pick`, the memory

@@ -68,7 +68,17 @@ pub fn task_detail(result: &Value, opts: &DetailOpts) -> String {
         }
     }
     opt_duration(&mut out, result, "estimate", "estimate", opts);
-    opt_duration(&mut out, result, "tracked", "tracked", opts);
+    if let Some(v) = result
+        .get("tracked")
+        .and_then(Value::as_str)
+        .filter(|v| !v.is_empty())
+    {
+        let mut cell = fmt_duration(v, opts);
+        if let Some(adj) = adjustment(result, opts) {
+            cell.push_str(&format!(" (adjusted {adj})"));
+        }
+        row(&mut out, "tracked", &cell);
+    }
     for (key, label) in [
         ("due", "due"),
         ("scheduled", "scheduled"),
@@ -590,6 +600,19 @@ fn opt_duration(out: &mut String, result: &Value, key: &str, label: &str, opts: 
             row(out, label, &fmt_duration(v, opts));
         }
     }
+}
+
+/// The net `task.adjust_tracked` correction, signed and formatted (`-2h`,
+/// `+PT30M`), or `None` when the task carries none (D166).
+fn adjustment(result: &Value, opts: &DetailOpts) -> Option<String> {
+    let raw = result
+        .get("tracked_adjustment")
+        .and_then(Value::as_str)
+        .filter(|a| !a.is_empty() && crate::util::duration_secs(a) != Some(0))?;
+    Some(match raw.strip_prefix('-') {
+        Some(magnitude) => format!("-{}", fmt_duration(magnitude, opts)),
+        None => format!("+{}", fmt_duration(raw, opts)),
+    })
 }
 
 /// A string field, or an empty string. Never panics on a non-string.
@@ -1182,7 +1205,26 @@ fn status_line(task: &Value, opts: &DetailOpts) -> String {
         .and_then(Value::as_str)
         .filter(|t| !t.is_empty() && crate::util::duration_secs(t) != Some(0))
     {
-        parts.push(format!("tracked {}", card_duration(t, opts)));
+        // D166: `tracked` includes the interval still running, and says so;
+        // a correction says how much of the total it is.
+        let running = task
+            .get("active_since")
+            .and_then(Value::as_str)
+            .is_some_and(|a| !a.is_empty());
+        let card_opts = DetailOpts {
+            time: TimeFormat::Relative,
+            now: opts.now,
+        };
+        let notes: Vec<String> = running
+            .then(|| "running".to_string())
+            .into_iter()
+            .chain(adjustment(task, &card_opts).map(|a| format!("adjusted {a}")))
+            .collect();
+        let mut cell = format!("tracked {}", card_duration(t, opts));
+        if !notes.is_empty() {
+            cell.push_str(&format!(" ({})", notes.join(", ")));
+        }
+        parts.push(cell);
     }
     if let Some(p) = task
         .get("project")

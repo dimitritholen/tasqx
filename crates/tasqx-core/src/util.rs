@@ -125,6 +125,17 @@ pub fn iso_duration(seconds: i64) -> String {
     out
 }
 
+/// [`iso_duration`] with a sign: `-PT2H25M` below zero, the unsigned
+/// spelling otherwise. For a correction (`tracked_adjustment`, D166), which
+/// can go either way; a total is never negative and keeps [`iso_duration`].
+pub fn signed_iso_duration(seconds: i64) -> String {
+    if seconds < 0 {
+        format!("-{}", iso_duration(seconds.saturating_neg()))
+    } else {
+        iso_duration(seconds)
+    }
+}
+
 // ---- typed params extraction ------------------------------------------------
 //
 // D32. Every params value the engine reads comes through this layer, and the
