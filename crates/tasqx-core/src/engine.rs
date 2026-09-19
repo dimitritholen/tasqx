@@ -1416,24 +1416,17 @@ fn opt_cmp(a: &Option<String>, b: &Option<String>) -> std::cmp::Ordering {
 ///    either way, instead of flipping the "last" placement along with the
 ///    order it belongs to.
 fn opt_magnitude_cmp_last(a: Option<i64>, b: Option<i64>, desc: bool) -> std::cmp::Ordering {
-    use std::cmp::Ordering;
     match (a, b) {
         (Some(x), Some(y)) => x.cmp(&y),
-        (Some(_), None) => {
+        // The missing side sorts after; pre-flipped so compare_by's desc reversal restores it.
+        _ => {
+            let o = b.is_some().cmp(&a.is_some());
             if desc {
-                Ordering::Greater
+                o.reverse()
             } else {
-                Ordering::Less
+                o
             }
         }
-        (None, Some(_)) => {
-            if desc {
-                Ordering::Less
-            } else {
-                Ordering::Greater
-            }
-        }
-        (None, None) => Ordering::Equal,
     }
 }
 
