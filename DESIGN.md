@@ -411,7 +411,7 @@ tasqx [GLOBAL-FLAGS] [VERB] [REF...] [ARGS / FILTER] [--flags]
 | `tag`/`untag` | — | `tasqx tag 42 blocking` / `tasqx untag 42 blocking`. A tag is written the same way as in `add`/`modify` sugar — `+api` and `api` name one tag — and untagging a tag the task does not have is exit 4 that removes nothing (D52). The bare-ref form `tasqx 42 +blocking` is **not** built: it needs the fuzzy-ref dispatch below, which is not built either. |
 | `pick` | `p`, `fzf` | `tasqx pick [filter]` — the task browser (**D124**): `list`'s rows on a full screen, `/` for a fuzzy search (subsequence, per field, a term found whole ranking first), enter to read a task's `show` card, and one key with an effect: `s` **starts** the task under the cursor. Leaving without starting one exits 0 — a browser you close is not a failed run (**D128**) — while a filter matching nothing still exits 4, having started nothing either way. It needs a terminal on stdin *and* stdout, so it refuses in a pipe (exit 2) rather than being composable — see D55 for why that killed the "print the ref" form the mockup drew. |
 | `agenda` | `ag`, `cal` | `tasqx agenda [filter] [--days N]` — `list` ordered by time and grouped by day. Each task sits on the EARLIER of its `due` and `scheduled`; overdue first, always; 14 days ahead by default. Tasks with neither date, and tasks past the horizon, are counted under the table rather than dropped (D53). |
-| `undo` | `u` | Reverses the newest event by appending a compensating one — the log is never rewritten. Four operations are undoable (`stop`, `untag`, `undep`, `annotate`); every other one exits 5 naming itself and the verb that does take it back. No ref, and no redo (D54). |
+| `undo` | `u` | Reverses the newest event by appending a compensating one — the log is never rewritten. Five operations are undoable (`stop`, `untag`, `undep`, `annotate`, `annotate --edit`); every other one exits 5 naming itself and the verb that does take it back. No ref, and no redo (D54). |
 
 **Fuzzy verb matching:** `tasqx stat` → *"did you mean `start`? [Y/n]"* on ambiguity, silent auto-correct on a unique prefix. A sub-millisecond Levenshtein pass over the clap subcommand table — no network.
 
@@ -431,6 +431,7 @@ tasqx [GLOBAL-FLAGS] [VERB] [REF...] [ARGS / FILTER] [--flags]
 | `tasqx tag 42 blocking` | `tag.add` | `+blocking` is the same tag; duplicates collapse. Re-adding an existing tag is ok. |
 | `tasqx untag 42 blocking` | `tag.remove` | All-or-nothing: a tag the task does not have is exit 4 (`not_found`) and removes none of them (D52). |
 | `tasqx 42 annotate "…"` | `annotation.add` | — |
+| `tasqx annotate 42 --edit <id> "…"` | `annotation.update` | Replaces one note's body in place — id, timestamp and position kept, search re-indexed; a removed note → exit 4, a stale `expected_rev` → exit 5. Undo-reversible (D165). |
 | `tasqx unannotate 42 <id>` | `annotation.remove` | Hard-deletes the body, keeps a tombstone; unknown/already-removed id → exit 4. Not undo-reversible (D113). |
 | `tasqx 42 dep 43` | `dependency.add` | Cycle → exit 5 (`conflict`). |
 | `tasqx memory add/search/show/rm/import` | `memory.add` / `memory.search` / `memory.get` / `memory.remove` / `memory.import` | D41, `show` from D71. `import`: one doc per `.md` file, one transaction, same `source` replaces in place and bumps its rev (D143); a source names one doc, so a batch naming one twice is refused and `add`/`update` refuse a source another doc holds (D174). |
@@ -438,7 +439,7 @@ tasqx [GLOBAL-FLAGS] [VERB] [REF...] [ARGS / FILTER] [--flags]
 | `tasqx agenda [filter] [--days N]` | `task.list` | No `agenda` method: the grouping, the horizon and the earlier-of-two-dates ordering are all rendering over fields the row already carries (D53). The filter defaults to every OPEN status, not `@working` — a future `scheduled` parks a task in `backlog`, which `@working` excludes. |
 | `tasqx report <name>` | `report.summary` | Feeds charts (§8) and HTML export. |
 | `tasqx docs` | *(none — no store)* | Generates the §8a user guide and opens it. Pure static content; never touches the store (D15). |
-| `tasqx undo` | `event.revert` | No params. Appends the inverse of the **newest** event, over a closed set of four ops; anything else is `conflict` (exit 5) naming the way back, and an empty log is exit 4 (D54). |
+| `tasqx undo` | `event.revert` | No params. Appends the inverse of the **newest** event, over a closed set of five ops (D54, D165); anything else is `conflict` (exit 5) naming the way back, and an empty log is exit 4 (D54). |
 | `tasqx export` / `import` | `store.export` / `store.import` | Canonical JSON round-trip. |
 | `tasqx api < req.json` | *(raw)* | Passthrough: one envelope in, one out. |
 
@@ -645,7 +646,7 @@ $ tasqx undo
 ▌ undid untag   +blocking +release +api   M ▄▄▃▁ 7.2   work.tasqx
 ```
 `event.revert` appends the inverse of the **newest** event — the reversed event stays in the log, so
-`tasqx chart` reads "the tag came off, then that was undone". Four operations are undoable; every
+`tasqx chart` reads "the tag came off, then that was undone". Five operations are undoable; every
 other one exits 5 naming itself and what does take it back (`done` → `tasqx reopen`, `modify` →
 `tasqx show` then a second `modify`). There is no redo, and no ref to aim it with: only the newest
 event can be reversed exactly, because nothing has happened since to have overwritten what the
@@ -803,6 +804,7 @@ An agent must never dither over *which* tool. So: **one verb = one tool**, names
 | `tasqx_set_check` | W | `ref`, `check_id`, `state`, `evidence?` | `{short_id, check_id, state}` — `open`\|`passed`\|`failed`; `failed` is a normal outcome, not an error | `check.set` |
 | `tasqx_remove_check` | W | `ref`, `check_id` | `{short_id, check_id, removed}` — for a criterion that was the wrong thing to ask | `check.remove` |
 | `tasqx_annotate_task` | W | `ref`, `body` (verbatim text; markdown fine), `include_body?` (transport-only, default true, D89) | `{short_id, annotation{id, body, created}}`; `body` → `body_bytes` when `include_body: false` (D89) | `annotation.add` |
+| `tasqx_update_annotation` | W | `ref`, `annotation_id`, `body`, `expected_rev?` | `{short_id, annotation{id, body, created}, _rev}` — the body replaced in place, id and `created` kept; `expected_rev` guards the TASK's `_rev` and is pinned by the server when omitted; `undo` puts the previous body back (D165) | `annotation.update` |
 | `tasqx_remove_annotation` | W | `ref`, `annotation_id` | `{short_id, removed{id, removed}}` — hard-deletes the body in storage, never echoes it; permanent, outside `undo` (D113) | `annotation.remove` |
 | `tasqx_add_dependency` | W | `ref`, `depends_on` (short_id or UUID) | `{short_id, depends_on[], blocked}`; cycle → `conflict` | `dependency.add` |
 | `tasqx_remove_dependency` | W | `ref`, `depends_on` | `{short_id, depends_on[], blocked}` (D67) | `dependency.remove` |
@@ -821,7 +823,7 @@ An agent must never dither over *which* tool. So: **one verb = one tool**, names
 ### Read vs write, and destructive-op safety
 
 - **Reads are free.** `tasqx_list_*`, `tasqx_get_task`, `tasqx_summary` never mutate — the agent explores at will.
-- **Behaviour is annotated per tool** in the schema so the host applies its confirmation policy. `destructiveHint` is true for the calls that can overwrite or remove what the store already held — `tasqx_remove_memory`, `tasqx_remove_annotation`, `tasqx_untag_task`, `tasqx_remove_dependency`, `tasqx_modify_task`, `tasqx_complete_task`, `tasqx_reopen_task` — and false for the append-only ones. It is **not** the write flag restated: computing it that way made it identical to `!readOnlyHint`, so a host gating on it gated every write or none, which disarmed the safeguard D64 chose (D68).
+- **Behaviour is annotated per tool** in the schema so the host applies its confirmation policy. `destructiveHint` is true for the calls that can overwrite or remove what the store already held — `tasqx_remove_memory`, `tasqx_remove_annotation`, `tasqx_update_annotation`, `tasqx_untag_task`, `tasqx_remove_dependency`, `tasqx_modify_task`, `tasqx_complete_task`, `tasqx_reopen_task` — and false for the append-only ones. It is **not** the write flag restated: computing it that way made it identical to `!readOnlyHint`, so a host gating on it gated every write or none, which disarmed the safeguard D64 chose (D68).
 - **Optimistic concurrency by default.** For writes, the server reads `_rev` first and passes `expected_rev` to `task.modify`. If a human edited the task in another shell, the core returns `conflict` and the tool surfaces it verbatim — `error [conflict]: expected_rev 5 but task is at rev 6` — naming both revs, which is the load-bearing half. The re-read-and-retry protocol rides the tool's own description rather than the error string (D75): the string is part of the frozen result surface, the description is what an agent reads before calling, and under real contention the conflict is the path an agent hits 199 times in 200, so the retry is the normal case and is documented as one.
 - **No hidden bulk delete.** There is deliberately no `tasqx_delete_all` / raw-SQL tool. Cancellation goes through `task.modify status:cancelled` (reversible, logged); the event log makes every agent action auditable and later revertible.
 - **Confirmation model:** the server labels writes destructive and defers the actual gate to the MCP host's human-in-the-loop UI — it does not invent its own prompt.
@@ -4150,6 +4152,15 @@ are the product's integrity guarantee.
 
 **Why a new entry and not an edit.** D146 and D153 rule what the transport renders, and that stands; this narrows only when an agent is told to ask for it.
 
+### D165 — the card reads Description and Delivered apart from the annotation page, completion pins the delivery note, and `annotation.update` corrects a note in place (task #654, findings #619, #630; extends D54, D113, D146)
+
+**Decision:** (1) `task.get` (and so the task half of `task.brief`) gains three always-present, nullable keys: `first_annotation`, the oldest live note; `delivered_annotation`, the delivery note; and `delivered_annotation_id`, the pin. Both notes are read apart from the page `annotations_limit`/`annotations_offset` asked for, in the page's own row shape with D148's body cap, and the D146 card reads its Description and Delivered rows from them. A result without the keys (an older server) still renders from the page as before. (2) `task.done` pins the newest live note at the instant of completion as `tasks.delivered_annotation_id` (a nullable column, added by the idempotent migration); `task.reopen` clears it, so a re-completion pins afresh. `delivered_annotation` is the pinned note; on a closed task with no pin — one completed before this shipped, or cancelled — it is the newest live note, today's rule; on an open task it is null. A pin whose note was since removed answers null rather than promoting another note, because the delivery note was retracted. `store.export` carries the pin only on a task that has one (the closed import gate's reason, D12) and `store.import` reads it. (3) `annotation.update {ref, annotation_id, body, expected_rev?}` — MCP `tasqx_update_annotation`, CLI `tasqx annotate <ref> --edit <id> <text…>` — replaces one live note's body in place, keeping its id, `created` and position; the FTS5 update trigger re-indexes it. A removed note is `not_found`. An identical body changes nothing and records nothing.
+
+**Why the concurrency guard is the task's `_rev`.** Annotations carry no rev, and every write to a note already bumps the task's, so `expected_rev` means what it means on `task.modify` and the MCP server pins it the same way when omitted. A per-note rev would be a column and a counter for a guard the task rev already gives.
+
+**Why undo covers it — a fifth op in D54's closed set.** The `annotation.update` event carries the replaced body as `previous`, and the edit touched nothing else, so the inverse is exact while it is the newest event. The inverse refuses unless the note still holds the body the edit wrote. Its `restored` names the note by id and carries no text. The `previous` body is also a copy of text D113 promises to scrub, so `annotation.remove` now redacts every `annotation.update` event for the note (`body` and `previous`) beside the `annotation.add` event. That is D113(1a)'s exception extended to the op that copies the text, not a second one.
+
+**Why the pin is only written by `task.done`.** The ruling was completion. A cancelled task keeps today's newest-note rule through the fallback. `done` stays outside undo (D54), so no undo path has to clear a pin; reopen does.
 
 ### D169 — an error's remedy is rendered in its transport's vocabulary; a check is named by id or 1-based position; a title carrying CLI sugar is stored verbatim with a `warnings` entry
 

@@ -155,6 +155,17 @@ Annotations show up in `tasqx show`, and they're searchable: the
 [memory system](Memory.md) indexes them alongside your knowledge documents, so
 "what did we decide about the plumber" is one `tasqx memory search` away.
 
+To correct a note instead of adding another, name it with `--edit`:
+
+```console
+tasqx annotate 42 --edit 018f2f7e-1234-7abc-9def-0123456789ab Plumber quoted 400, booked for Friday
+```
+
+The text is replaced in place: the note keeps its id, its timestamp and its
+place in the history, so the first note is still the box card's Description,
+and search finds the new text rather than the old. `tasqx undo` puts the old
+text back.
+
 ## tasqx unannotate
 
 Permanently scrub one annotation's text, by id:

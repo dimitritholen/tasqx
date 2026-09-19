@@ -10,7 +10,7 @@
 //! meant to be gone.
 //!
 //! **2. Only a closed, explicit set of operations is undoable** —
-//! [`UNDOABLE_OPS`], four of them. Everything else refuses BY NAME and says what
+//! [`UNDOABLE_OPS`], five of them. Everything else refuses BY NAME and says what
 //! taking it back would actually have required, from [`NOT_UNDOABLE`]. Guessing
 //! an inverse is how an undo silently corrupts a store: most of the ops here
 //! record what the caller ASKED for, not what changed, and the two differ
@@ -26,7 +26,7 @@
 //!
 //! **How far back: exactly one step, the newest row in the whole log.** Not a
 //! bounded walk, and not scoped to a task. This is not caution, it is what makes
-//! the four inverses provably exact: *nothing has happened since*, so the state
+//! the five inverses provably exact: *nothing has happened since*, so the state
 //! each inverse writes back is the state that operation found. The moment undo
 //! reaches past the newest event — whether by walking to the newest *undoable*
 //! one, or by scoping to `#42` and skipping whatever happened elsewhere — later
@@ -50,7 +50,7 @@
 //! One consequence of the same rule is worth stating rather than discovering:
 //! an import writes an event per row it touches, so `undo` straight after one
 //! refuses, naming `import`. That is this section doing its job — an import IS
-//! something that has happened since, and the four inverses are exact only
+//! something that has happened since, and the five inverses are exact only
 //! while nothing has.
 //!
 //! The cost is stated rather than hidden: `undo` twice in a row is a refusal,
@@ -89,7 +89,7 @@ use super::*;
 
 /// The operations `event.revert` will undo, and the only ones it ever will.
 ///
-/// Membership is not a matter of taste. Each of these four is *exactly*
+/// Membership is not a matter of taste. Each of these five is *exactly*
 /// invertible from its own event payload plus the state the store is in when
 /// undo runs, with nothing left to infer:
 ///
@@ -111,13 +111,22 @@ use super::*;
 ///    edge that existed and is now gone.
 ///  * **`annotation.add`** — the payload carries the annotation's `id`, and the
 ///    row it names is the whole of what the call created.
+///  * **`annotation.update`** (D165) — the payload carries the body the edit
+///    replaced as `previous`, and the edit touched nothing but that body (and
+///    the task's `rev`, which undo bumps anyway).
 ///
-/// A fifth entry needs the same proof, in writing, before it joins them: the
+/// A sixth entry needs the same proof, in writing, before it joins them: the
 /// guard `every_event_op_the_engine_writes_is_either_undoable_or_refused_by_name`
 /// (tests/engine.rs) forces every op the engine can write into this list or into
 /// [`NOT_UNDOABLE`], so the choice is always made deliberately — but it cannot
 /// check that a listed inverse is *correct*.
-pub const UNDOABLE_OPS: [&str; 4] = ["stop", "tag.remove", "dependency.remove", "annotation.add"];
+pub const UNDOABLE_OPS: [&str; 5] = [
+    "stop",
+    "tag.remove",
+    "dependency.remove",
+    "annotation.add",
+    "annotation.update",
+];
 
 /// Every other op the engine writes, paired with the reason `undo` refuses it
 /// and — the half that makes a refusal useful — what does take it back.
@@ -387,6 +396,7 @@ impl Engine {
             "tag.remove" => revert_tag_remove(&tx, &task, &payload)?,
             "dependency.remove" => revert_dependency_remove(&tx, &task, &payload)?,
             "annotation.add" => revert_annotation_add(&tx, &task, &payload)?,
+            "annotation.update" => revert_annotation_update(&tx, &task, &payload)?,
             // Unreachable while this match covers UNDOABLE_OPS, and an error
             // rather than a fallthrough precisely so that if the two ever drift
             // the store is left alone instead of being told the undo happened.
@@ -717,4 +727,43 @@ fn revert_annotation_add(
 
     tx.execute("DELETE FROM annotations WHERE id = ?1", params![id])?;
     Ok(json!({ "annotation": body }))
+}
+
+/// Put back the body an `annotation.update` replaced (D165).
+///
+/// Exact for the reason the other inverses are: nothing has happened since, and
+/// the payload carries the replaced text as `previous`. Refuses when the note
+/// no longer holds the body the edit wrote — removed, or changed outside the
+/// log — because writing `previous` over some other text would restore a
+/// state this event never saw. The restored object names the note by id and
+/// carries no text: an undo event is not redacted by `annotation.remove`, so a
+/// body in it would outlive a later scrub (D113).
+fn revert_annotation_update(
+    tx: &Transaction,
+    task: &Task,
+    payload: &Value,
+) -> Result<Value, ApiError> {
+    let field = |key: &str| payload.get(key).and_then(Value::as_str);
+    let (Some(id), Some(body), Some(previous)) = (field("id"), field("body"), field("previous"))
+    else {
+        return Err(ApiError::conflict(
+            "this `annotation.update` event does not carry the note's `id`, its new `body` and \
+             the `previous` one — the note was removed since and its text redacted, or the \
+             event is malformed. Nothing was changed.",
+        ));
+    };
+    let changed = tx.execute(
+        "UPDATE annotations SET body = ?1 WHERE id = ?2 AND task_id = ?3 \
+         AND removed IS NULL AND body = ?4",
+        params![previous, id, task.id, body],
+    )?;
+    if changed == 0 {
+        return Err(ApiError::conflict(format!(
+            "the note on #{} recorded under id {id} no longer holds the text this edit wrote, \
+             so putting the previous text back would overwrite something the log does not \
+             account for. Nothing was changed.",
+            task.short_id
+        )));
+    }
+    Ok(json!({ "annotation_id": id }))
 }

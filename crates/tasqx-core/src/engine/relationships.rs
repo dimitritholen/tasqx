@@ -444,33 +444,42 @@ impl Engine {
         // by task and matches on the payload's own `id`, tolerantly (a
         // malformed payload is skipped, never a hard failure — matching how
         // event payloads are read elsewhere, `commands.rs`).
+        //
+        // D165: every `annotation.update` event for the note is redacted by the
+        // same rule, because each carries a body (the new one and the one it
+        // replaced — the latter is what makes the edit undoable).
         let mut stmt = tx.prepare(
-            "SELECT id, payload FROM events \
-             WHERE op = 'annotation.add' AND entity_id = ?1",
+            "SELECT id, op, payload FROM events \
+             WHERE op IN ('annotation.add', 'annotation.update') AND entity_id = ?1",
         )?;
         let rows = stmt.query_map(params![task.id], |r| {
-            Ok((r.get::<_, String>(0)?, r.get::<_, Option<String>>(1)?))
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, Option<String>>(2)?,
+            ))
         })?;
-        let mut redact_event_id = None;
+        let mut redact = Vec::new();
         for row in rows {
-            let (event_id, payload) = row?;
+            let (event_id, op, payload) = row?;
             let Some(payload) = payload else { continue };
             let Ok(v) = serde_json::from_str::<Value>(&payload) else {
                 continue;
             };
             if opt_str(&v, "id").ok().flatten().as_deref() == Some(annotation_id.as_str()) {
-                redact_event_id = Some(event_id);
-                break;
+                let scrubbed = if op == "annotation.add" {
+                    json!({ "id": annotation_id, "body": null, "redacted": true })
+                } else {
+                    json!({ "id": annotation_id, "body": null, "previous": null, "redacted": true })
+                };
+                redact.push((event_id, scrubbed));
             }
         }
         drop(stmt);
-        if let Some(event_id) = redact_event_id {
+        for (event_id, scrubbed) in redact {
             tx.execute(
                 "UPDATE events SET payload = ?1 WHERE id = ?2",
-                params![
-                    json!({ "id": annotation_id, "body": null, "redacted": true }).to_string(),
-                    event_id,
-                ],
+                params![scrubbed.to_string(), event_id],
             )?;
         }
 
@@ -486,6 +495,109 @@ impl Engine {
         Ok(json!({
             "short_id": task.short_id,
             "removed": { "id": annotation_id, "removed": ts },
+        }))
+    }
+
+    // ---- annotation.update ----------------------------------------------------
+
+    /// `annotation.update` — correct one note's body in place (D165). Params:
+    /// `ref`, `annotation_id`, `body`, `expected_rev?`.
+    ///
+    /// The id, the `created` stamp and therefore the note's position are kept:
+    /// the oldest note is the card's Description, and the only correction path
+    /// before this — remove, then annotate again — promoted the next-oldest
+    /// note to Description and put the fix where the card reads Delivered.
+    /// The FTS5 update trigger re-indexes the body, so `memory.search` stops
+    /// finding the sentence that was corrected.
+    ///
+    /// Annotations carry no rev of their own, so `expected_rev` is the TASK's
+    /// `_rev`, exactly as on `task.modify`: a note is part of the task, and
+    /// every other write to one bumps that counter.
+    ///
+    /// The event carries the replaced body as `previous`, which is what makes
+    /// `undo` exact; `annotation.remove` redacts it with the rest (D113).
+    /// A body identical to the stored one changes nothing and records nothing.
+    pub fn annotation_update(&self, p: &Value) -> Result<Value, ApiError> {
+        let _ = ref_param(p)?;
+        let annotation_id = req_str(p, "annotation_id")?;
+        let body = req_str(p, "body")?;
+        let expected_rev = opt_i64(p, "expected_rev")?;
+
+        let tx = self.begin_mutation()?;
+        let task = self.resolve_ref_on(&tx, p)?;
+        if let Some(exp) = expected_rev {
+            if exp != task.rev {
+                return Err(ApiError::new(
+                    crate::ErrorCode::Conflict,
+                    format!(
+                        "expected_rev {exp} but task is at rev {}: re-read with \
+                         `tasqx show {} --json` and retry with expected_rev {}",
+                        task.rev, task.short_id, task.rev
+                    ),
+                    Some(json!({
+                        "expected": exp,
+                        "current": task.rev,
+                        "task": { "short_id": task.short_id, "title": task.title },
+                    })),
+                ));
+            }
+        }
+
+        let existing: Option<(String, String, Option<String>)> = tx
+            .query_row(
+                "SELECT body, created, removed FROM annotations WHERE id = ?1 AND task_id = ?2",
+                params![annotation_id, task.id],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .optional()?;
+        let Some((previous, created, removed)) = existing else {
+            return Err(ApiError::not_found(
+                format!(
+                    "#{} has no annotation with id {annotation_id} — check the id \
+                     `task.get` (or `tasqx show {} --json`) reports for it; nothing was edited.",
+                    task.short_id, task.short_id
+                ),
+                None,
+            ));
+        };
+        if removed.is_some() {
+            return Err(ApiError::not_found(
+                format!(
+                    "annotation {annotation_id} on #{} was removed — its text is gone from \
+                     the store, so there is nothing to edit. `tasqx annotate {} <text>` \
+                     writes a fresh note.",
+                    task.short_id, task.short_id
+                ),
+                None,
+            ));
+        }
+
+        let mut rev = task.rev;
+        if previous != body {
+            let ts = now();
+            rev += 1;
+            tx.execute(
+                "UPDATE annotations SET body = ?1 WHERE id = ?2",
+                params![body, annotation_id],
+            )?;
+            tx.execute(
+                "UPDATE tasks SET rev=?1, modified=?2 WHERE id=?3",
+                params![rev, ts, task.id],
+            )?;
+            insert_event(
+                &tx,
+                Entity::Task,
+                &task.id,
+                "annotation.update",
+                &json!({ "id": annotation_id, "body": body, "previous": previous }),
+            )?;
+            tx.commit()?;
+        }
+
+        Ok(json!({
+            "short_id": task.short_id,
+            "annotation": { "id": annotation_id, "body": body, "created": created },
+            "_rev": rev,
         }))
     }
 

@@ -219,6 +219,7 @@ pub static TASK_FIELDS: LazyLock<Vec<String>> = LazyLock::new(|| {
         modified: String::new(),
         completed: None,
         budget_tokens: None,
+        delivered_annotation_id: None,
     };
     match list_row_json(&probe, &[], false, Some(&[]), Some(&Value::Null)) {
         Value::Object(m) => m.keys().cloned().collect(),
@@ -858,6 +859,9 @@ pub const IMPORT_TASK_KEYS: &[&str] = &[
     "active_since",
     // D138's acceptance criteria, carried whole like `annotations`.
     "checks",
+    // D165's pinned delivery note. Absent on a legacy export and on any task
+    // no completion pinned one on.
+    "delivered_annotation_id",
 ];
 
 /// Every key an exported annotation object can carry. D34.
@@ -1406,6 +1410,7 @@ mod tests {
             modified: "2026-08-30T12:00:00Z".to_string(),
             completed: None,
             budget_tokens: None,
+            delivered_annotation_id: None,
         };
         let mut b = a.clone();
         b.id = "b".to_string();
@@ -1476,6 +1481,7 @@ mod tests {
                 modified: stamp.to_string(),
                 completed: None,
                 budget_tokens: None,
+                delivered_annotation_id: None,
             }
         }
 
@@ -1576,6 +1582,7 @@ mod tests {
             modified: "2026-08-30T12:00:00Z".to_string(),
             completed: None,
             budget_tokens: None,
+            delivered_annotation_id: None,
         };
         let mut b = a.clone();
         b.id = "b".to_string();

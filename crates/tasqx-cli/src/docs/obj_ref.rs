@@ -104,9 +104,9 @@ pub(super) const OBJECTS: [Object; 8] = [
     Object {
         id: "obj-annotation",
         name: "Annotation",
-        lead: "An annotation is a note on a task, stored verbatim. No method edits a note: notes \
-               are added and removed, and <code>store.import</code> replaces an imported task's \
-               notes with the document's. <code>annotation.remove</code> scrubs a note's text and leaves a \
+        lead: "An annotation is a note on a task, stored verbatim. <code>annotation.update</code> \
+               corrects one in place, keeping its id, timestamp and position (D165), and \
+               <code>store.import</code> replaces an imported task's notes with the document's. <code>annotation.remove</code> scrubs a note's text and leaves a \
                tombstone — its id and when it went — under <code>annotations_removed</code>; \
                undoing the <code>annotation.add</code> that wrote a note deletes it outright, \
                with no tombstone.",
@@ -119,6 +119,8 @@ pub(super) const OBJECTS: [Object; 8] = [
             (ON_A_TASK, "", d::TASK_ANNOTATIONS),
             (ON_A_TASK, "", d::TASK_EXPORT_ANNOTATIONS),
             (ON_A_TASK, "", d::TASK_ANNOTATIONS_REMOVED),
+            (ON_A_TASK, "", d::TASK_CARD_NOTES),
+            (ON_A_TASK, "", d::TASK_EXPORT_PIN),
         ],
         example: ("task.get", "/annotations/0", &[]),
     },

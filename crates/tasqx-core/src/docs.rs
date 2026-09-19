@@ -273,6 +273,19 @@ pub const TASK_ANNOTATIONS_REMOVED: &[FieldDoc] = &[
     f("annotations_removed", "array", "One tombstone per scrubbed note (D113) — id and instant, never the text. Excluded from `annotations` and its total."),
 ];
 
+/// D165: the notes the card quotes, read apart from the annotation page, and
+/// the pin completion wrote.
+pub const TASK_CARD_NOTES: &[FieldDoc] = &[
+    n("delivered_annotation_id", "string", "The note `task.done` pinned as the delivery note — the newest one at the instant of completion — or null. `task.reopen` clears it (D165)."),
+    n("first_annotation", "object", "The oldest note, whatever page `annotations_limit`/`annotations_offset` asked for — the card's Description — or null when there is none (D165)."),
+    n("delivered_annotation", "object", "The pinned delivery note — on a closed task with no pin, the newest note — or null on an open task, or when the pinned note was removed (D165)."),
+];
+
+/// D165: on an export row, the pin is present only when there is one.
+pub const TASK_EXPORT_PIN: &[FieldDoc] = &[
+    o("delivered_annotation_id", "string", "The note `task.done` pinned as the delivery note (D165). Present only on a task a completion pinned one on."),
+];
+
 /// The measurements on a task read live — always present, empty when there are none.
 pub const TASK_TOKENS: &[FieldDoc] = &[f(
     "tokens",
@@ -616,6 +629,21 @@ pub const R_ANNOTATION_REMOVE: &[FieldDoc] = &[
         "object",
         "The tombstone: the id and the instant, never the text (D113).",
     ),
+];
+
+/// `annotation.update`'s result.
+pub const R_ANNOTATION_UPDATE: &[FieldDoc] = &[
+    f(
+        "short_id",
+        "integer",
+        "The task's short id — the small number every `ref` accepts and the CLI prints.",
+    ),
+    f(
+        "annotation",
+        "object",
+        "The note as it now stands: the same id and `created`, the new body (D165).",
+    ),
+    f("_rev", "integer", "The task's revision counter after the edit. Send it back as `expected_rev` to make the next change conditional."),
 ];
 
 /// `check.add`'s result.
@@ -1235,6 +1263,7 @@ pub fn result_shape(method: &str) -> &'static [(&'static str, &'static [FieldDoc
             ("result.tasks[]", TASK_STATUS_FLAG),
         ],
         "task.get" => &[
+            ("result", TASK_CARD_NOTES),
             ("result", TASK_BUDGET_GAUGE),
             ("result", TASK_CHECKS),
             ("result", TASK_CORE),
@@ -1252,6 +1281,10 @@ pub fn result_shape(method: &str) -> &'static [(&'static str, &'static [FieldDoc
             ("result.checks[]", TASK_CHECK),
             ("result.annotations[]", ANNOTATION_ROW),
             ("result.annotations[]", ANNOTATION_CAP),
+            ("result.first_annotation", ANNOTATION_ROW),
+            ("result.first_annotation", ANNOTATION_CAP),
+            ("result.delivered_annotation", ANNOTATION_ROW),
+            ("result.delivered_annotation", ANNOTATION_CAP),
             ("result.annotations_removed[]", TOMBSTONE_ROW),
             ("result.tokens[]", MEASUREMENT_ROW),
             ("result.urgency_breakdown", URGENCY_BREAKDOWN_ROW),
@@ -1261,6 +1294,7 @@ pub fn result_shape(method: &str) -> &'static [(&'static str, &'static [FieldDoc
             ("result", R_TASK_BRIEF),
             // The task half is `task.get`'s result, less `urgency_breakdown`:
             // the brief never forwards `explain`.
+            ("result.task", TASK_CARD_NOTES),
             ("result.task", TASK_BUDGET_GAUGE),
             ("result.task", TASK_CHECKS),
             ("result.task", TASK_CORE),
@@ -1277,6 +1311,10 @@ pub fn result_shape(method: &str) -> &'static [(&'static str, &'static [FieldDoc
             ("result.task.checks[]", TASK_CHECK),
             ("result.task.annotations[]", ANNOTATION_ROW),
             ("result.task.annotations[]", ANNOTATION_CAP),
+            ("result.task.first_annotation", ANNOTATION_ROW),
+            ("result.task.first_annotation", ANNOTATION_CAP),
+            ("result.task.delivered_annotation", ANNOTATION_ROW),
+            ("result.task.delivered_annotation", ANNOTATION_CAP),
             ("result.task.annotations_removed[]", TOMBSTONE_ROW),
             ("result.task.tokens[]", MEASUREMENT_ROW),
             ("result.task.unmet_blockers[]", BLOCKER_ROW),
@@ -1307,6 +1345,10 @@ pub fn result_shape(method: &str) -> &'static [(&'static str, &'static [FieldDoc
         "annotation.remove" => &[
             ("result", R_ANNOTATION_REMOVE),
             ("result.removed", TOMBSTONE_ROW),
+        ],
+        "annotation.update" => &[
+            ("result", R_ANNOTATION_UPDATE),
+            ("result.annotation", ANNOTATION_ROW),
         ],
         "check.add" => &[("result", R_CHECK_ADD), ("result.check", TASK_CHECK)],
         "check.set" => &[("result", R_CHECK_SET)],
@@ -1364,6 +1406,7 @@ pub fn result_shape(method: &str) -> &'static [(&'static str, &'static [FieldDoc
             ("result", R_STORE_EXPORT),
             ("result.tasks[]", TASK_CORE),
             ("result.tasks[]", TASK_EXPORT_TIME),
+            ("result.tasks[]", TASK_EXPORT_PIN),
             ("result.tasks[]", TASK_EXPORT_TOKENS),
             ("result.tasks[]", TASK_DEPENDS_ON),
             ("result.tasks[]", TASK_EXPORT_ANNOTATIONS),

@@ -518,6 +518,11 @@ impl Engine {
         if !snapshot.tokens.is_empty() {
             out["tokens"] = json!(snapshot.tokens);
         }
+        // D165: the pinned delivery note, present only on a task a completion
+        // pinned one on — conditional for the closed-gate reason above.
+        if let Some(pin) = &t.delivered_annotation_id {
+            out["delivered_annotation_id"] = json!(pin);
+        }
         // Last, and exactly once. It only ever ADDS `status_unrecognized`, so
         // wrapping the literal or the finished object is the same document —
         // wrapping last is the spelling that stays correct as conditional keys
@@ -977,6 +982,13 @@ impl Engine {
                     }
                     other => other,
                 };
+            // D165. Absent is NULL: no pin, and the card falls back to the
+            // newest note, exactly as on a task completed before the pin.
+            let delivered_annotation_id = import_field(
+                id,
+                "delivered_annotation_id",
+                opt_str_nonempty(tv, "delivered_annotation_id"),
+            )?;
             let remind = match import_field(id, "remind", opt_str_nonempty(tv, "remind"))? {
                 Some(s) => Some(
                     import_field(id, "remind", remind::parse_remind(&s, now_ts))
@@ -1120,10 +1132,11 @@ impl Engine {
             tx.execute(
                 "INSERT INTO tasks (id, short_id, title, status, priority, project, due, \
                  scheduled, wait, estimate, recurrence, urgency, active_since, tracked_seconds, \
-                 rev, created, modified, completed, remind, budget_tokens) \
+                 rev, created, modified, completed, remind, budget_tokens, \
+                 delivered_annotation_id) \
                  VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12, \
                  CASE WHEN ?4 = 'active' THEN COALESCE(?18,?19) ELSE NULL END, \
-                 COALESCE(?20,0),?13,?14,?15,?16,?17,?21) \
+                 COALESCE(?20,0),?13,?14,?15,?16,?17,?21,?22) \
                  ON CONFLICT(id) DO UPDATE SET \
                  short_id=?2, title=?3, status=?4, priority=?5, project=?6, due=?7, \
                  scheduled=?8, wait=?9, estimate=?10, recurrence=?11, urgency=?12, \
@@ -1131,7 +1144,7 @@ impl Engine {
                  THEN COALESCE(?18, active_since, ?19) ELSE NULL END, \
                  tracked_seconds = COALESCE(?20, tracked_seconds), \
                  rev=?13, created=?14, modified=?15, completed=?16, remind=?17, \
-                 budget_tokens=?21",
+                 budget_tokens=?21, delivered_annotation_id=?22",
                 params![
                     id,
                     short_id,
@@ -1153,7 +1166,8 @@ impl Engine {
                     active_since,
                     now(),
                     tracked_seconds,
-                    budget_tokens
+                    budget_tokens,
+                    delivered_annotation_id
                 ],
             )?;
 

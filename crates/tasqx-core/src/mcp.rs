@@ -1344,6 +1344,31 @@ fn build_tool_specs() -> Vec<ToolSpec> {
             }),
         },
         ToolSpec {
+            name: "tasqx_update_annotation",
+            method: "annotation.update",
+            write: true,
+            destructive: true,
+            idempotent: true,
+            description: "Correct one annotation's body in place, by id (D165): id, timestamp \
+                and position are kept, and search stops finding the old text. `tasqx undo` \
+                covers it. An omitted `expected_rev` pins the task's current `_rev`, as on \
+                `tasqx_modify_task`.",
+            schema: json!({
+                "type": "object",
+                "properties": {
+                    "ref": ref_schema(),
+                    "annotation_id": {
+                        "type": "string",
+                        "description": "The annotation's id, as tasqx_annotate_task or \
+                            tasqx_get_task reports."
+                    },
+                    "body": { "type": "string", "description": "The corrected text; replaces the old body whole." },
+                    "expected_rev": { "type": "integer", "description": "Guard on the task's `_rev`; supplied by the server when omitted." }
+                },
+                "required": ["ref", "annotation_id", "body"]
+            }),
+        },
+        ToolSpec {
             name: "tasqx_add_dependency",
             method: "dependency.add",
             write: true,
@@ -1967,7 +1992,8 @@ impl<'e> McpServer<'e> {
         // edited in another shell yields a `conflict` instead of a silent
         // last-writer-wins clobber. A caller that pins its own `expected_rev`
         // (e.g. re-reading after a conflict) is respected as-is.
-        if spec.method == "task.modify" {
+        // D165: `annotation.update` guards on the same task `_rev`.
+        if spec.method == "task.modify" || spec.method == "annotation.update" {
             if let Some(obj) = args.as_object_mut() {
                 if !obj.contains_key("expected_rev") {
                     if let Some(rev) = self.current_rev(obj.get("ref")) {
@@ -3333,6 +3359,9 @@ mod tests {
                 "dependency.add" => json!({ "ref": 1, "depends_on": 2 }),
                 "dependency.remove" => json!({ "ref": 3, "depends_on": 1 }),
                 "memory.search" => json!({ "query": "t" }),
+                "annotation.update" => {
+                    json!({ "ref": 1, "annotation_id": note, "body": "edited" })
+                }
                 "memory.get" | "memory.update" | "memory.remove" => json!({ "id": doc }),
                 "memory.add" => json!({ "title": "t", "body": "b" }),
                 "project.create" => json!({ "name": "p" }),

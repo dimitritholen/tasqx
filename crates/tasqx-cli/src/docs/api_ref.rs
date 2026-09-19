@@ -1190,6 +1190,13 @@ const EXAMPLES: &[Example] = &[
         why: "",
     },
     Example {
+        method: "annotation.update",
+        request: r#"{"tasqx":"1","id":"au1","method":"annotation.update","params":{"ref":"51","annotation_id":"019f7c0a-3d51-7401-a1e6-c040f1ddbe51","body":"Ruling: the guide ships AFTER the 3.0 release."}}"#,
+        fixture: "",
+        response: r#"{"id":"au1","ok":true,"result":{"_rev":7,"annotation":{"body":"Ruling: the guide ships AFTER the 3.0 release.","created":"2026-09-16T09:00:00Z","id":"019f7c0a-3d51-7401-a1e6-c040f1ddbe51"},"short_id":51},"tasqx":"1"}"#,
+        why: "the note it edits has an id minted fresh, v7, half of it random, so no fixed request can name it.",
+    },
+    Example {
         method: "check.add",
         request: r#"{"tasqx":"1","id":"ca1","method":"check.add","params":{"ref":"51","body":"Every renamed symbol has a row in the table"}}"#,
         fixture: "",

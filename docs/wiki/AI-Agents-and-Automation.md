@@ -62,12 +62,12 @@ them (and learn what that unblocked), start and stop timers, tag, annotate,
 wire up dependencies, create projects, and search and store
 [memory](Memory.md).
 
-Twenty-nine tools, one verb each. Nine reads: `list_tasks`, `get_task`,
+Thirty tools, one verb each. Nine reads: `list_tasks`, `get_task`,
 `brief_task`, `summary`, `outcomes`, `list_projects`, `search_memory`,
 `get_memory`, `list_memory`.
-Twenty writes: `add_task`, `modify_task`, `complete_task`, `reopen_task`,
+Twenty-one writes: `add_task`, `modify_task`, `complete_task`, `reopen_task`,
 `cancel_task`, `start_timer`, `stop_timer`, `tag_task`, `untag_task`,
-`annotate_task`, `remove_annotation`, `add_check`, `set_check`,
+`annotate_task`, `update_annotation`, `remove_annotation`, `add_check`, `set_check`,
 `remove_check`, `add_dependency`, `remove_dependency`, `add_memory`,
 `update_memory`, `remove_memory`, `create_project` (all prefixed `tasqx_`).
 
@@ -196,6 +196,10 @@ want to act on:
   in the annotation row *and* in the original write's audit event, in one
   transaction, so a secret pasted into a note is also gone from an export.
   `tasqx undo` cannot bring it back.
+- **`tasqx_update_annotation` corrects a note in place.** The id, timestamp and
+  position stay, so a corrected first note is still the card's Description,
+  and memory search stops finding the old sentence. `tasqx undo` puts the
+  previous text back.
 
 The server's `instructions` block is the short version of how to work, so a
 fresh install already nudges the agent to search before deciding and to write

@@ -151,7 +151,8 @@ tasqx undo
 
 `undo` is deliberately narrow, and honest about it:
 
-- Four operations are undoable: `stop`, `untag`, `undep` and `annotate`.
+- Five operations are undoable: `stop`, `untag`, `undep`, `annotate` and
+  `annotate --edit`.
   Everything else is refused *by name*, with the command that does take it
   back — undoing a `done` is `tasqx reopen`, undoing a `modify` is a second
   `modify`.

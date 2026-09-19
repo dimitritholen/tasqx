@@ -483,6 +483,21 @@ const OMITTED: &[(&str, &str)] = &[
          (audit-2026-09 #8); the card already shows the full list via `depends_on` \
          and the `blocked` flag",
     ),
+    (
+        "delivered_annotation_id",
+        "D165's pin, for the card's Delivered row; the detail view prints the whole \
+         history, where the pinned note already sits",
+    ),
+    (
+        "first_annotation",
+        "D165: a copy of the oldest note for the card, read apart from the page; the \
+         detail view's history already carries it when the page reaches back that far",
+    ),
+    (
+        "delivered_annotation",
+        "D165: a copy of the delivery note for the card; the detail view's history \
+         already carries it",
+    ),
 ];
 
 /// How one key proves it reached the view.

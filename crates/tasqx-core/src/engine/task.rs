@@ -387,7 +387,7 @@ impl Engine {
         tx.execute(
             &format!(
                 "INSERT INTO tasks ({TASK_COLS}) VALUES \
-                 (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20)"
+                 (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21)"
             ),
             params![
                 id,
@@ -410,6 +410,7 @@ impl Engine {
                 Option::<String>::None, // completed
                 remind,
                 budget_tokens,
+                Option::<String>::None, // delivered_annotation_id
             ],
         )?;
         for tag in &tags {
@@ -805,9 +806,15 @@ impl Engine {
         // A recurring template spawns its next instance on completion (D2).
         // Tags belong to the same locked snapshot as the template row.
         let template_tags = task_tags(&tx, &task.id)?;
+        // D165: the newest live note at this instant is the delivery note,
+        // pinned so a note written after completion cannot displace it on the
+        // card. Ordered by id, the order `annotations_page` pages in.
         tx.execute(
             "UPDATE tasks SET status='done', completed=?1, active_since=NULL, \
-             tracked_seconds=?2, rev=?3, modified=?4 WHERE id=?5",
+             tracked_seconds=?2, rev=?3, modified=?4, delivered_annotation_id=( \
+                 SELECT id FROM annotations WHERE task_id=?5 AND removed IS NULL \
+                 ORDER BY id DESC LIMIT 1) \
+             WHERE id=?5",
             params![ts, total, task.rev + 1, ts, task.id],
         )?;
         // #12: the done event carries the correlation record for this
@@ -1068,7 +1075,7 @@ impl Engine {
         tx.execute(
             &format!(
                 "INSERT INTO tasks ({TASK_COLS}) VALUES \
-                 (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20)"
+                 (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21)"
             ),
             params![
                 new_id,
@@ -1094,6 +1101,7 @@ impl Engine {
                 // `estimate` and `recurrence` do: the next instance is the same
                 // work again and is the same size.
                 template.budget_tokens,
+                Option::<String>::None, // delivered_annotation_id
             ],
         )?;
         for tag in template_tags {
@@ -2229,11 +2237,7 @@ impl Engine {
              ORDER BY id DESC LIMIT ?2 OFFSET ?3",
         )?;
         let rows = stmt.query_map(params![task_id, sql_limit, sql_offset], |r| {
-            let mut row = Map::new();
-            row.insert("id".to_string(), json!(r.get::<_, String>(0)?));
-            put_body(&mut row, r.get::<_, String>(1)?, max_body);
-            row.insert("created".to_string(), json!(r.get::<_, String>(2)?));
-            Ok(Value::Object(row))
+            annotation_row(r, max_body)
         })?;
         let mut v = Vec::new();
         for r in rows {
@@ -2241,6 +2245,28 @@ impl Engine {
         }
         v.reverse();
         Ok((v, total))
+    }
+
+    /// One live annotation of this task in `annotations_page`'s row shape:
+    /// the one named `id`, or the first under `order`.
+    fn one_annotation(
+        &self,
+        task_id: &str,
+        id: Option<&String>,
+        order: &str,
+        max_body: Option<u64>,
+    ) -> Result<Option<Value>, ApiError> {
+        Ok(self
+            .conn
+            .query_row(
+                &format!(
+                    "SELECT id, body, created FROM annotations WHERE task_id = ?1 \
+                     AND removed IS NULL AND (?2 IS NULL OR id = ?2) {order} LIMIT 1"
+                ),
+                params![task_id, id],
+                |r| annotation_row(r, max_body),
+            )
+            .optional()?)
     }
 
     /// The tombstones `annotation.remove` left on this task: `{id, removed}`
@@ -2369,6 +2395,23 @@ impl Engine {
         // with nothing saying it went on purpose. Always present, empty array
         // included — the rule every other always-present key here follows.
         obj["annotations_removed"] = json!(self.removed_annotations(&task.id)?);
+        // D165: the two notes the card quotes, read apart from the page so a
+        // caller's `annotations_limit` cannot drop them. `first_annotation` is
+        // the oldest live note (the Description); `delivered_annotation` is
+        // what the completion pinned, or on a closed task with no pin (one
+        // completed before the pin existed, or cancelled) the newest live
+        // note. A pin whose note was since removed answers null: the delivery
+        // note was retracted, and promoting another note would misreport it.
+        obj["delivered_annotation_id"] = json!(task.delivered_annotation_id);
+        obj["first_annotation"] =
+            json!(self.one_annotation(&task.id, None, "ORDER BY id ASC", max_body)?);
+        obj["delivered_annotation"] = match (&task.delivered_annotation_id, task.status) {
+            (Some(pin), _) => json!(self.one_annotation(&task.id, Some(pin), "", max_body)?),
+            (None, Status::Done | Status::Cancelled) => {
+                json!(self.one_annotation(&task.id, None, "ORDER BY id DESC", max_body)?)
+            }
+            (None, _) => Value::Null,
+        };
         // D138: the criteria, in the order they were written. Always present,
         // empty array included — a caller that has to tell "no criteria" from
         // "this shape does not carry them" cannot, and the difference matters
@@ -2880,7 +2923,10 @@ impl Engine {
 
         let ts = now();
         tx.execute(
-            "UPDATE tasks SET status='pending', completed=NULL, rev=?1, modified=?2 WHERE id=?3",
+            // D165: the pin goes with the completion it belonged to; the next
+            // `task.done` pins afresh.
+            "UPDATE tasks SET status='pending', completed=NULL, delivered_annotation_id=NULL, \
+             rev=?1, modified=?2 WHERE id=?3",
             params![task.rev + 1, ts, task.id],
         )?;
         insert_event(
@@ -3020,6 +3066,16 @@ pub(super) fn derive_match_expr(
         .map(|t| format!("\"{}\"", t.replace('"', "\"\"")))
         .collect();
     Some(quoted.join(" OR "))
+}
+
+/// One `SELECT id, body, created FROM annotations` row as the ANNOTATION
+/// object `task.get` returns, body capped per D148.
+fn annotation_row(r: &rusqlite::Row, max_body: Option<u64>) -> rusqlite::Result<Value> {
+    let mut row = Map::new();
+    row.insert("id".to_string(), json!(r.get::<_, String>(0)?));
+    put_body(&mut row, r.get::<_, String>(1)?, max_body);
+    row.insert("created".to_string(), json!(r.get::<_, String>(2)?));
+    Ok(Value::Object(row))
 }
 
 #[cfg(test)]
