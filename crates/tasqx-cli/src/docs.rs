@@ -382,7 +382,8 @@ const METHODS: [(&str, &str, &str); 42] = [
         "<code>docs</code>",
         "<code>{imported, replaced, docs}</code>, each doc <code>{id, title, source, replaced, _rev}</code>. \
          One transaction; same <code>source</code> replaces IN PLACE (id and creation date kept), \
-         bumps that doc's <code>_rev</code> (D143) and is counted in <code>replaced</code>.",
+         bumps that doc's <code>_rev</code> (D143) and is counted in <code>replaced</code>; \
+         a batch naming one <code>source</code> twice is refused whole (D174).",
     ),
     (
         "memory.list",

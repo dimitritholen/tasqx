@@ -1397,7 +1397,7 @@ fn build_tool_specs() -> Vec<ToolSpec> {
                 "properties": {
                     "title": { "type": "string" },
                     "body": { "type": "string", "description": "Stored verbatim; multi-line markdown is fine." },
-                    "source": { "type": "string", "description": "Where this came from: a path, URL, or ticket." },
+                    "source": { "type": "string", "description": "Where this came from: a path, URL, or ticket. One doc per source: one another doc holds is a `conflict` naming it (D174)." },
                     "project": { "type": "string", "description": "Optional project scope. Omit to leave the doc unscoped; it is never defaulted onto a current project." },
                     "standing": {
                         "type": "boolean",
@@ -1429,7 +1429,7 @@ fn build_tool_specs() -> Vec<ToolSpec> {
                     },
                     "title": { "type": "string", "description": "New title. Omit to leave unchanged." },
                     "body": { "type": "string", "description": "New body, stored verbatim. Omit to leave unchanged." },
-                    "source": { "type": "string", "description": "New source. Omit to leave unchanged." },
+                    "source": { "type": "string", "description": "New source. Omit to leave unchanged. One another doc holds is a `conflict` naming it (D174)." },
                     "project": { "type": "string", "description": "New project scope. Omit to leave unchanged." },
                     "standing": {
                         "type": "boolean",

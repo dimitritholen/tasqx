@@ -18,6 +18,10 @@ tasqx memory add "Deploy runbook" "Deploys go through the blue-green pipeline"
   cleared, so a correction given once is not forgotten by recency. MCP
   clients receive standing docs when a session starts. Past 15
   standing docs in one scope, `add` answers with a hint to merge or retract.
+- `--source` names where the doc came from, and names one doc: a source
+  another document already holds is refused with `conflict` (exit 5), naming
+  that document, so `import` always knows which one to replace. The same
+  goes for `update --source`.
 
 ## tasqx memory list
 
@@ -86,6 +90,7 @@ tasqx memory import docs/adr
 - One transaction: if any file fails, nothing is imported.
 - Re-importing the same directory *replaces* those documents instead of
   duplicating them, so it's safe to re-run whenever the sources change.
+  Over the JSON API, a batch that names one source twice is refused whole.
 - A replace bumps the document's revision, so an `update --expected-rev`
   taken before the re-import is refused with `conflict` instead of silently
   overwriting the freshly imported text.
