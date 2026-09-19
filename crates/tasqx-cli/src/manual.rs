@@ -705,7 +705,7 @@ Double-quote a value containing a space, and the quotes also
 hide parentheses and the and/or keywords, as a shell does.
 The quotes must REACH tasqx, so protect them from your shell —
 wrap the whole token in single quotes (or backslash-escape it):
-  tasqx list 'project:\"Home Renovation\"' '+\"needs paint\"'
+  tasqx list 'project:\"Home Renovation\"' +paint
 
 tasqx does not guess where a value ended. Letting the shell eat
 the quotes leaves `project:Home Renovation`, which is

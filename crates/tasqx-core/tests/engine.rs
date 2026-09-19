@@ -1005,6 +1005,87 @@ fn a_bad_value_and_an_empty_value_name_the_task_alike() {
     }
 }
 
+// ---- tag normalisation (D172) ------------------------------------------------
+
+/// D172: a tag is stored lowercased, whichever door it came through, so `Perf`
+/// and `perf` are one tag. The response, the stored set and the event payload
+/// all carry the normalised name — the event is what `undo` replays from.
+#[test]
+fn every_tag_write_door_stores_the_lowercased_name() {
+    let e = engine();
+    let task = e
+        .task_add(&json!({ "title": "t", "tags": ["Release"] }))
+        .expect("add");
+    assert_eq!(task["tags"], json!(["release"]), "task.add response");
+    let out = e
+        .tag_add(&json!({ "ref": task["short_id"].clone(), "tags": ["Perf", "ÜNÏ"] }))
+        .expect("tag.add");
+    assert_eq!(out["tags"], json!(["perf", "release", "ünï"]));
+    assert_eq!(
+        tag_events(&e, &task["short_id"])[0]["payload"]["tags"],
+        json!(["perf", "ünï"]),
+        "the event must record what was stored, or undo replays a name that does not exist"
+    );
+
+    // tag.remove looks the name up normalised too.
+    let out = e
+        .tag_remove(&json!({ "ref": task["short_id"].clone(), "tags": ["PERF"] }))
+        .expect("tag.remove finds `perf` under `PERF`");
+    assert_eq!(out["removed"], json!(["perf"]));
+
+    // store.import, through an export whose tag was spelled in capitals.
+    let mut doc = e.store_export(&json!({})).expect("export");
+    doc["tasks"][0]["tags"] = json!(["Imported"]);
+    e.store_import(&doc).expect("import");
+    assert_eq!(
+        e.task_get(&json!({ "ref": task["short_id"].clone() }))
+            .unwrap()["tags"],
+        json!(["imported"])
+    );
+}
+
+/// D172: whitespace inside a tag is refused on every write door, naming the
+/// tag, and nothing is written.
+#[test]
+fn a_tag_containing_whitespace_is_refused_on_every_write_door() {
+    let e = engine();
+    let err = e
+        .task_add(&json!({ "title": "t", "tags": ["has space"] }))
+        .expect_err("task.add");
+    assert_eq!(err.code, ErrorCode::BadRequest, "{}", err.message);
+    assert!(err.message.contains("has space"), "{}", err.message);
+    assert_eq!(count(&e, "SELECT COUNT(*) FROM tasks"), 0);
+
+    let task = e.task_add(&json!({ "title": "t" })).expect("add");
+    let err = e
+        .tag_add(&json!({ "ref": task["short_id"].clone(), "tags": ["ok", "has\tspace"] }))
+        .expect_err("tag.add");
+    assert_eq!(err.code, ErrorCode::BadRequest, "{}", err.message);
+    assert!(err.message.contains("has\\tspace"), "{}", err.message);
+    assert_eq!(count(&e, "SELECT COUNT(*) FROM tags"), 0, "all-or-nothing");
+
+    let mut doc = e.store_export(&json!({})).expect("export");
+    doc["tasks"][0]["tags"] = json!(["has space"]);
+    let err = e.store_import(&doc).expect_err("store.import");
+    assert_eq!(err.code, ErrorCode::BadRequest, "{}", err.message);
+    assert!(err.message.contains("has space"), "{}", err.message);
+}
+
+/// D172: the filter DSL compares against the normalised form, so `+Perf`
+/// selects a task tagged `perf`.
+#[test]
+fn a_filter_tag_term_is_lowercased_before_it_matches() {
+    let e = engine();
+    e.task_add(&json!({ "title": "t", "tags": ["upper"] }))
+        .expect("add");
+    for filter in ["+UPPER", "+Upper"] {
+        let listed = e.task_list(&json!({ "filter": filter })).unwrap();
+        assert_eq!(listed["tasks"].as_array().unwrap().len(), 1, "{filter}");
+    }
+    let listed = e.task_list(&json!({ "filter": "-UPPER" })).unwrap();
+    assert_eq!(listed["tasks"].as_array().unwrap().len(), 0);
+}
+
 // ---- tag.remove (D52) -------------------------------------------------------
 
 /// A task carrying `api` and `release`, and the `{ref: …}` value every test
@@ -1630,8 +1711,11 @@ fn every_handler_that_opens_a_mutation_also_appends_an_event() {
 /// which is the one failure mode that makes the guard below pass vacuously.
 fn event_ops_the_engine_writes() -> BTreeSet<String> {
     const CALL: &str = "insert_event(";
+    // storage.rs too: the D172 tag migration logs `tag.normalize` from there.
+    // It also holds `insert_event`'s own definition, skipped below.
+    let storage = ("storage.rs", include_str!("../src/storage.rs"));
     let mut ops = BTreeSet::new();
-    for (file, source) in SOURCES {
+    for (file, source) in SOURCES.into_iter().chain([storage]) {
         // The engine's own `#[cfg(test)]` modules are not writers, and the prose
         // above a call site quotes the helper's name constantly.
         let production = source.split("\n#[cfg(test)]").next().unwrap_or(source);
@@ -1641,6 +1725,9 @@ fn event_ops_the_engine_writes() -> BTreeSet<String> {
             .collect::<Vec<_>>()
             .join("\n");
         for (i, _) in code.match_indices(CALL) {
+            if code[..i].ends_with("fn ") {
+                continue;
+            }
             let args = &code[i + CALL.len()..];
             let op = args.split(',').nth(3).unwrap_or("").trim();
             let literal = op

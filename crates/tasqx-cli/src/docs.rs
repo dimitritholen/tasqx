@@ -1354,8 +1354,10 @@ fn page_filters() -> String {
 
     s.push_str(&h3("Values with spaces"));
     s.push_str(&p(
-        "A space separates predicates, so a project or tag whose name contains one must be \
-         double-quoted — <code>project:\"Home Renovation\"</code>, <code>+\"needs paint\"</code>. \
+        "A space separates predicates, so a project whose name contains one must be \
+         double-quoted — <code>project:\"Home Renovation\"</code>. (A tag never contains one: \
+         tags are stored lowercased and a spaced tag is refused, so <code>+API</code> matches \
+         <code>api</code>.) \
          The rule is the shell's: inside quotes, spaces and parentheses are ordinary characters \
          and <code>and</code>/<code>or</code> are ordinary words, so a project named \
          <code>a (b)</code> no longer breaks the grouping. Write <code>\\\"</code> for a literal \
@@ -1380,7 +1382,7 @@ fn page_filters() -> String {
          quote is read by the scanner rather than taken whole.",
     ));
     s.push_str(&snippet(
-        "tasqx list project:\"Home Renovation\" +\"needs paint\"",
+        "tasqx list project:\"Home Renovation\" +paint",
         "",
     ));
 

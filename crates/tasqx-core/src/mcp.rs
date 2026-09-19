@@ -1211,7 +1211,7 @@ fn build_tool_specs() -> Vec<ToolSpec> {
             write: true,
             destructive: false,
             idempotent: true,
-            description: "Add one or more tags to a task. Returns the resulting tag set.",
+            description: "Add one or more tags to a task. Tags are stored lowercase; one containing whitespace is refused. Returns the resulting tag set.",
             schema: json!({
                 "type": "object",
                 "properties": {

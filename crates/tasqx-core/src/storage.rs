@@ -397,6 +397,7 @@ fn migrate(conn: &Connection) -> Result<(), ApiError> {
         "total_tokens",
         "INTEGER NOT NULL DEFAULT 0",
     )?;
+    normalize_stored_tags(conn)?;
     Ok(())
 }
 
@@ -1062,6 +1063,136 @@ pub fn task_tags(conn: &Connection, task_id: &str) -> Result<Vec<String>, ApiErr
     Ok(out)
 }
 
+/// D172: the one spelling a tag is stored under — lowercased, Unicode-aware, so
+/// `Perf` and `perf` are one tag. Whitespace is refused rather than rewritten:
+/// a tag is one word on the command line and in the filter DSL, and guessing
+/// between `has-space` and `has_space` for the caller would be a silent rename.
+pub fn normalize_tag(name: &str) -> Result<String, ApiError> {
+    if name.chars().any(char::is_whitespace) {
+        return Err(ApiError::bad_request(format!(
+            "tag {name:?} contains whitespace — a tag is one word; write it as {:?}",
+            hyphenated(name)
+        )));
+    }
+    Ok(name.to_lowercase())
+}
+
+/// [`normalize_tag`] over a list, duplicates collapsed in the order given, so
+/// `["Perf", "perf"]` is one tag in the stored set and in the event payload.
+pub fn normalize_tags(names: Vec<String>) -> Result<Vec<String>, ApiError> {
+    let mut out: Vec<String> = Vec::with_capacity(names.len());
+    for name in names {
+        let tag = normalize_tag(&name)?;
+        if !out.contains(&tag) {
+            out.push(tag);
+        }
+    }
+    Ok(out)
+}
+
+/// The lowercased name with each run of whitespace turned into one hyphen —
+/// the migration's rewrite of a legacy spaced tag, and the spelling a refusal
+/// suggests.
+fn hyphenated(name: &str) -> String {
+    name.split_whitespace()
+        .collect::<Vec<_>>()
+        .join("-")
+        .to_lowercase()
+}
+
+/// D172: fold the tags a store written before normalisation can hold — `UPPER`
+/// beside `upper`, `has space` — into the stored spelling: lowercased, each
+/// whitespace run a hyphen. A name that lands on an existing tag is MERGED: its
+/// links are re-pointed at the survivor (a task carrying both keeps one link)
+/// and its row is deleted, so no task loses a tag.
+///
+/// Unlike the silent repairs beside it, this one changes what a user sees on a
+/// task, so each task it touched gets one `tag.normalize` event naming every
+/// `{from, to}` it applied — `event.list {ref}` is the record of what the
+/// migration did. It runs on every open; a store with nothing to fold reads
+/// the tag table once and writes nothing.
+fn normalize_stored_tags(conn: &Connection) -> Result<(), ApiError> {
+    if stale_tags(conn)?.is_empty() {
+        return Ok(());
+    }
+    // IMMEDIATE, and the list re-read under the lock: a daemon and a one-shot
+    // opening the same old store at once must not both apply (and log) it.
+    let tx = Transaction::new_unchecked(conn, rusqlite::TransactionBehavior::Immediate)?;
+    let stale = stale_tags(&tx)?;
+    let mut changed: std::collections::BTreeMap<String, Vec<serde_json::Value>> =
+        std::collections::BTreeMap::new();
+    for (id, from, to) in &stale {
+        let tasks: Vec<String> = tx
+            .prepare("SELECT task_id FROM task_tags WHERE tag_id = ?1")?
+            .query_map(params![id], |r| r.get(0))?
+            .collect::<rusqlite::Result<_>>()?;
+        let survivor: Option<String> = tx
+            .query_row("SELECT id FROM tags WHERE name = ?1", params![to], |r| {
+                r.get(0)
+            })
+            .optional()?;
+        match survivor {
+            Some(keep) => {
+                tx.execute(
+                    "INSERT OR IGNORE INTO task_tags (task_id, tag_id) \
+                     SELECT task_id, ?2 FROM task_tags WHERE tag_id = ?1",
+                    params![id, keep],
+                )?;
+                tx.execute("DELETE FROM task_tags WHERE tag_id = ?1", params![id])?;
+                tx.execute("DELETE FROM tags WHERE id = ?1", params![id])?;
+            }
+            None => {
+                tx.execute("UPDATE tags SET name = ?1 WHERE id = ?2", params![to, id])?;
+            }
+        }
+        for task in tasks {
+            changed
+                .entry(task)
+                .or_default()
+                .push(serde_json::json!({ "from": from, "to": to }));
+        }
+    }
+    for (task, tags) in changed {
+        tx.execute(
+            "UPDATE tasks SET rev = rev + 1 WHERE id = ?1",
+            params![task],
+        )?;
+        insert_event(
+            &tx,
+            Entity::Task,
+            &task,
+            "tag.normalize",
+            &serde_json::json!({ "tags": tags }),
+        )?;
+    }
+    tx.commit()?;
+    Ok(())
+}
+
+/// Every stored tag whose name is not in the D172 form, as `(id, from, to)`.
+///
+/// `typeof` filters: an external writer can leave a NULL or INTEGER in either
+/// column of this non-STRICT table, and a migration that errored on such a row
+/// would refuse to open the store at all. A name that is nothing but
+/// whitespace has no form to fold into and is left alone.
+fn stale_tags(conn: &Connection) -> Result<Vec<(String, String, String)>, ApiError> {
+    let rows = conn
+        .prepare(
+            "SELECT id, name FROM tags \
+             WHERE typeof(id) = 'text' AND typeof(name) = 'text' ORDER BY name",
+        )?
+        .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(rows
+        .into_iter()
+        .map(|(id, name)| {
+            let to = hyphenated(&name);
+            (id, name, to)
+        })
+        .filter(|(_, name, to)| name != to && !to.is_empty())
+        .collect())
+}
+
 /// Ensure a tag row exists (by name) and link it to a task inside `tx`.
 /// Returns silently if the link already exists.
 ///
@@ -1072,7 +1203,11 @@ pub fn task_tags(conn: &Connection, task_id: &str) -> Result<Vec<String>, ApiErr
 /// this tag", so the function minted a fresh UUID and INSERTed. The operator
 /// then saw `UNIQUE constraint failed: tags.name` on a column they never
 /// touched, and the actual fault was never named.
+///
+/// The name is run through [`normalize_tag`] first (D172), so every door that
+/// attaches a tag stores the same spelling whether or not it normalised first.
 pub fn ensure_tag_link(tx: &Transaction, task_id: &str, tag_name: &str) -> Result<(), ApiError> {
+    let tag_name = &normalize_tag(tag_name)?;
     let existing: Option<String> = tx
         .query_row(
             "SELECT id FROM tags WHERE name = ?1",
@@ -1913,6 +2048,82 @@ mod tests {
             task_tags(&conn, "task-2").unwrap(),
             vec!["work".to_string()]
         );
+    }
+
+    /// D172: a store written before tags were normalised can hold `UPPER` and
+    /// `upper` as two tags, and a tag with a space in it. The migration folds
+    /// them into the lowercased, hyphenated form, re-points every link at the
+    /// surviving row, loses no task's tag, and logs what it changed on each
+    /// task it touched. A second run is a no-op.
+    #[test]
+    fn migration_lowercases_hyphenates_and_merges_tags_without_losing_a_link() {
+        let conn = open_in_memory().unwrap();
+        for (id, name) in [
+            ("t1", "UPPER"),
+            ("t2", "upper"),
+            ("t3", "has  space"),
+            ("t4", "ünïcödé"),
+            ("t5", "Ünïcödé"),
+        ] {
+            conn.execute(
+                "INSERT INTO tags (id, name) VALUES (?1, ?2)",
+                params![id, name],
+            )
+            .unwrap();
+        }
+        for (task, tag) in [
+            ("task-1", "t1"),
+            ("task-1", "t2"),
+            ("task-1", "t3"),
+            ("task-1", "t4"),
+            ("task-2", "t5"),
+            ("task-2", "t1"),
+        ] {
+            conn.execute(
+                "INSERT INTO task_tags (task_id, tag_id) VALUES (?1, ?2)",
+                params![task, tag],
+            )
+            .unwrap();
+        }
+
+        migrate(&conn).unwrap();
+
+        let names: Vec<String> = conn
+            .prepare("SELECT name FROM tags ORDER BY name")
+            .unwrap()
+            .query_map([], |r| r.get(0))
+            .unwrap()
+            .map(Result::unwrap)
+            .collect();
+        assert_eq!(names, ["has-space", "upper", "ünïcödé"]);
+        assert_eq!(
+            task_tags(&conn, "task-1").unwrap(),
+            ["has-space", "upper", "ünïcödé"]
+        );
+        assert_eq!(task_tags(&conn, "task-2").unwrap(), ["upper", "ünïcödé"]);
+
+        let logged = |task: &str| -> Vec<String> {
+            conn.prepare("SELECT payload FROM events WHERE entity_id = ?1 AND op = 'tag.normalize'")
+                .unwrap()
+                .query_map(params![task], |r| r.get(0))
+                .unwrap()
+                .map(Result::unwrap)
+                .collect()
+        };
+        let one = logged("task-1");
+        assert_eq!(one.len(), 1, "one event per task touched: {one:?}");
+        for fixture in ["UPPER", "has  space"] {
+            assert!(one[0].contains(fixture), "{fixture} missing from {one:?}");
+        }
+        assert!(logged("task-2")[0].contains("Ünïcödé"));
+
+        let events = |c: &Connection| -> i64 {
+            c.query_row("SELECT COUNT(*) FROM events", [], |r| r.get(0))
+                .unwrap()
+        };
+        let before = events(&conn);
+        migrate(&conn).unwrap();
+        assert_eq!(events(&conn), before, "a second run changes nothing");
     }
 
     /// A store created before token accounting has no `token_usage` table, and

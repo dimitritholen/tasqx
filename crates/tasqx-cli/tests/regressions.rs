@@ -825,11 +825,17 @@ fn a_wait_that_has_passed_brings_the_task_back_into_list() {
 /// shell had already delimited — so it is D13's fix, extended to `+tag`. Only
 /// the real binary reproduces it: the mangling happens between argv and the
 /// parser, so a hand-built `Vec` in a unit test can be written to hide it.
+///
+/// D172 then ruled a tag may not contain whitespace at all, so the whole argv
+/// element now reaches the core as ONE tag and is refused there, naming it —
+/// and a fragment of it still never reaches the title, because nothing is
+/// written.
 #[test]
 fn a_shell_quoted_tag_survives_add_and_modify_whole() {
     let dir = fresh_config_dir("spaced-tag");
+    let run = |tag: &str, args: &[&str]| bin(tag, &dir).args(args).output().expect("run tasqx");
     let json = |tag: &str, args: &[&str]| -> String {
-        let out = bin(tag, &dir).args(args).output().expect("run tasqx");
+        let out = run(tag, args);
         assert!(
             out.status.success(),
             "{args:?} failed: {}",
@@ -837,44 +843,36 @@ fn a_shell_quoted_tag_survives_add_and_modify_whole() {
         );
         String::from_utf8_lossy(&out.stdout).to_string()
     };
+    let refused = |args: &[&str], tag: &str| {
+        let out = run("spaced-tag", args);
+        let err = String::from_utf8_lossy(&out.stderr);
+        assert_eq!(
+            out.status.code(),
+            Some(2),
+            "{args:?} must be bad_request: {err}"
+        );
+        assert!(
+            err.contains(&format!("{tag:?}")),
+            "the refusal names the WHOLE argv element as the tag: {err}"
+        );
+    };
 
     json("spaced-tag", &["init", "work"]);
-    json("spaced-tag", &["add", "painting job", "+needs paint"]);
-    let shown = json("spaced-tag", &["--json", "show", "1"]);
-    assert!(
-        shown.contains(r#""needs paint""#),
-        "the whole argv element is the tag; the shell already did the splitting: {shown}"
-    );
-    assert!(
-        shown.contains(r#""title": "painting job""#),
-        "the title must not absorb a fragment of the tag: {shown}"
-    );
+    refused(&["add", "painting job", "+needs paint"], "needs paint");
+    json("spaced-tag", &["add", "painting job"]);
 
     // `modify` routes `+tag` to a follow-up `tag.add` (D13) through the same
     // parser, so it carried the identical bug — and there it ate the title whole.
-    json("spaced-tag", &["modify", "1", "+big job"]);
+    refused(&["modify", "1", "+big job"], "big job");
     let shown = json("spaced-tag", &["--json", "show", "1"]);
     assert!(
-        shown.contains(r#""big job""#),
-        "modify must keep the tag whole too: {shown}"
-    );
-    assert!(
         shown.contains(r#""title": "painting job""#),
-        "a sugar-only modify must not touch the title: {shown}"
+        "a refused sugar-only modify must not touch the title: {shown}"
     );
 
     // The literal-quote form (quotes reaching argv unstripped) must agree with
     // the shell-stripped form — the same equivalence C1 relies on when reading.
-    json("spaced-tag", &["add", "second", r#"+"needs paint""#]);
-    let shown = json("spaced-tag", &["--json", "show", "2"]);
-    assert!(
-        shown.contains(r#""needs paint""#),
-        "literal quotes must parse the same: {shown}"
-    );
-    assert!(
-        shown.contains(r#""title": "second""#),
-        "and leave the title alone: {shown}"
-    );
+    refused(&["add", "second", r#"+"needs paint""#], "needs paint");
 }
 
 /// C3 — `-tag` exclusion, core filter grammar, was never typable from a shell.
@@ -1098,9 +1096,10 @@ fn a_flag_after_a_filter_positional_is_still_a_flag() {
         "-needs beside another token must exclude: {mixed}"
     );
     // The quoted form, as a shell hands it over: one token, inner quotes intact
-    // (`tasqx list '-"needs paint"'`). It survives the join-and-retokenize trip.
-    ok(&["add", "fence job", "+needs paint"]);
-    let quoted = ok(&["list", "-\"needs paint\""]);
+    // (`tasqx list '-"needs(paint)"'`). It survives the join-and-retokenize trip.
+    // A paren, not a space: D172 refuses a tag containing whitespace.
+    ok(&["add", "fence job", "+needs(paint)"]);
+    let quoted = ok(&["list", "-\"needs(paint)\""]);
     assert!(
         !quoted.contains("fence job"),
         "a quoted tag exclusion must exclude: {quoted}"
@@ -1145,6 +1144,9 @@ fn a_flag_after_a_filter_positional_is_still_a_flag() {
 /// could not be filtered for in the natural shell form, and the two sides
 /// disagreed about what the shell had already decided.
 ///
+/// D172 later refused a tag containing a space, so the tag below carries a
+/// paren instead — the other character only quoting carries through.
+///
 /// Both spellings must converge on the same filter, exactly as C2 made the two
 /// write-side spellings converge, and an ordinary multi-element filter
 /// (`+api status:done`) must still parse as several tokens — the failure mode a
@@ -1174,14 +1176,14 @@ fn a_shell_quoted_filter_value_reaches_the_parser_whole() {
     };
 
     ok(&["init", "Home Renovation"]);
-    ok(&["add", "painted", "+needs paint"]);
+    ok(&["add", "painted", "+needs(paint)"]);
     ok(&["add", "unrelated", "+api"]);
 
     // `list`: the literal-quote form is what the tool teaches and must work.
-    let s = ok(&["list", r#"+"needs paint""#]);
+    let s = ok(&["list", r#"+"needs(paint)""#]);
     assert!(
         s.contains("painted"),
-        "the literal form must select the spaced tag: {s}"
+        "the literal form must select the quoted tag: {s}"
     );
     assert!(
         !s.contains("unrelated"),
@@ -1243,19 +1245,19 @@ fn a_shell_quoted_filter_value_reaches_the_parser_whole() {
     );
 
     // `export`, `report` and `watch` each carried their own join.
-    let s = ok(&["export", r#"+"needs paint""#]);
+    let s = ok(&["export", r#"+"needs(paint)""#]);
     assert!(
         s.contains("painted") && !s.contains("unrelated"),
         "export takes a filter too: {s}"
     );
-    let s = ok(&["report", "project", r#"+"needs paint""#]);
+    let s = ok(&["report", "project", r#"+"needs(paint)""#]);
     assert!(
         s.contains("Home Renovation"),
         "report's tail after group_by is a filter: {s}"
     );
     // `watch` blocks on a daemon, so only its argument handling is reachable:
     // the filter must at least not be rejected as unparseable before connecting.
-    let out = run(&["watch", r#"+"needs paint""#, "--json"]);
+    let out = run(&["watch", r#"+"needs(paint)""#, "--json"]);
     let err = String::from_utf8_lossy(&out.stderr);
     assert!(
         !err.contains("unknown filter token"),
@@ -2179,7 +2181,7 @@ fn one_filter_selects_one_set_of_rows_in_every_spelling() {
         "delta",
         "--project",
         "Home Renovation",
-        r#"+"needs paint""#,
+        r#"+"needs(paint)""#,
     ]);
     ok(&["add", "echo", "--project", "Work", "+api"]);
     ok(&["done", "5"]);
@@ -2234,7 +2236,7 @@ fn one_filter_selects_one_set_of_rows_in_every_spelling() {
         &["status:done"],                  // a status predicate
         &["due.before:+1y"],               // a date bound (widest, so the day cannot matter)
         &[r#"project:"Home Renovation""#], // a project name containing a space
-        &[r#"+"needs paint""#],            // a tag containing a space
+        &[r#"+"needs(paint)""#],           // a tag containing a paren (D172: never a space)
         &["-api"],                         // an exclusion, the one-dash grammar
     ];
 

@@ -1305,7 +1305,11 @@ impl Engine {
 
             // Replace tags.
             tx.execute("DELETE FROM task_tags WHERE task_id = ?1", params![id])?;
-            for tg in import_field(id, "tags", opt_str_array(tv, "tags"))? {
+            for tg in import_field(
+                id,
+                "tags",
+                opt_str_array(tv, "tags").and_then(normalize_tags),
+            )? {
                 ensure_tag_link(&tx, id, &tg)?;
             }
 
