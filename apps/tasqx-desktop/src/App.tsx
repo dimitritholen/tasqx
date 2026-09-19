@@ -3,7 +3,6 @@ import type { ComponentType, ReactNode } from 'react';
 
 import { ConnectionContext, createAppConnection, useConnection, useRefresh } from './api';
 import type { ConnectionController } from './api';
-import { isTauri } from './platform';
 import { AppShell } from './shell/AppShell';
 import { shellCommands } from './shell/CommandPalette';
 import { currentLayout, setLayout } from './shell/layout';
@@ -74,10 +73,11 @@ function ConnectedApp() {
   // controller buffers them until the baseline is in, so none are lost.
   useEffect(() => attachEvents(controller, store), [controller, store]);
 
-  // Only the Tauri window has a daemon to reach: in a browser the dev server
-  // has no host commands, so the Connect button drives whatever is injected.
+  // The Tauri window and a real dev/preview server (daemonBridge.ts) both
+  // have somewhere to connect; only Vitest's `test` mode does not, and there
+  // the harness drives `controller.start()` itself.
   useEffect(() => {
-    if (isTauri()) void controller.start();
+    if (import.meta.env.MODE !== 'test') void controller.start();
   }, [controller]);
 
   const refresh = useRefresh();

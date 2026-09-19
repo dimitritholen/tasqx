@@ -1,19 +1,24 @@
 import { createContext, useCallback, useContext, useSyncExternalStore } from 'react';
 
+import { isTauri } from '../platform';
 import type { DashboardStore } from '../state/store';
 import { loadBaseline } from './baseline';
 import type { ApiClient } from './client';
 import { ConnectionController } from './connection';
 import type { ConnectionState } from './connection';
+import { DevHttpTransport } from './devTransport';
 import { TauriTransport } from './transport';
 
 /**
- * The connection the app runs on: the real transport, loading #691's baseline
- * into `store`. A test builds its own on a FakeTransport.
+ * The connection the app runs on: TauriTransport inside the Tauri window,
+ * DevHttpTransport (vite-plugins/daemonBridge.ts) everywhere else — a plain
+ * browser has no host commands, only whatever the dev/preview server bridges
+ * in. Loads #691's baseline into `store`. A test builds its own on a
+ * FakeTransport.
  */
 export function createAppConnection(store: DashboardStore): ConnectionController {
   return new ConnectionController({
-    transport: new TauriTransport(),
+    transport: isTauri() ? new TauriTransport() : new DevHttpTransport(),
     loadBaseline: (client) => loadBaseline(client, store),
   });
 }
