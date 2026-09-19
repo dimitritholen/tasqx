@@ -1425,9 +1425,9 @@ const EXAMPLES: &[Example] = &[
     Example {
         method: "link.list",
         request: r#"{"tasqx":"1","id":"ll1","method":"link.list","params":{"ref":"51"}}"#,
-        fixture: "",
-        response: r#"{"id":"ll1","ok":true,"result":{"count":1,"links":[{"created_at":"2026-09-17T09:12:04Z","from":"task:019f7c0a-3d51-7c42-9a08-1f0c4e5b62d7","id":"019f8b31-77a4-7f10-8c55-2d7e9a13b004","metadata":null,"relation":"implements_decision","to":"memory:eb864f1e-e68a-4d96-af89-597bd0d2d52e"}],"next_offset":null,"total":1},"tasqx":"1"}"#,
-        why: "every row carries the link's own v7 id and the uuid of each endpoint, all minted when the fixture store was built — half clock, half entropy, so no pin reproduces the row.",
+        fixture: "api-link-list",
+        response: "",
+        why: "",
     },
     Example {
         method: "graph.query",
