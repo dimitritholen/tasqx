@@ -944,9 +944,12 @@ impl Engine {
             if exp != cur_rev {
                 return Err(ApiError::new(
                     crate::ErrorCode::Conflict,
+                    // CLI vocabulary here; the MCP transport rewrites this
+                    // clause to its own tool and parameter from `data` (#613,
+                    // `mcp::mcp_surface_message`), exactly as for `task.modify`.
                     format!(
                         "expected_rev {exp} but doc is at rev {cur_rev}: re-read it with \
-                         tasqx_get_memory and retry with expected_rev {cur_rev}"
+                         `tasqx memory show {id} --json` and retry with --expected-rev {cur_rev}"
                     ),
                     Some(json!({ "expected": exp, "current": cur_rev, "id": id })),
                 ));

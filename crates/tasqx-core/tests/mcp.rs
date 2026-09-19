@@ -3215,6 +3215,127 @@ fn an_mcp_missing_project_refusal_names_the_create_project_tool() {
     );
 }
 
+// ---- a stale rev names the MCP retry, not the CLI's (#613) ------------------
+
+/// `tasqx_modify_task` with a stale `expected_rev` answered `re-read with
+/// "tasqx show 603 --json" and retry with --expected-rev 5` — a shell command
+/// and a CLI flag, over a transport that has neither. The MCP rendering names
+/// the tool and the parameter; the core message (what the CLI prints) keeps
+/// the CLI's own vocabulary.
+#[test]
+fn an_mcp_stale_rev_conflict_names_get_task_and_expected_rev() {
+    let engine = engine();
+    engine.task_add(&json!({ "title": "t" })).expect("add");
+    engine
+        .task_modify(&json!({ "ref": 1, "set": { "priority": "H" } }))
+        .expect("bump the rev");
+    let server = McpServer::new(&engine, Scope::Write);
+    let resp = call(
+        &server,
+        1,
+        "tasqx_modify_task",
+        json!({ "ref": 1, "set": { "priority": "M" }, "expected_rev": 1 }),
+    );
+    assert!(is_error(&resp));
+    let text = resp["result"]["content"][0]["text"].as_str().unwrap();
+    assert!(
+        text.contains("tasqx_get_task") && text.contains("expected_rev 2"),
+        "the MCP remedy must name the tool and parameter an agent has: {text}"
+    );
+    assert!(
+        !text.contains("tasqx show") && !text.contains("--expected-rev"),
+        "the MCP remedy still names the CLI: {text}"
+    );
+
+    let core = engine
+        .task_modify(&json!({ "ref": 1, "set": { "priority": "M" }, "expected_rev": 1 }))
+        .expect_err("stale");
+    assert!(
+        core.message.contains("tasqx show 1 --json") && core.message.contains("--expected-rev 2"),
+        "the CLI rendering keeps the CLI's vocabulary: {}",
+        core.message
+    );
+}
+
+/// The same split for `memory.update`, which used to hard-code the MCP tool
+/// name into the core message and so printed `tasqx_get_memory` on the CLI.
+#[test]
+fn a_stale_memory_rev_is_rendered_per_transport() {
+    let engine = engine();
+    let id = engine
+        .memory_add(&json!({ "title": "t", "body": "b" }))
+        .expect("add")["id"]
+        .clone();
+    engine
+        .memory_update(&json!({ "id": id.clone(), "body": "b2" }))
+        .expect("bump the rev");
+    let stale = json!({ "id": id.clone(), "body": "b3", "expected_rev": 0 });
+
+    let core = engine.memory_update(&stale).expect_err("stale");
+    assert!(
+        core.message.contains("tasqx memory show") && core.message.contains("--expected-rev 1"),
+        "the CLI rendering names the CLI: {}",
+        core.message
+    );
+
+    let server = McpServer::new(&engine, Scope::Write);
+    let resp = call(&server, 1, "tasqx_update_memory", stale);
+    assert!(is_error(&resp));
+    let text = resp["result"]["content"][0]["text"].as_str().unwrap();
+    assert!(
+        text.contains("tasqx_get_memory") && text.contains("expected_rev 1"),
+        "the MCP remedy names the tool: {text}"
+    );
+    assert!(!text.contains("--expected-rev"), "{text}");
+}
+
+// ---- CLI inline sugar in an MCP title is flagged, not parsed (#621) ---------
+
+/// `tasqx_add_task title="fix crash +bug due:friday"` stored the title verbatim
+/// — correctly, the MCP door parses no sugar — but said nothing, so an agent
+/// carrying a CLI habit got a task with no tag and no due date, silently. The
+/// response now names the tokens; the stored title is unchanged.
+#[test]
+fn an_mcp_title_carrying_cli_sugar_is_stored_verbatim_with_a_warning() {
+    let engine = engine();
+    let server = McpServer::new(&engine, Scope::Write);
+    let resp = call(
+        &server,
+        1,
+        "tasqx_add_task",
+        json!({ "title": "fix crash +bug due:friday" }),
+    );
+    assert!(!is_error(&resp), "{resp}");
+    let out = tool_json(&resp);
+    assert_eq!(out["title"], "fix crash +bug due:friday", "stored verbatim");
+    assert_eq!(out["tags"], json!([]));
+    assert_eq!(out["due"], Value::Null);
+    assert_eq!(out["warnings"].as_array().map(Vec::len), Some(1), "{out}");
+    let w = out["warnings"][0].as_str().unwrap();
+    assert!(w.contains("+bug") && w.contains("due:friday"), "{w}");
+
+    let resp = call(
+        &server,
+        2,
+        "tasqx_modify_task",
+        json!({ "ref": 1, "set": { "title": "fix it !H est:2h project:tasqx" } }),
+    );
+    let out = tool_json(&resp);
+    let w = out["warnings"][0].as_str().expect("modify warns too");
+    assert!(
+        w.contains("!H") && w.contains("est:2h") && w.contains("project:tasqx"),
+        "{w}"
+    );
+
+    // Nothing sugar-shaped, no key at all — and prose that only LOOKS like a
+    // key (a Rust path, a bare `+`) is not sugar to the CLI either.
+    for title in ["plain words", "fix recur::advance_once", "Display + Error"] {
+        let resp = call(&server, 3, "tasqx_add_task", json!({ "title": title }));
+        let out = tool_json(&resp);
+        assert!(out.get("warnings").is_none(), "{title}: {out}");
+    }
+}
+
 // ---- the read-only refusal names the fix (audit #225.11) ---------------------
 
 #[test]

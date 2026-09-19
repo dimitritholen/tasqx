@@ -142,6 +142,108 @@ fn a_check_is_removed_by_id() {
     assert!(checks_of(&e, a).is_empty());
 }
 
+// ---- a mistyped id, and `position` (#624) -----------------------------------
+
+/// A one-character typo in a 36-char uuid answered `not_found` naming only the
+/// id that was wrong, so recovery cost a whole `task.get`. The refusal lists
+/// the task's real checks — id, 1-based position, first words — instead.
+#[test]
+fn a_mistyped_check_id_lists_the_tasks_real_checks() {
+    let e = engine();
+    let a = add(&e, "ship it");
+    let first = check(
+        &e,
+        a,
+        "python3 -m ledger --version prints the release number",
+    );
+    let second = check(&e, a, "the migration runs on an empty store");
+    for method in ["check.set", "check.remove"] {
+        let mut params = json!({ "ref": a, "check_id": "01a0a971-4afa-741d-ac74-9c9a34d83352" });
+        if method == "check.set" {
+            params["state"] = json!("passed");
+        }
+        let err = call(&e, method, params).expect_err("no such check");
+        assert_eq!(err.code, ErrorCode::NotFound, "{method}");
+        for (pos, id) in [(1, &first), (2, &second)] {
+            assert!(
+                err.message.contains(&format!("{pos}. {id}")),
+                "{method}: the refusal must list check {pos} by position and id: {}",
+                err.message
+            );
+        }
+        assert!(
+            err.message.contains("python3 -m ledger"),
+            "{method}: the refusal must quote each check's first words: {}",
+            err.message
+        );
+    }
+}
+
+#[test]
+fn a_task_with_no_checks_says_so_on_a_mistyped_id() {
+    let e = engine();
+    let a = add(&e, "ship it");
+    let err = call(&e, "check.remove", json!({ "ref": a, "check_id": "nope" }))
+        .expect_err("no such check");
+    assert!(err.message.contains("no checks"), "{}", err.message);
+}
+
+/// `position` is the 1-based order `task.get` and the card list checks in, an
+/// alternative to the uuid.
+#[test]
+fn a_check_is_named_by_its_1_based_position() {
+    let e = engine();
+    let a = add(&e, "ship it");
+    check(&e, a, "first");
+    let second = check(&e, a, "second");
+    check(&e, a, "third");
+
+    let out = call(
+        &e,
+        "check.set",
+        json!({ "ref": a, "position": 2, "state": "passed" }),
+    )
+    .expect("check.set by position");
+    assert_eq!(
+        out["check_id"],
+        json!(second),
+        "position 2 is the second check"
+    );
+    assert_eq!(checks_of(&e, a)[1]["state"], "passed");
+
+    // Positions are the ORDER, not the stored column: after removing the first
+    // check, what was third is now position 2.
+    call(&e, "check.remove", json!({ "ref": a, "position": 1 })).expect("remove by position");
+    let out = call(&e, "check.remove", json!({ "ref": a, "position": 2 })).expect("remove");
+    assert_ne!(out["check_id"], json!(second));
+    let left = checks_of(&e, a);
+    assert_eq!(left.len(), 1);
+    assert_eq!(left[0]["body"], "second");
+}
+
+#[test]
+fn position_and_check_id_are_exactly_one_of_two() {
+    let e = engine();
+    let a = add(&e, "ship it");
+    let id = check(&e, a, "only");
+    for params in [
+        json!({ "ref": a, "state": "passed" }),
+        json!({ "ref": a, "check_id": id, "position": 1, "state": "passed" }),
+        json!({ "ref": a, "position": 0, "state": "passed" }),
+    ] {
+        let err = call(&e, "check.set", params.clone()).expect_err("refused");
+        assert_eq!(err.code, ErrorCode::BadRequest, "{params}: {}", err.message);
+    }
+    let err = call(
+        &e,
+        "check.set",
+        json!({ "ref": a, "position": 2, "state": "passed" }),
+    )
+    .expect_err("past the end");
+    assert_eq!(err.code, ErrorCode::NotFound);
+    assert!(err.message.contains(&format!("1. {id}")), "{}", err.message);
+}
+
 // ---- completion -----------------------------------------------------------
 
 #[test]

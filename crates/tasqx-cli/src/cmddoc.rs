@@ -642,7 +642,7 @@ pub const COMMAND_REF: &[CmdDoc] = &[
         aliases: &[],
         method: "check.add + check.set + check.remove",
         summary: "Acceptance criteria on a task: add, mark, drop.",
-        usage: "tasqx check <add <ref> <criterion…>|set <ref> <check_id> <state> [--evidence e]|remove <ref> <check_id>>",
+        usage: "tasqx check <add <ref> <criterion…>|set <ref> <check_id|position> <state> [--evidence e]|remove <ref> <check_id|position>>",
         examples: &[
             ex_norun("tasqx check add 1 the notes name every breaking change", "add a criterion"),
             ex_norun(
@@ -650,6 +650,7 @@ pub const COMMAND_REF: &[CmdDoc] = &[
                 "mark it",
             ),
             ex_norun("tasqx check rm 1 019f-abc", "drop a criterion"),
+            ex_norun("tasqx check set 1 2 failed", "the second criterion, by position"),
         ],
         notes: &[
             "tasqx NEVER RUNS a check. The criterion is a claim and the evidence is a citation; \

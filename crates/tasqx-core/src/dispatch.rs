@@ -151,12 +151,14 @@ pub const PARAMS: &[(&str, &[&str], bool)] = &[
     // for annotations and for the same reason — naming it `check_id` says
     // which child row a `ref`-scoped call means.
     ("check.add", &["ref", "body"], false),
+    // #624: `position` (1-based, the order `task.get` lists them) is the
+    // alternative to `check_id`; exactly one of the two.
     (
         "check.set",
-        &["ref", "check_id", "state", "evidence"],
+        &["ref", "check_id", "position", "state", "evidence"],
         false,
     ),
-    ("check.remove", &["ref", "check_id"], false),
+    ("check.remove", &["ref", "check_id", "position"], false),
     // D113: `id` alone would collide with every other method's `id`-shaped
     // reads this table already has (`memory.get`, `memory.remove`) — naming it
     // `annotation_id` says which child row a `ref`-scoped call means.

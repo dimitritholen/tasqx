@@ -1284,7 +1284,7 @@ pub(super) enum CheckAction {
         /// short_id or UUID.
         #[arg(add = crate::complete::candidates::task_ids())]
         r#ref: String,
-        /// The check's id, from `tasqx show`.
+        /// The check's id, from `tasqx show` — or its 1-based position there.
         check_id: String,
         /// open | passed | failed.
         #[arg(value_parser = tasqx_core::engine::CHECK_STATES)]
@@ -1299,7 +1299,7 @@ pub(super) enum CheckAction {
         /// short_id or UUID.
         #[arg(add = crate::complete::candidates::task_ids())]
         r#ref: String,
-        /// The check's id.
+        /// The check's id — or its 1-based position in `tasqx show`.
         check_id: String,
     },
 }

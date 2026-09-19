@@ -152,6 +152,7 @@ pub const R_TASK_ADD: &[FieldDoc] = &[
     n("due", "string", "The due date resolved to an instant: `due: \"friday\"` comes back as its ISO timestamp."),
     f("tags", "array", "The tags as stored, lowercased and deduplicated."),
     n("scheduled", "string", "The scheduled date resolved to an instant, the same way `due` is."),
+    o("warnings", "array", "Present only when the title carries CLI inline sugar (`+tag`, `due:`, `!prio`…), which this door stores verbatim and never parses: one line naming those words."),
 ];
 
 /// `task.list`'s result.
@@ -539,6 +540,7 @@ pub const R_TASK_MODIFY: &[FieldDoc] = &[
     f("short_id", "integer", "The task's short id — the small number every `ref` accepts and the CLI prints."),
     f("_rev", "integer", "The task's revision counter. The methods that change the task or its tags, notes, checks and dependencies bump it; `token.add`, `token.remove` and `reminder.fire` leave it alone. Send it back as `expected_rev` to make a change conditional."),
     f("set", "object", "The RESOLVED value stored for each field this call named — `due: \"friday\"` comes back as its instant."),
+    o("warnings", "array", "Present only when `set.title` carries CLI inline sugar, stored verbatim: one line naming those words, as on `task.add`."),
 ];
 
 /// `task.cancel`'s result.

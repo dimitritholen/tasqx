@@ -214,7 +214,7 @@ impl Engine {
     /// invent a proof, which is worse than an unproven `passed`.
     pub fn check_set(&self, p: &Value) -> Result<Value, ApiError> {
         let _ = ref_param(p)?;
-        let check_id = req_str(p, "check_id")?;
+        let named = check_ref(p)?;
         let state = req_str(p, "state")?;
         if !CHECK_STATES.contains(&state.as_str()) {
             return Err(ApiError::bad_request(format!(
@@ -226,20 +226,12 @@ impl Engine {
         let ts = now();
         let tx = self.begin_mutation()?;
         let task = self.resolve_ref_on(&tx, p)?;
-        // `task_id` in the WHERE, not just the id: the `ref` scopes the child
-        // row, so naming another task's check answers `not_found` rather than
-        // reaching across tasks (the D113 shape, one relation over).
-        let changed = tx.execute(
+        let check_id = check_id_on(&tx, &task, named)?;
+        tx.execute(
             "UPDATE checks SET state = ?1, evidence = COALESCE(?2, evidence), modified = ?3 \
-             WHERE id = ?4 AND task_id = ?5",
-            params![state, evidence, ts, check_id, task.id],
+             WHERE id = ?4",
+            params![state, evidence, ts, check_id],
         )?;
-        if changed == 0 {
-            return Err(ApiError::not_found(
-                format!("task #{} has no check {check_id}", task.short_id),
-                None,
-            ));
-        }
         tx.execute(
             "UPDATE tasks SET rev=?1, modified=?2 WHERE id=?3",
             params![task.rev + 1, ts, task.id],
@@ -265,20 +257,12 @@ impl Engine {
     /// text it was added with.
     pub fn check_remove(&self, p: &Value) -> Result<Value, ApiError> {
         let _ = ref_param(p)?;
-        let check_id = req_str(p, "check_id")?;
+        let named = check_ref(p)?;
         let ts = now();
         let tx = self.begin_mutation()?;
         let task = self.resolve_ref_on(&tx, p)?;
-        let removed = tx.execute(
-            "DELETE FROM checks WHERE id = ?1 AND task_id = ?2",
-            params![check_id, task.id],
-        )?;
-        if removed == 0 {
-            return Err(ApiError::not_found(
-                format!("task #{} has no check {check_id}", task.short_id),
-                None,
-            ));
-        }
+        let check_id = check_id_on(&tx, &task, named)?;
+        tx.execute("DELETE FROM checks WHERE id = ?1", params![check_id])?;
         tx.execute(
             "UPDATE tasks SET rev=?1, modified=?2 WHERE id=?3",
             params![task.rev + 1, ts, task.id],
@@ -386,11 +370,33 @@ impl Engine {
             .optional()?;
 
         let Some(removed) = existing else {
+            // #624: a typo on a hard delete is worth a list of what IS there,
+            // live notes only (a scrubbed one has no text and nothing left to
+            // remove), newest first and capped, since a task can carry many.
+            let mut stmt = tx.prepare(
+                "SELECT id, body FROM annotations WHERE task_id = ?1 AND removed IS NULL \
+                 ORDER BY created DESC, id DESC LIMIT 11",
+            )?;
+            let live: Vec<(String, String)> = stmt
+                .query_map(params![task.id], |r| Ok((r.get(0)?, r.get(1)?)))?
+                .collect::<Result<_, _>>()?;
+            let listed = match live.len() {
+                0 => "it has no annotations".to_string(),
+                n => format!(
+                    "its {}annotations are: {}",
+                    if n > 10 { "10 newest " } else { "" },
+                    live.iter()
+                        .take(10)
+                        .map(|(id, body)| format!("{id} \"{}\"", first_words(body)))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ),
+            };
             return Err(ApiError::not_found(
                 format!(
-                    "#{} has no annotation with id {annotation_id} — check the id \
-                     `task.get` (or `tasqx show {}`) reports for it; nothing was removed.",
-                    task.short_id, task.short_id
+                    "#{} has no annotation with id {annotation_id}; {listed} — nothing was \
+                     removed.",
+                    task.short_id
                 ),
                 None,
             ));
@@ -616,6 +622,101 @@ impl Engine {
 /// was NOT met is a normal, useful write, and a vocabulary of `open`/`passed`
 /// alone would force a caller to delete the check or lie.
 pub const CHECK_STATES: [&str; 3] = ["open", "passed", "failed"];
+
+/// Which check a `check.set` / `check.remove` call names (#624).
+enum CheckRef {
+    Id(String),
+    /// 1-based, in the order `task.get` and the card list the checks — NOT the
+    /// stored `position` column, which keeps its gaps after a removal.
+    Position(i64),
+}
+
+/// Read `check_id` or `position` — exactly one — before the transaction opens.
+fn check_ref(p: &Value) -> Result<CheckRef, ApiError> {
+    match (opt_str_nonempty(p, "check_id")?, opt_i64(p, "position")?) {
+        (Some(id), None) => Ok(CheckRef::Id(id)),
+        (None, Some(n)) if n >= 1 => Ok(CheckRef::Position(n)),
+        (None, Some(n)) => Err(ApiError::bad_request(format!(
+            "`position` is 1-based, as task.get lists the checks (got {n})"
+        ))),
+        _ => Err(ApiError::bad_request(
+            "name the check by exactly one of `check_id` or `position` (1-based, in the order \
+             task.get lists them)",
+        )),
+    }
+}
+
+/// The id of the check `named` on `task`, or a `not_found` listing the checks
+/// the task really has. The `task_id` scope is the D113 shape: naming another
+/// task's check answers `not_found` rather than reaching across tasks.
+fn check_id_on(conn: &Connection, task: &Task, named: CheckRef) -> Result<String, ApiError> {
+    let (found, what) = match named {
+        CheckRef::Id(id) => (
+            conn.query_row(
+                "SELECT id FROM checks WHERE id = ?1 AND task_id = ?2",
+                params![id, task.id],
+                |r| r.get(0),
+            )
+            .optional()?,
+            id,
+        ),
+        CheckRef::Position(n) => (
+            conn.query_row(
+                "SELECT id FROM checks WHERE task_id = ?1 ORDER BY position LIMIT 1 OFFSET ?2",
+                params![task.id, n - 1],
+                |r| r.get(0),
+            )
+            .optional()?,
+            format!("at position {n}"),
+        ),
+    };
+    match found {
+        Some(id) => Ok(id),
+        None => Err(no_such_check(conn, task, &what)?),
+    }
+}
+
+/// #624: `task #589 has no check 01a0…` cost a whole `task.get` to recover
+/// from a one-character typo. A task carries a handful of checks, so the
+/// refusal lists them all — position, id, first words — and the retry is one
+/// call. Shared with `task.done`'s `checks_passed`, which refuses the same way.
+pub(super) fn no_such_check(
+    conn: &Connection,
+    task: &Task,
+    what: &str,
+) -> Result<ApiError, ApiError> {
+    let mut stmt =
+        conn.prepare("SELECT id, body FROM checks WHERE task_id = ?1 ORDER BY position")?;
+    let rows: Vec<(String, String)> = stmt
+        .query_map(params![task.id], |r| Ok((r.get(0)?, r.get(1)?)))?
+        .collect::<Result<_, _>>()?;
+    let listed = if rows.is_empty() {
+        "it has no checks".to_string()
+    } else {
+        let rows: Vec<String> = rows
+            .iter()
+            .enumerate()
+            .map(|(i, (id, body))| format!("{}. {id} \"{}\"", i + 1, first_words(body)))
+            .collect();
+        format!(
+            "its checks are: {} — name one by `check_id` or by `position`",
+            rows.join(", ")
+        )
+    };
+    Ok(ApiError::not_found(
+        format!("task #{} has no check {what}; {listed}", task.short_id),
+        None,
+    ))
+}
+
+/// The first few words of a body, for naming a row in a refusal.
+fn first_words(body: &str) -> String {
+    let words: Vec<&str> = body.split_whitespace().collect();
+    match words.len() {
+        0..=6 => words.join(" "),
+        _ => format!("{} …", words[..6].join(" ")),
+    }
+}
 
 #[cfg(test)]
 mod tests {

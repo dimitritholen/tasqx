@@ -275,6 +275,15 @@ fn put_body(row: &mut Map<String, Value>, body: String, cap: Option<u64>) {
     row.insert("body_truncated".to_string(), json!(true));
 }
 
+/// #621 (D169): this door stores a title verbatim and parses none of the CLI's
+/// inline sugar, so a title carrying `+bug due:friday` gets an additive
+/// `warnings` entry naming those words. Absent, not empty, when there are none
+/// — the `spawned`/`tokens_hint` convention for a conditional key.
+fn with_title_warning(out: &mut Value, title: &str) {
+    if let Some(w) = crate::sugar::title_sugar_warning(title) {
+        out["warnings"] = json!([w]);
+    }
+}
 impl Engine {
     // ---- task.add ------------------------------------------------------------
 
@@ -422,7 +431,7 @@ impl Engine {
         )?;
         tx.commit()?;
 
-        Ok(json!({
+        let mut out = json!({
             "id": id,
             "short_id": short_id,
             "status": status.as_str(),
@@ -447,7 +456,9 @@ impl Engine {
             // predict the parse of, and it is precisely what flips this bit.
             // Additive per D56, the same move D85 already made for `due`.
             "scheduled": scheduled,
-        }))
+        });
+        with_title_warning(&mut out, &title);
+        Ok(out)
     }
 
     // ---- backlog refusal hint -------------------------------------------------
@@ -851,10 +862,7 @@ impl Engine {
                 params![evidence, ts, id, task.id],
             )?;
             if changed == 0 {
-                return Err(ApiError::not_found(
-                    format!("task #{} has no check {id}", task.short_id),
-                    None,
-                ));
+                return Err(relationships::no_such_check(&tx, &task, id)?);
             }
         }
         insert_event(&tx, Entity::Task, &task.id, "done", &done_payload)?;
@@ -1545,7 +1553,11 @@ impl Engine {
         )?;
         tx.commit()?;
 
-        Ok(json!({ "short_id": task.short_id, "_rev": new_rev, "set": resolved_set }))
+        let mut out = json!({ "short_id": task.short_id, "_rev": new_rev, "set": resolved_set });
+        if let Some(title) = out["set"]["title"].as_str().map(str::to_string) {
+            with_title_warning(&mut out, &title);
+        }
+        Ok(out)
     }
 
     // ---- task.list -----------------------------------------------------------
