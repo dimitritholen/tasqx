@@ -2715,8 +2715,15 @@ impl Engine {
     /// back so it is never inferred, and excluding this task's OWN annotations
     /// (#607): the card already prints them in full, so a hit that is just
     /// that same note echoed back wastes a slot and answers nothing a reader
-    /// has not read. There is no fallback to a WIDER search when the scoped
-    /// one is empty: that would make the result depend on a branch the caller
+    /// has not read. The exclusion runs through `memory_search_excluding`
+    /// — the engine's own path into the same query, widened with an
+    /// `exclude_task_id` no public param exposes — so it applies INSIDE the
+    /// MATCH, ahead of `LIMIT` and `COUNT(*)` both, rather than as a filter
+    /// over the page this method gets back (D69: a filter run afterward
+    /// would undercount `total` and could hand back fewer than `limit` hits
+    /// whenever the task's own notes filled the slots a sibling's ruling
+    /// needed). There is no fallback to a WIDER search when the scoped one
+    /// is empty: that would make the result depend on a branch the caller
     /// cannot see, and D69's rule is that a result says what it answered
     /// about. A caller who wants wider still has `memory.search`, unchanged.
     /// A task with no project runs no project filter at all — store-wide,
@@ -2796,10 +2803,23 @@ impl Engine {
         }
         // Each kind asked for a WHOLE page of its own, so either can fill the
         // other's unused slots without a second query to widen it.
+        //
+        // #607: the annotation arm additionally excludes THIS task's own
+        // notes — the card `task.get`'s own half already prints them in
+        // full, so a hit that is just that same note echoed back costs a
+        // slot a sibling's ruling could have used and adds nothing a reader
+        // has not already read. `memory_search_excluding` runs the exclusion
+        // INSIDE the query, ahead of `LIMIT` and the `COUNT(*)` both, rather
+        // than as a filter over the page this closure gets back — filtering
+        // the page afterward undercounted `total` and could hand back fewer
+        // than `limit` hits whenever the task's own notes were dense enough
+        // to fill the slots a sibling's ruling needed, exactly the D69
+        // problem D147 itself exists to prevent. It is a no-op for
+        // `scope: "docs"`, where no annotation arm runs at all.
         let scoped = |scope: &str| -> Result<(Vec<Value>, i64), ApiError> {
             let mut p = params.clone();
             p["scope"] = json!(scope);
-            let out = self.memory_search(&p)?;
+            let out = self.memory_search_excluding(&p, Some(&task.id))?;
             // Through util's typed layer, like every other JSON read in the
             // engine: a raw accessor here would read a `hits` that came back
             // the wrong shape as an empty page, which is the silent-drop this
@@ -2809,30 +2829,7 @@ impl Engine {
             Ok((hits, total))
         };
         let (docs, docs_total) = scoped("docs")?;
-        let (mut annotations, annotations_total) = scoped("annotations")?;
-        // #607: the task's own annotations are not knowledge FOUND for it —
-        // the card `task.get`'s own half already prints them in full, so a
-        // hit that is just that same note echoed back costs a slot a
-        // sibling's ruling could have used and adds nothing a reader has not
-        // already read. `memory.search` has no notion of "this call's own
-        // task", so the filter runs here, on the one caller that has one,
-        // rather than becoming a param the general search would also have to
-        // carry. `annotations_total` drops by the same count removed, so it
-        // keeps naming what a WIDER page of this same query would show.
-        // Through `opt_str`, not a raw accessor: `util::tests::
-        // no_engine_param_is_read_with_a_raw_json_accessor` bans `.get(...)
-        // .and_then(...)` across every `engine/*.rs` source file, hit rows
-        // included — a hit here is engine output, not caller input, but the
-        // guard's source scan cannot tell the two apart, and it is cheaper to
-        // read it the one way this file already does than to teach the scan
-        // a second shape.
-        let own_source = format!("task:#{}", task.short_id);
-        let before = annotations.len();
-        annotations.retain(|h| {
-            opt_str(h, "source").ok().flatten().as_deref() != Some(own_source.as_str())
-        });
-        let annotations_total =
-            annotations_total.saturating_sub((before - annotations.len()) as i64);
+        let (annotations, annotations_total) = scoped("annotations")?;
 
         // Saturating throughout: `limit` is caller input and may be zero or
         // enormous, and a page that underflowed to `usize::MAX` would hand back

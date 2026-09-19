@@ -510,6 +510,61 @@ fn a_tasks_own_annotation_is_excluded_but_a_siblings_still_shows() {
     );
 }
 
+/// Review finding on #657: excluding the task's own notes AFTER the page's
+/// own `LIMIT` already ran undercounts the page itself, not only `total` — a
+/// task whose own notes outrank a sibling's can fill the SQL-level page with
+/// notes the post-hoc filter then discards, leaving a page with fewer hits
+/// than `memory_limit` and the sibling's ruling nowhere on it, even though it
+/// matched. The own notes here are packed with the derived query's words,
+/// repeated, so bm25 ranks them ahead of the sibling's one-word mention —
+/// exactly the shape that let the old post-filter cut the sibling at the
+/// query's own `LIMIT` before it ever got a chance to drop the (better
+/// ranked) notes that do not belong on the page at all.
+#[test]
+fn a_sibling_note_the_own_notes_outrank_still_fills_the_page_once_they_are_excluded_at_the_query() {
+    let e = engine();
+    let t = add(&e, "Reconcile the ledger balances", json!({}));
+    call(
+        &e,
+        "annotation.add",
+        json!({
+            "ref": t,
+            "body": "reconcile reconcile reconcile ledger ledger ledger balances balances \
+                     balances every single time without fail",
+        }),
+    )
+    .expect("own note, packed to outrank the sibling");
+    let sibling = add(&e, "the earlier task", json!({}));
+    call(
+        &e,
+        "annotation.add",
+        json!({ "ref": sibling, "body": "a passing mention of the ledger" }),
+    )
+    .expect("sibling's note, ranked to lose on bm25 alone");
+
+    let out = call(&e, "task.brief", json!({ "ref": t, "memory_limit": 1 })).expect("task.brief");
+    let hit_sources: Vec<String> = out["memory"]["hits"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|h| h["source"].as_str().unwrap_or_default().to_string())
+        .collect();
+    assert_eq!(
+        hit_sources,
+        vec![format!("task:#{sibling}")],
+        "the one slot must go to the sibling's ruling — cutting the task's \
+         own (better-ranked) note has to happen in the query the LIMIT reads, \
+         not after: {}",
+        out["memory"]
+    );
+    assert_eq!(
+        out["memory"]["annotations_total"], 1,
+        "the own note must not count toward what a wider page would show \
+         either: {}",
+        out["memory"]
+    );
+}
+
 /// The task's own notes are dropped before D147's counters run, so
 /// `annotations_total` still answers "how many of this kind a wider page of
 /// this query would show" — over the rows actually worth a slot, not the raw
