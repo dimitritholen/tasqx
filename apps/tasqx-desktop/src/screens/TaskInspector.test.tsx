@@ -66,6 +66,16 @@ describe('TaskInspector', () => {
     expect(it.transport.calls.at(-1)).toMatchObject({ method: 'task.get', params: { ref: 1 } });
   });
 
+  it('colours an overdue Due value the way the table does', async () => {
+    await live(
+      baselineScript(PAGE, { 'task.get': taskDetail({ ...DETAIL, due: '2020-01-01T00:00:00.000Z' }) }),
+      '#/tasks?sel=2',
+    );
+
+    const due = within(inspector()).getByText('Due').nextElementSibling;
+    expect(due?.firstElementChild).toHaveClass('cell-danger');
+  });
+
   it('spells each check state as its glyph and keeps the evidence beside it', async () => {
     await live(baselineScript(PAGE, { 'task.get': DETAIL }), '#/tasks?sel=2');
 

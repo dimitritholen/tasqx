@@ -1,11 +1,11 @@
 import type { ReactNode } from 'react';
 
 import type { Annotation, Blocker, Check, TaskDetail } from '../api/types';
-import { relativeTime } from '../state/relative';
+import { formatDuration, relativeTime } from '../state/relative';
 import { useStore } from '../state/store';
 import { Button, EmptyState, ErrorState, Skeleton } from '../ui/primitives';
 import { setSelection } from './route';
-import { PriorityPill, StatusPill, UrgencyMeter, When } from './TaskTable';
+import { isOverdue, PriorityPill, StatusPill, UrgencyMeter, When } from './TaskTable';
 
 /**
  * The one inspector: everything `task.get` answers about the selected task.
@@ -22,11 +22,14 @@ const CHECK_GLYPH: Record<Check['state'], string> = {
 
 const FIELDS: { label: string; of: (task: TaskDetail) => ReactNode }[] = [
   { label: 'Project', of: (task) => task.project ?? '—' },
-  { label: 'Due', of: (task) => <When iso={task.due} /> },
+  { label: 'Due', of: (task) => <When iso={task.due} danger={isOverdue(task)} /> },
   { label: 'Scheduled', of: (task) => <When iso={task.scheduled} /> },
   { label: 'Wait', of: (task) => <When iso={task.wait} /> },
-  { label: 'Estimate', of: (task) => <span className="mono">{task.estimate ?? '—'}</span> },
-  { label: 'Tracked', of: (task) => <span className="mono">{task.tracked}</span> },
+  {
+    label: 'Estimate',
+    of: (task) => <span className="mono">{task.estimate === null ? '—' : formatDuration(task.estimate)}</span>,
+  },
+  { label: 'Tracked', of: (task) => <span className="mono">{formatDuration(task.tracked)}</span> },
   { label: 'Created', of: (task) => <When iso={task.created} /> },
   { label: 'Modified', of: (task) => <When iso={task.modified} /> },
   { label: 'Revision', of: (task) => <span className="mono">{task._rev}</span> },

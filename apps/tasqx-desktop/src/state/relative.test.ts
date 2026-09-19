@@ -1,4 +1,4 @@
-import { NO_DATE, relativeTime } from './relative';
+import { formatDuration, NO_DATE, relativeTime } from './relative';
 
 const NOW = Date.parse('2026-09-19T12:00:00.000Z');
 
@@ -45,5 +45,20 @@ describe('relativeTime', () => {
     expect(relativeTime(new Date().toISOString()).relative).toBe(
       relativeTime('2026-09-19T12:00:00.000Z', Date.parse('2026-09-19T12:00:00.000Z')).relative,
     );
+  });
+});
+
+describe('formatDuration', () => {
+  it('reads an ISO-8601 duration as one token per non-zero unit', () => {
+    expect(formatDuration('PT6H')).toBe('6h');
+    expect(formatDuration('PT1H30M')).toBe('1h 30m');
+    expect(formatDuration('PT1M58S')).toBe('1m 58s');
+    expect(formatDuration('PT0S')).toBe('0s');
+    expect(formatDuration('P2D')).toBe('2d');
+    expect(formatDuration('P1W')).toBe('1w');
+  });
+
+  it('shows a duration this build cannot parse unchanged rather than blank', () => {
+    expect(formatDuration('nonsense')).toBe('nonsense');
   });
 });

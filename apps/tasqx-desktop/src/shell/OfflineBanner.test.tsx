@@ -15,6 +15,11 @@ test('without a scheduled retry it says retries are stopped', () => {
   expect(screen.getByRole('alert')).toHaveTextContent('Offline — not retrying (attempt 4)');
 });
 
+test('a first connect still in flight says connecting, not stopped', () => {
+  render(<OfflineBanner nextRetryAt={null} attempt={0} onStop={vi.fn()} onRetryNow={vi.fn()} />);
+  expect(screen.getByRole('alert')).toHaveTextContent('Offline — connecting (attempt 0)');
+});
+
 test('Stop and Retry now call back', async () => {
   const onStop = vi.fn();
   const onRetryNow = vi.fn();

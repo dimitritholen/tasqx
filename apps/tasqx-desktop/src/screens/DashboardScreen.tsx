@@ -4,8 +4,8 @@ import { useConnection, useRefresh } from '../api';
 import type { EventRow } from '../api/types';
 import { navigate, useRoute } from '../shell/router';
 import { relativeTime } from '../state/relative';
-import { selectCards, useStore } from '../state/store';
-import type { Cards } from '../state/store';
+import { selectCards, selectRowById, useStore } from '../state/store';
+import type { Cards, DashboardState } from '../state/store';
 import { EmptyState, ErrorState, Panel, Skeleton } from '../ui/primitives';
 import { routeStateOf, useRouteSync } from './route';
 import { TaskTable } from './TaskTable';
@@ -68,10 +68,20 @@ function SummaryCards() {
   );
 }
 
-/** A task event names its task by short id; everything else by its entity id. */
-function eventRef(event: EventRow): string {
+/** How many characters of a raw uuid an unresolved event shows. */
+const ENTITY_PREFIX = 8;
+
+/**
+ * A task event names its task by short id: read off a loaded row first (no
+ * extra fetch — D160 again), then the payload's own `short_id`. Anything else
+ * is a bare uuid, truncated, with the whole thing in the tooltip.
+ */
+function eventRef(event: EventRow, state: DashboardState): { text: string; title?: string } {
+  const row = selectRowById(state, event.entity_id);
+  if (row !== undefined) return { text: `#${row.short_id}` };
   const short = event.payload?.['short_id'];
-  return typeof short === 'number' ? `#${short}` : event.entity_id;
+  if (typeof short === 'number') return { text: `#${short}` };
+  return { text: event.entity_id.slice(0, ENTITY_PREFIX), title: event.entity_id };
 }
 
 function Activity() {
@@ -106,15 +116,20 @@ function Activity() {
         <EmptyState title="Nothing yet" message="Changes to tasks and projects show up here." />
       ) : (
         <ul className="activity-list">
-          {events.map((event) => (
-            <li className="activity-item" key={event.id}>
-              <span className="activity-op">{event.op}</span>
-              <span className="mono">{eventRef(event)}</span>
-              <span className="mono muted" title={relativeTime(event.ts).absolute}>
-                {relativeTime(event.ts).relative}
-              </span>
-            </li>
-          ))}
+          {events.map((event) => {
+            const ref = eventRef(event, state);
+            return (
+              <li className="activity-item" key={event.id}>
+                <span className="activity-op">{event.op}</span>
+                <span className="mono activity-entity" title={ref.title}>
+                  {ref.text}
+                </span>
+                <span className="mono muted" title={relativeTime(event.ts).absolute}>
+                  {relativeTime(event.ts).relative}
+                </span>
+              </li>
+            );
+          })}
         </ul>
       )}
     </Panel>
@@ -129,10 +144,8 @@ export function DashboardScreen() {
     <div className="screen screen-wide">
       <h1>Dashboard</h1>
       <SummaryCards />
-      <div className="dashboard-body">
-        <TaskTable label="Working set" />
-        <Activity />
-      </div>
+      <TaskTable label="Working set" />
+      <Activity />
     </div>
   );
 }

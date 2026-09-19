@@ -15,7 +15,12 @@ export function OfflineBanner({
   onStop: () => void;
   onRetryNow: () => void;
 }) {
-  const when = nextRetryAt === null ? 'not retrying' : `retrying at ${new Date(nextRetryAt).toLocaleTimeString()}`;
+  const when =
+    nextRetryAt === null
+      ? attempt === 0
+        ? 'connecting'
+        : 'not retrying'
+      : `retrying at ${new Date(nextRetryAt).toLocaleTimeString()}`;
   return (
     <div className="offline-banner" role="alert">
       <span className="offline-banner-text">{`Offline — ${when} (attempt ${attempt})`}</span>

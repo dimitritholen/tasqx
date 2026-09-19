@@ -39,6 +39,35 @@ function formatter(locale: string | undefined): Intl.RelativeTimeFormat {
   return made;
 }
 
+/** Each ISO-8601 duration designator, in the order it can appear, as its short word. */
+const DURATION_UNITS: readonly [string, string][] = [
+  ['weeks', 'w'],
+  ['days', 'd'],
+  ['hours', 'h'],
+  ['minutes', 'm'],
+  ['seconds', 's'],
+];
+
+const DURATION_RE = /^P(?:(?<weeks>\d+)W)?(?:(?<days>\d+)D)?(?:T(?:(?<hours>\d+)H)?(?:(?<minutes>\d+)M)?(?:(?<seconds>\d+)S)?)?$/;
+
+/**
+ * `estimate` and `tracked` come back as ISO-8601 durations (`PT1H30M`); this
+ * reads as tasqx itself does, one token per non-zero unit. A duration this
+ * build cannot parse is still a value — shown raw rather than blank.
+ */
+export function formatDuration(iso: string): string {
+  const match = DURATION_RE.exec(iso);
+  const groups = match?.groups;
+  if (groups === undefined || Object.values(groups).every((value) => value === undefined)) return iso;
+  const parts = DURATION_UNITS.filter(([key]) => groups[key] !== undefined && groups[key] !== '0').map(
+    ([key, suffix]) => `${groups[key]}${suffix}`,
+  );
+  if (parts.length > 0) return parts.join(' ');
+  // Every captured unit was zero (PT0S): show that unit rather than nothing.
+  const [key, suffix] = DURATION_UNITS.filter(([unitKey]) => groups[unitKey] !== undefined).at(-1) ?? [];
+  return key === undefined ? iso : `${groups[key]}${suffix}`;
+}
+
 export function relativeTime(
   iso: string | null,
   now: number = Date.now(),

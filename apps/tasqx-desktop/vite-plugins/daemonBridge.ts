@@ -71,6 +71,9 @@ function attachEvents(middlewares: Connect.Server, sockPath: string, sessions: M
       'Cache-Control': 'no-cache',
       Connection: 'keep-alive',
     });
+    // Node holds the status line until the first write; EventSource waits for
+    // it before firing `open`, so an idle daemon would hang the client forever.
+    res.write(': open\n\n');
     socket.setEncoding('utf8');
     socket.on('data', (chunk: string) => {
       pending += chunk;
