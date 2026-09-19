@@ -177,8 +177,20 @@ pub const BRIEF_MEMORY_LIMIT: u64 = 5;
 /// a blended `tokens_total` output — it exists here only to produce a total
 /// order for "most expensive first", the same way `priority` sorts by a rank
 /// nobody reads back as a number.
-pub const SORT_KEYS: [&str; 8] = [
-    "urgency", "short_id", "priority", "due", "created", "modified", "title", "tokens",
+///
+/// `estimate` and `tracked` (#663/D173) rank by the DURATION an `estimate`
+/// string or `tracked_seconds` carries, not by the string itself — an
+/// `estimate` of `PT4H` must outrank `PT90M` even though `"PT4H" < "PT90M"`
+/// under `str::cmp`. Neither ever has a `None` that reaches `compare_by`:
+/// `estimate` is a genuine `Option`, and `tracked` reads `tracked_seconds ==
+/// 0` (never started) as the same "no value" case. Both place that case LAST
+/// on the sorted list REGARDLESS of `-`, which `due`'s `opt_cmp` documents but
+/// does not deliver once its answer passes back through the `desc` reversal
+/// below — D173 records the fix as its own comparator rather than reusing
+/// `opt_cmp` and inheriting that bug.
+pub const SORT_KEYS: [&str; 10] = [
+    "urgency", "short_id", "priority", "due", "created", "modified", "title", "tokens", "estimate",
+    "tracked",
 ];
 
 /// The keys `task.list`'s `fields` param may name. Sorted, since it is read off
@@ -1338,6 +1350,24 @@ fn compare_by(
             // saturating sum of a task's four measurement buckets. The sum
             // itself is never reported (D48/D50) — only used to rank here.
             "tokens" => a_tokens.cmp(&b_tokens),
+            // #663/D173: duration order, not string order — see SORT_KEYS's
+            // doc for why `PT4H` must outrank `PT90M`. `k.desc` is threaded
+            // into the match arm itself (see `opt_magnitude_cmp_last`) rather
+            // than left to the blanket reversal below, which is exactly what
+            // leaves it OUT of the value comparison: the two magnitudes stay
+            // direction-agnostic here and let that reversal flip them, while
+            // the "no value" placement is pre-negated so the SAME reversal
+            // cancels back out to "last" either way.
+            "estimate" => opt_magnitude_cmp_last(
+                a.estimate.as_deref().and_then(duration_secs),
+                b.estimate.as_deref().and_then(duration_secs),
+                k.desc,
+            ),
+            "tracked" => opt_magnitude_cmp_last(
+                Some(a.tracked_seconds).filter(|&s| s != 0),
+                Some(b.tracked_seconds).filter(|&s| s != 0),
+                k.desc,
+            ),
             // Unreachable via the API: `parse_sort` rejects anything not in
             // SORT_KEYS. It stays as a total match rather than a panic because
             // this is a read path, and a test drives every published key
@@ -1367,6 +1397,42 @@ fn opt_cmp(a: &Option<String>, b: &Option<String>) -> std::cmp::Ordering {
         (Some(x), Some(y)) => x.cmp(y),
         (Some(_), None) => Ordering::Less,
         (None, Some(_)) => Ordering::Greater,
+        (None, None) => Ordering::Equal,
+    }
+}
+
+/// Compare two optional magnitudes (D173), placing the missing one LAST
+/// whichever way `desc` points — unlike [`opt_cmp`] above, whose "`None`
+/// last" is true only for the ascending caller and is silently undone the
+/// moment `compare_by`'s blanket `if k.desc { ord.reverse() }` runs on its
+/// answer too. `desc` therefore has to reach INTO this function rather than
+/// stay outside it, and only half the match needs it:
+///
+///  * `(Some, Some)` stays a plain, direction-agnostic `cmp` — the caller's
+///    reversal is exactly what turns that into "descending", so pre-flipping
+///    it here would cancel out.
+///  * `(Some, None)`/`(None, Some)` is pre-negated for `desc`, so that the
+///    SAME reversal lands back on "the value sorts before the missing one"
+///    either way, instead of flipping the "last" placement along with the
+///    order it belongs to.
+fn opt_magnitude_cmp_last(a: Option<i64>, b: Option<i64>, desc: bool) -> std::cmp::Ordering {
+    use std::cmp::Ordering;
+    match (a, b) {
+        (Some(x), Some(y)) => x.cmp(&y),
+        (Some(_), None) => {
+            if desc {
+                Ordering::Greater
+            } else {
+                Ordering::Less
+            }
+        }
+        (None, Some(_)) => {
+            if desc {
+                Ordering::Less
+            } else {
+                Ordering::Greater
+            }
+        }
         (None, None) => Ordering::Equal,
     }
 }
