@@ -34,6 +34,11 @@ function fanOut<T>(listeners: Set<(value: T) => void>, value: T): void {
   for (const listener of [...listeners]) listener(value);
 }
 
+/** The address the host would connect to; only the Tauri host knows it. */
+export async function defaultSocket(): Promise<string> {
+  return invoke<string>('daemon_default_socket');
+}
+
 export class TauriTransport implements Transport {
   private readonly lineListeners = new Set<(line: string) => void>();
   private readonly closeListeners = new Set<(reason: string) => void>();

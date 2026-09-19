@@ -3,3 +3,4 @@ export * from './transport';
 export * from './fakeTransport';
 export * from './client';
 export * from './connection';
+export * from './useConnection';
