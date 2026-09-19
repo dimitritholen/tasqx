@@ -1096,12 +1096,35 @@ pub const R_STORE_EXPORT: &[FieldDoc] = &[
         "integer",
         "How many dependency edges pointed outside the filtered slice and were dropped.",
     ),
-    f("projects", "array", "Every project."),
-    f("docs", "array", "Every knowledge doc."),
+    f(
+        "projects",
+        "array",
+        "Every project this document needs: all of them on an unfiltered export, or the ones named by the filter or by an exported task on a filtered one.",
+    ),
+    f(
+        "dropped_projects",
+        "integer",
+        "How many project rows a filtered export left out because nothing exported named them.",
+    ),
+    f(
+        "docs",
+        "array",
+        "Every memory doc this document needs, scoped like `projects`; an unscoped doc ships only with `include_unscoped`.",
+    ),
+    f(
+        "dropped_docs",
+        "integer",
+        "How many memory docs a filtered export left out, scoped or unscoped.",
+    ),
     f(
         "events",
         "array",
-        "The whole audit log, minus the bookkeeping rows an import itself writes.",
+        "The whole audit log for what this document carries, minus the bookkeeping rows an import itself writes.",
+    ),
+    f(
+        "dropped_events",
+        "integer",
+        "How many events a filtered export left out because they belong to a task, doc or project this document does not carry.",
     ),
     n(
         "default_project",

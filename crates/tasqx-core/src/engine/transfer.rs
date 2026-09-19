@@ -24,6 +24,20 @@ impl Engine {
         let filter = Filter::parse(&opt_str(p, "filter")?.unwrap_or_default(), now_ts)
             .map_err(ApiError::bad_request)?;
         validate_filter_projects(self.conn(), &filter)?;
+        // D171: widen a scoped export back to docs/projects with no project at
+        // all. Refused, not silently ignored, on an UNFILTERED export — the
+        // same "a value that changes nothing is refused" rule `memory.search`
+        // already applies to its own `include_unscoped`: there is no scope
+        // there to widen FROM, the whole store comes back either way, and a
+        // caller who sent this believes a scope is being applied.
+        let include_unscoped = opt_bool(p, "include_unscoped")?.unwrap_or(false);
+        if include_unscoped && filter.is_unfiltered() {
+            return Err(ApiError::bad_request(
+                "`include_unscoped` widens a filtered export's docs/projects to ones that \
+                 carry no project — an unfiltered export already carries all of them, so \
+                 it needs a filter to widen from",
+            ));
+        }
         // ONE snapshot for the whole document. This function issues
         // SNAPSHOT_QUERY_COUNT statements (`load_task_snapshots`) plus three
         // more — projects, docs and the default. The total is deliberately not
@@ -86,38 +100,66 @@ impl Engine {
         for snapshot in &selected {
             out.push(Self::export_task(snapshot, &present, &mut dropped, now_ts));
         }
+
+        // D171 (finding #627): an export that narrows `tasks` used to still
+        // ship every memory doc, every project row and the whole event log —
+        // a leak when the file is shared, and a surprise on import elsewhere.
+        // `needed_projects` is the scope those three now share: `None` means
+        // "unfiltered, carry everything" (D12/D37's byte-identical round
+        // trip, which must not lose an archived project no task references),
+        // and `Some(set)` is the union of every `project:`/`proj:` value the
+        // filter itself named (so an explicitly named but currently empty
+        // project still comes back) and every project the SELECTED tasks
+        // actually reference (so a filter naming no project at all, `+bug`
+        // spanning two projects, still carries only what those tasks need —
+        // the same "only what it needs" rule the named case follows).
+        let needed_projects: Option<HashSet<&str>> = if filter.is_unfiltered() {
+            None
+        } else {
+            let mut set: HashSet<&str> = filter.project_names().into_iter().collect();
+            for snapshot in &selected {
+                if let Some(name) = snapshot.task.project.as_deref() {
+                    set.insert(name);
+                }
+            }
+            Some(set)
+        };
+
+        let (docs, dropped_docs) = self.export_docs(needed_projects.as_ref(), include_unscoped)?;
+        let doc_ids: HashSet<&str> = docs.iter().filter_map(|d| d["id"].as_str()).collect();
+        let (projects, dropped_projects) = self.export_projects(needed_projects.as_ref())?;
+        let project_ids: HashSet<&str> = projects.iter().filter_map(|p| p["id"].as_str()).collect();
+        let (events, dropped_events) = self.export_events(&present, &doc_ids, &project_ids)?;
+
         Ok(json!({
             "tasks": out,
             "dropped_dependencies": dropped,
-            // D37: a project is a RECORD (D21/D22/D23), not a string that happens
-            // to appear on tasks, and an export that carries only the string is
-            // not the self-contained document D12 promises — restoring it lost
-            // every description, every archived flag, and the default, leaving a
-            // store whose tasks name projects `tasqx projects` does not list and
-            // `task.add` refuses. Always ALL of them, archived included and
-            // regardless of `filter`: a filter selects TASKS, and a project the
-            // selected tasks do not mention is not a dangling pointer, so there
-            // is nothing to trim and no second `dropped_` counter to explain.
-            "projects": self.export_projects()?,
-            // D41 memory docs, ALL of them regardless of `filter` — a filter
-            // selects tasks, and knowledge is not attached to a task. Omitting
-            // them was the D37 omission shape reintroduced: a backup that
-            // answered ok:true and silently lost every doc on restore (review
-            // finding).
-            "docs": self.export_docs()?,
-            // The audit trail for the tasks THIS document carries (#176): a
-            // restored store used to answer `chart heatmap`/`chart throughput`
-            // with zero `done`s while `list status:done` still counted 81,
-            // because the document carried every task's CURRENT fields and
-            // none of the events that explain how they got there. Filtered to
-            // `present` the same way `depends_on` is trimmed above — a task
-            // `filter` excluded is excluded whole, and an `add` or
-            // `annotation.add` event naming its title or note verbatim would
-            // leak it back into the document by a side door `dropped_
-            // dependencies` was invented to close for edges. Project and doc
-            // events are NOT filtered, matching `projects`/`docs` themselves,
-            // which are always emitted whole regardless of `filter`.
-            "events": self.export_events(&present)?,
+            // D37/D171: every project row this document needs. Always ALL of
+            // them on an unfiltered export (`needed_projects: None`) — a
+            // filter selects TASKS, and on that path a project the selected
+            // tasks do not mention is not a dangling pointer. A filtered
+            // export narrows to `needed_projects` and reports the trim.
+            "projects": projects,
+            "dropped_projects": dropped_projects,
+            // D41/D171: memory docs, scoped the same way. An unscoped doc
+            // ships only with `include_unscoped` — the leak concern is that a
+            // filtered export should carry only what its tasks need, and a
+            // doc with no project is nobody's in particular.
+            "docs": docs,
+            "dropped_docs": dropped_docs,
+            // The audit trail for the tasks, docs and projects THIS document
+            // carries (#176, D171): a restored store used to answer `chart
+            // heatmap`/`chart throughput` with zero `done`s while `list
+            // status:done` still counted 81, because the document carried
+            // every task's CURRENT fields and none of the events that explain
+            // how they got there. Filtered to `present`/`doc_ids`/
+            // `project_ids` the same way `depends_on` is trimmed above — an
+            // excluded task, doc or project is excluded whole, and an `add`
+            // or `memory.add` event naming its title verbatim would leak it
+            // back into the document by the same side door `dropped_
+            // dependencies` was invented to close for edges.
+            "events": events,
+            "dropped_events": dropped_events,
             // Store state, so the document carries it (D21: it lives in the
             // store's `config` table, never in config.toml). `null` when there
             // is none, which is a fact and not an omission.
@@ -321,7 +363,17 @@ impl Engine {
     }
 
     /// Every memory doc row, id-ordered (creation order, since UUIDv7). D41.
-    fn export_docs(&self) -> Result<Vec<Value>, ApiError> {
+    ///
+    /// `needed`, D171: `None` on an unfiltered export keeps every doc,
+    /// matching D12's byte-identical round trip. `Some(set)` keeps a doc whose
+    /// `project` is in `set`, plus an unscoped doc only when `include_unscoped`
+    /// asks for it — the same widening `memory.search`'s own flag of that name
+    /// already does. Returns the kept rows and how many were dropped.
+    fn export_docs(
+        &self,
+        needed: Option<&HashSet<&str>>,
+        include_unscoped: bool,
+    ) -> Result<(Vec<Value>, i64), ApiError> {
         let mut stmt = self.conn.prepare(
             "SELECT id, source, title, body, created, modified, project, rev, standing \
              FROM docs ORDER BY id",
@@ -342,24 +394,44 @@ impl Engine {
             }))
         })?;
         let mut out = Vec::new();
+        let mut dropped = 0i64;
         for r in rows {
-            out.push(r?);
+            let v = r?;
+            let keep = match needed {
+                None => true,
+                Some(set) => match v["project"].as_str() {
+                    Some(name) => set.contains(name),
+                    None => include_unscoped,
+                },
+            };
+            if keep {
+                out.push(v);
+            } else {
+                dropped += 1;
+            }
         }
-        Ok(out)
+        Ok((out, dropped))
     }
 
     /// Every event this store has recorded, id-ordered (UUIDv7, so
-    /// chronological), for the tasks in `present` — MINUS the bookkeeping rows
+    /// chronological), for the tasks in `present`, the docs in `doc_ids` and
+    /// the projects in `project_ids` — MINUS the bookkeeping rows
     /// `store.import` itself writes on every call it makes (`import` on a
     /// task or project, and a doc's `memory.add` carrying
     /// `via: "store.import"`).
     ///
-    /// `present` is the SAME set `export_task` trims `depends_on` against: a
-    /// task-entity event is emitted only when its `entity_id` is one of the
-    /// tasks this document carries, so a filtered export cannot leak an
-    /// excluded task's title or annotation body through its event log after
-    /// `tasks` correctly left the task out. Project- and doc-entity events are
-    /// never filtered, matching `projects`/`docs` themselves.
+    /// `present` is the SAME set `export_task` trims `depends_on` against, and
+    /// `doc_ids`/`project_ids` (D171) are the ids of the rows `export_docs`/
+    /// `export_projects` actually kept: a task-, doc- or project-entity event
+    /// is emitted only when its `entity_id` names something this document
+    /// carries, so a filtered export cannot leak an excluded task's title, an
+    /// excluded project's name, or an excluded doc's own title through the
+    /// event log after `tasks`/`docs`/`projects` correctly left it out. On an
+    /// unfiltered export every id set already names everything, so nothing
+    /// here is trimmed — the same "no restriction" shape `needed_projects`
+    /// itself follows. Returns the kept rows and how many were dropped by
+    /// this scoping (the `import`/`via` exclusion below is separate
+    /// bookkeeping noise, never counted as a drop).
     ///
     /// The `import`/`via` exclusion is what keeps D12's round trip byte-
     /// identical now that events ARE carried: `store.import` mints a fresh
@@ -373,7 +445,12 @@ impl Engine {
     /// nothing real history depends on. A genuine `memory.add`, including one
     /// written by the UNRELATED `memory.import` CLI command, is real history
     /// and stays.
-    fn export_events(&self, present: &HashSet<&str>) -> Result<Vec<Value>, ApiError> {
+    fn export_events(
+        &self,
+        present: &HashSet<&str>,
+        doc_ids: &HashSet<&str>,
+        project_ids: &HashSet<&str>,
+    ) -> Result<(Vec<Value>, i64), ApiError> {
         let mut stmt = self.conn.prepare(
             "SELECT id, entity, entity_id, op, payload, ts, actor FROM events ORDER BY id",
         )?;
@@ -389,9 +466,21 @@ impl Engine {
             ))
         })?;
         let mut out = Vec::new();
+        let mut dropped = 0i64;
         for r in rows {
             let (id, entity, entity_id, op, payload, ts, actor) = r?;
-            if entity == Entity::Task.as_str() && !present.contains(entity_id.as_str()) {
+            let keep = match Entity::parse(&entity) {
+                Some(Entity::Task) => present.contains(entity_id.as_str()),
+                Some(Entity::Doc) => doc_ids.contains(entity_id.as_str()),
+                Some(Entity::Project) => project_ids.contains(entity_id.as_str()),
+                // A future entity kind this build does not know: pass it
+                // through rather than silently dropping history it cannot
+                // scope — the same "refuse or widen, never guess" stance as
+                // `store.import`'s own unrecognized-top-level-key tolerance.
+                None => true,
+            };
+            if !keep {
+                dropped += 1;
                 continue;
             }
             let payload: Value = payload
@@ -413,11 +502,20 @@ impl Engine {
                 "actor": actor,
             }));
         }
-        Ok(out)
+        Ok((out, dropped))
     }
 
     /// Every project row, name-ordered, in the canonical §3 shape. D37.
-    fn export_projects(&self) -> Result<Vec<Value>, ApiError> {
+    ///
+    /// `needed`, D171: `None` on an unfiltered export keeps every project,
+    /// archived included — an export selects TASKS, and a project no task
+    /// mentions is not a dangling pointer there. `Some(set)` keeps a project
+    /// whose `name` is in `set`. Returns the kept rows and how many were
+    /// dropped.
+    fn export_projects(
+        &self,
+        needed: Option<&HashSet<&str>>,
+    ) -> Result<(Vec<Value>, i64), ApiError> {
         let mut stmt = self.conn.prepare(
             "SELECT id, name, description, archived, created FROM projects ORDER BY name",
         )?;
@@ -431,10 +529,20 @@ impl Engine {
             }))
         })?;
         let mut out = Vec::new();
+        let mut dropped = 0i64;
         for r in rows {
-            out.push(r?);
+            let v = r?;
+            let keep = match needed {
+                None => true,
+                Some(set) => v["name"].as_str().is_some_and(|name| set.contains(name)),
+            };
+            if keep {
+                out.push(v);
+            } else {
+                dropped += 1;
+            }
         }
-        Ok(out)
+        Ok((out, dropped))
     }
 
     /// Build the canonical §3 export object for one task. serde_json's default

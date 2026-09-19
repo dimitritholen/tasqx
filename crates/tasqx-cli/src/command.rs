@@ -914,6 +914,11 @@ pub(super) enum Command {
         // `List::filter`.
         #[arg(add = crate::complete::candidates::filter_words())]
         filter: Vec<String>,
+        /// Widen a filtered export's docs/projects to ones that carry no
+        /// project (D171). Refused on an unfiltered export — there is
+        /// nothing to widen from.
+        #[arg(long)]
+        include_unscoped: bool,
     },
     /// Import tasks from a file, or `-` for stdin (maps to store.import).
     #[command(after_help = crate::cmddoc::after_help("import"))]
@@ -1188,7 +1193,7 @@ impl Command {
     pub(super) fn filter_tail_mut(&mut self) -> Option<&mut Vec<String>> {
         match self {
             Command::List { filter, .. }
-            | Command::Export { filter }
+            | Command::Export { filter, .. }
             | Command::Watch { filter }
             | Command::Pick { filter }
             | Command::Next { filter, .. }

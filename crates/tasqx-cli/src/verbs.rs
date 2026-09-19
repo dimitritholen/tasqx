@@ -1330,10 +1330,17 @@ pub(crate) fn memory_docs_from_path(path: &str) -> Result<Vec<Value>, tasqx_core
     Ok(docs)
 }
 
-pub(crate) fn run_export(be: &mut Backend, filter: &[String]) -> CmdOutcome {
+pub(crate) fn run_export(
+    be: &mut Backend,
+    filter: &[String],
+    include_unscoped: bool,
+) -> CmdOutcome {
     let mut params = json!({});
     if !filter.is_empty() {
         params["filter"] = Value::String(tasqx_core::filter::from_argv(filter));
+    }
+    if include_unscoped {
+        params["include_unscoped"] = Value::Bool(true);
     }
     let result = be.call("store.export", &params)?;
     // A filter selects a subset, so edges pointing out of it are trimmed to keep

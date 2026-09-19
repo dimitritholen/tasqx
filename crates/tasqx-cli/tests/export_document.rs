@@ -479,3 +479,62 @@ fn an_import_with_no_docs_section_says_so_instead_of_printing_the_same_line_as_z
         "a document that DOES declare `docs` must not get the absence note: {out}"
     );
 }
+
+/// D171 (finding #627), through the real `export` VERB: a project filter must
+/// not ship another project's memory docs, and `--include-unscoped` widens
+/// it back to docs with no project — refused with no filter to widen from.
+#[test]
+fn the_export_verb_scopes_docs_to_the_named_project_and_include_unscoped_widens_it() {
+    let (dir, db) = store("cli-scope", "a");
+    ok(&dir, &db, &["init", "work"]);
+    ok(&dir, &db, &["init", "home"]);
+    ok(&dir, &db, &["add", "task in work", "project:work"]);
+    let added = api(
+        &dir,
+        &db,
+        "memory.add",
+        json!({ "title": "work doc", "body": "x", "project": "work" }),
+    );
+    assert_eq!(added["ok"], json!(true), "{added}");
+    let added = api(
+        &dir,
+        &db,
+        "memory.add",
+        json!({ "title": "home doc", "body": "x", "project": "home" }),
+    );
+    assert_eq!(added["ok"], json!(true), "{added}");
+    let added = api(
+        &dir,
+        &db,
+        "memory.add",
+        json!({ "title": "unscoped doc", "body": "x" }),
+    );
+    assert_eq!(added["ok"], json!(true), "{added}");
+
+    let scoped = ok(&dir, &db, &["export", "project:work"]);
+    let doc: Value = serde_json::from_str(&scoped).expect("export must be JSON");
+    let titles: Vec<&str> = doc["docs"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|d| d["title"].as_str().unwrap())
+        .collect();
+    assert_eq!(titles, vec!["work doc"], "{doc}");
+    assert_eq!(doc["dropped_docs"], json!(2), "{doc}");
+
+    let widened = ok(&dir, &db, &["export", "project:work", "--include-unscoped"]);
+    let doc: Value = serde_json::from_str(&widened).expect("export must be JSON");
+    let mut titles: Vec<&str> = doc["docs"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|d| d["title"].as_str().unwrap())
+        .collect();
+    titles.sort_unstable();
+    assert_eq!(titles, vec!["unscoped doc", "work doc"], "{doc}");
+
+    // No filter, no scope to widen from.
+    let (code, _, se) = run(&dir, &db, &["export", "--include-unscoped"]);
+    assert_eq!(code, 2, "must be refused as bad_request: {se}");
+    assert!(se.contains("include_unscoped"), "{se}");
+}

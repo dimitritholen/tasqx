@@ -348,6 +348,18 @@ impl Filter {
         out
     }
 
+    /// True when the caller asked for no filtering at all — the empty string,
+    /// parsed to `Pred::Always` (see [`Filter::parse`]).
+    ///
+    /// D171's seam: `store.export` must keep scoping `docs`/`projects`/`events`
+    /// OFF for this one case, because D12/D37 promise a byte-identical,
+    /// nothing-trimmed round trip for an unfiltered export — including a
+    /// project or doc that no task references. Any other filter, even one that
+    /// happens to match every row, narrows on purpose and is scoped.
+    pub fn is_unfiltered(&self) -> bool {
+        matches!(self.root, Expr::Pred(Pred::Always))
+    }
+
     /// The VALUE carried by the single predicate this filter is — `None` when it
     /// is not exactly one predicate, or when that predicate carries no value.
     ///
@@ -2025,6 +2037,18 @@ mod tests {
         // No `project:` predicate at all: nothing to validate.
         assert_eq!(names("status:done"), Vec::<String>::new());
         assert_eq!(names(""), Vec::<String>::new());
+    }
+
+    /// D171: only the empty string is unfiltered — a predicate that happens to
+    /// match every row (e.g. a status every task has) still counts as a filter
+    /// the caller wrote on purpose.
+    #[test]
+    fn is_unfiltered_is_true_only_for_the_empty_filter() {
+        let parses = |s: &str| Filter::parse(s, anchor()).unwrap_or_else(|e| panic!("{s:?}: {e}"));
+        assert!(parses("").is_unfiltered());
+        assert!(!parses("status:pending").is_unfiltered());
+        assert!(!parses("project:work").is_unfiltered());
+        assert!(!parses("+tag").is_unfiltered());
     }
 
     /// Every vocabulary in the registry must be reachable, or the CLI's

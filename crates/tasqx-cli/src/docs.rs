@@ -503,10 +503,13 @@ const METHODS: [(&str, &str, &str); 43] = [
     ),
     (
         "store.export",
-        "<code>filter?</code>",
-        "<code>{tasks, projects, docs, events, default_project, dropped_dependencies}</code>. \
+        "<code>filter?</code>, <code>include_unscoped?</code>",
+        "<code>{tasks, projects, dropped_projects, docs, dropped_docs, events, dropped_events, \
+         default_project, dropped_dependencies}</code>. \
          <code>events</code> is the whole audit log except the bookkeeping rows a `store.import` \
-         itself writes.",
+         itself writes. An unfiltered export carries every project/doc/event (D12); any other \
+         filter scopes those three to what the exported tasks need and reports what it dropped \
+         (D171) — <code>include_unscoped</code> widens that scope back to docs with no project.",
     ),
     (
         "store.import",
