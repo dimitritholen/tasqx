@@ -186,7 +186,17 @@ pub(super) const OBJECTS: [Object; 10] = [
         namespaces: &["link"],
         linked: &[],
         groups: &[("", "", d::LINK_ROW)],
-        example: ("link.list", "/links/0", &[]),
+        // Not `link.list`: its captured example is the empty page (no link
+        // touches task 51, D149's reproducibility rule for a freshly minted
+        // v7 id keeps a seeded one out of the demo store), so a real row
+        // comes from `link.add`'s illustrative example instead, with its
+        // extra `created` flag sliced off — `obj-dependency`'s same move,
+        // one object down.
+        example: (
+            "link.add",
+            "",
+            &["id", "from", "to", "relation", "metadata", "created_at"],
+        ),
     },
     Object {
         id: "obj-graph",
