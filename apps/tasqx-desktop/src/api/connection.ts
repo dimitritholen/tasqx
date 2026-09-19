@@ -155,6 +155,13 @@ export class ConnectionController {
     await this.client.close();
   }
 
+  /** Try now rather than at nextRetryAt, keeping the ladder's place. */
+  async retryNow(): Promise<void> {
+    this.clearRetryTimer();
+    this.set({ stopped: false, nextRetryAt: null });
+    await this.attempt();
+  }
+
   private async attempt(): Promise<void> {
     const generation = ++this.generation;
     this.set({ status: 'connecting', stale: true, nextRetryAt: null });
@@ -195,9 +202,10 @@ export class ConnectionController {
   /**
    * The stream can no longer be trusted. A dropped transport has to reconnect
    * first; a gap or an unreadable frame only needs a fresh baseline, and the
-   * baseline already in flight is at least as new as the event we lost.
+   * baseline already in flight is at least as new as the event we lost. The
+   * refresh key calls this with its own reason.
    */
-  private resync(why: string, reconnect = false): void {
+  resync(why: string, reconnect = false): void {
     this.record(why);
     if (this.state.stopped) return;
     if (reconnect) {

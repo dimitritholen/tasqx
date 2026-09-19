@@ -261,3 +261,34 @@
   flex-direction: column;
   gap: var(--space-2);
 }
+
+/* --- Connection panel -------------------------------------------------- */
+.connection {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.connection-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-height: var(--row-secondary);
+}
+
+.connection-label {
+  flex: none;
+  width: 96px;
+  color: var(--color-muted);
+  font-size: var(--text-secondary);
+}
+
+.connection-actions {
+  display: flex;
+  gap: var(--space-2);
+  margin-top: var(--space-1);
+}
+
+.connection-error {
+  color: var(--color-danger);
+}

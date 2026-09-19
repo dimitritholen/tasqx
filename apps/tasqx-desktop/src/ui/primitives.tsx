@@ -55,8 +55,12 @@ export function IconButton({
 
 export type Status = 'pending' | 'active' | 'done' | 'blocked' | 'overdue' | 'backlog' | 'waiting' | 'warning';
 
-export function Pill({ status, children }: { status: Status; children: ReactNode }) {
-  return <span className={cx('pill', `pill-${status}`)}>{children}</span>;
+export function Pill({ status, title, children }: { status: Status; title?: string; children: ReactNode }) {
+  return (
+    <span className={cx('pill', `pill-${status}`)} title={title}>
+      {children}
+    </span>
+  );
 }
 
 export function Panel({

@@ -217,6 +217,33 @@ describe('ConnectionController', () => {
     expect(controller.getState()).toMatchObject({ offline: false, offlineSince: null });
   });
 
+  it('retries on demand without losing its place in the ladder', async () => {
+    const { transport, controller } = make();
+    transport.failConnect = 'no daemon';
+    await controller.start();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(controller.getState().attempt).toBe(2);
+    const connects = transport.connects;
+
+    await controller.retryNow();
+
+    // One extra connect: the pending retry was cancelled, not run as well.
+    expect(transport.connects).toBe(connects + 1);
+    expect(controller.getState().attempt).toBe(3);
+    expect(retryIn(controller)).toBe(500);
+  });
+
+  it('reloads the baseline when the user asks for a refresh', async () => {
+    const { baseline, controller } = make();
+    await controller.start();
+
+    controller.resync('manual refresh');
+    await flush();
+
+    expect(baseline).toHaveBeenCalledTimes(2);
+    expect(controller.getState()).toMatchObject({ status: 'live', diagnostic: 'manual refresh' });
+  });
+
   it('keeps only the last 20 resync reasons', async () => {
     const { transport, controller } = make();
     await controller.start();
