@@ -736,6 +736,108 @@ fn memory_import_bumps_rev_on_a_source_replace_so_a_stale_expected_rev_conflicts
     );
 }
 
+/// #657: `memory.import` gains a batch-level `project`, scoping every doc it
+/// lands — the JSON op an executor's CLI-only `tasqx memory import --project`
+/// reaches (#640) — refused for an unknown name the same way every other
+/// project-taking write is (D23). A doc imported with no `project` at all
+/// stays global, the same default `memory.add` gives.
+#[test]
+fn memory_import_project_scopes_new_docs_and_refuses_an_unknown_one() {
+    let e = engine();
+    call(&e, "project.create", json!({ "name": "ledger" })).expect("project");
+
+    let err = call(
+        &e,
+        "memory.import",
+        json!({ "docs": [{ "title": "A", "body": "runbook body" }], "project": "nosuchproject" }),
+    )
+    .expect_err("an unknown project is refused, the same as every other project-taking write");
+    assert_eq!(err.code, ErrorCode::NotFound, "{err:?}");
+
+    let scoped = call(
+        &e,
+        "memory.import",
+        json!({ "docs": [{ "title": "A", "body": "runbook body", "source": "a.md" }], "project": "ledger" }),
+    )
+    .unwrap();
+    assert_eq!(scoped["docs"][0]["project"], "ledger", "{scoped}");
+    let id = scoped["docs"][0]["id"].as_str().unwrap().to_string();
+    let doc = call(&e, "memory.get", json!({ "id": id })).unwrap();
+    assert_eq!(doc["project"], "ledger", "{doc}");
+
+    let unscoped = call(
+        &e,
+        "memory.import",
+        json!({ "docs": [{ "title": "B", "body": "other runbook body", "source": "b.md" }] }),
+    )
+    .unwrap();
+    assert_eq!(
+        unscoped["docs"][0]["project"],
+        Value::Null,
+        "no `project` in the request is the same default `memory.add` gives: {unscoped}"
+    );
+}
+
+/// #657/D168: an import that names NO `project` carries no opinion about
+/// scope, the same rule `standing` already has for a re-import — so a doc's
+/// existing scope survives a re-run that never mentions `--project`, rather
+/// than being silently cleared back to global.
+#[test]
+fn memory_import_omitting_project_on_a_reimport_keeps_the_docs_existing_scope() {
+    let e = engine();
+    call(&e, "project.create", json!({ "name": "ledger" })).expect("project");
+    call(
+        &e,
+        "memory.import",
+        json!({ "docs": [{ "title": "A", "body": "v1", "source": "a.md" }], "project": "ledger" }),
+    )
+    .unwrap();
+
+    let out = call(
+        &e,
+        "memory.import",
+        json!({ "docs": [{ "title": "A", "body": "v2", "source": "a.md" }] }),
+    )
+    .unwrap();
+    assert_eq!(out["docs"][0]["replaced"], true, "{out}");
+    let id = out["docs"][0]["id"].as_str().unwrap().to_string();
+    let doc = call(&e, "memory.get", json!({ "id": id })).unwrap();
+    assert_eq!(
+        doc["project"], "ledger",
+        "an import naming no project carries no opinion, so the prior scope survives: {doc}"
+    );
+}
+
+/// #657/D168: an import that DOES name a project has an opinion, and a
+/// re-import naming a DIFFERENT one MOVES the doc's scope there — a directory
+/// re-pointed at `--project other` after landing in `ledger` is meant to land
+/// in `other`, not stay stuck at its first import's answer.
+#[test]
+fn memory_import_naming_a_different_project_on_a_reimport_moves_the_scope() {
+    let e = engine();
+    call(&e, "project.create", json!({ "name": "ledger" })).expect("project");
+    call(&e, "project.create", json!({ "name": "other" })).expect("project");
+    call(
+        &e,
+        "memory.import",
+        json!({ "docs": [{ "title": "A", "body": "v1", "source": "a.md" }], "project": "ledger" }),
+    )
+    .unwrap();
+
+    let out = call(
+        &e,
+        "memory.import",
+        json!({ "docs": [{ "title": "A", "body": "v2", "source": "a.md" }], "project": "other" }),
+    )
+    .unwrap();
+    let id = out["docs"][0]["id"].as_str().unwrap().to_string();
+    let doc = call(&e, "memory.get", json!({ "id": id })).unwrap();
+    assert_eq!(
+        doc["project"], "other",
+        "naming a different project on re-import MOVES the scope (D168): {doc}"
+    );
+}
+
 /// Review finding: `limit as i64` wrapped a u64 above i64::MAX negative, and
 /// SQLite treats a negative LIMIT as unlimited — the opposite of what the
 /// caller bounded.

@@ -251,6 +251,13 @@ impl Engine {
                 e.message
             ))
         })?;
+        // #657: one project for the whole batch. A directory import is one
+        // source of docs — asking a caller to repeat the same `project` on
+        // every entry would earn nothing `memory.add --project` does not
+        // already cover one doc at a time. Validated like every other
+        // project-taking write (D23): an unknown name is refused before
+        // anything is written, inside the same transaction the docs land in.
+        let project = opt_str_nonempty(p, "project")?;
 
         // D174: a source names one doc, so a batch naming it twice asks for
         // two docs on one identity — it used to insert the first and replace
@@ -275,6 +282,9 @@ impl Engine {
 
         let ts = now();
         let tx = self.begin_mutation()?;
+        if let Some(name) = &project {
+            require_live_project(&tx, name)?;
+        }
         let mut out = Vec::new();
         let mut replaced = 0i64;
         for dv in docs {
@@ -327,6 +337,16 @@ impl Engine {
             // so the flag a person set through `memory.update` survives the
             // re-run that would otherwise silently clear it.
             //
+            // #657: `project` follows the SAME rule, one way only: an import
+            // that names NO `project` carries no opinion either, so a doc's
+            // existing scope survives a re-run the way `standing` does, and
+            // `project` is simply absent from a brand-new doc's column list
+            // (the same default `memory.add` gives). An import that DOES name
+            // one is a caller with an opinion, and that opinion moves the
+            // scope on re-import — a directory re-pointed at `--project
+            // ledger` after landing unscoped is meant to land scoped, not
+            // stay stuck at its first import's answer (D168).
+            //
             // `rev` is in the SET list because a source-replace is a revision
             // of the same document (D143): a `memory.update` still holding
             // the pre-import `expected_rev` must conflict, not clobber the
@@ -334,14 +354,26 @@ impl Engine {
             // the way `memory_update` and `store.import` do it; the lookup
             // and the upsert sit in one IMMEDIATE transaction
             // (`begin_mutation`), so nothing can move the row between them.
-            tx.execute(
-                "INSERT INTO docs (id, source, title, body, search_body, rev, created, modified) \
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?7) \
-                 ON CONFLICT(id) DO UPDATE SET \
-                 source=excluded.source, title=excluded.title, body=excluded.body, \
-                 search_body=excluded.search_body, modified=excluded.modified, rev=excluded.rev",
-                params![id, source, title, body, search_body, rev, ts],
-            )?;
+            match &project {
+                Some(proj) => tx.execute(
+                    "INSERT INTO docs \
+                     (id, source, title, body, search_body, project, rev, created, modified) \
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?8) \
+                     ON CONFLICT(id) DO UPDATE SET \
+                     source=excluded.source, title=excluded.title, body=excluded.body, \
+                     search_body=excluded.search_body, project=excluded.project, \
+                     modified=excluded.modified, rev=excluded.rev",
+                    params![id, source, title, body, search_body, proj, rev, ts],
+                )?,
+                None => tx.execute(
+                    "INSERT INTO docs (id, source, title, body, search_body, rev, created, modified) \
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?7) \
+                     ON CONFLICT(id) DO UPDATE SET \
+                     source=excluded.source, title=excluded.title, body=excluded.body, \
+                     search_body=excluded.search_body, modified=excluded.modified, rev=excluded.rev",
+                    params![id, source, title, body, search_body, rev, ts],
+                )?,
+            };
             insert_event(
                 &tx,
                 Entity::Doc,
@@ -350,6 +382,7 @@ impl Engine {
                 &json!({
                     "title": title,
                     "source": source,
+                    "project": project,
                     "via": "memory.import",
                     "replaced": is_replace,
                     "rev": rev,
@@ -362,6 +395,7 @@ impl Engine {
                 "id": id,
                 "title": title,
                 "source": source,
+                "project": project,
                 "replaced": is_replace,
                 "_rev": rev,
             }));
@@ -442,15 +476,21 @@ impl Engine {
         // count query below reuses these same two arms without `:limit`, and
         // named binding is what lets the arm text stay identical between the
         // two statements instead of hand-renumbering `?1`/`?2` per query.
+        // #657: `project` rides beside `standing` for the same reason — a doc
+        // carries its own column, an annotation inherits its task's, and the
+        // UNION needs the column on both arms either way. Additive on the
+        // frozen `MEMORY_HIT_ROW` (D56): a store-wide search mixes projects and
+        // a reader could not previously tell which one a hit came from without
+        // opening it, which is how #607's cross-project noise went unnoticed.
         const DOCS_ARM: &str = "SELECT d.id AS id, 'doc' AS kind, d.title AS title, \
              d.source AS source, snippet(docs_fts, 1, '', '', '…', 12) AS snip, \
-             bm25(docs_fts) AS score, d.standing AS standing \
+             bm25(docs_fts) AS score, d.standing AS standing, d.project AS project \
              FROM docs_fts JOIN docs d ON d.rowid = docs_fts.rowid \
              WHERE docs_fts MATCH :match";
         const ANN_ARM: &str = "SELECT a.id AS id, 'annotation' AS kind, t.title AS title, \
              'task:#' || t.short_id AS source, \
              snippet(annotations_fts, 0, '', '', '…', 12) AS snip, \
-             bm25(annotations_fts) AS score, NULL AS standing \
+             bm25(annotations_fts) AS score, NULL AS standing, t.project AS project \
              FROM annotations_fts \
              JOIN annotations a ON a.rowid = annotations_fts.rowid \
              JOIN tasks t ON t.id = a.task_id \
@@ -506,6 +546,10 @@ impl Engine {
                     // property of a doc and the UNION needs the column on
                     // both arms either way.
                     "standing": r.get::<_, Option<i64>>(6)?.map(|n| n != 0),
+                    // #657: which project this hit belongs to — `null` for
+                    // global knowledge, same as `memory.get`/`memory.list`
+                    // already answer for a doc's own `project` column.
+                    "project": r.get::<_, Option<String>>(7)?,
                 }))
             })?;
             rows.collect()

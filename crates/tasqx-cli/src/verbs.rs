@@ -1081,7 +1081,7 @@ pub(crate) fn run_memory(be: &mut Backend, ctx: &Ctx, action: &MemoryAction) -> 
             let text = format!("Removed {}\n", render::san(id));
             Ok((result, text))
         }
-        MemoryAction::Import { path } => run_memory_import(be, path),
+        MemoryAction::Import { path, project } => run_memory_import(be, path, project.as_deref()),
         MemoryAction::List {
             limit,
             offset,
@@ -1162,13 +1162,17 @@ pub(crate) fn run_tokens(be: &mut Backend, ctx: &Ctx, action: &TokensAction) -> 
 /// One doc per file. A directory imports its direct `*.md` children; finding
 /// none is an error, not `Imported 0` at exit 0 — the same never-say-nothing
 /// rule `import` learned for truncated task files.
-pub(crate) fn run_memory_import(be: &mut Backend, path: &str) -> CmdOutcome {
+pub(crate) fn run_memory_import(be: &mut Backend, path: &str, project: Option<&str>) -> CmdOutcome {
     // Two-phase (review finding): ALL file I/O and title derivation happen
     // before a single write, then one `memory.import` lands the batch in one
     // transaction with replace-by-source semantics — a failure imports
     // nothing, and a re-run replaces instead of duplicating.
     let docs = memory_docs_from_path(path)?;
-    let result = be.call("memory.import", &json!({ "docs": docs }))?;
+    let mut params = json!({ "docs": docs });
+    if let Some(p) = project {
+        params["project"] = json!(p);
+    }
+    let result = be.call("memory.import", &params)?;
     let imported = result["imported"].as_u64().unwrap_or(0);
     // #178: a re-run that replaces a doc sharing its `source` used to print
     // this identical line whether it created 3 docs or silently overwrote 3

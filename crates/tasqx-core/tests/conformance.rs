@@ -533,6 +533,10 @@ const MEMORY_HIT_ROW: &[Field] = &[
     // property of a doc, and the UNION the two arms form needs the column on
     // both sides regardless.
     nul("standing", Ty::Bool),
+    // #657: which project this hit belongs to (null for global knowledge) —
+    // a doc's own column, or the annotation's task's, same split `source`
+    // already draws.
+    nul("project", Ty::Str),
 ];
 
 const TOKEN_BUCKETS_ROW: &[Field] = &[
@@ -929,6 +933,9 @@ const IMPORTED_DOC_ROW: &[Field] = &[
     req("id", Ty::Str),
     req("title", Ty::Str),
     nul("source", Ty::Str),
+    // #657: the batch's own `project`, echoed per doc like `memory.add`'s own
+    // result already does — null when the import named none.
+    nul("project", Ty::Str),
     req("replaced", Ty::Bool),
     req("_rev", Ty::Int),
 ];
@@ -1959,9 +1966,13 @@ fn cases() -> Vec<Case> {
                     .expect("dependent edge");
                 e.annotation_add(&json!({ "ref": 2, "body": "decided: the envelope is frozen" }))
                     .expect("the prerequisite's conclusion");
+                // #657: shares "freeze" with the derived query so this is a
+                // GENUINE doc hit — it used to reach `hits` only through the
+                // subject's own annotation below matching too (the exact
+                // self-echo #607 found), which the brief now excludes.
                 e.memory_add(&json!({
                     "title": "Envelope rules",
-                    "body": "Every request carries a tasqx version and a method."
+                    "body": "Every request carries a tasqx version and a method; the freeze holds across releases."
                 }))
                 .expect("doc");
                 // The task half's row shapes are frozen too, so #1 needs a

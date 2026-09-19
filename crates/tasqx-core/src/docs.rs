@@ -846,6 +846,7 @@ pub const MEMORY_HIT_ROW: &[FieldDoc] = &[
     f("snippet", "string", "The matching passage, with the hit in context. Never the whole body."),
     f("rank", "number", "The bm25 score. Lower is a better match; the number itself is not comparable between searches."),
     n("standing", "boolean", "For a doc hit, whether it is a standing ruling (D156); null on an annotation hit, which has no such flag."),
+    n("project", "string", "Which project this hit is scoped to — a doc's own column, or the annotation's task's — or null for global knowledge (#657)."),
 ];
 
 /// One knowledge doc, whole. The same row `memory.get` and `store.export` both answer with.
@@ -887,6 +888,7 @@ pub const IMPORTED_DOC_ROW: &[FieldDoc] = &[
     f("id", "string", "The doc's id — the one it already had when it was replaced in place."),
     f("title", "string", "Its title."),
     n("source", "string", "The source it was keyed on."),
+    n("project", "string", "The batch's `project`, echoed per doc — null when the import named none (#657)."),
     f("replaced", "boolean", "Whether this row replaced an existing doc rather than creating one (D143)."),
     f("_rev", "integer", "The row's revision counter, bumped by every write. Send it back as `expected_rev` to make a change conditional."),
 ];

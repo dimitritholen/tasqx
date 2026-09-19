@@ -510,7 +510,17 @@ fn brief_tail(out: &mut String, result: &Value) {
                     .filter(|s| !s.is_empty())
                     .map(|s| format!(" · `{s}`"))
                     .unwrap_or_default();
-                out.push_str(&format!("- **{}**{source}\n", str_of(h, "title")));
+                // #657: which project this hit is scoped to — absent (an
+                // older recorded response) or global prints nothing, so this
+                // adds a bracket only where it says something a reader could
+                // not already tell from the section it is under.
+                let project = h
+                    .get("project")
+                    .and_then(Value::as_str)
+                    .filter(|p| !p.is_empty())
+                    .map(|p| format!(" [{p}]"))
+                    .unwrap_or_default();
+                out.push_str(&format!("- **{}**{source}{project}\n", str_of(h, "title")));
                 // The engine's snippet keeps the body's line breaks; one hit
                 // is one excerpt, so it reads on one line under its bullet.
                 let snippet = str_of(h, "snippet")

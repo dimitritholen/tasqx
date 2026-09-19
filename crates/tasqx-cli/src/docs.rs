@@ -393,7 +393,9 @@ const METHODS: [(&str, &str, &str); 43] = [
          says \"review\". <code>matched</code> is the FTS5 expression actually run, which is how \
          <code>count: 0</code> is told apart from a store holding nothing on the subject. \
          <code>total</code> is every row matched before <code>limit</code> truncates (#132), and \
-         <code>project</code> scopes to one project's docs plus its tasks' annotations (#134).",
+         <code>project</code> scopes to one project's docs plus its tasks' annotations (#134). \
+         Each hit carries its own <code>project</code> too (null for global knowledge, #657), so a \
+         store-wide search says which project it came from.",
     ),
     (
         "memory.remove",
@@ -402,11 +404,15 @@ const METHODS: [(&str, &str, &str); 43] = [
     ),
     (
         "memory.import",
-        "<code>docs</code>",
-        "<code>{imported, replaced, docs}</code>, each doc <code>{id, title, source, replaced, _rev}</code>. \
-         One transaction; same <code>source</code> replaces IN PLACE (id and creation date kept), \
-         bumps that doc's <code>_rev</code> (D143) and is counted in <code>replaced</code>; \
-         a batch naming one <code>source</code> twice is refused whole (D174).",
+        "<code>docs</code>, <code>project?</code>",
+        "<code>{imported, replaced, docs}</code>, each doc \
+         <code>{id, title, source, project, replaced, _rev}</code>. One transaction; same \
+         <code>source</code> replaces IN PLACE (id and creation date kept), bumps that doc's \
+         <code>_rev</code> (D143) and is counted in <code>replaced</code>; a batch naming one \
+         <code>source</code> twice is refused whole (D174). <code>project</code> scopes every doc \
+         in the batch (#657): omitted, an existing doc keeps its prior scope (like \
+         <code>standing</code>) and a new one lands global; named, it moves an existing doc's \
+         scope on re-import, the same way <code>memory.update --project</code> would.",
     ),
     (
         "memory.list",
@@ -458,8 +464,12 @@ const METHODS: [(&str, &str, &str); 43] = [
          annotation — what that task concluded — and <code>neighbourhood.blocks</code> names \
          what this one releases, title and status only; <code>memory</code> is a \
          <code>memory.search</code> result under an expression tasqx DERIVES from the task's \
-         title, tags and project, echoed in <code>matched</code>, scoped to that project and \
-         reported in <code>project</code>. The derived expression is a disjunction: a caller's \
+         title, tags and project, echoed in <code>matched</code>, scoped to that project PLUS \
+         unscoped docs (the same <code>include_unscoped</code> shape <code>memory.search</code> \
+         has) or, for a task with no project, store-wide — reported either way in \
+         <code>project</code> — and excluding the task's OWN annotations, which the \
+         <code>task</code> half already carries in full (#657, D168). The derived expression is \
+         a disjunction: a caller's \
          query states what they want and is ANDed, a derived one is a bag of the task's own \
          words and would answer nothing if it were. Half the page (rounded up) is reserved for \
          knowledge docs and annotations fill the rest, either kind taking the other's unused \

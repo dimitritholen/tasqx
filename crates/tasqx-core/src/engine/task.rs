@@ -2710,11 +2710,19 @@ impl Engine {
     /// nothing in it. The two are different questions and take different
     /// operators.
     ///
-    /// **Scope.** The task's project (D115), reported back so it is never
-    /// inferred. There is no fallback to an unscoped search when the scoped one
-    /// is empty: that would make the result depend on a branch the caller
-    /// cannot see, and D69's rule is that a result says what it answered about.
-    /// A caller who wants wider still has `memory.search`, unchanged.
+    /// **Scope.** The task's project (D115) plus unscoped docs — the same
+    /// `include_unscoped` shape `memory.search` already has (#134) — reported
+    /// back so it is never inferred, and excluding this task's OWN annotations
+    /// (#607): the card already prints them in full, so a hit that is just
+    /// that same note echoed back wastes a slot and answers nothing a reader
+    /// has not read. There is no fallback to a WIDER search when the scoped
+    /// one is empty: that would make the result depend on a branch the caller
+    /// cannot see, and D69's rule is that a result says what it answered
+    /// about. A caller who wants wider still has `memory.search`, unchanged.
+    /// A task with no project runs no project filter at all — store-wide,
+    /// mirroring `memory.search`'s own behaviour when no `project` is given
+    /// (D168): there is no scope here to widen FROM, so "unscoped only" would
+    /// be a second, narrower answer to a question the caller never asked.
     ///
     /// **Why half the page is held for docs (D147).** bm25 alone decided this
     /// wrong, and decided it silently. The derived expression is the task's own
@@ -2801,7 +2809,30 @@ impl Engine {
             Ok((hits, total))
         };
         let (docs, docs_total) = scoped("docs")?;
-        let (annotations, annotations_total) = scoped("annotations")?;
+        let (mut annotations, annotations_total) = scoped("annotations")?;
+        // #607: the task's own annotations are not knowledge FOUND for it —
+        // the card `task.get`'s own half already prints them in full, so a
+        // hit that is just that same note echoed back costs a slot a
+        // sibling's ruling could have used and adds nothing a reader has not
+        // already read. `memory.search` has no notion of "this call's own
+        // task", so the filter runs here, on the one caller that has one,
+        // rather than becoming a param the general search would also have to
+        // carry. `annotations_total` drops by the same count removed, so it
+        // keeps naming what a WIDER page of this same query would show.
+        // Through `opt_str`, not a raw accessor: `util::tests::
+        // no_engine_param_is_read_with_a_raw_json_accessor` bans `.get(...)
+        // .and_then(...)` across every `engine/*.rs` source file, hit rows
+        // included — a hit here is engine output, not caller input, but the
+        // guard's source scan cannot tell the two apart, and it is cheaper to
+        // read it the one way this file already does than to teach the scan
+        // a second shape.
+        let own_source = format!("task:#{}", task.short_id);
+        let before = annotations.len();
+        annotations.retain(|h| {
+            opt_str(h, "source").ok().flatten().as_deref() != Some(own_source.as_str())
+        });
+        let annotations_total =
+            annotations_total.saturating_sub((before - annotations.len()) as i64);
 
         // Saturating throughout: `limit` is caller input and may be zero or
         // enormous, and a page that underflowed to `usize::MAX` would hand back
