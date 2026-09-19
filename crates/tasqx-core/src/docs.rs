@@ -846,6 +846,49 @@ pub const R_LINK_LIST: &[FieldDoc] = &[
     f("links", "array", "The links themselves, newest first. A `ref` matches EITHER endpoint, so a node's neighbourhood is one call."),
 ];
 
+/// One node of a `graph.query` projection (D160).
+///
+/// `short_id` and `task` are null on the kinds of node that do not have one
+/// rather than absent: a key that appears and disappears by node type makes a
+/// renderer branch on presence four ways to lay out one table, and "this node
+/// has no short id" is exactly what null says.
+pub const GRAPH_NODE: &[FieldDoc] = &[
+    f("id", "string", "The node's stable id, `<type>:<uuid>` — the same spelling a link's endpoints use, and what a follow-up `graph.query` takes as its `root`."),
+    f("type", "string", "Which kind of node: `task`, `memory`, `annotation` or `project`."),
+    f("label", "string", "The one line to draw in the box: a task's title, a document's title, a note's first line (cut to 80 characters) or a project's name."),
+    n("summary", "string", "The second line: `#<short_id> · <status> · <priority>` for a task, the source for a document, the owning task for a note, the description for a project. Null when a project has no description."),
+    n("project", "string", "The project this node is filed under, or null — including on a project node, which is not filed under itself."),
+    n("status", "string", "A task's status, read the way every other surface reads it (a future `wait` shows `backlog`). Null on every other kind of node."),
+    n("modified", "string", "When the node last changed: `modified` for a task or a document, `created` for a note, which is never edited. Null for a project, which carries no such column — so the date window cannot exclude one."),
+    n("short_id", "integer", "The small number a human types for a task. Null on every other kind of node."),
+    n("task", "string", "The node id of the task a note is written on. Null on every other kind of node."),
+];
+
+/// One edge of a projection.
+pub const GRAPH_EDGE: &[FieldDoc] = &[
+    f("id", "string", "The edge's id, stable for the same edge across calls: `dep:`, `ann:`, `member:` or `link:` for a stored one, `search:` or `tag:` for a computed one."),
+    f("from", "string", "The node id the edge starts at. A `depends_on` edge always points from the task that waits to the one it waits on, whichever end the walk reached it from."),
+    f("to", "string", "The node id the edge points at."),
+    f("relation", "string", "What the edge asserts: `depends_on`, `has_annotation`, `belongs_to_project`, one of the five link relations, or `search_match`/`shared_tag` when `include_inferred` asked for them."),
+    f("kind", "string", "`structural` for an edge read out of a table, `inferred` for one computed for this call and never stored."),
+    n("confidence", "number", "How strong a computed edge is, 0 to 1 within this answer. Null on a structural edge: a stored fact has no confidence to report."),
+    f("source", "string", "Where the edge came from: the table (`dependencies`, `annotations`, `tasks.project`, `docs.project`, `links`) or what computed it (`memory.search: <words>`, `tags: <shared>`)."),
+];
+
+/// `graph.query`'s result.
+pub const R_GRAPH_QUERY: &[FieldDoc] = &[
+    f("root", "string", "The node the projection is anchored at, resolved to its stable `<type>:<uuid>` id."),
+    f("depth", "integer", "How many hops were walked — the `depth` that was asked for, or 2."),
+    f("nodes", "array", "The nodes, ordered by depth, then kind, then id. Deterministic: the same call twice is the same list."),
+    f("edges", "array", "The edges, ordered by relation, then `from`, then `to`. Only edges with both endpoints among the nodes above."),
+    f("node_count", "integer", "How many nodes came back — the length of `nodes`, always present so a caller need not count."),
+    f("edge_count", "integer", "How many edges came back."),
+    f("truncated", "boolean", "Whether a cap bit, i.e. whether either omitted figure below is non-zero. A client that cannot tell a graph that ends from one that was cut draws the wrong picture."),
+    f("omitted_nodes", "integer", "How many nodes the walk found and `max_nodes` cut."),
+    f("omitted_edges", "integer", "How many edges `max_edges` cut, after the ones whose endpoints were cut had already gone."),
+    f("include_inferred", "boolean", "Whether the computed edges were asked for, echoed so a cached answer says which kind of graph it is."),
+];
+
 /// `memory.add`'s result.
 pub const R_MEMORY_ADD: &[FieldDoc] = &[
     f(
@@ -1420,6 +1463,11 @@ pub fn result_shape(method: &str) -> &'static [(&'static str, &'static [FieldDoc
         "link.add" => &[("result", R_LINK_ADD)],
         "link.remove" => &[("result", R_LINK_REMOVE)],
         "link.list" => &[("result", R_LINK_LIST), ("result.links[]", LINK_ROW)],
+        "graph.query" => &[
+            ("result", R_GRAPH_QUERY),
+            ("result.nodes[]", GRAPH_NODE),
+            ("result.edges[]", GRAPH_EDGE),
+        ],
         "memory.add" => &[("result", R_MEMORY_ADD)],
         "memory.search" => &[
             ("result", R_MEMORY_SEARCH),

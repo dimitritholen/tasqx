@@ -415,6 +415,14 @@ const UNEXPOSED_METHODS: &[(&str, &str)] = &[
         "tasqx has an undo (D54) and an agent cannot reach it, which is the sharpest single          omission on this list. It stays off until the tool can show what it is about to          undo: `event.revert` acts on the last matching event, and its blast radius depends          on store state the calling agent has not read. A destructive one-shot whose effect          the caller cannot see is not a tool, it is a coin flip.",
     ),
     (
+        "graph.query",
+        "an agent already reaches the graph's ends: `tasqx_search_memory` returns the docs and \
+         annotations the inferred half would match, and `tasqx_get_task` returns a task's notes, \
+         checks and dependencies. What `graph.query` adds over those is a LAYOUT — nodes, edges \
+         and provenance to draw — and that is a desktop client's question (D160), not something \
+         a model gains by reading two hundred node objects into its context.",
+    ),
+    (
         "link.add",
         "D160's explicit links are a curation surface: an agent proposing edges between docs, \
          tasks and decisions is exactly the noise the graph's inferred half already covers \

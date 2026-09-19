@@ -92,6 +92,7 @@ screens![
     "api-check-remove",
     "api-dependency-add",
     "api-dependency-remove",
+    "api-graph-query",
     "api-memory-get",
     "api-memory-update",
     "api-memory-remove",

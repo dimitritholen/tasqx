@@ -125,6 +125,7 @@ api-check-set	pipe-mut	100	-	api	-	{"tasqx":"1","id":"cs1","method":"check.set",
 api-check-remove	pipe-mut	100	-	api	-	{"tasqx":"1","id":"cr1","method":"check.remove","params":{"ref":"51","check_id":"e6a1096b-6f05-4e95-96f5-52452080f2ac"}}
 api-dependency-add	pipe-mut	100	-	api	-	{"tasqx":"1","id":"da1","method":"dependency.add","params":{"ref":"55","depends_on":"50"}}
 api-dependency-remove	pipe-mut	100	-	api	-	{"tasqx":"1","id":"dr1","method":"dependency.remove","params":{"ref":"51","depends_on":"50"}}
+api-graph-query	pipe	100	-	api	-	{"tasqx":"1","id":"gq1","method":"graph.query","params":{"root":"51","depth":1}}
 api-memory-get	pipe	100	-	api	-	{"tasqx":"1","id":"mg1","method":"memory.get","params":{"id":"eb864f1e-e68a-4d96-af89-597bd0d2d52e"}}
 api-memory-update	pipe-mut	100	-	api	-	{"tasqx":"1","id":"mu1","method":"memory.update","params":{"id":"1bce1a9b-5134-4ab7-8665-34cd79fe0c5f","body":"The handover happens Friday at 16:00, in the on-call channel."}}
 api-memory-remove	pipe-mut	100	-	api	-	{"tasqx":"1","id":"mr1","method":"memory.remove","params":{"id":"091eb5ff-05d5-4cb2-ba2f-0afdc77f7935"}}
