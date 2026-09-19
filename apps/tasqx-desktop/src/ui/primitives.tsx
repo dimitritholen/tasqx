@@ -144,7 +144,7 @@ export function Field({
 export function Kbd({ keys }: { keys: string }) {
   const mac = isMac();
   return (
-    <>
+    <span className="kbd-group">
       {keys.split(' ').map((chord) => (
         <kbd className="kbd" key={chord}>
           {chord
@@ -153,6 +153,6 @@ export function Kbd({ keys }: { keys: string }) {
             .join(mac ? '' : '+')}
         </kbd>
       ))}
-    </>
+    </span>
   );
 }

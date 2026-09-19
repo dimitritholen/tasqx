@@ -281,6 +281,7 @@
 .field select,
 .field input,
 .field textarea {
+  max-width: 320px;
   height: var(--row-secondary);
   padding: 0 var(--space-2);
   border: var(--border-width) solid var(--color-border);
@@ -305,6 +306,10 @@
 }
 
 /* --- Kbd --------------------------------------------------------------- */
+.kbd-group {
+  display: inline-flex;
+  gap: var(--space-1);
+}
 .kbd {
   display: inline-block;
   min-width: var(--space-5);
