@@ -208,13 +208,14 @@ pub(super) fn page() -> String {
 /// `tokens.recompute` files under `token` with `token.add`/`token.remove` — the
 /// two spellings are one subject, and a reader looking for "what tasqx knows
 /// about token spend" should not have to know that one of the three is plural.
-const GROUPS: [(&str, &str); 14] = [
+const GROUPS: [(&str, &str); 15] = [
     ("project", "Project methods"),
     ("task", "Task methods"),
     ("tag", "Tag methods"),
     ("annotation", "Annotation methods"),
     ("check", "Check methods"),
     ("dependency", "Dependency methods"),
+    ("link", "Link methods"),
     ("memory", "Memory methods"),
     ("token", "Token methods"),
     ("report", "Report methods"),
@@ -995,7 +996,7 @@ const PARAM_DOCS: &[(&str, &str, &str, &str, &str)] = &[
         "entity",
         "string",
         "",
-        "Only events about this kind of thing: `task`, `project` or `doc`. An unknown name is refused, not read as a filter matching nothing.",
+        "Only events about this kind of thing: `task`, `project`, `doc` or `link`. An unknown name is refused, not read as a filter matching nothing.",
     ),
     (
         "event.list",
@@ -1003,6 +1004,76 @@ const PARAM_DOCS: &[(&str, &str, &str, &str, &str)] = &[
         "string",
         "",
         "A lower bound in the usual date grammar (`yesterday`, `2026-09-01`). It promises no events older than roughly that instant, not an exact cut.",
+    ),
+    (
+        "link.add",
+        "from",
+        "integer or string",
+        "",
+        "The node the link starts at. A task short id (`42`), a bare uuid (tried against tasks, memory docs, annotations and projects in that order), or `task:`/`memory:`/`annotation:`/`project:` plus an id — a project also by name (`project:work`). An unknown prefix is refused; a well-formed reference naming nothing is `not_found`.",
+    ),
+    (
+        "link.add",
+        "to",
+        "integer or string",
+        "",
+        "The node the link points at, in the same grammar as `from`. Linking a node to itself is refused; a cycle between two nodes is not — nothing schedules work off a link.",
+    ),
+    (
+        "link.add",
+        "relation",
+        "string",
+        "",
+        "What the link asserts: `references`, `supersedes`, `implements_decision`, `derived_from` or `contradicts`. Anything else is refused with the list, not stored.",
+    ),
+    (
+        "link.add",
+        "metadata",
+        "object",
+        "",
+        "Your own object, stored verbatim and never interpreted. A repeat of an existing link never overwrites it.",
+    ),
+    (
+        "link.add",
+        "expected_rev",
+        "integer",
+        "",
+        "Optimistic-concurrency guard on the `from` endpoint, mismatched a `conflict` naming both revs. Ignored when that endpoint is an annotation or a project, which carry no rev.",
+    ),
+    (
+        "link.remove",
+        "id",
+        "string",
+        "",
+        "The link's own uuid, as `link.add` and `link.list` report it.",
+    ),
+    (
+        "link.list",
+        "ref",
+        "integer or string",
+        "",
+        "Only links with this node at EITHER end, in `link.add`'s reference grammar. Omitted, the whole store's links come back.",
+    ),
+    (
+        "link.list",
+        "relation",
+        "string",
+        "",
+        "Only links asserting this relation. An unknown one is refused, not read as a filter matching nothing.",
+    ),
+    (
+        "link.list",
+        "limit",
+        "integer",
+        "100",
+        "How many links to return, newest first. Clamped to 1,000.",
+    ),
+    (
+        "link.list",
+        "offset",
+        "integer",
+        "0",
+        "Where the page starts. `next_offset` from the previous page keeps the walk going.",
     ),
     (
         "memory.import",
@@ -1237,6 +1308,27 @@ const EXAMPLES: &[Example] = &[
         fixture: "api-dependency-remove",
         response: "",
         why: "",
+    },
+    Example {
+        method: "link.add",
+        request: r#"{"tasqx":"1","id":"la1","method":"link.add","params":{"from":"51","to":"memory:eb864f1e-e68a-4d96-af89-597bd0d2d52e","relation":"implements_decision"}}"#,
+        fixture: "",
+        response: r#"{"id":"la1","ok":true,"result":{"created":true,"created_at":"2026-09-17T09:12:04Z","from":"task:019f7c0a-3d51-7c42-9a08-1f0c4e5b62d7","id":"019f8b31-77a4-7f10-8c55-2d7e9a13b004","metadata":null,"relation":"implements_decision","to":"memory:eb864f1e-e68a-4d96-af89-597bd0d2d52e"},"tasqx":"1"}"#,
+        why: "a new link mints a fresh v7 id whose low bits are random, and the response also carries the task's own uuid — the pinned clock fixes the timestamp half of each and nothing fixes the rest, so a captured answer would differ on every run.",
+    },
+    Example {
+        method: "link.remove",
+        request: r#"{"tasqx":"1","id":"lr1","method":"link.remove","params":{"id":"019f8b31-77a4-7f10-8c55-2d7e9a13b004"}}"#,
+        fixture: "",
+        response: r#"{"id":"lr1","ok":true,"result":{"id":"019f8b31-77a4-7f10-8c55-2d7e9a13b004","removed":true},"tasqx":"1"}"#,
+        why: "it echoes the link id it was given, and that id came from a `link.add` whose own answer cannot be captured — so a fixture here would pin a uuid no other example on this page can produce.",
+    },
+    Example {
+        method: "link.list",
+        request: r#"{"tasqx":"1","id":"ll1","method":"link.list","params":{"ref":"51"}}"#,
+        fixture: "",
+        response: r#"{"id":"ll1","ok":true,"result":{"count":1,"links":[{"created_at":"2026-09-17T09:12:04Z","from":"task:019f7c0a-3d51-7c42-9a08-1f0c4e5b62d7","id":"019f8b31-77a4-7f10-8c55-2d7e9a13b004","metadata":null,"relation":"implements_decision","to":"memory:eb864f1e-e68a-4d96-af89-597bd0d2d52e"}],"next_offset":null,"total":1},"tasqx":"1"}"#,
+        why: "every row carries the link's own v7 id and the uuid of each endpoint, all minted when the fixture store was built — half clock, half entropy, so no pin reproduces the row.",
     },
     Example {
         method: "memory.add",
@@ -1666,7 +1758,7 @@ mod tests {
         }
     }
 
-    /// The methods no CLI verb reaches are the five we know about.
+    /// The methods no CLI verb reaches are the eight we know about.
     ///
     /// Read in both directions from [`super::VERBS`]' Method column, because
     /// that column is prose a human maintains: a mapping lost to a typo would
@@ -1689,6 +1781,12 @@ mod tests {
             "reminder.fire",
             // The token ledger's corrective half: `tasqx api token.remove`.
             "token.remove",
+            // D160's explicit links have no verb yet: `tasqx api link.add` is
+            // the way, and the graph UI the family was built for is a desktop
+            // client rather than a terminal screen.
+            "link.add",
+            "link.remove",
+            "link.list",
         ]
         .into_iter()
         .collect();

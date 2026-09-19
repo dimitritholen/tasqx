@@ -63,8 +63,8 @@ pub(super) struct Object {
 
 const ON_A_TASK: &str = "On a task";
 
-/// The eight objects, in sidebar order.
-pub(super) const OBJECTS: [Object; 8] = [
+/// The nine objects, in sidebar order.
+pub(super) const OBJECTS: [Object; 9] = [
     Object {
         id: "obj-task",
         name: "Task",
@@ -171,6 +171,22 @@ pub(super) const OBJECTS: [Object; 8] = [
         linked: &[d::MEMORY_HIT_ROW],
         groups: &[("", "", d::DOC_EXPORT_ROW), ("", "", d::MEMORY_LIST_ROW)],
         example: ("memory.get", "", &[]),
+    },
+    Object {
+        id: "obj-link",
+        name: "Link",
+        lead: "A link is an explicit edge between two nodes of the knowledge graph (D160): a \
+               task, a memory document, an annotation or a project at either end, and a relation \
+               naming what it asserts. Links are written and removed, never edited, and a repeat \
+               of one that already exists answers with the link that is there rather than a \
+               second row. Unlike a dependency they may form cycles, and unlike an inferred \
+               graph edge they are durable: nothing mints one but a caller who asked for it. \
+               Removing a memory document removes its links with it; an annotation tombstone \
+               leaves them alone, because the node is still there.",
+        namespaces: &["link"],
+        linked: &[],
+        groups: &[("", "", d::LINK_ROW)],
+        example: ("link.list", "/links/0", &[]),
     },
     Object {
         id: "obj-event",

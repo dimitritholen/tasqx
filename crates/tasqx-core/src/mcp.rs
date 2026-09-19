@@ -415,6 +415,25 @@ const UNEXPOSED_METHODS: &[(&str, &str)] = &[
         "tasqx has an undo (D54) and an agent cannot reach it, which is the sharpest single          omission on this list. It stays off until the tool can show what it is about to          undo: `event.revert` acts on the last matching event, and its blast radius depends          on store state the calling agent has not read. A destructive one-shot whose effect          the caller cannot see is not a tool, it is a coin flip.",
     ),
     (
+        "link.add",
+        "D160's explicit links are a curation surface: an agent proposing edges between docs, \
+         tasks and decisions is exactly the noise the graph's inferred half already covers \
+         without persisting anything. A link is durable and shows as fact, so it stays a human \
+         act until a promotion flow exists for an agent to ask for one.",
+    ),
+    (
+        "link.list",
+        "nothing asks for it yet: an agent reaching the graph wants a node's neighbourhood with \
+         labels, which is `graph.query`'s job, not a page of endpoint ids it would then have to \
+         resolve one by one.",
+    ),
+    (
+        "link.remove",
+        "the corrective half of `link.add`, off for the same reason: an agent that cannot write \
+         an edge has nothing of its own to retract, and deleting a human's curated link \
+         unsupervised is a bigger foot-gun than the gap it closes (`token.remove`'s reasoning).",
+    ),
+    (
         "memory.import",
         "it takes a batch of documents read off a filesystem, and the filesystem the CLI          reads is not the one an MCP client is on. `memory.add` is the per-document tool          that does reach across the wire.",
     ),

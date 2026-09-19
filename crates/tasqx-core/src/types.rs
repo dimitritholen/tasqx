@@ -34,12 +34,17 @@ pub enum Entity {
     /// — an annotation belongs to its task — so `doc` covers only the
     /// standalone knowledge rows in `docs`.
     Doc,
+    /// An explicit cross-entity link (D160). Its own entity because a link
+    /// belongs to neither end: filing `link.add` under the task at its `from`
+    /// side would hide every link written between two docs, and a caller
+    /// asking "what happened to this edge" has only the link's own id.
+    Link,
 }
 
 impl Entity {
     /// Every variant. Hand-written like [`Status::ALL`], and pinned by the same
     /// exhaustiveness test, because Rust has no way to enumerate a plain enum.
-    pub const ALL: [Entity; 3] = [Entity::Task, Entity::Project, Entity::Doc];
+    pub const ALL: [Entity; 4] = [Entity::Task, Entity::Project, Entity::Doc, Entity::Link];
 
     /// The wire spelling written into `events.entity` — the exact lowercase word
     /// [`Entity::parse`] round-trips, and the only text any writer may store.
@@ -48,6 +53,7 @@ impl Entity {
             Entity::Task => "task",
             Entity::Project => "project",
             Entity::Doc => "doc",
+            Entity::Link => "link",
         }
     }
 
@@ -59,6 +65,7 @@ impl Entity {
             "task" => Some(Entity::Task),
             "project" => Some(Entity::Project),
             "doc" => Some(Entity::Doc),
+            "link" => Some(Entity::Link),
             _ => None,
         }
     }
@@ -568,7 +575,7 @@ mod tests {
         seen.sort_unstable();
         seen.dedup();
         assert_eq!(seen.len(), before, "Entity::ALL contains a duplicate");
-        assert_eq!(before, 3, "Entity::ALL must list every variant");
+        assert_eq!(before, 4, "Entity::ALL must list every variant");
         for e in Entity::ALL {
             assert_eq!(
                 Entity::parse(e.as_str()),

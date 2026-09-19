@@ -246,6 +246,46 @@ fn migrate(conn: &Connection) -> Result<(), ApiError> {
         );
         CREATE INDEX IF NOT EXISTS idx_deps_dependson ON dependencies(depends_on_id);
 
+        -- D160: explicit links between any two nodes of the knowledge graph —
+        -- tasks, memory docs, annotations and projects.
+        --
+        -- The endpoints are polymorphic (`<type>`, `<id>`) and so carry NO
+        -- foreign key, unlike `dependencies` just above, where the FKs are what
+        -- stops a dangling edge. The price is paid where the rows are written
+        -- instead: `link.add` resolves both endpoints inside its own write
+        -- transaction, and `memory.remove` — the one hard delete of a node this
+        -- engine has — deletes the links naming that doc in the same
+        -- transaction. An annotation removal is a tombstone (D113), so the node
+        -- still exists and its links are left alone.
+        --
+        -- `relation` is a string, not a CHECK constraint, although D160 fixes
+        -- the registry today: the validation lives in the engine, where a
+        -- refusal can list the accepted set, and a sixth relation must not cost
+        -- a schema migration on every store.
+        --
+        -- `metadata` is the caller's own JSON object, stored verbatim and never
+        -- interpreted — `checks.evidence`'s rule one table up.
+        --
+        -- The UNIQUE key carries `relation`, so "A references B" and "A
+        -- contradicts B" coexist while a repeat of either is idempotent.
+        CREATE TABLE IF NOT EXISTS links (
+            id         TEXT PRIMARY KEY,
+            from_type  TEXT NOT NULL,
+            from_id    TEXT NOT NULL,
+            to_type    TEXT NOT NULL,
+            to_id      TEXT NOT NULL,
+            relation   TEXT NOT NULL,
+            metadata   TEXT,
+            created    TEXT NOT NULL,
+            created_by TEXT NOT NULL DEFAULT 'user',
+            UNIQUE (from_type, from_id, to_type, to_id, relation)
+        );
+        -- `link.list {ref}` and every graph expansion read a node's edges from
+        -- both ends, and the UNIQUE index above is from-leading, so it cannot
+        -- serve the `to` half.
+        CREATE INDEX IF NOT EXISTS idx_links_from ON links(from_type, from_id);
+        CREATE INDEX IF NOT EXISTS idx_links_to   ON links(to_type, to_id);
+
         -- D138: acceptance criteria with a state and a citation.
         --
         -- Its own table rather than a convention inside an annotation body: a
@@ -818,8 +858,8 @@ pub fn clear_config(tx: &Transaction, key: &str) -> Result<bool, ApiError> {
 /// state change it records, so state and history can never diverge.
 ///
 /// `entity` is the typed [`Entity`], not a `&str`, so the only spellings the
-/// column may ever hold are the enum's three variants — `task`, `project` and
-/// `doc` (D41) — rather than a literal hand-typed at each call site. That is what
+/// column may ever hold are the enum's four variants — `task`, `project`,
+/// `doc` (D41) and `link` (D160) — rather than a literal hand-typed at each call site. That is what
 /// lets `event.list` state its accepted set from [`Entity::ALL`] instead of
 /// keeping a second list in sync with these writers.
 pub fn insert_event(

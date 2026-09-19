@@ -292,6 +292,19 @@ pub const NOT_UNDOABLE: &[(&str, &str)] = &[
          again with the verb that changes it.",
     ),
     (
+        "link.add",
+        "An `add` is idempotent (D160): a repeat answers with the link that was already there, \
+         so the event cannot tell an edge this call created from one it found — the same \
+         asymmetry `dependency.add` has, one table over. `tasqx api link.remove {id}` deletes \
+         the edge the response names.",
+    ),
+    (
+        "link.remove",
+        "The row is gone and the event carries only the link's id, not its endpoints, relation \
+         or metadata — so an inverse would have to invent all four, and the id itself cannot \
+         come back (`link.add` mints a fresh one). `tasqx api link.add` writes the edge again.",
+    ),
+    (
         "annotation.remove",
         "D113: the body is overwritten in the same statement that records the removal, so by \
          the time this event exists there is nothing left in the row to put back — undoing it \

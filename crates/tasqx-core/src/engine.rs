@@ -9,6 +9,7 @@
 //! no event. State and history therefore move together, always.
 
 mod commands;
+mod graph;
 mod memory;
 mod projects;
 mod relationships;
@@ -18,6 +19,11 @@ mod relationships;
 /// [`OUTCOME_METRICS`], [`MEMORY_SCOPES`]) so the MCP schema renders its `enum`
 /// from the list the engine validates against.
 pub use relationships::CHECK_STATES;
+
+/// D160's node vocabulary and link registry, published beside the other closed
+/// vocabularies for the same reason: one list the engine validates against, and
+/// no second copy for a surface to render from.
+pub use graph::{NodeType, LINK_RELATIONS};
 mod reports;
 pub mod task;
 mod tokens;
@@ -1708,6 +1714,7 @@ mod tests {
         let source = [
             include_str!("engine.rs"),
             include_str!("engine/commands.rs"),
+            include_str!("engine/graph.rs"),
             include_str!("engine/memory.rs"),
             include_str!("engine/projects.rs"),
             include_str!("engine/relationships.rs"),
@@ -1732,6 +1739,8 @@ mod tests {
             "annotation_add",
             "dependency_add",
             "dependency_remove",
+            "link_add",
+            "link_remove",
             "memory_add",
             "memory_remove",
             "memory_import",
