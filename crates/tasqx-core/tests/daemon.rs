@@ -1194,15 +1194,10 @@ fn telemetry_arriving_holds_the_daemon_open_and_silence_then_releases_it() {
         },
     );
 
-    // The receiver binds on its own thread, and the idle clock starts as soon as
-    // `serve` does — not when the receiver is up. Waiting on the receiver alone
-    // raced the 500 ms timeout: on a slow Windows runner, where a refused
-    // localhost connect takes about 2 s, the first POST missed the receiver, the
-    // daemon retired meanwhile and took the receiver with it, and every retry
-    // was refused (#666). A held client connection is work, so the daemon cannot
-    // leave until the receiver has answered; the clock starts only after that.
-    // A bind that lost the port race still fails this loudly rather than
-    // passing on a receiver that never existed.
+    // The idle clock starts with `serve`, not with the receiver: a POST that
+    // missed a slow bind let the daemon retire and take the receiver with it
+    // (#666). A held client connection is work, so the clock waits for the
+    // receiver's first answer; a bind that lost the port race still fails.
     let holding_open = daemon::try_connect(&sock).expect("the daemon accepted a holding client");
     let deadline = std::time::Instant::now() + Duration::from_secs(30);
     let mut answered = false;
