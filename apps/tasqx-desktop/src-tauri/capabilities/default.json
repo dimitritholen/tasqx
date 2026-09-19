@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "The Tasqx Desktop window: core APIs plus the event permissions the daemon bridge needs to emit tasqx://line and tasqx://closed and for the frontend to listen.",
+  "windows": ["main"],
+  "permissions": ["core:default", "core:event:default"]
+}

@@ -1,0 +1,27 @@
+[package]
+name = "tasqx-desktop"
+version = "0.11.0"
+edition = "2021"
+description = "Tasqx Desktop — Tauri host for the Tasqx client"
+publish = false
+
+# DELIBERATELY EMPTY, not an oversight (D160). Without it cargo walks up to the
+# repository root and pulls this crate into the tasqx workspace, whose members
+# list is exactly crates/tasqx-core and crates/tasqx-cli and whose lockfile has
+# no tauri in it. The empty table makes src-tauri its own workspace root.
+[workspace]
+
+[lib]
+# `tauri build` invokes the binary target; the library holds the code so the
+# unit tests below can reach it.
+name = "tasqx_desktop_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+directories = "6"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tauri = { version = "2", features = [] }
