@@ -209,6 +209,28 @@ pub const PARAMS: &[(&str, &[&str], bool)] = &[
     // will do is three chances to name the wrong edge (`token.remove`'s shape).
     ("link.remove", &["id"], false),
     ("link.list", &["ref", "relation", "limit", "offset"], false),
+    // D160's projection over everything above. `root` is a node reference like
+    // a link's endpoints; the rest bound the walk (`depth`, `max_nodes`,
+    // `max_edges`), narrow it (`node_types`, `relation_types`, `project`,
+    // `status`, `tags`, the two dates) or widen it (`include_inferred`).
+    (
+        "graph.query",
+        &[
+            "root",
+            "depth",
+            "node_types",
+            "relation_types",
+            "project",
+            "status",
+            "tags",
+            "modified_after",
+            "modified_before",
+            "include_inferred",
+            "max_nodes",
+            "max_edges",
+        ],
+        false,
+    ),
     (
         "memory.add",
         // #101: `standing` marks a doc that belongs in every session of its
@@ -383,6 +405,7 @@ pub fn dispatch(engine: &Engine, method: &str, params: &Value) -> Result<Value, 
         "link.add" => engine.link_add(params),
         "link.remove" => engine.link_remove(params),
         "link.list" => engine.link_list(params),
+        "graph.query" => engine.graph_query(params),
         "memory.add" => engine.memory_add(params),
         "memory.search" => engine.memory_search(params),
         "memory.get" => engine.memory_get(params),
