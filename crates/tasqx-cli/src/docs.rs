@@ -153,7 +153,7 @@ const VERBS: [(&str, &str, &str); 44] = [
 
 /// The method table the JSON API page renders: `(method, params, returns)`.
 /// Single source, same reason as [`VERBS`].
-const METHODS: [(&str, &str, &str); 46] = [
+const METHODS: [(&str, &str, &str); 47] = [
     (
         "project.create",
         "<code>name</code>, <code>description?</code>",
