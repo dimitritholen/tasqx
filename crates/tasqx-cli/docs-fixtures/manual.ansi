@@ -47,7 +47,7 @@
   theme        List or preview terminal themes.
   config       Read and change tasqx settings.
   memory       Store and search knowledge: docs, patterns, and your task annotations (D41).
-  tokens       Repair stored token attribution — dry-run by default (D50).
+  tokens       Record token spend after the fact, or repair stored attribution (D50, D167).
   export       Dump tasks as canonical JSON.
   import       Load tasks from a JSON file or stdin.
   api          One JSON envelope in on stdin → one out on stdout.
