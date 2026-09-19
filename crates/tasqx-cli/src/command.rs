@@ -1238,6 +1238,20 @@ fn window_parser(max: u64) -> clap::builder::RangedU64ValueParser<usize> {
 pub(super) enum ChartKind {
     /// Tasks added vs done per ISO week (from the events table).
     Throughput {
+        /// Filter DSL, e.g. "project:work" (default: the whole store). Same
+        /// grammar `list`/`report`/`agenda` take (#663/D173): only the
+        /// scoped tasks' events move a bar.
+        // ponytail: this positional sits one `#[command(subcommand)]` level
+        // below `Cli`, and `argv::prepass`'s dash-escaping only ever walks the
+        // FIRST subcommand token, so a bare `-tag` exclusion here reaches clap
+        // as an unrecognized flag instead of filter text (it errors loudly
+        // rather than misreading, so nothing is silently wrong — just
+        // untypable unquoted). `project:`/`+tag`/`status:` etc. are unaffected.
+        // Upgrade path: teach `argv::subcommand_index`/`canonical_name` to
+        // descend into a matched subcommand's own nested subcommands, the way
+        // `list`/`agenda` already work at the top level.
+        #[arg(add = crate::complete::candidates::filter_words())]
+        filter: Vec<String>,
         /// Number of weeks to show (1-520; default 12).
         // Weekly is the only bucketing — the spec's `--weekly` flag was parsed
         // and dropped for two releases, so it is gone rather than documented.
@@ -1246,6 +1260,9 @@ pub(super) enum ChartKind {
     },
     /// GitHub-style completion density per day (from done events).
     Heatmap {
+        /// Filter DSL — see `throughput`'s.
+        #[arg(add = crate::complete::candidates::filter_words())]
+        filter: Vec<String>,
         /// Show a full year (52 weeks).
         #[arg(long)]
         year: bool,
@@ -1257,14 +1274,11 @@ pub(super) enum ChartKind {
     /// from each task's current status, not read forwards off the events
     /// table — D59/D60).
     Burndown {
-        /// Restrict to a project (else all tasks).
-        // The archived-inclusive provider, unlike every other `--project`. This
-        // is a READ and the engine really does chart an archived project, so the
-        // narrow set would offer less than the command accepts; `add`, `modify`
-        // and `use` all refuse an archived project outright, which is why they
-        // take the narrow one. See `candidates::projects`.
-        #[arg(long, add = crate::complete::candidates::projects_including_archived())]
-        project: Option<String>,
+        /// Filter DSL, e.g. "project:work" (default: the whole store) — see
+        /// `throughput`'s. Supersedes the old `--project` flag: `project:x`
+        /// says the same thing and composes with every other predicate.
+        #[arg(add = crate::complete::candidates::filter_words())]
+        filter: Vec<String>,
         /// Number of days to show (1-3650; default 30).
         #[arg(long, allow_hyphen_values = true, value_parser = window_parser(MAX_CHART_DAYS))]
         days: Option<usize>,

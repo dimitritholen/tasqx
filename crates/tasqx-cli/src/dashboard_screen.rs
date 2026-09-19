@@ -410,8 +410,9 @@ pub(crate) fn run_dashboard(be: &mut Backend, ctx: &Ctx) -> Result<Option<String
             }
             // `⏎` on PROJECTS (#204): the same leave-and-print shape as `l`,
             // scoped to the row the cursor was on. `filter::quote` and not a
-            // raw `{name}`, exactly as `burndown_members` already does for a
-            // project name that can hold a space or a quote.
+            // raw `{name}`, the same composition `chart burndown`'s CLI-side
+            // filter positional now leaves to its own caller (#663/D173) —
+            // a project name may hold a space or a quote.
             Some(Action::ListProject(name)) => {
                 let filter = format!("project:{}", tasqx_core::filter::quote(&name));
                 return run_list(be, ctx, &[filter], &[], None, None, &[]).map(|(_, r)| Some(r));
@@ -541,25 +542,31 @@ pub(crate) fn events_since(
     )
 }
 
-/// Resolve the task ids a burndown covers, plus its label. Split out of the
-/// `ChartKind::Burndown` arm so the scope rule is testable on its own.
+/// Resolve the task ids a burndown/throughput/heatmap chart covers, plus a
+/// label for it. Split out of the `run_chart` arms so the scope rule is
+/// testable on its own.
 ///
-/// Both branches go through `task.list` with no status filter (D60). The `None`
-/// branch previously used an unfiltered `store.export`, which is what let
-/// cancelled tasks inflate the whole-store burndown's "remaining work" line.
+/// `filter` (#663/D173) is the SAME argv a caller would hand `run_list`: the
+/// positional filter-DSL tail `tasqx chart <kind>` now takes, joined through
+/// `filter::from_argv` rather than composed here — a project name with a
+/// space is the caller's own quoting to get right (`chart burndown
+/// 'project:"Home Renovation"'`), the identical rule `list`/`report`/`agenda`
+/// already hold callers to, superseding the bespoke `--project`
+/// quote-and-compose this function used to do for `burndown` alone.
+///
+/// Every branch goes through `task.list` with no status filter (D60). An
+/// empty `filter` previously used an unfiltered `store.export`, which is what
+/// let cancelled tasks inflate the whole-store burndown's "remaining work"
+/// line.
 pub(crate) fn burndown_members(
     engine: &Engine,
-    project: &Option<String>,
+    filter: &[String],
 ) -> Result<(Vec<chart::Member>, String), ApiError> {
-    let (filter, label) = match project {
-        // Through `filter::quote`, never interpolated: a project may be named
-        // `Home Renovation` or `a (b)`, and a raw `{p}` composes a filter that
-        // asks a different question (or none at all) without saying so.
-        Some(p) => (
-            Some(format!("project:{}", tasqx_core::filter::quote(p))),
-            p.clone(),
-        ),
-        None => (None, "all tasks".to_string()),
+    let joined = tasqx_core::filter::from_argv(filter);
+    let (filter, label) = if joined.trim().is_empty() {
+        (None, "all tasks".to_string())
+    } else {
+        (Some(joined.clone()), joined)
     };
     // No `NOT_CANCELLED` any more. It existed because the old reconstruction
     // guessed "open" for a task whose closing event it could not see, so a

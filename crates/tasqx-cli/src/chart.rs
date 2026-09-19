@@ -103,9 +103,10 @@ impl WeekBucket {
 ///
 /// Every caller passes the membership it actually has — the terminal `chart
 /// throughput` command's own unfiltered run computes the full-store list via
-/// `burndown_members(engine, &None)`, same as a filtered report computes its
-/// scoped one — so this takes `&[Member]`, not an `Option`, and is never asked
-/// to count anonymously.
+/// `burndown_members(engine, &[])`, a filtered one via its own filter-DSL
+/// argv (#663/D173), same as a filtered report computes its scoped one — so
+/// this takes `&[Member]`, not an `Option`, and is never asked to count
+/// anonymously.
 pub fn throughput(
     result: &Value,
     members: &[Member],

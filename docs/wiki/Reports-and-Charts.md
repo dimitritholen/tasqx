@@ -78,6 +78,15 @@ Charts drawn right in the terminal, from the event log.
 - **burndown** answers "is the pile shrinking?" (`--days 30` widens the
   window)
 
+Each takes the same filter DSL `list`/`report`/`agenda` do, so a chart can be
+scoped to one slice of the store:
+
+```console
+tasqx chart burndown project:work
+```
+
+only counts `work`'s own tasks and events — the whole store otherwise.
+
 The charts degrade cleanly from truecolor terminals down to no color at all.
 
 ## tasqx why
