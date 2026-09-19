@@ -458,6 +458,26 @@ const UNEXPOSED_METHODS: &[(&str, &str)] = &[
     ),
 ];
 
+/// Method params a tool PINS rather than exposes: the server fills each one in
+/// and refuses it from the caller, with the reason it is not the caller's to set.
+///
+/// `every_tool_advertises_exactly_the_params_its_method_accepts` subtracts
+/// these, so the omission is a recorded decision rather than a hidden param.
+const PINNED_ARGS: &[(&str, &str, &str)] = &[
+    (
+        "tasqx_add_tokens",
+        "source",
+        "an agent reporting its own spend is a self-report by definition; `otel` and \
+         `log-parse` name tasqx mechanisms the agent is not (D167).",
+    ),
+    (
+        "tasqx_add_tokens",
+        "confidence",
+        "a grade the reporter sets for itself grades nothing: an agent's count is \
+         `medium`, exactly what `tasqx_complete_task` records (D50, D167).",
+    ),
+];
+
 /// Tool arguments this server READS AND DOES NOT FORWARD, each with the reason
 /// it belongs to the transport rather than to the method.
 ///
@@ -1325,17 +1345,15 @@ fn build_tool_specs() -> Vec<ToolSpec> {
             idempotent: false,
             description: "Record token spend on a task after the fact, e.g. a count that arrived \
                 after completion (D167). Send the split counts, or `total_tokens` alone when only \
-                one number is known — never both. `confidence` grades how checkable the figure \
-                is: a self-report is `medium` at most (`high` is refused, D50), log-parse is \
-                `high` only with a session-confirmed transcript, OTLP is `high`. Reuse \
-                `idempotency_key` on a retry.",
+                one number is known — never both. Stored as a self-report at confidence \
+                `medium`, as on `tasqx_complete_task`: nothing can check it, so it is never \
+                `high` (D50); only a session-confirmed transcript or OTLP telemetry earns that. \
+                Reuse `idempotency_key` on a retry.",
             schema: json!({
                 "type": "object",
                 "properties": {
                     "ref": ref_schema(),
-                    "tool": { "type": "string", "description": "The AI tool that spent them, e.g. \"claude-code\"." },
-                    "source": { "type": "string", "enum": enum_of(crate::tokens::TOKEN_SOURCES) },
-                    "confidence": { "type": "string", "enum": enum_of(crate::tokens::TOKEN_CONFIDENCE) },
+                    "tool": { "type": "string", "description": "The AI tool that spent them; defaults to the handshake's client." },
                     "model": { "type": "string" },
                     "input_tokens": { "type": "integer" },
                     "output_tokens": { "type": "integer" },
@@ -1344,7 +1362,7 @@ fn build_tool_specs() -> Vec<ToolSpec> {
                     "total_tokens": { "type": "integer", "description": "One unsplit count, instead of the four." },
                     "idempotency_key": { "type": "string", "description": "The same key twice on one task banks once." }
                 },
-                "required": ["ref", "tool", "source", "confidence"]
+                "required": ["ref"]
             }),
         },
         ToolSpec {
@@ -2229,6 +2247,45 @@ impl<'e> McpServer<'e> {
                 if obj.get("client").is_none_or(Value::is_null) {
                     if let Some(label) = self.client_label() {
                         obj.insert("client".to_string(), Value::String(label));
+                    }
+                }
+            }
+        }
+        // D167: `tasqx_add_tokens` records what `tasqx_complete_task`'s
+        // self-report records and nothing an agent could raise. A pinned
+        // argument sent anyway is refused like any unknown key, not silently
+        // overwritten: an agent that asked for `high` must learn it did not
+        // get it. `tool` falls back to the handshake client, as on `task.done`.
+        let pinned: Vec<&str> = PINNED_ARGS
+            .iter()
+            .filter(|(tool, _, _)| *tool == spec.name)
+            .map(|(_, arg, _)| *arg)
+            .collect();
+        if !pinned.is_empty() {
+            if let Some(obj) = args.as_object_mut() {
+                if let Some(key) = pinned.iter().find(|k| obj.contains_key(**k)) {
+                    return Err(tool_error(
+                        "bad_request",
+                        format!(
+                            "unknown argument `{key}` for {}: this tool records a self-report \
+                             at confidence \"medium\", the grade `tasqx_complete_task` gives the \
+                             same claim — `source` and `confidence` are not the caller's to set \
+                             (D50, D167)",
+                            spec.name
+                        ),
+                    ));
+                }
+                obj.insert(
+                    "source".to_string(),
+                    json!(crate::tokens::SOURCE_SELF_REPORT),
+                );
+                obj.insert(
+                    "confidence".to_string(),
+                    json!(crate::tokens::CONFIDENCE_MEDIUM),
+                );
+                if obj.get("tool").is_none_or(Value::is_null) {
+                    if let Some(label) = self.client_label() {
+                        obj.insert("tool".to_string(), Value::String(label));
                     }
                 }
             }
@@ -3754,7 +3811,15 @@ mod tests {
                 .map(String::as_str)
                 .collect();
             advertised.sort_unstable();
-            let mut expected: Vec<&str> = accepted.to_vec();
+            let mut expected: Vec<&str> = accepted
+                .iter()
+                .copied()
+                .filter(|p| {
+                    !PINNED_ARGS
+                        .iter()
+                        .any(|(tool, arg, _)| *tool == spec.name && arg == p)
+                })
+                .collect();
             expected.extend(
                 TRANSPORT_ONLY_ARGS
                     .iter()

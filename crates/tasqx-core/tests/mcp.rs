@@ -3991,23 +3991,31 @@ fn an_mcp_stale_rev_on_update_annotation_names_get_task_and_expected_rev() {
 
 /// D167: a count that arrives after completion had no MCP door — `token.add`
 /// was on `UNEXPOSED_METHODS` — so an agent holding one had nowhere to put it.
+/// The tool records exactly what `tasqx_complete_task`'s self-report records:
+/// `self-report` at `medium`, with `tool` from the handshake.
 #[test]
 fn tasqx_add_tokens_records_a_total_after_completion() {
     let engine = engine();
     let server = McpServer::new(&engine, Scope::Write);
+    server.handle_message(&json!({
+        "jsonrpc": "2.0", "id": 0, "method": "initialize",
+        "params": { "protocolVersion": "2025-06-18", "capabilities": {},
+                    "clientInfo": { "name": "claude-code", "version": "2.1" } }
+    }));
     call(&server, 1, "tasqx_add_task", json!({ "title": "t" }));
     call(&server, 2, "tasqx_complete_task", json!({ "ref": 1 }));
     let r = call(
         &server,
         3,
         "tasqx_add_tokens",
-        json!({
-            "ref": 1, "tool": "claude-code", "source": "self-report",
-            "confidence": "medium", "total_tokens": 37898
-        }),
+        json!({ "ref": 1, "total_tokens": 37898 }),
     );
     assert!(!is_error(&r), "{r}");
-    assert_eq!(tool_text(&r)["measurement"]["total_tokens"], 37898, "{r}");
+    let m = &tool_text(&r)["measurement"];
+    assert_eq!(m["total_tokens"], 37898, "{r}");
+    assert_eq!(m["source"], "self-report", "{r}");
+    assert_eq!(m["confidence"], "medium", "{r}");
+    assert_eq!(m["tool"], "claude-code 2.1", "{r}");
 
     // Write-scoped: a read-only session cannot reach it.
     let read = McpServer::new(&engine, Scope::Read);
@@ -4015,10 +4023,35 @@ fn tasqx_add_tokens_records_a_total_after_completion() {
         &read,
         4,
         "tasqx_add_tokens",
-        json!({ "ref": 1, "tool": "x", "source": "self-report", "confidence": "medium" }),
+        json!({ "ref": 1, "tool": "x" }),
     );
     assert!(
         is_error(&denied) || denied.get("error").is_some(),
         "{denied}"
     );
+}
+
+/// An agent cannot self-certify: `source` and `confidence` are not its to
+/// set over MCP, so sending either is refused and writes nothing (D50, D167).
+#[test]
+fn tasqx_add_tokens_refuses_a_caller_set_source_or_confidence() {
+    let engine = engine();
+    let server = McpServer::new(&engine, Scope::Write);
+    call(&server, 1, "tasqx_add_task", json!({ "title": "t" }));
+    for (key, value) in [("confidence", "high"), ("source", "otel")] {
+        let r = call(
+            &server,
+            2,
+            "tasqx_add_tokens",
+            json!({ "ref": 1, "tool": "x", "total_tokens": 5, key: value }),
+        );
+        assert!(is_error(&r), "{key} must be refused: {r}");
+        let text = r["result"]["content"][0]["text"].as_str().unwrap();
+        assert!(text.contains(key), "{text}");
+    }
+    let n: i64 = engine
+        .conn()
+        .query_row("SELECT COUNT(*) FROM token_usage", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(n, 0);
 }
