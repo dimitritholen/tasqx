@@ -655,13 +655,8 @@ impl Engine {
                     ))
                 })?;
                 let source = opt_str_nonempty(dv, "source")?;
-                // #88: through the same date gate as a task's created/modified
-                // (opt_when/parse_when), not stored verbatim — a hand-written
-                // import carrying a lowercase `z`, an explicit offset or a
-                // date-only stamp used to escape D144's `rtrim(modified, 'Z')`
-                // and sort by raw bytes instead of by instant. parse_when
-                // short-circuits on RFC3339 so D12's byte-identical round trip
-                // of a tasqx-produced export still holds.
+                // #88: the task branch's date gate, so a foreign stamp lands in
+                // canonical form for D144's sort; RFC3339 short-circuits (D12).
                 let now_ts = crate::clock::now();
                 let created = import_doc_field(&did, "created", opt_when(dv, "created", now_ts))?
                     .unwrap_or_else(now);
@@ -1718,16 +1713,7 @@ mod tests {
         assert_eq!(after["docs"][0]["body"], json!("v2"), "{after}");
     }
 
-    /// #88: a doc's `created`/`modified` used to be stored verbatim
-    /// (`opt_str_nonempty`), while a task's went through `opt_when`/
-    /// `parse_when` and landed in `util::now`'s spelling. D144's
-    /// `memory.list` sorts on `rtrim(modified, 'Z')`, which only normalises
-    /// that one spelling: a lowercase `z` (rtrim's set is case-sensitive)
-    /// left as written compares by raw bytes against a canonical stamp, so
-    /// the earlier instant sorted above the later one. This pins that
-    /// `store.import` now normalises the doc the same way tasks already
-    /// were, so `memory.list` orders by instant regardless of the stamp's
-    /// original spelling.
+    /// #88: a lowercase-`z` stamp must sort by instant, not by bytes.
     #[test]
     fn store_import_normalises_a_foreign_doc_stamp_so_memory_list_orders_by_instant() {
         let e = Engine::open_in_memory().expect("open");
