@@ -673,35 +673,22 @@ impl Engine {
                 // `memory.add`/`memory.import` compute it at their own write
                 // doors, so a restored store's index matches its content.
                 let search_body = crate::frontmatter::flatten(&body).into_owned();
-                // #84: the doc-branch counterpart to the #177 guard just
-                // above for tasks — a doc ALREADY in this store, at a HIGHER
-                // `_rev` than the payload's, means the payload is a stale
-                // copy of this very doc. Without this check the upsert wrote
-                // `rev=excluded.rev` unconditionally, so restoring an older
-                // export silently rolled the doc's title and body back AND
-                // lowered its `rev`, which reopened the stale-`expected_rev`
-                // clobber D143 closed for `memory.import`: a writer still
-                // holding the doc's old `expected_rev` would pass
-                // `memory.update`'s guard against a body it never read.
-                // Refused by name, the same shape the task branch already
-                // gets; a payload at or ahead of the stored rev still
-                // passes, which is what keeps re-importing a store's own
-                // export (D12's round trip) a no-op rather than a refusal.
+                // #84: the doc counterpart of the #177 guard above. An older
+                // payload would rewind the doc's body and rev, reopening D143's
+                // stale-`expected_rev` clobber; same or higher rev still passes (D12).
                 let stored_rev: Option<i64> = tx
                     .query_row("SELECT rev FROM docs WHERE id = ?1", params![did], |r| {
                         r.get(0)
                     })
                     .optional()?;
-                if let Some(stored) = stored_rev {
-                    if stored > rev {
-                        return Err(ApiError::conflict(format!(
-                            "store.import: doc {did} carries _rev {rev}, but the store already \
+                if let Some(stored) = stored_rev.filter(|s| *s > rev) {
+                    return Err(ApiError::conflict(format!(
+                        "store.import: doc {did} carries _rev {rev}, but the store already \
                              holds it at _rev {stored} — this payload is older than what is \
                              already here, and importing it would roll its title and body back \
                              to a stale copy (run `tasqx export` first for a merge target, or \
                              drop this doc from the payload)"
-                        )));
-                    }
+                    )));
                 }
                 tx.execute(
                     "INSERT INTO docs \
