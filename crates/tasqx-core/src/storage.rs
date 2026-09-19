@@ -611,7 +611,9 @@ fn migrate_memory(conn: &Connection) -> Result<(), ApiError> {
     // written before this may already have two on one source, so they are
     // resolved first — once, gated on the index being absent — without
     // deleting anything: the most recently modified row keeps the source and
-    // the older ones keep their title and body with the source cleared.
+    // the older ones keep their title and body with the source cleared. An
+    // empty source is no identity, exactly like NULL: left out of both the
+    // resolution and the index, and left stored as it is (#81 owns that).
     // `rtrim(modified, 'Z')` is `memory.list`'s own normalisation of a
     // trimmed-fraction stamp (D142's trap), `id` the tie-break. The UPDATE
     // runs after `docs_fts` and its triggers exist, so `docs_fts_au`
@@ -625,11 +627,11 @@ fn migrate_memory(conn: &Connection) -> Result<(), ApiError> {
     if !has_source_index {
         tx.execute_batch(
             "UPDATE docs SET source = NULL \
-             WHERE source IS NOT NULL AND id <> ( \
+             WHERE source IS NOT NULL AND source <> '' AND id <> ( \
                  SELECT d.id FROM docs d WHERE d.source = docs.source \
                  ORDER BY rtrim(d.modified, 'Z') DESC, d.id DESC LIMIT 1); \
              CREATE UNIQUE INDEX idx_docs_source ON docs(source) \
-                 WHERE source IS NOT NULL;",
+                 WHERE source IS NOT NULL AND source <> '';",
         )?;
     }
     tx.commit()?;
@@ -1688,6 +1690,9 @@ mod tests {
             ("mid", Some("deploy.md"), "2026-09-10T10:00:10.5Z"),
             ("alone", Some("other.md"), "2026-09-01T09:00:00Z"),
             ("loose", None, "2026-09-01T09:00:00Z"),
+            // An empty source is no identity (D174): both keep their `""`.
+            ("empty1", Some(""), "2026-09-01T09:00:00Z"),
+            ("empty2", Some(""), "2026-09-02T09:00:00Z"),
         ] {
             conn.execute(
                 "INSERT INTO docs (id, source, title, body, created, modified) \
@@ -1707,7 +1712,9 @@ mod tests {
             .collect::<Result<_, _>>()
             .unwrap();
         let src = |id: &str| rows.iter().find(|r| r.0 == id).unwrap().1.clone();
-        assert_eq!(rows.len(), 5, "nothing may be deleted: {rows:?}");
+        assert_eq!(rows.len(), 7, "nothing may be deleted: {rows:?}");
+        assert_eq!(src("empty1").as_deref(), Some(""), "{rows:?}");
+        assert_eq!(src("empty2").as_deref(), Some(""), "{rows:?}");
         assert_eq!(src("newest").as_deref(), Some("deploy.md"), "{rows:?}");
         assert_eq!(src("mid"), None, "{rows:?}");
         assert_eq!(src("old"), None, "{rows:?}");
@@ -1729,6 +1736,12 @@ mod tests {
             [],
         )
         .expect("the index is partial: many docs may have no source");
+        conn.execute(
+            "INSERT INTO docs (id, source, title, body, created, modified) \
+             VALUES ('empty3', '', 't', 'b', 't', 't')",
+            [],
+        )
+        .expect("nor is an empty source an identity");
 
         migrate(&conn).expect("the migration is idempotent");
     }
