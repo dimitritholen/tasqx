@@ -35,12 +35,15 @@ are what the tasqx backlog and its annotations are for.
 
 Each task gets its own feature branch, `task/<id>-<slug>`, cut from `main`.
 A builder agent does the implementation on that branch. When it finishes,
-review the branch diff with `/ponytail:ponytail-review` plus your own judgement
+review the branch diff with `/1337:review` plus your own judgement
 on correctness, and send the findings back to the builder until the diff is
-clean and all four gates pass. Then merge it to `main` without asking first.
-This rule is standing permission for that merge. `main` requires a PR and the
-twelve CI checks, but nobody waits on them: push the branch, `gh pr create`,
-then `gh pr merge --auto --rebase`, and move straight on to the next task.
+clean and all four gates pass. `.claude/review.sh` enforces the review as a
+Stop hook: a `task/*` branch ahead of `main` and not yet pushed blocks the turn
+until the skill has run after its last commit. Then merge it to `main` without
+asking first: this rule is standing permission for that merge. `main` requires a
+PR and the twelve CI checks, but nobody waits on them: push the branch,
+`gh pr create`, then `gh pr merge --auto --rebase`, and move straight on to the
+next task.
 GitHub merges it when the checks pass. At the next task boundary, check the
 previous PR: a failed check or a Qodo comment worth acting on goes back to a
 builder on that branch; the rest is advisory and needs no reply.
