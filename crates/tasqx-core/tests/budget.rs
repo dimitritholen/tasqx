@@ -228,3 +228,31 @@ fn an_export_round_trip_keeps_the_budget() {
     .expect("import");
     assert_eq!(get(&fresh, 1)["budget_tokens"], 4_242);
 }
+
+/// D167: an unsplit total cannot say how much of it was cache reads, so the
+/// gauge counts it in full — fresh = input + output + cache creation, and a
+/// total is at most that plus reads the reporter never separated.
+#[test]
+fn an_unsplit_total_counts_toward_the_gauge_in_full() {
+    let e = engine();
+    let over = add(&e, "over", json!({ "budget_tokens": 20_000 }));
+    let under = add(&e, "under", json!({ "budget_tokens": 30_000 }));
+    for r in [over, under] {
+        let done = call(
+            &e,
+            "task.done",
+            json!({ "ref": r, "tool": "claude-code", "total_tokens": 21_145 }),
+        )
+        .expect("task.done");
+        assert_eq!(done.get("budget_hint").is_some(), r == over, "{done}");
+    }
+    let t = get(&e, over);
+    assert_eq!(t["fresh_tokens"], 21_145);
+    assert_eq!(t["over"], true);
+    let t = get(&e, under);
+    assert_eq!(t["fresh_tokens"], 21_145);
+    assert_eq!(t["over"], false);
+
+    let o = call(&e, "report.outcomes", json!({ "metrics": ["overrun"] })).expect("outcomes");
+    assert_eq!(o["groups"][0]["overrun"]["refs"], json!([over]), "{o}");
+}

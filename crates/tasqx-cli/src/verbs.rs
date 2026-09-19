@@ -556,6 +556,7 @@ pub(crate) fn apply_self_report(params: &mut Value, r: &command::SelfReportArgs)
         ("output_tokens", r.output_tokens),
         ("cache_read_tokens", r.cache_read_tokens),
         ("cache_creation_tokens", r.cache_creation_tokens),
+        ("total_tokens", r.total_tokens),
     ] {
         if let Some(v) = value {
             params[key] = json!(v);
@@ -1154,6 +1155,43 @@ pub(crate) fn run_tokens(be: &mut Backend, ctx: &Ctx, action: &TokensAction) -> 
         TokensAction::Recompute { apply } => {
             let result = be.call("tokens.recompute", &json!({ "dry_run": !apply }))?;
             let text = render::tokens_recompute(ctx, &result);
+            Ok((result, text))
+        }
+        // D167: a count that arrives after completion, without a hand-built
+        // `tasqx api` envelope. A person typing a number is a self-report, so
+        // it is stored as one, at the grade `task.done` gives the same claim.
+        TokensAction::Add {
+            r#ref,
+            total,
+            input,
+            output,
+            cache_read,
+            cache_creation,
+            tool,
+            model,
+        } => {
+            let mut params = json!({
+                "ref": r#ref,
+                "tool": tool,
+                "source": tasqx_core::tokens::SOURCE_SELF_REPORT,
+                "confidence": tasqx_core::tokens::CONFIDENCE_MEDIUM,
+            });
+            if let Some(m) = model {
+                params["model"] = json!(m);
+            }
+            for (key, value) in [
+                ("total_tokens", total),
+                ("input_tokens", input),
+                ("output_tokens", output),
+                ("cache_read_tokens", cache_read),
+                ("cache_creation_tokens", cache_creation),
+            ] {
+                if let Some(v) = value {
+                    params[key] = json!(v);
+                }
+            }
+            let result = be.call("token.add", &params)?;
+            let text = render::token_added(&result);
             Ok((result, text))
         }
     }

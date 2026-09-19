@@ -445,14 +445,9 @@ const UNEXPOSED_METHODS: &[(&str, &str)] = &[
         "it overwrites, in bulk, from a document nobody has reviewed. The confirmation model          (§7) defers to the host's gate, and a host gate on a call whose diff nobody can see          is not a safeguard.",
     ),
     (
-        "token.add",
-        "a measurement after the fact, and D50 makes the completion's self-report the primary \
-         channel precisely so one task never mixes channels. An agent with a count to report \
-         has `tasqx_complete_task`.",
-    ),
-    (
         "token.remove",
-        "the corrective half of `token.add` (#210), and the same reasoning keeps it off: an \
+        "the corrective half of `token.add` (#210), kept off although its other half is \
+         `tasqx_add_tokens` (D167): an \
          agent that reports a wrong count fixes it by reporting the right one, and a removal an \
          agent could reach unsupervised on the ledger a lead reads for budget decisions is a \
          bigger foot-gun than the gap it closes. A human runs `tasqx api token.remove` instead.",
@@ -1034,10 +1029,10 @@ fn build_tool_specs() -> Vec<ToolSpec> {
             destructive: true,
             idempotent: false,
             description: "Mark a task done. Returns any tasks its completion newly unblocked. \
-                Report what this task cost via the *_tokens params: you are the only party \
-                that knows which task a turn's spend served, so self-report is the primary \
-                channel (D50), and `tool`/`model` are recorded on the event even with no \
-                count. A task with open dependencies is a `conflict` naming the blockers; \
+                Report what this task cost via the *_tokens params, or `total_tokens` alone when \
+                you only know one number (D167): self-report is the primary channel, graded \
+                `medium` because nothing can check it (D50). `tool`/`model` are recorded on the \
+                event even with no count. A task with open dependencies is a `conflict` naming the blockers; \
                 `force: true` completes it anyway, counted by `tasqx_outcomes` (D150). \
                 `view: \"card\"` leads with the task's box card (D153), for a person deciding on \
                 it; a routine completion needs none (D164).",
@@ -1075,6 +1070,10 @@ fn build_tool_specs() -> Vec<ToolSpec> {
                     "cache_creation_tokens": {
                         "type": "integer",
                         "description": "Self-reported cache-creation tokens (0 or more)."
+                    },
+                    "total_tokens": {
+                        "type": "integer",
+                        "description": "One unsplit count, instead of the four (D167)."
                     },
                     "checks_passed": {
                         "type": "array",
@@ -1313,6 +1312,39 @@ fn build_tool_specs() -> Vec<ToolSpec> {
                     }
                 },
                 "required": ["ref", "body"]
+            }),
+        },
+        // D167. `token.add` was on `UNEXPOSED_METHODS` because the completion
+        // carries the self-report; a count that arrives AFTER completion had
+        // no door an agent could reach.
+        ToolSpec {
+            name: "tasqx_add_tokens",
+            method: "token.add",
+            write: true,
+            destructive: false,
+            idempotent: false,
+            description: "Record token spend on a task after the fact, e.g. a count that arrived \
+                after completion (D167). Send the split counts, or `total_tokens` alone when only \
+                one number is known — never both. `confidence` grades how checkable the figure \
+                is: a self-report is `medium` at most (`high` is refused, D50), log-parse is \
+                `high` only with a session-confirmed transcript, OTLP is `high`. Reuse \
+                `idempotency_key` on a retry.",
+            schema: json!({
+                "type": "object",
+                "properties": {
+                    "ref": ref_schema(),
+                    "tool": { "type": "string", "description": "The AI tool that spent them, e.g. \"claude-code\"." },
+                    "source": { "type": "string", "enum": enum_of(crate::tokens::TOKEN_SOURCES) },
+                    "confidence": { "type": "string", "enum": enum_of(crate::tokens::TOKEN_CONFIDENCE) },
+                    "model": { "type": "string" },
+                    "input_tokens": { "type": "integer" },
+                    "output_tokens": { "type": "integer" },
+                    "cache_read_tokens": { "type": "integer" },
+                    "cache_creation_tokens": { "type": "integer" },
+                    "total_tokens": { "type": "integer", "description": "One unsplit count, instead of the four." },
+                    "idempotency_key": { "type": "string", "description": "The same key twice on one task banks once." }
+                },
+                "required": ["ref", "tool", "source", "confidence"]
             }),
         },
         ToolSpec {
@@ -3365,6 +3397,9 @@ mod tests {
                 "memory.get" | "memory.update" | "memory.remove" => json!({ "id": doc }),
                 "memory.add" => json!({ "title": "t", "body": "b" }),
                 "project.create" => json!({ "name": "p" }),
+                "token.add" => json!({
+                    "ref": 1, "tool": "t", "source": "self-report", "confidence": "medium"
+                }),
                 other => panic!(
                     "tool `{}` requires {required:?} of `{other}`, which this fixture has no \
                      valid call for — extend it rather than skip the tool",

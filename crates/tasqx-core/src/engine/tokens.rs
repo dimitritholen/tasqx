@@ -59,6 +59,9 @@ pub(super) struct NewTokenUsage {
     pub(super) output_tokens: i64,
     pub(super) cache_read_tokens: i64,
     pub(super) cache_creation_tokens: i64,
+    /// D167: one unsplit count from a reporter that cannot split it. A
+    /// measurement carries either this or the four buckets, never both.
+    pub(super) total_tokens: i64,
     pub(super) confidence: String,
     /// Opaque bookkeeping the caller's write door attaches — currently only
     /// `token_add`'s `idempotency_key` (#221), JSON-encoded so the column
@@ -86,8 +89,8 @@ pub(super) fn record_token_usage(
     let created = now();
     tx.execute(
         "INSERT INTO token_usage (id, task_id, tool, source, model, input_tokens, \
-         output_tokens, cache_read_tokens, cache_creation_tokens, confidence, created, extra) \
-         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12)",
+         output_tokens, cache_read_tokens, cache_creation_tokens, confidence, created, extra, \
+         total_tokens) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13)",
         params![
             id,
             task_id,
@@ -101,6 +104,7 @@ pub(super) fn record_token_usage(
             usage.confidence,
             created,
             usage.extra,
+            usage.total_tokens,
         ],
     )?;
     Ok(json!({
@@ -112,6 +116,7 @@ pub(super) fn record_token_usage(
         "output_tokens": usage.output_tokens,
         "cache_read_tokens": usage.cache_read_tokens,
         "cache_creation_tokens": usage.cache_creation_tokens,
+        "total_tokens": usage.total_tokens,
         "confidence": usage.confidence,
         "created": created,
     }))
@@ -152,6 +157,7 @@ pub(super) fn measurement_from_row(row: &Row, base: usize) -> rusqlite::Result<V
         "cache_creation_tokens": row.get::<_, i64>(base + 7)?,
         "confidence": row.get::<_, String>(base + 8)?,
         "created": row.get::<_, String>(base + 9)?,
+        "total_tokens": row.get::<_, i64>(base + 10)?,
     }))
 }
 
@@ -159,7 +165,7 @@ pub(super) fn measurement_from_row(row: &Row, base: usize) -> rusqlite::Result<V
 /// with [`measurement_from_row`] the same way `TASK_COLS` pairs with
 /// `map_task_row`.
 pub(super) const TOKEN_COLS: &str = "id, tool, source, model, input_tokens, output_tokens, \
-     cache_read_tokens, cache_creation_tokens, confidence, created";
+     cache_read_tokens, cache_creation_tokens, confidence, created, total_tokens";
 
 /// One stored log-parse measurement row, as [`Engine::token_recompute`] reads
 /// it back for the before/after report and the unchanged check. Carries its
@@ -257,20 +263,42 @@ pub(super) fn measurement_totals(measurements: &[Value]) -> crate::tokens::Token
         totals.cache_creation = totals
             .cache_creation
             .saturating_add(get("cache_creation_tokens"));
+        totals.unsplit = totals.unsplit.saturating_add(get("total_tokens"));
     }
     totals
 }
 
 /// Render a rolled-up [`crate::tokens::TokenTotals`] as the same four-bucket
 /// object [`buckets`] renders for the recompute report — never a blended
-/// total (D48). This is `task.list`'s `tokens` projection field.
+/// total (D48). This is `task.list`'s `tokens` projection field, and it
+/// carries the D167 unsplit count beside the four as `total_tokens`, the same
+/// key a measurement row uses.
 pub(super) fn bucket_json(totals: &crate::tokens::TokenTotals) -> Value {
-    buckets(
+    let mut v = buckets(
         totals.input as i64,
         totals.output as i64,
         totals.cache_read as i64,
         totals.cache_creation as i64,
-    )
+    );
+    v["total_tokens"] = json!(totals.unsplit as i64);
+    v
+}
+
+/// D167: a measurement is either one unsplit `total_tokens` or the four
+/// buckets. Both at once would be two answers to one question, and nothing in
+/// the store could say which a report should believe.
+pub(super) fn refuse_total_beside_split(
+    total: Option<i64>,
+    split: [Option<i64>; 4],
+) -> Result<(), ApiError> {
+    if total.is_some() && split.iter().any(Option::is_some) {
+        return Err(ApiError::bad_request(
+            "`total_tokens` is the unsplit count for a reporter that cannot split it — send \
+             either `total_tokens` alone or the split counts (`input_tokens`, `output_tokens`, \
+             `cache_read_tokens`, `cache_creation_tokens`), not both (D167)",
+        ));
+    }
+    Ok(())
 }
 
 impl Engine {
@@ -285,8 +313,11 @@ impl Engine {
     /// a rev bump from one of those would spuriously break a client's
     /// `expected_rev` on a task the client never touched.
     pub fn token_add(&self, p: &Value) -> Result<Value, ApiError> {
-        // `ref` first, so an empty call is refused over the same field every
-        // other task verb names first.
+        // D167: every missing required field in one refusal, `ref` first so
+        // the list reads in the order every other task verb names them. One
+        // per round trip taught a caller building the envelope by hand its
+        // four required fields in four failed calls.
+        require_all(p, &["ref", "tool", "source", "confidence"])?;
         let _ = ref_param(p)?;
         let source = req_str(p, "source")?;
         require_source(&source)?;
@@ -315,6 +346,16 @@ impl Engine {
         // telemetry side.
         let idempotency_key = opt_str_nonempty(p, "idempotency_key")?;
         let extra = idempotency_key.as_deref().map(idempotency_extra);
+        let total_tokens = opt_token_count(p, "total_tokens")?;
+        refuse_total_beside_split(
+            total_tokens,
+            [
+                opt_token_count(p, "input_tokens")?,
+                opt_token_count(p, "output_tokens")?,
+                opt_token_count(p, "cache_read_tokens")?,
+                opt_token_count(p, "cache_creation_tokens")?,
+            ],
+        )?;
         let usage = NewTokenUsage {
             tool: req_str(p, "tool")?,
             source,
@@ -323,6 +364,7 @@ impl Engine {
             output_tokens: opt_token_count(p, "output_tokens")?.unwrap_or(0),
             cache_read_tokens: opt_token_count(p, "cache_read_tokens")?.unwrap_or(0),
             cache_creation_tokens: opt_token_count(p, "cache_creation_tokens")?.unwrap_or(0),
+            total_tokens: total_tokens.unwrap_or(0),
             confidence,
             extra,
         };
@@ -429,11 +471,13 @@ impl Engine {
         let tx = self.begin_mutation()?;
         let found: Option<(Value, String)> = tx
             .query_row(
-                &format!("SELECT {TOKEN_COLS}, task_id FROM token_usage WHERE id = ?1"),
+                // `task_id` leads, as in the snapshot query, so the column
+                // list can grow without moving it.
+                &format!("SELECT task_id, {TOKEN_COLS} FROM token_usage WHERE id = ?1"),
                 params![measurement_id],
                 |r| {
-                    let measurement = measurement_from_row(r, 0)?;
-                    let task_id: String = r.get(10)?;
+                    let measurement = measurement_from_row(r, 1)?;
+                    let task_id: String = r.get(0)?;
                     Ok((measurement, task_id))
                 },
             )
@@ -574,6 +618,7 @@ impl Engine {
                 output_tokens: output,
                 cache_read_tokens: cache_read,
                 cache_creation_tokens: cache_creation,
+                total_tokens: 0,
                 confidence: confidence.clone(),
                 extra: None,
             };
@@ -1316,6 +1361,7 @@ fn classify_task(
                 output_tokens: clamp(rc.totals.output),
                 cache_read_tokens: clamp(rc.totals.cache_read),
                 cache_creation_tokens: clamp(rc.totals.cache_creation),
+                total_tokens: 0,
                 confidence: rc.confidence.to_string(),
                 extra: None,
             });

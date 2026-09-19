@@ -50,7 +50,7 @@ use crate::urgency;
 use crate::util::{
     duration_secs, is_future_at, iso_duration, now, opt_array, opt_bool, opt_i64, opt_str,
     opt_str_array, opt_str_nonempty, opt_u64, parse_ts, req_array, req_i64, req_object, req_str,
-    req_str_lookup, req_str_value, seconds_between,
+    req_str_lookup, req_str_value, require_all, seconds_between,
 };
 
 /// The config key holding the default project name (inherited by `task.add`).
@@ -77,9 +77,11 @@ pub const SUMMARY_GROUP_BY: [&str; 3] = ["project", "status", "priority"];
 /// The `tokens_*` metrics roll up the per-task token measurements (#11) and are
 /// emitted as JSON integers, never ISO durations: a token count is a cardinal
 /// number, and the JSON type of a metric is frozen from its first release.
-/// There are exactly four: the blended `tokens_total` left the vocabulary with
-/// D50, so a downstream sum is an explicit choice, never an ambient default.
-pub const SUMMARY_METRICS: [&str; 8] = [
+/// There are exactly four buckets: the blended `tokens_total` left the
+/// vocabulary with D50, so a downstream sum is an explicit choice, never an
+/// ambient default. `tokens_unsplit` (D167) is not a fifth bucket but the sum
+/// of counts a reporter could not split at all, kept apart from the four.
+pub const SUMMARY_METRICS: [&str; 9] = [
     "count",
     "est_total",
     "overdue",
@@ -88,6 +90,7 @@ pub const SUMMARY_METRICS: [&str; 8] = [
     "tokens_out",
     "tokens_cache_read",
     "tokens_cache_creation",
+    "tokens_unsplit",
 ];
 
 /// The metrics `report.outcomes` can emit per group (D137). Unlike
@@ -902,6 +905,9 @@ pub const IMPORT_TOKEN_KEYS: &[&str] = &[
     "cache_creation_tokens",
     "confidence",
     "created",
+    // D167: absent in every export written before the unsplit kind existed,
+    // which imports as 0 — what those rows mean.
+    "total_tokens",
 ];
 
 /// Every key an exported memory doc object can carry. D41, held to D34's gate.

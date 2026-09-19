@@ -2945,3 +2945,135 @@ fn a_live_bank_and_a_recompute_agree_on_all_four_buckets() {
 
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+// ---- total_tokens: the unsplit count (D167) ------------------------------------
+
+/// A harness that reports one number (#615, #641) records it as its own
+/// measurement kind: `total_tokens`, never guessed into the four buckets.
+#[test]
+fn task_done_with_total_tokens_records_an_unsplit_measurement() {
+    let e = engine();
+    let sid = e.task_add(&json!({ "title": "t" })).unwrap()["short_id"].clone();
+    let done = dispatch(
+        &e,
+        "task.done",
+        &json!({ "ref": sid, "tool": "claude-code", "total_tokens": 21145 }),
+    )
+    .unwrap();
+    assert!(
+        done.get("tokens_hint").is_none(),
+        "a count was given: {done}"
+    );
+
+    let t = dispatch(&e, "task.get", &json!({ "ref": sid })).unwrap();
+    let m = &t["tokens"][0];
+    assert_eq!(m["total_tokens"], 21145, "{m}");
+    for k in [
+        "input_tokens",
+        "output_tokens",
+        "cache_read_tokens",
+        "cache_creation_tokens",
+    ] {
+        assert_eq!(m[k], 0, "an unsplit total is never folded into {k}: {m}");
+    }
+    assert_eq!(m["source"], "self-report");
+    assert_eq!(m["confidence"], "medium");
+    // Split measurements say so too: the key is always present.
+    let other = e.task_add(&json!({ "title": "u" })).unwrap()["short_id"].clone();
+    dispatch(
+        &e,
+        "task.done",
+        &json!({ "ref": other, "tool": "x", "input_tokens": 5 }),
+    )
+    .unwrap();
+    let t = dispatch(&e, "task.get", &json!({ "ref": other })).unwrap();
+    assert_eq!(t["tokens"][0]["total_tokens"], 0);
+}
+
+/// A total beside a split count would be two answers to one question; which
+/// one a report should believe is not something the store can decide.
+#[test]
+fn total_tokens_beside_a_split_count_is_refused() {
+    let e = engine();
+    let sid = e.task_add(&json!({ "title": "t" })).unwrap()["short_id"].clone();
+    let err = dispatch(
+        &e,
+        "task.done",
+        &json!({ "ref": sid, "tool": "x", "total_tokens": 10, "input_tokens": 4 }),
+    )
+    .unwrap_err();
+    assert_eq!(err.code, ErrorCode::BadRequest);
+    assert!(err.message.contains("total_tokens"), "{}", err.message);
+    let err = e
+        .token_add(&json!({
+            "ref": sid, "tool": "x", "source": "self-report", "confidence": "medium",
+            "total_tokens": 10, "output_tokens": 4
+        }))
+        .unwrap_err();
+    assert_eq!(err.code, ErrorCode::BadRequest);
+    assert_eq!(count(&e, "SELECT COUNT(*) FROM token_usage"), 0);
+}
+
+/// A count that arrives after completion (#602) goes through `token.add`, and
+/// the reports carry it as its own figure: `tokens_unsplit` in the summary and
+/// in the outcomes' `cost`.
+#[test]
+fn token_add_total_after_completion_reaches_summary_and_outcomes() {
+    let e = engine();
+    let sid = e
+        .task_add(&json!({ "title": "t", "project": null }))
+        .unwrap()["short_id"]
+        .clone();
+    dispatch(&e, "task.done", &json!({ "ref": sid })).unwrap();
+    let r = e
+        .token_add(&json!({
+            "ref": sid, "tool": "claude-code", "source": "self-report",
+            "confidence": "medium", "total_tokens": 37898
+        }))
+        .unwrap();
+    assert_eq!(r["measurement"]["total_tokens"], 37898);
+
+    let s = dispatch(
+        &e,
+        "report.summary",
+        &json!({ "group_by": "status", "all": true, "metrics": ["tokens_unsplit", "tokens_in"] }),
+    )
+    .unwrap();
+    let done = s["groups"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|g| g["status"] == "done")
+        .expect("a done group");
+    assert_eq!(done["tokens_unsplit"], 37898, "{s}");
+    assert_eq!(done["tokens_in"], 0, "never folded into input: {s}");
+
+    let o = dispatch(&e, "report.outcomes", &json!({ "metrics": ["cost"] })).unwrap();
+    let cost = &o["groups"][0]["cost"];
+    assert_eq!(cost["tokens_unsplit"], 37898, "{o}");
+    assert_eq!(cost["tokens_in"], 0, "{o}");
+    assert_eq!(
+        cost["n"], 1,
+        "a total-only measurement is an observation: {o}"
+    );
+}
+
+/// `token.add` named its missing required fields one per call, so a caller
+/// building the envelope by hand learned them one failed round trip at a time.
+#[test]
+fn token_add_names_every_missing_required_field_at_once() {
+    let e = engine();
+    let err = e.token_add(&json!({})).unwrap_err();
+    assert_eq!(err.code, ErrorCode::BadRequest);
+    for k in ["ref", "tool", "source", "confidence"] {
+        assert!(err.message.contains(k), "{k} missing from: {}", err.message);
+    }
+    let err = e
+        .token_add(&json!({ "ref": 1, "source": "self-report" }))
+        .unwrap_err();
+    assert!(
+        err.message.contains("tool") && err.message.contains("confidence"),
+        "{}",
+        err.message
+    );
+}

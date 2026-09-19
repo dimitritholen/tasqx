@@ -968,7 +968,8 @@ impl Engine {
             if fresh > budget {
                 out["budget_hint"] = json!(format!(
                     "over budget: {fresh} fresh tokens against a budget of {budget} \
-                     (fresh = input + output + cache creation; cache reads are not counted). \
+                     (fresh = input + output + cache creation + any unsplit total; cache reads \
+                     are not counted). \
                      Nothing was blocked — this is a size signal, and a task that blew its \
                      budget is usually one that was too big to hand to an agent whole."
                 ));
@@ -2475,7 +2476,10 @@ impl Engine {
     }
 
     /// A task's spend as D139's gauge counts it: `input + output +
-    /// cache_creation`, with cache reads excluded.
+    /// cache_creation`, with cache reads excluded — plus any D167 unsplit
+    /// `total_tokens` in full, since nothing can say how much of one number
+    /// was cache reads and counting none of it would let an unsplit report
+    /// hide an overrun.
     ///
     /// Not a blend in the sense D48/D50 forbid. Those rulings govern a COST
     /// report, where one number destroys the split a reader needs because a
@@ -2491,7 +2495,7 @@ impl Engine {
     fn fresh_tokens(&self, task_id: &str) -> Result<i64, ApiError> {
         let sum: i64 = self.conn.query_row(
             "SELECT COALESCE(SUM(input_tokens), 0) + COALESCE(SUM(output_tokens), 0) \
-                  + COALESCE(SUM(cache_creation_tokens), 0) \
+                  + COALESCE(SUM(cache_creation_tokens), 0) + COALESCE(SUM(total_tokens), 0) \
              FROM token_usage WHERE task_id = ?1",
             params![task_id],
             |r| r.get(0),
@@ -3757,8 +3761,9 @@ mod tests {
                 "output_tokens": 500,
                 "cache_read_tokens": 2000,
                 "cache_creation_tokens": 300,
+                "total_tokens": 0,
             }),
-            "the four buckets, never a blended total (D48)"
+            "the four buckets, never a blended total (D48), and the D167 unsplit count apart"
         );
         assert_eq!(
             tasks[1]["tokens"],
@@ -3767,6 +3772,7 @@ mod tests {
                 "output_tokens": 5,
                 "cache_read_tokens": 0,
                 "cache_creation_tokens": 0,
+                "total_tokens": 0,
             })
         );
 

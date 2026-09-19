@@ -135,7 +135,9 @@ const VERBS: [(&str, &str, &str); 44] = [
         // use is a command line.
         "memory.search + get/add/remove/list/update + memory.import",
     ),
-    ("tokens", "—", "tokens.recompute"),
+    // `token.add` spelled whole, not as a `/add` suffix: its object is the
+    // singular `token`, and a suffix would expand against `tokens`.
+    ("tokens", "—", "tokens.recompute + token.add"),
     ("export", "—", "store.export"),
     ("import", "—", "store.import"),
     ("api", "—", "(any)"),
@@ -242,12 +244,13 @@ const METHODS: [(&str, &str, &str); 43] = [
          <code>transcript_path?</code>, <code>client?</code>, <code>tool?</code>, \
          <code>model?</code>, <code>input_tokens?</code>, <code>output_tokens?</code>, \
          <code>cache_read_tokens?</code>, <code>cache_creation_tokens?</code>, \
-         <code>checks_passed?</code>, <code>evidence?</code>",
+         <code>total_tokens?</code>, <code>checks_passed?</code>, <code>evidence?</code>",
         "The task; plus the spawned next instance if recurring. Correlation params \
          land in the done event, and so do <code>tool</code> and <code>model</code> on \
          their own (D65) — a caller that cannot count its tokens still records who did \
          the work. Any present token count additionally records a self-report \
-         measurement — the primary channel: only the caller knows which task a \
+         measurement — <code>total_tokens</code> alone is one unsplit count, never beside \
+         the four (D167) — the primary channel: only the caller knows which task a \
          turn's spend served, and the log-parse fallback refuses samples claimed \
          by more than one task's window. A task with open blockers is refused \
          <code>conflict</code> naming them; <code>force: true</code> completes it \
@@ -344,9 +347,11 @@ const METHODS: [(&str, &str, &str); 43] = [
         "<code>ref</code>, <code>tool</code>, <code>source</code>, <code>confidence</code>, \
          <code>model?</code>, <code>input_tokens?</code>, <code>output_tokens?</code>, \
          <code>cache_read_tokens?</code>, <code>cache_creation_tokens?</code>, \
-         <code>idempotency_key?</code>",
+         <code>total_tokens?</code>, <code>idempotency_key?</code>",
         "<code>{short_id, measurement}</code>. Records AI token spend; never bumps \
-         <code>_rev</code>. A repeated <code>idempotency_key</code> on the same task \
+         <code>_rev</code>. <code>total_tokens</code> is one unsplit count, refused beside \
+         the split four (D167); a missing required field is refused together with every \
+         other one missing. A repeated <code>idempotency_key</code> on the same task \
          returns the measurement it already banked, unchanged.",
     ),
     (

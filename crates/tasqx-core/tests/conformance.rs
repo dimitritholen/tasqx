@@ -383,6 +383,8 @@ const MEASUREMENT_ROW: &[Field] = &[
     req("cache_creation_tokens", Ty::Int),
     req("confidence", Ty::Str),
     req("created", Ty::Str),
+    // D167: additive — the unsplit count, 0 on every split measurement.
+    req("total_tokens", Ty::Int),
 ];
 const MEASUREMENT: Shape = &[MEASUREMENT_ROW];
 
@@ -1087,6 +1089,8 @@ const OUTCOME_COST: &[Field] = &[
     req("tokens_out", Ty::Int),
     req("tokens_cache_read", Ty::Int),
     req("tokens_cache_creation", Ty::Int),
+    // D167: additive — unsplit counts, beside the four and never inside them.
+    req("tokens_unsplit", Ty::Int),
     req("n", Ty::Int),
     opt("confidence", Ty::Str),
 ];

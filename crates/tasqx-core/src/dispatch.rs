@@ -138,6 +138,8 @@ pub const PARAMS: &[(&str, &[&str], bool)] = &[
             "output_tokens",
             "cache_read_tokens",
             "cache_creation_tokens",
+            // D167: one unsplit count, for a harness that reports only that.
+            "total_tokens",
         ],
         false,
     ),
@@ -181,6 +183,7 @@ pub const PARAMS: &[(&str, &[&str], bool)] = &[
             "output_tokens",
             "cache_read_tokens",
             "cache_creation_tokens",
+            "total_tokens",
             "confidence",
             "idempotency_key",
         ],

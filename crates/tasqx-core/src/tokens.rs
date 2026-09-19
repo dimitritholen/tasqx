@@ -183,6 +183,11 @@ pub struct TokenTotals {
     /// Cache writes, summed. Stored as `token_usage.cache_creation_tokens`,
     /// reported as `tokens_cache_creation`.
     pub cache_creation: u64,
+    /// Unsplit counts, summed (D167): a reporter that knew only one number.
+    /// Stored as `token_usage.total_tokens`, reported as `tokens_unsplit`.
+    /// Never folded into the four above; no transcript or telemetry parser
+    /// writes it.
+    pub unsplit: u64,
 }
 
 impl TokenTotals {
@@ -194,7 +199,7 @@ impl TokenTotals {
         self.cache_creation = self.cache_creation.saturating_add(s.cache_creation_tokens);
     }
 
-    /// The blended grand total across all four buckets, saturating. Used only to
+    /// The blended grand total across all five kinds, saturating. Used only to
     /// answer "did we find anything?" — a measurement row is still stored as the
     /// four separate fields, never this number (research rule #5).
     pub fn total(&self) -> u64 {
@@ -202,6 +207,7 @@ impl TokenTotals {
             .saturating_add(self.output)
             .saturating_add(self.cache_read)
             .saturating_add(self.cache_creation)
+            .saturating_add(self.unsplit)
     }
 }
 

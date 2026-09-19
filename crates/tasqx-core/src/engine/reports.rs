@@ -149,6 +149,9 @@ impl Engine {
             tokens_out: i64,
             tokens_cache_read: i64,
             tokens_cache_creation: i64,
+            // D167: counts a reporter could not split, summed apart from the
+            // four and never folded into them.
+            tokens_unsplit: i64,
             // D50's trust hierarchy lives in `source`/`confidence` per
             // measurement (#217). The four buckets above blend every
             // measurement's counts together with no way back to which row
@@ -178,6 +181,7 @@ impl Engine {
                         || n("output_tokens") != 0
                         || n("cache_read_tokens") != 0
                         || n("cache_creation_tokens") != 0
+                        || n("total_tokens") != 0
                 });
                 if spent {
                     tokens_excluded_cancelled_tasks += 1;
@@ -227,6 +231,7 @@ impl Engine {
                 tokens_out: 0,
                 tokens_cache_read: 0,
                 tokens_cache_creation: 0,
+                tokens_unsplit: 0,
                 tokens_confidence: None,
             });
             agg.count += 1;
@@ -285,6 +290,7 @@ impl Engine {
                 agg.tokens_cache_creation = agg
                     .tokens_cache_creation
                     .saturating_add(bucket("cache_creation_tokens"));
+                agg.tokens_unsplit = agg.tokens_unsplit.saturating_add(bucket("total_tokens"));
                 let str_field = |name: &str| m.get(name).and_then(Value::as_str);
                 if let Some(c) = str_field("confidence") {
                     let is_worse = match agg.tokens_confidence.as_deref() {
@@ -346,6 +352,9 @@ impl Engine {
                             "tokens_cache_creation".into(),
                             json!(agg.tokens_cache_creation),
                         );
+                    }
+                    "tokens_unsplit" => {
+                        obj.insert("tokens_unsplit".into(), json!(agg.tokens_unsplit));
                     }
                     _ => {}
                 }
@@ -516,6 +525,8 @@ impl Engine {
             tokens_out: i64,
             tokens_cache_read: i64,
             tokens_cache_creation: i64,
+            /// D167: unsplit counts, apart from the four.
+            tokens_unsplit: i64,
             /// Completions that contributed at least one measurement — the
             /// denominator `cost` is read against, which is NOT `completions`:
             /// a report whose cost covers three of twelve completions must not
@@ -590,6 +601,7 @@ impl Engine {
                 tokens_out: 0,
                 tokens_cache_read: 0,
                 tokens_cache_creation: 0,
+                tokens_unsplit: 0,
                 measured: 0,
                 confidence: None,
             });
@@ -655,6 +667,7 @@ impl Engine {
                     sum.saturating_add(bucket("input_tokens"))
                         .saturating_add(bucket("output_tokens"))
                         .saturating_add(bucket("cache_creation_tokens"))
+                        .saturating_add(bucket("total_tokens"))
                 });
                 if fresh > budget {
                     agg.overrun.push(t.short_id);
@@ -663,13 +676,14 @@ impl Engine {
             let mut contributed = false;
             for m in &snapshot.tokens {
                 let bucket = |name: &str| m.get(name).and_then(Value::as_i64).unwrap_or(0);
-                let (i, o, cr, cc) = (
+                let (i, o, cr, cc, t) = (
                     bucket("input_tokens"),
                     bucket("output_tokens"),
                     bucket("cache_read_tokens"),
                     bucket("cache_creation_tokens"),
+                    bucket("total_tokens"),
                 );
-                if i == 0 && o == 0 && cr == 0 && cc == 0 {
+                if i == 0 && o == 0 && cr == 0 && cc == 0 && t == 0 {
                     // D65: `tool`/`model` are recorded without a count and
                     // write no measurement — but a zero-count row reaching
                     // here from anywhere else must not inflate `measured`
@@ -681,6 +695,7 @@ impl Engine {
                 agg.tokens_out = agg.tokens_out.saturating_add(o);
                 agg.tokens_cache_read = agg.tokens_cache_read.saturating_add(cr);
                 agg.tokens_cache_creation = agg.tokens_cache_creation.saturating_add(cc);
+                agg.tokens_unsplit = agg.tokens_unsplit.saturating_add(t);
                 // A closure parameter rather than a literal key, the shape
                 // `report_summary` uses two hundred lines up and for the same
                 // reason: D32's guard bans the literal chain store-wide because
@@ -764,6 +779,8 @@ impl Engine {
                     "tokens_cache_creation".into(),
                     json!(agg.tokens_cache_creation),
                 );
+                // D167: the unsplit total beside the four, never inside them.
+                cost.insert("tokens_unsplit".into(), json!(agg.tokens_unsplit));
                 cost.insert("n".into(), json!(agg.measured));
                 // Absent rather than null when nothing was measured: a
                 // confidence grading describes figures, and there are none.

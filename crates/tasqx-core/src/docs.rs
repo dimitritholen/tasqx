@@ -215,7 +215,7 @@ pub const TASK_STATUS_FLAG: &[FieldDoc] = &[
 
 /// D139's derived pair: what was spent, and whether that is past the budget.
 pub const TASK_BUDGET_GAUGE: &[FieldDoc] = &[
-    f("fresh_tokens", "integer", "Fresh tokens spent on this task — input, output and cache creation, never cache reads (D139)."),
+    f("fresh_tokens", "integer", "Fresh tokens spent on this task — input, output and cache creation, never cache reads (D139), plus any unsplit `total_tokens` in full (D167)."),
     n("over", "boolean", "Whether `fresh_tokens` is past `budget_tokens`; null when no budget was set, because there is no verdict to give."),
 ];
 
@@ -361,6 +361,7 @@ pub const MEASUREMENT_ROW: &[FieldDoc] = &[
     f("cache_creation_tokens", "integer", "Tokens spent writing the cache."),
     f("confidence", "string", "How checkable the figure is: `high`, `medium` or `low`. A self-report may not claim `high`."),
     f("created", "string", "When the measurement was banked."),
+    f("total_tokens", "integer", "One unsplit count, from a reporter that could not split it — 0 on a split measurement, and never folded into the four (D167)."),
 ];
 
 /// The terms `urgency` sums (D1).
@@ -1057,6 +1058,7 @@ pub const OUTCOME_COST: &[FieldDoc] = &[
     f("tokens_out", "integer", "Output tokens."),
     f("tokens_cache_read", "integer", "Cache reads."),
     f("tokens_cache_creation", "integer", "Cache writes."),
+    f("tokens_unsplit", "integer", "Unsplit `total_tokens` counts, summed apart from the four (D167)."),
     f("n", "integer", "The denominator this rate was computed over. A rate never travels without it."),
     o("confidence", "string", "How checkable the figures are. Absent — not null — when nothing was measured, because there is nothing to grade."),
 ];
