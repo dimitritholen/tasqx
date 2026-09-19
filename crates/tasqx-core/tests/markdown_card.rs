@@ -814,3 +814,50 @@ fn the_status_row_marks_a_running_total_and_a_corrected_one() {
 "
     );
 }
+
+/// D170 (finding #628): a recurrence spawn names the occurrence it came from
+/// on its Repeats row, and its brief quotes what that occurrence delivered.
+#[test]
+fn a_spawn_names_its_predecessor_and_its_brief_quotes_last_times_delivery() {
+    let spawn = json!({
+        "short_id": 625,
+        "title": "ledger",
+        "status": "pending",
+        "recurrence": "every week",
+        "spawned_from": 604,
+        "annotations": [ { "body": "Reconcile the ledger.", "created": "2026-09-15T09:00:00Z" } ],
+        "annotations_total": 1,
+        "checks": [
+            { "body": "totals match", "state": "open" },
+            { "body": "sheet archived", "state": "open" }
+        ]
+    });
+    let card = task_card(&spawn, &unicode());
+    assert!(
+        card.contains("│ Repeats     │ every week from #604"),
+        "the Repeats row names the predecessor:\n{card}"
+    );
+    assert!(
+        card.contains("│ Description │ Reconcile the ledger."),
+        "{card}"
+    );
+    assert!(card.contains("[ ] totals match"), "{card}");
+    assert!(
+        !task_card(&minimal(), &unicode()).contains("from #"),
+        "no predecessor, no suffix"
+    );
+
+    let brief = json!({
+        "task": spawn,
+        "neighbourhood": { "depends_on": [], "blocks": [] },
+        "last_time": {
+            "short_id": 604, "title": "ledger", "completed": "2026-09-14T08:00:00Z",
+            "delivered": "Balanced to the cent."
+        }
+    });
+    let tail = brief_tail_text(&brief);
+    assert_eq!(
+        tail, "\n### Last time\n\n- **#604** ledger\n  > Balanced to the cent.\n",
+        "the brief's tail quotes the predecessor's delivery paragraph"
+    );
+}

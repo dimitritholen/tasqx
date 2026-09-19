@@ -433,6 +433,16 @@ const TASK_EXPORT_PIN: &[Field] = &[opt("delivered_annotation_id", Ty::Str)];
 /// that one.
 const TASK_BLOCKS: &[Field] = &[req("blocks", Ty::Array)];
 
+/// D170: the predecessor a recurrence spawned this task from, by short_id like
+/// `depends_on`; null on every other task. `task.get`-only — the export row
+/// carries the uuid instead, and only on a spawn ([`TASK_EXPORT_SPAWNED_FROM`]).
+const TASK_SPAWNED_FROM: &[Field] = &[nul("spawned_from", Ty::Int)];
+
+/// D170 on the export row: the predecessor's uuid, omitted on any task nothing
+/// spawned — `IMPORT_TASK_KEYS` is a closed gate, so an always-present key would
+/// make every new export unreadable to an older tasqx.
+const TASK_EXPORT_SPAWNED_FROM: &[Field] = &[opt("spawned_from", Ty::Str)];
+
 /// What `task.get` says about the history it did NOT return.
 ///
 /// `annotations_total` is required, not optional, and present whether the page
@@ -680,6 +690,7 @@ const R_TASK_GET: Shape = &[
     TASK_LIVE_TIME,
     TASK_GET_RELATIONS,
     TASK_BLOCKS,
+    TASK_SPAWNED_FROM,
     TASK_ANNOTATION_PAGE,
     TASK_TOKENS,
     TASK_BLOCKED,
@@ -1069,6 +1080,7 @@ const R_TASK_BRIEF_TASK: Shape = &[
     TASK_LIVE_TIME,
     TASK_GET_RELATIONS,
     TASK_BLOCKS,
+    TASK_SPAWNED_FROM,
     TASK_ANNOTATION_PAGE,
     TASK_TOKENS,
     TASK_BLOCKED,
@@ -1080,10 +1092,22 @@ const R_TASK_BRIEF_TASK: Shape = &[
     )],
 ];
 
+/// D170: on a recurrence spawn, the previous occurrence and the first
+/// paragraph of its newest note. `completed` is null while that occurrence is
+/// open (it was reopened), `delivered` when nobody wrote on it.
+const BRIEF_LAST_TIME: &[Field] = &[
+    req("short_id", Ty::Int),
+    req("title", Ty::Str),
+    nul("completed", Ty::Str),
+    nul("delivered", Ty::Str),
+];
+
 const R_TASK_BRIEF: Shape = &[&[
     req_of("task", Ty::Object, R_TASK_BRIEF_TASK),
     req_of("neighbourhood", Ty::Object, &[BRIEF_NEIGHBOURHOOD]),
     req_of("memory", Ty::Object, &[BRIEF_MEMORY]),
+    // Present only on a recurrence spawn, like `task.done`'s `spawned`.
+    opt_of("last_time", Ty::Object, &[BRIEF_LAST_TIME]),
 ]];
 
 /// D137's per-metric sub-objects. Each is frozen separately because each is
@@ -1200,6 +1224,7 @@ const R_STORE_EXPORT: Shape = &[&[
             // D138: an export is self-contained (D12, D37), so the criteria
             // travel with the task like its annotations do.
             TASK_CHECKS,
+            TASK_EXPORT_SPAWNED_FROM,
         ],
     ),
     req("dropped_dependencies", Ty::Int),
@@ -2026,6 +2051,18 @@ fn cases() -> Vec<Case> {
                 // The cap is shorter than the note so D148's markers show.
                 e.annotation_add(&json!({ "ref": 1, "body": "shipping the freeze today" }))
                     .expect("annotate the subject");
+                // D170's `last_time` is present only on a recurrence spawn, so
+                // #1 is made one — through `store.import`, the door that writes
+                // `spawned_from` directly — naming #2 as its predecessor.
+                // Before the scrub: an import replaces the annotations
+                // wholesale and would take the tombstone with it.
+                let mut doc = e.store_export(&json!({})).expect("export to edit");
+                let tasks = doc["tasks"].as_array_mut().expect("tasks");
+                let predecessor =
+                    tasks.iter().find(|t| t["short_id"] == 2).expect("#2")["id"].clone();
+                let subject = tasks.iter_mut().find(|t| t["short_id"] == 1).expect("#1");
+                subject["spawned_from"] = predecessor;
+                e.store_import(&doc).expect("re-import as a spawn");
                 scrub_one(e, 1);
                 e.check_add(&json!({ "ref": 1, "body": "the criterion" }))
                     .expect("check");
@@ -2119,6 +2156,22 @@ fn cases() -> Vec<Case> {
                     .find(|t| t["short_id"] == 2)
                     .expect("the completed task is in the export");
                 task["tracked_seconds"] = json!(3600);
+                // D170's conditional key, set the same way: #2 recorded as a
+                // spawn of #1, so `spawned_from` appears on an exported row.
+                let predecessor = doc["tasks"]
+                    .as_array()
+                    .expect("tasks")
+                    .iter()
+                    .find(|t| t["short_id"] == 1)
+                    .expect("#1")["id"]
+                    .clone();
+                let task = doc["tasks"]
+                    .as_array_mut()
+                    .expect("tasks")
+                    .iter_mut()
+                    .find(|t| t["short_id"] == 2)
+                    .expect("#2");
+                task["spawned_from"] = predecessor;
                 e.store_import(&doc).expect("re-import with banked time");
                 // D166's `tracked_adjustment_seconds` is conditional on the
                 // same rule; a correction on the done task makes it appear.

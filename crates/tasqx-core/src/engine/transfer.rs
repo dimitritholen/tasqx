@@ -657,6 +657,12 @@ impl Engine {
         if let Some(pin) = &t.delivered_annotation_id {
             out["delivered_annotation_id"] = json!(pin);
         }
+        // D170: by uuid, like `depends_on` here — only on a recurrence spawn.
+        // Not trimmed to `present`: it is provenance, not an edge, and
+        // `task.get` reads a predecessor the store does not hold as null.
+        if let Some(from) = &snapshot.spawned_from {
+            out["spawned_from"] = json!(from);
+        }
         // Last, and exactly once. It only ever ADDS `status_unrecognized`, so
         // wrapping the literal or the finished object is the same document —
         // wrapping last is the spelling that stays correct as conditional keys
@@ -1123,6 +1129,8 @@ impl Engine {
                 "delivered_annotation_id",
                 opt_str_nonempty(tv, "delivered_annotation_id"),
             )?;
+            let spawned_from =
+                import_field(id, "spawned_from", opt_str_nonempty(tv, "spawned_from"))?;
             let remind = match import_field(id, "remind", opt_str_nonempty(tv, "remind"))? {
                 Some(s) => Some(
                     import_field(id, "remind", remind::parse_remind(&s, now_ts))
@@ -1278,10 +1286,10 @@ impl Engine {
                 "INSERT INTO tasks (id, short_id, title, status, priority, project, due, \
                  scheduled, wait, estimate, recurrence, urgency, active_since, tracked_seconds, \
                  rev, created, modified, completed, remind, budget_tokens, \
-                 delivered_annotation_id, tracked_adjustment_seconds) \
+                 delivered_annotation_id, tracked_adjustment_seconds, spawned_from) \
                  VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12, \
                  CASE WHEN ?4 = 'active' THEN COALESCE(?18,?19) ELSE NULL END, \
-                 COALESCE(?20,0),?13,?14,?15,?16,?17,?21,?22,COALESCE(?23,0)) \
+                 COALESCE(?20,0),?13,?14,?15,?16,?17,?21,?22,COALESCE(?23,0),?24) \
                  ON CONFLICT(id) DO UPDATE SET \
                  short_id=?2, title=?3, status=?4, priority=?5, project=?6, due=?7, \
                  scheduled=?8, wait=?9, estimate=?10, recurrence=?11, urgency=?12, \
@@ -1291,7 +1299,8 @@ impl Engine {
                  rev=?13, created=?14, modified=?15, completed=?16, remind=?17, \
                  budget_tokens=?21, delivered_annotation_id=?22, \
                  tracked_adjustment_seconds = COALESCE(?23, \
-                 CASE WHEN ?20 IS NULL THEN tracked_adjustment_seconds ELSE 0 END)",
+                 CASE WHEN ?20 IS NULL THEN tracked_adjustment_seconds ELSE 0 END), \
+                 spawned_from=?24",
                 params![
                     id,
                     short_id,
@@ -1315,7 +1324,8 @@ impl Engine {
                     tracked_seconds,
                     budget_tokens,
                     delivered_annotation_id,
-                    tracked_adjustment_seconds
+                    tracked_adjustment_seconds,
+                    spawned_from
                 ],
             )?;
 

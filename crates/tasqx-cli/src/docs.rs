@@ -476,7 +476,9 @@ const METHODS: [(&str, &str, &str); 44] = [
          (D136): <code>task</code> is <code>task.get</code>'s own result verbatim; \
          <code>neighbourhood.depends_on</code> names each prerequisite with its NEWEST \
          annotation — what that task concluded — and <code>neighbourhood.blocks</code> names \
-         what this one releases, title and status only; <code>memory</code> is a \
+         what this one releases, title and status only; on a recurrence spawn, \
+         <code>last_time</code> names the previous occurrence and the first paragraph of its \
+         newest note (D170); <code>memory</code> is a \
          <code>memory.search</code> result under an expression tasqx DERIVES from the task's \
          title, tags and project, echoed in <code>matched</code>, scoped to that project PLUS \
          unscoped docs (the same <code>include_unscoped</code> shape <code>memory.search</code> \

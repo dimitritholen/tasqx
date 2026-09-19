@@ -220,7 +220,11 @@ fn migrate(conn: &Connection) -> Result<(), ApiError> {
             -- D166: the net of every `task.adjust_tracked` delta. Already
             -- folded into `tracked_seconds`; kept so a read can say how much
             -- of the total is correction rather than clock.
-            tracked_adjustment_seconds INTEGER NOT NULL DEFAULT 0
+            tracked_adjustment_seconds INTEGER NOT NULL DEFAULT 0,
+            -- D170: the task whose completion spawned this one (a recurrence),
+            -- by uuid. NULL on everything else. Not in `TASK_COLS`: only
+            -- `task.get`, `task.brief` and the export read it.
+            spawned_from    TEXT
         );
         CREATE INDEX IF NOT EXISTS idx_tasks_status  ON tasks(status);
         CREATE INDEX IF NOT EXISTS idx_tasks_project ON tasks(project);
@@ -382,6 +386,7 @@ fn migrate(conn: &Connection) -> Result<(), ApiError> {
         "tracked_adjustment_seconds",
         "INTEGER NOT NULL DEFAULT 0",
     )?;
+    add_column_if_missing(conn, "tasks", "spawned_from", "TEXT")?;
 
     // Must follow the ALTER: on an upgraded store the column does not exist
     // until the statement above runs. Partial, because the scheduler only ever

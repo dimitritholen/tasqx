@@ -58,6 +58,10 @@ tasqx add Team retro repeat:"monthly on the 2nd tuesday"
 ```
 
 - Completing a recurring task spawns the next occurrence; the answer shows it.
+  The occurrence keeps the task's first note (its description) and its checks,
+  reset to open, and its Repeats row names the one it came from
+  (`every week from #604`). `tasqx brief` on it adds a "Last time" section
+  quoting what the previous occurrence delivered.
 - Missed occurrences don't pile up — they collapse into a single next one.
 - `every N months` can drift across short months; anchor with
   `monthly on day 15` when the day of month matters.

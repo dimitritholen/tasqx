@@ -584,6 +584,11 @@ const RENDERED_AS: &[(&str, Shows)] = &[
     ("wait", Shows::Row("wait")),
     ("remind", Shows::Row("remind")),
     ("recurrence", Shows::Row("recurrence")),
+    // D170: a suffix on the recurrence cell, naming the predecessor.
+    (
+        "spawned_from",
+        Shows::Cell("| recurrence | weekly on mon from #2 |"),
+    ),
     ("active_since", Shows::Row("active since")),
     ("completed", Shows::Row("completed")),
     ("blocked", Shows::Cell("| blocked | yes |")),
@@ -763,13 +768,16 @@ fn every_field_task_get_returns_is_accounted_for_in_the_view() {
     // `force`: #2 still depends on #1, which this fixture leaves pending on
     // purpose (it is what makes `blocked`/`unmet_blockers` non-empty above),
     // and D150 refuses that completion without the override.
-    d("task.done", &json!({ "ref": 2, "force": true }));
+    let done = d("task.done", &json!({ "ref": 2, "force": true }));
     // D166: a correction, so `tracked_adjustment` carries a value to render.
     d(
         "task.adjust_tracked",
         &json!({ "ref": 2, "delta": "+1h", "reason": "forgot to start" }),
     );
     let finished = d("task.get", &json!({ "ref": 2 }));
+    // #2 recurs, so its completion spawned the next occurrence — the one task
+    // here whose `spawned_from` (D170) is not null.
+    let spawn = d("task.get", &json!({ "ref": done["spawned"]["short_id"] }));
     // `status_unrecognized` is emitted for a status no writer of THIS build
     // could have produced (D28), so a fixture that only drives the state
     // machine can never carry it — and a mapping that can never fire is a
@@ -784,7 +792,7 @@ fn every_field_task_get_returns_is_accounted_for_in_the_view() {
     let anomalous = d("task.get", &json!({ "ref": 2 }));
 
     let snapshots: Vec<(Value, String)> = [
-        pending, waiting, elided, scrubbed, running, finished, anomalous, blocker,
+        pending, waiting, elided, scrubbed, running, finished, anomalous, blocker, spawn,
     ]
     .into_iter()
     .map(|task| {

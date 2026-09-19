@@ -1145,8 +1145,8 @@ impl Engine {
         let new_short = alloc_short_id(tx)?;
         tx.execute(
             &format!(
-                "INSERT INTO tasks ({TASK_COLS}) VALUES \
-                 (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22)"
+                "INSERT INTO tasks ({TASK_COLS}, spawned_from) VALUES \
+                 (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22,?23)"
             ),
             params![
                 new_id,
@@ -1174,10 +1174,44 @@ impl Engine {
                 template.budget_tokens,
                 Option::<String>::None, // delivered_annotation_id
                 0i64, // tracked_adjustment_seconds: the next occurrence has no time yet
+                template.id,            // D170: spawned_from
             ],
         )?;
         for tag in template_tags {
             ensure_tag_link(tx, &new_id, tag)?;
+        }
+        // D170 (finding #628): the next occurrence is the same work again, so
+        // it carries what describes the work — the OLDEST live note, verbatim,
+        // as a new note of its own — and what would prove it done: every
+        // check, reset to open with no evidence. Later notes are the history
+        // of the occurrence that just closed and stay with it. No events of
+        // their own: the spawn's `add` is the one event this spawn writes, so
+        // `undo` (which refuses `add`) cannot peel the copies off it.
+        tx.execute(
+            "INSERT INTO annotations (id, task_id, body, created) \
+             SELECT ?1, ?2, body, ?3 FROM annotations \
+             WHERE task_id = ?4 AND removed IS NULL ORDER BY id LIMIT 1",
+            params![crate::clock::uuid_v7().to_string(), new_id, ts, template.id],
+        )?;
+        let check_bodies: Vec<(String, i64)> = {
+            let mut stmt = tx.prepare(
+                "SELECT body, position FROM checks WHERE task_id = ?1 ORDER BY position",
+            )?;
+            let rows = stmt.query_map(params![template.id], |r| Ok((r.get(0)?, r.get(1)?)))?;
+            rows.collect::<Result<_, _>>()?
+        };
+        for (body, position) in check_bodies {
+            tx.execute(
+                "INSERT INTO checks (id, task_id, body, state, evidence, position, created, \
+                 modified) VALUES (?1, ?2, ?3, 'open', NULL, ?4, ?5, ?5)",
+                params![
+                    crate::clock::uuid_v7().to_string(),
+                    new_id,
+                    body,
+                    position,
+                    ts
+                ],
+            )?;
         }
         insert_event(
             tx,
@@ -1681,11 +1715,15 @@ impl Engine {
         let mut statements = 0usize;
 
         statements += 1;
-        let tasks: Vec<Task> = {
+        // `spawned_from` (D170) rides on this statement rather than adding one:
+        // it is a column of the same row, read after `TASK_COLS` so every
+        // positional index `map_task_row_at` reads is untouched.
+        let ncols = TASK_COLS.split(',').count();
+        let tasks: Vec<(Task, Option<String>)> = {
             let mut stmt = self
                 .conn
-                .prepare(&format!("SELECT {TASK_COLS} FROM tasks"))?;
-            let rows = stmt.query_map([], |r| map_task_row_at(r, now))?;
+                .prepare(&format!("SELECT {TASK_COLS}, spawned_from FROM tasks"))?;
+            let rows = stmt.query_map([], |r| Ok((map_task_row_at(r, now)?, r.get(ncols)?)))?;
             let mut out = Vec::new();
             for row in rows {
                 out.push(row?);
@@ -1839,9 +1877,10 @@ impl Engine {
 
         let snapshots = tasks
             .into_iter()
-            .map(|task| {
+            .map(|(task, spawned_from)| {
                 let id = &task.id;
                 TaskSnapshot {
+                    spawned_from,
                     tags: tags.remove(id).unwrap_or_default(),
                     blocked: blocked.contains(id),
                     depends_on: dependencies.remove(id).unwrap_or_default(),
@@ -2426,6 +2465,10 @@ impl Engine {
         // The reverse edge (D-159): additive per D56/D85, so a v1 client
         // reading this shape unchanged never notices it arrived.
         obj["blocks"] = json!(self.blocks_short_ids(&task.id)?);
+        // D170: the predecessor a recurrence spawned this task from, by
+        // short_id like `depends_on`. Null on a task nothing spawned — and on a
+        // spawn whose predecessor is not in this store (a filtered import).
+        obj["spawned_from"] = json!(self.spawned_from_short_id(&task.id)?);
 
         let limit = opt_u64(p, "annotations_limit")?;
         let offset = opt_u64(p, "annotations_offset")?.unwrap_or(0);
@@ -2669,10 +2712,75 @@ impl Engine {
 
         let memory = self.derived_memory(&task, &tags, opt_u64(p, "memory_limit")?)?;
 
-        Ok(json!({
+        let mut out = json!({
             "task": detail,
             "neighbourhood": neighbourhood,
             "memory": memory,
+        });
+        // D170: on a recurrence spawn, what the previous occurrence delivered.
+        // Present only on a spawn, like `task.done`'s `spawned`.
+        if let Some(last) = self.last_time(&task.id)? {
+            out["last_time"] = last;
+        }
+        Ok(out)
+    }
+
+    /// The short_id of the task a recurrence spawned `task_id` from (D170).
+    fn spawned_from_short_id(&self, task_id: &str) -> Result<Option<i64>, ApiError> {
+        Ok(self
+            .conn
+            .query_row(
+                "SELECT p.short_id FROM tasks t JOIN tasks p ON p.id = t.spawned_from \
+                 WHERE t.id = ?1",
+                params![task_id],
+                |r| r.get(0),
+            )
+            .optional()?)
+    }
+
+    /// `task.brief`'s "Last time" (D170): the predecessor, and the first
+    /// paragraph of its delivery note — D165's `delivered_annotation` rule,
+    /// in SQL: the pinned note (null if it was since removed), else on a
+    /// closed task the newest live note, else nothing.
+    fn last_time(&self, task_id: &str) -> Result<Option<Value>, ApiError> {
+        let row = self
+            .conn
+            .query_row(
+                "SELECT p.short_id, p.title, p.completed, \
+                        CASE WHEN p.delivered_annotation_id IS NOT NULL THEN \
+                            (SELECT a.body FROM annotations a \
+                             WHERE a.id = p.delivered_annotation_id AND a.removed IS NULL) \
+                        WHEN p.status IN ('done', 'cancelled') THEN \
+                            (SELECT a.body FROM annotations a \
+                             WHERE a.task_id = p.id AND a.removed IS NULL \
+                             ORDER BY a.id DESC LIMIT 1) \
+                        END \
+                 FROM tasks t JOIN tasks p ON p.id = t.spawned_from WHERE t.id = ?1",
+                params![task_id],
+                |r| {
+                    Ok((
+                        r.get::<_, i64>(0)?,
+                        r.get::<_, String>(1)?,
+                        r.get::<_, Option<String>>(2)?,
+                        r.get::<_, Option<String>>(3)?,
+                    ))
+                },
+            )
+            .optional()?;
+        Ok(row.map(|(short_id, title, completed, body)| {
+            let delivered = body.map(|b| {
+                b.lines()
+                    .skip_while(|l| l.trim().is_empty())
+                    .take_while(|l| !l.trim().is_empty())
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            });
+            json!({
+                "short_id": short_id,
+                "title": title,
+                "completed": completed,
+                "delivered": delivered,
+            })
         }))
     }
 
@@ -3973,6 +4081,100 @@ mod tests {
         assert!(
             due.ends_with("T00:00:00Z"),
             "spawned due is not a clean midnight boundary: {due}"
+        );
+    }
+
+    /// Finding #628 (D170): completing a recurring task spawned the next
+    /// occurrence with FIELDS only — ledger #604 -> #625 lost its description
+    /// and would have lost its acceptance criteria. The spawn carries the
+    /// predecessor's oldest note verbatim, every check reset to open with no
+    /// evidence, and `spawned_from`; its brief quotes what was delivered last
+    /// time.
+    #[test]
+    fn a_recurrence_spawn_carries_the_description_the_checks_and_its_predecessor() {
+        let e = Engine::open_in_memory().unwrap();
+        e.task_add(&json!({ "title": "ledger", "recurrence": "every week" }))
+            .unwrap();
+        e.annotation_add(&json!({ "ref": 1, "body": "Reconcile the ledger.\n\nSee the sheet." }))
+            .unwrap();
+        e.check_add(&json!({ "ref": 1, "body": "totals match" }))
+            .unwrap();
+        e.check_add(&json!({ "ref": 1, "body": "sheet archived" }))
+            .unwrap();
+        e.annotation_add(&json!({ "ref": 1, "body": "Balanced to the cent.\n\nDetail." }))
+            .unwrap();
+        let first_check = e.task_get(&json!({ "ref": 1 })).unwrap()["checks"][0]["id"].clone();
+        let done = e
+            .task_done(&json!({
+                "ref": 1, "checks_passed": [first_check], "evidence": "sheet v3"
+            }))
+            .unwrap();
+        let spawn = done["spawned"]["short_id"].as_i64().unwrap();
+
+        let got = e.task_get(&json!({ "ref": spawn })).unwrap();
+        let prev = e.task_get(&json!({ "ref": 1 })).unwrap();
+        let notes = got["annotations"].as_array().unwrap();
+        assert_eq!(notes.len(), 1, "only the description is copied: {got}");
+        assert_eq!(notes[0]["body"], prev["annotations"][0]["body"]);
+        assert_ne!(
+            notes[0]["id"], prev["annotations"][0]["id"],
+            "a new note, new id"
+        );
+        let checks = got["checks"].as_array().unwrap();
+        assert_eq!(checks.len(), 2, "every check is copied: {got}");
+        for (copy, orig) in checks.iter().zip(prev["checks"].as_array().unwrap()) {
+            assert_eq!(copy["body"], orig["body"]);
+            assert_eq!(copy["state"], "open");
+            assert_eq!(copy["evidence"], Value::Null);
+            assert_ne!(copy["id"], orig["id"]);
+        }
+        assert_eq!(
+            prev["checks"][0]["evidence"], "sheet v3",
+            "the original is untouched"
+        );
+        assert_eq!(got["spawned_from"], json!(1));
+        assert_eq!(
+            prev["spawned_from"],
+            Value::Null,
+            "a first occurrence has none"
+        );
+
+        // Undo cannot take the completion back piecemeal: the newest event is
+        // still the spawn's `add`, which is refused, so the copies stay with it.
+        assert!(e.event_revert().is_err());
+        assert_eq!(
+            e.task_get(&json!({ "ref": spawn })).unwrap()["checks"],
+            got["checks"]
+        );
+
+        // Written after the completion, so it is not the pinned delivery
+        // note (D165) and "Last time" must not quote it.
+        e.annotation_add(&json!({ "ref": 1, "body": "an afterthought" }))
+            .unwrap();
+        let brief = e.task_brief(&json!({ "ref": spawn })).unwrap();
+        assert_eq!(brief["last_time"]["short_id"], json!(1));
+        assert_eq!(brief["last_time"]["delivered"], "Balanced to the cent.");
+        let first = e.task_brief(&json!({ "ref": 1 })).unwrap();
+        assert!(
+            first.get("last_time").is_none(),
+            "only a spawn has a last time"
+        );
+
+        // A store.export / store.import round trip keeps the link.
+        let doc = e.store_export(&json!({})).unwrap();
+        let row = doc["tasks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|t| t["short_id"] == json!(spawn))
+            .unwrap()
+            .clone();
+        assert_eq!(row["spawned_from"], prev["id"]);
+        let fresh = Engine::open_in_memory().unwrap();
+        fresh.store_import(&doc).unwrap();
+        assert_eq!(
+            fresh.task_get(&json!({ "ref": spawn })).unwrap()["spawned_from"],
+            json!(1)
         );
     }
 

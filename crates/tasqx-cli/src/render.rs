@@ -2093,6 +2093,23 @@ pub fn task_brief(ctx: &Ctx, result: &Value, now: Timestamp) -> String {
         )
     };
 
+    // D170: what the previous occurrence of a recurring task delivered.
+    if let Some(last) = result.get("last_time").filter(|v| !v.is_null()) {
+        heading(&mut out, "LAST TIME");
+        let sid = last.get("short_id").and_then(Value::as_i64).unwrap_or(0);
+        out.push_str(&format!(
+            "  {}  {}\n",
+            ctx.paint("accent", &format!("#{sid}")),
+            san(&s(last, "title"))
+        ));
+        for line in wrap_words(
+            &san(&s(last, "delivered")),
+            ctx.cols.saturating_sub(6).max(20),
+        ) {
+            out.push_str(&format!("    {}\n", ctx.paint("muted", &line)));
+        }
+    }
+
     let depends_on = list("depends_on");
     if !depends_on.is_empty() {
         heading(&mut out, "DEPENDS ON");
@@ -2397,7 +2414,12 @@ fn detail_rows(ctx: &Ctx, result: &Value, now: Timestamp) -> Vec<DetailRow> {
         row("wait", DetailField::Wait, fmt_i(&s(result, "wait")));
     }
     if !s(result, "recurrence").is_empty() {
-        row("repeats", DetailField::Repeats, s(result, "recurrence"));
+        // D170: a spawn names the occurrence it came from.
+        let repeats = match result.get("spawned_from").and_then(Value::as_i64) {
+            Some(from) => format!("{} from #{from}", s(result, "recurrence")),
+            None => s(result, "recurrence"),
+        };
+        row("repeats", DetailField::Repeats, repeats);
     }
     if !s(result, "estimate").is_empty() {
         row(
@@ -6048,6 +6070,26 @@ mod tests {
             out.contains("FROM MEMORY") && out.contains("Idempotency"),
             "{out}"
         );
+    }
+
+    /// D170: a recurrence spawn's brief quotes what the previous occurrence
+    /// delivered, and its detail names that occurrence on the repeats row.
+    #[test]
+    fn a_spawns_brief_prints_last_times_delivery_and_its_predecessor() {
+        let ctx = Ctx::new(theme::default_theme(), Caps::PLAIN);
+        let result = json!({
+            "task": { "short_id": 625, "title": "ledger", "status": "pending",
+                      "recurrence": "every week", "spawned_from": 604 },
+            "neighbourhood": { "depends_on": [], "blocks": [] },
+            "memory": { "hits": [], "total": 0 },
+            "last_time": { "short_id": 604, "title": "ledger",
+                           "completed": "2026-09-14T08:00:00Z",
+                           "delivered": "Balanced to the cent." },
+        });
+        let out = task_brief(&ctx, &result, crate::clock::now());
+        assert!(out.contains("LAST TIME"), "{out}");
+        assert!(out.contains("Balanced to the cent."), "{out}");
+        assert!(out.contains("every week from #604"), "{out}");
     }
 
     /// An empty section is omitted, not printed with nothing under it: a brief
