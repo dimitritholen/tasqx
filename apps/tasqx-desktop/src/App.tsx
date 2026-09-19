@@ -11,6 +11,8 @@ import { OfflineBanner } from './shell/OfflineBanner';
 import { navigate, useRoute } from './shell/router';
 import type { Screen } from './shell/router';
 import { currentTheme, nextTheme, setTheme, useTheme } from './shell/theme';
+import { attachEvents } from './state/events';
+import { DashboardStore, StoreContext, useStore } from './state/store';
 import {
   DashboardScreen,
   GraphScreen,
@@ -34,13 +36,28 @@ const SCREEN_VIEWS: Record<Screen, ComponentType<{ connection?: ReactNode }>> = 
   settings: SettingsScreen,
 };
 
-/** @param controller - a test's connection; the app builds the real one. */
-export function App({ controller }: { controller?: ConnectionController }) {
-  const connection = useMemo(() => controller ?? createAppConnection(), [controller]);
+/**
+ * @param controller - a test's connection; the app builds the real one.
+ * @param store - a test's pre-filled store; the app builds an empty one.
+ */
+export function App({
+  controller,
+  store,
+}: {
+  controller?: ConnectionController;
+  store?: DashboardStore;
+}) {
+  const dashboard = useMemo(() => store ?? new DashboardStore(), [store]);
+  const connection = useMemo(
+    () => controller ?? createAppConnection(dashboard),
+    [controller, dashboard],
+  );
   return (
-    <ConnectionContext.Provider value={connection}>
-      <ConnectedApp />
-    </ConnectionContext.Provider>
+    <StoreContext.Provider value={dashboard}>
+      <ConnectionContext.Provider value={connection}>
+        <ConnectedApp />
+      </ConnectionContext.Provider>
+    </StoreContext.Provider>
   );
 }
 
@@ -48,7 +65,12 @@ function ConnectedApp() {
   useTheme();
   const route = useRoute();
   const { state, controller } = useConnection();
+  const { store } = useStore();
   const View = SCREEN_VIEWS[route.screen];
+
+  // The daemon's pushes reach the store only while this is mounted; the
+  // controller buffers them until the baseline is in, so none are lost.
+  useEffect(() => attachEvents(controller, store), [controller, store]);
 
   // Only the Tauri window has a daemon to reach: in a browser the dev server
   // has no host commands, so the Connect button drives whatever is injected.

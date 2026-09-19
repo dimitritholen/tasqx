@@ -1,15 +1,20 @@
 import { createContext, useCallback, useContext, useSyncExternalStore } from 'react';
 
+import type { DashboardStore } from '../state/store';
+import { loadBaseline } from './baseline';
 import type { ApiClient } from './client';
-import { ConnectionController, defaultLoadBaseline } from './connection';
+import { ConnectionController } from './connection';
 import type { ConnectionState } from './connection';
 import { TauriTransport } from './transport';
 
-/** The connection the app runs on. A test builds its own on a FakeTransport. */
-export function createAppConnection(): ConnectionController {
+/**
+ * The connection the app runs on: the real transport, loading #691's baseline
+ * into `store`. A test builds its own on a FakeTransport.
+ */
+export function createAppConnection(store: DashboardStore): ConnectionController {
   return new ConnectionController({
     transport: new TauriTransport(),
-    loadBaseline: defaultLoadBaseline,
+    loadBaseline: (client) => loadBaseline(client, store),
   });
 }
 
