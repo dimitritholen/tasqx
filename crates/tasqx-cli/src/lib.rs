@@ -3560,6 +3560,54 @@ mod tests {
         );
     }
 
+    /// The other half of the case above: something IS listening at the probed
+    /// socket, so the warning must stay silent. Spins up a real daemon (the
+    /// same `daemon::serve` the CLI's `tasqx daemon` runs) on its own isolated
+    /// socket rather than a bare listener, so the same code path that maps a
+    /// socket string to a Unix socket or a Windows named pipe (`bind` and
+    /// `connect_stream` in `tasqx_core::daemon` both funnel through
+    /// `win_pipe_name`) is exercised on both platforms with no cfg-gating.
+    #[test]
+    fn otlp_daemon_warning_is_silent_when_something_answers_at_the_probed_socket() {
+        let stem = format!(
+            "tasqx-live-daemon-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        );
+        let live = std::env::temp_dir().join(format!("{stem}.sock"));
+        let live = live.to_str().expect("utf-8 path").to_string();
+
+        let shutdown = Arc::new(AtomicBool::new(false));
+        let sd = shutdown.clone();
+        let sock = live.clone();
+        std::thread::spawn(move || {
+            let engine = tasqx_core::Engine::open_in_memory().expect("open engine");
+            daemon::serve(engine, &sock, sd).expect("serve");
+        });
+
+        // Wait until the listener is up rather than assuming the thread won
+        // the race (matches the wait loop `tasqx-core/tests/daemon.rs` uses).
+        let deadline = std::time::Instant::now() + Duration::from_secs(20);
+        while std::time::Instant::now() < deadline {
+            if let Some(c) = daemon::try_connect(&live) {
+                drop(c);
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+
+        assert_eq!(
+            otlp_daemon_warning_at("otlp.enabled", "true", &live),
+            None,
+            "a daemon answering at the probed socket must suppress the warning"
+        );
+
+        shutdown.store(true, Ordering::Relaxed);
+    }
+
     /// `config get` on a key nobody registered must say so and list the valid
     /// ones. Today an unknown key in config.toml is read by nothing and
     /// reported by nothing, so a typo looks like it worked.
