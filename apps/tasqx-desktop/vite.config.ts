@@ -9,6 +9,9 @@ export default defineConfig({
   test: {
     environment: 'jsdom',
     globals: true,
+    // The token tests import the stylesheets with ?raw; without this Vitest
+    // hands back an empty string for anything CSS.
+    css: true,
     setupFiles: 'src/test/setup.ts',
     include: ['src/**/*.test.{ts,tsx}'],
   },
