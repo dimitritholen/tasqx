@@ -1,5 +1,6 @@
 import base from './base.css?raw';
 import components from './components.css?raw';
+import screens from './screens.css?raw';
 import shell from './shell.css?raw';
 
 test('body sits on the canvas and uses the UI font at body size', () => {
@@ -46,4 +47,39 @@ test('pills carry one class per status token', () => {
     expect(components).toContain(`.pill-${status}`);
     expect(components).toContain(`var(--status-${status})`);
   }
+});
+
+test.each(['.task-row', '.card', '.project-row'])('%s styles hover, pressed and focus', (row) => {
+  for (const state of [':hover', ':active']) {
+    expect(screens).toContain(`${row}${state}`);
+  }
+});
+
+test('the selected row is marked, not merely focused', () => {
+  expect(screens).toContain(".task-row[aria-selected='true']");
+  expect(screens).toContain('.task-row:focus-visible');
+  expect(screens).toContain('.card:focus-visible');
+});
+
+test('the table scrolls inside its pane and the title column truncates', () => {
+  expect(screens).toMatch(/\.table-pane\s*\{[^}]*overflow:\s*auto/);
+  expect(screens).toMatch(/\.cell-title\s*\{[^}]*text-overflow:\s*ellipsis/);
+});
+
+test('an annotation body wraps as it was written and is never markup', () => {
+  expect(screens).toMatch(/\.note-body\s*\{[^}]*white-space:\s*pre-wrap/);
+});
+
+test('the skeleton shimmer stops under prefers-reduced-motion', () => {
+  expect(components).toMatch(/\.skeleton\s*\{[^}]*animation:\s*skeleton-shimmer/);
+  const at = components.indexOf('@media (prefers-reduced-motion: reduce)');
+  expect(at).toBeGreaterThanOrEqual(0);
+  expect(components.slice(at)).toMatch(/\.skeleton\s*\{[^}]*animation:\s*none/);
+});
+
+test('every length on a screen sits on the 4px grid', () => {
+  // Hairlines and the 2px accent marker are the only sub-grid lengths there are.
+  const lengths = (screens.match(/\d+px/g) ?? []).map((value) => Number.parseInt(value, 10)).filter((px) => px > 2);
+  expect(lengths.length).toBeGreaterThan(0);
+  for (const px of lengths) expect(px % 4).toBe(0);
 });

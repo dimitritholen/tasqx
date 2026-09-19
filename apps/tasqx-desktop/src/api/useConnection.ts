@@ -33,3 +33,16 @@ export function useConnection(): {
   const state = useSyncExternalStore(subscribe, getState, getState);
   return { state, controller, client: controller.client };
 }
+
+/**
+ * Refresh means "make what I am looking at true again": a fresh baseline while
+ * live, and an early retry while it is not. The toolbar button, the `r` key,
+ * the palette and every Retry in an error state run this one thing.
+ */
+export function useRefresh(): () => void {
+  const { state, controller } = useConnection();
+  return useCallback(() => {
+    if (state.status === 'live') controller.resync('manual refresh');
+    else void controller.retryNow();
+  }, [controller, state.status]);
+}

@@ -4,7 +4,12 @@ import { setTheme, useTheme } from '../shell/theme';
 import type { Theme } from '../shell/theme';
 import { EmptyState, Field } from '../ui/primitives';
 
-/** Every data screen is the same shape until the API client lands. */
+export { DashboardScreen } from './DashboardScreen';
+export { ProjectsScreen } from './ProjectsScreen';
+export { TaskInspector } from './TaskInspector';
+export { TasksScreen } from './TasksScreen';
+
+/** The screens still waiting for their data: a heading and what is coming. */
 function Placeholder({ title, lede, empty }: { title: string; lede: string; empty: string }) {
   return (
     <div className="screen">
@@ -12,36 +17,6 @@ function Placeholder({ title, lede, empty }: { title: string; lede: string; empt
       <p className="screen-lede">{lede}</p>
       <EmptyState title="Not connected" message={empty} />
     </div>
-  );
-}
-
-export function DashboardScreen() {
-  return (
-    <Placeholder
-      title="Dashboard"
-      lede="What is working, what is blocked, what is due."
-      empty="Connect to the tasqx daemon to see your working set."
-    />
-  );
-}
-
-export function TasksScreen() {
-  return (
-    <Placeholder
-      title="Tasks"
-      lede="The backlog, filtered and ordered."
-      empty="Connect to the tasqx daemon to list tasks."
-    />
-  );
-}
-
-export function ProjectsScreen() {
-  return (
-    <Placeholder
-      title="Projects"
-      lede="One project per repo or initiative."
-      empty="Connect to the tasqx daemon to list projects."
-    />
   );
 }
 

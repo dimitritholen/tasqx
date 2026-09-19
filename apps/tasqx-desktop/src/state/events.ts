@@ -50,8 +50,20 @@ export function attachEvents(
     }
     // Docs and links have no screen in #691.
     if (entity !== undefined && entity !== 'task') return;
-    const row = shortId === undefined ? undefined : selectRow(store.getState(), shortId);
-    if (shortId === undefined || row === undefined) {
+    const state = store.getState();
+    const row = shortId === undefined ? undefined : selectRow(state, shortId);
+    if (shortId === undefined) {
+      schedulePageRefresh();
+      return;
+    }
+    if (row === undefined) {
+      // The open task need not be on the page under it — the dashboard's
+      // working set drops a task the moment it is done, and the inspector is
+      // still showing it. Follow the selection whether or not it has a row.
+      const selected = state.selected.data;
+      if (selected !== null && selected.short_id === shortId && applyEvent({ rev: selected._rev }, event) !== 'ignore') {
+        store.refetchTask(shortId, true).catch(() => schedulePageRefresh());
+      }
       schedulePageRefresh();
       return;
     }
