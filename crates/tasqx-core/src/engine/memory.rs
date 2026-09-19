@@ -120,18 +120,21 @@ pub struct SessionDoc {
 /// is a `conflict` naming that doc, never a second holder. Every door that
 /// sets `source` from a caller (`memory.add`, `memory.update`, `store.import`)
 /// asks here first; the partial UNIQUE index `idx_docs_source` is the
-/// backstop that would otherwise answer with a raw constraint failure.
+/// backstop that would otherwise answer with a raw constraint failure. An
+/// empty source is no identity, exactly like none: the index leaves it out.
 pub(crate) fn refuse_source_held_elsewhere(
     conn: &Connection,
     source: Option<&str>,
     id: &str,
 ) -> Result<(), ApiError> {
-    let Some(source) = source else {
+    let Some(source) = source.filter(|s| !s.is_empty()) else {
         return Ok(());
     };
     let holder: Option<String> = conn
         .query_row(
-            "SELECT id FROM docs WHERE source = ?1 AND id <> ?2",
+            // `source <> ''` restates the index's predicate so the planner
+            // can use it; the filter above already guarantees it holds.
+            "SELECT id FROM docs WHERE source = ?1 AND source <> '' AND id <> ?2",
             params![source, id],
             |r| r.get(0),
         )
@@ -253,10 +256,11 @@ impl Engine {
         // two docs on one identity — it used to insert the first and replace
         // it with the second, reporting two entries for one id. Refused whole,
         // before the write lock is taken. A malformed `source` is left to the
-        // per-doc validation below.
+        // per-doc validation below, and so is `""`, which is no identity.
         let mut seen = HashSet::new();
         let mut twice: Vec<&str> = Vec::new();
-        for src in docs.iter().filter_map(|d| d.get("source")?.as_str()) {
+        let sources = docs.iter().filter_map(|d| d.get("source")?.as_str());
+        for src in sources.filter(|s| !s.is_empty()) {
             if !seen.insert(src) && !twice.contains(&src) {
                 twice.push(src);
             }

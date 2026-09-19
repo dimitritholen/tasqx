@@ -1917,3 +1917,21 @@ fn store_import_refuses_a_doc_whose_source_another_id_holds() {
     )
     .expect("the holder itself re-imports over its own row");
 }
+
+/// D174: an empty-string source is no identity — it is exactly as unsourced
+/// as NULL for uniqueness, so two docs may both carry `""`. What is stored is
+/// left alone (normalisation is task #81's).
+#[test]
+fn memory_add_lets_two_docs_share_an_empty_source() {
+    let e = engine();
+    for title in ["one", "two"] {
+        call(
+            &e,
+            "memory.add",
+            json!({ "title": title, "body": "b", "source": "" }),
+        )
+        .expect("an empty source is not held by anyone");
+    }
+    let listed = call(&e, "memory.list", json!({})).unwrap();
+    assert_eq!(listed["total"], 2, "{listed}");
+}
