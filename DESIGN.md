@@ -411,7 +411,7 @@ tasqx [GLOBAL-FLAGS] [VERB] [REF...] [ARGS / FILTER] [--flags]
 | `tag`/`untag` | — | `tasqx tag 42 blocking` / `tasqx untag 42 blocking`. A tag is written the same way as in `add`/`modify` sugar — `+api` and `api` name one tag — and untagging a tag the task does not have is exit 4 that removes nothing (D52). The bare-ref form `tasqx 42 +blocking` is **not** built: it needs the fuzzy-ref dispatch below, which is not built either. |
 | `pick` | `p`, `fzf` | `tasqx pick [filter]` — the task browser (**D124**): `list`'s rows on a full screen, `/` for a fuzzy search (subsequence, per field, a term found whole ranking first), enter to read a task's `show` card, and one key with an effect: `s` **starts** the task under the cursor. Leaving without starting one exits 0 — a browser you close is not a failed run (**D128**) — while a filter matching nothing still exits 4, having started nothing either way. It needs a terminal on stdin *and* stdout, so it refuses in a pipe (exit 2) rather than being composable — see D55 for why that killed the "print the ref" form the mockup drew. |
 | `agenda` | `ag`, `cal` | `tasqx agenda [filter] [--days N]` — `list` ordered by time and grouped by day. Each task sits on the EARLIER of its `due` and `scheduled`; overdue first, always; 14 days ahead by default. Tasks with neither date, and tasks past the horizon, are counted under the table rather than dropped (D53). |
-| `undo` | `u` | Reverses the newest event by appending a compensating one — the log is never rewritten. Five operations are undoable (`stop`, `untag`, `undep`, `annotate`, `annotate --edit`); every other one exits 5 naming itself and the verb that does take it back. No ref, and no redo (D54). |
+| `undo` | `u` | Reverses the newest event by appending a compensating one — the log is never rewritten. Six operations are undoable (`stop`, `untag`, `undep`, `annotate`, `annotate --edit`, `adjust`); every other one exits 5 naming itself and the verb that does take it back. No ref, and no redo (D54). |
 
 **Fuzzy verb matching:** `tasqx stat` → *"did you mean `start`? [Y/n]"* on ambiguity, silent auto-correct on a unique prefix. A sub-millisecond Levenshtein pass over the clap subcommand table — no network.
 
@@ -439,7 +439,8 @@ tasqx [GLOBAL-FLAGS] [VERB] [REF...] [ARGS / FILTER] [--flags]
 | `tasqx agenda [filter] [--days N]` | `task.list` | No `agenda` method: the grouping, the horizon and the earlier-of-two-dates ordering are all rendering over fields the row already carries (D53). The filter defaults to every OPEN status, not `@working` — a future `scheduled` parks a task in `backlog`, which `@working` excludes. |
 | `tasqx report <name>` | `report.summary` | Feeds charts (§8) and HTML export. |
 | `tasqx docs` | *(none — no store)* | Generates the §8a user guide and opens it. Pure static content; never touches the store (D15). |
-| `tasqx undo` | `event.revert` | No params. Appends the inverse of the **newest** event, over a closed set of five ops (D54, D165); anything else is `conflict` (exit 5) naming the way back, and an empty log is exit 4 (D54). |
+| `tasqx adjust <ref> <delta> --reason <text>` | `task.adjust_tracked` | Signed correction (`-2h25m`, `+30m`) to tracked time, any status; below zero or an empty reason is exit 2. Undoable (D166). |
+| `tasqx undo` | `event.revert` | No params. Appends the inverse of the **newest** event, over a closed set of six ops (D54, D165, D166); anything else is `conflict` (exit 5) naming the way back, and an empty log is exit 4 (D54). |
 | `tasqx export` / `import` | `store.export` / `store.import` | Canonical JSON round-trip. |
 | `tasqx api < req.json` | *(raw)* | Passthrough: one envelope in, one out. |
 
@@ -646,7 +647,7 @@ $ tasqx undo
 ▌ undid untag   +blocking +release +api   M ▄▄▃▁ 7.2   work.tasqx
 ```
 `event.revert` appends the inverse of the **newest** event — the reversed event stays in the log, so
-`tasqx chart` reads "the tag came off, then that was undone". Five operations are undoable; every
+`tasqx chart` reads "the tag came off, then that was undone". Six operations are undoable; every
 other one exits 5 naming itself and what does take it back (`done` → `tasqx reopen`, `modify` →
 `tasqx show` then a second `modify`). There is no redo, and no ref to aim it with: only the newest
 event can be reversed exactly, because nothing has happened since to have overwritten what the
@@ -797,6 +798,7 @@ An agent must never dither over *which* tool. So: **one verb = one tool**, names
 | `tasqx_complete_task` | W | `ref`, `checks_passed[]?`, `evidence?`, the self-report counts, `view?` | `{status, unblocked[]}`, plus `checks_hint` when a criterion is still open (D138), `budget_hint` on an overrun (D139) and `tokens_hint` when no counts were given (D65); `view: "card"` leads with the D146 card of the task as completed, JSON unchanged behind it (**D153**) | `task.done` |
 | `tasqx_reopen_task` | W | `ref` | `{short_id, status, blocked[]}` (D67, D69) — done\|cancelled → pending, naming the dependents it put back | `task.reopen` |
 | `tasqx_start_timer` / `tasqx_stop_timer` | W | `ref` | interval / `tracked` | `task.start` / `task.stop` |
+| `tasqx_adjust_tracked` | W | `ref`, `delta`, `reason` | `{short_id, title, delta, tracked, tracked_adjustment, _rev}` — a signed correction to tracked time, any status, undoable (D166) | `task.adjust_tracked` |
 | `tasqx_tag_task` | W | `ref`, `tags[]` | resulting tag set | `tag.add` |
 | `tasqx_untag_task` | W | `ref`, `tags[]` | resulting tag set (D67) | `tag.remove` |
 | `tasqx_search_memory` | R | `query`, `limit?`, `scope?`, `raw?`, `include_rank?` | `{count, hits[], matched}` bm25-ranked (D41); `matched` is the expression actually run (D69); each hit's bm25 `rank` is present only under `include_rank: true` (**D154**) | `memory.search` |
@@ -4160,6 +4162,20 @@ are the product's integrity guarantee.
 **Why undo covers it — a fifth op in D54's closed set.** The `annotation.update` event carries the replaced body as `previous`, and the edit touched nothing else, so the inverse is exact while it is the newest event. The inverse refuses unless the note still holds the body the edit wrote. Its `restored` names the note by id and carries no text. The `previous` body is also a copy of text D113 promises to scrub, so `annotation.remove` now redacts every `annotation.update` event for the note (`body` and `previous`) beside the `annotation.add` event. That is D113(1a)'s exception extended to the op that copies the text, not a second one.
 
 **Why the pin is only written by `task.done`.** The ruling was completion. A cancelled task keeps today's newest-note rule through the fallback. `done` stays outside undo (D54), so no undo path has to clear a pin; reopen does.
+
+### D166 — `tracked` includes the running interval on every read, and `task.adjust_tracked` is an auditable, undoable correction folded into the total (task #655; amends D54, extends D97, D98)
+
+**Decision:** (1) Every read that reports `tracked` — `task.get`, `task.list`, `task.brief`, the markdown detail and the card — and `report.summary`'s unwindowed `tracked_total` add the open interval up to the read's own instant, through one method, `Task::tracked_at(now)`. The windowed summary already closed an open interval at `now` and clips it to `[since, until)` like any other (D97). The stored `tracked_seconds` still holds closed intervals only. The card's Status row says `tracked 4m (running)`. (2) A new method `task.adjust_tracked {ref, delta, reason}` (MCP `tasqx_adjust_tracked`, CLI `tasqx adjust <ref> <delta> --reason <text>`) takes a signed duration in `parse_duration`'s grammar behind an optional sign, and a non-empty reason. It is allowed in any status, done included. It refuses with `bad_request` a delta that would take the stored total below zero, and a zero delta. The delta is added to `tracked_seconds` and to a new column, `tracked_adjustment_seconds`, the net of every correction. The method writes an `adjust_tracked` event carrying `delta_seconds` and the reason. `adjust_tracked` joins `UNDOABLE_OPS`, the sixth op after D165's `annotation.update`: its inverse subtracts `delta_seconds` from both columns. The task object gains `tracked_adjustment` (a signed ISO duration, `-PT2H25M`, `PT0S` when none), shown as `tracked 2h30m (adjusted -2h25m)` in the detail and on the card. `store.export` carries `tracked_adjustment_seconds` when non-zero, and `store.import` reads it beside `tracked_seconds`. `task.modify`'s absolute `set.tracked` (D98) resets the adjustment to zero.
+
+**Why fold the delta into `tracked_seconds` and keep a column beside it.** Every reader of the total — `report.outcomes`' calibration, the abandoned-time sum, `task.done`'s echo, export — already reads `tracked_seconds`, so folding makes the correction count everywhere without a change to any of them. The column exists only so a read can say how much of the total is correction, which a column answers in one field where summing the event log on every `task.get` would not. Undo stays exact from its own payload, and the round trip carries one extra conditional key, so older exports import unchanged. The alternative, a separate column added on read, would have needed every reader of the total to learn about it, and `revert_stop`'s floor check would have ignored it.
+
+**Why the stored total, not the reported one, is the floor.** A running interval is not banked yet. A negative `tracked_seconds` would be refused by `store.import`'s own check on the next restore.
+
+**Why the running interval reaches `tracked` now, overturning the note on `task_to_json`.** That note kept the open interval out so `task.get` and `report.summary` would not disagree. With both reading `tracked_at`, they still agree, and the reads stop printing `PT0S` while a clock runs (findings #623, #634). Clients that added the elapsed time themselves (the dashboard's running row) now read `tracked` as given.
+
+**The roster cap moves with the tool.** `tasqx_adjust_tracked` is a new MCP tool, and D155's roster guard admits a raise when a tool is added. Measured beside D165's and D167's tools, the roster is 32 tools and 34,704 bytes, so the cap moves from 34,304 to 34,816. The tool's description and parameter sentences are kept to the contract.
+
+**What does not change.** `task.stop`'s `interval` and `tracked`, D97's windowing (an adjustment, like a D98 correction, has no place in time and is not attributed to a window), and the stop event's payload.
 
 ### D167 — `total_tokens`: one unsplit count as its own measurement kind, counted in full by the budget gauge; `token.add` reachable as `tasqx_add_tokens` and `tasqx tokens add` (task #656; findings #615, #622, #641; amends D50's MCP placement of `token.add`, extends D139)
 

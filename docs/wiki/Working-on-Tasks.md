@@ -72,6 +72,26 @@ Pause an active task. The tracked time is kept.
 tasqx stop 42
 ```
 
+While a timer runs, `tracked` already counts it: `list`, `show`, `report` and
+the card all include the open interval up to the moment you ask.
+
+## tasqx adjust
+
+Correct a task's tracked time when the clock was wrong — a timer left running
+over lunch, or work that never reached it.
+
+```console
+tasqx adjust 42 -2h25m --reason "idle gap"
+tasqx adjust 42 +30m --reason "forgot to start"
+```
+
+- The reason is required and stays in the task's history with the correction.
+- It works on done tasks too, so `report --outcomes` calibration can be fixed
+  after the fact. A correction that would take the total below zero is refused.
+- `show` prints the net of every correction beside the total:
+  `tracked 2h30m (adjusted -2h25m)`.
+- `tasqx undo` takes the newest correction back.
+
 ## tasqx done
 
 *Aliases: `d`, `x`, `complete`*
@@ -151,8 +171,8 @@ tasqx undo
 
 `undo` is deliberately narrow, and honest about it:
 
-- Five operations are undoable: `stop`, `untag`, `undep`, `annotate` and
-  `annotate --edit`.
+- Six operations are undoable: `stop`, `untag`, `undep`, `annotate`,
+  `annotate --edit` and `adjust`.
   Everything else is refused *by name*, with the command that does take it
   back — undoing a `done` is `tasqx reopen`, undoing a `modify` is a second
   `modify`.

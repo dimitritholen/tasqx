@@ -880,6 +880,22 @@ pub fn stopped(ctx: &Ctx, result: &Value, task: &Value, now: Timestamp) -> Strin
     draw(ctx, card, now)
 }
 
+/// `tasqx adjust`: the correction, signed, and the total it left (D166).
+pub fn adjusted(ctx: &Ctx, result: &Value, task: &Value, now: Timestamp) -> String {
+    let delta = s(result, "delta");
+    let (sign, magnitude) = match delta.strip_prefix('-') {
+        Some(m) => ("-", m.to_string()),
+        None => ("+", delta.clone()),
+    };
+    let what = format!("adjusted {sign}{}", exact_duration(ctx, &magnitude));
+    let mut card = Card::new(task, outcome(ctx, &what));
+    if let Some(f) = tracked_fact(ctx, &s(result, "tracked"), &s(task, "estimate"), true) {
+        card.lead.push(f);
+        card.context.est = false;
+    }
+    draw(ctx, card, now)
+}
+
 /// `tasqx done`: tracked against the estimate when anything was tracked, the
 /// dependents it released, and the next occurrence of a recurring task. A
 /// closed task has no urgency to rank, so the cell goes (D126).
@@ -1387,6 +1403,7 @@ pub fn undone(ctx: &Ctx, result: &Value, task: &Value, titles: &Titles, now: Tim
         "dependency.remove" => "undep",
         "annotation.add" => "annotate",
         "annotation.update" => "annotate --edit",
+        "adjust_tracked" => "adjust",
         other => other,
     };
     let mut card = Card::new(task, outcome(ctx, &format!("undid {}", san(verb))));
@@ -1431,6 +1448,14 @@ pub fn undone(ctx: &Ctx, result: &Value, task: &Value, titles: &Titles, now: Tim
             // cuts it rather than dropping the id with it.
             if let Some(title) = titles.get(&n).filter(|t| !t.is_empty()) {
                 card.detail.push((Fact::detail(ctx, title), Give::Cut));
+            }
+        }
+        "adjust_tracked" => {
+            // What came off again is the correction; the total is the card's.
+            let est = s(task, "estimate");
+            if let Some(f) = tracked_fact(ctx, &s(&restored, "tracked"), &est, true) {
+                card.lead.push(f);
+                card.context.est = false;
             }
         }
         "annotation.add" => {

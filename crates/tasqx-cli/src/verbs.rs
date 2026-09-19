@@ -538,6 +538,20 @@ pub(crate) fn run_stop(be: &mut Backend, ctx: &Ctx, r#ref: String) -> CmdOutcome
     Ok((result, text))
 }
 
+pub(crate) fn run_adjust(
+    be: &mut Backend,
+    ctx: &Ctx,
+    r#ref: String,
+    delta: String,
+    reason: String,
+) -> CmdOutcome {
+    let params = json!({ "ref": r#ref, "delta": delta, "reason": reason });
+    let result = be.call("task.adjust_tracked", &params)?;
+    let task = read_back(be, &result).unwrap_or_else(|| result.clone());
+    let text = render::adjusted(ctx, &result, &task, crate::clock::now());
+    Ok((result, text))
+}
+
 /// Widen a `task.done` params object with whichever self-report facts were
 /// given on the command line (#13, D50/D65).
 ///

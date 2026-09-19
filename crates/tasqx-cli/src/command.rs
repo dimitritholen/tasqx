@@ -548,6 +548,19 @@ pub(super) enum Command {
         #[arg(add = crate::complete::candidates::task_ids())]
         r#ref: String,
     },
+    /// Correct a task's tracked time by a signed duration (maps to task.adjust_tracked).
+    #[command(after_help = crate::cmddoc::after_help("adjust"))]
+    Adjust {
+        /// short_id or UUID.
+        #[arg(add = crate::complete::candidates::task_ids())]
+        r#ref: String,
+        /// Signed duration: -2h25m takes time off, +30m (or 30m) adds it.
+        #[arg(allow_hyphen_values = true)]
+        delta: String,
+        /// Why the time is being corrected (required; kept in the event log).
+        #[arg(long)]
+        reason: String,
+    },
     /// Complete a task (maps to task.done).
     #[command(alias = "d", alias = "x", alias = "complete", after_help = crate::cmddoc::after_help("done"))]
     Done {
@@ -623,7 +636,7 @@ pub(super) enum Command {
     /// else, because that is the only position from which its inverses are exact
     /// rather than plausible (see `engine/undo.rs`); a `<ref>` here would look
     /// like a courtesy and would silently reach past whatever happened
-    /// elsewhere. Five operations are undoable and every other one refuses by
+    /// elsewhere. Six operations are undoable and every other one refuses by
     /// name, saying what does take it back.
     #[command(alias = "u", after_help = crate::cmddoc::after_help("undo"))]
     Undo,

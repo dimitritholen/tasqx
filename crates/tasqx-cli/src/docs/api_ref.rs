@@ -1127,6 +1127,13 @@ const EXAMPLES: &[Example] = &[
         why: "",
     },
     Example {
+        method: "task.adjust_tracked",
+        request: r#"{"tasqx":"1","id":"at1","method":"task.adjust_tracked","params":{"ref":"42","delta":"-2h25m","reason":"idle gap"}}"#,
+        fixture: "api-task-adjust-tracked",
+        response: "",
+        why: "",
+    },
+    Example {
         method: "task.done",
         request: r#"{"tasqx":"1","id":"d1","method":"task.done","params":{"ref":"47"}}"#,
         fixture: "api-task-done",

@@ -459,8 +459,14 @@ pub struct Task {
     pub urgency: f64,
     /// RFC3339 instant the current active interval began (None when not active).
     pub active_since: Option<String>,
-    /// Accumulated tracked time across closed intervals, in seconds.
+    /// Accumulated tracked time across closed intervals, in seconds, with
+    /// every `task.adjust_tracked` delta already folded in (D166). A running
+    /// interval is never in it; [`Task::tracked_at`] adds that on read.
     pub tracked_seconds: i64,
+    /// The net of every `task.adjust_tracked` delta, in seconds — already
+    /// part of `tracked_seconds`, kept beside it so a read can say how much of
+    /// the total is correction rather than clock (D166).
+    pub tracked_adjustment_seconds: i64,
     /// Per-task event counter (`_rev` in the API).
     pub rev: i64,
     /// RFC3339 instant the task was added. Feeds the small age term in
@@ -491,6 +497,19 @@ impl Task {
     /// hide it.
     pub fn status_is_unrecognized(&self) -> bool {
         self.status_raw.is_some()
+    }
+
+    /// Tracked time as every read reports it at `now` (D166): the stored total
+    /// plus the interval still running, if one is. The stored column keeps
+    /// only closed intervals; this is the one place the open one is added, so
+    /// `task.get`, `task.list`, `report.summary` and every card agree.
+    pub fn tracked_at(&self, now: Timestamp) -> i64 {
+        let running = self
+            .active_since
+            .as_deref()
+            .and_then(crate::util::parse_ts)
+            .map_or(0, |since| (now.as_second() - since.as_second()).max(0));
+        self.tracked_seconds.saturating_add(running)
     }
 }
 

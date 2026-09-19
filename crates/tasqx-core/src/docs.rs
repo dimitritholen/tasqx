@@ -192,7 +192,12 @@ pub const TASK_LIVE_TIME: &[FieldDoc] = &[
     f(
         "tracked",
         "string",
-        "Time on the clock from CLOSED intervals, as an ISO duration. An interval still running is not in it; `active_since` marks where that one began.",
+        "Time on the clock as an ISO duration, the interval still running included up to the moment of the read (D166). `active_since` marks where that one began.",
+    ),
+    f(
+        "tracked_adjustment",
+        "string",
+        "The net of every `task.adjust_tracked` correction already inside `tracked`, as a signed ISO duration (`-PT2H25M`); `PT0S` when there is none.",
     ),
     n(
         "active_since",
@@ -496,6 +501,36 @@ pub const R_TASK_STOP: &[FieldDoc] = &[
         "The task's short id — the small number every `ref` accepts and the CLI prints.",
     ),
     f("title", "string", "The task's title, verbatim."),
+];
+
+/// `task.adjust_tracked`'s result (D166).
+pub const R_TASK_ADJUST_TRACKED: &[FieldDoc] = &[
+    f(
+        "short_id",
+        "integer",
+        "The task's short id — the small number every `ref` accepts and the CLI prints.",
+    ),
+    f("title", "string", "The task's title, verbatim."),
+    f(
+        "delta",
+        "string",
+        "The correction this call applied, as a signed ISO duration.",
+    ),
+    f(
+        "tracked",
+        "string",
+        "The total after it — the same word `task.get` uses.",
+    ),
+    f(
+        "tracked_adjustment",
+        "string",
+        "The net of every correction on the task, this one included.",
+    ),
+    f(
+        "_rev",
+        "integer",
+        "The task's revision after the correction.",
+    ),
 ];
 
 /// `task.done`'s result.
@@ -1141,6 +1176,11 @@ pub const TASK_EXPORT_TIME: &[FieldDoc] = &[
         "Tracked time in raw seconds (D42). Omitted when it would be zero.",
     ),
     o(
+        "tracked_adjustment_seconds",
+        "integer",
+        "The signed net of the `task.adjust_tracked` corrections inside `tracked_seconds` (D166). Omitted when it would be zero.",
+    ),
+    o(
         "active_since",
         "string",
         "The open interval's anchor, omitted when no timer is running.",
@@ -1356,6 +1396,7 @@ pub fn result_shape(method: &str) -> &'static [(&'static str, &'static [FieldDoc
             ("result.auto_stopped[]", AUTO_STOPPED_ROW),
         ],
         "task.stop" => &[("result", R_TASK_STOP)],
+        "task.adjust_tracked" => &[("result", R_TASK_ADJUST_TRACKED)],
         "task.done" => &[
             ("result", R_TASK_DONE),
             ("result.blocked_by[]", BLOCKER_ROW),

@@ -1206,6 +1206,25 @@ fn build_tool_specs() -> Vec<ToolSpec> {
             }),
         },
         ToolSpec {
+            name: "tasqx_adjust_tracked",
+            method: "task.adjust_tracked",
+            write: true,
+            destructive: false,
+            idempotent: false,
+            description:
+                "Correct tracked time by a signed `delta` (`-2h25m`, `+30m`); any status. \
+                `tasqx undo` reverts it.",
+            schema: json!({
+                "type": "object",
+                "properties": {
+                    "ref": ref_schema(),
+                    "delta": { "type": "string", "description": "Signed duration: `-2h25m`, `+30m`." },
+                    "reason": { "type": "string", "description": "Why the time is corrected." }
+                },
+                "required": ["ref", "delta", "reason"]
+            }),
+        },
+        ToolSpec {
             name: "tasqx_tag_task",
             method: "tag.add",
             write: true,
@@ -3457,6 +3476,9 @@ mod tests {
                 "token.add" => json!({
                     "ref": 1, "tool": "t", "source": "self-report", "confidence": "medium"
                 }),
+                "task.adjust_tracked" => {
+                    json!({ "ref": 1, "delta": "+30m", "reason": "forgot to start" })
+                }
                 other => panic!(
                     "tool `{}` requires {required:?} of `{other}`, which this fixture has no \
                      valid call for — extend it rather than skip the tool",

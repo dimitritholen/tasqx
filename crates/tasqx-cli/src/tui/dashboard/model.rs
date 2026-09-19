@@ -623,12 +623,11 @@ pub fn build_sorted(src: Sources<'_>, now: Timestamp, today: Date, sort: Sort) -
     // `modified` — so the marker, the column and the sort read it directly.
     let mut rows: Vec<Task> = all.clone();
     for t in &mut rows {
-        if let Some(started) = t.active_since {
-            // Saturating, and signed on purpose: a store written by a machine
-            // whose clock has since moved back would otherwise produce a
-            // negative elapsed that formats as nonsense.
-            let elapsed = (now.as_second() - started.as_second()).max(0);
-            t.running_secs = Some(t.tracked_secs + elapsed);
+        // D166: `tracked` on the wire already includes the open interval, up
+        // to the read this snapshot came from — adding the elapsed time here
+        // again would count the running hour twice.
+        if t.active_since.is_some() {
+            t.running_secs = Some(t.tracked_secs);
         }
     }
     let overdue_now = rows.iter().filter(|t| t.is_overdue(now)).count();

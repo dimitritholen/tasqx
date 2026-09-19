@@ -81,6 +81,11 @@ const EXAMPLE_SCREENS: &[(&str, &str, &str)] = &[
     ("why", "tasqx why 1", "why"),
     ("start", "tasqx start 1", "start-echo"),
     ("stop", "tasqx stop 1", "stop-echo"),
+    (
+        "adjust",
+        "tasqx adjust 1 -2h25m --reason 'idle gap'",
+        "adjust-echo",
+    ),
     ("done", "tasqx done 1", "done-echo"),
     ("cancel", "tasqx cancel 1", "cancel-echo"),
     ("reopen", "tasqx reopen 1", "reopen-echo"),

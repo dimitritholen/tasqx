@@ -50,7 +50,7 @@ use crate::urgency;
 use crate::util::{
     duration_secs, is_future_at, iso_duration, now, opt_array, opt_bool, opt_i64, opt_str,
     opt_str_array, opt_str_nonempty, opt_u64, parse_ts, req_array, req_i64, req_object, req_str,
-    req_str_lookup, req_str_value, require_all, seconds_between,
+    req_str_lookup, req_str_value, require_all, seconds_between, signed_iso_duration,
 };
 
 /// The config key holding the default project name (inherited by `task.add`).
@@ -235,8 +235,16 @@ pub static TASK_FIELDS: LazyLock<Vec<String>> = LazyLock::new(|| {
         completed: None,
         budget_tokens: None,
         delivered_annotation_id: None,
+        tracked_adjustment_seconds: 0,
     };
-    match list_row_json(&probe, &[], false, Some(&[]), Some(&Value::Null)) {
+    match list_row_json(
+        &probe,
+        &[],
+        false,
+        Some(&[]),
+        Some(&Value::Null),
+        Timestamp::UNIX_EPOCH,
+    ) {
         Value::Object(m) => m.keys().cloned().collect(),
         // Unreachable: `task_to_json` builds an object literal.
         _ => Vec::new(),
@@ -865,6 +873,9 @@ pub const IMPORT_TASK_KEYS: &[&str] = &[
     // import reads it as `Option` and an absent value PRESERVES the stored
     // total rather than zeroing it (see the upsert's COALESCE).
     "tracked_seconds",
+    // D166: the net correction inside `tracked_seconds`. Absent on a legacy
+    // export and on any task never adjusted; absent preserves the stored net.
+    "tracked_adjustment_seconds",
     // D139's size gauge. Absent on a legacy export, which is NULL — no
     // threshold, the same thing the store said before the column existed.
     "budget_tokens",
@@ -1118,13 +1129,14 @@ fn update_column(
 /// Not the export shape: `store_export` builds its own §3 object, so fields
 /// added here for a reader's benefit cannot disturb the D12 round trip.
 ///
-/// `tracked` is the STORED total and excludes an interval that is still
-/// running, which is why `active_since` sits beside it: together they are the
-/// whole truth and the running part stays derivable by anyone who wants it.
-/// Folding the open interval in here would make `task.get` disagree with
-/// `report.summary`'s `tracked_total` about the same task — trading a missing
-/// number for two numbers that contradict each other.
-pub fn task_to_json(t: &Task, tags: &[String]) -> Value {
+/// `tracked` includes the interval still running, up to `now` (D166) — read
+/// through [`Task::tracked_at`], the one place that sum is made, which
+/// `report.summary`'s `tracked_total` reads too, so the two cannot disagree
+/// about the same task. It used to be the stored total alone, and every
+/// surface printed `PT0S` for as long as a clock ran. `active_since` still
+/// marks where the open interval began; `tracked_adjustment` is the net of
+/// the `task.adjust_tracked` corrections already inside `tracked`.
+pub fn task_to_json(t: &Task, tags: &[String], now: Timestamp) -> Value {
     flag_unrecognized_status(
         t,
         json!({
@@ -1138,7 +1150,8 @@ pub fn task_to_json(t: &Task, tags: &[String]) -> Value {
             "scheduled": t.scheduled,
             "wait": t.wait,
             "estimate": t.estimate,
-            "tracked": iso_duration(t.tracked_seconds),
+            "tracked": iso_duration(t.tracked_at(now)),
+            "tracked_adjustment": signed_iso_duration(t.tracked_adjustment_seconds),
             "active_since": t.active_since,
             "recurrence": t.recurrence,
             "remind": t.remind,
@@ -1170,8 +1183,9 @@ fn list_row_json(
     blocked: bool,
     depends_on: Option<&[i64]>,
     tokens: Option<&Value>,
+    now: Timestamp,
 ) -> Value {
-    let mut v = task_to_json(t, tags);
+    let mut v = task_to_json(t, tags, now);
     v["blocked"] = json!(blocked);
     // Emitted only when the caller projected it (D70). It is a name
     // `TASK_FIELDS` publishes and `parse_fields` accepts, and it is absent from
@@ -1476,6 +1490,7 @@ mod tests {
             completed: None,
             budget_tokens: None,
             delivered_annotation_id: None,
+            tracked_adjustment_seconds: 0,
         };
         let mut b = a.clone();
         b.id = "b".to_string();
@@ -1547,6 +1562,7 @@ mod tests {
                 completed: None,
                 budget_tokens: None,
                 delivered_annotation_id: None,
+                tracked_adjustment_seconds: 0,
             }
         }
 
@@ -1648,6 +1664,7 @@ mod tests {
             completed: None,
             budget_tokens: None,
             delivered_annotation_id: None,
+            tracked_adjustment_seconds: 0,
         };
         let mut b = a.clone();
         b.id = "b".to_string();

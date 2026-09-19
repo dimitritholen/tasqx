@@ -251,7 +251,9 @@ impl Engine {
                     .map(|ivs| windowed_overlap_secs(ivs, since, until))
                     .unwrap_or(0)
             } else {
-                t.tracked_seconds
+                // D166: the running interval counts here as it does on
+                // `task.get`, through the same sum.
+                t.tracked_at(now_ts)
             };
             agg.tracked_secs = agg.tracked_secs.saturating_add(tracked_contribution);
             // A task carries many measurements (#11); its contribution to the

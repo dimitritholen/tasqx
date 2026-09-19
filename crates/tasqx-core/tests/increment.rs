@@ -4249,6 +4249,7 @@ fn the_import_key_table_matches_the_keys_an_export_actually_emits() {
             "title": "running",
             "status": "active",
             "tracked_seconds": 60,
+            "tracked_adjustment_seconds": -30,
             "active_since": "2020-01-01T00:00:00Z",
         }]}))
         .unwrap();

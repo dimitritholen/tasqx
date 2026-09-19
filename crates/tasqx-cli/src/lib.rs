@@ -1046,6 +1046,11 @@ fn execute(cli: Cli) -> Exit {
             correlation,
         }) => run_start(&mut backend, &ctx, r#ref, keep, &correlation),
         Some(Command::Stop { r#ref }) => run_stop(&mut backend, &ctx, r#ref),
+        Some(Command::Adjust {
+            r#ref,
+            delta,
+            reason,
+        }) => run_adjust(&mut backend, &ctx, r#ref, delta, reason),
         Some(Command::Done {
             r#ref,
             force,

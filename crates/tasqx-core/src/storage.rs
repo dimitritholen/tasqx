@@ -35,7 +35,8 @@ const READ_ONLY_BUSY_TIMEOUT_MS: u64 = 30;
 /// index untouched.
 pub const TASK_COLS: &str = "id, short_id, title, status, priority, project, due, \
     scheduled, wait, estimate, recurrence, urgency, active_since, tracked_seconds, \
-    rev, created, modified, completed, remind, budget_tokens, delivered_annotation_id";
+    rev, created, modified, completed, remind, budget_tokens, delivered_annotation_id, \
+    tracked_adjustment_seconds";
 
 /// Open (creating if needed) the store at `path`, apply pragmas + migration.
 pub fn open(path: &str) -> Result<Connection, ApiError> {
@@ -215,7 +216,11 @@ fn migrate(conn: &Connection) -> Result<(), ApiError> {
             -- D165: the newest live annotation at the instant `task.done`
             -- completed the task — the card's Delivered row. NULL on an open
             -- task, and on one completed before the column existed.
-            delivered_annotation_id TEXT
+            delivered_annotation_id TEXT,
+            -- D166: the net of every `task.adjust_tracked` delta. Already
+            -- folded into `tracked_seconds`; kept so a read can say how much
+            -- of the total is correction rather than clock.
+            tracked_adjustment_seconds INTEGER NOT NULL DEFAULT 0
         );
         CREATE INDEX IF NOT EXISTS idx_tasks_status  ON tasks(status);
         CREATE INDEX IF NOT EXISTS idx_tasks_project ON tasks(project);
@@ -371,6 +376,12 @@ fn migrate(conn: &Connection) -> Result<(), ApiError> {
     add_column_if_missing(conn, "tasks", "remind", "TEXT")?;
     add_column_if_missing(conn, "tasks", "budget_tokens", "INTEGER")?;
     add_column_if_missing(conn, "tasks", "delivered_annotation_id", "TEXT")?;
+    add_column_if_missing(
+        conn,
+        "tasks",
+        "tracked_adjustment_seconds",
+        "INTEGER NOT NULL DEFAULT 0",
+    )?;
 
     // Must follow the ALTER: on an upgraded store the column does not exist
     // until the statement above runs. Partial, because the scheduler only ever
@@ -994,6 +1005,7 @@ pub fn map_task_row_at(row: &Row, now: Timestamp) -> rusqlite::Result<Task> {
         remind: row.get(18)?,
         budget_tokens: row.get(19)?,
         delivered_annotation_id: row.get(20)?,
+        tracked_adjustment_seconds: row.get(21)?,
     })
 }
 

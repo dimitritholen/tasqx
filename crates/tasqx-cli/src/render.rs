@@ -2317,10 +2317,9 @@ fn detail_rows(ctx: &Ctx, result: &Value, now: Timestamp) -> Vec<DetailRow> {
     };
 
     // D122: a running task says so in its status, not on a `running` row of
-    // its own beside `status active`, which said the same thing twice. The
-    // open interval is still not folded into `tracked` (see `task_to_json`),
-    // so the moment it started is what distinguishes "running" from "done
-    // running": it rides on the status.
+    // its own beside `status active`, which said the same thing twice. Since
+    // D166 `tracked` includes the open interval, and the moment it started
+    // rides on the status: that is what tells "running" from "done running".
     let mut status = status_cell(ctx, result);
     if !s(result, "active_since").is_empty() && !status_is_unrecognized(result) {
         status = format!("{status} · since {}", fmt_i(&s(result, "active_since")));
@@ -2426,7 +2425,14 @@ fn detail_rows(ctx: &Ctx, result: &Value, now: Timestamp) -> Vec<DetailRow> {
     // second onward, which is when the number starts meaning something.
     let tracked = s(result, "tracked");
     if !tracked.is_empty() && tracked != "PT0S" {
-        row("tracked", DetailField::Tracked, fmt_d(&tracked));
+        // D166: the net of the `adjust` corrections inside the total, signed.
+        let adj = s(result, "tracked_adjustment");
+        let value = match adj.strip_prefix('-') {
+            _ if adj.is_empty() || adj == "PT0S" => fmt_d(&tracked),
+            Some(m) => format!("{} (adjusted -{})", fmt_d(&tracked), fmt_d(m)),
+            None => format!("{} (adjusted +{})", fmt_d(&tracked), fmt_d(&adj)),
+        };
+        row("tracked", DetailField::Tracked, value);
     }
     if let Some(tags) = result.get("tags").and_then(Value::as_array) {
         if !tags.is_empty() {

@@ -597,7 +597,7 @@ fn a_blocked_task_is_in_the_list_marked_rather_than_hidden_from_it() {
     );
 }
 
-/// The running row reports time INCLUDING the open interval.
+/// The running row reports time INCLUDING the open interval — once.
 ///
 /// `tracked` alone reads as the final answer when it is only the total so far.
 /// This was the NOW card's number; D80 retired the card, and a row marked `▶`
@@ -621,15 +621,17 @@ fn the_running_row_adds_the_open_interval_to_the_tracked_total() {
             "active_since",
             json!("2026-08-05T11:00:00Z"),
         ),
+        // D166: the engine's `tracked` already carries the hour since 11:00
+        // on top of the 30m banked before it, so the row must not add it again.
         "tracked",
-        json!("PT30M"),
+        json!("PT1H30M"),
     )]);
     let d = build_with(tasks, summary(vec![]), project_list(vec![]));
     let running: Vec<i64> = rows(&d).iter().filter_map(|t| t.running_secs).collect();
     assert_eq!(
         running,
         vec![1800 + 3600],
-        "the row shows tracked PLUS the hour since 11:00, and only that row does"
+        "the row shows the banked 30m plus the hour since 11:00 once, and only that row does"
     );
 }
 

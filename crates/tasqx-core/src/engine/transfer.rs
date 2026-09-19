@@ -632,6 +632,11 @@ impl Engine {
         if t.tracked_seconds != 0 {
             out["tracked_seconds"] = json!(t.tracked_seconds);
         }
+        // D166: the net of the `task.adjust_tracked` corrections inside
+        // `tracked_seconds`, on the same conditional rule — absent when none.
+        if t.tracked_adjustment_seconds != 0 {
+            out["tracked_adjustment_seconds"] = json!(t.tracked_adjustment_seconds);
+        }
         // D42: the open interval's anchor, present only while the task is
         // `active`, and emitted for the same reason D12 exists: an export that
         // drops it is not self-contained. The alternative — reconstructing an
@@ -1152,6 +1157,12 @@ impl Engine {
                     other => Ok(other),
                 }),
             )?;
+            // D166: signed, since a correction goes either way.
+            let tracked_adjustment_seconds = import_field(
+                id,
+                "tracked_adjustment_seconds",
+                opt_i64(tv, "tracked_adjustment_seconds"),
+            )?;
             // Through the same date gate as created/modified/completed, so a
             // malformed anchor is named rather than stored.
             let active_since =
@@ -1258,14 +1269,19 @@ impl Engine {
             // `tracked_seconds` — COALESCE, never a plain bind: a legacy export
             // has no such key, and reading absent as zero would wipe the live
             // total on every merge-import.
+            //
+            // `tracked_adjustment_seconds` travels with the total it is part
+            // of: absent beside a present `tracked_seconds` means the payload's
+            // total carries no correction (0); absent beside an absent total
+            // keeps what the store holds, as the total itself does.
             tx.execute(
                 "INSERT INTO tasks (id, short_id, title, status, priority, project, due, \
                  scheduled, wait, estimate, recurrence, urgency, active_since, tracked_seconds, \
                  rev, created, modified, completed, remind, budget_tokens, \
-                 delivered_annotation_id) \
+                 delivered_annotation_id, tracked_adjustment_seconds) \
                  VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12, \
                  CASE WHEN ?4 = 'active' THEN COALESCE(?18,?19) ELSE NULL END, \
-                 COALESCE(?20,0),?13,?14,?15,?16,?17,?21,?22) \
+                 COALESCE(?20,0),?13,?14,?15,?16,?17,?21,?22,COALESCE(?23,0)) \
                  ON CONFLICT(id) DO UPDATE SET \
                  short_id=?2, title=?3, status=?4, priority=?5, project=?6, due=?7, \
                  scheduled=?8, wait=?9, estimate=?10, recurrence=?11, urgency=?12, \
@@ -1273,7 +1289,9 @@ impl Engine {
                  THEN COALESCE(?18, active_since, ?19) ELSE NULL END, \
                  tracked_seconds = COALESCE(?20, tracked_seconds), \
                  rev=?13, created=?14, modified=?15, completed=?16, remind=?17, \
-                 budget_tokens=?21, delivered_annotation_id=?22",
+                 budget_tokens=?21, delivered_annotation_id=?22, \
+                 tracked_adjustment_seconds = COALESCE(?23, \
+                 CASE WHEN ?20 IS NULL THEN tracked_adjustment_seconds ELSE 0 END)",
                 params![
                     id,
                     short_id,
@@ -1296,7 +1314,8 @@ impl Engine {
                     now(),
                     tracked_seconds,
                     budget_tokens,
-                    delivered_annotation_id
+                    delivered_annotation_id,
+                    tracked_adjustment_seconds
                 ],
             )?;
 
