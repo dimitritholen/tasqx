@@ -50,9 +50,13 @@ jobs:
         with:
           components: rustfmt, clippy
 
+      # Both workspaces: the host crate, and the root one whose tasqx-cli the
+      # desktop integration test spawns as a daemon.
       - uses: Swatinem/rust-cache@v2
         with:
-          workspaces: apps/tasqx-desktop/src-tauri
+          workspaces: |
+            apps/tasqx-desktop/src-tauri
+            .
 
       # Tauri 2 on Linux links against WebKitGTK 4.1; the rest are what its
       # bundler and the appindicator/SVG paths need.
@@ -75,6 +79,14 @@ jobs:
       - run: npm ci
       - run: npm run typecheck
       - run: npm run lint
+
+      # src/test/integration/daemon.test.ts runs the real daemon against a
+      # scratch store; it FAILS rather than skips when the binary is missing,
+      # so the binary is built here and not from inside the test run.
+      - name: Build tasqx-cli for the integration test
+        working-directory: .
+        run: cargo build -p tasqx-cli
+
       - run: npm test -- --run
       - run: npm run build
 
