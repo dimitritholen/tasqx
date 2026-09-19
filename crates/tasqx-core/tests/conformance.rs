@@ -893,6 +893,35 @@ const R_DEPENDENCY_ADD: Shape = &[&[
     req("inserted", Ty::Bool),
 ]];
 
+/// One explicit link (D160), as `link.list` pages it.
+///
+/// `metadata` is nullable and never absent, for the reason every nullable key
+/// in this file is: a key that appears and disappears makes a client branch on
+/// presence to ask an ordinary question, and most links carry none.
+const LINK_ROW: &[Field] = &[
+    req("id", Ty::Str),
+    req("from", Ty::Str),
+    req("to", Ty::Str),
+    req("relation", Ty::Str),
+    nul("metadata", Ty::Object),
+    req("created_at", Ty::Str),
+];
+
+/// `link.add` answers with the link plus `created`, which is `dependency.add`'s
+/// `inserted` under the name this family reads better with. The timestamp is
+/// `created_at` and not `created` precisely because the boolean took that word:
+/// one object cannot carry two keys of one name meaning different things.
+const R_LINK_ADD: Shape = &[LINK_ROW, &[req("created", Ty::Bool)]];
+
+const R_LINK_REMOVE: Shape = &[&[req("id", Ty::Str), req("removed", Ty::Bool)]];
+
+const R_LINK_LIST: Shape = &[&[
+    req("count", Ty::Int),
+    req("total", Ty::Int),
+    nul("next_offset", Ty::Int),
+    req_of("links", Ty::Array, &[LINK_ROW]),
+]];
+
 const R_MEMORY_ADD: Shape = &[&[
     req("id", Ty::Str),
     req("title", Ty::Str),
@@ -1868,6 +1897,48 @@ fn cases() -> Vec<Case> {
                 json!({ "ref": 2, "depends_on": 1 })
             },
             R_DEPENDENCY,
+        ),
+        case(
+            "link.add",
+            "a fresh link between a task and a memory doc, with metadata",
+            |e| {
+                plain_task(e);
+                let doc = e
+                    .memory_add(&json!({ "title": "the ruling", "body": "links are D160" }))
+                    .expect("doc");
+                json!({
+                    "from": 1,
+                    "to": format!("memory:{}", doc["id"].as_str().expect("id")),
+                    "relation": "references",
+                    "metadata": { "why": "the design note" },
+                })
+            },
+            R_LINK_ADD,
+        ),
+        case(
+            "link.remove",
+            "an existing link, by its own id",
+            |e| {
+                plain_task(e);
+                plain_task(e);
+                let link = e
+                    .link_add(&json!({ "from": 1, "to": 2, "relation": "references" }))
+                    .expect("link");
+                json!({ "id": link["id"] })
+            },
+            R_LINK_REMOVE,
+        ),
+        case(
+            "link.list",
+            "one node's links, from both directions",
+            |e| {
+                plain_task(e);
+                plain_task(e);
+                e.link_add(&json!({ "from": 1, "to": 2, "relation": "references" }))
+                    .expect("link");
+                json!({ "ref": 1, "limit": 10, "offset": 0 })
+            },
+            R_LINK_LIST,
         ),
         case(
             "memory.add",

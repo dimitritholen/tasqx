@@ -154,7 +154,7 @@ const VERBS: [(&str, &str, &str); 45] = [
 
 /// The method table the JSON API page renders: `(method, params, returns)`.
 /// Single source, same reason as [`VERBS`].
-const METHODS: [(&str, &str, &str); 44] = [
+const METHODS: [(&str, &str, &str); 999] = [
     (
         "project.create",
         "<code>name</code>, <code>description?</code>",
@@ -379,6 +379,38 @@ const METHODS: [(&str, &str, &str); 44] = [
         "dependency.remove",
         "<code>ref</code>, <code>depends_on</code>",
         "Dep state + <code>blocked</code>.",
+    ),
+    (
+        "link.add",
+        "<code>from</code>, <code>to</code>, <code>relation</code>, <code>metadata?</code>, \
+         <code>expected_rev?</code>",
+        "<code>{id, from, to, relation, metadata, created_at, created}</code> — one explicit edge \
+         of the knowledge graph (D160). <code>from</code> and <code>to</code> are NODE references: \
+         a task short id or uuid, a bare uuid, or <code>task:</code>/<code>memory:</code>/\
+         <code>annotation:</code>/<code>project:</code> plus an id (a project also by name), and \
+         they come back resolved as <code>&lt;type&gt;:&lt;uuid&gt;</code>. <code>relation</code> \
+         is one of <code>references</code>, <code>supersedes</code>, \
+         <code>implements_decision</code>, <code>derived_from</code>, <code>contradicts</code>; \
+         anything else is refused by name. Adding the same from/to/relation twice is idempotent \
+         and answers <code>created: false</code> with the id the first call minted; a self-link \
+         is refused and a cycle is not. <code>expected_rev</code> guards the <code>from</code> \
+         endpoint when it has one (a task or a doc) and is ignored for an annotation or project, \
+         which carry no rev.",
+    ),
+    (
+        "link.remove",
+        "<code>id</code>",
+        "<code>{id, removed}</code>. By the link's own id — removing one that is not there is \
+         <code>not_found</code>, not a no-op.",
+    ),
+    (
+        "link.list",
+        "<code>ref?</code>, <code>relation?</code>, <code>limit?</code>, <code>offset?</code>",
+        "<code>{count, total, next_offset, links}</code> — the same paging shape as \
+         <code>task.list</code> (D70), newest first. <code>ref</code> is a node reference and \
+         matches EITHER endpoint, so a node's whole neighbourhood is one call; omit it to list \
+         the store's links. <code>relation</code> narrows to one of the five. An omitted \
+         <code>limit</code> defaults to 100 and a named one is clamped to 1,000.",
     ),
     (
         "memory.add",
@@ -2355,12 +2387,14 @@ fn p(html: &str) -> String {
 /// written for a word — extending it is a one-line edit the day a roster grows
 /// that far, which is cheaper than the sentence going stale unwatched.
 fn count_word(n: usize) -> &'static str {
-    const WORDS: [&str; 14] = [
+    const WORDS: [&str; 17] = [
         "zero", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten",
         "eleven", "twelve",
         // The thirteenth: the methods the MCP page says an agent cannot reach
         // (#647). Extending the table is the one-line edit this panic asks for.
         "thirteen",
+        // Sixteen the day D160's three `link.*` methods joined that list.
+        "fourteen", "fifteen", "sixteen",
     ];
     WORDS
         .get(n)
@@ -3624,11 +3658,12 @@ mod tests {
         // the count this guard reports rather than adding the rows you wrote:
         // it went 7 -> 8 when `event.revert` joined, 8 -> 9 when `otlp.status`
         // (#222) did, 9 -> 10 when `memory.list` (#133) did, 10 -> 11 when
-        // `report.outcomes` (D137) did, and a floor that drifts below the
-        // truth is a guard that has stopped guarding.
+        // `report.outcomes` (D137) did, 11 -> 12 when `link.list` (D160) did,
+        // and a floor that drifts below the truth is a guard that has stopped
+        // guarding.
         assert_eq!(
-            checked, 11,
-            "expected to check all 11 bare-callable return shapes; a row that stopped being \
+            checked, 12,
+            "expected to check all 12 bare-callable return shapes; a row that stopped being \
              checkable is coverage lost silently"
         );
     }

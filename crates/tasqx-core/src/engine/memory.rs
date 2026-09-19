@@ -723,6 +723,20 @@ impl Engine {
                 None,
             ));
         }
+        // D160: a doc is the one graph node this engine HARD deletes, so its
+        // explicit links go with it, in this transaction. The `links` table
+        // carries no foreign key — its endpoints are polymorphic, so SQLite
+        // cannot be asked to enforce this — which makes the cascade the
+        // engine's job and leaving it out exactly the dangling-edge shape D12
+        // fixed for `dependencies`: invisible to every reader that resolves
+        // both ends, still in the file, and impossible to remove by id nobody
+        // can list. Annotations are NOT cascaded: `annotation.remove` leaves a
+        // tombstone (D113), so the node is still there to point at.
+        tx.execute(
+            "DELETE FROM links WHERE (from_type = 'memory' AND from_id = ?1) \
+                OR (to_type = 'memory' AND to_id = ?1)",
+            params![id],
+        )?;
         insert_event(&tx, Entity::Doc, &id, "memory.remove", &json!({}))?;
         tx.commit()?;
         Ok(json!({ "id": id, "removed": true }))
