@@ -125,6 +125,37 @@ describe('attachEvents', () => {
     detach();
   });
 
+  it('follows the open task even when its row is not on the page', async () => {
+    // The dashboard's working set drops a task the moment it is done, and the
+    // inspector is still showing it: the detail has to follow the event.
+    const { transport, store, detach } = await live();
+    store.setSelected(taskDetail({ short_id: 90, title: 'Off the page', _rev: 5 }));
+    store.setRoute({ sel: 90 });
+    transport.clearCalls();
+
+    transport.pushEvent({ entity: 'task', op: 'done', short_id: 90, _rev: 6 });
+    await vi.advanceTimersByTimeAsync(REFRESH_DEBOUNCE_MS);
+
+    expect(transport.methods).toEqual(['task.get', 'task.list', 'report.summary']);
+    expect(transport.calls[0]?.params).toMatchObject({ ref: 90 });
+    expect(store.getState().selected.data?.title).toBe('Refetched');
+    detach();
+  });
+
+  it('leaves an off-page task nobody is looking at to the page refresh', async () => {
+    const { transport, store, detach } = await live();
+    store.setSelected(taskDetail({ short_id: 1, title: 'Something else', _rev: 5 }));
+    store.setRoute({ sel: 1 });
+    transport.clearCalls();
+
+    transport.pushEvent({ entity: 'task', op: 'add', short_id: 90, _rev: 1 });
+    await vi.advanceTimersByTimeAsync(REFRESH_DEBOUNCE_MS);
+
+    expect(transport.methods).toEqual(['task.list', 'report.summary']);
+    expect(store.getState().selected.data?.title).toBe('Something else');
+    detach();
+  });
+
   it('collapses a burst of off-page events into one page and summary refresh', async () => {
     const { transport, detach } = await live();
 

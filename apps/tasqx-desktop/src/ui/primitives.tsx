@@ -88,7 +88,7 @@ export function Panel({
   );
 }
 
-export function EmptyState({ title, message, action }: { title: string; message: string; action?: ReactNode }) {
+export function EmptyState({ title, message, action }: { title: string; message: ReactNode; action?: ReactNode }) {
   return (
     <div className="empty-state" role="status">
       <h3 className="empty-state-title">{title}</h3>
@@ -96,6 +96,38 @@ export function EmptyState({ title, message, action }: { title: string; message:
       {action}
     </div>
   );
+}
+
+/**
+ * A slice that failed, in the daemon's own words: the code in mono, the
+ * message verbatim, and the one thing left to do about it. Typed structurally
+ * rather than as an ApiError so the UI layer keeps no dependency on the API.
+ */
+export function ErrorState({
+  title,
+  error,
+  onRetry,
+}: {
+  title: string;
+  error: { code: string; message: string };
+  onRetry: () => void;
+}) {
+  return (
+    <EmptyState
+      title={title}
+      message={
+        <>
+          <span className="mono">{error.code}</span> {error.message}
+        </>
+      }
+      action={<Button onClick={onRetry}>Retry</Button>}
+    />
+  );
+}
+
+/** A placeholder block while a read is in flight; it says nothing, so it is hidden. */
+export function Skeleton({ width }: { width?: string }) {
+  return <span className="skeleton" style={width === undefined ? undefined : { width }} aria-hidden="true" />;
 }
 
 export function Spinner() {
@@ -145,8 +177,9 @@ export function Kbd({ keys }: { keys: string }) {
   const mac = isMac();
   return (
     <span className="kbd-group">
-      {keys.split(' ').map((chord) => (
-        <kbd className="kbd" key={chord}>
+      {/* `g g` is two chords of the same key, so the position is the identity. */}
+      {keys.split(' ').map((chord, at) => (
+        <kbd className="kbd" key={`${chord}-${at}`}>
           {chord
             .split('+')
             .map((part) => (part === 'mod' ? (mac ? '⌘' : 'Ctrl') : part.length === 1 ? part.toUpperCase() : part))

@@ -1,7 +1,7 @@
-import { useCallback, useEffect, useMemo } from 'react';
+import { useEffect, useMemo } from 'react';
 import type { ComponentType, ReactNode } from 'react';
 
-import { ConnectionContext, createAppConnection, useConnection } from './api';
+import { ConnectionContext, createAppConnection, useConnection, useRefresh } from './api';
 import type { ConnectionController } from './api';
 import { isTauri } from './platform';
 import { AppShell } from './shell/AppShell';
@@ -20,10 +20,12 @@ import {
   ProjectsScreen,
   ReportsScreen,
   SettingsScreen,
+  TaskInspector,
   TasksScreen,
 } from './screens';
 import { ConnectionPanel, ConnectionPill, UNKNOWN_SOCKET } from './screens/ConnectionPanel';
-import { EmptyState } from './ui/primitives';
+import { CARDS, openFilter } from './screens/DashboardScreen';
+import { Pill } from './ui/primitives';
 
 /** Only Settings reads `connection`; the rest ignore the prop. */
 const SCREEN_VIEWS: Record<Screen, ComponentType<{ connection?: ReactNode }>> = {
@@ -78,24 +80,27 @@ function ConnectedApp() {
     if (isTauri()) void controller.start();
   }, [controller]);
 
+  const refresh = useRefresh();
+
   const commands = useMemo(
-    () =>
-      shellCommands({
+    () => [
+      ...shellCommands({
         navigate,
         toggleTheme: () => setTheme(nextTheme(currentTheme())),
         toggleSidebar: () => setLayout({ sidebarCollapsed: !currentLayout().sidebarCollapsed }),
         toggleInspector: () => setLayout({ inspectorOpen: !currentLayout().inspectorOpen }),
         reconnect: () => void controller.stop().then(() => controller.start()),
       }),
-    [controller],
+      { id: 'refresh', title: 'Refresh', hint: 'r', run: refresh },
+      // The dashboard's cards, reachable without the dashboard.
+      ...CARDS.map((card) => ({
+        id: `filter-${card.id}`,
+        title: `Tasks: ${card.label}`,
+        run: () => openFilter(card.filter),
+      })),
+    ],
+    [controller, refresh],
   );
-
-  // Refresh means "make what I am looking at true again": a fresh baseline
-  // while live, and an early retry while it is not.
-  const refresh = useCallback(() => {
-    if (state.status === 'live') controller.resync('manual refresh');
-    else void controller.retryNow();
-  }, [controller, state.status]);
 
   return (
     <div className="app-root" data-testid="app">
@@ -103,7 +108,17 @@ function ConnectedApp() {
         screen={route.screen}
         commands={commands}
         onRefresh={refresh}
-        sidebarFooter={<ConnectionPill status={state.status} title={state.socket ?? UNKNOWN_SOCKET} />}
+        sidebarFooter={
+          <>
+            <ConnectionPill status={state.status} title={state.socket ?? UNKNOWN_SOCKET} />
+            {/* Data on screen the daemon may already have moved on from. */}
+            {state.stale && (
+              <Pill status="pending" title="Not live: what you see may be out of date">
+                stale
+              </Pill>
+            )}
+          </>
+        }
         banner={
           state.offline && (
             <OfflineBanner
@@ -114,7 +129,7 @@ function ConnectedApp() {
             />
           )
         }
-        inspector={<EmptyState title="Nothing selected" message="Pick a row to see its details here." />}
+        inspector={<TaskInspector />}
       >
         <View connection={<ConnectionPanel />} />
       </AppShell>

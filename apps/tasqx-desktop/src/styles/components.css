@@ -256,6 +256,31 @@
   }
 }
 
+/* --- Skeleton ---------------------------------------------------------- */
+.skeleton {
+  display: block;
+  width: 100%;
+  height: var(--space-3);
+  border-radius: var(--radius-control);
+  background: linear-gradient(90deg, var(--color-elevated), var(--color-border), var(--color-elevated));
+  background-size: 200% 100%;
+  animation: skeleton-shimmer 1200ms linear infinite;
+}
+
+@keyframes skeleton-shimmer {
+  to {
+    background-position: -200% 0;
+  }
+}
+
+/* A placeholder that pulses is decoration; without motion it is just a block. */
+@media (prefers-reduced-motion: reduce) {
+  .skeleton {
+    animation: none;
+    background: var(--color-elevated);
+  }
+}
+
 /* --- Field ------------------------------------------------------------- */
 .field {
   display: flex;

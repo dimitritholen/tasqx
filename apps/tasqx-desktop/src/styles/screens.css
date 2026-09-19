@@ -1,0 +1,384 @@
+/* The data screens: cards, the task grid, the inspector, the activity panel.
+   Everything measures in the 4 px tokens; nothing sets a colour of its own. */
+
+.screen-wide {
+  max-width: none;
+  /* The table scrolls inside its own pane, so the screen itself never does. */
+  min-width: 0;
+}
+
+/* --- Summary cards ----------------------------------------------------- */
+.card-row {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: var(--space-2);
+}
+
+.card {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  padding: var(--space-3);
+  border: var(--border-width) solid var(--color-border);
+  border-radius: var(--radius-panel);
+  background: var(--color-panel);
+  text-align: left;
+  cursor: pointer;
+  transition: background-color 120ms ease, border-color 120ms ease;
+}
+
+.card:hover {
+  background: var(--color-elevated);
+  border-color: var(--color-muted);
+}
+
+.card:active {
+  background: var(--color-border);
+}
+
+.card:focus-visible {
+  position: relative;
+  z-index: 1;
+}
+
+.card-value {
+  font-size: var(--text-title);
+  font-weight: 600;
+}
+
+.card-label {
+  font-size: var(--text-secondary);
+}
+
+/* --- Task grid --------------------------------------------------------- */
+.table-pane {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  border: var(--border-width) solid var(--color-border);
+  border-radius: var(--radius-panel);
+  background: var(--color-panel);
+  overflow: auto;
+}
+
+.task-grid {
+  display: flex;
+  flex-direction: column;
+  min-width: 880px;
+}
+
+.task-row {
+  display: grid;
+  grid-template-columns: 56px minmax(160px, 3fr) 96px 72px 72px 88px minmax(80px, 1fr) minmax(88px, 1fr) 80px 88px;
+  align-items: center;
+  gap: var(--space-2);
+  height: var(--row-primary);
+  padding: 0 var(--space-2);
+  border-bottom: var(--border-width) solid var(--color-border);
+  cursor: pointer;
+  transition: background-color 120ms ease;
+}
+
+.task-row:hover {
+  background: var(--color-elevated);
+}
+
+.task-row:active {
+  background: var(--color-border);
+}
+
+.task-row[aria-selected='true'] {
+  background: var(--color-elevated);
+  box-shadow: inset 2px 0 0 var(--color-accent);
+}
+
+.task-row:focus-visible {
+  position: relative;
+  z-index: 1;
+}
+
+.task-head {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  background: var(--color-panel);
+  color: var(--color-muted);
+  font-size: var(--text-secondary);
+  cursor: default;
+}
+
+.task-head:hover {
+  background: var(--color-panel);
+}
+
+.task-cell {
+  min-width: 0;
+  overflow: hidden;
+}
+
+/* The one column allowed to be long: it truncates, the tooltip has it whole. */
+.cell-title {
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.cell-danger {
+  color: var(--color-danger);
+}
+
+.sort-btn {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font-size: inherit;
+  cursor: pointer;
+}
+
+.sort-btn:hover {
+  color: var(--color-text);
+}
+
+[aria-sort='ascending'] .sort-btn::after {
+  content: ' ↑';
+}
+
+[aria-sort='descending'] .sort-btn::after {
+  content: ' ↓';
+}
+
+.cell-tags {
+  display: flex;
+  gap: var(--space-1);
+  overflow: hidden;
+}
+
+.tag {
+  padding: 0 var(--space-1);
+  border-radius: var(--space-1);
+  background: var(--color-elevated);
+  color: var(--color-muted);
+  font-size: var(--text-secondary);
+  white-space: nowrap;
+}
+
+/* --- Urgency meter ----------------------------------------------------- */
+.meter {
+  display: inline-flex;
+  gap: 2px;
+  align-items: center;
+}
+
+.meter-step {
+  width: var(--space-2);
+  height: var(--space-1);
+  border-radius: 1px;
+  background: var(--color-border);
+}
+
+.meter-step-on {
+  background: var(--color-accent);
+}
+
+/* --- Tasks screen ------------------------------------------------------ */
+.filter-bar {
+  display: flex;
+  gap: var(--space-3);
+  align-items: flex-start;
+}
+
+.filter-bar .field:first-child {
+  flex: 1;
+}
+
+.filter-bar .field:first-child input {
+  max-width: none;
+  width: 100%;
+  font-family: var(--font-mono);
+}
+
+/* The daemon's own words about the filter, in the daemon's own spelling. */
+.filter-bar .field-error {
+  font-family: var(--font-mono);
+}
+
+.pager {
+  display: flex;
+  gap: var(--space-2);
+  align-items: center;
+  color: var(--color-muted);
+}
+
+.pager-spacer {
+  flex: 1;
+}
+
+/* --- Dashboard body ---------------------------------------------------- */
+.dashboard-body {
+  display: grid;
+  grid-template-columns: minmax(0, 2fr) minmax(240px, 1fr);
+  gap: var(--space-3);
+  align-items: start;
+}
+
+.activity-list {
+  display: flex;
+  flex-direction: column;
+}
+
+.activity-item {
+  display: flex;
+  gap: var(--space-2);
+  align-items: center;
+  height: var(--row-secondary);
+}
+
+.activity-op {
+  min-width: 56px;
+  color: var(--color-muted);
+  font-size: var(--text-secondary);
+}
+
+/* --- Projects ---------------------------------------------------------- */
+.project-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.project-row {
+  display: flex;
+  gap: var(--space-2);
+  align-items: center;
+  width: 100%;
+  min-height: var(--row-primary);
+  padding: 0 var(--space-2);
+  border: var(--border-width) solid transparent;
+  border-radius: var(--radius-control);
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
+}
+
+.project-row:hover {
+  background: var(--color-elevated);
+}
+
+.project-row:active {
+  background: var(--color-border);
+}
+
+.project-name {
+  font-weight: 600;
+}
+
+.project-description {
+  flex: 1;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+/* --- Inspector --------------------------------------------------------- */
+.inspector-panel {
+  display: flex;
+  flex-direction: column;
+  gap: var(--section-gap);
+  min-width: 0;
+}
+
+.inspector-title {
+  font-size: var(--text-title);
+  overflow-wrap: anywhere;
+}
+
+.inspector-badges {
+  display: flex;
+  gap: var(--space-2);
+  align-items: center;
+  flex-wrap: wrap;
+  margin-top: var(--space-1);
+}
+
+.inspector-fields {
+  display: grid;
+  grid-template-columns: 88px minmax(0, 1fr);
+  gap: var(--space-1) var(--space-2);
+  margin: 0;
+  align-items: center;
+}
+
+.inspector-value {
+  margin: 0;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.inspector-section {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  align-items: flex-start;
+}
+
+.link-list,
+.check-list,
+.note-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  width: 100%;
+}
+
+.link-list {
+  flex-direction: row;
+  flex-wrap: wrap;
+}
+
+.link-btn {
+  padding: 0 var(--space-1);
+  border: var(--border-width) solid var(--color-border);
+  border-radius: var(--radius-control);
+  background: var(--color-elevated);
+  cursor: pointer;
+}
+
+.link-btn:hover {
+  border-color: var(--color-accent);
+  color: var(--color-accent);
+}
+
+.link-btn:active {
+  background: var(--color-border);
+}
+
+.check {
+  display: flex;
+  gap: var(--space-2);
+  align-items: baseline;
+}
+
+.check-evidence {
+  display: block;
+}
+
+.note {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  padding: var(--space-2);
+  border: var(--border-width) solid var(--color-border);
+  border-radius: var(--radius-control);
+}
+
+/* An annotation is text the daemon stored, never markup: it wraps as written. */
+.note-body {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.note-removed {
+  border-style: dashed;
+}
