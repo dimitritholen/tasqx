@@ -2792,10 +2792,18 @@ fn task_detail_card(ctx: &Ctx, result: &Value, now: Timestamp) -> String {
     let unrecognized = status_is_unrecognized(result);
     let mut cells: Vec<MetaCell> = Vec::new();
     let mut annotations: Vec<String> = Vec::new();
+    let mut checks: Vec<(&'static str, String)> = Vec::new();
     for r in detail_rows(ctx, result, now) {
         let (role, prepainted): (Option<&'static str>, bool) = match r.field {
             DetailField::Annotation => {
                 annotations.push(r.value);
+                continue;
+            }
+            // #714: a check is a sentence, not a fact — through the pairing
+            // below it landed beside `rev`, and short ones filled the left
+            // column. Its own block under the facts, like the notes.
+            DetailField::Check => {
+                checks.push((r.label, r.value));
                 continue;
             }
             // D122: the one fact that stops the reader working opens the
@@ -2924,6 +2932,28 @@ fn task_detail_card(ctx: &Ctx, result: &Value, now: Timestamp) -> String {
             }
         }
         i += 1;
+    }
+
+    // D138: one criterion per line, the marker painted as the plain layout
+    // paints it, a long one wrapped under itself and its evidence under it.
+    if !checks.is_empty() {
+        push(&mut out, String::new());
+        let cw = avail.saturating_sub(4).max(10);
+        for (mark, body) in &checks {
+            let evidence = mark.trim().is_empty();
+            for (j, line) in wrap_words(body, cw).iter().enumerate() {
+                if j == 0 && !evidence {
+                    let role = match *mark {
+                        "[x]" => "ok",
+                        "[!]" => "danger",
+                        _ => "muted",
+                    };
+                    push(&mut out, format!("{} {line}", ctx.paint(role, mark)));
+                } else {
+                    push(&mut out, format!("    {line}"));
+                }
+            }
+        }
     }
 
     // Annotations: the content-rich block the ledger rendered as one
@@ -5790,6 +5820,50 @@ mod tests {
             lines[at + 1].contains("the proof"),
             "the citation sits under its claim: {out}"
         );
+    }
+
+    /// #714: on a terminal the card paired short facts two to a line, and a
+    /// check went through the same pairing — so `rev 1` shared its line with
+    /// `[x] Every renamed…` and short checks filled the left column. Checks,
+    /// their evidence and the notes print below the facts, one per line, at
+    /// every width.
+    #[test]
+    fn the_card_prints_checks_and_notes_below_the_facts_one_per_line() {
+        let t = json!({
+            "short_id": 51, "title": "Rename the symbols", "status": "pending",
+            "priority": "M", "project": "tasqx", "urgency": 4.3,
+            "created": "2026-09-01T10:00:00Z", "modified": "2026-09-02T10:00:00Z",
+            "_rev": 1,
+            "checks": [
+                { "body": "Every renamed symbol has a row in the table", "state": "passed", "evidence": "the proof" },
+                { "body": "ok", "state": "open", "evidence": null },
+                { "body": "tests", "state": "failed", "evidence": null },
+            ],
+            "annotations": [{ "body": "a note" }],
+        });
+        for cols in [80, 94, 120, 200] {
+            let ctx = Ctx::new(theme::default_theme(), card_caps()).with_cols(cols);
+            let out = task_detail(&ctx, &t, crate::clock::now());
+            let body: Vec<&str> = out
+                .lines()
+                .map(|l| l.trim_start_matches('▌').trim_start())
+                .collect();
+            let rev = body.iter().position(|l| l.starts_with("rev")).unwrap();
+            for needle in [
+                "[x] Every renamed symbol has a row in the table",
+                "[ ] ok",
+                "[!] tests",
+                "the proof",
+                "· a note",
+            ] {
+                let at = body.iter().position(|l| l.contains(needle));
+                let at = at.unwrap_or_else(|| panic!("{needle:?} missing at {cols}:\n{out}"));
+                assert!(
+                    at > rev && body[at].trim_start().starts_with(needle),
+                    "{needle:?} not on its own line below the facts at {cols} cols:\n{out}"
+                );
+            }
+        }
     }
 
     /// A task with no criteria gets no marker lines at all — the same rule the
