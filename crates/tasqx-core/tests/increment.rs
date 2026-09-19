@@ -2291,6 +2291,44 @@ fn a_project_filtered_export_round_trips_into_exactly_that_project() {
     );
 }
 
+/// Review finding on D171: `default_project` names the store's default
+/// regardless of `filter`, so `export project:A` out of a store whose
+/// default is B used to hand back a document that named a project its own
+/// `projects` section did not carry — `store.import` refuses exactly that
+/// shape ("names ..., which the payload's `projects` section does not
+/// define and the store does not have"), so the export could not round-trip
+/// into a fresh store at all. `default_project` is null whenever the
+/// default is not among the exported project rows.
+#[test]
+fn a_filtered_export_drops_a_default_project_it_did_not_carry() {
+    let e = engine();
+    e.project_create(&json!({ "name": "A" })).unwrap();
+    e.project_create(&json!({ "name": "B" })).unwrap();
+    e.project_use(&json!({ "name": "B" })).unwrap();
+    e.task_add(&json!({ "title": "task in A", "project": "A" }))
+        .unwrap();
+
+    let ex = e.store_export(&json!({ "filter": "project:A" })).unwrap();
+    assert_eq!(
+        ex["default_project"],
+        Value::Null,
+        "B is the default but is not among the exported projects: {ex}"
+    );
+
+    let fresh = engine();
+    let imp = fresh.store_import(&ex).unwrap();
+    assert_eq!(imp["imported"], json!(1), "{imp}");
+    assert_eq!(
+        fresh.default_project().unwrap(),
+        None,
+        "a fresh store must come out with no default, not a stolen one"
+    );
+
+    // Unaffected: the unfiltered export still carries the real default.
+    let full = e.store_export(&json!({})).unwrap();
+    assert_eq!(full["default_project"], json!("B"));
+}
+
 // ---- modify: set + clear round-trip (DESIGN §5, §12-D13) --------------------
 
 /// Every field the CLI's `modify` steers must survive a set → read → clear →

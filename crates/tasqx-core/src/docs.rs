@@ -1129,7 +1129,7 @@ pub const R_STORE_EXPORT: &[FieldDoc] = &[
     n(
         "default_project",
         "string",
-        "The store's default project, or null.",
+        "The store's default project, or null — also null when a filtered export did not carry it among `projects`.",
     ),
 ];
 
