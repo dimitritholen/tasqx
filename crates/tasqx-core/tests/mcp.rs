@@ -3373,9 +3373,9 @@ fn the_read_only_refusal_names_the_flag_that_fixes_it() {
 /// D165 added `tasqx_update_annotation` and raised the roster cap by 1 KB for
 /// it; the per-tool caps did not move.
 ///
-/// D167 added `tasqx_add_tokens` and the `total_tokens` argument on
-/// `tasqx_complete_task`, and raised the roster cap again, to just above the
-/// measured roster with both tools present (ROSTER_MEASURED below).
+/// D167 added `tasqx_add_tokens` (1,226 bytes) and the `total_tokens`
+/// argument on `tasqx_complete_task`. Measured with both tools present: 31
+/// tools, 34,000 bytes, so the roster cap moved from 32,768 to 34,304.
 ///
 /// The floor is not zero. With every `description` key removed from the roster
 /// the same serialization is 11,597 bytes of schema skeleton — property names,
