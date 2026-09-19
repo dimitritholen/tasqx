@@ -7,10 +7,12 @@
 [1;38;2;191;97;106m▌[0m [38;2;138;138;138mestimate[0m    5h                [38;2;138;138;138mtags[0m        +docs
 [1;38;2;191;97;106m▌[0m [38;2;138;138;138mcreated[0m     16 Aug (31 days ago)
 [1;38;2;191;97;106m▌[0m [38;2;138;138;138mmodified[0m    16 Aug (31 days ago)
-[1;38;2;191;97;106m▌[0m [38;2;138;138;138mrev[0m         1                 [38;2;138;138;138m[x][0m         Every renamed symbol has a row in the table
-[1;38;2;191;97;106m▌[0m [38;2;138;138;138m[x][0m         One worked example per SDK (js, py, go)
-[1;38;2;191;97;106m▌[0m [38;2;138;138;138m[ ][0m         The rate-limit ceiling is stated with its real number
-[1;38;2;191;97;106m▌[0m [38;2;138;138;138m[ ][0m         Reviewed by whoever ships 3.0
+[1;38;2;191;97;106m▌[0m [38;2;138;138;138mrev[0m         1
+[1;38;2;191;97;106m▌[0m
+[1;38;2;191;97;106m▌[0m [x] Every renamed symbol has a row in the table
+[1;38;2;191;97;106m▌[0m [x] One worked example per SDK (js, py, go)
+[1;38;2;191;97;106m▌[0m [2;38;2;76;86;106m[ ][0m The rate-limit ceiling is stated with its real number
+[1;38;2;191;97;106m▌[0m [2;38;2;76;86;106m[ ][0m Reviewed by whoever ships 3.0
 [1;38;2;191;97;106m▌[0m
 [1;38;2;191;97;106m▌[0m [38;2;138;138;138m·[0m Ruling: the guide ships WITH the 3.0 release, not after it. A migration note that lands a week
 [1;38;2;191;97;106m▌[0m   late is a support ticket that already happened.
