@@ -2955,6 +2955,16 @@ fn every_mcp_tool_hands_back_the_frozen_result_of_its_method() {
                     obj.insert("include_preview".to_string(), json!(true));
                 }
             }
+            // D167: `tasqx_add_tokens` pins `source` and `confidence` and
+            // refuses them from the caller; the server fills in the same
+            // self-report/medium pair this case sends, so the result checked
+            // below is still `token.add`'s own.
+            if tool == "tasqx_add_tokens" {
+                if let Some(obj) = params.as_object_mut() {
+                    obj.remove("source");
+                    obj.remove("confidence");
+                }
+            }
             let response = server
                 .handle_message(&json!({
                     "jsonrpc": "2.0",

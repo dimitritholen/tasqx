@@ -62,7 +62,7 @@ per-request figures.
 | Log-parse | `medium` | An explicit path to a file with no per-session anchor (Gemini, Copilot) |
 | Log-parse | `low` | No path: the transcript was found by scanning and matched on time overlap alone |
 | Log-parse | `low` | `tokens recompute` found the transcript gone, so it kept the counts and lowered the grade |
-| Self-report | `medium` | Every report on `done`, and `tokens add`; `token.add` also accepts `low` |
+| Self-report | `medium` | Every report on `done`, `tasqx_add_tokens` and `tokens add`; `tasqx api token.add` also accepts `low` |
 
 A self-report is `medium` and can never be `high`. Only the agent knows which
 task the spend served, so self-report is the primary channel. But nothing
