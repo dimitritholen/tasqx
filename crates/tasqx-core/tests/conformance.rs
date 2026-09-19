@@ -176,6 +176,14 @@ const fn req_of(key: &'static str, ty: Ty, inner: Shape) -> Field {
     }
 }
 
+/// Always present, may be `null`; when it is not, it carries `inner`.
+const fn nul_of(key: &'static str, ty: Ty, inner: Shape) -> Field {
+    Field {
+        inner,
+        ..nul(key, ty)
+    }
+}
+
 /// May be absent; when present it is not `null` and its rows carry `inner`.
 ///
 /// The combination is not decoration: `store.export`'s `tokens` is conditional
@@ -393,6 +401,19 @@ const TASK_GET_RELATIONS: &[Field] = &[
     req("depends_on", Ty::Array),
     req_of("annotations", Ty::Array, CAPPED_ANNOTATION),
 ];
+
+/// D165: the two notes the card quotes, read apart from the annotation page,
+/// and the pin completion wrote. All three nullable: an open task has no
+/// delivery note and a task nobody wrote on has no first one.
+const TASK_CARD_NOTES: &[Field] = &[
+    nul("delivered_annotation_id", Ty::Str),
+    nul_of("first_annotation", Ty::Object, CAPPED_ANNOTATION),
+    nul_of("delivered_annotation", Ty::Object, CAPPED_ANNOTATION),
+];
+
+/// D165: present only on an exported task a completion pinned a note on, so
+/// an older tasqx's closed import gate keeps reading every other export.
+const TASK_EXPORT_PIN: &[Field] = &[opt("delivered_annotation_id", Ty::Str)];
 
 /// The reverse edge (tasqx audit #159): short_ids of the tasks THIS task
 /// blocks. `task.get`-only — `store.export`'s row shape is `TASK_RELATIONS`
@@ -636,6 +657,7 @@ const R_TASK_LIST_PROJECTED: Shape = &[&[
 const TASK_BUDGET_GAUGE: &[Field] = &[req("fresh_tokens", Ty::Int), nul("over", Ty::Bool)];
 
 const R_TASK_GET: Shape = &[
+    TASK_CARD_NOTES,
     TASK_BUDGET_GAUGE,
     TASK_CHECKS,
     TASK_CORE,
@@ -776,6 +798,15 @@ const R_ANNOTATION_REMOVE: Shape = &[&[
         Ty::Object,
         &[&[req("id", Ty::Str), req("removed", Ty::Str)]],
     ),
+]];
+
+/// `annotation.update`'s answer (D165): the note as it now stands — same id
+/// and `created`, new body — and the task's `_rev` after the edit, the value a
+/// caller sends back as `expected_rev` next time.
+const R_ANNOTATION_UPDATE: Shape = &[&[
+    req("short_id", Ty::Int),
+    req_of("annotation", Ty::Object, ANNOTATION),
+    req("_rev", Ty::Int),
 ]];
 
 const R_TOKEN_ADD: Shape = &[&[
@@ -1002,6 +1033,7 @@ const BRIEF_MEMORY: &[Field] = &[
 /// never forwards `explain`, and an optional key no call can produce freezes
 /// nothing.
 const R_TASK_BRIEF_TASK: Shape = &[
+    TASK_CARD_NOTES,
     TASK_BUDGET_GAUGE,
     TASK_CHECKS,
     TASK_CORE,
@@ -1130,6 +1162,7 @@ const R_STORE_EXPORT: Shape = &[&[
         &[
             TASK_CORE,
             TASK_EXPORT_TIME,
+            TASK_EXPORT_PIN,
             TASK_EXPORT_TOKENS,
             TASK_RELATIONS,
             TASK_STATUS_FLAG,
@@ -1682,6 +1715,22 @@ fn cases() -> Vec<Case> {
             R_ANNOTATION_REMOVE,
         ),
         case(
+            "annotation.update",
+            "the corrected note comes back under its own id and timestamp (D165)",
+            |e| {
+                plain_task(e);
+                let added = e
+                    .annotation_add(&json!({ "ref": 1, "body": "a wrong sentence" }))
+                    .expect("add");
+                json!({
+                    "ref": 1,
+                    "annotation_id": added["annotation"]["id"],
+                    "body": "the right sentence",
+                })
+            },
+            R_ANNOTATION_UPDATE,
+        ),
+        case(
             "token.add",
             "one self-report measurement",
             |e| {
@@ -1981,14 +2030,16 @@ fn cases() -> Vec<Case> {
                 plain_task(e);
                 e.task_start(&json!({ "ref": 2 })).expect("start");
                 e.task_stop(&json!({ "ref": 2 })).expect("stop");
-                e.task_done(&json!({ "ref": 2 })).expect("done");
-                e.task_start(&json!({ "ref": 1 })).expect("start");
                 // Both tasks are annotated, not just one: the row shape below
                 // `annotations` is checked per row, so a task without one would
-                // leave that row's nested keys unexamined.
-                e.annotation_add(&json!({ "ref": 1, "body": "a note" }))
-                    .expect("annotate");
+                // leave that row's nested keys unexamined. Task 2's note lands
+                // BEFORE its completion, so the completion pins it (D165) and
+                // the optional `delivered_annotation_id` is observed present.
                 e.annotation_add(&json!({ "ref": 2, "body": "and another" }))
+                    .expect("annotate");
+                e.task_done(&json!({ "ref": 2 })).expect("done");
+                e.task_start(&json!({ "ref": 1 })).expect("start");
+                e.annotation_add(&json!({ "ref": 1, "body": "a note" }))
                     .expect("annotate");
                 // D138, and for the annotations' reason one relation over: the
                 // row shape under `checks` is checked PER ROW, so a task

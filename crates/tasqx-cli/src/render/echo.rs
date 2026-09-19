@@ -1342,14 +1342,15 @@ pub fn dep_changed(
     draw(ctx, card, now)
 }
 
-/// `tasqx annotate`: the note, wrapped under itself.
-pub fn annotated(ctx: &Ctx, result: &Value, task: &Value, now: Timestamp) -> String {
+/// `tasqx annotate`: the note, wrapped under itself, after `word` —
+/// `annotated`, or `note edited` for `annotate --edit` (D165).
+pub fn annotated(ctx: &Ctx, result: &Value, task: &Value, now: Timestamp, word: &str) -> String {
     let body = san(result
         .get("annotation")
         .and_then(|a| a.get("body"))
         .and_then(Value::as_str)
         .unwrap_or(""));
-    let mut card = Card::new(task, outcome(ctx, "annotated"));
+    let mut card = Card::new(task, outcome(ctx, word));
     card.words = Some(body);
     card.context = Context::NONE;
     draw(ctx, card, now)
@@ -1385,6 +1386,7 @@ pub fn undone(ctx: &Ctx, result: &Value, task: &Value, titles: &Titles, now: Tim
         "tag.remove" => "untag",
         "dependency.remove" => "undep",
         "annotation.add" => "annotate",
+        "annotation.update" => "annotate --edit",
         other => other,
     };
     let mut card = Card::new(task, outcome(ctx, &format!("undid {}", san(verb))));
@@ -1438,6 +1440,11 @@ pub fn undone(ctx: &Ctx, result: &Value, task: &Value, titles: &Titles, now: Tim
             if !note.is_empty() {
                 card.detail.push((Fact::detail(ctx, &note), Give::Cut));
             }
+            card.context = Context::NONE;
+        }
+        "annotation.update" => {
+            card.lead
+                .push(Fact::changed(ctx, "card.strong", "previous text back"));
             card.context = Context::NONE;
         }
         _ => {

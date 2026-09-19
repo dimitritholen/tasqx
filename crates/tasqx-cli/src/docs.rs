@@ -108,7 +108,11 @@ const VERBS: [(&str, &str, &str); 44] = [
     ),
     ("reopen", "—", "task.reopen"),
     ("undo", "<code>u</code>", "event.revert"),
-    ("annotate", "<code>note</code>", "annotation.add"),
+    (
+        "annotate",
+        "<code>note</code>",
+        "annotation.add + annotation.update",
+    ),
     ("unannotate", "—", "annotation.remove"),
     ("tag", "—", "tag.add"),
     ("untag", "—", "tag.remove"),
@@ -147,7 +151,7 @@ const VERBS: [(&str, &str, &str); 44] = [
 
 /// The method table the JSON API page renders: `(method, params, returns)`.
 /// Single source, same reason as [`VERBS`].
-const METHODS: [(&str, &str, &str); 42] = [
+const METHODS: [(&str, &str, &str); 43] = [
     (
         "project.create",
         "<code>name</code>, <code>description?</code>",
@@ -325,6 +329,17 @@ const METHODS: [(&str, &str, &str); 42] = [
          <code>not_found</code>; <code>event.revert</code> does not cover this op.",
     ),
     (
+        "annotation.update",
+        "<code>ref</code>, <code>annotation_id</code>, <code>body</code>, \
+         <code>expected_rev?</code>",
+        "<code>{short_id, annotation, _rev}</code>. Replaces one note's body IN PLACE (D165): \
+         its id, <code>created</code> and position are kept, so a corrected first note stays \
+         the card's Description, and search re-indexes the new text. \
+         <code>expected_rev</code> is the TASK's <code>_rev</code>, as on \
+         <code>task.modify</code>. A removed note is <code>not_found</code>; \
+         <code>event.revert</code> puts the previous body back.",
+    ),
+    (
         "token.add",
         "<code>ref</code>, <code>tool</code>, <code>source</code>, <code>confidence</code>, \
          <code>model?</code>, <code>input_tokens?</code>, <code>output_tokens?</code>, \
@@ -499,9 +514,9 @@ const METHODS: [(&str, &str, &str); 42] = [
         "—",
         "<code>{reverted, short_id, title, restored}</code> — <code>reverted</code> carries \
          the event id, its op and its timestamp. Undoes the <em>newest</em> event by \
-         APPENDING a compensating one, so the reversed event stays in the log. Four ops are \
+         APPENDING a compensating one, so the reversed event stays in the log. Five ops are \
          undoable (<code>stop</code>, <code>tag.remove</code>, <code>dependency.remove</code>, \
-         <code>annotation.add</code>); every other one is <code>conflict</code> naming itself \
+         <code>annotation.add</code>, <code>annotation.update</code>); every other one is <code>conflict</code> naming itself \
          and what does take it back. The newest <em>event</em>, not the last call you made: a \
          call that changed nothing writes no event, so undo reaches past it — which is why the \
          answer names what it undid instead of saying ok.",

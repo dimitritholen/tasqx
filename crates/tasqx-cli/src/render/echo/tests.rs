@@ -151,13 +151,13 @@ fn a_change_too_long_for_one_line_continues_on_the_rail() {
 fn an_annotation_wraps_under_itself_and_keeps_every_word() {
     let note = "word ".repeat(30).trim().to_string();
     let result = json!({ "short_id": 50, "annotation": { "body": note } });
-    let out = annotated(&unicode(40), &result, &task(), now());
+    let out = annotated(&unicode(40), &result, &task(), now(), "annotated");
     assert_eq!(out.matches("word").count(), 30, "{out}");
     for l in out.lines() {
         assert!(width(l) <= 40, "{} cells: {l:?}", width(l));
         assert!(l.starts_with('▌'), "off the rail: {l:?}");
     }
-    let piped = annotated(&plain(40), &result, &task(), now());
+    let piped = annotated(&plain(40), &result, &task(), now(), "annotated");
     assert_eq!(piped.lines().count(), 2, "a pipe has no width: {piped}");
 }
 
@@ -584,7 +584,13 @@ fn every_echo(ctx: &Ctx) -> Vec<(&'static str, String, Vec<&'static str>)> {
         ),
         (
             "annotate",
-            annotated(ctx, &json!({ "annotation": { "body": "a note" } }), &t, n),
+            annotated(
+                ctx,
+                &json!({ "annotation": { "body": "a note" } }),
+                &t,
+                n,
+                "annotated",
+            ),
             vec!["annotated"],
         ),
         (

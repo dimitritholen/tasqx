@@ -618,16 +618,21 @@ pub(super) enum Command {
     /// else, because that is the only position from which its inverses are exact
     /// rather than plausible (see `engine/undo.rs`); a `<ref>` here would look
     /// like a courtesy and would silently reach past whatever happened
-    /// elsewhere. Four operations are undoable and every other one refuses by
+    /// elsewhere. Five operations are undoable and every other one refuses by
     /// name, saying what does take it back.
     #[command(alias = "u", after_help = crate::cmddoc::after_help("undo"))]
     Undo,
-    /// Annotate a task (maps to annotation.add).
+    /// Annotate a task (maps to annotation.add), or correct one note in place
+    /// with `--edit <annotation-id>` (maps to annotation.update, D165).
     #[command(alias = "note", after_help = crate::cmddoc::after_help("annotate"))]
     Annotate {
         /// short_id or UUID.
         #[arg(add = crate::complete::candidates::task_ids())]
         r#ref: String,
+        /// Replace the body of this annotation instead of adding one; its id,
+        /// timestamp and position are kept.
+        #[arg(long, value_name = "ANNOTATION_ID")]
+        edit: Option<String>,
         /// The annotation text.
         text: Vec<String>,
     },

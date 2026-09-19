@@ -83,12 +83,12 @@ fn full_protocol_sequence() {
     }));
     assert!(note.is_none(), "notifications must not produce a response");
 
-    // 3. tools/list — all 29 tools present, each with an inputSchema.
+    // 3. tools/list — all 30 tools present, each with an inputSchema.
     let listed = server
         .handle_message(&json!({ "jsonrpc": "2.0", "id": 2, "method": "tools/list" }))
         .expect("tools/list is a request");
     let tools = listed["result"]["tools"].as_array().expect("tools array");
-    assert_eq!(tools.len(), 29, "expected 29 tools");
+    assert_eq!(tools.len(), 30, "expected 30 tools");
     let names: Vec<&str> = tools.iter().map(|t| t["name"].as_str().unwrap()).collect();
     for expected in [
         "tasqx_list_tasks",
@@ -109,6 +109,7 @@ fn full_protocol_sequence() {
         "tasqx_untag_task",
         "tasqx_annotate_task",
         "tasqx_remove_annotation",
+        "tasqx_update_annotation",
         "tasqx_add_dependency",
         "tasqx_remove_dependency",
         "tasqx_add_memory",
@@ -3368,6 +3369,8 @@ fn the_read_only_refusal_names_the_flag_that_fixes_it() {
 /// the essay creeping back, which is how the 42 KB accumulated in the first
 /// place. Re-measure with the pipeline in D155 before raising one, and raise
 /// it because a tool was ADDED, not because a description grew.
+/// D165 added `tasqx_update_annotation` and raised the roster cap by 1 KB for
+/// it; the per-tool caps did not move.
 ///
 /// The floor is not zero. With every `description` key removed from the roster
 /// the same serialization is 11,597 bytes of schema skeleton — property names,
@@ -3379,7 +3382,7 @@ fn the_read_only_refusal_names_the_flag_that_fixes_it() {
 fn the_whole_tool_roster_stays_inside_its_per_prompt_budget() {
     const MAX_DESCRIPTION: usize = 800;
     const MAX_ENTRY: usize = 3_072;
-    const MAX_ROSTER: usize = 31_744;
+    const MAX_ROSTER: usize = 32_768;
 
     let engine = engine();
     let server = McpServer::new(&engine, Scope::Write);

@@ -35,7 +35,7 @@ const READ_ONLY_BUSY_TIMEOUT_MS: u64 = 30;
 /// index untouched.
 pub const TASK_COLS: &str = "id, short_id, title, status, priority, project, due, \
     scheduled, wait, estimate, recurrence, urgency, active_since, tracked_seconds, \
-    rev, created, modified, completed, remind, budget_tokens";
+    rev, created, modified, completed, remind, budget_tokens, delivered_annotation_id";
 
 /// Open (creating if needed) the store at `path`, apply pragmas + migration.
 pub fn open(path: &str) -> Result<Connection, ApiError> {
@@ -211,7 +211,11 @@ fn migrate(conn: &Connection) -> Result<(), ApiError> {
             -- the default and deliberately not a number: a shipped default
             -- would be a guess about workloads tasqx has no data on, applied
             -- to every task in every store.
-            budget_tokens   INTEGER
+            budget_tokens   INTEGER,
+            -- D165: the newest live annotation at the instant `task.done`
+            -- completed the task — the card's Delivered row. NULL on an open
+            -- task, and on one completed before the column existed.
+            delivered_annotation_id TEXT
         );
         CREATE INDEX IF NOT EXISTS idx_tasks_status  ON tasks(status);
         CREATE INDEX IF NOT EXISTS idx_tasks_project ON tasks(project);
@@ -363,6 +367,7 @@ fn migrate(conn: &Connection) -> Result<(), ApiError> {
     // Fresh stores get `remind` from the CREATE and skip this.
     add_column_if_missing(conn, "tasks", "remind", "TEXT")?;
     add_column_if_missing(conn, "tasks", "budget_tokens", "INTEGER")?;
+    add_column_if_missing(conn, "tasks", "delivered_annotation_id", "TEXT")?;
 
     // Must follow the ALTER: on an upgraded store the column does not exist
     // until the statement above runs. Partial, because the scheduler only ever
@@ -976,6 +981,7 @@ pub fn map_task_row_at(row: &Row, now: Timestamp) -> rusqlite::Result<Task> {
         completed: row.get(17)?,
         remind: row.get(18)?,
         budget_tokens: row.get(19)?,
+        delivered_annotation_id: row.get(20)?,
     })
 }
 

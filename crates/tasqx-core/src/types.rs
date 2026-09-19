@@ -449,6 +449,10 @@ pub struct Task {
     /// on the flag is the agent reading its brief or a hook the operator
     /// installed — both parties that ARE in the loop.
     pub budget_tokens: Option<i64>,
+    /// The annotation `task.done` pinned as the delivery note (D165): the
+    /// newest live one at the instant of completion. `None` on an open task,
+    /// and on one completed before the pin existed.
+    pub delivered_annotation_id: Option<String>,
     /// The cached [`crate::urgency`] score. A DERIVED value that is also
     /// persisted, so it is only as fresh as the last write to this row — the
     /// due-proximity and age terms both move with the wall clock.

@@ -228,6 +228,13 @@ fn undo_store(tag: &str, op: &str, title: &str) -> Store {
         "annotation.add" => {
             st.plain(&["annotate", "1", "call the printer"]);
         }
+        "annotation.update" => {
+            let id = st.json(&["annotate", "1", "call the printr"])["annotation"]["id"]
+                .as_str()
+                .expect("the note's id")
+                .to_string();
+            st.plain(&["annotate", "1", "--edit", &id, "call the printer"]);
+        }
         "dependency.remove" => {
             st.plain(&["dep", "1", "2"]);
             st.plain(&["undep", "1", "2"]);
@@ -430,7 +437,13 @@ fn every_echo_fits_a_sixty_column_terminal() {
         overflow(&mut over, &format!("{args:?}"), &out);
     }
     // `undo` of each op it reverses, each on a store whose newest event it is.
-    for op in ["stop", "tag.remove", "annotation.add", "dependency.remove"] {
+    for op in [
+        "stop",
+        "tag.remove",
+        "annotation.add",
+        "annotation.update",
+        "dependency.remove",
+    ] {
         let u = undo_store(&format!("fits-60-undo-{op}"), op, long);
         overflow(&mut over, &format!("undo {op}"), &u.term_raw(60, &["undo"]));
     }
@@ -800,4 +813,25 @@ fn add_orders_its_facts_the_way_list_does() {
         "{plain}"
     );
     assert!(l[1].starts_with("added"), "{plain}");
+}
+
+/// D165: `annotate --edit` replaces the note's text under its own id, says so,
+/// and `undo` puts the old text back.
+#[test]
+fn annotate_edit_replaces_the_note_in_place_and_undo_restores_it() {
+    let st = undo_store("annotate-edit", "annotation.update", "Write the report");
+    let notes = st.json(&["show", "1"])["annotations"].clone();
+    assert_eq!(notes.as_array().map(Vec::len), Some(1), "{notes}");
+    assert_eq!(notes[0]["body"], "call the printer");
+    let echo = st.plain(&["undo"]);
+    assert!(echo.contains("undid annotate --edit"), "{echo}");
+    assert_eq!(
+        st.json(&["show", "1"])["annotations"][0]["body"],
+        "call the printr"
+    );
+
+    let id = notes[0]["id"].as_str().expect("id");
+    let out = st.plain(&["annotate", "1", "--edit", id, "call", "the", "plumber"]);
+    assert!(out.contains("note edited"), "{out}");
+    assert!(out.contains("call the plumber"), "{out}");
 }

@@ -479,11 +479,11 @@ pub const COMMAND_REF: &[CmdDoc] = &[
         ],
         notes: &[
             "It takes no ref, and that is the design: only the NEWEST event can be reversed exactly, because nothing has happened since to have read or overwritten what the inverse puts back.",
-            "Four operations are undoable — `stop`, `untag`, `undep` and `annotate`. Every other one exits 5 naming itself and the verb that does take it back (`done` -> `tasqx reopen`, `modify` -> `tasqx show` then a second `modify`).",
+            "Five operations are undoable — `stop`, `untag`, `undep`, `annotate` and `annotate --edit`. Every other one exits 5 naming itself and the verb that does take it back (`done` -> `tasqx reopen`, `modify` -> `tasqx show` then a second `modify`).",
             "Undo APPENDS: the event it reverses stays in the log and a new `undo` event lands behind it, so `tasqx chart` and the audit trail read `X happened, then it was undone`.",
             "There is no redo, so `tasqx undo` twice in a row exits 5: the second one would find the first undo as the newest event and the pair would toggle forever.",
             "It reverses the newest RECORDED event, which is not always the last command you typed. A command that changed nothing records nothing — `tasqx undep 1 2` where no such edge exists, or `tasqx start` on a task already running — so `undo` reaches past it to the previous change. That is why the answer names what it undid: read it before assuming it hit what you were aiming at.",
-            "A single event outside the undoable four permanently blocks undo for everything BEFORE it, not just for itself: the newest event on an active store is almost always `add`, `done` or `modify`, and once one of those lands, an annotation from ten seconds earlier can never be reached (#228.2). This is a same-breath affordance — undo the thing you just did — not an undo stack.",
+            "A single event outside the undoable five permanently blocks undo for everything BEFORE it, not just for itself: the newest event on an active store is almost always `add`, `done` or `modify`, and once one of those lands, an annotation from ten seconds earlier can never be reached (#228.2). This is a same-breath affordance — undo the thing you just did — not an undo stack.",
         ],
         see_also: &["untag", "undep", "reopen", "chart"],
         topic: Topic::Capturing,
@@ -491,13 +491,16 @@ pub const COMMAND_REF: &[CmdDoc] = &[
     CmdDoc {
         verb: "annotate",
         aliases: &["note"],
-        method: "annotation.add",
+        method: "annotation.add + annotation.update",
         summary: "Attach a timestamped note to a task.",
-        usage: "tasqx annotate <ref> <text…>",
+        usage: "tasqx annotate <ref> [--edit <annotation-id>] <text…>",
         examples: &[ex_norun_plain("tasqx annotate 1 Called the plumber, waiting on a quote")],
         notes: &[
             "Wrote something you shouldn't have? `tasqx unannotate <ref> <annotation-id>` \
              scrubs it — there is no other way back.",
+            "Wrote something wrong? `--edit <annotation-id>` replaces that note's text in \
+             place (D165): its id, timestamp and position stay, so a corrected first note \
+             is still the card's Description, and `tasqx undo` puts the old text back.",
         ],
         see_also: &["show", "modify", "unannotate"],
         topic: Topic::Capturing,
@@ -1269,7 +1272,7 @@ mod tests {
 
     /// #228.2: `undo --help` read as if it undid "the last thing" generally,
     /// but on any active store the newest event is almost always `add`,
-    /// `done` or `modify` — none of the four undoable operations — so `undo`
+    /// `done` or `modify` — none of the five undoable operations — so `undo`
     /// is unreachable in practice the moment one of those lands. The help
     /// must say so plainly rather than let the reader learn it from a
     /// `conflict` error every time.

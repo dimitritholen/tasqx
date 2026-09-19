@@ -1092,8 +1092,16 @@ fn card_rows(task: &Value, neighbourhood: Option<&Value>, opts: &CardOpts) -> Ve
     // Only on a closed task, where "what came of it" is a question with an
     // answer. On an open one the newest annotation is a progress note, and
     // labelling it "Delivered" would report work that has not happened.
+    //
+    // D165: `task.get` names the delivery note itself, pinned at completion
+    // and read apart from the page; a result without the key (an older
+    // server) falls back to the newest note on the page.
     if matches!(str_of(task, "status").as_str(), "done" | "cancelled") {
-        if let Some(last) = page.last() {
+        let delivered = match task.get("delivered_annotation") {
+            Some(v) => v.as_object().map(|_| v),
+            None => page.last(),
+        };
+        if let Some(last) = delivered {
             rows.push(Row {
                 label: "Delivered".to_string(),
                 lines: prose(&first_paragraph(&str_of(last, "body"))),
@@ -1177,6 +1185,14 @@ fn annotation_page(task: &Value) -> &[Value] {
 /// end, so "annotations[0]" and "the first note" are the same object only at
 /// offset zero with nothing older elided.
 fn description(task: &Value, page: &[Value]) -> Option<Vec<String>> {
+    // D165: `task.get` carries the oldest note apart from the page, so the
+    // row no longer depends on which page was asked for. The page arithmetic
+    // below is for a result without the key (an older server).
+    if let Some(first) = task.get("first_annotation") {
+        return first
+            .as_object()
+            .map(|_| prose(&first_paragraph(&str_of(first, "body"))));
+    }
     let total = task
         .get("annotations_total")
         .and_then(Value::as_u64)

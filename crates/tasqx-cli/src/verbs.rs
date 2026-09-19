@@ -777,16 +777,31 @@ pub(crate) fn run_undo(be: &mut Backend, ctx: &Ctx) -> CmdOutcome {
     Ok((result, text))
 }
 
+/// `tasqx annotate` — add a note, or with `--edit <id>` correct one in place
+/// (`annotation.update`, D165).
 pub(crate) fn run_annotate(
     be: &mut Backend,
     ctx: &Ctx,
     r#ref: String,
+    edit: Option<String>,
     text: Vec<String>,
 ) -> CmdOutcome {
     let body = text.join(" ");
-    let result = be.call("annotation.add", &json!({ "ref": r#ref, "body": body }))?;
+    let (result, word) = match edit {
+        Some(id) => (
+            be.call(
+                "annotation.update",
+                &json!({ "ref": r#ref, "annotation_id": id, "body": body }),
+            )?,
+            "note edited",
+        ),
+        None => (
+            be.call("annotation.add", &json!({ "ref": r#ref, "body": body }))?,
+            "annotated",
+        ),
+    };
     let task = read_back(be, &result).unwrap_or_else(|| result.clone());
-    let out = render::annotated(ctx, &result, &task, crate::clock::now());
+    let out = render::annotated(ctx, &result, &task, crate::clock::now(), word);
     Ok((result, out))
 }
 
