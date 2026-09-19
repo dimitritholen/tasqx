@@ -754,3 +754,29 @@ fn a_hit_with_no_kind_keeps_the_flat_list_it_had_before_the_labels() {
 - **blocked is unmet_blockers non-empty** · `DESIGN.md`\n  D145 rules that…\n"
     );
 }
+
+/// Task #715: the engine's snippet keeps the body's line breaks, so a doc
+/// whose flattened frontmatter sits above its prose (D135) came through as
+/// `description  How an SDK…`, a blank line, then `Cut the…` — one hit read
+/// as two paragraphs, the second not even indented under its bullet. A
+/// snippet is one excerpt: it renders on one line, whitespace runs collapsed.
+#[test]
+fn a_snippet_with_line_breaks_renders_on_one_line() {
+    let b = json!({
+        "task": minimal(),
+        "memory": {
+            "count": 1,
+            "total": 1,
+            "hits": [
+                { "title": "release-process", "source": "docs/release.md",
+                  "snippet": "description  How an SDK release is cut\n\nCut the release branch…" }
+            ]
+        }
+    });
+    assert_eq!(
+        brief_tail_text(&b),
+        "\
+\n### From memory\n\n\
+- **release-process** · `docs/release.md`\n  description How an SDK release is cut Cut the release branch…\n"
+    );
+}

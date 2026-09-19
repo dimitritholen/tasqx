@@ -511,7 +511,12 @@ fn brief_tail(out: &mut String, result: &Value) {
                     .map(|s| format!(" · `{s}`"))
                     .unwrap_or_default();
                 out.push_str(&format!("- **{}**{source}\n", str_of(h, "title")));
-                let snippet = str_of(h, "snippet");
+                // The engine's snippet keeps the body's line breaks; one hit
+                // is one excerpt, so it reads on one line under its bullet.
+                let snippet = str_of(h, "snippet")
+                    .split_whitespace()
+                    .collect::<Vec<_>>()
+                    .join(" ");
                 if !snippet.is_empty() {
                     out.push_str(&format!("  {snippet}\n"));
                 }
