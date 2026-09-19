@@ -2928,8 +2928,10 @@ mod tests {
         };
         let (live, gone, finished) = (id_of("1"), id_of("2"), id_of("3"));
 
-        for scope in [None, Some("P".to_string())] {
-            let (members, _) = burndown_members(&e, &scope).expect("burndown scope resolved");
+        let no_filter: Vec<String> = Vec::new();
+        let project_filter = vec!["project:P".to_string()];
+        for scope in [&no_filter, &project_filter] {
+            let (members, _) = burndown_members(&e, scope).expect("burndown scope resolved");
             let by_id = |id: &str| members.iter().find(|m| m.id == id);
 
             let open = by_id(&live).expect("scope {scope:?} lost the open task");
@@ -2947,15 +2949,21 @@ mod tests {
         }
     }
 
-    /// A project whose name contains a space silently produced an EMPTY
-    /// burndown: `format!("project:{p} ...")` tokenized to `project:Home` plus a
-    /// stray `Renovation`, and the resulting parse failure was swallowed by
-    /// `.ok()` + `.unwrap_or_default()`. The chart then rendered "0 left -
-    /// cleared" over a project with open work, and exited 0.
+    /// #663/D173: `burndown_members` no longer composes `project:{p}` itself —
+    /// its old `--project` flag folded into the same filter-DSL positional
+    /// `list`/`report`/`agenda` take, so quoting a name with a space is the
+    /// CALLER's job now (`chart burndown 'project:"Home Renovation"'`), same
+    /// as it already is for every other filter command. This proves that
+    /// hand-off still scopes correctly once quoted, on the exact metacharacter
+    /// set that used to break the old internal `format!("project:{p} ...")`
+    /// composition: a raw interpolation tokenized `Home Renovation` into
+    /// `project:Home` plus a stray `Renovation` and the swallowed parse
+    /// failure rendered "0 left - cleared" over a project with open work, at
+    /// exit 0.
     ///
     /// Both halves are asserted because either alone leaves the bug: the count
-    /// proves the composed filter is now correct, the parenthesised and quoted
-    /// names prove it survives the metacharacters that broke it.
+    /// proves the filter scopes correctly, the unrelated project's task proves
+    /// it did not just collapse to "match everything".
     #[test]
     fn burndown_scope_survives_project_names_with_metacharacters() {
         for name in ["Home Renovation", "a (b)", "say \"hi\"", "work and play"] {
@@ -2971,15 +2979,60 @@ mod tests {
             e.task_add(&json!({ "title": "unrelated", "project": "Other" }))
                 .unwrap();
 
-            let (members, label) =
-                burndown_members(&e, &Some(name.to_string())).expect("scope resolved");
+            // One argv element, exactly what the shell hands `run_chart` once
+            // the caller has quoted the value themselves.
+            let filter = vec![format!("project:{}", tasqx_core::filter::quote(name))];
+            let (members, label) = burndown_members(&e, &filter).expect("scope resolved");
             assert_eq!(
                 members.len(),
                 2,
                 "project {name:?} must scope to its own 2 tasks"
             );
-            assert_eq!(label, name, "the chart label is the project name as given");
+            assert_eq!(
+                label,
+                tasqx_core::filter::from_argv(&filter),
+                "the chart label is the filter as given"
+            );
         }
+    }
+
+    /// #663/D173, end-to-end through the dispatcher `ChartKind::Burndown`'s
+    /// caller actually runs: `run_chart` hands its `filter` straight to
+    /// `burndown_members`, so a project filter must reach all the way through
+    /// to what the chart draws — proven against `run_chart` itself, not just
+    /// the helper underneath it, so a future arm that stops passing `filter`
+    /// along would go red here even if `burndown_members` stayed correct.
+    #[test]
+    fn chart_burndown_with_a_project_filter_excludes_another_projects_tasks() {
+        let e = tasqx_core::Engine::open_in_memory().unwrap();
+        e.project_create(&json!({ "name": "ledger" })).unwrap();
+        e.project_create(&json!({ "name": "other" })).unwrap();
+        e.task_add(&json!({ "title": "ledger task", "project": "ledger" }))
+            .unwrap();
+        // Two tasks in a DIFFERENT project: without them, a filter that
+        // collapsed to "match everything" would pass this test too.
+        e.task_add(&json!({ "title": "other task 1", "project": "other" }))
+            .unwrap();
+        e.task_add(&json!({ "title": "other task 2", "project": "other" }))
+            .unwrap();
+
+        let ctx = Ctx::new(theme::default_theme(), theme::Caps::PLAIN);
+        let (result, _) = run_chart(
+            &e,
+            &ctx,
+            ChartKind::Burndown {
+                filter: vec!["project:ledger".to_string()],
+                days: Some(1),
+            },
+        )
+        .expect("chart ran");
+        let last = result["series"].as_array().unwrap().last().unwrap();
+        assert_eq!(
+            last["remaining"],
+            json!(1),
+            "must count only ledger's own open task, not other's 2: {result}"
+        );
+        assert_eq!(result["scope"], json!("project:ledger"));
     }
 
     /// The swallow itself, independent of any one bad name: when the composed
@@ -3001,7 +3054,7 @@ mod tests {
         e.project_create(&json!({ "name": "empty-project" }))
             .unwrap();
         let (members, _) =
-            burndown_members(&e, &Some("empty-project".to_string())).expect("parses");
+            burndown_members(&e, &["project:empty-project".to_string()]).expect("parses");
         assert!(
             members.is_empty(),
             "a live project with no open work is legitimately empty, not an error"
@@ -3012,7 +3065,7 @@ mod tests {
         // guarantee `task.add --project`/`task.modify --project` already give
         // (D23) — no longer a silent empty burndown for what is, in fact, a
         // typo.
-        let unknown = burndown_members(&e, &Some("nope".to_string()))
+        let unknown = burndown_members(&e, &["project:nope".to_string()])
             .expect_err("an unknown project name must propagate as an error, not an empty chart");
         assert_eq!(unknown.code, tasqx_core::ErrorCode::NotFound);
         assert!(unknown.message.contains("nope"), "{}", unknown.message);
@@ -3054,7 +3107,7 @@ mod tests {
             .unwrap();
         e.task_cancel(&json!({ "ref": "2" })).unwrap();
 
-        let (members, _) = burndown_members(&e, &None).expect("scope resolved");
+        let (members, _) = burndown_members(&e, &[]).expect("scope resolved");
         assert_eq!(
             members.len(),
             3,

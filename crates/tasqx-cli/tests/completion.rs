@@ -889,7 +889,6 @@ fn a_seeded_store_completes_project_names() {
         (4, &["tasqx", "add", "x", "--project", ""][..]),
         (5, &["tasqx", "modify", "1", "x", "--project", "wo"][..]),
         (2, &["tasqx", "use", "wo"][..]),
-        (4, &["tasqx", "chart", "burndown", "--project", ""][..]),
     ] {
         let got = complete_bash_in(&db, &socket, cursor, words);
         assert!(
@@ -897,6 +896,16 @@ fn a_seeded_store_completes_project_names() {
             "`{words:?}` must offer the seeded project, got {got:?}"
         );
     }
+
+    // `chart burndown` (#663/D173) takes the filter positional, not a
+    // `--project` flag any more, so its `project:` candidates are the
+    // COMPOSED form `filter_words()`'s other attachments offer.
+    let got = complete_bash_in(&db, &socket, 3, &["tasqx", "chart", "burndown", "project:"]);
+    assert!(
+        got.iter()
+            .any(|c| c == &format!("project:{SEEDED_PROJECT}")),
+        "`chart burndown project:<TAB>` must offer the seeded project, got {got:?}"
+    );
 
     let _ = std::fs::remove_dir_all(db.parent().expect("fixture dir"));
 }

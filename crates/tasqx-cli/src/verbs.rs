@@ -1462,13 +1462,13 @@ pub(crate) fn run_why(
 pub(crate) fn run_chart(engine: &Engine, ctx: &Ctx, kind: ChartKind) -> CmdOutcome {
     let anchor = chart::today();
     Ok(match kind {
-        ChartKind::Throughput { weeks } => {
+        ChartKind::Throughput { filter, weeks } => {
             let weeks = chart::default_weeks(false, weeks);
             // At least 5 weeks back regardless of the display window (#234
             // item 4): the 4-wk velocity is always computed over the last four
             // COMPLETE ISO weeks, which `--weeks 1` alone would clip.
             let events = events_since(engine, anchor, weeks.max(5) * 7 + 7)?;
-            let (members, _) = burndown_members(engine, &None)?;
+            let (members, _) = burndown_members(engine, &filter)?;
             let series = chart::throughput(&events, &members, weeks, anchor);
             let velocity = chart::velocity_4wk(&events, &members, anchor);
             let data = series
@@ -1484,10 +1484,14 @@ pub(crate) fn run_chart(engine: &Engine, ctx: &Ctx, kind: ChartKind) -> CmdOutco
                 chart::render_throughput(ctx, &series, velocity, members.is_empty()),
             )
         }
-        ChartKind::Heatmap { year, weeks } => {
+        ChartKind::Heatmap {
+            filter,
+            year,
+            weeks,
+        } => {
             let weeks = chart::default_weeks(year, weeks);
             let events = events_since(engine, anchor, weeks * 7 + 7)?;
-            let (members, _) = burndown_members(engine, &None)?;
+            let (members, _) = burndown_members(engine, &filter)?;
             let days = chart::heatmap(&events, &members, weeks, anchor);
             let data = days
                 .iter()
@@ -1500,12 +1504,12 @@ pub(crate) fn run_chart(engine: &Engine, ctx: &Ctx, kind: ChartKind) -> CmdOutco
                 chart::render_heatmap(ctx, &days, anchor, members.is_empty()),
             )
         }
-        ChartKind::Burndown { project, days } => {
+        ChartKind::Burndown { filter, days } => {
             let days_n = days.unwrap_or(30);
             // Reported, never swallowed: an unresolvable scope used to render as
             // a cleared burndown, which is a wrong answer wearing the costume of
             // a right one.
-            let (members, label) = burndown_members(engine, &project)?;
+            let (members, label) = burndown_members(engine, &filter)?;
             let events = events_since(engine, anchor, days_n + 1)?;
             let series = chart::burndown(&events, &members, days_n, anchor);
             let data = series
