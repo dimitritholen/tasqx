@@ -231,7 +231,10 @@ capture_tui() {
 
 # A piped row: stdout AND stderr, because a warning line is part of the screen
 # (`add` prints one when it declines a sugar-shaped word, and the site should
-# show what a reader would actually see).
+# show what a reader would actually see). Piped, but not plain: with
+# TASQX_FORCE_COLOR and COLUMNS set, the binary renders the TERMINAL layout
+# (the `show`/`brief` card, its field grid), so a change to what a terminal
+# prints changes these fixtures too (#714's check-block fix did).
 capture_pipe() {
     local cols=$1 db=$2 stdin=$3 dest=$4
     shift 4
