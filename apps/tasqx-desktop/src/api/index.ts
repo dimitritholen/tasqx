@@ -1,6 +1,7 @@
 export * from './envelope';
 export * from './types';
 export * from './transport';
+export * from './devTransport';
 export * from './fakeTransport';
 export * from './client';
 export * from './connection';
