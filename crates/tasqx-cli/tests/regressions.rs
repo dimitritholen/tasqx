@@ -4889,6 +4889,83 @@ fn memory_update_prints_the_actual_bumped_rev_not_a_hardcoded_zero() {
     );
 }
 
+/// #657/#640: `memory import --project` scopes every doc the batch lands, so
+/// an executor with no MCP tools (the CLI-only path #640 found) can land its
+/// own repo docs scoped instead of unscoped and invisible to a
+/// project-filtered list. Naming a DIFFERENT project on a re-import MOVES the
+/// scope there (D168) — the engine's own `project` semantics are exercised in
+/// `tests/memory.rs`; this is the CLI plumbing that reaches them.
+#[test]
+fn memory_import_project_scopes_the_batch_and_a_reimport_moves_it() {
+    let dir = fresh_config_dir("memory-import-project");
+    let src = std::env::temp_dir().join(format!(
+        "tasqx-reg-memory-import-project-src-{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&src);
+    std::fs::create_dir_all(&src).expect("create source dir");
+    std::fs::write(src.join("runbook.md"), "# Runbook\n\nDeploy on Monday.").expect("write doc");
+
+    let run = |args: &[&str]| {
+        bin("memory-import-project", &dir)
+            .args(args)
+            .output()
+            .expect("run tasqx")
+    };
+    for proj in ["ledger", "other"] {
+        let out = run(&["init", proj]);
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+
+    let out = run(&[
+        "--json",
+        "memory",
+        "import",
+        src.to_str().expect("utf-8 path"),
+        "--project",
+        "ledger",
+    ]);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let list = run(&["--json", "memory", "list", "--project", "ledger"]);
+    assert!(list.status.success());
+    let v: serde_json::Value = serde_json::from_slice(&list.stdout).expect("json");
+    assert_eq!(v["count"], 1, "the import landed in the named project: {v}");
+
+    // A re-import naming a different project moves the doc's scope, since
+    // import replaces by source (D168) — a caller who names one has an
+    // opinion the batch is stating.
+    let out = run(&[
+        "--json",
+        "memory",
+        "import",
+        src.to_str().expect("utf-8 path"),
+        "--project",
+        "other",
+    ]);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let moved_out = run(&["--json", "memory", "list", "--project", "ledger"]);
+    let v: serde_json::Value = serde_json::from_slice(&moved_out.stdout).expect("json");
+    assert_eq!(v["count"], 0, "the doc moved out of ledger: {v}");
+    let moved_in = run(&["--json", "memory", "list", "--project", "other"]);
+    let v: serde_json::Value = serde_json::from_slice(&moved_in.stdout).expect("json");
+    assert_eq!(v["count"], 1, "and into other: {v}");
+
+    let _ = std::fs::remove_dir_all(&src);
+}
+
 /// #229 item 8: a store the engine cannot open (`TASQX_DB` pointing at an
 /// unwritable path) printed `error: cannot open store ...` at exit 1 — a bare
 /// `error:` prefix with no bracketed code, which DESIGN.md reserves for

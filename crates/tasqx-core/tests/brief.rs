@@ -304,6 +304,44 @@ fn memory_is_scoped_to_the_tasks_project_and_says_which() {
     );
 }
 
+/// D168: a task with NO project runs no project filter at all — store-wide,
+/// the same answer `memory.search` itself gives when no `project` is named.
+/// There is no scope here to widen FROM, so narrowing to "unscoped only"
+/// would silently answer a different, narrower question than the one asked.
+#[test]
+fn a_task_with_no_project_searches_store_wide_like_memory_search_does() {
+    let e = engine();
+    // No `project.create` here on purpose: the first one created becomes the
+    // store's DEFAULT project (gap fix A1) and `add`'s `t` below would
+    // silently inherit it, testing "task in the default project" instead of
+    // "task with no project at all". `memory.add` does not itself require a
+    // project to be live, so the docs can name one without it existing.
+    for p in ["alpha", "beta"] {
+        call(
+            &e,
+            "memory.add",
+            json!({
+                "title": format!("{p} retries"),
+                "body": "retries are bounded and logged",
+                "project": p
+            }),
+        )
+        .expect("doc");
+    }
+    let t = add(&e, "Bound the retries", json!({}));
+
+    let out = brief(&e, t);
+    let mut titles = hit_titles(&out);
+    titles.sort();
+    assert_eq!(
+        titles,
+        ["alpha retries", "beta retries"],
+        "no project means no filter, the same as an unscoped `memory.search`: {}",
+        out["memory"]
+    );
+    assert_eq!(out["memory"]["project"], Value::Null);
+}
+
 /// A document with no project is GLOBAL knowledge, and a project scope that
 /// hides it hides exactly the conventions the reader imported.
 ///
@@ -365,6 +403,141 @@ fn an_empty_scoped_result_does_not_silently_widen() {
         out["memory"]
     );
     assert_eq!(out["memory"]["project"], "alpha");
+}
+
+/// #607: a brief on `tasqx brief 51` (the demo store) once returned three of
+/// five hits as the task's own annotations, verbatim, echoed back beside a
+/// doc that belonged to a DIFFERENT project the derived query happened to
+/// share words with. This pins the repro from that finding: a cross-project
+/// doc is out of scope, the task's own note is not knowledge FOUND for it,
+/// and the one hit that survives both cuts names its project (D168).
+#[test]
+fn a_cross_project_doc_and_the_tasks_own_note_are_both_excluded_and_a_surviving_hit_names_its_project(
+) {
+    let e = engine();
+    call(&e, "project.create", json!({ "name": "ledger" })).expect("ledger");
+    call(&e, "project.create", json!({ "name": "checkout" })).expect("checkout");
+    // A different project, sharing the derived query's words — must stay out
+    // of scope exactly as `memory_is_scoped_to_the_tasks_project_and_says_which`
+    // already pins, pinned again here beside the other two cuts.
+    call(
+        &e,
+        "memory.add",
+        json!({
+            "title": "Checkout reconciliation playbook",
+            "body": "Reconcile the ledger balances against the checkout provider.",
+            "project": "checkout",
+        }),
+    )
+    .expect("cross-project doc");
+    // Unscoped — global knowledge, must reach the brief (D136's
+    // `include_unscoped` shape) and must say its project is null.
+    call(
+        &e,
+        "memory.add",
+        json!({
+            "title": "Ledger reconciliation runbook",
+            "body": "Reconcile the ledger balances at close of business.",
+        }),
+    )
+    .expect("global doc");
+
+    let t = add(
+        &e,
+        "Reconcile the ledger balances",
+        json!({ "project": "ledger" }),
+    );
+    call(
+        &e,
+        "annotation.add",
+        json!({ "ref": t, "body": "Reconciled the ledger balances by hand, this once." }),
+    )
+    .expect("own annotation");
+
+    let out = brief(&e, t);
+    assert_eq!(
+        hit_titles(&out),
+        ["Ledger reconciliation runbook"],
+        "the cross-project doc and the task's own note must both be gone: {}",
+        out["memory"]
+    );
+    assert_eq!(
+        out["memory"]["hits"][0]["project"],
+        Value::Null,
+        "the surviving hit is global knowledge, and says so: {}",
+        out["memory"]
+    );
+}
+
+/// #607: `memory.search` has no notion of "the caller's own task" to
+/// exclude, so the filter lives in the brief — the one caller that has a
+/// task to exclude — and must not blanket-drop every annotation: a sibling's
+/// note is still knowledge FOUND for this task.
+#[test]
+fn a_tasks_own_annotation_is_excluded_but_a_siblings_still_shows() {
+    let e = engine();
+    let past = add(&e, "the earlier task", json!({}));
+    call(
+        &e,
+        "annotation.add",
+        json!({ "ref": past, "body": "the migration needs the backfill run before the ALTER" }),
+    )
+    .expect("sibling's note");
+    let t = add(&e, "Write the migration", json!({}));
+    call(
+        &e,
+        "annotation.add",
+        json!({ "ref": t, "body": "the migration plan: backfill, then ALTER, then verify" }),
+    )
+    .expect("own note");
+
+    let out = brief(&e, t);
+    let hit_sources: Vec<String> = out["memory"]["hits"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|h| h["source"].as_str().unwrap_or_default().to_string())
+        .collect();
+    assert!(
+        hit_sources.contains(&format!("task:#{past}")),
+        "a sibling's annotation still counts as knowledge found: {:?}",
+        out["memory"]
+    );
+    assert!(
+        !hit_sources.contains(&format!("task:#{t}")),
+        "the task's OWN annotation must not be echoed back as a hit: {:?}",
+        out["memory"]
+    );
+}
+
+/// The task's own notes are dropped before D147's counters run, so
+/// `annotations_total` still answers "how many of this kind a wider page of
+/// this query would show" — over the rows actually worth a slot, not the raw
+/// MATCH count the self-notes would otherwise inflate.
+#[test]
+fn annotations_total_drops_by_the_self_notes_the_filter_removed() {
+    let e = engine();
+    let t = add(&e, "Reconcile the ledger balances", json!({}));
+    for body in [
+        "Reconcile the ledger balances, pass one",
+        "Reconcile the ledger balances, pass two",
+    ] {
+        call(&e, "annotation.add", json!({ "ref": t, "body": body })).expect("own note");
+    }
+    let sibling = add(&e, "the earlier task", json!({}));
+    call(
+        &e,
+        "annotation.add",
+        json!({ "ref": sibling, "body": "reconcile the ledger balances too" }),
+    )
+    .expect("sibling's note");
+
+    let out = brief(&e, t);
+    assert_eq!(
+        out["memory"]["annotations_total"], 1,
+        "both self-notes are dropped before the count, leaving only the sibling's: {}",
+        out["memory"]
+    );
 }
 
 #[test]

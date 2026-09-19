@@ -2130,13 +2130,22 @@ pub fn task_brief(ctx: &Ctx, result: &Value, now: Timestamp) -> String {
         heading(&mut out, "FROM MEMORY");
         for h in &hits {
             let source = s(h, "source");
+            // #657: which project this hit is scoped to — empty (global, or
+            // an older recorded response with no `project` key) prints
+            // nothing, since a bracket that never says anything is noise.
+            let project = s(h, "project");
             out.push_str(&format!(
-                "  {}{}\n",
+                "  {}{}{}\n",
                 san(&s(h, "title")),
                 if source.is_empty() {
                     String::new()
                 } else {
                     format!("  {}", ctx.paint("muted", &san(&source)))
+                },
+                if project.is_empty() {
+                    String::new()
+                } else {
+                    format!("  {}", ctx.paint("muted", &format!("[{}]", san(&project))))
                 }
             ));
             let snippet = san(&s(h, "snippet"));

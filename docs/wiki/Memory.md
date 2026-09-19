@@ -94,6 +94,11 @@ tasqx memory import docs/adr
 - A replace bumps the document's revision, so an `update --expected-rev`
   taken before the re-import is refused with `conflict` instead of silently
   overwriting the freshly imported text.
+- `--project` scopes every document in the batch, so an agent's own repo docs
+  land in that project's memory instead of unscoped. Omitted, a new document
+  stays global and an existing one keeps whatever scope it already had (like
+  `--standing` on a re-import); naming a project moves an existing document's
+  scope there, so re-pointing an import at a different project rescopes it.
 
 ## tasqx memory rm
 

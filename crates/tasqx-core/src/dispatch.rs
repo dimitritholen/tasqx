@@ -212,7 +212,9 @@ pub const PARAMS: &[(&str, &[&str], bool)] = &[
     ),
     ("memory.get", &["id"], false),
     ("memory.remove", &["id"], false),
-    ("memory.import", &["docs"], false),
+    // #657: `project` scopes the whole batch, the same additive shape
+    // `memory.add`'s own `project` already has.
+    ("memory.import", &["docs", "project"], false),
     (
         "memory.list",
         &["limit", "offset", "project", "standing"],

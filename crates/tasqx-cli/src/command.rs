@@ -1505,6 +1505,11 @@ pub(super) enum MemoryAction {
         // backwards for the form most people use.
         #[arg(value_hint = ValueHint::AnyPath)]
         path: String,
+        /// Scope every imported doc to this project. Omitted, they stay
+        /// global, same as `memory add` with no `--project`; re-importing the
+        /// same directory with a different one MOVES the scope (#657).
+        #[arg(long, add = crate::complete::candidates::projects())]
+        project: Option<String>,
     },
 }
 
