@@ -3560,13 +3560,8 @@ mod tests {
         );
     }
 
-    /// The other half of the case above: something IS listening at the probed
-    /// socket, so the warning must stay silent. Spins up a real daemon (the
-    /// same `daemon::serve` the CLI's `tasqx daemon` runs) on its own isolated
-    /// socket rather than a bare listener, so the same code path that maps a
-    /// socket string to a Unix socket or a Windows named pipe (`bind` and
-    /// `connect_stream` in `tasqx_core::daemon` both funnel through
-    /// `win_pipe_name`) is exercised on both platforms with no cfg-gating.
+    /// Something IS listening at the probed socket, so the warning stays silent.
+    /// A real `daemon::serve` covers the Unix socket and the Windows pipe alike.
     #[test]
     fn otlp_daemon_warning_is_silent_when_something_answers_at_the_probed_socket() {
         let stem = format!(
