@@ -187,6 +187,11 @@ pub(super) struct SelfReportArgs {
     /// Self-reported cache-creation tokens this task cost (0 or more).
     #[arg(long, value_name = "N")]
     pub(super) cache_creation_tokens: Option<i64>,
+
+    /// One unsplit token count, for a harness that reports only a total —
+    /// instead of the four counts above, never beside them (D167).
+    #[arg(long, value_name = "N")]
+    pub(super) total_tokens: Option<i64>,
 }
 
 #[derive(Parser)]
@@ -1515,6 +1520,42 @@ pub(super) enum MemoryAction {
 
 #[derive(Subcommand)]
 pub(super) enum TokensAction {
+    /// Record token spend on a task after the fact (maps to token.add), e.g. a
+    /// count that arrived after the task was completed. Stored as a
+    /// self-report at medium confidence (D50, D167). Give --total alone when
+    /// only one number is known, or the split counts — never both.
+    #[command(group(
+        clap::ArgGroup::new("count")
+            .required(true)
+            .multiple(true)
+            .args(["total", "input", "output", "cache_read", "cache_creation"])
+    ))]
+    Add {
+        /// short_id or UUID.
+        #[arg(add = crate::complete::candidates::task_ids())]
+        r#ref: String,
+        /// One unsplit count, kept apart from the four buckets (D167).
+        #[arg(long, value_name = "N", conflicts_with_all = ["input", "output", "cache_read", "cache_creation"])]
+        total: Option<i64>,
+        /// Input tokens.
+        #[arg(long = "in", value_name = "N")]
+        input: Option<i64>,
+        /// Output tokens.
+        #[arg(long = "out", value_name = "N")]
+        output: Option<i64>,
+        /// Cache-read tokens.
+        #[arg(long, value_name = "N")]
+        cache_read: Option<i64>,
+        /// Cache-creation tokens.
+        #[arg(long, value_name = "N")]
+        cache_creation: Option<i64>,
+        /// The AI tool that spent them, free-form. Default "unknown".
+        #[arg(long, value_name = "TOOL", default_value = "unknown")]
+        tool: String,
+        /// The model that did the work.
+        #[arg(long, value_name = "MODEL")]
+        model: Option<String>,
+    },
     /// Re-run log-parse attribution over stored history under the D50 refusal
     /// rule (maps to tokens.recompute): samples claimed by more than one task's
     /// window drop out, and a task whose transcript is gone keeps its counts

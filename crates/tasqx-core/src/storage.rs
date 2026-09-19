@@ -290,6 +290,8 @@ fn migrate(conn: &Connection) -> Result<(), ApiError> {
         -- `confidence` are the closed vocabularies in `crate::tokens`, enforced
         -- at every write door. `extra` is reserved for per-tool oddities the
         -- later parser phases may need to carry (nothing writes it yet).
+        -- `total_tokens` (D167) is a fifth, separate kind: one unsplit count
+        -- from a reporter that cannot split it, never folded into the four.
         CREATE TABLE IF NOT EXISTS token_usage (
             id                    TEXT PRIMARY KEY,
             task_id               TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
@@ -302,7 +304,8 @@ fn migrate(conn: &Connection) -> Result<(), ApiError> {
             cache_creation_tokens INTEGER NOT NULL DEFAULT 0,
             extra                 TEXT,
             confidence            TEXT NOT NULL,
-            created               TEXT NOT NULL
+            created               TEXT NOT NULL,
+            total_tokens          INTEGER NOT NULL DEFAULT 0
         );
         CREATE INDEX IF NOT EXISTS idx_token_usage_task ON token_usage(task_id);
 
@@ -386,6 +389,14 @@ fn migrate(conn: &Connection) -> Result<(), ApiError> {
     // `NULL` means "never removed"; every reader that lists annotations filters
     // on it. Additive column, same upgrade path as `remind` above.
     add_column_if_missing(conn, "annotations", "removed", "TEXT")?;
+    // D167: the unsplit count. 0 on every existing row, which is what those
+    // rows mean — each was reported split.
+    add_column_if_missing(
+        conn,
+        "token_usage",
+        "total_tokens",
+        "INTEGER NOT NULL DEFAULT 0",
+    )?;
     Ok(())
 }
 

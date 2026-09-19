@@ -48,8 +48,15 @@ pub const BUCKETS: [(&str, &str, &str); 4] = [
     ("tokens_out", "out", "output"),
 ];
 
+/// D167's unsplit count: `report.summary`'s `tokens_unsplit` and the outcomes
+/// `cost` key. Not a fifth bucket — a total a reporter could not split — so it
+/// is kept out of [`BUCKETS`] and every surface that lays the four side by side.
+pub const UNSPLIT: (&str, &str, &str) = ("tokens_unsplit", "unsplit", "total (unsplit)");
+
 /// The largest bucket in one `report.summary` group, or `None` when the group
-/// spent nothing.
+/// spent nothing. An unsplit total competes too, under its own label, so a
+/// group measured only that way does not read as having spent nothing; a tie
+/// goes to the bucket.
 ///
 /// Deliberately NOT "the most expensive bucket": that would need a price list,
 /// tasqx has none, and a stale one is worse than none — the same reason D48 bans
@@ -59,6 +66,7 @@ pub const BUCKETS: [(&str, &str, &str); 4] = [
 pub fn dominant(group: &Value) -> Option<(&'static str, i64)> {
     BUCKETS
         .iter()
+        .chain([&UNSPLIT])
         .map(|(key, short, _)| (*short, group.get(key).and_then(Value::as_i64).unwrap_or(0)))
         .filter(|(_, n)| *n > 0)
         // `max_by_key` returns the LAST maximum, so iterate reversed to keep the
@@ -113,6 +121,16 @@ mod tests {
         });
         assert_eq!(dominant(&g), Some(("cacheR", 13_630_240)));
         assert_eq!(dominant_cell(&g), "cacheR 13.6M");
+    }
+
+    #[test]
+    fn an_unsplit_total_is_named_as_one_and_never_as_a_bucket() {
+        let only = json!({ "tokens_in": 0, "tokens_unsplit": 37_898 });
+        assert_eq!(dominant_cell(&only), "unsplit 37.8K");
+        // A split bucket at least as large still wins: the total is one
+        // report among several, not a headline.
+        let both = json!({ "tokens_cache_read": 40_000, "tokens_unsplit": 37_898 });
+        assert_eq!(dominant_cell(&both), "cacheR 40.0K");
     }
 
     #[test]

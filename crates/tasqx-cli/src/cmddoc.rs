@@ -401,7 +401,7 @@ pub const COMMAND_REF: &[CmdDoc] = &[
         usage: "tasqx done <ref> [--force] [--client TOOL] [--session-id ID] \
                 [--transcript-path PATH] [--tool TOOL] [--model MODEL] \
                 [--input-tokens N] [--output-tokens N] [--cache-read-tokens N] \
-                [--cache-creation-tokens N]",
+                [--cache-creation-tokens N] [--total-tokens N]",
         examples: &[
             ex_norun("tasqx done 1", "completes; spawns the next recurrence if any"),
             ex_norun(
@@ -847,10 +847,19 @@ pub const COMMAND_REF: &[CmdDoc] = &[
     CmdDoc {
         verb: "tokens",
         aliases: &[],
-        method: "tokens.recompute",
-        summary: "Repair stored token attribution — dry-run by default (D50).",
-        usage: "tasqx tokens recompute [--apply]",
+        method: "tokens.recompute + token.add",
+        summary: "Record token spend after the fact, or repair stored attribution (D50, D167).",
+        usage: "tasqx tokens recompute [--apply] | tasqx tokens add <ref> [--total N] [--in N] \
+                [--out N] [--cache-read N] [--cache-creation N] [--tool TOOL] [--model MODEL]",
         examples: &[
+            ex_norun(
+                "tasqx tokens add 602 --total 37898",
+                "a count that arrived after completion, as one unsplit number",
+            ),
+            ex_norun(
+                "tasqx tokens add 602 --in 18400 --out 2600 --tool claude-code",
+                "the same, split",
+            ),
             ex("tasqx tokens recompute"),
             ex_norun(
                 "tasqx tokens recompute --apply",
@@ -858,6 +867,7 @@ pub const COMMAND_REF: &[CmdDoc] = &[
             ),
         ],
         notes: &[
+            "`add` records a self-report at confidence `medium` — what `done`'s token flags record, for a count that arrives later (D167). `--total` is one unsplit number, kept apart from the four buckets and counted in full by a budget; give it alone or give the split flags, never both.",
             "A bare `tasqx tokens recompute` prints the per-task delta and writes NOTHING; `--apply` is the explicit opt-in for the one verb in the API built to delete measurement rows.",
             "Scope is `source=log-parse` measurements only: samples claimed by more than one task's window drop out, a task whose transcript is gone keeps its counts at confidence `low`, and self-reported/OTLP rows are never rewritten.",
             "Stop any daemon on the store before `--apply`: the verb parses transcripts and runs in-process only (a daemon refuses it over the socket), and applying beside a live daemon is two writers — convergence on rerun is the safety net, not a license.",

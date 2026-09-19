@@ -197,14 +197,30 @@ fn tokens(out: &mut String, result: &Value) {
     if rows.is_empty() {
         return;
     }
+    // D167: the unsplit column only when some row carries one, so a task
+    // measured the ordinary way reads exactly as it did.
+    let unsplit = |m: &Value| m.get("total_tokens").and_then(Value::as_i64).unwrap_or(0);
+    let any_unsplit = rows.iter().any(|m| unsplit(m) != 0);
     out.push_str(&format!("\n### Tokens ({})\n\n", rows.len()));
-    out.push_str("| tool | in | out | cache read | cache write | source | confidence |\n");
-    out.push_str("|---|---:|---:|---:|---:|---|---|\n");
+    if any_unsplit {
+        out.push_str(
+            "| tool | in | out | cache read | cache write | total (unsplit) | source | confidence |\n",
+        );
+        out.push_str("|---|---:|---:|---:|---:|---:|---|---|\n");
+    } else {
+        out.push_str("| tool | in | out | cache read | cache write | source | confidence |\n");
+        out.push_str("|---|---:|---:|---:|---:|---|---|\n");
+    }
     for m in rows {
         let n = |k: &str| m.get(k).and_then(Value::as_i64).unwrap_or(0);
         let s = |k: &str| m.get(k).and_then(Value::as_str).unwrap_or("").to_string();
+        let total_cell = if any_unsplit {
+            format!(" {} |", unsplit(m))
+        } else {
+            String::new()
+        };
         out.push_str(&format!(
-            "| {} | {} | {} | {} | {} | {} | {} |\n",
+            "| {} | {} | {} | {} | {} |{total_cell} {} | {} |\n",
             s("tool"),
             n("input_tokens"),
             n("output_tokens"),

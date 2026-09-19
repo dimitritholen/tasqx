@@ -83,12 +83,12 @@ fn full_protocol_sequence() {
     }));
     assert!(note.is_none(), "notifications must not produce a response");
 
-    // 3. tools/list — all 30 tools present, each with an inputSchema.
+    // 3. tools/list — all 31 tools present, each with an inputSchema.
     let listed = server
         .handle_message(&json!({ "jsonrpc": "2.0", "id": 2, "method": "tools/list" }))
         .expect("tools/list is a request");
     let tools = listed["result"]["tools"].as_array().expect("tools array");
-    assert_eq!(tools.len(), 30, "expected 30 tools");
+    assert_eq!(tools.len(), 31, "expected 31 tools");
     let names: Vec<&str> = tools.iter().map(|t| t["name"].as_str().unwrap()).collect();
     for expected in [
         "tasqx_list_tasks",
@@ -110,6 +110,7 @@ fn full_protocol_sequence() {
         "tasqx_annotate_task",
         "tasqx_remove_annotation",
         "tasqx_update_annotation",
+        "tasqx_add_tokens",
         "tasqx_add_dependency",
         "tasqx_remove_dependency",
         "tasqx_add_memory",
@@ -3372,6 +3373,10 @@ fn the_read_only_refusal_names_the_flag_that_fixes_it() {
 /// D165 added `tasqx_update_annotation` and raised the roster cap by 1 KB for
 /// it; the per-tool caps did not move.
 ///
+/// D167 added `tasqx_add_tokens` and the `total_tokens` argument on
+/// `tasqx_complete_task`, and raised the roster cap again, to just above the
+/// measured roster with both tools present (ROSTER_MEASURED below).
+///
 /// The floor is not zero. With every `description` key removed from the roster
 /// the same serialization is 11,597 bytes of schema skeleton — property names,
 /// `type`, the closed `enum` lists D30 renders from the engine's own consts,
@@ -3382,7 +3387,7 @@ fn the_read_only_refusal_names_the_flag_that_fixes_it() {
 fn the_whole_tool_roster_stays_inside_its_per_prompt_budget() {
     const MAX_DESCRIPTION: usize = 800;
     const MAX_ENTRY: usize = 3_072;
-    const MAX_ROSTER: usize = 32_768;
+    const MAX_ROSTER: usize = 34_304;
 
     let engine = engine();
     let server = McpServer::new(&engine, Scope::Write);
@@ -3981,5 +3986,39 @@ fn an_mcp_stale_rev_on_update_annotation_names_get_task_and_expected_rev() {
     assert!(
         !text.contains("tasqx show") && !text.contains("--expected-rev"),
         "the MCP remedy still names the CLI: {text}"
+    );
+}
+
+/// D167: a count that arrives after completion had no MCP door — `token.add`
+/// was on `UNEXPOSED_METHODS` — so an agent holding one had nowhere to put it.
+#[test]
+fn tasqx_add_tokens_records_a_total_after_completion() {
+    let engine = engine();
+    let server = McpServer::new(&engine, Scope::Write);
+    call(&server, 1, "tasqx_add_task", json!({ "title": "t" }));
+    call(&server, 2, "tasqx_complete_task", json!({ "ref": 1 }));
+    let r = call(
+        &server,
+        3,
+        "tasqx_add_tokens",
+        json!({
+            "ref": 1, "tool": "claude-code", "source": "self-report",
+            "confidence": "medium", "total_tokens": 37898
+        }),
+    );
+    assert!(!is_error(&r), "{r}");
+    assert_eq!(tool_text(&r)["measurement"]["total_tokens"], 37898, "{r}");
+
+    // Write-scoped: a read-only session cannot reach it.
+    let read = McpServer::new(&engine, Scope::Read);
+    let denied = call(
+        &read,
+        4,
+        "tasqx_add_tokens",
+        json!({ "ref": 1, "tool": "x", "source": "self-report", "confidence": "medium" }),
+    );
+    assert!(
+        is_error(&denied) || denied.get("error").is_some(),
+        "{denied}"
     );
 }

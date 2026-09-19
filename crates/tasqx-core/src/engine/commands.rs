@@ -90,6 +90,8 @@ pub(super) struct SelfReport {
     pub(super) output_tokens: Option<i64>,
     pub(super) cache_read_tokens: Option<i64>,
     pub(super) cache_creation_tokens: Option<i64>,
+    /// D167: the unsplit count, exclusive with the four above.
+    pub(super) total_tokens: Option<i64>,
 }
 
 pub(super) fn parse_self_report(p: &Value) -> Result<SelfReport, ApiError> {
@@ -100,6 +102,7 @@ pub(super) fn parse_self_report(p: &Value) -> Result<SelfReport, ApiError> {
         output_tokens: tokens::opt_token_count(p, "output_tokens")?,
         cache_read_tokens: tokens::opt_token_count(p, "cache_read_tokens")?,
         cache_creation_tokens: tokens::opt_token_count(p, "cache_creation_tokens")?,
+        total_tokens: tokens::opt_token_count(p, "total_tokens")?,
     })
 }
 
@@ -123,7 +126,17 @@ impl SelfReport {
         let any_count = self.input_tokens.is_some()
             || self.output_tokens.is_some()
             || self.cache_read_tokens.is_some()
-            || self.cache_creation_tokens.is_some();
+            || self.cache_creation_tokens.is_some()
+            || self.total_tokens.is_some();
+        tokens::refuse_total_beside_split(
+            self.total_tokens,
+            [
+                self.input_tokens,
+                self.output_tokens,
+                self.cache_read_tokens,
+                self.cache_creation_tokens,
+            ],
+        )?;
         if !any_count {
             // No counts, no measurement — a zero-count `token_usage` row is a
             // phantom every later sum treats as real, which is worse than none.
@@ -155,6 +168,7 @@ impl SelfReport {
             output_tokens: self.output_tokens.unwrap_or(0),
             cache_read_tokens: self.cache_read_tokens.unwrap_or(0),
             cache_creation_tokens: self.cache_creation_tokens.unwrap_or(0),
+            total_tokens: self.total_tokens.unwrap_or(0),
             confidence: crate::tokens::CONFIDENCE_MEDIUM.to_string(),
             extra: None,
         }))

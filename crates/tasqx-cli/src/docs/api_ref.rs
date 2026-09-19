@@ -873,20 +873,6 @@ const PARAM_DOCS: &[(&str, &str, &str, &str, &str)] = &[
     ),
     (
         "token.add",
-        "ref",
-        "integer or string",
-        "",
-        "The task the spend belongs to: a short id, a uuid, or a uuid prefix.",
-    ),
-    (
-        "token.add",
-        "tool",
-        "string",
-        "",
-        "Which tool spent the tokens, e.g. `claude-code`. Free-form, and the axis reports group on.",
-    ),
-    (
-        "token.add",
         "source",
         "string",
         "",
@@ -933,13 +919,6 @@ const PARAM_DOCS: &[(&str, &str, &str, &str, &str)] = &[
         "string",
         "",
         "How checkable the figure is: `medium` or `low` for a self-report — `high` is refused, because confidence describes verifiability and not preference (D50).",
-    ),
-    (
-        "token.add",
-        "idempotency_key",
-        "string",
-        "",
-        "A key of the caller's choosing. Sending the same one twice for one task returns the measurement already banked instead of a second one.",
     ),
     (
         "token.remove",
@@ -1228,14 +1207,14 @@ const EXAMPLES: &[Example] = &[
         method: "token.add",
         request: r#"{"tasqx":"1","id":"tk1","method":"token.add","params":{"ref":"51","tool":"claude-code","source":"self-report","model":"opus","input_tokens":18400,"output_tokens":2600,"cache_read_tokens":91000,"cache_creation_tokens":12000,"confidence":"medium"}}"#,
         fixture: "",
-        response: r#"{"id":"tk1","ok":true,"result":{"measurement":{"cache_creation_tokens":12000,"cache_read_tokens":91000,"confidence":"medium","created":"2026-09-16T09:00:00Z","id":"019f7c0a-3d51-7d22-b73c-9353de0a3360","input_tokens":18400,"model":"opus","output_tokens":2600,"source":"self-report","tool":"claude-code"},"short_id":51},"tasqx":"1"}"#,
+        response: r#"{"id":"tk1","ok":true,"result":{"measurement":{"cache_creation_tokens":12000,"cache_read_tokens":91000,"confidence":"medium","created":"2026-09-16T09:00:00Z","id":"019f7c0a-3d51-7d22-b73c-9353de0a3360","input_tokens":18400,"model":"opus","output_tokens":2600,"source":"self-report","tool":"claude-code","total_tokens":0},"short_id":51},"tasqx":"1"}"#,
         why: "the measurement's id is minted fresh, v7, half of it random.",
     },
     Example {
         method: "token.remove",
         request: r#"{"tasqx":"1","id":"tr1","method":"token.remove","params":{"measurement_id":"019f7c0a-3d51-7d22-b73c-9353de0a3360"}}"#,
         fixture: "",
-        response: r#"{"id":"tr1","ok":true,"result":{"removed":{"cache_creation_tokens":12000,"cache_read_tokens":91000,"confidence":"medium","created":"2026-09-16T09:00:00Z","id":"019f7c0a-3d51-7d22-b73c-9353de0a3360","input_tokens":18400,"model":"opus","output_tokens":2600,"source":"self-report","tool":"claude-code"},"short_id":51},"tasqx":"1"}"#,
+        response: r#"{"id":"tr1","ok":true,"result":{"removed":{"cache_creation_tokens":12000,"cache_read_tokens":91000,"confidence":"medium","created":"2026-09-16T09:00:00Z","id":"019f7c0a-3d51-7d22-b73c-9353de0a3360","input_tokens":18400,"model":"opus","output_tokens":2600,"source":"self-report","tool":"claude-code","total_tokens":0},"short_id":51},"tasqx":"1"}"#,
         why: "it deletes a measurement by id, and the only measurement to delete is one a previous call just minted — so the request itself quotes an id no fixture can pin.",
     },
     Example {
@@ -1708,8 +1687,7 @@ mod tests {
             "otlp.status",
             // Daemon-internal.
             "reminder.fire",
-            // The token ledger's write half: `tasqx done` self-reports instead.
-            "token.add",
+            // The token ledger's corrective half: `tasqx api token.remove`.
             "token.remove",
         ]
         .into_iter()

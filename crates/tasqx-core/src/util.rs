@@ -170,6 +170,27 @@ fn present<'a>(p: &'a Value, key: &str) -> Option<&'a Value> {
     p.get(key).filter(|v| !v.is_null())
 }
 
+/// Refuse a params object missing any of `keys` — absent, null or `""` —
+/// naming EVERY missing one in a single error rather than the first (D167).
+/// Presence only: each field's own reader still checks its type and value.
+pub fn require_all(p: &Value, keys: &[&str]) -> Result<(), ApiError> {
+    let missing: Vec<&str> = keys
+        .iter()
+        .copied()
+        .filter(|k| present(p, k).is_none_or(|v| v.as_str() == Some("")))
+        .collect();
+    match missing.as_slice() {
+        [] => Ok(()),
+        [one] => Err(ApiError::bad_request(format!(
+            "missing or empty required field: {one}"
+        ))),
+        many => Err(ApiError::bad_request(format!(
+            "missing or empty required fields: {}",
+            many.join(", ")
+        ))),
+    }
+}
+
 /// Extract a required string field from a params object.
 pub fn req_str(p: &Value, key: &str) -> Result<String, ApiError> {
     req_str_value(key, present(p, key))

@@ -11,7 +11,7 @@ store a decision with its why — and CLAUDE.md carries the setup-specific
 rules. This file holds only what neither says.
 
 tasqx is one JSON API behind three clients: the CLI, an MCP server
-(thirty `tasqx_*` tools), and HTML reports. Prefer the MCP tools. Fall back
+(thirty-one `tasqx_*` tools), and HTML reports. Prefer the MCP tools. Fall back
 to the CLI for the verbs the MCP deliberately lacks: `next`, `why`, `agenda`,
 `chart`, `export`, `import`, `report --html`, `memory import`, `undo`, `use`,
 `archive`, and `tasqx --no-daemon tokens recompute` (refused over the daemon

@@ -2543,13 +2543,7 @@ fn detail_rows(ctx: &Ctx, result: &Value, now: Timestamp) -> Vec<DetailRow> {
             row(
                 "tokens",
                 DetailField::Tokens,
-                format!(
-                    "in {} · out {} · cacheR {} · cacheW {}{confidence_suffix}",
-                    sum("input_tokens"),
-                    sum("output_tokens"),
-                    sum("cache_read_tokens"),
-                    sum("cache_creation_tokens")
-                ),
+                format!("{}{confidence_suffix}", token_figures(sum)),
             );
         }
     }
@@ -3448,15 +3442,27 @@ pub fn report(
         Some(c) if c != tasqx_core::tokens::CONFIDENCE_HIGH => format!("{cell} ~{c}"),
         _ => cell,
     };
+    // D167: with all four shown, an unsplit total gets its own column after
+    // them — only when some group carries one, so every other table is as it was.
+    let unsplit_of = |g: &Value| {
+        g.get(crate::tokens::UNSPLIT.0)
+            .and_then(Value::as_i64)
+            .unwrap_or(0)
+    };
+    let show_unsplit = show_all_tokens && groups.iter().any(|g| unsplit_of(g) != 0);
     // The token cells of one row: all four buckets, or the one that dominates.
     let token_cells = |g: &Value, confidence: Option<&str>| -> Vec<String> {
         if show_all_tokens {
-            crate::tokens::BUCKETS
+            let mut cells: Vec<String> = crate::tokens::BUCKETS
                 .iter()
                 .map(|(bkey, _, _)| {
                     crate::tokens::compact(g.get(*bkey).and_then(Value::as_i64).unwrap_or(0))
                 })
-                .collect()
+                .collect();
+            if show_unsplit {
+                cells.push(crate::tokens::compact(unsplit_of(g)));
+            }
+            cells
         } else {
             vec![mark_confidence(crate::tokens::dominant_cell(g), confidence)]
         }
@@ -3491,7 +3497,10 @@ pub fn report(
         if let Some(s) = tasqx_core::util::duration_secs(tracked_iso) {
             total_tracked_secs = total_tracked_secs.saturating_add(s);
         }
-        for (bkey, _, _) in crate::tokens::BUCKETS {
+        for (bkey, _, _) in crate::tokens::BUCKETS
+            .iter()
+            .chain([&crate::tokens::UNSPLIT])
+        {
             let n = g.get(bkey).and_then(Value::as_i64).unwrap_or(0);
             if n != 0 {
                 any_tokens = true;
@@ -3528,6 +3537,7 @@ pub fn report(
         "tokens_cache_creation": total_bucket.get("tokens_cache_creation").copied().unwrap_or(0),
         "tokens_in": total_bucket.get("tokens_in").copied().unwrap_or(0),
         "tokens_out": total_bucket.get("tokens_out").copied().unwrap_or(0),
+        "tokens_unsplit": total_bucket.get("tokens_unsplit").copied().unwrap_or(0),
     });
     let mut total_cells = vec![
         total_count.to_string(),
@@ -3550,6 +3560,9 @@ pub fn report(
                 .iter()
                 .map(|(_, short, _)| short.to_uppercase()),
         );
+        if show_unsplit {
+            labels.push(crate::tokens::UNSPLIT.1.to_uppercase());
+        }
     } else {
         labels.push("TOKENS".to_string());
     }
@@ -3709,6 +3722,40 @@ const RECOMPUTE_BUCKETS: [(&str, &str); 4] = [
 /// that drops 200k output tokens and adds 200k cache-read tokens nets to the
 /// SAME blended number on both sides and reads as a no-op, having swapped the
 /// cheapest bucket for one of the most expensive.
+/// The four buckets as one line, and the D167 unsplit total beside them —
+/// alone when nothing was reported split, so a total-only task does not read
+/// as four zeroes and a number.
+fn token_figures(sum: impl Fn(&str) -> u64) -> String {
+    let split = [
+        sum("input_tokens"),
+        sum("output_tokens"),
+        sum("cache_read_tokens"),
+        sum("cache_creation_tokens"),
+    ];
+    let unsplit = sum("total_tokens");
+    let four = format!(
+        "in {} · out {} · cacheR {} · cacheW {}",
+        split[0], split[1], split[2], split[3]
+    );
+    match (split.iter().all(|n| *n == 0), unsplit) {
+        (_, 0) => four,
+        (true, t) => format!("total (unsplit) {t}"),
+        (false, t) => format!("{four} · total (unsplit) {t}"),
+    }
+}
+
+/// `tasqx tokens add` (D167): what was recorded, on which task, graded how.
+pub fn token_added(result: &Value) -> String {
+    let m = &result["measurement"];
+    format!(
+        "Recorded on #{}: {} · {}, {} confidence\n",
+        result["short_id"].as_i64().unwrap_or(0),
+        token_figures(|k| m.get(k).and_then(Value::as_u64).unwrap_or(0)),
+        san(m["source"].as_str().unwrap_or("?")),
+        san(m["confidence"].as_str().unwrap_or("?")),
+    )
+}
+
 pub fn tokens_recompute(ctx: &Ctx, result: &Value) -> String {
     let empty = Vec::new();
     let tasks = result
@@ -7778,6 +7825,30 @@ mod tests {
             all_four.contains("200.0K") && all_four.contains("50.0K"),
             "expected the out/in counts as their own cells: {all_four:?}"
         );
+    }
+
+    /// D167: an unsplit total is its own column beside the four, and only
+    /// when some group carries one; the dominant cell names it as unsplit.
+    #[test]
+    fn report_shows_an_unsplit_total_apart_from_the_four_buckets() {
+        let ctx = Ctx::new(theme::default_theme(), Caps::PLAIN);
+        let groups = json!({ "groups": [
+            { "project": "late", "count": 1, "est_total": "PT0S", "overdue": 0,
+              "tracked_total": "PT0S", "tokens_in": 0, "tokens_out": 0,
+              "tokens_cache_read": 0, "tokens_cache_creation": 0,
+              "tokens_unsplit": 37_898 },
+        ] });
+        let dominant = report(&ctx, &groups, "project", None);
+        assert!(dominant.contains("unsplit 37.8K"), "{dominant:?}");
+
+        let metrics = vec!["tokens_in".to_string()];
+        let all = report(&ctx, &groups, "project", Some(&metrics));
+        assert!(all.contains("UNSPLIT") && all.contains("37.8K"), "{all:?}");
+
+        let mut split = groups.clone();
+        split["groups"][0]["tokens_unsplit"] = json!(0);
+        let all = report(&ctx, &split, "project", Some(&metrics));
+        assert!(!all.contains("UNSPLIT"), "{all:?}");
     }
 
     /// #234 item 12: a cancelled task's spend must not vanish from the

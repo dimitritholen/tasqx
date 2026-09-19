@@ -25,6 +25,17 @@ or MCP passes what it spent: `input_tokens`, `output_tokens`,
 optional `tool` and `model`. The agent is the only party that knows which task
 the spend served; completing without counts earns a `tokens_hint` saying so.
 
+A harness that reports only one number passes `total_tokens` instead of the
+four, never beside them. It is stored as its own kind, shown as
+`total (unsplit)`, and never split into input and output. A count that
+arrives after the task was completed goes through `tasqx_add_tokens` over MCP,
+or from a shell:
+
+```console
+tasqx tokens add 602 --total 37898
+tasqx tokens add 602 --in 18400 --out 2600 --tool claude-code
+```
+
 **Log-parse** — the fallback. Name the calling tool on `start`/`done` and the
 daemon reads the tool's own transcript afterwards:
 
@@ -38,12 +49,26 @@ from `--client` by substring — without it no transcript is ever read.
 **Telemetry** — the opt-in OTLP receiver below. Samples are matched to the task
 by session id, and beat log-parsing when both are available.
 
-Every measurement carries a confidence grading the correlation, never the
-counts: `high` means the samples provably belong to the task (an explicit
-transcript with the session id confirmed against it, or telemetry matched by
-session id); `medium` is plausible but unproven — every self-report, and
-Gemini/Copilot transcripts, which carry no per-session anchor; `low` means the
-transcript was discovered by scanning and matched on time overlap alone.
+## How much to trust a figure
+
+Every measurement carries a confidence. It grades how firmly the tokens are
+tied to this task, not how precise the counts are: every channel reads
+per-request figures.
+
+| Channel | Earns | When |
+|---|---|---|
+| Telemetry (`otel`) | `high` | Always: samples are matched to the task by session id |
+| Log-parse | `high` | An explicit `--transcript-path`, with the completion's session id confirmed in the file |
+| Log-parse | `medium` | An explicit path to a file with no per-session anchor (Gemini, Copilot) |
+| Log-parse | `low` | No path: the transcript was found by scanning and matched on time overlap alone |
+| Log-parse | `low` | `tokens recompute` found the transcript gone, so it kept the counts and lowered the grade |
+| Self-report | `medium` | Every report on `done`, and `tokens add`; `token.add` also accepts `low` |
+
+A self-report is `medium` and can never be `high`. Only the agent knows which
+task the spend served, so self-report is the primary channel. But nothing
+tasqx holds can check the number, and the grade describes how checkable a
+figure is, not how much the reporter is trusted. A report stays unverifiable
+however much you trust whoever sent it.
 
 ## The OTLP receiver
 
@@ -84,7 +109,9 @@ tasqx add Port the payment adapter --budget-tokens 200000
 
 It counts **fresh** tokens — input, output and cache creation — and ignores
 cache reads, because a budget dominated by re-reads measures how often the agent
-re-read its own context rather than how big the work was. That is not a blend of
+re-read its own context rather than how big the work was. An unsplit
+`total_tokens` counts in full: nothing can say how much of it was cache reads,
+and counting none of it would let an unsplit report hide an overrun. That is not a blend of
 the four buckets; those stay split everywhere they are reported.
 
 **It stops nothing.** tasqx is a store an agent calls between turns: it never

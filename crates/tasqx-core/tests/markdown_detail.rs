@@ -234,6 +234,31 @@ fn measurements_render_as_their_own_table() {
     );
 }
 
+/// D167: an unsplit count gets its own column, and only when one exists — a
+/// task measured split reads exactly as the test above pins it.
+#[test]
+fn an_unsplit_total_renders_in_its_own_column() {
+    let task = json!({
+        "short_id": 602, "title": "Late count", "status": "done",
+        "priority": null, "urgency": 0.0, "project": null,
+        "created": "2026-07-29T09:00:00Z", "modified": "2026-07-29T09:00:00Z",
+        "_rev": 3,
+        "tokens": [
+            { "input_tokens": 0, "output_tokens": 0,
+              "cache_read_tokens": 0, "cache_creation_tokens": 0, "total_tokens": 37898,
+              "source": "self-report", "confidence": "medium",
+              "tool": "claude-code", "model": null,
+              "created": "2026-07-29T09:34:56Z" }
+        ]
+    });
+    let out = task_detail(&task, &iso_opts());
+    assert!(out.contains("| total (unsplit) |"), "got:\n{out}");
+    assert!(
+        out.contains("| claude-code | 0 | 0 | 0 | 0 | 37898 | self-report | medium |"),
+        "got:\n{out}"
+    );
+}
+
 #[test]
 fn a_task_without_annotations_or_tokens_emits_neither_section() {
     let task = json!({

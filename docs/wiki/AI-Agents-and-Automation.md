@@ -62,12 +62,12 @@ them (and learn what that unblocked), start and stop timers, tag, annotate,
 wire up dependencies, create projects, and search and store
 [memory](Memory.md).
 
-Thirty tools, one verb each. Nine reads: `list_tasks`, `get_task`,
+Thirty-one tools, one verb each. Nine reads: `list_tasks`, `get_task`,
 `brief_task`, `summary`, `outcomes`, `list_projects`, `search_memory`,
 `get_memory`, `list_memory`.
-Twenty-one writes: `add_task`, `modify_task`, `complete_task`, `reopen_task`,
+Twenty-two writes: `add_task`, `modify_task`, `complete_task`, `reopen_task`,
 `cancel_task`, `start_timer`, `stop_timer`, `tag_task`, `untag_task`,
-`annotate_task`, `update_annotation`, `remove_annotation`, `add_check`, `set_check`,
+`annotate_task`, `update_annotation`, `remove_annotation`, `add_tokens`, `add_check`, `set_check`,
 `remove_check`, `add_dependency`, `remove_dependency`, `add_memory`,
 `update_memory`, `remove_memory`, `create_project` (all prefixed `tasqx_`).
 
@@ -96,9 +96,11 @@ What makes this more than remote CRUD:
   agent that documents its work is building the knowledge base as a side
   effect.
 - **Token spend lands on the task.** `complete_task` takes token counts plus
-  who spent them; a log-parse fallback fills gaps and refuses contested
-  samples rather than guess. The table, the dashboard and the HTML report all
-  show what each task cost.
+  who spent them — or `total_tokens`, one unsplit number, when that is all
+  the harness reports — and `add_tokens` records a count that arrives after
+  completion; a log-parse fallback fills gaps and refuses contested samples
+  rather than guess. The table, the dashboard and the HTML report all show
+  what each task cost.
 
 Safety properties worth knowing:
 
@@ -264,6 +266,8 @@ rather than attributed to the wrong one.
 
 | Command | What it does |
 |---|---|
+| `tasqx tokens add 602 --total 37898` | Record a count that arrived after completion, as one unsplit number |
+| `tasqx tokens add 602 --in 18400 --out 2600` | The same, split into buckets |
 | `tasqx tokens recompute` | Dry run: shows what would change, writes nothing |
 | `tasqx tokens recompute --apply` | Actually rewrite the log-parse attributions |
 
@@ -272,6 +276,9 @@ Stop any running daemon before `--apply` — this one runs strictly in-process.
 Where the numbers surface: the task table's TOKENS column, the dashboard's
 TOKENS panel, and the HTML report's header tiles — always as separate buckets
 (input, output, cache read, cache creation), never a misleading blended total.
+A count reported as one number stays one number, shown as `total (unsplit)`.
+What each confidence grade means, and why a self-report is `medium`, is in the
+[token accounting guide](../guides/token-accounting.md#how-much-to-trust-a-figure).
 
 ### Token accounting
 

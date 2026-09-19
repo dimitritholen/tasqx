@@ -298,8 +298,8 @@ impl Engine {
                 tx.execute(
                     "INSERT INTO token_usage (id, task_id, tool, source, model, \
                      input_tokens, output_tokens, cache_read_tokens, \
-                     cache_creation_tokens, confidence, created) \
-                     VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)",
+                     cache_creation_tokens, confidence, created, total_tokens) \
+                     VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12)",
                     params![
                         mid,
                         id,
@@ -311,7 +311,8 @@ impl Engine {
                         count("cache_read_tokens")?,
                         count("cache_creation_tokens")?,
                         confidence,
-                        mcreated
+                        mcreated,
+                        count("total_tokens")?
                     ],
                 )?;
             }
