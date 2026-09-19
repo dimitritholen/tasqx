@@ -298,6 +298,8 @@ struct TaskSnapshot {
     /// set-based like every other side table — a per-task point query here is
     /// the N+1 the statement-count test exists to forbid.
     tokens: Vec<Value>,
+    /// D170: the uuid of the task a recurrence spawned this one from.
+    spawned_from: Option<String>,
 }
 
 impl Engine {
@@ -888,6 +890,8 @@ pub const IMPORT_TASK_KEYS: &[&str] = &[
     // D165's pinned delivery note. Absent on a legacy export and on any task
     // no completion pinned one on.
     "delivered_annotation_id",
+    // D170: the predecessor's uuid, present only on a recurrence spawn.
+    "spawned_from",
 ];
 
 /// Every key an exported annotation object can carry. D34.

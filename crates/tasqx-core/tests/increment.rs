@@ -1448,8 +1448,10 @@ fn completing_monthly_day_31_clamps_to_month_end() {
 /// silently dropping to `None`, or the tag-copy loop silently doing nothing,
 /// left the whole workspace suite green. Pins the carry, and pins the other
 /// half of the same shape on purpose: the occurrence is a fresh task, not a
-/// clone, so its annotations/dependencies/checks belong to the instance that
-/// was just completed and do not ride along.
+/// clone, so its dependencies and all but the first annotation belong to the
+/// instance that was just completed and do not ride along. D170 (finding
+/// #628) moved the line: the oldest note (the description) and every check,
+/// reset to open, DO carry — the next occurrence is the same work again.
 #[test]
 fn completing_recurring_carries_fields_but_not_relationships() {
     let e = engine();
@@ -1503,13 +1505,18 @@ fn completing_recurring_carries_fields_but_not_relationships() {
         "budget_tokens carries to the occurrence"
     );
 
-    // The deliberate non-carry: a fresh occurrence starts with none of these.
-    for key in ["annotations", "depends_on", "checks"] {
-        assert!(
-            occ[key].as_array().unwrap().is_empty(),
-            "no {key} carry over"
-        );
-    }
+    // The deliberate non-carry: a fresh occurrence depends on nothing.
+    assert!(
+        occ["depends_on"].as_array().unwrap().is_empty(),
+        "no depends_on carry over"
+    );
+    // D170: the description and the criteria DO carry, the checks reset.
+    assert_eq!(occ["annotations"].as_array().unwrap().len(), 1);
+    assert_eq!(occ["annotations"][0]["body"], "carried context");
+    assert_eq!(occ["checks"].as_array().unwrap().len(), 1);
+    assert_eq!(occ["checks"][0]["body"], "reviewed");
+    assert_eq!(occ["checks"][0]["state"], "open");
+    assert_eq!(occ["spawned_from"], sid);
 }
 
 #[test]
@@ -4229,8 +4236,12 @@ fn the_import_key_table_matches_the_keys_an_export_actually_emits() {
     .unwrap();
     e.task_done(&json!({ "ref": sid })).unwrap();
 
-    let exported = e.store_export(&json!({})).unwrap()["tasks"][0].clone();
+    let document = e.store_export(&json!({})).unwrap();
+    let exported = document["tasks"][0].clone();
     let mut emitted = keys(&exported);
+    // `spawned_from` (D170) is emitted only on a recurrence spawn — and the
+    // completion above spawned one, the second task in the document.
+    emitted.extend(keys(&document["tasks"][1]));
     // `status_unrecognized` appears only on an anomalous row, so it needs the
     // one store that can produce it.
     let (bad, _) = store_with_an_unrecognized_status();

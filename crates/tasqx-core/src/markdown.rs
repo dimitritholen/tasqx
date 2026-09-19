@@ -89,7 +89,11 @@ pub fn task_detail(result: &Value, opts: &DetailOpts) -> String {
     }
     if let Some(r) = result.get("recurrence").and_then(Value::as_str) {
         if !r.is_empty() {
-            row(&mut out, "recurrence", r);
+            // D170: a spawn names the occurrence it came from.
+            match result.get("spawned_from").and_then(Value::as_i64) {
+                Some(from) => row(&mut out, "recurrence", &format!("{r} from #{from}")),
+                None => row(&mut out, "recurrence", r),
+            }
         }
     }
     for (key, label) in [("active_since", "active since"), ("completed", "completed")] {
@@ -410,8 +414,8 @@ pub fn task_brief(result: &Value, opts: &DetailOpts) -> String {
     out
 }
 
-/// Everything a brief adds after its task half: the neighbourhood and the
-/// memory hits.
+/// Everything a brief adds after its task half: the previous occurrence's
+/// delivery (D170), the neighbourhood and the memory hits.
 ///
 /// Split out because D146 gives the task half a second spelling (the box card)
 /// and the tail must not fork with it. Two copies would drift one section at a
@@ -421,6 +425,19 @@ pub fn task_brief(result: &Value, opts: &DetailOpts) -> String {
 /// formats an instant or a duration, so the tail is the same bytes under every
 /// `TimeFormat`.
 fn brief_tail(out: &mut String, result: &Value) {
+    // D170: what the previous occurrence of a recurring task delivered. First,
+    // because it is the closest thing to this very work that was ever done.
+    if let Some(last) = result.get("last_time").filter(|v| !v.is_null()) {
+        let sid = last.get("short_id").and_then(Value::as_i64).unwrap_or(0);
+        out.push_str(&format!(
+            "\n### Last time\n\n- **#{sid}** {}\n",
+            str_of(last, "title")
+        ));
+        for line in str_of(last, "delivered").lines() {
+            out.push_str(&format!("  > {line}\n"));
+        }
+    }
+
     let n = result.get("neighbourhood");
     let list = |key: &str| -> &[Value] {
         n.and_then(|v| v.get(key))
@@ -1078,7 +1095,11 @@ fn card_rows(task: &Value, neighbourhood: Option<&Value>, opts: &CardOpts) -> Ve
         .and_then(Value::as_str)
         .filter(|r| !r.is_empty())
     {
-        push_row(&mut rows, "Repeats", r);
+        // D170: a spawn names the occurrence it came from.
+        match task.get("spawned_from").and_then(Value::as_i64) {
+            Some(from) => push_row(&mut rows, "Repeats", &format!("{r} from #{from}")),
+            None => push_row(&mut rows, "Repeats", r),
+        }
     }
 
     let page = annotation_page(task);

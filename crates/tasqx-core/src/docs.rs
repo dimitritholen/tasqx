@@ -253,6 +253,36 @@ pub const TASK_BLOCKS: &[FieldDoc] = &[f(
     "The short ids this task is holding back — the reverse edge of `depends_on`.",
 )];
 
+/// D170: the occurrence a recurrence spawned this task from.
+pub const TASK_SPAWNED_FROM: &[FieldDoc] = &[n(
+    "spawned_from",
+    "integer",
+    "The short id of the task whose completion spawned this one (a recurrence, D170); null on any other task.",
+)];
+
+/// D170: the same link on an export row, by uuid and only when set.
+pub const TASK_EXPORT_SPAWNED_FROM: &[FieldDoc] = &[o(
+    "spawned_from",
+    "string",
+    "The uuid of the task whose completion spawned this one (D170). Omitted on any other task.",
+)];
+
+/// D170: what the previous occurrence of a recurring task delivered.
+pub const BRIEF_LAST_TIME: &[FieldDoc] = &[
+    f(
+        "short_id",
+        "integer",
+        "The task's short id — the small number every `ref` accepts and the CLI prints.",
+    ),
+    f("title", "string", "The task's title, verbatim."),
+    n("completed", "string", "When the previous occurrence was completed."),
+    n(
+        "delivered",
+        "string",
+        "The first paragraph of its newest note — the delivery note — or null when nobody wrote one.",
+    ),
+];
+
 /// What `task.get` says about the history it did NOT return — paging, not a
 /// property of the task or of any note.
 pub const ANNOTATION_PAGING: &[FieldDoc] = &[
@@ -403,6 +433,11 @@ pub const R_TASK_BRIEF: &[FieldDoc] = &[
         "memory",
         "object",
         "A `memory.search` result under an expression derived from the task's own words.",
+    ),
+    o(
+        "last_time",
+        "object",
+        "Present only on a recurrence spawn: the previous occurrence and what it delivered (D170).",
     ),
 ];
 
@@ -1338,6 +1373,7 @@ pub fn result_shape(method: &str) -> &'static [(&'static str, &'static [FieldDoc
             ("result", TASK_DEPENDS_ON),
             ("result", TASK_ANNOTATIONS),
             ("result", TASK_BLOCKS),
+            ("result", TASK_SPAWNED_FROM),
             ("result", ANNOTATION_PAGING),
             ("result", TASK_ANNOTATIONS_REMOVED),
             ("result", TASK_TOKENS),
@@ -1369,6 +1405,7 @@ pub fn result_shape(method: &str) -> &'static [(&'static str, &'static [FieldDoc
             ("result.task", TASK_DEPENDS_ON),
             ("result.task", TASK_ANNOTATIONS),
             ("result.task", TASK_BLOCKS),
+            ("result.task", TASK_SPAWNED_FROM),
             ("result.task", ANNOTATION_PAGING),
             ("result.task", TASK_ANNOTATIONS_REMOVED),
             ("result.task", TASK_TOKENS),
@@ -1389,6 +1426,7 @@ pub fn result_shape(method: &str) -> &'static [(&'static str, &'static [FieldDoc
             ("result.neighbourhood.depends_on[]", BRIEF_PREREQUISITE),
             ("result.neighbourhood.blocks[]", BRIEF_DEPENDENT),
             ("result.memory", BRIEF_MEMORY),
+            ("result.last_time", BRIEF_LAST_TIME),
             ("result.memory.hits[]", MEMORY_HIT_ROW),
         ],
         "task.start" => &[
@@ -1480,6 +1518,7 @@ pub fn result_shape(method: &str) -> &'static [(&'static str, &'static [FieldDoc
             ("result.tasks[]", TASK_EXPORT_ANNOTATIONS),
             ("result.tasks[]", TASK_STATUS_FLAG),
             ("result.tasks[]", TASK_CHECKS),
+            ("result.tasks[]", TASK_EXPORT_SPAWNED_FROM),
             ("result.tasks[].tokens[]", MEASUREMENT_ROW),
             ("result.tasks[].annotations[]", ANNOTATION_ROW),
             ("result.tasks[].checks[]", TASK_CHECK),
