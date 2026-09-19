@@ -1311,8 +1311,19 @@ fn compare_by(
             "short_id" => a.short_id.cmp(&b.short_id),
             "priority" => priority_rank(a.priority).cmp(&priority_rank(b.priority)),
             "due" => opt_cmp(&a.due, &b.due),
-            "created" => a.created.cmp(&b.created),
-            "modified" => a.modified.cmp(&b.modified),
+            // D144: `util::now` trims the fractional second at a whole
+            // second, so under BINARY/`str::cmp` 'Z' outranks every digit and
+            // '.' — `...10Z` would sort above `...10.9Z`. Strip the
+            // terminator before comparing, same normalisation `memory.list`
+            // applies via `rtrim(modified, 'Z')` (#87).
+            "created" => a
+                .created
+                .trim_end_matches('Z')
+                .cmp(b.created.trim_end_matches('Z')),
+            "modified" => a
+                .modified
+                .trim_end_matches('Z')
+                .cmp(b.modified.trim_end_matches('Z')),
             "title" => a.title.cmp(&b.title),
             // #215: a total order for "most expensive first" over the
             // saturating sum of a task's four measurement buckets. The sum
@@ -1423,6 +1434,81 @@ mod tests {
                 desc,
             }];
             assert_eq!(compare_by(&a, &b, 0, 0, &keys), Ordering::Less);
+        }
+    }
+
+    /// #87: `created`/`modified` are `util::now` stamps whose fractional
+    /// second is trimmed at a whole second, so under plain text comparison
+    /// `...10Z` (BINARY 'Z' > any digit or '.') outranks `...10.9Z`, and
+    /// `...10.12Z` outranks `...10.123Z` — a task can sort as newer than one
+    /// that is chronologically later. D144 ruled the fix for `memory.list`:
+    /// strip the trailing 'Z' terminator before comparing. `compare_by` must
+    /// do the same for `sort:created`/`sort:modified`, in true time order.
+    #[test]
+    fn compare_by_created_and_modified_strip_terminator_before_comparing() {
+        use std::cmp::Ordering;
+
+        fn task_at(short_id: i64, stamp: &str) -> Task {
+            Task {
+                id: short_id.to_string(),
+                short_id,
+                title: "same".to_string(),
+                status: Status::Pending,
+                status_raw: None,
+                priority: None,
+                project: None,
+                due: None,
+                scheduled: None,
+                wait: None,
+                estimate: None,
+                recurrence: None,
+                remind: None,
+                urgency: 0.0,
+                active_since: None,
+                tracked_seconds: 0,
+                rev: 1,
+                created: stamp.to_string(),
+                modified: stamp.to_string(),
+                completed: None,
+                budget_tokens: None,
+            }
+        }
+
+        // Chronological order, oldest first — but the text is inverted: a
+        // longer fraction sorts as text-smaller because 'Z' beats every
+        // digit and '.'.
+        let oldest = task_at(1, "2026-08-30T12:00:10Z");
+        let a_tenth = task_at(2, "2026-08-30T12:00:10.1Z");
+        let a_hundredth = task_at(3, "2026-08-30T12:00:10.12Z");
+        let newest = task_at(4, "2026-08-30T12:00:10.123Z");
+
+        for field in ["created", "modified"] {
+            let asc = vec![SortKey {
+                key: field.to_string(),
+                desc: false,
+            }];
+            assert_eq!(
+                compare_by(&oldest, &a_tenth, 0, 0, &asc),
+                Ordering::Less,
+                "`{field}` ascending: whole-second stamp must sort before a \
+                 later fractional one"
+            );
+            assert_eq!(
+                compare_by(&a_hundredth, &newest, 0, 0, &asc),
+                Ordering::Less,
+                "`{field}` ascending: a shorter fraction must sort before a \
+                 longer, later one"
+            );
+
+            let desc = vec![SortKey {
+                key: field.to_string(),
+                desc: true,
+            }];
+            assert_eq!(
+                compare_by(&newest, &oldest, 0, 0, &desc),
+                Ordering::Less,
+                "`{field}` descending: the newest stamp must sort first"
+            );
         }
     }
 
