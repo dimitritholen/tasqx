@@ -131,6 +131,26 @@ impl Engine {
         let project_ids: HashSet<&str> = projects.iter().filter_map(|p| p["id"].as_str()).collect();
         let (events, dropped_events) = self.export_events(&present, &doc_ids, &project_ids)?;
 
+        // D171 review finding: `default_project` names the STORE's default
+        // regardless of `filter`, so a filtered export whose scope drops that
+        // very project (the default is B, `filter` is `project:A`) used to
+        // hand back a document naming a project its own `projects` section
+        // did not carry — exactly the shape `store.import` refuses ("names
+        // ..., which the payload's `projects` section does not define and
+        // the store does not have"), so the export could not round-trip into
+        // a fresh store at all. Named only when it is among the rows this
+        // document actually carries; `None` (unfiltered) always is, by the
+        // same live-project invariant `default_project()` itself keeps.
+        let default_project = self.default_project()?;
+        let default_project = match &needed_projects {
+            None => default_project,
+            Some(_) => {
+                let project_names: HashSet<&str> =
+                    projects.iter().filter_map(|p| p["name"].as_str()).collect();
+                default_project.filter(|name| project_names.contains(name.as_str()))
+            }
+        };
+
         Ok(json!({
             "tasks": out,
             "dropped_dependencies": dropped,
@@ -162,8 +182,8 @@ impl Engine {
             "dropped_events": dropped_events,
             // Store state, so the document carries it (D21: it lives in the
             // store's `config` table, never in config.toml). `null` when there
-            // is none, which is a fact and not an omission.
-            "default_project": self.default_project()?,
+            // is none, or when a filtered export did not carry it (above).
+            "default_project": default_project,
         }))
     }
 

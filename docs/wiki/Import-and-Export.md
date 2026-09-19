@@ -26,7 +26,10 @@ tasqx export project:work > work.json
   `tasqx export project:ledger` no longer ships every other project's
   knowledge along with it. A doc that carries no project ships only with
   `--include-unscoped`, which is refused on an unfiltered export — there is
-  nothing to widen from.
+  nothing to widen from. The store's default project is carried only when
+  it is among the projects the filter kept, so a filtered export whose
+  scope drops it comes back with no default rather than a document
+  `tasqx import` would refuse.
 
 ```console
 tasqx export project:work --include-unscoped > work-and-global.json
