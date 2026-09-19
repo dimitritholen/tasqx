@@ -3022,6 +3022,7 @@ mod tests {
             &ctx,
             ChartKind::Burndown {
                 filter: vec!["project:ledger".to_string()],
+                project: None,
                 days: Some(1),
             },
         )
@@ -3033,6 +3034,64 @@ mod tests {
             "must count only ledger's own open task, not other's 2: {result}"
         );
         assert_eq!(result["scope"], json!("project:ledger"));
+    }
+
+    /// Review finding on #663: dropping `chart burndown --project` outright
+    /// was a breaking CLI change the ruling never asked for — a script or a
+    /// doc still spelling it would fail. `--project <name>` stays as
+    /// shorthand that appends `project:<name>` (quoted through
+    /// `filter::quote`, same as the flag always did) to the SAME filter
+    /// positional #663/D173 added, so it must SCOPE identically to typing
+    /// the term directly (same members, same `series`) — proven end to end
+    /// through clap's own parsing and `run_chart`, not just the composition
+    /// helper underneath it. The `scope` label legitimately differs in
+    /// spelling (quoted vs. not); that is asserted too, so a future change
+    /// that quietly stops quoting the flag's value is still visible here.
+    #[test]
+    fn chart_burndown_project_flag_scopes_the_same_as_the_filter_term() {
+        let e = tasqx_core::Engine::open_in_memory().unwrap();
+        e.project_create(&json!({ "name": "ledger" })).unwrap();
+        e.project_create(&json!({ "name": "other" })).unwrap();
+        e.task_add(&json!({ "title": "ledger task", "project": "ledger" }))
+            .unwrap();
+        e.task_add(&json!({ "title": "other task", "project": "other" }))
+            .unwrap();
+
+        let ctx = Ctx::new(theme::default_theme(), theme::Caps::PLAIN);
+        let run = |argv: &[&str]| -> Value {
+            match add_of(argv) {
+                Command::Chart { kind } => run_chart(&e, &ctx, kind).expect("chart ran").0,
+                _ => panic!("expected Command::Chart from argv: {argv:?}"),
+            }
+        };
+
+        let via_flag = run(&[
+            "tasqx",
+            "chart",
+            "burndown",
+            "--project",
+            "ledger",
+            "--days",
+            "1",
+        ]);
+        let via_term = run(&[
+            "tasqx",
+            "chart",
+            "burndown",
+            "project:ledger",
+            "--days",
+            "1",
+        ]);
+        assert_eq!(
+            via_flag["series"], via_term["series"],
+            "--project must scope identically to `project:<name>`: {via_flag} vs {via_term}"
+        );
+        // `scope` is the filter TEXT, not the scoping itself, and legitimately
+        // differs: `filter::quote` quotes unconditionally, so the flag's own
+        // composed term reads `project:"ledger"` where the bare positional
+        // reads `project:ledger` — same predicate, same tasks, different spelling.
+        assert_eq!(via_flag["scope"], json!("project:\"ledger\""));
+        assert_eq!(via_term["scope"], json!("project:ledger"));
     }
 
     /// The swallow itself, independent of any one bad name: when the composed

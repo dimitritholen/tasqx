@@ -1504,8 +1504,23 @@ pub(crate) fn run_chart(engine: &Engine, ctx: &Ctx, kind: ChartKind) -> CmdOutco
                 chart::render_heatmap(ctx, &days, anchor, members.is_empty()),
             )
         }
-        ChartKind::Burndown { filter, days } => {
+        ChartKind::Burndown {
+            mut filter,
+            project,
+            days,
+        } => {
             let days_n = days.unwrap_or(30);
+            // `--project` is shorthand appended to the SAME positional
+            // (#663/D173 review finding): through `filter::quote`, never
+            // interpolated, for the reason `dashboard_screen`'s own
+            // `Action::ListProject` composition gives — a project may be
+            // named `Home Renovation` or `a (b)`. Appended rather than
+            // replacing `filter`, so `chart burndown project:work --project
+            // other` (an odd thing to type, but not refused) ANDs both terms
+            // exactly as two positional terms would.
+            if let Some(p) = project {
+                filter.push(format!("project:{}", tasqx_core::filter::quote(&p)));
+            }
             // Reported, never swallowed: an unresolvable scope used to render as
             // a cleared burndown, which is a wrong answer wearing the costume of
             // a right one.

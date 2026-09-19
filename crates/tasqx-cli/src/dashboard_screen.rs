@@ -410,9 +410,11 @@ pub(crate) fn run_dashboard(be: &mut Backend, ctx: &Ctx) -> Result<Option<String
             }
             // `⏎` on PROJECTS (#204): the same leave-and-print shape as `l`,
             // scoped to the row the cursor was on. `filter::quote` and not a
-            // raw `{name}`, the same composition `chart burndown`'s CLI-side
-            // filter positional now leaves to its own caller (#663/D173) —
-            // a project name may hold a space or a quote.
+            // raw `{name}`, the same composition `chart burndown --project`
+            // still does for its own shorthand (#663/D173's `run_chart`) —
+            // a project name may hold a space or a quote. The bare filter
+            // positional (`project:<name>` typed directly) leaves quoting to
+            // its own caller instead, same as `list`/`report`/`agenda`.
             Some(Action::ListProject(name)) => {
                 let filter = format!("project:{}", tasqx_core::filter::quote(&name));
                 return run_list(be, ctx, &[filter], &[], None, None, &[]).map(|(_, r)| Some(r));

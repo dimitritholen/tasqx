@@ -737,7 +737,7 @@ pub const COMMAND_REF: &[CmdDoc] = &[
         aliases: &[],
         method: "event.list",
         summary: "Render throughput, heatmap, or burndown charts.",
-        usage: "tasqx chart <throughput|heatmap|burndown> [filter…] [--weeks n|--days n] [--year]",
+        usage: "tasqx chart <throughput|heatmap|burndown> [filter…] [--weeks n|--days n] [--year] [--project p]",
         examples: &[
             ex("tasqx chart throughput"),
             ex("tasqx chart heatmap --year"),
@@ -747,6 +747,7 @@ pub const COMMAND_REF: &[CmdDoc] = &[
         notes: &[
             "--socket is refused here rather than honoured (DESIGN.md D73): charts render from a direct local read of the store, never through a daemon.",
             "Each subcommand takes the same filter DSL `list`/`report`/`agenda` do (DESIGN.md D173), e.g. `tasqx chart burndown project:work` — only that project's tasks and events count. Omit it for the whole store, the same default as before.",
+            "`--project work` is shorthand for the `project:work` filter term above, kept for scripts already spelling it that way. The filter term is the more general form — it composes with a second predicate, which `--project` alone cannot.",
         ],
         see_also: &["report"],
         topic: Topic::Reports,

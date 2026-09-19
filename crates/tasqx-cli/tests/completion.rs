@@ -889,6 +889,7 @@ fn a_seeded_store_completes_project_names() {
         (4, &["tasqx", "add", "x", "--project", ""][..]),
         (5, &["tasqx", "modify", "1", "x", "--project", "wo"][..]),
         (2, &["tasqx", "use", "wo"][..]),
+        (4, &["tasqx", "chart", "burndown", "--project", ""][..]),
     ] {
         let got = complete_bash_in(&db, &socket, cursor, words);
         assert!(
@@ -897,9 +898,11 @@ fn a_seeded_store_completes_project_names() {
         );
     }
 
-    // `chart burndown` (#663/D173) takes the filter positional, not a
-    // `--project` flag any more, so its `project:` candidates are the
-    // COMPOSED form `filter_words()`'s other attachments offer.
+    // `chart burndown` (#663/D173) ALSO takes the filter positional, kept
+    // alongside `--project` (review finding: dropping the flag was a
+    // breaking change the ruling never asked for) — its `project:`
+    // candidates are the COMPOSED form `filter_words()`'s other attachments
+    // offer.
     let got = complete_bash_in(&db, &socket, 3, &["tasqx", "chart", "burndown", "project:"]);
     assert!(
         got.iter()
