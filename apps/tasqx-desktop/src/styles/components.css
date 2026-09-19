@@ -1,0 +1,319 @@
+/* Primitives from src/ui. One class per primitive, states on that class. */
+
+/* --- Button ------------------------------------------------------------ */
+.btn {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  height: var(--row-primary);
+  padding: 0 var(--space-3);
+  border: var(--border-width) solid var(--color-border);
+  border-radius: var(--radius-control);
+  background: var(--color-elevated);
+  color: var(--color-text);
+  font-size: var(--text-body);
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background-color 120ms ease, border-color 120ms ease;
+}
+
+.btn-sm {
+  height: var(--row-secondary);
+  padding: 0 var(--space-2);
+  font-size: var(--text-secondary);
+}
+
+.btn:hover {
+  background: var(--color-border);
+}
+
+.btn:active {
+  background: var(--color-panel);
+}
+
+.btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.btn:disabled:hover {
+  background: var(--color-elevated);
+}
+
+.btn-primary {
+  border-color: var(--color-accent);
+  background: var(--color-accent);
+  color: var(--color-canvas);
+  font-weight: 600;
+}
+
+.btn-primary:hover {
+  filter: brightness(1.1);
+}
+
+.btn-primary:active {
+  filter: brightness(0.92);
+}
+
+.btn-ghost {
+  border-color: transparent;
+  background: transparent;
+}
+
+.btn-ghost:active {
+  background: var(--color-elevated);
+}
+
+.btn-danger {
+  border-color: var(--color-danger);
+  color: var(--color-danger);
+  background: transparent;
+}
+
+.btn-danger:hover {
+  background: var(--color-elevated);
+}
+
+.btn[aria-busy='true'] {
+  cursor: progress;
+}
+
+/* --- IconButton -------------------------------------------------------- */
+.icon-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: var(--row-secondary);
+  height: var(--row-secondary);
+  padding: 0;
+  border: var(--border-width) solid transparent;
+  border-radius: var(--radius-control);
+  background: transparent;
+  color: var(--color-muted);
+  cursor: pointer;
+  transition: background-color 120ms ease, color 120ms ease;
+}
+
+.icon-btn:hover {
+  background: var(--color-elevated);
+  color: var(--color-text);
+}
+
+.icon-btn:active {
+  background: var(--color-border);
+}
+
+.icon-btn[aria-pressed='true'] {
+  background: var(--color-elevated);
+  color: var(--color-accent);
+}
+
+.icon-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.icon-btn:disabled:hover {
+  background: transparent;
+  color: var(--color-muted);
+}
+
+/* Focus rings must not be clipped by a neighbouring surface. */
+.btn:focus-visible,
+.icon-btn:focus-visible {
+  position: relative;
+  z-index: 1;
+}
+
+/* --- Pill -------------------------------------------------------------- */
+.pill {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  height: var(--space-5);
+  padding: 0 var(--space-2);
+  border: var(--border-width) solid currentColor;
+  border-radius: var(--space-5);
+  font-size: var(--text-secondary);
+  line-height: 1;
+  white-space: nowrap;
+}
+
+.pill::before {
+  content: '';
+  width: var(--space-1);
+  height: var(--space-1);
+  border-radius: 50%;
+  background: currentColor;
+}
+
+.pill-pending {
+  color: var(--status-pending);
+}
+
+.pill-active {
+  color: var(--status-active);
+}
+
+.pill-done {
+  color: var(--status-done);
+}
+
+.pill-blocked {
+  color: var(--status-blocked);
+}
+
+.pill-overdue {
+  color: var(--status-overdue);
+}
+
+.pill-backlog {
+  color: var(--status-backlog);
+}
+
+.pill-waiting {
+  color: var(--status-waiting);
+}
+
+.pill-warning {
+  color: var(--status-warning);
+}
+
+/* --- Panel ------------------------------------------------------------- */
+.panel {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  border: var(--border-width) solid var(--color-border);
+  border-radius: var(--radius-panel);
+  background: var(--color-panel);
+}
+
+.panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  height: var(--row-primary);
+  padding: 0 var(--panel-pad);
+  border-bottom: var(--border-width) solid var(--color-border);
+}
+
+.panel-title {
+  font-size: var(--text-heading);
+  font-weight: 600;
+}
+
+.panel-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+}
+
+.panel-body {
+  padding: var(--panel-pad);
+  overflow: auto;
+}
+
+/* --- EmptyState -------------------------------------------------------- */
+.empty-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-6) var(--space-4);
+  border: var(--border-width) dashed var(--color-border);
+  border-radius: var(--radius-panel);
+  text-align: center;
+}
+
+.empty-state-title {
+  font-size: var(--text-heading);
+  font-weight: 600;
+}
+
+.empty-state-text {
+  max-width: 44ch;
+  color: var(--color-muted);
+  font-size: var(--text-secondary);
+}
+
+/* --- Spinner ----------------------------------------------------------- */
+.spinner {
+  display: inline-block;
+  flex: none;
+  width: var(--space-3);
+  height: var(--space-3);
+  border: 2px solid currentColor;
+  border-top-color: transparent;
+  border-radius: 50%;
+  animation: spinner-rotate 700ms linear infinite;
+}
+
+@keyframes spinner-rotate {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* --- Field ------------------------------------------------------------- */
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.field-label {
+  color: var(--color-muted);
+  font-size: var(--text-secondary);
+}
+
+.field-hint {
+  color: var(--color-muted);
+  font-size: var(--text-secondary);
+}
+
+.field-error {
+  color: var(--color-danger);
+  font-size: var(--text-secondary);
+}
+
+.field select,
+.field input,
+.field textarea {
+  height: var(--row-secondary);
+  padding: 0 var(--space-2);
+  border: var(--border-width) solid var(--color-border);
+  border-radius: var(--radius-control);
+  background: var(--color-elevated);
+}
+
+.field select:hover:enabled,
+.field input:hover:enabled {
+  border-color: var(--color-muted);
+}
+
+.field select:disabled,
+.field input:disabled,
+.field textarea:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.field [aria-invalid='true'] {
+  border-color: var(--color-danger);
+}
+
+/* --- Kbd --------------------------------------------------------------- */
+.kbd {
+  display: inline-block;
+  min-width: var(--space-5);
+  padding: 0 var(--space-1);
+  border: var(--border-width) solid var(--color-border);
+  border-radius: var(--space-1);
+  background: var(--color-elevated);
+  color: var(--color-muted);
+  font-family: var(--font-mono);
+  font-size: var(--text-mono);
+  text-align: center;
+}

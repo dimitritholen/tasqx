@@ -84,7 +84,7 @@ jobs:
 
       - name: cargo clippy
         working-directory: apps/tasqx-desktop/src-tauri
-        run: cargo clippy -- -D warnings
+        run: cargo clippy --all-targets -- -D warnings
 
       - run: npm run tauri:build
 
