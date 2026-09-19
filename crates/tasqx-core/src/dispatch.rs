@@ -196,6 +196,19 @@ pub const PARAMS: &[(&str, &[&str], bool)] = &[
     ("token.remove", &["measurement_id"], false),
     ("dependency.add", &["ref", "depends_on"], false),
     ("dependency.remove", &["ref", "depends_on"], false),
+    // D160's explicit graph edges. `from`/`to` are NODE references, not task
+    // refs — a link spans tasks, memory docs, annotations and projects — which
+    // is why they are not spelled `ref`/`depends_on` like the pair above.
+    (
+        "link.add",
+        &["from", "to", "relation", "metadata", "expected_rev"],
+        false,
+    ),
+    // By the link's own id, so there is no `ref` to name: the endpoints plus
+    // the relation would identify it too, and naming three things where one
+    // will do is three chances to name the wrong edge (`token.remove`'s shape).
+    ("link.remove", &["id"], false),
+    ("link.list", &["ref", "relation", "limit", "offset"], false),
     (
         "memory.add",
         // #101: `standing` marks a doc that belongs in every session of its
@@ -367,6 +380,9 @@ pub fn dispatch(engine: &Engine, method: &str, params: &Value) -> Result<Value, 
         "tokens.recompute" => engine.token_recompute(params),
         "dependency.add" => engine.dependency_add(params),
         "dependency.remove" => engine.dependency_remove(params),
+        "link.add" => engine.link_add(params),
+        "link.remove" => engine.link_remove(params),
+        "link.list" => engine.link_list(params),
         "memory.add" => engine.memory_add(params),
         "memory.search" => engine.memory_search(params),
         "memory.get" => engine.memory_get(params),
@@ -518,6 +534,7 @@ mod tests {
         let src = [
             include_str!("engine.rs"),
             include_str!("engine/commands.rs"),
+            include_str!("engine/graph.rs"),
             include_str!("engine/memory.rs"),
             include_str!("engine/projects.rs"),
             include_str!("engine/relationships.rs"),

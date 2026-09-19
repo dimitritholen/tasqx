@@ -21,8 +21,9 @@ use tasqx_core::{dispatch, handle_envelope, storage, Engine, ErrorCode};
 /// vocabulary scan — and two copies of "which files hold the engine" is exactly
 /// the drift that once left `engine/tokens.rs` and `engine/reports.rs` unscanned
 /// for as long as they had existed.
-const SOURCES: [(&str, &str); 9] = [
+const SOURCES: [(&str, &str); 10] = [
     ("engine.rs", include_str!("../src/engine.rs")),
+    ("engine/graph.rs", include_str!("../src/engine/graph.rs")),
     ("engine/memory.rs", include_str!("../src/engine/memory.rs")),
     (
         "engine/projects.rs",

@@ -838,6 +838,49 @@ pub const R_DEPENDENCY_REMOVE: &[FieldDoc] = &[
     ),
 ];
 
+/// One explicit link, as `link.list` pages it (D160).
+///
+/// The endpoints are ids and not objects: a link spans four kinds of node, and
+/// embedding each end's row would make one list answer with four shapes.
+/// `graph.query` is where a node's label and summary come from.
+pub const LINK_ROW: &[FieldDoc] = &[
+    f("id", "string", "The link's uuid — what `link.remove` takes."),
+    f("from", "string", "The node the link starts at, as `<type>:<uuid>`: `task:`, `memory:`, `annotation:` or `project:`."),
+    f("to", "string", "The node the link points at, spelled the same way."),
+    f("relation", "string", "What the link asserts: `references`, `supersedes`, `implements_decision`, `derived_from` or `contradicts`."),
+    n("metadata", "object", "The caller's own object, stored verbatim and never interpreted, or null."),
+    f("created_at", "string", "When the link was written. Named `created_at` because `link.add` answers with a boolean `created` beside it."),
+];
+
+/// `link.add`'s result: the link, plus whether this call is what created it.
+pub const R_LINK_ADD: &[FieldDoc] = &[
+    f("id", "string", "The link's uuid. On a duplicate this is the id the first call minted, not a new one."),
+    f("from", "string", "The node the link starts at, as `<type>:<uuid>` — the resolved form of whatever reference was sent."),
+    f("to", "string", "The node the link points at, spelled the same way."),
+    f("relation", "string", "The relation as stored, one of the five D160 fixes."),
+    n("metadata", "object", "The metadata this link carries, or null. On a duplicate it is what the FIRST call stored — a repeat never overwrites."),
+    f("created_at", "string", "When the link was written."),
+    f("created", "boolean", "False when the link was already there, so a re-run is told apart from a new edge. Adding the same from/to/relation twice is idempotent, never an error."),
+];
+
+/// `link.remove`'s result.
+pub const R_LINK_REMOVE: &[FieldDoc] = &[
+    f("id", "string", "The link that is gone."),
+    f(
+        "removed",
+        "boolean",
+        "Always true on success. Removing a link that is not there is `not_found`, not a no-op.",
+    ),
+];
+
+/// `link.list`'s result — the same paging shape as `task.list` (D70).
+pub const R_LINK_LIST: &[FieldDoc] = &[
+    f("count", "integer", "How many links came back in this page."),
+    f("total", "integer", "How many matched before `limit` and `offset` cut the page."),
+    n("next_offset", "integer", "The offset that keeps walking, or null once nothing is left."),
+    f("links", "array", "The links themselves, newest first. A `ref` matches EITHER endpoint, so a node's neighbourhood is one call."),
+];
+
 /// `memory.add`'s result.
 pub const R_MEMORY_ADD: &[FieldDoc] = &[
     f(
@@ -1217,7 +1260,7 @@ pub const PROJECT_EXPORT_ROW: &[FieldDoc] = &[
 /// One row of the append-only audit log.
 pub const EVENT_ROW: &[FieldDoc] = &[
     f("id", "string", "The event's uuid."),
-    f("entity", "string", "What kind of thing it happened to: `task`, `project` or `doc`."),
+    f("entity", "string", "What kind of thing it happened to: `task`, `project`, `doc` or `link`."),
     f("entity_id", "string", "That thing's uuid."),
     f("op", "string", "What happened: `add`, `done`, `start`, `stop`, `tag.remove`, …"),
     n("payload", "object", "The op's own vocabulary. Null only for a row whose payload will not parse — a corrupt store."),
@@ -1438,6 +1481,9 @@ pub fn result_shape(method: &str) -> &'static [(&'static str, &'static [FieldDoc
         ],
         "dependency.add" => &[("result", R_DEPENDENCY_ADD)],
         "dependency.remove" => &[("result", R_DEPENDENCY_REMOVE)],
+        "link.add" => &[("result", R_LINK_ADD)],
+        "link.remove" => &[("result", R_LINK_REMOVE)],
+        "link.list" => &[("result", R_LINK_LIST), ("result.links[]", LINK_ROW)],
         "memory.add" => &[("result", R_MEMORY_ADD)],
         "memory.search" => &[
             ("result", R_MEMORY_SEARCH),
