@@ -3751,6 +3751,75 @@ mod tests {
         );
     }
 
+    /// #663/D173: `estimate` and `tracked` join `SORT_KEYS` so grooming can
+    /// sort by size, not just urgency. Both are magnitudes with a "no value"
+    /// case — no `estimate` at all, or `tracked_seconds == 0` because the
+    /// task was never started — and that case sorts LAST whichever way `-`
+    /// points, the same promise `due`'s `opt_cmp` documents but does not
+    /// actually keep once its result passes back through `compare_by`'s
+    /// blanket `desc` reversal (D173's finding). Proven both directions so a
+    /// regression that only flips the ascending half would still go red.
+    #[test]
+    fn task_list_sorts_by_estimate_and_tracked_with_untracked_last() {
+        let e = Engine::open_in_memory().unwrap();
+        e.task_add(&json!({ "title": "small", "estimate": "PT30M" }))
+            .unwrap();
+        e.task_add(&json!({ "title": "big", "estimate": "PT4H" }))
+            .unwrap();
+        e.task_add(&json!({ "title": "unestimated" })).unwrap();
+
+        let short_ids = |out: &Value| -> Vec<i64> {
+            out["tasks"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|t| t["short_id"].as_i64().unwrap())
+                .collect()
+        };
+
+        let desc = e
+            .task_list(&json!({ "sort": ["-estimate"], "fields": ["short_id"] }))
+            .unwrap();
+        assert_eq!(
+            short_ids(&desc),
+            [2, 1, 3],
+            "-estimate: biggest first, the unestimated task last"
+        );
+        let asc = e
+            .task_list(&json!({ "sort": ["estimate"], "fields": ["short_id"] }))
+            .unwrap();
+        assert_eq!(
+            short_ids(&asc),
+            [1, 2, 3],
+            "estimate: smallest first, the unestimated task STILL last"
+        );
+
+        // `tracked_seconds` is never literally absent — 0 (never started) is
+        // the "no value" case `-estimate` above spelled as `None`.
+        e.task_modify(&json!({ "ref": "1", "set": { "tracked": "PT2H" } }))
+            .unwrap();
+        e.task_modify(&json!({ "ref": "2", "set": { "tracked": "PT10M" } }))
+            .unwrap();
+        // #3 stays untracked.
+
+        let desc = e
+            .task_list(&json!({ "sort": ["-tracked"], "fields": ["short_id"] }))
+            .unwrap();
+        assert_eq!(
+            short_ids(&desc),
+            [1, 2, 3],
+            "-tracked: most-tracked first, the untracked task last"
+        );
+        let asc = e
+            .task_list(&json!({ "sort": ["tracked"], "fields": ["short_id"] }))
+            .unwrap();
+        assert_eq!(
+            short_ids(&asc),
+            [2, 1, 3],
+            "tracked: least-tracked first, the untracked task STILL last"
+        );
+    }
+
     /// #76.1: `fields: []` used to mean "restrict every row to nothing",
     /// returning `{}` per row, while OMITTING `fields` entirely meant no
     /// restriction — an empty list and no list are different requests in
