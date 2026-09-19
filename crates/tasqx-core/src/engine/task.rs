@@ -323,7 +323,7 @@ impl Engine {
             Some(s) => Some(datetime::parse_duration(&s)?),
             None => None,
         };
-        let tags = opt_str_array(p, "tags")?;
+        let tags = normalize_tags(opt_str_array(p, "tags")?)?;
         // Recurrence rule (optional). Validate + normalize before storing so a
         // bad rule fails the add cleanly and the stored form is canonical.
         let recurrence = match opt_str_nonempty(p, "recurrence")? {

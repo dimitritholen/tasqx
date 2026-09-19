@@ -204,6 +204,13 @@ pub const NOT_UNDOABLE: &[(&str, &str)] = &[
          carried. `tasqx untag <ref> <tag>` removes exactly the one you name.",
     ),
     (
+        "tag.normalize",
+        "This is the D172 store migration folding a legacy tag into its lowercased, hyphenated \
+         form, not something typed — and it may have merged two tags into one, which the \
+         payload cannot split apart again. `tasqx tag <ref> <tag>` and `tasqx untag <ref> <tag>` \
+         set the task's tags to whatever they should be.",
+    ),
+    (
         "dependency.add",
         "The edge goes in with INSERT OR IGNORE and the event is written either way, so the log \
          cannot tell an edge this call created from one it found already there. `tasqx undep \
@@ -580,6 +587,8 @@ fn revert_tag_remove(tx: &Transaction, task: &Task, payload: &Value) -> Result<V
                 .collect()
         })
         .unwrap_or_default();
+    // An event written before D172 can name `Perf`; the task now carries `perf`.
+    let tags = normalize_tags(tags)?;
     if tags.is_empty() {
         return Err(ApiError::conflict(
             "this `tag.remove` event names no tags, so there is nothing for undo to put back. \

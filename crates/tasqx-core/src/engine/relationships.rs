@@ -11,7 +11,7 @@ impl Engine {
     /// add left behind.
     pub fn tag_add(&self, p: &Value) -> Result<Value, ApiError> {
         let _ = ref_param(p)?;
-        let tags = opt_str_array(p, "tags")?;
+        let tags = normalize_tags(opt_str_array(p, "tags")?)?;
         if tags.is_empty() {
             return Err(ApiError::bad_request(
                 "tag.add requires a non-empty `tags` array",
@@ -84,7 +84,7 @@ impl Engine {
     /// racing to reuse.
     pub fn tag_remove(&self, p: &Value) -> Result<Value, ApiError> {
         let _ = ref_param(p)?;
-        let tags = opt_str_array(p, "tags")?;
+        let tags = normalize_tags(opt_str_array(p, "tags")?)?;
         if tags.is_empty() {
             return Err(ApiError::bad_request(
                 "tag.remove requires a non-empty `tags` array",

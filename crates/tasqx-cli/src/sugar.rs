@@ -2,8 +2,8 @@
 //!
 //! Extracts structured fields from the free-text title, leaving the remaining
 //! words as the title:
-//!  * `+tag` — quote to include spaces, e.g. `+"needs paint"`, exactly like the
-//!    value keys below and like the filter grammar's `+` on the read side.
+//!  * `+tag` — stored lowercased by the core; a tag containing whitespace
+//!    (`+"needs paint"`) is split out whole here and then refused there (D172).
 //!  * `project:<name>` / `proj:<name>`
 //!  * `!<prio>` (`!high`, `!h`)
 //!  * date keys `due:` / `scheduled:` / `wait:` — values are **natural-language
@@ -369,8 +369,9 @@ fn escaped_sugar_char(tok: &str) -> Option<&str> {
 ///    core to come back as "`tags` contains an empty string" — which is true but
 ///    does not say which of the words the shell handed over was empty.
 ///
-/// Duplicates collapse, exactly as they do in [`parse_add`]: `tag 42 api api` is
-/// one tag, and the order the user typed is preserved.
+/// Names come back in the core's stored spelling (D172), and duplicates
+/// collapse, exactly as they do in [`parse_add`]: `tag 42 api API` is one tag,
+/// and the order the user typed is preserved.
 pub fn tag_arguments(words: &[String]) -> Result<Vec<String>, ApiError> {
     let mut out: Vec<String> = Vec::with_capacity(words.len());
     for word in words {
@@ -387,11 +388,10 @@ pub fn tag_arguments(words: &[String]) -> Result<Vec<String>, ApiError> {
                 "an empty tag name was given — drop the argument rather than passing \"\"",
             ));
         }
-        if !out.iter().any(|t| t == name) {
-            out.push(name.to_string());
-        }
+        out.push(name.to_string());
     }
-    Ok(out)
+    // D172: the core's spelling, so the echo marks the tag that was stored.
+    tasqx_core::storage::normalize_tags(out)
 }
 
 /// The sugar VALUE this module would take out of a FINISHED word, or `None` if
@@ -1245,6 +1245,16 @@ mod tests {
         assert_eq!(
             tag_arguments(&words(&["release", "+api", "api", "release"])).unwrap(),
             ["release", "api"]
+        );
+    }
+
+    /// D172: the names are the core's stored spelling, so `Perf` and `perf`
+    /// are one tag and the echo can mark the tag that was stored.
+    #[test]
+    fn tag_arguments_are_the_stored_lowercase_spelling() {
+        assert_eq!(
+            tag_arguments(&words(&["+Perf", "perf", "ÜNÏ"])).unwrap(),
+            ["perf", "ünï"]
         );
     }
 

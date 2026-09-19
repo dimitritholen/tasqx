@@ -128,6 +128,14 @@ Attach one or more tags.
 Re-adding a tag the task already has is fine — the answer is simply the
 resulting tag set.
 
+Tags are stored lowercase, so `+API` and `+api` are the same tag, and a tag
+cannot contain a space — `tasqx tag 42 "needs paint"` is refused; write
+`needs-paint`. A filter's `+API` matches it too. A store written by an older
+tasqx is folded into this form the first time it is opened (spaces become
+hyphens, duplicates merge), and each task it touched gets a `tag.normalize`
+event naming every `from` → `to` it applied — `event.list` with that task's
+`ref` shows them (see [`tasqx api`](AI-Agents-and-Automation.md#tasqx-api)).
+
 ## tasqx untag
 
 Remove one or more tags.

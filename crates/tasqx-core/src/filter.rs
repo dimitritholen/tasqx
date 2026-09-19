@@ -17,8 +17,9 @@
 //! did not mean "generous", it meant a filter string could abort the process —
 //! see that constant.
 //!
-//! **A value may be double-quoted**, which is the only way to name a project or
-//! tag containing a space: `project:"Home Renovation"`, `+"needs paint"`. The
+//! **A value may be double-quoted**, which is the only way to name a project
+//! containing a space: `project:"Home Renovation"`. (A tag cannot contain one
+//! since D172; a `+`/`-` value is lowercased to match the stored form.) The
 //! rule is the shell's, so it is one rule and not a table: inside quotes,
 //! whitespace and `(`/`)` are ordinary characters and `and`/`or` are ordinary
 //! words; `\"` is a literal quote and `\\` a literal backslash. Quotes may cover
@@ -142,8 +143,8 @@ filter     := or_expr
 or_expr    := and_expr ( \"or\" and_expr )*
 and_expr   := term ( \"and\"? term )*        # juxtaposition = implicit AND
 term       := \"(\" or_expr \")\" | predicate
-predicate  := \"+\" VALUE                    # require tag; VALUE not empty
-            | \"-\" VALUE                    # exclude tag; VALUE not empty, not starting with a dash
+predicate  := \"+\" VALUE                    # require tag; VALUE not empty, lowercased (D172)
+            | \"-\" VALUE                    # exclude tag; VALUE not empty, not starting with a dash, lowercased
             | \"@working\"                   # status in {pending,active} AND not blocked
             | \"@blocked\" | \"+blocked\" | \"status:blocked\"   # the blocked flag
             | \"project:\" VALUE
@@ -1089,7 +1090,7 @@ fn predicate(tok: &str, now: Timestamp) -> Result<Pred, String> {
     }
     if let Some(rest) = tok.strip_prefix('+') {
         if !rest.is_empty() {
-            return Ok(Pred::TagInclude(rest.to_string()));
+            return Ok(Pred::TagInclude(rest.to_lowercase()));
         }
     }
     if let Some(rest) = tok.strip_prefix('-') {
@@ -1116,7 +1117,7 @@ fn predicate(tok: &str, now: Timestamp) -> Result<Pred, String> {
             ));
         }
         if !rest.is_empty() {
-            return Ok(Pred::TagExclude(rest.to_string()));
+            return Ok(Pred::TagExclude(rest.to_lowercase()));
         }
     }
     // `proj:` is the write side's alias for `project:` (`tasqx-cli`'s
