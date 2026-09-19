@@ -727,6 +727,27 @@ impl Engine {
             }
         }
 
+        // The last level is kept but its own hop never runs, so an edge
+        // between two of ITS members — both already in `seen` — was never
+        // crossed by the loop above: the walk's boundary is a node cut, not
+        // an edge cut, and a leaf that is not expanded still has edges to its
+        // siblings. One more pass over that level finds them; anything it
+        // would reach that is not already in `seen` is a new node the walk
+        // chose not to add, so it is discarded rather than counted.
+        if depth > 0 {
+            let last_level: Vec<GraphNode> =
+                kept.iter().filter(|n| n.depth == depth).cloned().collect();
+            if !last_level.is_empty() {
+                let seen_ids: HashSet<String> = seen.iter().map(node_id).collect();
+                let (_, crossed) = self.expand_graph(&last_level, &filters)?;
+                for edge in crossed {
+                    if seen_ids.contains(&edge.from) && seen_ids.contains(&edge.to) {
+                        edges.entry(edge.id.clone()).or_insert(edge);
+                    }
+                }
+            }
+        }
+
         let mut inferred: Vec<GraphEdge> = Vec::new();
         if include_inferred && filters.allows("search_match") {
             let (hits, matched) = self.graph_search_match(&root_node, &filters, &seen)?;
@@ -1391,18 +1412,6 @@ fn graph_instant(p: &Value, key: &str) -> Result<Option<Timestamp>, ApiError> {
     })
 }
 
-/// Every relation a `relation_types` filter may name: the structural three, the
-/// five explicit link relations, and the two inferred ones.
-fn graph_relations_accepted() -> String {
-    GRAPH_STRUCTURAL_RELATIONS
-        .iter()
-        .chain(LINK_RELATIONS.iter())
-        .chain(GRAPH_INFERRED_RELATIONS.iter())
-        .copied()
-        .collect::<Vec<_>>()
-        .join(", ")
-}
-
 /// Parse `graph.query`'s filter params, refusing every unknown name by naming
 /// the accepted set (D34).
 ///
@@ -1428,7 +1437,13 @@ fn graph_filters(p: &Value) -> Result<GraphFilters, ApiError> {
         if !known {
             return Err(ApiError::bad_request(format!(
                 "`{name}` is not a graph relation — expected one of {}",
-                graph_relations_accepted()
+                GRAPH_STRUCTURAL_RELATIONS
+                    .iter()
+                    .chain(LINK_RELATIONS.iter())
+                    .chain(GRAPH_INFERRED_RELATIONS.iter())
+                    .copied()
+                    .collect::<Vec<_>>()
+                    .join(", ")
             )));
         }
         relations.push(name);
