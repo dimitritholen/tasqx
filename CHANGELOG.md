@@ -4,6 +4,73 @@ What changed in each tasqx release, newest first. Every release also lists its
 commits on the [releases page](https://github.com/dimitritholen/tasqx/releases),
 where the binaries, checksums and installers are.
 
+## 0.11.0
+
+This release is mostly about getting tasqx set up and understood. `tasqx setup`
+installs the Claude Code integration in one screen, the API and MCP reference
+pages are generated from the engine itself instead of hand-typed prose, and the
+README is now a short pitch that links out to the wiki for everything else.
+Four bugs are fixed, from a sort order that could favour an older task to a
+memory snippet that read as two paragraphs.
+
+### Added
+
+- **`tasqx setup` installs the Claude Code integration in one screen.** It
+  registers the MCP server (`claude mcp add --scope user`) and writes the
+  bundled `tasqx-workflow` and `retro` skills to `~/.claude/skills`, shown as
+  an interactive checklist on a terminal or a flat list with `--list`. A skill
+  file that differs from the bundled one is kept unless you tick it or pass
+  `--force`, and setup never touches `~/.claude.json` itself — it drives
+  `claude mcp add`, because Claude Code owns that file.
+- **A generated API and MCP reference.** The reference pages `tasqx docs` and
+  the documentation site render now come from the engine's own parameter
+  table, the MCP tool schemas and the documented response shapes, instead of
+  prose that could drift from what the server actually does. Objects also
+  gained their own pages — Task, Project, Annotation, Check, Dependency,
+  Memory document, Event and Token measurement — each listing the fields that
+  belong to it, exactly once, alongside the methods that read or write it.
+- **The README is the pitch; the wiki is the manual.** It opens on why you'd
+  want tasqx and links out to `docs/wiki` for install fine print, the MCP tool
+  roster and everything else you only need once you're using it. It now opens
+  on a VHS-recorded hero GIF showing the loop a user repeats — add a task with
+  its project, due date, priority, tag and estimate, make a second task wait
+  on it, then find the first again by fuzzy search down to its card — and
+  several feature rows carry their own short GIFs.
+
+### Changed
+
+- **Agent guidance now recommends the task card only when a person is
+  deciding on a task** — one being proposed, or one asked about by name.
+  Starting or completing a task is one line instead
+  (`▶ #<id> <title> · <priority> · <estimate> · <passed>/<total> checks` /
+  `✔ #<id> done · <passed>/<total> checks · unblocked #<n>`), built from
+  information the agent already holds. The card itself renders the same as
+  before.
+
+### Fixed
+
+- **`task.list`/`tasqx list` sorted by created or modified time could put an
+  older task above a newer one** when one timestamp landed on a whole second
+  and the other didn't — the comparison ran on the timestamp text, where a
+  trailing `Z` outranks a digit. Both sort orders now compare true time.
+- **The dashboard's detail overlay showed "blocked by #N" in red for every
+  dependency,** even when the task itself was done or its blocker was done or
+  cancelled. It now shows only the blockers that are actually still open.
+- **`tasqx brief` and `tasqx show` on a terminal packed acceptance checks into
+  the two-column field grid**, crowding a short check beside a field like
+  `rev`. Checks now print in their own block below the fields, one per line.
+- **A memory hit's snippet in a task brief could split across a blank line
+  and read as two paragraphs,** in the MCP/markdown and card views alike. It
+  now prints on one line.
+- **Every API method's guard against an unknown parameter key and a missing
+  required one now has test coverage across the board,** closing gaps where
+  25 of 42 methods went unchecked for an unknown key and only the first of
+  several missing required keys was ever probed. The guards themselves were
+  already correct; no method's accepted input changed.
+- **The documentation site's tables no longer run off a phone screen,** and
+  the install section on GitHub Pages offers the right installer for each OS
+  and architecture instead of only Homebrew or a `cargo build` line.
+
 ## 0.10.0
 
 This release is mostly about AI agents. A correction you give once is now
