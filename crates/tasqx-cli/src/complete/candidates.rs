@@ -172,18 +172,31 @@ const MAX_VALUE_CANDIDATES: usize = 200;
 /// the narrow set is right here changed, and a reader comparing this comment to
 /// an older revision should find the change explained instead of silent.
 ///
-/// #663/D173: `chart burndown --project` was the one command that ACCEPTED an
-/// archived project and needed a wider sibling constructor for it — a READ,
-/// so `tasqx chart burndown --project oldstuff` charted an archived project
-/// and exited 0, and the narrow set here would have under-offered it. That
-/// flag is gone: `chart`'s three subcommands take the same filter-DSL
-/// positional `list`/`report`/`agenda` do, so `project:oldstuff` reaches
-/// [`filter_candidates`]'s own `Vocabulary::Project` arm instead, which
-/// already serves `project_names(true)` for exactly this reason. Nothing
-/// left calls this constructor with `true` today, so `project_candidates`
-/// keeps the parameter rather than losing the shape the day something does.
+/// A command that ACCEPTS an archived project therefore needs the other
+/// constructor — see [`projects_including_archived`]. Splitting them rather than
+/// widening this one keeps each attachment site offering exactly what it takes.
 pub(crate) fn projects() -> ArgValueCandidates {
     ArgValueCandidates::new(|| project_candidates(false))
+}
+
+/// [`projects`] plus the archived ones, for a command that genuinely accepts one.
+///
+/// `chart burndown --project` is the only such site today, and it is a READ:
+/// `tasqx chart burndown --project oldstuff` charts an archived project and
+/// exits 0. Serving it the narrow set made completion offer LESS than the
+/// command accepts — an under-offer rather than a wrong answer, but the kind
+/// that looks like the project no longer exists.
+///
+/// #663/D173: `--project` also composes into `chart`'s own filter-DSL
+/// positional now (`project:<name>` says the same thing and, unlike the
+/// flag, combines with a second predicate), so `filter_candidates`'s own
+/// `Vocabulary::Project` arm answers `project:<TAB>` there and already
+/// serves `project_names(true)` for the identical reason. This constructor
+/// is kept for the flag itself, which a review finding on this same task
+/// restored rather than removing (a breaking CLI change the ruling did not
+/// ask for).
+pub(crate) fn projects_including_archived() -> ArgValueCandidates {
+    ArgValueCandidates::new(|| project_candidates(true))
 }
 
 /// The whole-word surface, so two things happen here that the sugar arm does not
@@ -708,9 +721,9 @@ fn filter_candidates(typed: &str) -> Vec<CompletionCandidate> {
         // project:oldstuff` prints its task, `export` exports it and `report`
         // counts it, all at exit 0. Withholding the name would make completion
         // offer LESS than the command accepts, which reads as "that project is
-        // gone" — the same under-offer the now-removed `projects_including_archived`
-        // constructor existed to fix on `chart burndown --project`, before that
-        // flag folded into this same filter positional (#663/D173).
+        // gone" — the same under-offer `projects_including_archived` was split
+        // out to fix on `chart burndown --project`, which is now also reachable
+        // through this same filter positional's own `project:<name>` (#663/D173).
         Vocabulary::Project => composed(prefix, value, project_names(true)),
         // The one closed vocabulary in the grammar, and the only arm that needs
         // no store at all. `Status::ALL` is the same five variants `Status::parse`
@@ -1266,18 +1279,20 @@ mod tests {
         );
     }
 
-    /// Floor, not a list: `add --project`, `modify --project`, `use
-    /// <PROJECT>` and `archive <PROJECT>`. `chart burndown --project` was the
-    /// fifth member until #663/D173 folded it into `chart`'s filter-DSL
-    /// positional (`project:<name>`, the same convention `list`/`report`/
-    /// `agenda` already use, which this guard does not count — it is a
-    /// `filter_words()` positional, not a `PROJECT`-valued flag). Raise it
-    /// when the surface grows; the guard finds the members itself.
+    /// Floor, not a list: `add --project`, `modify --project`,
+    /// `chart burndown --project`, `use <PROJECT>` and `archive <PROJECT>`.
+    /// #663/D173 also folded `chart burndown`'s scope into a `project:<name>`
+    /// filter-DSL positional (the convention `list`/`report`/`agenda` already
+    /// use), which this guard does not count — it is a `filter_words()`
+    /// positional, not a `PROJECT`-valued flag — but a review finding on the
+    /// same task kept `--project` itself working as shorthand for it, so the
+    /// flag is still here. Raise it when the surface grows; the guard finds
+    /// the members itself.
     ///
-    /// Re-derived from the count the guard itself reports (4), not incremented
+    /// Re-derived from the count the guard itself reports (5), not incremented
     /// by hand — a floor that drifts below the real count is a guard that has
     /// stopped guarding while still printing green.
-    const KNOWN_PROJECT_VALUED_ARGS: usize = 4;
+    const KNOWN_PROJECT_VALUED_ARGS: usize = 5;
 
     /// The value name that means "this argument's value IS a tag name".
     const TAG_VALUE_NAME: &str = "TAG";

@@ -86,6 +86,9 @@ tasqx chart burndown project:work
 ```
 
 only counts `work`'s own tasks and events — the whole store otherwise.
+`tasqx chart burndown --project work` is shorthand for the same thing;
+`project:work` on the filter is the more general form, since it combines with
+a second predicate (`tasqx chart burndown project:work +urgent`).
 
 The charts degrade cleanly from truecolor terminals down to no color at all.
 

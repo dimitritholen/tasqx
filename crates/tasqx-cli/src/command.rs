@@ -1275,10 +1275,22 @@ pub(super) enum ChartKind {
     /// table — D59/D60).
     Burndown {
         /// Filter DSL, e.g. "project:work" (default: the whole store) — see
-        /// `throughput`'s. Supersedes the old `--project` flag: `project:x`
-        /// says the same thing and composes with every other predicate.
+        /// `throughput`'s.
         #[arg(add = crate::complete::candidates::filter_words())]
         filter: Vec<String>,
+        /// Restrict to a project (else all tasks). Shorthand for appending
+        /// `project:<name>` (quoted) to `filter` above — kept for scripts
+        /// and docs already spelling it this way; `project:work` on the
+        /// positional says the same thing and composes with a second
+        /// predicate the flag alone cannot (`chart burndown project:work
+        /// +urgent`).
+        // The archived-inclusive provider, unlike every other `--project`. This
+        // is a READ and the engine really does chart an archived project, so the
+        // narrow set would offer less than the command accepts; `add`, `modify`
+        // and `use` all refuse an archived project outright, which is why they
+        // take the narrow one. See `candidates::projects`.
+        #[arg(long, add = crate::complete::candidates::projects_including_archived())]
+        project: Option<String>,
         /// Number of days to show (1-3650; default 30).
         #[arg(long, allow_hyphen_values = true, value_parser = window_parser(MAX_CHART_DAYS))]
         days: Option<usize>,
