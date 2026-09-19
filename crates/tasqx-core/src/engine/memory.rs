@@ -339,13 +339,17 @@ impl Engine {
             //
             // #657: `project` follows the SAME rule, one way only: an import
             // that names NO `project` carries no opinion either, so a doc's
-            // existing scope survives a re-run the way `standing` does, and
-            // `project` is simply absent from a brand-new doc's column list
-            // (the same default `memory.add` gives). An import that DOES name
-            // one is a caller with an opinion, and that opinion moves the
-            // scope on re-import — a directory re-pointed at `--project
-            // ledger` after landing unscoped is meant to land scoped, not
-            // stay stuck at its first import's answer (D168).
+            // existing scope survives a re-run the way `standing` does. A
+            // brand-new doc's row has no prior `project` to fall back to, so
+            // `?6` binds the given value (or SQL NULL, unscoped, when
+            // omitted) directly on INSERT — the same default `memory.add`
+            // gives. On a source-replace, `COALESCE(excluded.project,
+            // docs.project)` picks the just-bound value when the caller named
+            // one and the row's OWN prior value otherwise, in one statement:
+            // a caller who names a project has an opinion, and that opinion
+            // moves the scope on re-import — a directory re-pointed at
+            // `--project ledger` after landing unscoped is meant to land
+            // scoped, not stay stuck at its first import's answer (D168).
             //
             // `rev` is in the SET list because a source-replace is a revision
             // of the same document (D143): a `memory.update` still holding
@@ -354,26 +358,17 @@ impl Engine {
             // the way `memory_update` and `store.import` do it; the lookup
             // and the upsert sit in one IMMEDIATE transaction
             // (`begin_mutation`), so nothing can move the row between them.
-            match &project {
-                Some(proj) => tx.execute(
-                    "INSERT INTO docs \
-                     (id, source, title, body, search_body, project, rev, created, modified) \
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?8) \
-                     ON CONFLICT(id) DO UPDATE SET \
-                     source=excluded.source, title=excluded.title, body=excluded.body, \
-                     search_body=excluded.search_body, project=excluded.project, \
-                     modified=excluded.modified, rev=excluded.rev",
-                    params![id, source, title, body, search_body, proj, rev, ts],
-                )?,
-                None => tx.execute(
-                    "INSERT INTO docs (id, source, title, body, search_body, rev, created, modified) \
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?7) \
-                     ON CONFLICT(id) DO UPDATE SET \
-                     source=excluded.source, title=excluded.title, body=excluded.body, \
-                     search_body=excluded.search_body, modified=excluded.modified, rev=excluded.rev",
-                    params![id, source, title, body, search_body, rev, ts],
-                )?,
-            };
+            tx.execute(
+                "INSERT INTO docs \
+                 (id, source, title, body, search_body, project, rev, created, modified) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?8) \
+                 ON CONFLICT(id) DO UPDATE SET \
+                 source=excluded.source, title=excluded.title, body=excluded.body, \
+                 search_body=excluded.search_body, \
+                 project=COALESCE(excluded.project, docs.project), \
+                 modified=excluded.modified, rev=excluded.rev",
+                params![id, source, title, body, search_body, project, rev, ts],
+            )?;
             insert_event(
                 &tx,
                 Entity::Doc,
@@ -425,6 +420,28 @@ impl Engine {
     /// same WHERE clauses as the page itself, so the two numbers can never
     /// name a different match set than the hits do.
     pub fn memory_search(&self, p: &Value) -> Result<Value, ApiError> {
+        self.memory_search_excluding(p, None)
+    }
+
+    /// The engine's own path into `memory.search`, widened with ONE thing no
+    /// public param exposes: a task whose own annotations are excluded from
+    /// the annotation arm before the limit and the count run, not after.
+    ///
+    /// `task.brief`'s `derived_memory` is the only caller — the task's own
+    /// notes are not knowledge FOUND for it (#607), and a caller-visible
+    /// `exclude_task` parameter would be one more thing `memory.search`
+    /// documents for a filter nobody outside this one caller has a reason to
+    /// ask for. Filtering the ALREADY-LIMITED page instead (the first cut of
+    /// this fix) undercounted both the page and `total` whenever the task's
+    /// own notes were dense enough to fill the slots a sibling's ruling
+    /// needed — the exact D69 problem D147 itself was ruled against — so the
+    /// exclusion has to run inside the query the limit and the count both
+    /// read.
+    pub(crate) fn memory_search_excluding(
+        &self,
+        p: &Value,
+        exclude_task_id: Option<&str>,
+    ) -> Result<Value, ApiError> {
         let query = req_str(p, "query")?;
         let raw = opt_bool(p, "raw")?.unwrap_or(false);
         // Checked, not `as i64`: a value above i64::MAX wrapped negative, and
@@ -472,10 +489,11 @@ impl Engine {
         // `bm25()` is aliased `score`, not `rank`: `rank` is a live column on
         // every FTS5 table and shadowing it inside a compound SELECT is asking
         // for a quiet resolution surprise. Lower bm25 = better, so ORDER BY ASC.
-        // Named params (`:match`/`:project`/`:limit`), not positional: the
-        // count query below reuses these same two arms without `:limit`, and
-        // named binding is what lets the arm text stay identical between the
-        // two statements instead of hand-renumbering `?1`/`?2` per query.
+        // Named params (`:match`/`:project`/`:limit`/`:exclude_task`), not
+        // positional: the count query below reuses these same two arms
+        // without `:limit`, and named binding is what lets the arm text stay
+        // identical between the two statements instead of hand-renumbering
+        // `?1`/`?2` per query.
         // #657: `project` rides beside `standing` for the same reason — a doc
         // carries its own column, an annotation inherits its task's, and the
         // UNION needs the column on both arms either way. Additive on the
@@ -516,6 +534,16 @@ impl Engine {
         } else {
             (DOCS_ARM.to_string(), ANN_ARM.to_string())
         };
+        // The exclusion runs INSIDE the annotation arm, ahead of `LIMIT` and
+        // the `COUNT(*)` both — never as a filter over the page `run()`
+        // already cut. A caller's own task is not part of the MATCH at all,
+        // the same way a project it does not belong to is not: `total` and
+        // `has_more` have to agree with the hits for the same D69 reason the
+        // project scope already does.
+        let ann_arm = match exclude_task_id {
+            Some(_) => format!("{ann_arm} AND a.task_id <> :exclude_task"),
+            None => ann_arm,
+        };
         let matched_sql = match scope.as_str() {
             "docs" => docs_arm.clone(),
             "annotations" => ann_arm.clone(),
@@ -524,10 +552,24 @@ impl Engine {
         let sql = format!("{matched_sql} ORDER BY score LIMIT :limit");
         let count_sql = format!("SELECT COUNT(*) FROM ({matched_sql})");
 
-        let named: Vec<(&str, &dyn rusqlite::ToSql)> = match &project {
-            Some(proj) => vec![(":match", &match_expr), (":project", proj)],
-            None => vec![(":match", &match_expr)],
-        };
+        // Owned, so `:exclude_task` can be bound like `:project` is — a
+        // reference into a value this function still holds when `run()` and
+        // the count query read it.
+        let exclude_task_owned = exclude_task_id.map(str::to_string);
+        let mut named: Vec<(&str, &dyn rusqlite::ToSql)> = vec![(":match", &match_expr)];
+        if let Some(proj) = &project {
+            named.push((":project", proj));
+        }
+        // Bound only when the arm that reads it is actually part of
+        // `matched_sql` — a `scope: "docs"` call never puts `:exclude_task`
+        // in the SQL text at all, and binding a name the statement does not
+        // have is its own error, the same discipline `:project` already
+        // follows for a scope that dropped its own arm.
+        if scope.as_str() != "docs" {
+            if let Some(ex) = &exclude_task_owned {
+                named.push((":exclude_task", ex));
+            }
+        }
 
         let run = || -> Result<Vec<Value>, rusqlite::Error> {
             let mut stmt = self.conn.prepare(&sql)?;
