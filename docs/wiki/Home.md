@@ -1,6 +1,8 @@
 # tasqx wiki
 
-Every tasqx command, explained in plain language. Each page covers a group of
+tasqx is the organiser for your AI: a backlog, a memory and a brief for your
+coding agent, and a task manager that lives in your terminal. Every tasqx
+command, explained in plain language. Each page covers a group of
 commands that belong together; every command has its own heading, with its
 aliases next to it.
 

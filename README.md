@@ -2,15 +2,16 @@
 
 # tasqx
 
-**Your terminal task manager — and your AI agent's long-term memory.**
+**The organiser for your AI.**
 
+A backlog, a memory and a brief for your coding agent.
 One binary. One SQLite file on your disk. No account, no cloud.
 
 [![Latest release](https://img.shields.io/github/v/release/dimitritholen/tasqx)](https://github.com/dimitritholen/tasqx/releases/latest)
 [![CI](https://img.shields.io/github/actions/workflow/status/dimitritholen/tasqx/ci.yml?branch=main&label=CI)](https://github.com/dimitritholen/tasqx/actions/workflows/ci.yml)
 [![License: FSL-1.1-MIT](https://img.shields.io/badge/license-FSL--1.1--MIT-blue)](LICENSE.md)
 
-[Install](#install) · [Documentation](https://dimitritholen.github.io/tasqx/) · [Guides](#learn-more) · [Wiki](docs/wiki/Home.md)
+[Install](#install) · [Connect your agent](#connect-your-agent) · [Documentation](https://dimitritholen.github.io/tasqx/) · [Guides](#learn-more) · [Wiki](docs/wiki/Home.md)
 
 <!-- Pictures come from an invented demo store, never a real one:
      scripts/demo-store.py builds it, and its docstring has the render lines.
@@ -19,34 +20,131 @@ One binary. One SQLite file on your disk. No account, no cloud.
 
 </div>
 
+An agent that starts a task cold redoes work it finished last week, forgets
+what the previous session decided, and reports "done" with nothing to show
+for it. tasqx gives it what an organiser gives a person: a list in the right
+order, a reference section it can search, a briefing before each piece of
+work, a checklist that says what done means, and an expense sheet. All of it
+is one local file, and the same file is a task manager you use from the
+shell.
+
+## What the organiser holds
+
 <table>
 <tr>
-<th width="50%">For you</th>
-<th width="50%">For your agents</th>
+<td width="45%" valign="top">
+
+### The list, in the right order
+
+Every task carries a priority, an urgency gauge and a date, and `tasqx next`
+picks the one to do now. One filter language (`project:work and (+api or +ui)`)
+works on every listing command, `report` and `export` included. Over MCP,
+`tasqx_list_tasks` with the `@working` filter hides what is blocked or waiting,
+so an agent only ever sees work it can start.
+
+</td>
+<td>
+
+![tasqx list: a running task and an overdue one, each row with a priority, an urgency gauge and a calendar date](docs/img/list.png)
+
+</td>
 </tr>
 <tr>
 <td valign="top">
 
-- **Capture in one line:** `tasqx add Ship it due:friday +api !high`
-- **Ask "what now?"** `tasqx next` picks; `tasqx why` shows the arithmetic.
-- **See it all at once:** `tasqx dashboard` is a full-screen overview.
-- **Send a report:** terminal charts, or one self-contained HTML page.
-- **Own your data:** a file on your disk, and `cancel` and `undo` take changes back.
+### The order, kept for you
+
+`tasqx dep 63 62` makes one task wait on another, and a waiting task stays out
+of `next` until its prerequisite is done. Finishing a task reports what it
+unblocked: `tasqx_complete_task` returns the next work in its answer, so an
+agent moves on without asking again, and no board has cards to drag.
 
 </td>
+<td>
+
+![tasqx list shows two blocked release tasks; tasqx done 62 reports that #63 is unblocked, and tasqx next then picks #63](docs/img/deps.gif)
+
+</td>
+</tr>
+<tr>
 <td valign="top">
 
-- **A backlog over MCP**, read-only until you grant write access.
-- **One `brief` call** before starting: the task, what its prerequisites concluded, relevant memory.
-- **Long-term memory** across sessions, searched over your imported docs and every annotation.
-- **"Done" means something:** acceptance checks, and completion returns what it unblocked.
-- **Token spend per task**, so you can see what agent work cost.
+### The reference section
+
+`tasqx memory import` reads a folder of markdown (ADRs, notes, guides) into a
+local full-text index, and `tasqx memory search` finds a ruling by two words
+months later, with the file it came from. Every task note is in the same
+index, so what an agent decided last session is there for the next one.
+Memory outlives the context window, and it never leaves your disk.
+
+</td>
+<td>
+
+![tasqx memory import loads three decision docs; tasqx memory search failed charge finds the payment-retries ruling with its source file and a snippet](docs/img/memory.gif)
+
+</td>
+</tr>
+<tr>
+<td valign="top">
+
+### The briefing
+
+`tasqx brief` is the one read an agent makes before it starts (MCP's
+`tasqx_brief_task` is the same call): the task, what each prerequisite
+concluded when it was finished, and the memory that matches, under a query
+tasqx derives from the task itself. Here #50 is done with a note on the real
+rate limit, and the brief for #51, which waited on it, hands that ruling over.
+
+</td>
+<td>
+
+![tasqx done 50 unblocks #51; tasqx brief 51 --card shows #51's card, #50's conclusion about the rate limit, and matching memory hits](docs/img/brief.gif)
+
+</td>
+</tr>
+<tr>
+<td valign="top">
+
+### The checklist and the expense sheet
+
+"Done" means something. A task carries acceptance checks, each marked with
+the evidence that proved it, and completing a task names which ones passed.
+Every completion can carry the tokens it cost. `tasqx report --outcomes` then
+asks whether finished work stayed finished: how much came back as rework, how
+far tracked time ran over the estimate, which completions nobody documented,
+what was forced past a blocker, what was dropped after it was started, and
+what the tokens cost. Every rate stands beside the count it rests on.
+
+</td>
+<td>
+
+![tasqx report --outcomes: per project, rework, forced, silent, calibration, dropped, over-budget and unproven counts, each as a fraction over its sample, and token spend](docs/img/outcomes.gif)
+
+</td>
+</tr>
+<tr>
+<td valign="top">
+
+### The review
+
+Throughput, heatmap and burndown charts drawn from the event log, or a themed
+HTML page with zero external requests that you can send to anyone.
+Five built-in themes. The same `--outcomes` measures land in the page, so a
+weekly review says what the agent did and what it got right.
+
+</td>
+<td>
+
+![The HTML weekly review: headline counts, then what needs attention](docs/img/report.png)
 
 </td>
 </tr>
 </table>
 
-## See it
+## For you, at the shell
+
+The organiser is a plain terminal task manager too, and a fast one: capture in
+one line, ask "what now?", finish, and every change can be taken back.
 
 ```console
 $ tasqx add Ship the release notes due:friday +docs !high --project work
@@ -70,111 +168,11 @@ $ tasqx why 42
 Urgency is recomputed on every read, so the deadline row climbs as Friday
 approaches. The scores in any capture are an illustration; the rows are the contract.
 
-<table>
-<tr>
-<td width="45%" valign="top">
-
-### Your working set, ranked
-
-Every row carries a priority, an urgency gauge and a date. One filter language
-(`project:work and (+api or +ui)`) works on every listing command, `report`
-and `export` included. Recurrence reads like speech (`every 3 days`,
-`monthly on the 2nd tuesday`), and reminders move when the due date moves.
-
-</td>
-<td>
-
-![tasqx list: a running task and an overdue one, each row with a priority, an urgency gauge and a calendar date](docs/img/list.png)
-
-</td>
-</tr>
-<tr>
-<td valign="top">
-
-### Work in the right order
-
-`tasqx dep 63 62` makes one task wait on another, and a waiting task stays out
-of `next` until its prerequisite is done. Finishing a task tells you what it
-unblocked, so the order is kept for you, no board to drag cards across.
-
-</td>
-<td>
-
-![tasqx list shows two blocked release tasks; tasqx done 62 reports that #63 is unblocked, and tasqx next then picks #63](docs/img/deps.gif)
-
-</td>
-</tr>
-<tr>
-<td valign="top">
-
-### Decisions you can find again
-
-`tasqx memory import` reads a folder of markdown (ADRs, notes, guides) into a
-local full-text index, and `tasqx memory search` finds a ruling by two words
-months later, with the file it came from. Every task note is in the same
-index, so what an agent decided last session is there for the next one.
-
-</td>
-<td>
-
-![tasqx memory import loads three decision docs; tasqx memory search failed charge finds the payment-retries ruling with its source file and a snippet](docs/img/memory.gif)
-
-</td>
-</tr>
-<tr>
-<td valign="top">
-
-### Briefed before it starts
-
-`tasqx brief` is the one read an agent makes before it starts a task (MCP's
-`tasqx_brief_task` is the same call): the task, what each prerequisite
-concluded when it was finished, and the memory that matches. Here #50 is done
-with a note on the real rate limit, and the brief for #51, which waited on it,
-hands that ruling over.
-
-</td>
-<td>
-
-![tasqx done 50 unblocks #51; tasqx brief 51 --card shows #51's card, #50's conclusion about the rate limit, and matching memory hits](docs/img/brief.gif)
-
-</td>
-</tr>
-<tr>
-<td valign="top">
-
-### Outcomes, not just output
-
-`tasqx report --outcomes` asks whether finished work stayed finished: how much
-came back as rework, how far tracked time ran over the estimate, which
-completions nobody documented, what was forced past a blocker or dropped after
-it was started, and what the tokens cost. Every rate stands beside the count it
-rests on.
-
-</td>
-<td>
-
-![tasqx report --outcomes: per project, rework, forced, silent, calibration, dropped, over-budget and unproven counts, each as a fraction over its sample, and token spend](docs/img/outcomes.gif)
-
-</td>
-</tr>
-<tr>
-<td valign="top">
-
-### Reports you can send
-
-Throughput, heatmap and burndown charts drawn from the event log, or a themed
-HTML page with zero external requests. Five built-in themes. `--outcomes`
-measures whether the work worked: rework, estimate calibration, completions
-nobody documented, abandoned work.
-
-</td>
-<td>
-
-![The HTML weekly review: headline counts, then what needs attention](docs/img/report.png)
-
-</td>
-</tr>
-</table>
+- **Capture in one line:** `tasqx add Ship it due:friday +api !high`
+- **Ask "what now?"** `tasqx next` picks; `tasqx why` shows the arithmetic.
+- **See it all at once:** `tasqx dashboard` is a full-screen overview.
+- **Dates that read like speech:** `every 3 days`, `monthly on the 2nd tuesday`, and reminders move when the due date moves.
+- **Own your data:** a file on your disk, and `cancel` and `undo` take changes back.
 
 ## Install
 

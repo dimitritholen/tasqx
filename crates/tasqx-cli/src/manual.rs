@@ -571,7 +571,8 @@ fn topic_body(t: Topic) -> &'static str {
     match t {
         Topic::GettingStarted => {
             "\
-tasqx is a fast, terminal-first, AI-native task manager.
+tasqx is the organiser for your AI: a backlog, a memory and a brief
+for your coding agent, and a fast, terminal-first task manager for you.
 
 The whole loop is four commands:
   tasqx init <project>\tcreate a project (just a name)

@@ -21,7 +21,7 @@ the text it could not store.
 ## Paste this
 
 ```markdown
-## tasqx is your long-term memory and your task manager
+## tasqx is your organiser: your backlog and your long-term memory
 
 tasqx holds a backlog of tasks and one searchable index over two things: knowledge
 docs, and the annotations written on tasks. Reach it over MCP (`tasqx_*` tools) and,

@@ -1692,9 +1692,9 @@ pub fn tool_docs() -> Vec<ToolDoc> {
 /// do with what it cannot store. Shared paragraphs are one literal each so the
 /// two variants cannot drift into disagreeing about the same advice.
 pub fn instructions(scope: Scope) -> String {
-    const INTRO: &str = "tasqx is this workspace's backlog and long-term memory: one searchable \
-        index over imported knowledge docs and the annotations written on tasks. Use it instead \
-        of an in-conversation todo list or a memory file.";
+    const INTRO: &str = "tasqx is this workspace's organiser: its backlog, and its long-term \
+        memory, one searchable index over imported knowledge docs and the annotations written \
+        on tasks. Use it instead of an in-conversation todo list or a memory file.";
 
     const SEARCH: &str = "Search first. Call tasqx_search_memory before resuming work, choosing \
         between designs, touching a convention-bearing file, or asserting how this project does \
