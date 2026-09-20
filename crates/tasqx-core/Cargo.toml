@@ -7,7 +7,7 @@ license.workspace = true
 repository.workspace = true
 homepage.workspace = true
 readme.workspace = true
-description = "Headless task-manager engine: SQLite storage, domain model, and the stable JSON API dispatch layer."
+description = "The engine behind tasqx, the organiser for your AI: SQLite storage, domain model, and the stable JSON API dispatch layer."
 # Per-crate rather than inherited: these describe the CRATE, and the two members
 # are different things on crates.io — a headless library and a binary. Category
 # slugs are a closed vocabulary, so they cannot be invented here.

@@ -1,7 +1,9 @@
 # Getting Started
 
-tasqx is a task manager that lives in your terminal. Your tasks are stored in a
-single SQLite file on your own disk — no account, no cloud, works offline.
+tasqx is the organiser for your AI: a backlog, a memory and a brief for your
+coding agent, and a task manager that lives in your terminal. Your tasks are
+stored in a single SQLite file on your own disk — no account, no cloud, works
+offline.
 
 ## Install
 

@@ -7,7 +7,7 @@ license.workspace = true
 repository.workspace = true
 homepage.workspace = true
 readme.workspace = true
-description = "The tasqx command-line client — a thin surface over tasqx-core's JSON API."
+description = "tasqx, the organiser for your AI — the command-line client, a thin surface over tasqx-core's JSON API."
 # See the note in crates/tasqx-core/Cargo.toml: keywords and categories describe
 # the crate, not the workspace, and this one is the binary half.
 keywords = ["task", "todo", "cli", "task-manager", "productivity"]

@@ -53,7 +53,7 @@ sum_for() {
 
 cat <<EOF
 class Tasqx < Formula
-  desc "Task manager that lives in the terminal and treats an AI agent as a normal user"
+  desc "Organiser for your AI: a backlog, a memory and a brief for your coding agent"
   homepage "https://github.com/${REPO}"
   # No \`version\`: Homebrew scans it out of the URL, and \`brew audit\` rejects
   # the field as redundant — the first check a tap maintainer runs, failing on

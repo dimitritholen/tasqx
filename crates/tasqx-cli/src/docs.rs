@@ -1031,7 +1031,8 @@ fn page_overview() -> String {
     let mut s = page_open("overview");
 
     s.push_str(&lead(
-        "tasqx is a fast, terminal-first, AI-native task manager. It is a headless Rust \
+        "tasqx is the organiser for your AI: a backlog, a memory and a brief for your \
+         coding agent, and a fast, terminal-first task manager for you. It is a headless Rust \
          core engine that exposes one stable, versioned JSON API — and every surface you \
          touch (the CLI, the MCP server, the HTML report, this guide) is a client of that \
          one contract.",

@@ -207,7 +207,7 @@ pub(super) struct SelfReportArgs {
     // then exempts it from the pre-pass automatically, because that guard reads
     // clap's own arg table rather than a list of letters (D30).
     propagate_version = true,
-    about = "A fast, terminal-first, AI-native task manager.",
+    about = "The organiser for your AI: a backlog, a memory and a brief for your coding agent, and a fast, terminal-first task manager for you.",
     // #228.1: short aliases (`ls`, `d`, `rm`, `mod`, …) are deliberately
     // HIDDEN from clap — `visible_alias` was tried and reverted, because
     // hidden is what lets `tasqx mod<TAB>` complete to the canonical `modify`

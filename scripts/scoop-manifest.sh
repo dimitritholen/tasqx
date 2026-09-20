@@ -52,7 +52,7 @@ HASH="$(awk '{print $1; exit}' "${work}/${WINDOWS}.sha256")"
 cat <<EOF
 {
     "version": "${VERSION}",
-    "description": "Task manager that lives in the terminal and treats an AI agent as a normal user",
+    "description": "Organiser for your AI: a backlog, a memory and a brief for your coding agent",
     "homepage": "https://github.com/${REPO}",
     "license": {
         "identifier": "FSL-1.1-MIT",
