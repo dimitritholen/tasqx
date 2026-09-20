@@ -270,8 +270,20 @@ fn racing_starts_create_one_interval() {
         .expect("read final task");
     assert_eq!(task["status"], "active");
     assert_eq!(task["_rev"], 2, "one effective start advances one revision");
+    // D166: `tracked` on an active task includes the running interval up to
+    // the read's own instant, so a moment after the start it reads PT1S on a
+    // loaded runner (CI did, on a docs-only PR). The claim is that nothing
+    // CLOSED an interval, and the stored column holds closed intervals alone.
+    let closed: i64 = store
+        .connection()
+        .query_row(
+            "SELECT tracked_seconds FROM tasks WHERE short_id = 1",
+            [],
+            |row| row.get(0),
+        )
+        .expect("stored tracked total");
     assert_eq!(
-        task["tracked"], "PT0S",
+        closed, 0,
         "the second start must not close the new interval"
     );
     assert!(
