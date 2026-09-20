@@ -1,0 +1,91 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 720" width="1280" height="720" role="img" aria-labelledby="t d">
+<title id="t">What tasqx holds</title>
+<desc id="d">A map of tasqx. You at the shell and your agent over MCP both read and write one local file. Around it, the organiser's parts as connected nodes: the list, the order, the briefing, the expense sheet, the checklist, the reference section and the review, each with a one-line explanation.</desc>
+<defs>
+<marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#4b5563"/></marker>
+<style>
+text{font-family:ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;}
+.title{font-size:16px;font-weight:700;fill:#e6edf3;}
+.core{font-size:21px;}
+.body{font-size:12.5px;fill:#9aa7b5;}
+.label{font-size:11.5px;fill:#9aa7b5;font-style:italic;}
+.edge{stroke:#4b5563;stroke-width:1.6;fill:none;marker-end:url(#arrow);}
+</style></defs>
+<rect x="0" y="0" width="1280" height="720" rx="16" fill="#0b0f14"/>
+<path class="edge" d="M395.0,95 L495.0,95"/>
+<path class="edge" d="M885.0,95 L785.0,95"/>
+<path class="edge" d="M640,147.0 C640,182.5 250,182.5 250,218.0"/>
+<path class="edge" d="M640,147.0 L640,218.0"/>
+<path class="edge" d="M640,147.0 C640,182.5 1030,182.5 1030,218.0"/>
+<path class="edge" d="M395.0,270 L495.0,270"/>
+<rect x="410.2" y="251.0" width="69.6" height="18" rx="9" fill="#0b0f14"/>
+<text class="label" x="445.0" y="264.0" text-anchor="middle">waits on</text>
+<path class="edge" d="M785.0,270 L885.0,270"/>
+<rect x="796.6" y="251.0" width="76.8" height="18" rx="9" fill="#0b0f14"/>
+<text class="label" x="835.0" y="264.0" text-anchor="middle">concluded</text>
+<path class="edge" d="M1030,388.0 L1030,322.0"/>
+<rect x="970.0" y="346.0" width="120.0" height="18" rx="9" fill="#0b0f14"/>
+<text class="label" x="1030.0" y="359.0" text-anchor="middle">matching memory</text>
+<path class="edge" d="M1030,322.0 C1030,355.0 640,355.0 640,388.0"/>
+<rect x="771.4" y="346.0" width="127.2" height="18" rx="9" fill="#0b0f14"/>
+<text class="label" x="835.0" y="359.0" text-anchor="middle">done, with proof</text>
+<path class="edge" d="M640,492.0 L640,558.0"/>
+<rect x="562.0" y="516.0" width="156.0" height="18" rx="9" fill="#0b0f14"/>
+<text class="label" x="640.0" y="529.0" text-anchor="middle">what stayed finished</text>
+<path class="edge" d="M250,492.0 C250,525.0 640,525.0 640,558.0"/>
+<rect x="341.4" y="510.0" width="127.2" height="18" rx="9" fill="#0b0f14"/>
+<text class="label" x="405.0" y="523.0" text-anchor="middle">and what it cost</text>
+<rect x="105.0" y="43.0" width="290" height="104" rx="10" fill="#131a22" stroke="#7ee787" stroke-width="1.6"/>
+<rect x="105.0" y="43.0" width="4" height="104" rx="2" fill="#7ee787"/>
+<text class="title" x="123.0" y="70.0" style="fill:#7ee787">You, at the shell</text>
+<text class="body" x="123.0" y="92.0">add, next, done: the same</text>
+<text class="body" x="123.0" y="109.0">file, read from a terminal</text>
+<text class="body" x="123.0" y="126.0">and taken back with undo</text>
+<rect x="495.0" y="43.0" width="290" height="104" rx="10" fill="#131a22" stroke="#e3b341" stroke-width="1.6"/>
+<rect x="495.0" y="43.0" width="4" height="104" rx="2" fill="#e3b341"/>
+<text class="title core" x="513.0" y="70.0" style="fill:#e3b341">tasqx</text>
+<text class="body" x="513.0" y="92.0">The organiser for your AI</text>
+<text class="body" x="513.0" y="109.0">one binary, one SQLite file</text>
+<text class="body" x="513.0" y="126.0">no account, no cloud</text>
+<rect x="885.0" y="43.0" width="290" height="104" rx="10" fill="#131a22" stroke="#79c0ff" stroke-width="1.6"/>
+<rect x="885.0" y="43.0" width="4" height="104" rx="2" fill="#79c0ff"/>
+<text class="title" x="903.0" y="70.0" style="fill:#79c0ff">Your agent, over MCP</text>
+<text class="body" x="903.0" y="92.0">the same file, over the</text>
+<text class="body" x="903.0" y="109.0">built-in MCP server;</text>
+<text class="body" x="903.0" y="126.0">writes only when granted</text>
+<rect x="105.0" y="218.0" width="290" height="104" rx="10" fill="#131a22" stroke="#2b3441" stroke-width="1.2"/>
+<text class="title" x="123.0" y="245.0">The list</text>
+<text class="body" x="123.0" y="267.0">each task carries priority,</text>
+<text class="body" x="123.0" y="284.0">urgency and a date; next</text>
+<text class="body" x="123.0" y="301.0">picks the one to do now</text>
+<rect x="495.0" y="218.0" width="290" height="104" rx="10" fill="#131a22" stroke="#2b3441" stroke-width="1.2"/>
+<text class="title" x="513.0" y="245.0">The order</text>
+<text class="body" x="513.0" y="267.0">dep makes a task wait on</text>
+<text class="body" x="513.0" y="284.0">another; done reports</text>
+<text class="body" x="513.0" y="301.0">what it just unblocked</text>
+<rect x="885.0" y="218.0" width="290" height="104" rx="10" fill="#131a22" stroke="#2b3441" stroke-width="1.2"/>
+<text class="title" x="903.0" y="245.0">The briefing</text>
+<text class="body" x="903.0" y="267.0">one read before starting:</text>
+<text class="body" x="903.0" y="284.0">the task, what each blocker</text>
+<text class="body" x="903.0" y="301.0">concluded, matching memory</text>
+<rect x="105.0" y="388.0" width="290" height="104" rx="10" fill="#131a22" stroke="#2b3441" stroke-width="1.2"/>
+<text class="title" x="123.0" y="415.0">The expense sheet</text>
+<text class="body" x="123.0" y="437.0">tokens recorded per task,</text>
+<text class="body" x="123.0" y="454.0">so you can see what</text>
+<text class="body" x="123.0" y="471.0">the agent's work cost</text>
+<rect x="495.0" y="388.0" width="290" height="104" rx="10" fill="#131a22" stroke="#2b3441" stroke-width="1.2"/>
+<text class="title" x="513.0" y="415.0">The checklist</text>
+<text class="body" x="513.0" y="437.0">checks with the evidence</text>
+<text class="body" x="513.0" y="454.0">that proved them; unmarked</text>
+<text class="body" x="513.0" y="471.0">ones are counted unproven</text>
+<rect x="885.0" y="388.0" width="290" height="104" rx="10" fill="#131a22" stroke="#2b3441" stroke-width="1.2"/>
+<text class="title" x="903.0" y="415.0">The reference section</text>
+<text class="body" x="903.0" y="437.0">memory import indexes your</text>
+<text class="body" x="903.0" y="454.0">docs and every task note,</text>
+<text class="body" x="903.0" y="471.0">searchable months later</text>
+<rect x="495.0" y="558.0" width="290" height="104" rx="10" fill="#131a22" stroke="#2b3441" stroke-width="1.2"/>
+<text class="title" x="513.0" y="585.0">The review</text>
+<text class="body" x="513.0" y="607.0">outcomes: rework, silent</text>
+<text class="body" x="513.0" y="624.0">completions, forced work;</text>
+<text class="body" x="513.0" y="641.0">an HTML page you can send</text>
+</svg>
