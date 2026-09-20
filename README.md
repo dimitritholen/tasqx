@@ -11,7 +11,7 @@ One binary. One SQLite file on your disk. No account, no cloud.
 [![CI](https://img.shields.io/github/actions/workflow/status/dimitritholen/tasqx/ci.yml?branch=main&label=CI)](https://github.com/dimitritholen/tasqx/actions/workflows/ci.yml)
 [![License: FSL-1.1-MIT](https://img.shields.io/badge/license-FSL--1.1--MIT-blue)](LICENSE.md)
 
-[Install](#install) · [Connect your agent](#connect-your-agent) · [Documentation](https://dimitritholen.github.io/tasqx/) · [Guides](#learn-more) · [Wiki](docs/wiki/Home.md)
+[Quick start](#quick-start) · [Documentation](https://dimitritholen.github.io/tasqx/) · [Guides](#learn-more) · [Wiki](docs/wiki/Home.md)
 
 <!-- docs/img/hero.svg is drawn by hand: a map of what the organiser holds,
      one node per feature, with its own dark background so it reads the same
@@ -29,6 +29,66 @@ order, a reference section it can search, a briefing before each piece of
 work, a checklist that says what done means, and an expense sheet. All of it
 is one local file, and the same file is a task manager you use from the
 shell.
+
+## Quick start
+
+**1. Install.** macOS and Linux with Homebrew, Windows with Scoop:
+
+```console
+brew install dimitritholen/tasqx/tasqx
+```
+
+```console
+scoop bucket add tasqx https://github.com/dimitritholen/scoop-tasqx
+scoop install tasqx
+```
+
+No package manager? Linux and macOS:
+
+```console
+curl -fsSL https://raw.githubusercontent.com/dimitritholen/tasqx/main/install.sh | sh
+```
+
+Windows (the first statement lets older PowerShell negotiate TLS at all):
+
+```console
+[Net.ServicePointManager]::SecurityProtocol=[Net.SecurityProtocolType]::Tls12; irm https://raw.githubusercontent.com/dimitritholen/tasqx/main/install.ps1 | iex
+```
+
+**2. Connect your agent.** One command registers the MCP server with Claude
+Code and installs the `tasqx-workflow` and `retro` skills:
+
+```console
+tasqx setup
+```
+
+Any other MCP client takes this shape in its config:
+
+```json
+{
+  "mcpServers": {
+    "tasqx": { "command": "tasqx", "args": ["mcp", "serve", "--scope", "write"] }
+  }
+}
+```
+
+A bare `tasqx mcp serve` is read-only: the agent can search and read, and never
+sees a write tool. `--scope write` is the grant that lets it add, complete and
+remember. Every tool, and what makes it more than remote CRUD, is on the
+[AI Agents and Automation](docs/wiki/AI-Agents-and-Automation.md) page.
+
+**3. Run the loop.** Create a project, add a task, ask what to do now, complete it:
+
+```console
+tasqx init work
+tasqx add Buy milk
+tasqx next
+tasqx done 1
+```
+
+That's the whole loop, for you and for the agent alike. `tasqx manual` is the
+full guide in your terminal, and every verb answers `-h` with examples you can
+paste.
 
 ## What the organiser holds
 
@@ -149,78 +209,27 @@ weekly review says what the agent did and what it got right.
 ## For you, at the shell
 
 The organiser is a plain terminal task manager too, and a fast one: capture in
-one line, ask "what now?", finish, and every change can be taken back.
+one line, ask "what now?", finish, and every change can be taken back. With the
+project from the quick start in place:
 
 ```console
-$ tasqx add Ship the release notes due:friday +docs !high --project work
-▌ #42  Ship the release notes
-▌ added   H ▄▄▄▄ 13.5   work   due Fri   +docs
-
-$ tasqx next
-next    #42  Ship the release notes
-        H ▄▄▄▄ 13.5   work   due Fri   +docs
-        tasqx start 42  ·  tasqx why 42
-
-$ tasqx why 42
-#42  Ship the release notes
-
-  priority   H                 6.0
-  deadline   due Fri           7.5
-  age        created today     0.0
-  urgency                     13.5
+tasqx add Ship the release notes due:friday +docs !high
+tasqx next
+tasqx why <ref>
+tasqx done <ref>
 ```
 
-Urgency is recomputed on every read, so the deadline row climbs as Friday
-approaches. The scores in any capture are an illustration; the rows are the contract.
-
-- **Capture in one line:** `tasqx add Ship it due:friday +api !high`
-- **Ask "what now?"** `tasqx next` picks; `tasqx why` shows the arithmetic.
+- **Capture in one line:** project, due date, priority, tags and estimate in the same breath as the title. `add` prints the task's id, and `<ref>` is that id wherever a command wants one.
+- **Ask "what now?"** `tasqx next` picks; `tasqx why` shows the arithmetic, and urgency is recomputed on every read.
 - **See it all at once:** `tasqx dashboard` is a full-screen overview.
 - **Dates that read like speech:** `every 3 days`, `monthly on the 2nd tuesday`, and reminders move when the due date moves.
 - **Own your data:** a file on your disk, and `cancel` and `undo` take changes back.
 
-## Install
-
-macOS and Linux, with Homebrew:
-
-```console
-brew install dimitritholen/tasqx/tasqx
-```
-
-Windows, with Scoop:
-
-```console
-scoop bucket add tasqx https://github.com/dimitritholen/scoop-tasqx
-scoop install tasqx
-```
-
-No package manager? Linux and macOS:
-
-```console
-curl -fsSL https://raw.githubusercontent.com/dimitritholen/tasqx/main/install.sh | sh
-```
-
-Windows (the first statement lets older PowerShell negotiate TLS at all):
-
-```console
-[Net.ServicePointManager]::SecurityProtocol=[Net.SecurityProtocolType]::Tls12; irm https://raw.githubusercontent.com/dimitritholen/tasqx/main/install.ps1 | iex
-```
+## Install details
 
 Brew switches Tab completion on for you; anywhere else, `tasqx completions --install`
 does. Flags, checksums and what the scripts promise are in the
 [install fine print](docs/wiki/Getting-Started.md#install-fine-print).
-
-Then create a project, add a task, ask what to do now, and complete it:
-
-```console
-tasqx init work
-tasqx add Buy milk
-tasqx next
-tasqx done 1
-```
-
-That's the whole loop. `tasqx manual` is the full guide in your terminal, and
-every verb answers `-h` with examples you can paste.
 
 Prebuilt binaries are on the [Releases page](https://github.com/dimitritholen/tasqx/releases).
 Building from source needs Rust 1.95 or newer:
@@ -231,35 +240,11 @@ cd tasqx
 cargo install --path crates/tasqx-cli --force
 ```
 
-## Connect your agent
-
-One command registers the MCP server with Claude Code and installs the
-`tasqx-workflow` and `retro` skills:
-
-```console
-tasqx setup
-```
-
-Or wire the server by hand:
+To wire the MCP server into Claude Code by hand, without the skills `tasqx setup` adds:
 
 ```console
 claude mcp add --scope user tasqx -- tasqx mcp serve --scope write
 ```
-
-Any other MCP client takes the same shape:
-
-```json
-{
-  "mcpServers": {
-    "tasqx": { "command": "tasqx", "args": ["mcp", "serve", "--scope", "write"] }
-  }
-}
-```
-
-A bare `tasqx mcp serve` is read-only: the agent can search and read, and never
-sees a write tool. `--scope write` is the grant that lets it add, complete and
-remember. Every tool, and what makes it more than remote CRUD, is on the
-[AI Agents and Automation](docs/wiki/AI-Agents-and-Automation.md) page.
 
 ## Built to be trusted
 
