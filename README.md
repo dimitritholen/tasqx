@@ -13,10 +13,12 @@ One binary. One SQLite file on your disk. No account, no cloud.
 
 [Install](#install) · [Connect your agent](#connect-your-agent) · [Documentation](https://dimitritholen.github.io/tasqx/) · [Guides](#learn-more) · [Wiki](docs/wiki/Home.md)
 
-<!-- Pictures come from an invented demo store, never a real one:
-     scripts/demo-store.py builds it, and its docstring has the render lines.
-     The GIF is recorded by scripts/hero.tape (`vhs scripts/hero.tape`). -->
-![A terminal: tasqx add captures a task with project, due date, priority, tag and estimate in one line; a second task is added and made to wait on it; tasqx pick fuzzy-searches "new pricing" down to the first task and opens its card, which shows it blocks the second](docs/img/hero.gif)
+<!-- docs/img/hero.svg is drawn by hand: a map of what the organiser holds,
+     one node per feature, with its own dark background so it reads the same
+     on GitHub's light and dark themes. The captures further down come from an
+     invented demo store, never a real one: scripts/demo-store.py builds it,
+     and its docstring has the render lines. -->
+![A map of tasqx: you at the shell and your agent over MCP both use one local file; around it, the list, the order, the briefing, the expense sheet, the checklist, the reference section and the review, connected and each explained in a line](docs/img/hero.svg)
 
 </div>
 
