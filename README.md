@@ -209,16 +209,17 @@ weekly review says what the agent did and what it got right.
 ## For you, at the shell
 
 The organiser is a plain terminal task manager too, and a fast one: capture in
-one line, ask "what now?", finish, and every change can be taken back.
+one line, ask "what now?", finish, and every change can be taken back. With the
+project from the quick start in place:
 
 ```console
 tasqx add Ship the release notes due:friday +docs !high
 tasqx next
-tasqx why 42
-tasqx done 42
+tasqx why <ref>
+tasqx done <ref>
 ```
 
-- **Capture in one line:** project, due date, priority, tags and estimate in the same breath as the title.
+- **Capture in one line:** project, due date, priority, tags and estimate in the same breath as the title. `add` prints the task's id, and `<ref>` is that id wherever a command wants one.
 - **Ask "what now?"** `tasqx next` picks; `tasqx why` shows the arithmetic, and urgency is recomputed on every read.
 - **See it all at once:** `tasqx dashboard` is a full-screen overview.
 - **Dates that read like speech:** `every 3 days`, `monthly on the 2nd tuesday`, and reminders move when the due date moves.
