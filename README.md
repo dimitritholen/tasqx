@@ -56,8 +56,9 @@ so an agent only ever sees work it can start.
 
 `tasqx dep 63 62` makes one task wait on another, and a waiting task stays out
 of `next` until its prerequisite is done. Finishing a task reports what it
-unblocked: `tasqx_complete_task` returns the next work in its answer, so an
-agent moves on without asking again, and no board has cards to drag.
+unblocked: `tasqx_complete_task` names the tasks it released in its answer, so
+an agent has its candidates for the next step without re-listing the backlog,
+and no board has cards to drag.
 
 </td>
 <td>
@@ -107,8 +108,10 @@ rate limit, and the brief for #51, which waited on it, hands that ruling over.
 
 ### The checklist and the expense sheet
 
-"Done" means something. A task carries acceptance checks, each marked with
-the evidence that proved it, and completing a task names which ones passed.
+"Done" means something. A task carries acceptance checks, each of which can
+be marked with the evidence that proved it, and completing a task names which
+ones passed. A completion that leaves a check unmarked is counted as unproven
+rather than refused.
 Every completion can carry the tokens it cost. `tasqx report --outcomes` then
 asks whether finished work stayed finished: how much came back as rework, how
 far tracked time ran over the estimate, which completions nobody documented,
