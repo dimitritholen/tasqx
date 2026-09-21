@@ -373,5 +373,8 @@ fn without_ripwire_on_path_setup_prints_the_install_hint_and_exits_0() {
     std::fs::create_dir_all(&empty).unwrap();
     let (code, out, err) = run(bin(&dir).env("PATH", &empty).args(["--list"]));
     assert_eq!(code, 0, "stdout: {out}\nstderr: {err}");
-    assert!(out.contains("install ripwire and put it on PATH"), "{out}");
+    assert!(
+        out.contains("install it from https://github.com/redhat-et/ripwire and put it on PATH"),
+        "{out}"
+    );
 }

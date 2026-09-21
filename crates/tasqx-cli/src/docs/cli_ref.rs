@@ -689,6 +689,13 @@ fn method_cell(method: &str) -> String {
 }
 
 /// Plain text with backtick spans, as `cmddoc` writes it, turned into markup.
+///
+/// A bare `http(s)://` URL — D178/#795's ripwire hint names one — gets the same
+/// `<code>` treatment without asking the source to backtick-quote it: the
+/// constant is shared with `--help` and the terminal, where a literal backtick
+/// pair around a URL would be new, unwanted punctuation, and this page's own
+/// self-containment guard refuses a scheme URL that sits in prose rather than a
+/// code span.
 fn md(text: &str) -> String {
     let escaped = esc(text);
     let mut out = String::new();
@@ -698,10 +705,24 @@ fn md(text: &str) -> String {
             out.push_str(part);
             out.push_str("</code>");
         } else {
-            out.push_str(part);
+            out.push_str(&code_bare_urls(part));
         }
     }
     out
+}
+
+/// Wraps every whitespace-delimited `http://`/`https://` token in `<code>`.
+fn code_bare_urls(text: &str) -> String {
+    text.split(' ')
+        .map(|word| {
+            if word.starts_with("http://") || word.starts_with("https://") {
+                format!("<code>{word}</code>")
+            } else {
+                word.to_string()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 /// The handful of things a verb's section carries that neither `cmddoc` nor
