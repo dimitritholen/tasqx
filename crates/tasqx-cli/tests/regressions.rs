@@ -5255,6 +5255,78 @@ fn memory_import_records_the_origin_file_of_every_doc_it_lands() {
     let _ = std::fs::remove_dir_all(&repo);
 }
 
+/// #789: `memory import --refresh` is the other half of what recording an
+/// origin file was for (D180). It takes no path — the store says which files
+/// it read — re-reads the ones that changed, NAMES the ones that are gone
+/// without removing their docs, and exits 0 either way, because a refresh in
+/// a script must not fail over a file somebody moved.
+#[test]
+fn memory_import_refresh_re_reads_an_edited_file_and_names_a_deleted_one() {
+    let dir = fresh_config_dir("memory-import-refresh");
+    let repo = std::env::temp_dir().join(format!(
+        "tasqx-reg-memory-import-refresh-{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&repo);
+    std::fs::create_dir_all(repo.join("docs")).expect("create docs dir");
+    std::fs::create_dir_all(repo.join(".git")).expect("create .git dir");
+    let edited = repo.join("docs").join("edited.md");
+    let doomed = repo.join("docs").join("doomed.md");
+    let steady = repo.join("docs").join("steady.md");
+    std::fs::write(&edited, "# Edited\n\nbefore").expect("write doc");
+    std::fs::write(&doomed, "# Doomed\n\nstill here").expect("write doc");
+    std::fs::write(&steady, "# Steady\n\nunchanged").expect("write doc");
+
+    let run = |args: &[&str]| {
+        bin("memory-import-refresh", &dir)
+            .current_dir(&repo)
+            .args(args)
+            .output()
+            .expect("run tasqx")
+    };
+
+    let out = run(&["memory", "import", "docs"]);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    std::fs::write(&edited, "# Edited\n\nafter, and longer than before").expect("edit one");
+    std::fs::remove_file(&doomed).expect("delete one");
+
+    let out = run(&["memory", "import", "--refresh"]);
+    let text = String::from_utf8_lossy(&out.stdout).to_string();
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "a missing file is a report, not a failure: {text}{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        text.contains("refreshed docs/edited.md"),
+        "the edited file must be named as refreshed: {text}"
+    );
+    assert!(
+        text.contains("docs/doomed.md") && text.contains("is gone"),
+        "the deleted file must be named: {text}"
+    );
+    assert!(
+        text.contains("3 checked, 1 refreshed, 1 unchanged, 1 missing"),
+        "the summary must account for all three docs: {text}"
+    );
+
+    // The doc whose file vanished is still there, with the text it had.
+    let list = run(&["--json", "memory", "list"]);
+    let listed: serde_json::Value = serde_json::from_slice(&list.stdout).expect("json");
+    assert_eq!(
+        listed["total"], 3,
+        "nothing may have been deleted: {listed}"
+    );
+
+    let _ = std::fs::remove_dir_all(&repo);
+}
+
 /// #229 item 8: a store the engine cannot open (`TASQX_DB` pointing at an
 /// unwritable path) printed `error: cannot open store ...` at exit 1 — a bare
 /// `error:` prefix with no bracketed code, which DESIGN.md reserves for

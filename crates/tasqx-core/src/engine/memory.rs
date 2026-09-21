@@ -148,6 +148,134 @@ pub(crate) fn refuse_source_held_elsewhere(
     }
 }
 
+/// One document on its way into `docs`, as the two doors that land a file
+/// both spell it: `memory.import`'s per-entry read of a batch, and
+/// `memory.refresh`'s re-read of a file that changed under an existing doc.
+///
+/// `id` and `rev` are the CALLER's: an import looks the row up by `source`
+/// (D174) and mints a UUID when there is none, while a refresh already holds
+/// the row it re-read and must update THAT one — a doc with an origin file
+/// and no source would otherwise be inserted a second time by a lookup that
+/// found nothing.
+struct DocWrite<'a> {
+    id: &'a str,
+    /// The revision this write lands at: the row's current one plus one on a
+    /// replace, `0` on a brand-new doc (D143).
+    rev: i64,
+    title: &'a str,
+    body: &'a str,
+    source: Option<&'a str>,
+    project: Option<&'a str>,
+    origin_path: Option<&'a str>,
+    origin_mtime: Option<i64>,
+    origin_size: Option<i64>,
+    /// The method the event's `via` names, and whether the row was already
+    /// there — both things only the caller knows.
+    via: &'a str,
+    replaced: bool,
+}
+
+/// Land one document, in place when its id is already in `docs`.
+///
+/// ON CONFLICT DO UPDATE, never DELETE+INSERT (D41's own rule, learned the
+/// hard way for the annotation upsert): a DELETE does not fire `docs_fts`'s
+/// delete trigger for free, and re-doing it by hand here would be a second
+/// copy of the exact bug that rule exists to prevent. The UPDATE path fires
+/// `docs_fts_au` and keeps the index honest. `created` is deliberately absent
+/// from the SET list, so a replace keeps the ORIGINAL creation date rather
+/// than pretending the doc is new.
+///
+/// #101: `standing` is NOT in the SET list either — a re-imported directory
+/// carries no opinion about whether a doc is standing, so the flag a person
+/// set through `memory.update` survives the re-run that would otherwise
+/// silently clear it.
+///
+/// #657: `project` follows the SAME rule, one way only: a write that names NO
+/// `project` carries no opinion either, so a doc's existing scope survives a
+/// re-run the way `standing` does. A brand-new doc's row has no prior
+/// `project` to fall back to, so `?6` binds the given value (or SQL NULL,
+/// unscoped, when omitted) directly on INSERT — the same default `memory.add`
+/// gives. On a replace, `COALESCE(excluded.project, docs.project)` picks the
+/// just-bound value when the caller named one and the row's OWN prior value
+/// otherwise, in one statement: a caller who names a project has an opinion,
+/// and that opinion moves the scope on re-import — a directory re-pointed at
+/// `--project ledger` after landing unscoped is meant to land scoped, not
+/// stay stuck at its first import's answer (D168). `memory.refresh` names
+/// none, which is how a refreshed doc keeps the scope it had.
+///
+/// `rev` is in the SET list because a replace is a revision of the same
+/// document (D143): a `memory.update` still holding the pre-import
+/// `expected_rev` must conflict, not clobber the import. The caller computes
+/// it from the row it looked up inside this same IMMEDIATE transaction, so
+/// nothing can move the row between the lookup and the upsert.
+///
+/// #788/D180: the three origin columns ARE in the SET list, plainly and
+/// without a COALESCE — the opposite rule from `standing` and `project`
+/// above, because they describe THIS read of the file. A re-import that
+/// carries no origin (a caller on the JSON API, not the CLI's importer) must
+/// leave the row saying it has no origin rather than keeping a path and an
+/// mtime from an import that happened on another machine a year ago.
+fn upsert_doc(tx: &Transaction, ts: &str, d: &DocWrite<'_>) -> Result<(), ApiError> {
+    // The CLI's own importer already cuts frontmatter before it ever reaches
+    // this call (#228.4's throwaway agent-memory metadata), so `search_body`
+    // equals `body` there; it only matters for a caller on the JSON API
+    // directly, which gets `memory.add`'s same index guarantee without `body`
+    // itself being touched.
+    let search_body = crate::frontmatter::flatten(d.body).into_owned();
+    tx.execute(
+        "INSERT INTO docs \
+         (id, source, title, body, search_body, project, rev, created, modified, \
+          origin_path, origin_mtime, origin_size) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?8, ?9, ?10, ?11) \
+         ON CONFLICT(id) DO UPDATE SET \
+         source=excluded.source, title=excluded.title, body=excluded.body, \
+         search_body=excluded.search_body, \
+         project=COALESCE(excluded.project, docs.project), \
+         modified=excluded.modified, rev=excluded.rev, \
+         origin_path=excluded.origin_path, origin_mtime=excluded.origin_mtime, \
+         origin_size=excluded.origin_size",
+        params![
+            d.id,
+            d.source,
+            d.title,
+            d.body,
+            search_body,
+            d.project,
+            d.rev,
+            ts,
+            d.origin_path,
+            d.origin_mtime,
+            d.origin_size
+        ],
+    )?;
+    insert_event(
+        tx,
+        Entity::Doc,
+        d.id,
+        "memory.add",
+        &json!({
+            "title": d.title,
+            "source": d.source,
+            "project": d.project,
+            "via": d.via,
+            "replaced": d.replaced,
+            "rev": d.rev,
+        }),
+    )
+}
+
+/// A doc that names an origin file, as `memory.refresh` reads it back.
+struct OriginDoc {
+    id: String,
+    source: Option<String>,
+    rev: i64,
+    title: String,
+    body: String,
+    origin_path: String,
+    origin_mtime: Option<i64>,
+    origin_size: Option<i64>,
+}
+
 impl Engine {
     // ---- memory.add ----------------------------------------------------------
 
@@ -303,13 +431,7 @@ impl Engine {
                 ],
             )?;
             let title = req_str(dv, "title")?;
-            // The CLI's own importer already cuts frontmatter before it ever
-            // reaches this call (#228.4's throwaway agent-memory metadata),
-            // so `search_body` equals `body` there; it only matters for a
-            // caller on the JSON API directly, which gets `memory.add`'s same
-            // index guarantee without `body` itself being touched.
             let body = req_str(dv, "body")?;
-            let search_body = crate::frontmatter::flatten(&body).into_owned();
             let source = opt_str_nonempty(dv, "source")?;
             // #788/D180: where the file was and what it looked like when it
             // was read. Optional on every entry — the JSON API is reachable
@@ -343,88 +465,26 @@ impl Engine {
                 Some((id, cur_rev)) => (id, cur_rev + 1),
                 None => (crate::clock::uuid_v7().to_string(), 0),
             };
-            // ON CONFLICT DO UPDATE, never DELETE+INSERT (D41's own rule,
-            // learned the hard way for the annotation upsert): a DELETE does
-            // not fire `docs_fts`'s delete trigger for free, and re-doing it
-            // by hand here would be a second copy of the exact bug that rule
-            // exists to prevent. The UPDATE path fires `docs_fts_au` and
-            // keeps the index honest. `created` is deliberately absent from
-            // the SET list, so a source-replace keeps the ORIGINAL creation
-            // date rather than pretending the doc is new.
-            //
-            // #101: `standing` is NOT in the SET list either — a re-imported
-            // directory carries no opinion about whether a doc is standing,
-            // so the flag a person set through `memory.update` survives the
-            // re-run that would otherwise silently clear it.
-            //
-            // #657: `project` follows the SAME rule, one way only: an import
-            // that names NO `project` carries no opinion either, so a doc's
-            // existing scope survives a re-run the way `standing` does. A
-            // brand-new doc's row has no prior `project` to fall back to, so
-            // `?6` binds the given value (or SQL NULL, unscoped, when
-            // omitted) directly on INSERT — the same default `memory.add`
-            // gives. On a source-replace, `COALESCE(excluded.project,
-            // docs.project)` picks the just-bound value when the caller named
-            // one and the row's OWN prior value otherwise, in one statement:
-            // a caller who names a project has an opinion, and that opinion
-            // moves the scope on re-import — a directory re-pointed at
-            // `--project ledger` after landing unscoped is meant to land
-            // scoped, not stay stuck at its first import's answer (D168).
-            //
-            // `rev` is in the SET list because a source-replace is a revision
-            // of the same document (D143): a `memory.update` still holding
-            // the pre-import `expected_rev` must conflict, not clobber the
-            // import. The value is the looked-up row's rev + 1, computed here
-            // the way `memory_update` and `store.import` do it; the lookup
-            // and the upsert sit in one IMMEDIATE transaction
-            // (`begin_mutation`), so nothing can move the row between them.
-            //
-            // #788: the three origin columns ARE in the SET list, plainly and
-            // without a COALESCE — the opposite rule from `standing` and
-            // `project` above, because they describe THIS read of the file
-            // and nothing else. A re-import that carries no origin (a caller
-            // on the JSON API, not the CLI's importer) must leave the row
-            // saying it has no origin rather than keeping a path and an mtime
-            // from an import that happened on another machine a year ago.
-            tx.execute(
-                "INSERT INTO docs \
-                 (id, source, title, body, search_body, project, rev, created, modified, \
-                  origin_path, origin_mtime, origin_size) \
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?8, ?9, ?10, ?11) \
-                 ON CONFLICT(id) DO UPDATE SET \
-                 source=excluded.source, title=excluded.title, body=excluded.body, \
-                 search_body=excluded.search_body, \
-                 project=COALESCE(excluded.project, docs.project), \
-                 modified=excluded.modified, rev=excluded.rev, \
-                 origin_path=excluded.origin_path, origin_mtime=excluded.origin_mtime, \
-                 origin_size=excluded.origin_size",
-                params![
-                    id,
-                    source,
-                    title,
-                    body,
-                    search_body,
-                    project,
-                    rev,
-                    ts,
-                    origin_path,
-                    origin_mtime,
-                    origin_size
-                ],
-            )?;
-            insert_event(
+            // The upsert itself, its comment and its event live in
+            // `upsert_doc` — shared with `memory.refresh` (#789), which
+            // lands a re-read file through the same statement so the two
+            // doors cannot drift on what a replace keeps.
+            upsert_doc(
                 &tx,
-                Entity::Doc,
-                &id,
-                "memory.add",
-                &json!({
-                    "title": title,
-                    "source": source,
-                    "project": project,
-                    "via": "memory.import",
-                    "replaced": is_replace,
-                    "rev": rev,
-                }),
+                &ts,
+                &DocWrite {
+                    id: &id,
+                    rev,
+                    title: &title,
+                    body: &body,
+                    source: source.as_deref(),
+                    project: project.as_deref(),
+                    origin_path: origin_path.as_deref(),
+                    origin_mtime,
+                    origin_size,
+                    via: "memory.import",
+                    replaced: is_replace,
+                },
             )?;
             if is_replace {
                 replaced += 1;
@@ -441,6 +501,152 @@ impl Engine {
         tx.commit()?;
 
         Ok(json!({ "imported": out.len(), "replaced": replaced, "docs": out }))
+    }
+
+    // ---- memory.refresh ------------------------------------------------------
+
+    /// Has the file at `origin_path` changed since the doc was read off it?
+    ///
+    /// `None` when the file is gone or unreadable — the one answer that is
+    /// not about content, and the reason this is not a `bool`: a deleted file
+    /// must be REPORTED, never mistaken for a doc that needs rewriting or one
+    /// that is up to date.
+    ///
+    /// The stored `origin_mtime` and `origin_size` (D180) are the fast
+    /// filter: both matching what the filesystem says now ends the question
+    /// without opening the file, which is what lets a whole store be checked
+    /// on a turn. The byte compare is the truth. So a `touch` is not a
+    /// change: the mtime moves, the fast filter misses, the file is re-read
+    /// through [`crate::memory_doc::read_doc`] — the same reader the import
+    /// used, so frontmatter and a BOM are cut the same way — and the derived
+    /// title and body compare equal.
+    ///
+    /// A doc whose stored mtime is null (a platform that would not answer for
+    /// it) never takes the fast path: two unknowns are not a match.
+    pub fn origin_changed(
+        &self,
+        origin_path: &str,
+        origin_mtime: Option<i64>,
+        origin_size: Option<i64>,
+        title: &str,
+        body: &str,
+    ) -> Option<bool> {
+        let path = std::path::Path::new(origin_path);
+        let meta = std::fs::metadata(path).ok()?;
+        if origin_mtime.is_some()
+            && origin_mtime == crate::memory_doc::unix_seconds(&meta)
+            && origin_size == i64::try_from(meta.len()).ok()
+        {
+            return Some(false);
+        }
+        let (fresh_title, fresh_body) = crate::memory_doc::read_doc(path).ok()?;
+        Some(fresh_title != title || fresh_body != body)
+    }
+
+    /// `memory.refresh` — re-read every doc whose origin file changed, and
+    /// name the ones whose file is gone.
+    ///
+    /// Params: `dry_run` (default false) does every check and writes nothing.
+    ///
+    /// Only docs holding an `origin_path` are looked at, so a doc written by
+    /// `memory.add` — no file behind it — is never touched and never counted.
+    /// A changed file is landed through the same `upsert_doc` a re-import
+    /// uses: the doc keeps its id and creation date, bumps its `rev` (D143),
+    /// keeps its `project` and `standing`, and restates all three origin
+    /// columns from the metadata of the read that just happened (D180).
+    ///
+    /// **Nothing is ever deleted.** A file that has vanished is reported
+    /// under `missing`, with the doc left exactly as it was: the file may be
+    /// on a machine this store was copied off, or behind an unmounted
+    /// volume, and a sweep that removed knowledge for either would be a data
+    /// loss nobody asked for. Retiring the doc stays `tasqx memory rm`, a
+    /// human act.
+    pub fn memory_refresh(&self, p: &Value) -> Result<Value, ApiError> {
+        let dry_run = opt_bool(p, "dry_run")?.unwrap_or(false);
+        let ts = now();
+        let tx = self.begin_mutation()?;
+        let docs: Vec<OriginDoc> = {
+            let mut stmt = tx.prepare(
+                "SELECT id, source, rev, title, body, origin_path, origin_mtime, origin_size \
+                 FROM docs WHERE origin_path IS NOT NULL ORDER BY created, id",
+            )?;
+            let rows = stmt.query_map([], |r| {
+                Ok(OriginDoc {
+                    id: r.get(0)?,
+                    source: r.get(1)?,
+                    rev: r.get(2)?,
+                    title: r.get(3)?,
+                    body: r.get(4)?,
+                    origin_path: r.get(5)?,
+                    origin_mtime: r.get(6)?,
+                    origin_size: r.get(7)?,
+                })
+            })?;
+            rows.collect::<rusqlite::Result<Vec<_>>>()?
+        };
+
+        let checked = docs.len();
+        let mut refreshed = Vec::new();
+        let mut missing = Vec::new();
+        let mut unchanged = 0i64;
+        for d in &docs {
+            match self.origin_changed(
+                &d.origin_path,
+                d.origin_mtime,
+                d.origin_size,
+                &d.title,
+                &d.body,
+            ) {
+                None => missing.push(json!({
+                    "id": d.id,
+                    "source": d.source,
+                    "origin_path": d.origin_path,
+                })),
+                Some(false) => unchanged += 1,
+                Some(true) => {
+                    let path = std::path::Path::new(&d.origin_path);
+                    let (title, body) = crate::memory_doc::read_doc(path)?;
+                    // Read AFTER the file, not before: the numbers have to
+                    // describe the bytes just stored, or the next sweep
+                    // compares a fresh doc against a stale stamp and
+                    // refreshes it again forever.
+                    let meta = std::fs::metadata(path).ok();
+                    if !dry_run {
+                        upsert_doc(
+                            &tx,
+                            &ts,
+                            &DocWrite {
+                                id: &d.id,
+                                rev: d.rev + 1,
+                                title: &title,
+                                body: &body,
+                                source: d.source.as_deref(),
+                                // No opinion: the doc keeps the scope it has.
+                                project: None,
+                                origin_path: Some(&d.origin_path),
+                                origin_mtime: meta
+                                    .as_ref()
+                                    .and_then(crate::memory_doc::unix_seconds),
+                                origin_size: meta
+                                    .as_ref()
+                                    .and_then(|m| i64::try_from(m.len()).ok()),
+                                via: "memory.refresh",
+                                replaced: true,
+                            },
+                        )?;
+                    }
+                    refreshed.push(json!({ "id": d.id, "source": d.source }));
+                }
+            }
+        }
+        tx.commit()?;
+
+        Ok(json!({
+            "checked": checked,
+            "refreshed": refreshed,
+            "missing": missing,
+            "unchanged": unchanged,
+        }))
     }
 
     // ---- memory.search -------------------------------------------------------

@@ -1182,6 +1182,13 @@ const PARAM_DOCS: &[(&str, &str, &str, &str, &str)] = &[
         "Scopes every doc in the batch (#657) — one value for the whole import, not per-doc. Omitted, a new doc lands global and an existing one (a re-import) keeps whatever scope it already had, like `standing`; named, it MOVES an existing doc's scope on re-import.",
     ),
     (
+        "memory.refresh",
+        "dry_run",
+        "boolean",
+        "false",
+        "Check every doc and report, without writing anything. The same answer the real sweep would give — which docs would be re-read, which files are gone — so it can be looked at before a store full of documents is rewritten.",
+    ),
+    (
         "reminder.fire",
         "ref",
         "integer or string",
@@ -1470,6 +1477,13 @@ const EXAMPLES: &[Example] = &[
         fixture: "api-memory-import",
         response: "",
         why: "",
+    },
+    Example {
+        method: "memory.refresh",
+        request: r#"{"tasqx":"1","id":"mf1","method":"memory.refresh","params":{"dry_run":true}}"#,
+        fixture: "",
+        response: r#"{"id":"mf1","ok":true,"result":{"checked":3,"missing":[{"id":"091eb5ff-05d5-4cb2-ba2f-0afdc77f7935","origin_path":"/home/you/repo/docs/retired.md","source":"docs/retired.md"}],"refreshed":[{"id":"eb864f1e-e68a-4d96-af89-597bd0d2d52e","source":"docs/release.md"}],"unchanged":1},"tasqx":"1"}"#,
+        why: "the answer is whatever the files under the store's own imports look like right now, so a captured one would describe the capturing machine's disk rather than the method.",
     },
     Example {
         method: "memory.list",

@@ -255,6 +255,9 @@ pub const PARAMS: &[(&str, &[&str], bool)] = &[
     // #657: `project` scopes the whole batch, the same additive shape
     // `memory.add`'s own `project` already has.
     ("memory.import", &["docs", "project"], false),
+    // #789: the sweep takes no scope and no path — it re-reads what the store
+    // already says it imported (D180). `dry_run` is the only knob.
+    ("memory.refresh", &["dry_run"], false),
     (
         "memory.list",
         &["limit", "offset", "project", "standing"],
@@ -411,6 +414,7 @@ pub fn dispatch(engine: &Engine, method: &str, params: &Value) -> Result<Value, 
         "memory.get" => engine.memory_get(params),
         "memory.remove" => engine.memory_remove(params),
         "memory.import" => engine.memory_import(params),
+        "memory.refresh" => engine.memory_refresh(params),
         "memory.list" => engine.memory_list(params),
         "memory.update" => engine.memory_update(params),
         "report.summary" => engine.report_summary(params),

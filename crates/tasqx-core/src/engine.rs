@@ -1778,6 +1778,7 @@ mod tests {
             "memory_add",
             "memory_remove",
             "memory_import",
+            "memory_refresh",
             "store_import",
             "reminder_fire",
             "token_add",

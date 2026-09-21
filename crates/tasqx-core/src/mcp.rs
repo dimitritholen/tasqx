@@ -446,6 +446,13 @@ const UNEXPOSED_METHODS: &[(&str, &str)] = &[
         "it takes a batch of documents read off a filesystem, and the filesystem the CLI          reads is not the one an MCP client is on. `memory.add` is the per-document tool          that does reach across the wire.",
     ),
     (
+        "memory.refresh",
+        "the sweep re-reads the files `memory.import` recorded on THIS machine (D180), and the \
+         filesystem an MCP client is on is not that one — `memory.import`'s own reason, one \
+         method over. Keeping a server's own docs fresh is the server's job, reached by \
+         calling the engine, not an agent's to trigger across the wire.",
+    ),
+    (
         "otlp.status",
         "an operator diagnostic for a machine-local, opt-in receiver (#18) — is telemetry \
          reaching THIS daemon on THIS machine — not a fact about any task an agent is \

@@ -1653,6 +1653,33 @@ fn every_handler_that_opens_a_mutation_also_appends_an_event() {
     // watchers could be told anything. Every other mutation here changes a task.
     const EVENTLESS_BY_DESIGN: [&str; 1] = ["otlp_ingest"];
 
+    // Two handlers append their event one hop down, in the writer they share:
+    // `memory_import` and `memory_refresh` both land a doc through
+    // `upsert_doc` (#789), which is where the `memory.add` event is written.
+    // The helper is NAMED rather than the rule loosened, and the loop below
+    // this one checks that it really does append an event — so delegation
+    // cannot become the hiding place this guard exists to close.
+    const EVENT_VIA_HELPER: [&str; 1] = ["upsert_doc("];
+    for helper in EVENT_VIA_HELPER {
+        let decl = format!("\nfn {}(", helper.trim_end_matches('('));
+        let body = SOURCES
+            .iter()
+            .find_map(|(_, source)| {
+                let start = source.find(&decl)?;
+                source[start..].split("\n}").next().map(str::to_string)
+            })
+            .unwrap_or_else(|| {
+                panic!(
+                    "`{helper}` is named as a handler's event door, and the \
+                 engine sources hold no such free function"
+                )
+            });
+        assert!(
+            body.contains("insert_event("),
+            "`{helper}` is named as a handler's event door and appends no event itself"
+        );
+    }
+
     let mut mutating = 0;
     for (file, source) in SOURCES {
         // engine.rs's own unit tests run a sibling scan and mention
@@ -1673,7 +1700,7 @@ fn every_handler_that_opens_a_mutation_also_appends_an_event() {
                 continue;
             }
             assert!(
-                body.contains("insert_event("),
+                body.contains("insert_event(") || EVENT_VIA_HELPER.iter().any(|h| body.contains(h)),
                 "{file}: `{name}` opens a mutation transaction but appends no event — \
                  the write would land while every watcher (daemon push, `tasqx watch`, \
                  the audit log) is told nothing"
@@ -1695,7 +1722,7 @@ fn every_handler_that_opens_a_mutation_also_appends_an_event() {
     // real count moves — a floor that drifts below the truth is a guard that
     // has stopped guarding while still reporting green.
     assert!(
-        mutating >= 25,
+        mutating >= 26,
         "the scan found only {mutating} mutating handlers — it has stopped matching"
     );
 }

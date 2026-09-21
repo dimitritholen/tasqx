@@ -831,9 +831,9 @@ pub const COMMAND_REF: &[CmdDoc] = &[
         // method" on the API reference under the one method whose documented
         // use is a command line (#647) — and a seventh suffix makes the
         // slash-joined token unbreakable past a 40-column manual page.
-        method: "memory.search + get/add/remove/list/update + memory.import",
+        method: "memory.search + get/add/remove/list/update + memory.import + memory.refresh",
         summary: "Store and search knowledge: docs, patterns, and your task annotations (D41).",
-        usage: "tasqx memory <add <title> <body> [--source s] [--project p] [--standing]|search <words…> [--limit n] [--scope s] [--raw]|list [--limit n] [--offset n] [--project p] [--standing]|show <id>|update <id> [--title t] [--body b] [--source s] [--project p] [--standing true|false] [--expected-rev n]|rm <id>|import <path> [--project p]>",
+        usage: "tasqx memory <add <title> <body> [--source s] [--project p] [--standing]|search <words…> [--limit n] [--scope s] [--raw]|list [--limit n] [--offset n] [--project p] [--standing]|show <id>|update <id> [--title t] [--body b] [--source s] [--project p] [--standing true|false] [--expected-rev n]|rm <id>|import <path> [--project p]|import --refresh>",
         examples: &[
             ex("tasqx memory add \"Deploy runbook\" \"deploys go through the blue-green pipeline\""),
             ex("tasqx memory search blue-green"),
@@ -851,6 +851,10 @@ pub const COMMAND_REF: &[CmdDoc] = &[
                 "scopes every doc in the batch; a re-import naming a different project moves it (#657)",
             ),
             ex_norun(
+                "tasqx memory import --refresh",
+                "re-reads every imported doc whose file changed; takes no path",
+            ),
+            ex_norun(
                 "tasqx memory update 019f8422-7b3e-7c41-a2d9-6f1b0e5c8a12 --body \"corrected text\"",
                 "in-place correction; add/remove leave the stale doc searchable or lose it for good",
             ),
@@ -865,6 +869,7 @@ pub const COMMAND_REF: &[CmdDoc] = &[
             "list browses every doc without a query — the enumeration search can't do without one — newest-modified first, paged the same way as `tasqx list`.",
             "update replaces title/body/source/project in place, guarded by the same optimistic-concurrency rev `tasqx modify` uses. rm is permanent; update is the correction path that keeps the id and doesn't pollute search with a stale duplicate.",
             "Import is one transaction: a bad file imports nothing, and re-importing a directory replaces docs from the same source instead of duplicating them. --project scopes the whole batch; omitted, an existing doc keeps whatever scope it already had (like --standing), a new one stays global, and naming a different project on a re-import moves the doc's scope there.",
+            "`import --refresh` takes no path: it re-reads every doc that recorded an origin file (D180) whose file has changed since, keeping each doc's id, scope and standing flag and bumping its rev; a file that only got a newer timestamp counts as unchanged, because the bytes are compared. A doc whose file can no longer be read is named and kept, never deleted — the file may be on another machine or an unmounted volume — and the command still exits 0.",
             "A file's stored source is its path relative to the git toplevel above it, or, outside a git work tree, relative to the current directory — so docs/, ./docs/ and its absolute path are one document per file from any starting directory or machine (D179); an older spelling already in memory is named in a note rather than removed.",
             "An MCP agent reaches the same store: tasqx_search_memory works even read-only, so agents can consult knowledge while executing tasks.",
             "A standing doc (`--standing`) is a ruling meant for every session of its scope — a correction given once, sent to MCP clients at session start — and `list --standing` shows them; more than 15 in one scope earns a hint to merge or retract (D156).",
