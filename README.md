@@ -1,6 +1,6 @@
 <div align="center">
 
-# tasqx
+<img src="docs/brand/tasqx-wordmark.svg" alt="tasqx" width="440">
 
 **The organiser for your AI.**
 
