@@ -2214,8 +2214,10 @@ mod tests {
         std::fs::write(dir.join("lower.md"), "# Lower doc\n\nbody").unwrap();
         std::fs::write(dir.join("UPPER.MD"), "# Upper doc\n\nbody").unwrap();
 
-        let docs = memory_docs_from_path(dir.to_str().unwrap()).expect("both files import");
+        let (docs, notes) =
+            memory_docs_from_path(dir.to_str().unwrap()).expect("both files import");
         assert_eq!(docs.len(), 2, "UPPER.MD must not be skipped");
+        assert!(notes.is_empty(), "distinct files are not aliases");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

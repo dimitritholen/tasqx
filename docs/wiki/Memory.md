@@ -105,7 +105,10 @@ tasqx memory import docs/adr
   any directory and any machine, is one document per file, not several. An
   import that finds a doc already holding an older spelling of the same file
   name never removes it, but prints a `note:` line naming it so it can be
-  retired by hand.
+  retired by hand. A symlink pointing at another file in the same import
+  collapses onto it too — same `source` once resolved — so only the real file
+  becomes a document, and the alias is named in a `note:` line instead of
+  refusing the batch.
 
 ## tasqx memory rm
 
