@@ -1226,7 +1226,7 @@ pub(crate) fn run_memory_import(
     // before a single write, then one `memory.import` lands the batch in one
     // transaction with replace-by-source semantics — a failure imports
     // nothing, and a re-run replaces instead of duplicating.
-    let docs = memory_docs_from_path(path)?;
+    let (docs, alias_notes) = memory_docs_from_path(path)?;
     let batch_sources: Vec<String> = docs
         .iter()
         .filter_map(|d| d["source"].as_str().map(String::from))
@@ -1251,6 +1251,12 @@ pub(crate) fn run_memory_import(
     } else {
         format!("Imported {imported} doc(s) into memory\n")
     };
+    // #797: a symlink alias `memory_docs_from_path` collapsed onto the file it
+    // points at (D179) — named so a caller understands why the directory held
+    // more `.md` names than docs landed.
+    for note in &alias_notes {
+        text.push_str(&render::note_line(ctx, note));
+    }
 
     // #784: `import_source` moved what this batch stores in `source` to the
     // git-toplevel-relative spelling (D174 extends D179). A doc already
@@ -1259,26 +1265,63 @@ pub(crate) fn run_memory_import(
     // the one this batch just replaced — named here so a caller can retire it
     // by hand. D174's own migration already refuses to delete a doc on a
     // caller's behalf, so this does the same: it lists, nothing more.
-    let superseded = find_superseded_sources(be, &batch_sources)?;
-    if !superseded.is_empty() {
-        for s in &superseded {
-            text.push_str(&render::note_line(
-                ctx,
-                &format!(
-                    "{} looks like an older spelling of {}; remove it with `tasqx memory rm {}` \
-                     if so",
-                    s.source,
-                    s.matches.join(" or "),
-                    s.id
-                ),
-            ));
-        }
-        result["superseded"] = json!(superseded
-            .iter()
-            .map(|s| json!({ "id": s.id, "source": s.source, "matches": s.matches }))
-            .collect::<Vec<_>>());
+    //
+    // #797: the scan is best-effort. It runs AFTER `memory.import` already
+    // committed, so a failing `memory.list` must not turn a successful import
+    // into a failed command — `superseded_report` turns the `Err` into one
+    // `note:` line instead of a `?`.
+    let (superseded_text, superseded_json) =
+        superseded_report(ctx, find_superseded_sources(be, &batch_sources));
+    text.push_str(&superseded_text);
+    if let Some(v) = superseded_json {
+        result["superseded"] = v;
     }
     Ok((result, text))
+}
+
+/// Turns `find_superseded_sources`'s outcome into what `run_memory_import`
+/// prints and stores: on `Ok`, one `note:` line per candidate plus the
+/// `superseded` JSON array; on `Err`, one `note:` line saying the check could
+/// not run, and no `superseded` key. Split out from `run_memory_import` so the
+/// best-effort behaviour is a unit test away from needing a `memory.list` call
+/// that actually fails, which nothing in the CLI's own test harness can force.
+fn superseded_report(
+    ctx: &Ctx,
+    found: Result<Vec<SupersededSource>, tasqx_core::ApiError>,
+) -> (String, Option<Value>) {
+    match found {
+        Ok(superseded) => {
+            let mut text = String::new();
+            for s in &superseded {
+                text.push_str(&render::note_line(
+                    ctx,
+                    &format!(
+                        "{} looks like an older spelling of {}; remove it with `tasqx memory rm \
+                         {}` if so",
+                        s.source,
+                        s.matches.join(" or "),
+                        s.id
+                    ),
+                ));
+            }
+            let json = (!superseded.is_empty()).then(|| {
+                json!(superseded
+                    .iter()
+                    .map(|s| json!({ "id": s.id, "source": s.source, "matches": s.matches }))
+                    .collect::<Vec<_>>())
+            });
+            (text, json)
+        }
+        Err(e) => (
+            render::note_line(
+                ctx,
+                &format!(
+                    "the older-spelling check could not run ({e}); the import itself succeeded"
+                ),
+            ),
+            None,
+        ),
+    }
 }
 
 /// One old-spelling candidate `run_memory_import` found: a doc whose
@@ -1342,9 +1385,22 @@ fn find_superseded_sources(
 }
 
 /// Read `path` (a file, or a directory's direct `*.md` children) into
-/// `memory.import` doc objects. Pure I/O — no store access — so the whole
-/// failure surface of an import is exhausted before anything is written.
-pub(crate) fn memory_docs_from_path(path: &str) -> Result<Vec<Value>, tasqx_core::ApiError> {
+/// `memory.import` doc objects, plus one `note:`-ready message per symlink
+/// alias skipped along the way.
+///
+/// `import_source` canonicalises (D179), so a directory holding `a.md` and a
+/// symlink `b.md -> a.md` computes the SAME `source` for both — and
+/// `memory.import` refuses a batch with a duplicated source outright (D174).
+/// Rather than surface that refusal, the alias is dropped here before the
+/// batch is built: the first file in the directory's sorted order to reach a
+/// given `source` wins, and every later file computing the same `source` is
+/// named in a returned message instead of a doc.
+///
+/// Pure I/O — no store access — so the whole failure surface of an import is
+/// exhausted before anything is written.
+pub(crate) fn memory_docs_from_path(
+    path: &str,
+) -> Result<(Vec<Value>, Vec<String>), tasqx_core::ApiError> {
     let meta = std::fs::metadata(path)
         .map_err(|e| tasqx_core::ApiError::bad_request(format!("cannot read {path}: {e}")))?;
     let files: Vec<std::path::PathBuf> = if meta.is_dir() {
@@ -1374,16 +1430,46 @@ pub(crate) fn memory_docs_from_path(path: &str) -> Result<Vec<Value>, tasqx_core
         vec![std::path::PathBuf::from(path)]
     };
 
+    // Compute every source before reading a single body, so a later file
+    // computing the same source as an earlier one (a symlink alias) is caught
+    // — and skipped — before its content is read at all. `files` is already
+    // sorted, so "first to reach a source" is the directory's sorted order.
+    let mut winners: Vec<(&std::path::Path, String)> = Vec::new();
+    let mut aliases: std::collections::BTreeMap<String, Vec<&std::path::Path>> =
+        std::collections::BTreeMap::new();
+    for file in &files {
+        let source = import_source(file);
+        if winners.iter().any(|(_, s)| s == &source) {
+            aliases.entry(source).or_default().push(file);
+        } else {
+            winners.push((file, source));
+        }
+    }
+    let notes: Vec<String> = aliases
+        .into_iter()
+        .map(|(source, extra)| {
+            let via = extra
+                .iter()
+                .map(|p| p.display().to_string())
+                .collect::<Vec<_>>()
+                .join(", ");
+            format!(
+                "{} symlink alias(es) skipped: {source} also reached via {via}",
+                extra.len()
+            )
+        })
+        .collect();
+
     // BOM strip, frontmatter cut and title derivation live in
     // `tasqx_core::memory_doc::read_doc` (#787) — the engine needs the same
     // file-to-`(title, body)` reader for its own refresh sweep (#789) and
     // stale-flag check (#790), including under the MCP server.
     let mut docs = Vec::new();
-    for file in &files {
+    for (file, source) in &winners {
         let (title, body) = tasqx_core::memory_doc::read_doc(file)?;
-        docs.push(json!({ "title": title, "body": body, "source": import_source(file) }));
+        docs.push(json!({ "title": title, "body": body, "source": source }));
     }
-    Ok(docs)
+    Ok((docs, notes))
 }
 
 /// The `source` `memory.import` stores for `file` — a doc's identity (D174),
@@ -1411,7 +1497,7 @@ fn import_source(file: &std::path::Path) -> String {
             return slash_joined(rel);
         }
     }
-    canon.to_string_lossy().into_owned()
+    slash_joined(&canon)
 }
 
 /// The git toplevel above `file`: the nearest ancestor directory (starting at
@@ -1426,13 +1512,11 @@ fn git_toplevel(file: &std::path::Path) -> Option<std::path::PathBuf> {
     }
 }
 
-/// `rel`'s components joined with `/`, so a source string is the same text on
-/// Windows and on Unix.
+/// `rel` spelled with `/`, so a source string is the same text on Windows and
+/// on Unix — the one line all three `import_source` branches share, the
+/// absolute fallback included (#797).
 fn slash_joined(rel: &std::path::Path) -> String {
-    rel.components()
-        .map(|c| c.as_os_str().to_string_lossy())
-        .collect::<Vec<_>>()
-        .join("/")
+    rel.to_string_lossy().replace('\\', "/")
 }
 
 pub(crate) fn run_export(
@@ -1781,4 +1865,78 @@ mod import_source_tests {
     // path while it holds. `memory_import_source_outside_a_git_tree_is_relative_to_cwd`
     // in `tests/regressions.rs` proves the same case through a subprocess,
     // which owns its cwd exclusively.
+
+    /// The THIRD branch — neither a git work tree nor under the cwd — is
+    /// exercised without touching the process cwd: `temp_dir` already lives
+    /// outside this crate's checkout. #797's review shrink routed this
+    /// fallback through the same `slash_joined` the other two branches use;
+    /// this is the meaningful half of that on a platform where `\` and `/`
+    /// actually differ (Windows CI), asserting the exact string rather than
+    /// only `!contains('\\')`, which unix would pass trivially either way.
+    #[test]
+    fn import_source_fallback_is_slash_normalised() {
+        let outside = temp_dir("fallback");
+        std::fs::create_dir_all(&outside).unwrap();
+        let file = outside.join("c.md");
+        std::fs::write(&file, "# C").unwrap();
+
+        let canon = std::fs::canonicalize(&file).unwrap();
+        let expected = canon.to_string_lossy().replace('\\', "/");
+        assert_eq!(import_source(&file), expected);
+        assert!(!import_source(&file).contains('\\'));
+
+        let _ = std::fs::remove_dir_all(&outside);
+    }
+}
+
+#[cfg(test)]
+mod superseded_report_tests {
+    use super::{superseded_report, SupersededSource};
+    use crate::theme::{default_theme, Caps, Ctx};
+
+    fn ctx() -> Ctx {
+        Ctx::new(default_theme(), Caps::PLAIN)
+    }
+
+    /// The shape `run_memory_import` builds from a successful scan: a
+    /// `note:` line per candidate, and the `superseded` JSON key set.
+    #[test]
+    fn ok_with_candidates_notes_and_reports_them() {
+        let found = Ok(vec![SupersededSource {
+            id: "3f2".to_string(),
+            source: "./docs/a.md".to_string(),
+            matches: vec!["docs/a.md".to_string()],
+        }]);
+
+        let (text, json) = superseded_report(&ctx(), found);
+
+        assert!(text.contains("./docs/a.md"));
+        assert!(text.contains("docs/a.md"));
+        assert!(text.contains("tasqx memory rm 3f2"));
+        assert_eq!(json.unwrap()[0]["id"], "3f2");
+    }
+
+    /// No candidates: no note, no key — `run_memory_import` must not print an
+    /// empty line or set `superseded` to `[]`.
+    #[test]
+    fn ok_with_no_candidates_is_silent() {
+        let (text, json) = superseded_report(&ctx(), Ok(Vec::new()));
+
+        assert!(text.is_empty());
+        assert!(json.is_none());
+    }
+
+    /// A failing scan (an unreachable backend after `memory.import` already
+    /// committed) must not fail the command: one `note:` line, no
+    /// `superseded` key, and the import's own result stands.
+    #[test]
+    fn err_becomes_one_note_and_no_superseded_key() {
+        let found = Err(tasqx_core::ApiError::internal("store closed"));
+
+        let (text, json) = superseded_report(&ctx(), found);
+
+        assert!(text.contains("could not run"));
+        assert!(text.contains("store closed"));
+        assert!(json.is_none());
+    }
 }

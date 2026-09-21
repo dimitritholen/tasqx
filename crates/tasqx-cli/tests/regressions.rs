@@ -5136,6 +5136,58 @@ fn memory_import_notes_an_older_spelling_of_the_same_file_without_removing_it() 
     let _ = std::fs::remove_dir_all(&repo);
 }
 
+/// #797: `import_source` canonicalises (D179), so a directory holding a real
+/// file and a symlink pointing at it computes the SAME `source` for both —
+/// and `memory.import` refuses a batch with a duplicated source outright
+/// (D174). `memory_docs_from_path` dedupes before the batch is built, so the
+/// import still succeeds, with one doc under the real file's spelling.
+#[test]
+#[cfg(unix)]
+fn memory_import_collapses_a_symlink_alias_to_one_doc() {
+    let dir = fresh_config_dir("memory-import-symlink-alias");
+    let repo = std::env::temp_dir().join(format!(
+        "tasqx-reg-memory-import-symlink-alias-{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&repo);
+    std::fs::create_dir_all(repo.join("docs")).expect("create docs dir");
+    std::fs::create_dir_all(repo.join(".git")).expect("create .git dir");
+    std::fs::write(repo.join("docs").join("a.md"), "# A\n\nbody").expect("write doc");
+    std::os::unix::fs::symlink(
+        repo.join("docs").join("a.md"),
+        repo.join("docs").join("alias.md"),
+    )
+    .expect("create symlink");
+
+    let run = |args: &[&str]| {
+        bin("memory-import-symlink-alias", &dir)
+            .current_dir(&repo)
+            .args(args)
+            .output()
+            .expect("run tasqx")
+    };
+
+    let out = run(&["--json", "memory", "import", "docs"]);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).expect("json");
+    assert_eq!(
+        v["imported"], 1,
+        "the alias must not count as a second doc: {v}"
+    );
+
+    let list = run(&["--json", "memory", "list"]);
+    assert!(list.status.success());
+    let list_v: serde_json::Value = serde_json::from_slice(&list.stdout).expect("json");
+    assert_eq!(list_v["count"], 1, "{list_v}");
+    assert_eq!(list_v["docs"][0]["source"], "docs/a.md");
+
+    let _ = std::fs::remove_dir_all(&repo);
+}
+
 /// #229 item 8: a store the engine cannot open (`TASQX_DB` pointing at an
 /// unwritable path) printed `error: cannot open store ...` at exit 1 — a bare
 /// `error:` prefix with no bracketed code, which DESIGN.md reserves for
