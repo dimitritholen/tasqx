@@ -1096,7 +1096,9 @@ pub(crate) fn run_memory(be: &mut Backend, ctx: &Ctx, action: &MemoryAction) -> 
             let text = format!("Removed {}\n", render::san(id));
             Ok((result, text))
         }
-        MemoryAction::Import { path, project } => run_memory_import(be, path, project.as_deref()),
+        MemoryAction::Import { path, project } => {
+            run_memory_import(be, ctx, path, project.as_deref())
+        }
         MemoryAction::List {
             limit,
             offset,
@@ -1214,17 +1216,26 @@ pub(crate) fn run_tokens(be: &mut Backend, ctx: &Ctx, action: &TokensAction) -> 
 /// One doc per file. A directory imports its direct `*.md` children; finding
 /// none is an error, not `Imported 0` at exit 0 — the same never-say-nothing
 /// rule `import` learned for truncated task files.
-pub(crate) fn run_memory_import(be: &mut Backend, path: &str, project: Option<&str>) -> CmdOutcome {
+pub(crate) fn run_memory_import(
+    be: &mut Backend,
+    ctx: &Ctx,
+    path: &str,
+    project: Option<&str>,
+) -> CmdOutcome {
     // Two-phase (review finding): ALL file I/O and title derivation happen
     // before a single write, then one `memory.import` lands the batch in one
     // transaction with replace-by-source semantics — a failure imports
     // nothing, and a re-run replaces instead of duplicating.
     let docs = memory_docs_from_path(path)?;
+    let batch_sources: Vec<String> = docs
+        .iter()
+        .filter_map(|d| d["source"].as_str().map(String::from))
+        .collect();
     let mut params = json!({ "docs": docs });
     if let Some(p) = project {
         params["project"] = json!(p);
     }
-    let result = be.call("memory.import", &params)?;
+    let mut result = be.call("memory.import", &params)?;
     let imported = result["imported"].as_u64().unwrap_or(0);
     // #178: a re-run that replaces a doc sharing its `source` used to print
     // this identical line whether it created 3 docs or silently overwrote 3
@@ -1232,7 +1243,7 @@ pub(crate) fn run_memory_import(be: &mut Backend, path: &str, project: Option<&s
     // who thought to try. `replaced` is counted by the engine either way, so
     // rendering it here is the one thing on the write side that was missing.
     let replaced = result["replaced"].as_u64().unwrap_or(0);
-    let text = if replaced > 0 {
+    let mut text = if replaced > 0 {
         format!(
             "Imported {imported} doc(s) into memory ({replaced} replaced; the previous text is \
              not recoverable)\n"
@@ -1240,7 +1251,94 @@ pub(crate) fn run_memory_import(be: &mut Backend, path: &str, project: Option<&s
     } else {
         format!("Imported {imported} doc(s) into memory\n")
     };
+
+    // #784: `import_source` moved what this batch stores in `source` to the
+    // git-toplevel-relative spelling (D174 extends D178). A doc already
+    // holding an older spelling of the SAME file (`./docs/a.md`,
+    // `/abs/.../docs/a.md`) is now a separate, stale-looking doc rather than
+    // the one this batch just replaced — named here so a caller can retire it
+    // by hand. D174's own migration already refuses to delete a doc on a
+    // caller's behalf, so this does the same: it lists, nothing more.
+    let superseded = find_superseded_sources(be, &batch_sources)?;
+    if !superseded.is_empty() {
+        for s in &superseded {
+            text.push_str(&render::note_line(
+                ctx,
+                &format!(
+                    "{} looks like an older spelling of {}; remove it with `tasqx memory rm {}` \
+                     if so",
+                    s.source,
+                    s.matches.join(" or "),
+                    s.id
+                ),
+            ));
+        }
+        result["superseded"] = json!(superseded
+            .iter()
+            .map(|s| json!({ "id": s.id, "source": s.source, "matches": s.matches }))
+            .collect::<Vec<_>>());
+    }
     Ok((result, text))
+}
+
+/// One old-spelling candidate `run_memory_import` found: a doc whose
+/// `source` this batch did not write, but whose path is a `/`-suffix match
+/// of a source the batch DID write (or vice versa) — the shape an old
+/// `docs/`-relative or absolute spelling of the same file takes now that
+/// D174/#784 moved `source` to the git-toplevel-relative form.
+struct SupersededSource {
+    id: String,
+    source: String,
+    matches: Vec<String>,
+}
+
+/// True when `a` and `b` (both `/`-normalised) look like two spellings of the
+/// same file: one ends with `/` + the other, or they are equal outright. A
+/// bare file-name compare would flag `guides/a.md` as an older spelling of
+/// `docs/a.md`; a suffix compare on the WHOLE remaining path does not.
+fn is_path_suffix_match(a: &str, b: &str) -> bool {
+    let a = a.replace('\\', "/");
+    let b = b.replace('\\', "/");
+    a == b || a.ends_with(&format!("/{b}")) || b.ends_with(&format!("/{a}"))
+}
+
+/// Docs whose `source` looks like an older spelling of something this batch
+/// just imported: not itself one of `batch_sources`, but a path-suffix match
+/// of one. One `memory.list` call — no `limit`, which is that method's own
+/// spelling for "everything" — is the only cheap way to find a doc whose
+/// source might be anywhere in the store, so this is a single full scan
+/// rather than a page loop.
+fn find_superseded_sources(
+    be: &mut Backend,
+    batch_sources: &[String],
+) -> Result<Vec<SupersededSource>, tasqx_core::ApiError> {
+    if batch_sources.is_empty() {
+        return Ok(Vec::new());
+    }
+    let result = be.call("memory.list", &json!({}))?;
+    let docs = result["docs"].as_array().cloned().unwrap_or_default();
+    let mut out = Vec::new();
+    for doc in docs {
+        let Some(source) = doc["source"].as_str() else {
+            continue;
+        };
+        if source.is_empty() || batch_sources.iter().any(|b| b == source) {
+            continue;
+        }
+        let matches: Vec<String> = batch_sources
+            .iter()
+            .filter(|b| is_path_suffix_match(source, b))
+            .cloned()
+            .collect();
+        if !matches.is_empty() {
+            out.push(SupersededSource {
+                id: doc["id"].as_str().unwrap_or_default().to_string(),
+                source: source.to_string(),
+                matches,
+            });
+        }
+    }
+    Ok(out)
 }
 
 /// Read `path` (a file, or a directory's direct `*.md` children) into
@@ -1283,9 +1381,58 @@ pub(crate) fn memory_docs_from_path(path: &str) -> Result<Vec<Value>, tasqx_core
     let mut docs = Vec::new();
     for file in &files {
         let (title, body) = tasqx_core::memory_doc::read_doc(file)?;
-        docs.push(json!({ "title": title, "body": body, "source": file.display().to_string() }));
+        docs.push(json!({ "title": title, "body": body, "source": import_source(file) }));
     }
     Ok(docs)
+}
+
+/// The `source` `memory.import` stores for `file` — a doc's identity (D174),
+/// so it has to read the same on every machine and from every starting
+/// directory. Three cases, in order:
+/// 1. `file` is inside a git work tree (found by walking up from its
+///    canonicalised directory for a `.git` entry — a worktree's is a FILE,
+///    not a directory, so either counts): the path relative to that
+///    toplevel.
+/// 2. No `.git` above it, but `file` is under the current directory: the
+///    path relative to the canonicalised cwd.
+/// 3. Neither (an `../elsewhere` import): the canonicalised absolute path.
+///
+/// Always `/`-joined, even on Windows, so the same folder imported from
+/// either platform names the same doc (task #784).
+fn import_source(file: &std::path::Path) -> String {
+    let canon = std::fs::canonicalize(file).unwrap_or_else(|_| file.to_path_buf());
+    if let Some(toplevel) = git_toplevel(&canon) {
+        if let Ok(rel) = canon.strip_prefix(&toplevel) {
+            return slash_joined(rel);
+        }
+    }
+    if let Ok(cwd) = std::env::current_dir().and_then(std::fs::canonicalize) {
+        if let Ok(rel) = canon.strip_prefix(&cwd) {
+            return slash_joined(rel);
+        }
+    }
+    canon.to_string_lossy().into_owned()
+}
+
+/// The git toplevel above `file`: the nearest ancestor directory (starting at
+/// `file`'s own parent) that carries a `.git` entry, file or directory.
+fn git_toplevel(file: &std::path::Path) -> Option<std::path::PathBuf> {
+    let mut dir = file.parent()?;
+    loop {
+        if dir.join(".git").exists() {
+            return Some(dir.to_path_buf());
+        }
+        dir = dir.parent()?;
+    }
+}
+
+/// `rel`'s components joined with `/`, so a source string is the same text on
+/// Windows and on Unix.
+fn slash_joined(rel: &std::path::Path) -> String {
+    rel.components()
+        .map(|c| c.as_os_str().to_string_lossy())
+        .collect::<Vec<_>>()
+        .join("/")
 }
 
 pub(crate) fn run_export(
@@ -1583,4 +1730,55 @@ pub(crate) fn run_html_report(
             doc,
         )),
     }
+}
+
+#[cfg(test)]
+mod import_source_tests {
+    use super::import_source;
+
+    /// A private directory per test, same formula `config.rs`'s own test
+    /// module uses: named per test so cargo's parallel threads cannot share
+    /// one tree and race on its contents.
+    fn temp_dir(tag: &str) -> std::path::PathBuf {
+        let d = std::env::temp_dir().join(format!("tasqx-verbs-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        d
+    }
+
+    #[test]
+    fn import_source_is_relative_to_a_git_toplevel_directory() {
+        let repo = temp_dir("git-dir");
+        let docs = repo.join("docs");
+        std::fs::create_dir_all(&docs).unwrap();
+        std::fs::create_dir_all(repo.join(".git")).unwrap();
+        let file = docs.join("a.md");
+        std::fs::write(&file, "# A").unwrap();
+
+        assert_eq!(import_source(&file), "docs/a.md");
+
+        let _ = std::fs::remove_dir_all(&repo);
+    }
+
+    /// A worktree's `.git` is a FILE (`gitdir: <path>`), not a directory —
+    /// the toplevel search has to accept either.
+    #[test]
+    fn import_source_is_relative_to_a_git_toplevel_that_is_a_worktree_file() {
+        let repo = temp_dir("git-file");
+        let docs = repo.join("sub").join("docs");
+        std::fs::create_dir_all(&docs).unwrap();
+        std::fs::write(repo.join(".git"), "gitdir: /elsewhere/.git/worktrees/x").unwrap();
+        let file = docs.join("b.md");
+        std::fs::write(&file, "# B").unwrap();
+
+        assert_eq!(import_source(&file), "sub/docs/b.md");
+
+        let _ = std::fs::remove_dir_all(&repo);
+    }
+
+    // The no-`.git`/relative-to-cwd case is not a unit test here: `import_source`'s
+    // fallback reads the process-global current directory, and mutating it
+    // inside this test binary could break any other test reading a relative
+    // path while it holds. `memory_import_source_outside_a_git_tree_is_relative_to_cwd`
+    // in `tests/regressions.rs` proves the same case through a subprocess,
+    // which owns its cwd exclusively.
 }
