@@ -4968,7 +4968,7 @@ fn memory_import_project_scopes_the_batch_and_a_reimport_moves_it() {
     let _ = std::fs::remove_dir_all(&src);
 }
 
-/// #784/D178: `docs/`, `./docs/`, the absolute path and `../docs` (run from a
+/// #784/D179: `docs/`, `./docs/`, the absolute path and `../docs` (run from a
 /// subdirectory) all name the same folder, so an import from any of them
 /// lands the SAME doc — `source` is stored relative to the git toplevel, not
 /// spelled the way the caller typed the path.
