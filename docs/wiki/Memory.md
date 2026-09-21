@@ -118,7 +118,9 @@ tasqx memory import docs/adr
   document whose file can no longer be read is *named and kept*, never
   deleted — the file may be on another machine or a volume that is not
   mounted — and the command still exits 0, so a refresh in a script does not
-  fail over a file somebody moved.
+  fail over a file somebody moved. An MCP session runs this same sweep on its
+  own `initialize` when its scope allows writes, so an agent's session opens
+  on the working tree without a watcher or a daemon job (D180).
 - Each imported document also records where it came from: `origin_path` (the
   file's absolute path on this machine), `origin_mtime` (its modification
   time in unix seconds) and `origin_size` (its size in bytes), all shown by
