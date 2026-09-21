@@ -928,7 +928,7 @@ pub const COMMAND_REF: &[CmdDoc] = &[
             ex_norun("tasqx import backup.json", "from a file"),
             ex_norun("tasqx export | tasqx import -", "from stdin"),
         ],
-        notes: &[],
+        notes: &["A task whose number a DIFFERENT task here already holds keeps its id and takes the next free one; every move is printed and reported as `renumbered` (D177). A task this store already holds keeps the number it has here."],
         see_also: &["export", "api"],
         topic: Topic::JsonApi,
     },

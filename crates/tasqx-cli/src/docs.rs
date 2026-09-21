@@ -578,9 +578,12 @@ const METHODS: [(&str, &str, &str); 48] = [
         "<code>tasks</code>, <code>projects?</code>, <code>default_project?</code>, \
          <code>docs?</code>, <code>events?</code>",
         "<code>{imported, projects_imported, projects_created, docs_imported, docs_declared, \
-         events_imported, default_project}</code>. A task already in the store at a higher \
-         <code>_rev</code> than the payload's refuses the whole import (conflict) rather than \
-         silently discarding the annotations, tags and edges added since.",
+         events_imported, default_project, renumbered}</code>. A task already in the store at a \
+         higher <code>_rev</code> than the payload's refuses the whole import (conflict) rather \
+         than silently discarding the annotations, tags and edges added since. A task whose \
+         <code>short_id</code> a DIFFERENT task here already holds keeps its id and takes the \
+         next free number, listed in <code>renumbered</code> as \
+         <code>{id, from, to}</code> (D177).",
     ),
     (
         "event.list",

@@ -1337,6 +1337,11 @@ const R_STORE_IMPORT: Shape = &[&[
     req("docs_declared", Ty::Bool),
     req("events_imported", Ty::Int),
     nul("default_project", Ty::Str),
+    // D177: `{id, from, to}` per task whose number a DIFFERENT task in the
+    // destination already held. Always present, empty when nothing moved — the
+    // same rule `projects_created` follows, and for the same reason: a write
+    // the caller did not ask for has to be visible.
+    req("renumbered", Ty::Array),
 ]];
 
 const R_EVENT_LIST: Shape = &[&[

@@ -717,6 +717,9 @@ impl Engine {
         // say whether the number was taken by the DESTINATION or by an earlier
         // task in the same document — two faults with two different remedies.
         let mut written: HashSet<String> = HashSet::new();
+        // D177: every task whose number this store was already using, and the
+        // number it took instead. Always reported, empty when nothing moved.
+        let mut renumbered: Vec<Value> = Vec::new();
         let tx = self.begin_mutation()?;
 
         // Pass 0: projects, before any task, so a task's `project` can be checked
@@ -940,6 +943,23 @@ impl Engine {
             }
         }
 
+        // D177: the mint floor is raised above the WHOLE payload before a single
+        // task is written, because a renumbered task mints from the same counter
+        // and a number a LATER row in this document still claims would only move
+        // the collision one row down — and renumber a task that had no conflict
+        // at all. `bump_short_id_floor` never lowers the counter, so a payload
+        // below it changes nothing. A number outside the mintable range is
+        // skipped here and refused by name, with the task that carries it, in
+        // the loop below; `checked_add` for the reason `alloc_short_id` has one.
+        if let Some(above) = tasks
+            .iter()
+            .filter_map(|tv| opt_i64(tv, "short_id").ok().flatten())
+            .max()
+            .and_then(|n| n.checked_add(1))
+        {
+            bump_short_id_floor(&tx, above)?;
+        }
+
         for tv in tasks {
             // Shape first, fields second: a non-object entry used to be
             // diagnosed by `req_str` as "missing required field: id", sending
@@ -976,21 +996,21 @@ impl Engine {
             }
             let short_id = import_field(id, "short_id", req_i64(tv, "short_id"))?;
             // D17's rule where the value ENTERS: `short_id` is untrusted i64 and
-            // the mint floor below is `short_id + 1`, which panicked in debug and
+            // the mint floor is `short_id + 1`, which panicked in debug and
             // wrapped in release at `i64::MAX` — leaving a floor of `i64::MIN`, so
             // the next `add` re-minted a live short_id and broke D4. The counter
             // starts at 1 and only advances, so anything outside 1..i64::MAX is a
-            // value no minter could have produced.
-            let short_id_floor = short_id
-                .checked_add(1)
-                .filter(|_| short_id >= 1)
-                .ok_or_else(|| {
-                    ApiError::bad_request(format!(
-                        "store.import: task {id} has short_id {short_id} — expected an integer \
-                         from 1 to {}",
-                        i64::MAX - 1
-                    ))
-                })?;
+            // value no minter could have produced. The floor itself is raised
+            // once, above the whole payload, before the loop (D177); this is the
+            // range check that makes that addition safe, kept HERE because only
+            // here can the error name the task the caller must edit.
+            if short_id < 1 || short_id.checked_add(1).is_none() {
+                return Err(ApiError::bad_request(format!(
+                    "store.import: task {id} has short_id {short_id} — expected an integer \
+                     from 1 to {}",
+                    i64::MAX - 1
+                )));
+            }
             // D35 + D16: `task.add` refuses an empty title through `req_str`, so
             // import does too. `title: ""` used to store a titleless task that
             // `add` cannot create and every listing renders as a blank row.
@@ -1186,52 +1206,78 @@ impl Engine {
                 now_ts,
             );
 
-            // D4: `short_id` is the handle the whole CLI addresses a task by, and
-            // the column is NOT NULL UNIQUE — so a payload carrying a number some
-            // OTHER task in this store already holds cannot be written. The
-            // upsert keys on `id`, which never noticed, and the raw UNIQUE
-            // violation came back through `From<rusqlite::Error>` as `internal` /
-            // exit 1: the code §4 reserves for "internal bug; safe to
-            // retry-report", with a message naming neither task. Merging two
-            // machines' stores, or restoring a filtered export on top of live
-            // work, is a user error with an obvious remedy — it must read as one.
+            // D4/D177: `short_id` is the handle the whole CLI addresses a task
+            // by, and the column is NOT NULL UNIQUE — so a payload carrying a
+            // number some OTHER task in this store already holds cannot be
+            // written under it. The upsert keys on `id`, which never noticed, and
+            // the raw UNIQUE violation came back through `From<rusqlite::Error>`
+            // as `internal` / exit 1: the code §4 reserves for "internal bug;
+            // safe to retry-report", with a message naming neither task. It was
+            // then a `conflict` whose only remedy was a store nobody had —
+            // merging two machines' stores, or restoring a filtered export on
+            // top of live work, is the normal case, not a user error.
             //
-            // `conflict` (exit 5), not `bad_request`: §4 files a duplicate under
-            // conflict, and the document is not malformed — it is this
-            // DESTINATION that already holds the number. The self-dependency and
-            // cycle guards in pass 2 spell the same distinction the same way.
-            // Hence also the message built by hand rather than through
-            // `import_field`, which relabels everything it wraps as bad_request.
+            // So the arriving task keeps its id and takes a fresh number
+            // instead, and the move is reported. Nothing keys on `short_id`:
+            // dependencies, annotations, checks, links and events all key on the
+            // id, so the only thing a move costs is what a human wrote down.
             //
-            // BEFORE the upsert, so it also catches a payload that moves one
-            // task's short_id onto another and two payload tasks claiming one
-            // number (the second sees the first, already inserted in this
-            // transaction). `.optional()`: no row is the normal case, and
-            // `query_row` would otherwise raise `QueryReturnedNoRows`.
-            let owner: Option<String> = tx
+            // A task this store ALREADY holds does not go through any of it: it
+            // keeps the number it is addressed by HERE, whatever the document
+            // says. That is the rule that makes importing one document twice a
+            // no-op rather than a walk up the counter, and it is why the stored
+            // number is read FIRST — with the row already present, the owner
+            // query below would only ever find the payload's number held by some
+            // third task, which is no collision at all.
+            let stored_short_id: Option<i64> = tx
                 .query_row(
-                    "SELECT id FROM tasks WHERE short_id = ?1",
-                    params![short_id],
+                    "SELECT short_id FROM tasks WHERE id = ?1",
+                    params![id],
                     |r| r.get(0),
                 )
                 .optional()?;
-            if let Some(other) = owner.filter(|owner| owner != id) {
-                // Two faults, two remedies, so they must not share one sentence:
-                // a number this very payload already handed to another task is an
-                // incoherent DOCUMENT, and "import into a fresh store" fixes
-                // nothing — the second task would collide there too.
-                if written.contains(&other) {
-                    return Err(ApiError::conflict(format!(
-                        "store.import: task {id} carries short_id {short_id}, which task {other} \
-                         in the same payload already claims — one short_id addresses exactly one \
-                         task, so this document cannot be restored anywhere"
-                    )));
+            let short_id = match stored_short_id {
+                Some(stored) => stored,
+                // `.optional()`: no row is the normal case, and `query_row`
+                // would otherwise raise `QueryReturnedNoRows`. The id is new
+                // here, so any owner of the number is a DIFFERENT task.
+                None => {
+                    let owner: Option<String> = tx
+                        .query_row(
+                            "SELECT id FROM tasks WHERE short_id = ?1",
+                            params![short_id],
+                            |r| r.get(0),
+                        )
+                        .optional()?;
+                    match owner {
+                        None => short_id,
+                        Some(other) => {
+                            // Two faults, two remedies, so they must not share
+                            // one answer: a number this very payload already
+                            // handed to another task is an incoherent DOCUMENT,
+                            // and renumbering it would paper over a file that
+                            // addresses one task by two ids — the second
+                            // claimant is seen here because the first is already
+                            // inserted in this transaction.
+                            if written.contains(&other) {
+                                return Err(ApiError::conflict(format!(
+                                    "store.import: task {id} carries short_id {short_id}, which \
+                                     task {other} in the same payload already claims — one \
+                                     short_id addresses exactly one task, so this document \
+                                     cannot be restored anywhere"
+                                )));
+                            }
+                            let minted = alloc_short_id(&tx)?;
+                            renumbered.push(json!({
+                                "id": id,
+                                "from": short_id,
+                                "to": minted,
+                            }));
+                            minted
+                        }
+                    }
                 }
-                return Err(ApiError::conflict(format!(
-                    "store.import: task {id} carries short_id {short_id}, which already belongs \
-                     to task {other} in this store — import into a fresh store, or renumber"
-                )));
-            }
+            };
 
             // #177: a task ALREADY in this store, at a HIGHER `_rev` than the
             // payload's, means the payload is a stale copy of this very task —
@@ -1295,7 +1341,7 @@ impl Engine {
                  CASE WHEN ?4 = 'active' THEN COALESCE(?18,?19) ELSE NULL END, \
                  COALESCE(?20,0),?13,?14,?15,?16,?17,?21,?22,COALESCE(?23,0),?24) \
                  ON CONFLICT(id) DO UPDATE SET \
-                 short_id=?2, title=?3, status=?4, priority=?5, project=?6, due=?7, \
+                 title=?3, status=?4, priority=?5, project=?6, due=?7, \
                  scheduled=?8, wait=?9, estimate=?10, recurrence=?11, urgency=?12, \
                  active_since = CASE WHEN ?4 = 'active' \
                  THEN COALESCE(?18, active_since, ?19) ELSE NULL END, \
@@ -1332,9 +1378,6 @@ impl Engine {
                     spawned_from
                 ],
             )?;
-
-            // short_id must never later be re-minted (§12-D4).
-            bump_short_id_floor(&tx, short_id_floor)?;
 
             // Replace tags.
             tx.execute("DELETE FROM task_tags WHERE task_id = ?1", params![id])?;
@@ -1478,6 +1521,7 @@ impl Engine {
             "docs_declared": docs_declared,
             "events_imported": events_imported,
             "default_project": default_project,
+            "renumbered": renumbered,
         }))
     }
 }
@@ -1528,50 +1572,173 @@ mod tests {
             .len()
     }
 
-    /// A payload short_id that a DIFFERENT task in the destination already holds
-    /// is a collision the caller can act on, not an engine bug. It used to hit
-    /// the raw `tasks.short_id` UNIQUE constraint, which `From<rusqlite::Error>`
-    /// turns into `internal` / exit 1 — the code §4 reserves for "internal bug;
-    /// safe to retry-report" — with a message naming no task at all.
+    /// D177: a payload short_id that a DIFFERENT task in the destination already
+    /// holds is not a fault to refuse — the id is the key, the number is a
+    /// display handle, so the arriving task keeps its id, takes a fresh number
+    /// and the move is reported. It used to hit the raw `tasks.short_id` UNIQUE
+    /// constraint (`internal` / exit 1, naming no task), then a `conflict` whose
+    /// only remedy was a store nobody had.
     #[test]
-    fn store_import_refuses_a_short_id_another_task_already_holds() {
+    fn store_import_renumbers_a_short_id_another_task_already_holds() {
         let e = Engine::open_in_memory().expect("open");
         let mine = e
             .task_add(&json!({ "title": "already here" }))
             .expect("add");
         let mine_id = mine["id"].as_str().expect("id").to_string();
         let taken = mine["short_id"].as_i64().expect("short_id");
-        let taken_text = taken.to_string();
 
         const THEIRS: &str = "0193aaaa-0000-7000-8000-00000000beef";
-        let err = e
+        let r = e
             .store_import(&json!({ "tasks": [
                 { "id": THEIRS, "short_id": taken, "title": "from the other store" },
             ] }))
-            .expect_err("a collision must not be accepted");
+            .expect("a number this store already uses must move, not refuse");
 
-        assert_eq!(err.code, ErrorCode::Conflict, "{}", err.message);
-        for needle in [mine_id.as_str(), THEIRS, taken_text.as_str()] {
-            assert!(
-                err.message.contains(needle),
-                "message must name {needle}: {}",
-                err.message
-            );
-        }
-        assert!(
-            !err.message.contains("UNIQUE constraint"),
-            "the raw SQLite string diagnoses nothing: {}",
-            err.message
+        assert_eq!(r["imported"], json!(1), "{r}");
+        let moved = r["renumbered"]
+            .as_array()
+            .expect("renumbered is always present");
+        assert_eq!(moved.len(), 1, "exactly the one task that moved: {r}");
+        assert_eq!(moved[0]["id"], json!(THEIRS), "{r}");
+        assert_eq!(moved[0]["from"], json!(taken), "{r}");
+        let to = moved[0]["to"].as_i64().expect("the number it took");
+        assert_ne!(to, taken, "the whole point is that it moved: {r}");
+
+        // The arriving task keeps its ID and is addressable under the new
+        // number; the task already here keeps the number it was addressed by.
+        let theirs = e
+            .task_get(&json!({ "ref": THEIRS }))
+            .expect("the imported task exists under its own id");
+        assert_eq!(theirs["short_id"], json!(to), "{theirs}");
+        let ours = e.task_get(&json!({ "ref": mine_id })).expect("get ours");
+        assert_eq!(
+            ours["short_id"],
+            json!(taken),
+            "an import must never move a number the destination was using: {ours}"
         );
-        // The remedy, not just the diagnosis: the document is fine, it is this
-        // destination that is already using the number.
+    }
+
+    /// The minted number must clear the WHOLE payload, not just what the store
+    /// holds: minting into a number a LATER task in the same document still
+    /// claims would only move the collision one row down, and the cascade would
+    /// renumber tasks that had no conflict at all.
+    #[test]
+    fn store_import_mints_above_every_payload_short_id() {
+        let e = Engine::open_in_memory().expect("open");
+        e.task_add(&json!({ "title": "one" })).expect("add");
+        e.task_add(&json!({ "title": "two" })).expect("add");
+
+        const A: &str = "0193aaaa-0000-7000-8000-0000000000aa";
+        const B: &str = "0193aaaa-0000-7000-8000-0000000000bb";
+        let r = e
+            .store_import(&json!({ "tasks": [
+                { "id": A, "short_id": 1, "title": "collides" },
+                { "id": B, "short_id": 50, "title": "free" },
+            ] }))
+            .expect("import");
+
+        let a_now = e.task_get(&json!({ "ref": A })).expect("get a")["short_id"]
+            .as_i64()
+            .expect("short_id");
         assert!(
-            err.message.contains("in this store") && err.message.contains("fresh store"),
-            "message must say where the number is taken and what to do: {}",
-            err.message
+            a_now > 50,
+            "a mint at or below 50 would collide with B: {a_now}"
         );
-        // Same transaction, so the refusal writes nothing at all.
-        assert_eq!(exported_task_count(&e), 1);
+        assert_eq!(
+            e.task_get(&json!({ "ref": B })).expect("get b")["short_id"],
+            json!(50),
+            "a number nothing holds is kept — only the collision moves"
+        );
+        assert_eq!(
+            r["renumbered"],
+            json!([{ "id": A, "from": 1, "to": a_now }]),
+            "only the task that moved is reported: {r}"
+        );
+
+        // And the counter is left above the document, so the next `add` cannot
+        // re-mint a number this import just wrote (D4).
+        let next = e.task_add(&json!({ "title": "after" })).expect("add")["short_id"]
+            .as_i64()
+            .expect("short_id");
+        assert!(next > a_now, "the next mint must clear the import: {next}");
+    }
+
+    /// A task this store already holds keeps the number it is addressed by here,
+    /// whatever the document says — which is what makes importing one document
+    /// twice a no-op instead of a second renumbering that walks the task's
+    /// number up on every run.
+    #[test]
+    fn store_import_keeps_the_stored_short_id_for_a_known_id() {
+        let e = Engine::open_in_memory().expect("open");
+        e.task_add(&json!({ "title": "already here" }))
+            .expect("add");
+
+        const X: &str = "0193aaaa-0000-7000-8000-0000000000cc";
+        // Stamps and rev spelled out, as a real export carries them: without
+        // them the second import would write a fresh `modified` and the
+        // comparison below would be measuring the clock, not the rule.
+        let payload = json!({ "tasks": [{
+            "id": X,
+            "short_id": 1,
+            "title": "from the other store",
+            "created": "2026-09-10T08:00:00Z",
+            "modified": "2026-09-10T08:00:00Z",
+            "_rev": 1,
+        }] });
+
+        let first = e.store_import(&payload).expect("import");
+        let n = first["renumbered"][0]["to"]
+            .as_i64()
+            .expect("the number it took");
+        let before = e.task_get(&json!({ "ref": X })).expect("get");
+
+        let again = e.store_import(&payload).expect("second import");
+        assert_eq!(
+            again["renumbered"],
+            json!([]),
+            "a task this store already holds has nothing to move: {again}"
+        );
+        let after = e.task_get(&json!({ "ref": X })).expect("get");
+        assert_eq!(after["short_id"], json!(n), "the stored number stands");
+        assert_eq!(
+            after, before,
+            "re-importing the same document must change nothing at all, `_rev` included"
+        );
+        assert_eq!(exported_task_count(&e), 2, "and mint no second row");
+    }
+
+    /// Nothing keys on `short_id`: a dependency edge is stored by id, so both
+    /// ends of it can move in one import and the graph still reads.
+    #[test]
+    fn store_import_dependencies_survive_renumbering() {
+        let e = Engine::open_in_memory().expect("open");
+        e.task_add(&json!({ "title": "one" })).expect("add");
+        e.task_add(&json!({ "title": "two" })).expect("add");
+
+        const A: &str = "0193aaaa-0000-7000-8000-0000000000a1";
+        const B: &str = "0193aaaa-0000-7000-8000-0000000000b2";
+        let r = e
+            .store_import(&json!({ "tasks": [
+                { "id": A, "short_id": 1, "title": "dependent", "depends_on": [B] },
+                { "id": B, "short_id": 2, "title": "blocker" },
+            ] }))
+            .expect("import");
+        assert_eq!(
+            r["renumbered"].as_array().map(Vec::len),
+            Some(2),
+            "both numbers were taken here: {r}"
+        );
+
+        let b_now = e.task_get(&json!({ "ref": B })).expect("get b")["short_id"]
+            .as_i64()
+            .expect("short_id");
+        let a = e.task_get(&json!({ "ref": A })).expect("get a");
+        assert_eq!(
+            a["depends_on"],
+            json!([b_now]),
+            "the edge must follow the id and be read back under the NEW number: {a}"
+        );
+        assert_eq!(a["blocked"], json!(true), "{a}");
     }
 
     /// The same guard, one step earlier: two payload tasks claiming one short_id

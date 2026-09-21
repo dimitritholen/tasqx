@@ -1703,6 +1703,26 @@ pub fn imported(ctx: &Ctx, result: &Value) -> String {
             "the document carried no `docs` section, so no memory docs were restored",
         ));
     }
+    // D177: one line per task whose number this store was already using. A
+    // renumbering is a write the caller did not ask for, so it is named, with
+    // both numbers and the id the task kept — the id is what every branch name,
+    // annotation and dependency still points at.
+    for moved in result
+        .get("renumbered")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+    {
+        out.push_str(&note_line(
+            ctx,
+            &format!(
+                "renumbered: #{} is taken here, so task {} is now #{}",
+                moved.get("from").and_then(Value::as_i64).unwrap_or(0),
+                s(moved, "id"),
+                moved.get("to").and_then(Value::as_i64).unwrap_or(0),
+            ),
+        ));
+    }
     let minted: Vec<String> = result
         .get("projects_created")
         .and_then(Value::as_array)

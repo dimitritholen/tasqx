@@ -480,6 +480,40 @@ fn an_import_with_no_docs_section_says_so_instead_of_printing_the_same_line_as_z
     );
 }
 
+/// D177, through the real `import` VERB: a renumbering is a write the caller
+/// did not ask for, so it is named — both numbers and the id the task kept.
+#[test]
+fn an_import_names_every_task_whose_number_this_store_was_already_using() {
+    let (dir, db) = store("renumber", "a");
+    ok(&dir, &db, &["add", "already here"]);
+
+    const THEIRS: &str = "019f6a0f-99df-7000-8000-0000000000ee";
+    let payload = json!([{
+        "id": THEIRS,
+        "short_id": 1,
+        "title": "from the other machine",
+    }]);
+    let path = dir.join("theirs.json");
+    std::fs::write(&path, payload.to_string()).expect("write payload");
+
+    let out = ok(&dir, &db, &["import", path.to_str().expect("utf8 path")]);
+    assert!(out.contains("1 task"), "{out}");
+    assert!(
+        out.contains(&format!(
+            "note: renumbered: #1 is taken here, so task {THEIRS} is now #2"
+        )),
+        "the move must be named, with both numbers and the id: {out}"
+    );
+
+    // Nothing moved is nothing said.
+    let (_, b) = store("renumber", "b");
+    let out = ok(&dir, &b, &["import", path.to_str().expect("utf8 path")]);
+    assert!(
+        !out.contains("renumbered"),
+        "an import with no collision must print no such line: {out}"
+    );
+}
+
 /// D171 (finding #627), through the real `export` VERB: a project filter must
 /// not ship another project's memory docs, and `--include-unscoped` widens
 /// it back to docs with no project — refused with no filter to widen from.
