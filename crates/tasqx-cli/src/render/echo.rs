@@ -1676,7 +1676,19 @@ pub fn imported(ctx: &Ctx, result: &Value) -> String {
     } else {
         plural_tasks(n)
     };
-    let mut fixed = vec![outcome(ctx, "imported"), Fact::new(tasks.clone(), tasks)];
+    // D184: `dry_run` echoes the param — true only when the whole import ran
+    // and was then rolled back, so the word leading the line names that
+    // before anything else is read.
+    let dry_run = result
+        .get("dry_run")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let word = if dry_run {
+        "dry run: imported"
+    } else {
+        "imported"
+    };
+    let mut fixed = vec![outcome(ctx, word), Fact::new(tasks.clone(), tasks)];
     let mut count = |text: String| {
         let mut f = Fact::new(text.clone(), text);
         f.sep = attach(ctx);
@@ -1762,6 +1774,9 @@ pub fn imported(ctx: &Ctx, result: &Value) -> String {
                 minted.join(", ")
             ),
         ));
+    }
+    if dry_run {
+        out.push_str(&note_line(ctx, "nothing was written"));
     }
     out
 }

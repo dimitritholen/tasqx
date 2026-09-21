@@ -590,9 +590,10 @@ const METHODS: [(&str, &str, &str); 49] = [
     (
         "store.import",
         "<code>tasks</code>, <code>projects?</code>, <code>default_project?</code>, \
-         <code>docs?</code>, <code>events?</code>, <code>links?</code>",
+         <code>docs?</code>, <code>events?</code>, <code>links?</code>, <code>dry_run?</code>",
         "<code>{imported, projects_imported, projects_created, docs_imported, docs_declared, \
-         events_imported, links_imported, default_project, renumbered, docs_merged}</code>. \
+         events_imported, links_imported, default_project, renumbered, docs_merged, \
+         dry_run}</code>. \
          A task already in \
          the store at a higher <code>_rev</code> than the payload's refuses the whole import \
          (conflict) rather than silently discarding the annotations, tags and edges added since. \
@@ -603,7 +604,9 @@ const METHODS: [(&str, &str, &str); 49] = [
          text — listed in <code>docs_merged</code> as \
          <code>{source, kept_id, dropped_id, took}</code> (D183). Links are restored last, both \
          ends resolved against what this store now holds; an end it does not have refuses the \
-         import by name (D181).",
+         import by name (D181). <code>dry_run</code> (default false) runs the entire import — \
+         every renumbering, merge and refusal — and rolls it back instead of committing, so the \
+         same answer previews what a real import would do (D184).",
     ),
     (
         "event.list",

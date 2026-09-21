@@ -281,6 +281,11 @@ impl MutationContext<'_> {
     fn commit(self) -> Result<(), ApiError> {
         self.transaction.commit().map_err(ApiError::from)
     }
+
+    /// `store.import`'s `dry_run` (D184): every write ran, nothing is kept.
+    fn rollback(self) -> Result<(), ApiError> {
+        self.transaction.rollback().map_err(ApiError::from)
+    }
 }
 
 /// Statements one whole-relation snapshot runs, independent of task count.
