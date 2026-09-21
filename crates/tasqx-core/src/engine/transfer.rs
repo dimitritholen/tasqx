@@ -713,9 +713,9 @@ impl Engine {
         // (task_id, its validated `depends_on` ids) — typed at collection time so
         // pass 2 cannot inherit a silently-dropped edge from a wrong-typed value.
         let mut edges: Vec<(String, Vec<String>)> = Vec::new();
-        // Task ids this payload has already written, so a short_id collision can
-        // say whether the number was taken by the DESTINATION or by an earlier
-        // task in the same document — two faults with two different remedies.
+        // Task ids this payload has already written, so an id repeated in one
+        // document (#180) is refused rather than applied twice and counted
+        // twice.
         let mut written: HashSet<String> = HashSet::new();
         // D177: every task whose number this store was already using, and the
         // number it took instead. Always reported, empty when nothing moved.
@@ -951,12 +951,42 @@ impl Engine {
         // below it changes nothing. A number outside the mintable range is
         // skipped here and refused by name, with the task that carries it, in
         // the loop below; `checked_add` for the reason `alloc_short_id` has one.
-        if let Some(above) = tasks
-            .iter()
-            .filter_map(|tv| opt_i64(tv, "short_id").ok().flatten())
-            .max()
-            .and_then(|n| n.checked_add(1))
-        {
+        //
+        // #796: the same pass answers the other whole-document question, for
+        // the same reason it has to be asked before the first row lands. Two
+        // payload tasks claiming one number is an incoherent DOCUMENT, not a
+        // collision to renumber, and it is a property of the payload alone —
+        // deciding it inside the loop, from the ids already written, made the
+        // answer depend on the row order and on what the destination happened
+        // to hold: a new task carrying the number a KNOWN task was renumbered
+        // to here was refused as a same-payload duplicate one way round and
+        // renumbered the other, while two new tasks both claiming a number the
+        // destination holds were both quietly renumbered and accepted.
+        let mut claims: HashMap<i64, String> = HashMap::new();
+        let mut floor: Option<i64> = None;
+        for tv in tasks {
+            // Unreadable values are skipped, not diagnosed: `import_shape` and
+            // the typed reads in the loop below refuse them by name, with the
+            // task that carries them.
+            let Ok(Some(short_id)) = opt_i64(tv, "short_id") else {
+                continue;
+            };
+            floor = floor.max(Some(short_id));
+            let Ok(Some(id)) = opt_str(tv, "id") else {
+                continue;
+            };
+            // Keyed on the id, so a payload that repeats one task verbatim is
+            // left to the `written` check below, which names that fault.
+            let claimed = claims.entry(short_id).or_insert_with(|| id.clone());
+            if *claimed != id {
+                return Err(ApiError::conflict(format!(
+                    "store.import: task {id} carries short_id {short_id}, which task {claimed} \
+                     in the same payload already claims — one short_id addresses exactly one \
+                     task, so this document cannot be restored anywhere"
+                )));
+            }
+        }
+        if let Some(above) = floor.and_then(|n| n.checked_add(1)) {
             bump_short_id_floor(&tx, above)?;
         }
 
@@ -976,7 +1006,7 @@ impl Engine {
             // one bad field in a thousand-line export is useless without it.
             import_keys(&format!("task {id}, "), "task", tv, IMPORT_TASK_KEYS)?;
             // #180: a repeated primary `id` in one payload is the same fault
-            // the short_id check below refuses one field over — two entries
+            // the short_id check above refuses one field over — two entries
             // claim to be the same task, and the upsert's `ON CONFLICT(id) DO
             // UPDATE` would otherwise apply both and silently keep only the
             // LAST, while `imported` still counted every entry it read rather
@@ -1251,22 +1281,15 @@ impl Engine {
                         .optional()?;
                     match owner {
                         None => short_id,
-                        Some(other) => {
-                            // Two faults, two remedies, so they must not share
-                            // one answer: a number this very payload already
-                            // handed to another task is an incoherent DOCUMENT,
-                            // and renumbering it would paper over a file that
-                            // addresses one task by two ids — the second
-                            // claimant is seen here because the first is already
-                            // inserted in this transaction.
-                            if written.contains(&other) {
-                                return Err(ApiError::conflict(format!(
-                                    "store.import: task {id} carries short_id {short_id}, which \
-                                     task {other} in the same payload already claims — one \
-                                     short_id addresses exactly one task, so this document \
-                                     cannot be restored anywhere"
-                                )));
-                            }
+                        // Whoever holds the number here — a task that was
+                        // already in this store, or one an earlier row of this
+                        // payload just wrote — the arriving task is new and the
+                        // number is taken, so it moves. The OTHER fault, a
+                        // document that hands one number to two tasks, was
+                        // settled over the whole payload before this loop
+                        // started (#796); by here there is nothing left to tell
+                        // apart.
+                        Some(_) => {
                             let minted = alloc_short_id(&tx)?;
                             renumbered.push(json!({
                                 "id": id,
@@ -1741,9 +1764,118 @@ mod tests {
         assert_eq!(a["blocked"], json!(true), "{a}");
     }
 
+    /// #796: the second round trip between two machines. X was renumbered HERE
+    /// by an earlier import, so the payload's number for it is stale and the
+    /// stored one stands (D177) — and a LATER new task carrying the number X
+    /// now holds is a plain destination collision, not a payload that claims
+    /// one number twice. Deciding that from the ids this import had already
+    /// written made the answer depend on row order: refused one way round,
+    /// renumbered the other.
+    #[test]
+    fn store_import_renumbers_a_new_task_whose_number_a_known_task_holds_in_either_row_order() {
+        const X: &str = "0193aaaa-0000-7000-8000-0000000000f1";
+        const Z: &str = "0193aaaa-0000-7000-8000-0000000000f2";
+
+        // Two stores set up identically, so the only difference between them is
+        // the order of the second payload's rows.
+        let prepare = || {
+            let e = Engine::open_in_memory().expect("open");
+            e.task_add(&json!({ "title": "already here" }))
+                .expect("add");
+            let first = e
+                .store_import(&json!({ "tasks": [
+                    { "id": X, "short_id": 1, "title": "from the other store" },
+                ] }))
+                .expect("import");
+            let n = first["renumbered"][0]["to"]
+                .as_i64()
+                .expect("X took a fresh number here");
+            (e, n)
+        };
+        let (forward, n) = prepare();
+        let (reversed, n_again) = prepare();
+        assert_eq!(n, n_again, "the two stores must start identical");
+        assert_ne!(n, 3, "the stale number below must not be X's own");
+
+        // X carries the number its OWN store still uses; Z, new here, carries
+        // the number X was given on this machine.
+        let x_row = json!({ "id": X, "short_id": 3, "title": "from the other store" });
+        let z_row = json!({ "id": Z, "short_id": n, "title": "new over there" });
+        let mut seen = Vec::new();
+        for (e, tasks) in [
+            (&forward, json!([x_row, z_row])),
+            (&reversed, json!([z_row, x_row])),
+        ] {
+            let r = e
+                .store_import(&json!({ "tasks": tasks }))
+                .expect("a number a KNOWN task holds is a collision to renumber, not a refusal");
+            assert_eq!(r["imported"], json!(2), "{r}");
+            let x_now = e.task_get(&json!({ "ref": X })).expect("get x")["short_id"]
+                .as_i64()
+                .expect("short_id");
+            assert_eq!(x_now, n, "a known task keeps its stored number (D177): {r}");
+            let z_now = e.task_get(&json!({ "ref": Z })).expect("get z")["short_id"]
+                .as_i64()
+                .expect("short_id");
+            assert!(
+                z_now > n,
+                "Z must take a fresh number above the payload: {r}"
+            );
+            assert_eq!(
+                r["renumbered"],
+                json!([{ "id": Z, "from": n, "to": z_now }]),
+                "only the new task moved: {r}"
+            );
+            seen.push((x_now, z_now));
+        }
+        assert_eq!(
+            seen[0], seen[1],
+            "the same document in either row order must land the same numbers"
+        );
+    }
+
+    /// Two payload tasks claiming one number is an incoherent document whatever
+    /// the DESTINATION holds: when the number is also taken here, both used to
+    /// be quietly renumbered and accepted, because each looked like an ordinary
+    /// collision with the store. Checked over the whole payload before any row
+    /// is written, so neither lands.
+    #[test]
+    fn store_import_refuses_two_new_tasks_claiming_a_number_the_destination_holds() {
+        let e = Engine::open_in_memory().expect("open");
+        let taken = e
+            .task_add(&json!({ "title": "already here" }))
+            .expect("add")["short_id"]
+            .as_i64()
+            .expect("short_id");
+
+        const A: &str = "0193aaaa-0000-7000-8000-0000000000e1";
+        const B: &str = "0193aaaa-0000-7000-8000-0000000000e2";
+        let err = e
+            .store_import(&json!({ "tasks": [
+                { "id": A, "short_id": taken, "title": "first claimant" },
+                { "id": B, "short_id": taken, "title": "second claimant" },
+            ] }))
+            .expect_err("one short_id cannot address two tasks");
+
+        assert_eq!(err.code, ErrorCode::Conflict, "{}", err.message);
+        assert!(err.message.contains(A), "{}", err.message);
+        assert!(err.message.contains(B), "{}", err.message);
+        assert_eq!(
+            e.task_get(&json!({ "ref": A })).unwrap_err().code,
+            ErrorCode::NotFound,
+            "a refused document writes nothing"
+        );
+        assert_eq!(
+            e.task_get(&json!({ "ref": B })).unwrap_err().code,
+            ErrorCode::NotFound,
+            "a refused document writes nothing"
+        );
+        assert_eq!(exported_task_count(&e), 1);
+    }
+
     /// The same guard, one step earlier: two payload tasks claiming one short_id
-    /// is an incoherent document, and the second one sees the first because both
-    /// are written inside the import's own transaction. A DIFFERENT fault from
+    /// is an incoherent document, caught over the whole `tasks` array before any
+    /// row is written. A DIFFERENT fault from
     /// the one above, so it must not be diagnosed with the same sentence:
     /// "import into a fresh store" fixes nothing when both claimants arrived in
     /// the same payload.
