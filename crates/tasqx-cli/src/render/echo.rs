@@ -1723,7 +1723,7 @@ pub fn imported(ctx: &Ctx, result: &Value) -> String {
             ),
         ));
     }
-    // D182: one line per memory doc that landed on a row this store already
+    // D183: one line per memory doc that landed on a row this store already
     // held under the same `source`. Named for the renumbering's reason — the
     // payload's id is gone afterwards, and which copy's text survived is the
     // thing the caller cannot see from the doc count.

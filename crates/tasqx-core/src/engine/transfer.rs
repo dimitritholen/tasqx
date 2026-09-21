@@ -904,7 +904,7 @@ impl Engine {
         let docs_param = opt_array(p, "docs")?.cloned();
         let docs_declared = docs_param.is_some();
         let mut docs_imported = 0i64;
-        // D182: every doc that landed on a row this store already held under
+        // D183: every doc that landed on a row this store already held under
         // the same `source`. Always reported, empty when nothing merged — the
         // rule `renumbered` and `projects_created` already follow, and for
         // their reason: an id the import dropped is a write the caller did not
@@ -959,7 +959,7 @@ impl Engine {
                 // `memory.add`/`memory.import` compute it at their own write
                 // doors, so a restored store's index matches its content.
                 let search_body = crate::frontmatter::flatten(&body).into_owned();
-                // D182, before the `_rev` guard and before D174's refusal,
+                // D183, before the `_rev` guard and before D174's refusal,
                 // because neither one is about this case. Two machines that
                 // each ran `tasqx memory import docs/` hold one file under one
                 // `source` (D179) and two ids, because each store minted its
@@ -1153,7 +1153,7 @@ impl Engine {
                     link_events.push((eid, entity_id, op, payload.to_string(), ts, actor));
                     continue;
                 }
-                // D182: a doc event naming an id this import merged away lands
+                // D183: a doc event naming an id this import merged away lands
                 // under the doc that kept the source, the way a link event
                 // passes through `link_remap` below. Nothing is staged for it:
                 // the docs pass runs ABOVE this one, so the table already knows
@@ -1949,7 +1949,7 @@ impl Engine {
             "links_imported": links_imported,
             "default_project": default_project,
             "renumbered": renumbered,
-            // D182: every doc that merged onto a row this store already held
+            // D183: every doc that merged onto a row this store already held
             // under the same `source`, and which copy's text won.
             "docs_merged": docs_merged,
         }))
@@ -2643,7 +2643,7 @@ mod tests {
         assert_eq!(after["docs"][0]["body"], json!("v2"), "{after}");
     }
 
-    /// D182: two machines that each ran `tasqx memory import docs/` hold one
+    /// D183: two machines that each ran `tasqx memory import docs/` hold one
     /// file under one `source` (D179) and two ids, because each store minted
     /// its own. D174 already says the source IS the doc's identity, so the
     /// arriving row is the same doc, not a second holder to refuse — and the
@@ -2722,7 +2722,7 @@ mod tests {
         assert_eq!(err.code, ErrorCode::NotFound, "{}", err.message);
     }
 
-    /// The other half of D182's tiebreak: a payload no newer than the row
+    /// The other half of D183's tiebreak: a payload no newer than the row
     /// already here changes nothing — the merge is still reported, because the
     /// caller's id was dropped either way.
     #[test]
@@ -2824,7 +2824,7 @@ mod tests {
     }
 
     /// A payload doc the store ALREADY holds under the SAME id is untouched by
-    /// D182 — it is not a second holder of anything, so #84's rewind guard is
+    /// D183 — it is not a second holder of anything, so #84's rewind guard is
     /// still the rule that decides it.
     #[test]
     fn store_import_same_id_doc_still_goes_through_the_rev_guard() {
