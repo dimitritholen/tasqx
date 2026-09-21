@@ -578,24 +578,28 @@ const METHODS: [(&str, &str, &str); 49] = [
     (
         "store.export",
         "<code>filter?</code>, <code>include_unscoped?</code>",
-        "<code>{tasks, projects, dropped_projects, docs, dropped_docs, events, dropped_events, \
-         default_project, dropped_dependencies}</code>. \
+        "<code>{tasks, projects, dropped_projects, docs, dropped_docs, links, dropped_links, \
+         events, dropped_events, default_project, dropped_dependencies}</code>. \
          <code>events</code> is the whole audit log except the bookkeeping rows a `store.import` \
-         itself writes. An unfiltered export carries every project/doc/event (D12); any other \
-         filter scopes those three to what the exported tasks need and reports what it dropped \
-         (D171) — <code>include_unscoped</code> widens that scope back to docs with no project.",
+         itself writes. An unfiltered export carries every project/doc/link/event (D12); any \
+         other filter scopes those four to what the exported tasks need and reports what it \
+         dropped (D171, D180) — <code>include_unscoped</code> widens that scope back to docs \
+         with no project. A link travels only when BOTH its ends are nodes the document \
+         carries.",
     ),
     (
         "store.import",
         "<code>tasks</code>, <code>projects?</code>, <code>default_project?</code>, \
-         <code>docs?</code>, <code>events?</code>",
+         <code>docs?</code>, <code>events?</code>, <code>links?</code>",
         "<code>{imported, projects_imported, projects_created, docs_imported, docs_declared, \
-         events_imported, default_project, renumbered}</code>. A task already in the store at a \
-         higher <code>_rev</code> than the payload's refuses the whole import (conflict) rather \
-         than silently discarding the annotations, tags and edges added since. A task whose \
-         <code>short_id</code> a DIFFERENT task here already holds keeps its id and takes the \
-         next free number, listed in <code>renumbered</code> as \
-         <code>{id, from, to}</code> (D177).",
+         events_imported, links_imported, default_project, renumbered}</code>. A task already in \
+         the store at a higher <code>_rev</code> than the payload's refuses the whole import \
+         (conflict) rather than silently discarding the annotations, tags and edges added since. \
+         A task whose <code>short_id</code> a DIFFERENT task here already holds keeps its id and \
+         takes the next free number, listed in <code>renumbered</code> as \
+         <code>{id, from, to}</code> (D177). Links are restored last, both ends resolved \
+         against what this store now holds; an end it does not have refuses the import by name \
+         (D180).",
     ),
     (
         "event.list",

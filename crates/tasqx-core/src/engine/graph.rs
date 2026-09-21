@@ -64,7 +64,7 @@ impl NodeType {
 
     /// The accepted set as a message fragment, built from [`NodeType::ALL`] so
     /// a refusal cannot fall behind the enum.
-    fn accepted() -> String {
+    pub(super) fn accepted() -> String {
         NodeType::ALL
             .iter()
             .map(|t| t.as_str())
@@ -113,7 +113,8 @@ const LINK_LIST_MAX: u64 = 1000;
 /// promotion of an inferred edge (D160) can record that a machine proposed one,
 /// and publishing a column whose only value is `'user'` would freeze a field
 /// that says nothing yet.
-const LINK_COLS: &str = "id, from_type, from_id, to_type, to_id, relation, metadata, created";
+pub(super) const LINK_COLS: &str =
+    "id, from_type, from_id, to_type, to_id, relation, metadata, created";
 
 /// `graph.query`'s bounds (D160): the default when the caller names none, and
 /// the ceiling on one they do.
@@ -1290,7 +1291,9 @@ impl Engine {
 ///
 /// One function for both readers, so the duplicate `link.add` hands back and
 /// the rows `link.list` pages cannot come to disagree about what a link row is.
-fn link_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<Value> {
+/// `store.export` is the third (D180), for the same reason: the archive states
+/// a link in the one spelling every reader here already speaks.
+pub(super) fn link_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<Value> {
     let metadata: Option<String> = r.get(6)?;
     Ok(json!({
         "id": r.get::<_, String>(0)?,
@@ -1323,7 +1326,7 @@ fn required_node_ref<'a>(p: &'a Value, key: &str) -> Result<&'a Value, ApiError>
 /// Does a row of this kind exist with this id?
 ///
 /// The table and column are literals chosen by the match, never caller text.
-fn node_exists(conn: &Connection, ty: NodeType, id: &str) -> Result<bool, ApiError> {
+pub(super) fn node_exists(conn: &Connection, ty: NodeType, id: &str) -> Result<bool, ApiError> {
     let sql = match ty {
         NodeType::Task => "SELECT 1 FROM tasks WHERE id = ?1",
         NodeType::Memory => "SELECT 1 FROM docs WHERE id = ?1",
