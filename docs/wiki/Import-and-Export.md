@@ -90,6 +90,49 @@ written`. There is no separate preview logic — it is the same import, undone.
 tasqx import backup.json --dry-run
 ```
 
+`tasqx import other.json --merge` folds a second live store into this one
+instead of restoring over it. For a task this store *already* holds, the
+annotations, checks, tags and dependency edges written on either side are
+unioned — nothing here is thrown away, and nothing in the document is — while
+the fields that can only have one value (title, status, priority, project, the
+dates) are taken from whichever side was modified later. The `_rev` check is
+skipped for those tasks, because two stores count their own revisions and
+neither number means anything to the other. One line per task says which copy
+won. A task the document carries and this store has never seen is imported
+exactly as it would be without the flag.
+
+Without `--merge`, the document stays authoritative about a task it names: its
+notes, checks, tags and edges replace what is here. That is what a restore
+should do, so it stays the default.
+
+## Merging two machines
+
+Each machine exports, and each imports the other's document. Rehearse with
+`--dry-run` first — it prints the same report and keeps nothing.
+
+On machine A:
+
+```console
+tasqx export > a.json
+```
+
+Copy `a.json` to machine B, then there:
+
+```console
+tasqx import a.json --merge --dry-run
+tasqx import a.json --merge
+tasqx export > b.json
+```
+
+Copy `b.json` back to machine A and do the reverse:
+
+```console
+tasqx import b.json --merge --dry-run
+tasqx import b.json --merge
+```
+
+Both stores now hold both sides' work.
+
 ## Good habits
 
 A dated backup, in one line:

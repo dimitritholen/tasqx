@@ -228,17 +228,47 @@ impl Engine {
         }))
     }
 
+    /// How many child rows one task holds across the four tables `merge`
+    /// unions (D185).
+    ///
+    /// It exists because an `ON CONFLICT DO UPDATE` reports a row affected
+    /// even when it rewrote the same bytes, so the statement's own count
+    /// cannot answer "did this merge bring anything in" — and that question
+    /// decides whether `rev` moves. Counting rows can only say "more than
+    /// before", which is exactly the case the counter has to notice: a state
+    /// change on a row both stores already hold travels with the scalars, and
+    /// those are decided by `modified`.
+    fn child_row_count(tx: &rusqlite::Transaction, id: &str) -> Result<i64, ApiError> {
+        Ok(tx.query_row(
+            "SELECT (SELECT COUNT(*) FROM annotations WHERE task_id = ?1) \
+                  + (SELECT COUNT(*) FROM checks WHERE task_id = ?1) \
+                  + (SELECT COUNT(*) FROM task_tags WHERE task_id = ?1) \
+                  + (SELECT COUNT(*) FROM token_usage WHERE task_id = ?1)",
+            params![id],
+            |r| r.get(0),
+        )?)
+    }
+
     /// Replace one task's annotations from its import object — the
     /// annotations half of `store_import`'s per-task child-table work,
     /// self-contained: it reads `tv` (the task document), never the request
     /// params, which is what keeps it invisible to dispatch's key-scan on
     /// purpose.
+    ///
+    /// `merge` (D185) keeps every row this store already holds and upserts the
+    /// payload's beside them, keyed on each annotation's own id, so a note
+    /// written on either machine since the export survives. Without it the
+    /// payload's task object stays authoritative about its own child rows
+    /// (D138) and they are replaced wholesale.
     fn import_annotations(
         tx: &rusqlite::Transaction,
         id: &str,
         tv: &Value,
+        merge: bool,
     ) -> Result<(), ApiError> {
-        tx.execute("DELETE FROM annotations WHERE task_id = ?1", params![id])?;
+        if !merge {
+            tx.execute("DELETE FROM annotations WHERE task_id = ?1", params![id])?;
+        }
         if let Some(anns) = import_field(id, "annotations", opt_array(tv, "annotations"))? {
             for a in anns {
                 // `Value::get` answers None on a non-object, so every field
@@ -284,15 +314,43 @@ impl Engine {
     /// (D138): the payload's task object is authoritative about its own child
     /// rows.
     ///
+    /// `merge` (D185) unions them instead, like annotations — and `take_payload`
+    /// is the one place the two differ. A check carries STATE, so a criterion
+    /// both stores hold has two answers, and the one to keep is the later
+    /// write's: `take_payload` is true only when the payload task's `modified`
+    /// is past the stored one, and a stored `passed` is otherwise not rolled
+    /// back to `open` by a copy that never saw it pass. A check the store does
+    /// not hold at all is inserted either way.
+    ///
     /// `state` passes the same closed-vocabulary gate `check.set` enforces,
     /// with `import_field` naming the task — carrying an unknown state
     /// verbatim would let one bad payload re-export the corruption to every
     /// downstream store (D16).
-    fn import_checks(tx: &rusqlite::Transaction, id: &str, tv: &Value) -> Result<(), ApiError> {
-        tx.execute("DELETE FROM checks WHERE task_id = ?1", params![id])?;
+    fn import_checks(
+        tx: &rusqlite::Transaction,
+        id: &str,
+        tv: &Value,
+        merge: bool,
+        take_payload: bool,
+    ) -> Result<(), ApiError> {
+        if !merge {
+            tx.execute("DELETE FROM checks WHERE task_id = ?1", params![id])?;
+        }
         let Some(rows) = import_field(id, "checks", opt_array(tv, "checks"))? else {
             return Ok(());
         };
+        let sql = format!(
+            "INSERT INTO checks (id, task_id, body, state, evidence, position, created, \
+             modified) VALUES (?1,?2,?3,?4,?5,?6,?7,?8) ON CONFLICT(id) {}",
+            if merge && !take_payload {
+                "DO NOTHING"
+            } else {
+                "DO UPDATE SET \
+                 task_id=excluded.task_id, body=excluded.body, state=excluded.state, \
+                 evidence=excluded.evidence, position=excluded.position, \
+                 created=excluded.created, modified=excluded.modified"
+            }
+        );
         for (n, c) in rows.iter().enumerate() {
             import_keys(&format!("task {id}, "), "checks[]", c, IMPORT_CHECK_KEYS)?;
             let cid = import_field(id, "checks[].id", opt_str_nonempty(c, "id"))?
@@ -317,12 +375,7 @@ impl Engine {
             let modified = import_field(id, "checks[].modified", opt_str_nonempty(c, "modified"))?
                 .unwrap_or_else(|| created.clone());
             tx.execute(
-                "INSERT INTO checks (id, task_id, body, state, evidence, position, created, \
-                 modified) VALUES (?1,?2,?3,?4,?5,?6,?7,?8) \
-                 ON CONFLICT(id) DO UPDATE SET \
-                 task_id=excluded.task_id, body=excluded.body, state=excluded.state, \
-                 evidence=excluded.evidence, position=excluded.position, \
-                 created=excluded.created, modified=excluded.modified",
+                &sql,
                 params![cid, id, body, state, evidence, position, created, modified],
             )?;
         }
@@ -335,12 +388,20 @@ impl Engine {
     /// `token.add` enforces, with `import_field` naming the task — carrying
     /// an unknown source/confidence verbatim would let one bad payload
     /// re-export the corruption to every downstream store (D16).
+    ///
+    /// `merge` (D185) unions the ledger rather than replacing it, for the
+    /// reason annotations and checks are unioned: a measurement recorded on
+    /// the destination since the export is spend that really happened, and a
+    /// wholesale replace would subtract it from every budget reading.
     fn import_token_measurements(
         tx: &rusqlite::Transaction,
         id: &str,
         tv: &Value,
+        merge: bool,
     ) -> Result<(), ApiError> {
-        tx.execute("DELETE FROM token_usage WHERE task_id = ?1", params![id])?;
+        if !merge {
+            tx.execute("DELETE FROM token_usage WHERE task_id = ?1", params![id])?;
+        }
         if let Some(measurements) = import_field(id, "tokens", opt_array(tv, "tokens"))? {
             for m in measurements {
                 import_keys(&format!("task {id}, "), "tokens[]", m, IMPORT_TOKEN_KEYS)?;
@@ -380,15 +441,26 @@ impl Engine {
                 // — refuse and name the id instead. No FTS index hangs off
                 // token_usage, so the annotations' trigger reasoning does
                 // not apply here.
-                let taken: bool = tx.query_row(
-                    "SELECT EXISTS(SELECT 1 FROM token_usage WHERE id = ?1)",
-                    params![mid],
-                    |r| r.get(0),
-                )?;
+                //
+                // D185: on a merge nothing was deleted, so a row this very
+                // task already holds under that id is the SAME measurement
+                // arriving a second time, not a stolen one — the idempotent
+                // answer is to leave it alone. An id held by a DIFFERENT
+                // task is still the fault above, merge or not.
+                let holder: Option<String> = tx
+                    .query_row(
+                        "SELECT task_id FROM token_usage WHERE id = ?1",
+                        params![mid],
+                        |r| r.get(0),
+                    )
+                    .optional()?;
+                if merge && holder.as_deref() == Some(id) {
+                    continue;
+                }
                 import_field(
                     id,
                     "tokens[].id",
-                    if taken {
+                    if holder.is_some() {
                         Err(ApiError::bad_request(format!(
                             "measurement id {mid:?} appears more than once in the \
                              import (or belongs to a task outside it) — every \
@@ -791,6 +863,11 @@ impl Engine {
     /// same `BEGIN IMMEDIATE`; only the very last step differs.
     pub fn store_import(&self, p: &Value) -> Result<Value, ApiError> {
         let dry_run = opt_bool(p, "dry_run")?.unwrap_or(false);
+        // D185: default false, so a restore keeps D138's wholesale replace.
+        // True turns a KNOWN task's child tables into unions and its scalars
+        // into D3's per-field last-writer-wins, which is what makes two live
+        // stores mergeable in either direction.
+        let merge = opt_bool(p, "merge")?.unwrap_or(false);
         let tasks = req_array(p, "tasks").map_err(|e| {
             ApiError::bad_request(format!(
                 "{} — store.import requires a `tasks` array",
@@ -826,6 +903,14 @@ impl Engine {
         // D177: every task whose number this store was already using, and the
         // number it took instead. Always reported, empty when nothing moved.
         let mut renumbered: Vec<Value> = Vec::new();
+        // D185: one entry per task this store ALREADY held when `merge` was
+        // asked for — `(id, took, rev_target, changed)`. `took` names which
+        // side's scalars stand, and the last two carry the deferred `rev`
+        // bump: the edges only land in pass 2, so a merge that added nothing
+        // but an edge cannot know it changed anything until after that pass.
+        // Always reported (as `{id, took}`), empty when `merge` is false or
+        // the document held nothing this store had seen — `renumbered`'s rule.
+        let mut merged: Vec<(String, &'static str, i64, bool)> = Vec::new();
         // D181: payload id -> the id that row actually landed under, per node
         // kind, filled by the passes that write those rows and read by the
         // links pass. It holds the kinds whose stored id CAN differ from the
@@ -1604,12 +1689,32 @@ impl Engine {
             // stored rev still passes, which is what keeps re-importing a
             // store's own export (D12's round trip) a no-op rather than a
             // refusal.
-            let stored_rev: Option<i64> = tx
-                .query_row("SELECT rev FROM tasks WHERE id = ?1", params![id], |r| {
-                    r.get(0)
-                })
+            //
+            // D185: `merge` skips it outright for this task, and `modified`
+            // decides instead. The two counters were minted independently, on
+            // stores that never saw each other's writes, so a payload at a
+            // lower `_rev` is not a stale copy of this task but a different
+            // count of a different history — D183's reasoning for a doc's
+            // `rev`, one table over — and nothing is discarded either way,
+            // because every child table below is a union on a merge.
+            let stored: Option<(i64, String)> = tx
+                .query_row(
+                    "SELECT rev, modified FROM tasks WHERE id = ?1",
+                    params![id],
+                    |r| Ok((r.get(0)?, r.get(1)?)),
+                )
                 .optional()?;
-            if let Some(stored) = stored_rev {
+            let merging = merge && stored.is_some();
+            // D3's per-field last-writer-wins at the import door: `modified` is
+            // the one stamp both machines mean the same thing by. A tie keeps
+            // the store's copy, which is what makes importing one document
+            // twice leave the scalars alone.
+            let take_payload = match &stored {
+                Some((_, held)) => parse_ts(&modified) > parse_ts(held),
+                None => true,
+            };
+            let stored_rev = stored.as_ref().map(|(r, _)| *r);
+            if let Some(stored) = stored_rev.filter(|_| !merging) {
                 if stored > rev {
                     return Err(ApiError::conflict(format!(
                         "store.import: task {id} carries _rev {rev}, but the store already holds \
@@ -1644,8 +1749,26 @@ impl Engine {
             // of: absent beside a present `tracked_seconds` means the payload's
             // total carries no correction (0); absent beside an absent total
             // keeps what the store holds, as the total itself does.
-            tx.execute(
-                "INSERT INTO tasks (id, short_id, title, status, priority, project, due, \
+            //
+            // D185: on a merge the row already exists and the scalars follow
+            // the later `modified`, so this statement runs only when the
+            // PAYLOAD is that side; when the store is, nothing here is
+            // touched at all and only the child unions below happen. The
+            // `rev` it writes is `max(stored, payload) + 1` — one past
+            // whichever counter was higher, so neither store's own
+            // `expected_rev` guard (D13) reads the merge as a rewind.
+            let rev_target = match stored_rev.filter(|_| merging) {
+                Some(held) => held.max(rev).saturating_add(1),
+                None => rev,
+            };
+            let children_before = if merging {
+                Self::child_row_count(&tx, id)?
+            } else {
+                0
+            };
+            if !merging || take_payload {
+                tx.execute(
+                    "INSERT INTO tasks (id, short_id, title, status, priority, project, due, \
                  scheduled, wait, estimate, recurrence, urgency, active_since, tracked_seconds, \
                  rev, created, modified, completed, remind, budget_tokens, \
                  delivered_annotation_id, tracked_adjustment_seconds, spawned_from) \
@@ -1663,36 +1786,40 @@ impl Engine {
                  tracked_adjustment_seconds = COALESCE(?23, \
                  CASE WHEN ?20 IS NULL THEN tracked_adjustment_seconds ELSE 0 END), \
                  spawned_from=?24",
-                params![
-                    id,
-                    short_id,
-                    title,
-                    status,
-                    priority,
-                    project,
-                    due,
-                    scheduled,
-                    wait,
-                    estimate,
-                    recurrence,
-                    urgency,
-                    rev,
-                    created,
-                    modified,
-                    completed,
-                    remind,
-                    active_since,
-                    now(),
-                    tracked_seconds,
-                    budget_tokens,
-                    delivered_annotation_id,
-                    tracked_adjustment_seconds,
-                    spawned_from
-                ],
-            )?;
+                    params![
+                        id,
+                        short_id,
+                        title,
+                        status,
+                        priority,
+                        project,
+                        due,
+                        scheduled,
+                        wait,
+                        estimate,
+                        recurrence,
+                        urgency,
+                        rev_target,
+                        created,
+                        modified,
+                        completed,
+                        remind,
+                        active_since,
+                        now(),
+                        tracked_seconds,
+                        budget_tokens,
+                        delivered_annotation_id,
+                        tracked_adjustment_seconds,
+                        spawned_from
+                    ],
+                )?;
+            }
 
-            // Replace tags.
-            tx.execute("DELETE FROM task_tags WHERE task_id = ?1", params![id])?;
+            // Replace tags — or union them, on a merge: a tag set is D3's
+            // "already commutes" case, so both sides' labels stand.
+            if !merging {
+                tx.execute("DELETE FROM task_tags WHERE task_id = ?1", params![id])?;
+            }
             for tg in import_field(
                 id,
                 "tags",
@@ -1701,17 +1828,36 @@ impl Engine {
                 ensure_tag_link(&tx, id, &tg)?;
             }
 
-            Self::import_annotations(&tx, id, tv)?;
-            Self::import_checks(&tx, id, tv)?;
-            Self::import_token_measurements(&tx, id, tv)?;
+            Self::import_annotations(&tx, id, tv, merging)?;
+            Self::import_checks(&tx, id, tv, merging, take_payload)?;
+            Self::import_token_measurements(&tx, id, tv, merging)?;
 
             // Edges are deferred to pass 2: a payload may list a target *after*
-            // its dependent, and the FOREIGN KEY would reject it here.
-            tx.execute("DELETE FROM dependencies WHERE task_id = ?1", params![id])?;
+            // its dependent, and the FOREIGN KEY would reject it here. A merge
+            // keeps the destination's own edges and lets the payload's join
+            // them, the way its tags do — pass 2's `INSERT OR IGNORE` already
+            // makes the union idempotent, and the cycle and self-dependency
+            // guards there run on the union rather than on the payload alone.
+            if !merging {
+                tx.execute("DELETE FROM dependencies WHERE task_id = ?1", params![id])?;
+            }
             edges.push((
                 id.to_string(),
                 import_field(id, "depends_on", opt_str_array(tv, "depends_on"))?,
             ));
+            if merging {
+                // An upsert reports a row affected even when it rewrote the
+                // same bytes, so "did this merge add anything" is counted from
+                // the child rows themselves; pass 2 finishes the answer with
+                // the edges it inserts.
+                let changed = take_payload || Self::child_row_count(&tx, id)? != children_before;
+                merged.push((
+                    id.to_string(),
+                    if take_payload { "payload" } else { "store" },
+                    rev_target,
+                    changed,
+                ));
+            }
 
             insert_event(
                 &tx,
@@ -1765,9 +1911,31 @@ impl Engine {
                          {d} already depends on {id}"
                     )));
                 }
-                tx.execute(
+                let inserted = tx.execute(
                     "INSERT OR IGNORE INTO dependencies (task_id, depends_on_id) VALUES (?1,?2)",
                     params![id, d],
+                )?;
+                // D185: an edge the destination did not have is the one change
+                // a merge can make after the task loop already asked itself
+                // whether anything changed.
+                if inserted > 0 {
+                    if let Some(e) = merged.iter_mut().find(|(m, ..)| m == id) {
+                        e.3 = true;
+                    }
+                }
+            }
+        }
+        // D185: the deferred half of the `rev` bump. A merge whose SCALARS came
+        // from the payload already wrote `max(stored, payload) + 1` in the
+        // upsert above; one that kept the store's row did not write to `tasks`
+        // at all, so the counter moves here — and only when the union actually
+        // brought something in, which is what keeps merging one document twice
+        // a no-op rather than a walk up the counter.
+        for (id, took, rev_target, changed) in &merged {
+            if *took == "store" && *changed {
+                tx.execute(
+                    "UPDATE tasks SET rev = ?2 WHERE id = ?1",
+                    params![id, rev_target],
                 )?;
             }
         }
@@ -2016,6 +2184,14 @@ impl Engine {
             // D183: every doc that merged onto a row this store already held
             // under the same `source`, and which copy's text won.
             "docs_merged": docs_merged,
+            // D185: every task this store already held that `merge` unioned
+            // rather than replaced, and which side's scalars stand. Always
+            // present, empty when `merge` was not asked for or the document
+            // carried nothing this store had seen.
+            "merged": merged
+                .iter()
+                .map(|(id, took, ..)| json!({ "id": id, "took": took }))
+                .collect::<Vec<Value>>(),
             // D184: always present, false on a real run — the same rule every
             // other additive result field in this answer already follows.
             "dry_run": dry_run,
@@ -2662,6 +2838,334 @@ mod tests {
         // of work" are exactly as they were.
         let after = e.store_export(&json!({})).expect("export");
         assert_eq!(after, live, "a refused import must not touch the store");
+    }
+
+    /// D185: the destination's own notes and checks survive a merge, and the
+    /// payload's arrive beside them. Without `merge` the child tables are
+    /// DELETEd and reinserted from the payload (D138), so whichever side's
+    /// export lost the `_rev` race lost every note written since — the defect
+    /// that made two live stores unmergeable in either direction.
+    #[test]
+    fn store_import_merge_keeps_notes_and_checks_written_on_both_sides() {
+        let a = Engine::open_in_memory().expect("open a");
+        let added = a.task_add(&json!({ "title": "shared work" })).expect("add");
+        let sid = added["short_id"].as_i64().expect("short_id");
+        a.annotation_add(&json!({ "ref": sid, "body": "N0 the original context" }))
+            .expect("N0");
+        a.check_add(&json!({ "ref": sid, "body": "C0 the original criterion" }))
+            .expect("C0");
+
+        // One export seeds the second machine, so both hold the same task
+        // under the same id, with the same annotation and check.
+        let seed = a.store_export(&json!({})).expect("export the seed");
+        let b = Engine::open_in_memory().expect("open b");
+        b.store_import(&seed).expect("seed b");
+
+        a.annotation_add(&json!({ "ref": sid, "body": "NA written on machine A" }))
+            .expect("NA");
+        a.check_add(&json!({ "ref": sid, "body": "CA claimed on machine A" }))
+            .expect("CA");
+        b.annotation_add(&json!({ "ref": sid, "body": "NB written on machine B" }))
+            .expect("NB");
+        b.check_add(&json!({ "ref": sid, "body": "CB claimed on machine B" }))
+            .expect("CB");
+
+        let mut payload = a.store_export(&json!({})).expect("export a");
+        payload["merge"] = json!(true);
+        b.store_import(&payload).expect("a merge must not refuse");
+
+        let after = b.store_export(&json!({})).expect("export b");
+        let bodies: Vec<&str> = after["tasks"][0]["annotations"]
+            .as_array()
+            .expect("annotations")
+            .iter()
+            .filter_map(|a| a["body"].as_str())
+            .collect();
+        for note in [
+            "N0 the original context",
+            "NA written on machine A",
+            "NB written on machine B",
+        ] {
+            assert_eq!(
+                bodies.iter().filter(|b| **b == note).count(),
+                1,
+                "{note} must survive exactly once: {bodies:?}"
+            );
+        }
+        assert_eq!(bodies.len(), 3, "and nothing else: {bodies:?}");
+
+        let checks: Vec<&str> = after["tasks"][0]["checks"]
+            .as_array()
+            .expect("checks")
+            .iter()
+            .filter_map(|c| c["body"].as_str())
+            .collect();
+        for claim in [
+            "C0 the original criterion",
+            "CA claimed on machine A",
+            "CB claimed on machine B",
+        ] {
+            assert_eq!(
+                checks.iter().filter(|c| **c == claim).count(),
+                1,
+                "{claim} must survive exactly once: {checks:?}"
+            );
+        }
+        assert_eq!(checks.len(), 3, "and nothing else: {checks:?}");
+    }
+
+    /// D185: tags and dependency edges are sets, so a merge unions them — the
+    /// destination keeps what it tagged and wired, and the payload's arrive
+    /// beside it. The cycle and self-dependency guards still run on the union.
+    #[test]
+    fn store_import_merge_unions_tags_and_edges() {
+        let a = Engine::open_in_memory().expect("open a");
+        let t = a
+            .task_add(&json!({ "title": "the dependent" }))
+            .expect("add");
+        let u = a.task_add(&json!({ "title": "the blocker" })).expect("add");
+        let t_sid = t["short_id"].as_i64().expect("short_id");
+        let u_sid = u["short_id"].as_i64().expect("short_id");
+        let t_id = t["id"].as_str().expect("id").to_string();
+
+        let seed = a.store_export(&json!({})).expect("export the seed");
+        let b = Engine::open_in_memory().expect("open b");
+        b.store_import(&seed).expect("seed b");
+
+        a.tag_add(&json!({ "ref": t_sid, "tags": ["x"] }))
+            .expect("x");
+        a.dependency_add(&json!({ "ref": t_sid, "depends_on": u_sid }))
+            .expect("edge");
+        b.tag_add(&json!({ "ref": t_sid, "tags": ["y"] }))
+            .expect("y");
+
+        let mut payload = a.store_export(&json!({})).expect("export a");
+        payload["merge"] = json!(true);
+        b.store_import(&payload).expect("a merge must not refuse");
+
+        let after = b.task_get(&json!({ "ref": t_id })).expect("get t");
+        let mut tags: Vec<&str> = after["tags"]
+            .as_array()
+            .expect("tags")
+            .iter()
+            .filter_map(Value::as_str)
+            .collect();
+        tags.sort_unstable();
+        assert_eq!(tags, ["x", "y"], "both sides' tags must survive: {after}");
+        assert_eq!(
+            after["depends_on"],
+            json!([u_sid]),
+            "the payload's edge must be wired: {after}"
+        );
+    }
+
+    /// D185 applies D3's per-field last-writer-wins at the import door: the
+    /// scalars follow the later `modified`, the one stamp two independently
+    /// minted stores mean the same thing by, and `merged` names which side won.
+    #[test]
+    fn store_import_merge_takes_scalars_from_the_later_modified_side() {
+        let newer = Engine::open_in_memory().expect("open");
+        let added = newer
+            .task_add(&json!({ "title": "the stored title" }))
+            .expect("add");
+        let id = added["id"].as_str().expect("id").to_string();
+        let sid = added["short_id"].as_i64().expect("short_id");
+
+        let r = newer
+            .store_import(&json!({
+                "merge": true,
+                "tasks": [{
+                    "id": id,
+                    "short_id": sid,
+                    "title": "the payload title",
+                    "modified": "2099-01-01T00:00:00Z",
+                }],
+            }))
+            .expect("merge");
+        assert_eq!(
+            r["merged"],
+            json!([{ "id": id, "took": "payload" }]),
+            "a later payload wins the scalars, and says so: {r}"
+        );
+        let after = newer.task_get(&json!({ "ref": &id })).expect("get");
+        assert_eq!(after["title"], json!("the payload title"), "{after}");
+
+        // The same call with the stamps the other way round.
+        let older = Engine::open_in_memory().expect("open");
+        let added = older
+            .task_add(&json!({ "title": "the stored title" }))
+            .expect("add");
+        let id = added["id"].as_str().expect("id").to_string();
+        let sid = added["short_id"].as_i64().expect("short_id");
+        let r = older
+            .store_import(&json!({
+                "merge": true,
+                "tasks": [{
+                    "id": id,
+                    "short_id": sid,
+                    "title": "the payload title",
+                    "modified": "2000-01-01T00:00:00Z",
+                }],
+            }))
+            .expect("merge");
+        assert_eq!(
+            r["merged"],
+            json!([{ "id": id, "took": "store" }]),
+            "an older payload leaves the scalars alone, and says so: {r}"
+        );
+        let after = older.task_get(&json!({ "ref": &id })).expect("get");
+        assert_eq!(after["title"], json!("the stored title"), "{after}");
+    }
+
+    /// D185: the #177 `_rev` guard is skipped for a merged task. The two
+    /// counters were minted on stores that never saw each other's writes, so a
+    /// payload at a lower `_rev` is not a stale copy of this task — it is a
+    /// different count of a different history, which is D183's reasoning for
+    /// docs. The kept row takes `max(stored, payload) + 1`.
+    #[test]
+    fn store_import_merge_skips_the_rev_guard() {
+        let e = Engine::open_in_memory().expect("open");
+        let added = e
+            .task_add(&json!({ "title": "the stored title" }))
+            .expect("add");
+        let id = added["id"].as_str().expect("id").to_string();
+        let sid = added["short_id"].as_i64().expect("short_id");
+        e.annotation_add(&json!({ "ref": sid, "body": "written here since" }))
+            .expect("annotate");
+        e.annotation_add(&json!({ "ref": sid, "body": "and again" }))
+            .expect("annotate");
+        let stored_rev = e.store_export(&json!({})).expect("export")["tasks"][0]["_rev"]
+            .as_i64()
+            .expect("_rev");
+        assert!(stored_rev > 1, "the store must be ahead: {stored_rev}");
+
+        let payload = json!({
+            "tasks": [{
+                "id": id,
+                "short_id": sid,
+                "title": "from the other machine",
+                "modified": "2099-01-01T00:00:00Z",
+                "_rev": 1,
+                "annotations": [{ "body": "written over there" }],
+            }],
+        });
+        let err = e
+            .store_import(&payload)
+            .expect_err("without merge the guard still bites");
+        assert_eq!(err.code, ErrorCode::Conflict, "{}", err.message);
+
+        let mut merged = payload.clone();
+        merged["merge"] = json!(true);
+        let r = e.store_import(&merged).expect("a merge must not refuse");
+        assert_eq!(r["merged"], json!([{ "id": id, "took": "payload" }]), "{r}");
+
+        let after = e.store_export(&json!({})).expect("export");
+        assert_eq!(
+            after["tasks"][0]["_rev"],
+            json!(stored_rev + 1),
+            "max(stored, payload) + 1: {after}"
+        );
+        assert_eq!(
+            after["tasks"][0]["annotations"]
+                .as_array()
+                .expect("annotations")
+                .len(),
+            3,
+            "both sides' notes: {after}"
+        );
+    }
+
+    /// D138's contract, pinned: without `merge` the payload stays authoritative
+    /// about a known task's child rows — they are replaced wholesale — and a
+    /// payload behind the stored `_rev` is still refused.
+    #[test]
+    fn store_import_without_merge_still_replaces_wholesale_and_guards_rev() {
+        let e = Engine::open_in_memory().expect("open");
+        let added = e.task_add(&json!({ "title": "the task" })).expect("add");
+        let id = added["id"].as_str().expect("id").to_string();
+        let sid = added["short_id"].as_i64().expect("short_id");
+        e.annotation_add(&json!({ "ref": sid, "body": "written here" }))
+            .expect("annotate");
+        e.check_add(&json!({ "ref": sid, "body": "claimed here" }))
+            .expect("check");
+        e.tag_add(&json!({ "ref": sid, "tags": ["here"] }))
+            .expect("tag");
+
+        let stale = json!({ "tasks": [{
+            "id": id, "short_id": sid, "title": "the task", "_rev": 1,
+        }]});
+        let err = e
+            .store_import(&stale)
+            .expect_err("a payload behind the stored _rev is still refused");
+        assert_eq!(err.code, ErrorCode::Conflict, "{}", err.message);
+
+        let r = e
+            .store_import(&json!({ "tasks": [{
+                "id": id,
+                "short_id": sid,
+                "title": "the task",
+                "_rev": 99,
+                "annotations": [{ "body": "written over there" }],
+                "checks": [{ "body": "claimed over there" }],
+            }]}))
+            .expect("import");
+        assert_eq!(
+            r["merged"],
+            json!([]),
+            "`merged` is always present, empty without the flag: {r}"
+        );
+
+        let after = e.store_export(&json!({})).expect("export");
+        let t = &after["tasks"][0];
+        assert_eq!(
+            t["annotations"].as_array().expect("annotations").len(),
+            1,
+            "the payload replaces the notes wholesale: {t}"
+        );
+        assert_eq!(
+            t["annotations"][0]["body"],
+            json!("written over there"),
+            "{t}"
+        );
+        assert_eq!(
+            t["checks"].as_array().expect("checks").len(),
+            1,
+            "and the checks: {t}"
+        );
+        assert_eq!(t["checks"][0]["body"], json!("claimed over there"), "{t}");
+        assert_eq!(t["tags"], json!([]), "and the tags: {t}");
+    }
+
+    /// D184 composes with D185: a merge can be rehearsed. The report names
+    /// the side that would have won and the store is left byte-identical.
+    #[test]
+    fn store_import_merge_with_dry_run_writes_nothing() {
+        let e = Engine::open_in_memory().expect("open");
+        let added = e
+            .task_add(&json!({ "title": "the stored title" }))
+            .expect("add");
+        let id = added["id"].as_str().expect("id").to_string();
+        let sid = added["short_id"].as_i64().expect("short_id");
+        let before = e.store_export(&json!({})).expect("export");
+
+        let r = e
+            .store_import(&json!({
+                "merge": true,
+                "dry_run": true,
+                "tasks": [{
+                    "id": id,
+                    "short_id": sid,
+                    "title": "the payload title",
+                    "modified": "2099-01-01T00:00:00Z",
+                    "annotations": [{ "body": "written over there" }],
+                }],
+            }))
+            .expect("a dry merge");
+        assert_eq!(r["dry_run"], json!(true), "{r}");
+        assert_eq!(r["merged"], json!([{ "id": id, "took": "payload" }]), "{r}");
+
+        let after = e.store_export(&json!({})).expect("export");
+        assert_eq!(after, before, "a dry run must write nothing");
     }
 
     /// #84: the doc-branch counterpart to the test above. Restoring an OLDER

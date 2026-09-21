@@ -1389,6 +1389,9 @@ const R_STORE_IMPORT: Shape = &[&[
     req("docs_merged", Ty::Array),
     // D184: echoes the `dry_run` param — always present, false on a real run.
     req("dry_run", Ty::Bool),
+    // D185: every known task `merge` unioned instead of replacing, and which
+    // side's scalars stand. Always present, empty without the flag.
+    req("merged", Ty::Array),
 ]];
 
 const R_EVENT_LIST: Shape = &[&[

@@ -681,3 +681,73 @@ fn the_import_verb_dry_run_previews_and_writes_nothing() {
         "the real import must still land: {list}"
     );
 }
+
+/// D185, through the real `import` VERB: `--merge` keeps the notes this store
+/// wrote since the export and takes the payload's beside them, prints one line
+/// per task naming the copy whose scalars won, and composes with `--dry-run`
+/// so the same report can be read before anything is kept.
+#[test]
+fn the_import_verb_merge_unions_both_sides_and_previews_with_dry_run() {
+    let (dir, a_db) = store("mergeverb", "a");
+    let b_db = dir.join("b.db");
+    let _ = std::fs::remove_file(&b_db);
+
+    // One export seeds the second machine, so both hold the same task under
+    // the same id — the shape two laptops running `tasqx` end up in.
+    ok(&dir, &a_db, &["add", "shared work"]);
+    ok(&dir, &a_db, &["annotate", "1", "the original context"]);
+    let seed = dir.join("seed.json");
+    std::fs::write(&seed, ok(&dir, &a_db, &["export"])).expect("write seed");
+    ok(&dir, &b_db, &["import", seed.to_str().expect("utf8 path")]);
+
+    ok(&dir, &a_db, &["annotate", "1", "written on machine A"]);
+    ok(&dir, &b_db, &["annotate", "1", "written on machine B"]);
+    let theirs = dir.join("theirs.json");
+    std::fs::write(&theirs, ok(&dir, &a_db, &["export"])).expect("write theirs");
+    let path = theirs.to_str().expect("utf8 path");
+
+    let notes = |db: &Path| -> Vec<String> {
+        let shown: Value =
+            serde_json::from_str(&ok(&dir, db, &["show", "1", "--json"])).expect("show");
+        shown["annotations"]
+            .as_array()
+            .unwrap_or_else(|| panic!("annotations: {shown}"))
+            .iter()
+            .filter_map(|a| a["body"].as_str().map(str::to_string))
+            .collect()
+    };
+
+    let preview = ok(&dir, &b_db, &["import", path, "--merge", "--dry-run"]);
+    assert!(preview.starts_with("dry run:"), "{preview}");
+    assert!(
+        preview.contains("note: merged: task ") && preview.contains(" copy"),
+        "a merge must name the task and the copy that won: {preview}"
+    );
+    assert!(
+        preview.trim_end().ends_with("nothing was written"),
+        "{preview}"
+    );
+    assert_eq!(
+        notes(&b_db).len(),
+        2,
+        "a dry merge must leave the store exactly as it was"
+    );
+
+    let out = ok(&dir, &b_db, &["import", path, "--merge"]);
+    assert!(
+        out.contains("note: merged: task ") && out.contains(" copy"),
+        "{out}"
+    );
+    assert!(!out.contains("nothing was written"), "{out}");
+    let mut after = notes(&b_db);
+    after.sort();
+    assert_eq!(
+        after,
+        [
+            "the original context",
+            "written on machine A",
+            "written on machine B"
+        ],
+        "both sides' notes must survive, once each"
+    );
+}

@@ -1117,7 +1117,11 @@ fn execute(cli: Cli) -> Exit {
             filter,
             include_unscoped,
         }) => run_export(&mut backend, &filter, include_unscoped),
-        Some(Command::Import { file, dry_run }) => run_import(&mut backend, &ctx, file, dry_run),
+        Some(Command::Import {
+            file,
+            dry_run,
+            merge,
+        }) => run_import(&mut backend, &ctx, file, dry_run, merge),
         Some(Command::Next {
             filter,
             card,

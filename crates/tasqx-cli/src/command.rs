@@ -950,6 +950,11 @@ pub(super) enum Command {
         /// merge and refusal against this store without writing anything.
         #[arg(long)]
         dry_run: bool,
+        /// Merge a task this store already holds instead of replacing it
+        /// (D185): union its notes, checks, tags and edges, and take its
+        /// scalars from whichever side was modified later.
+        #[arg(long)]
+        merge: bool,
     },
     /// Print the single highest-urgency unblocked task (the "what now" button).
     #[command(after_help = crate::cmddoc::after_help("next"))]

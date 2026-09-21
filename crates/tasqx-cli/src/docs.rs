@@ -590,10 +590,11 @@ const METHODS: [(&str, &str, &str); 49] = [
     (
         "store.import",
         "<code>tasks</code>, <code>projects?</code>, <code>default_project?</code>, \
-         <code>docs?</code>, <code>events?</code>, <code>links?</code>, <code>dry_run?</code>",
+         <code>docs?</code>, <code>events?</code>, <code>links?</code>, <code>dry_run?</code>, \
+         <code>merge?</code>",
         "<code>{imported, projects_imported, projects_created, docs_imported, docs_declared, \
          events_imported, links_imported, default_project, renumbered, docs_merged, \
-         dry_run}</code>. \
+         dry_run, merged}</code>. \
          A task already in \
          the store at a higher <code>_rev</code> than the payload's refuses the whole import \
          (conflict) rather than silently discarding the annotations, tags and edges added since. \
@@ -606,7 +607,11 @@ const METHODS: [(&str, &str, &str); 49] = [
          ends resolved against what this store now holds; an end it does not have refuses the \
          import by name (D181). <code>dry_run</code> (default false) runs the entire import — \
          every renumbering, merge and refusal — and rolls it back instead of committing, so the \
-         same answer previews what a real import would do (D184).",
+         same answer previews what a real import would do (D184). <code>merge</code> (default \
+         false) unions a KNOWN task's annotations, checks, tags and dependency edges with what \
+         this store already holds instead of replacing them, skips its <code>_rev</code> guard \
+         and takes its scalars from whichever side's <code>modified</code> is later — listed in \
+         <code>merged</code> as <code>{id, took}</code> (D185).",
     ),
     (
         "event.list",
