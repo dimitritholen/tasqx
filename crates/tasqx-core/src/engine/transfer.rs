@@ -904,6 +904,12 @@ impl Engine {
         let docs_param = opt_array(p, "docs")?.cloned();
         let docs_declared = docs_param.is_some();
         let mut docs_imported = 0i64;
+        // D182: every doc that landed on a row this store already held under
+        // the same `source`. Always reported, empty when nothing merged — the
+        // rule `renumbered` and `projects_created` already follow, and for
+        // their reason: an id the import dropped is a write the caller did not
+        // ask for.
+        let mut docs_merged: Vec<Value> = Vec::new();
         if let Some(rows) = docs_param {
             for dv in &rows {
                 let dv = import_shape("", "doc", dv)?;
@@ -953,6 +959,82 @@ impl Engine {
                 // `memory.add`/`memory.import` compute it at their own write
                 // doors, so a restored store's index matches its content.
                 let search_body = crate::frontmatter::flatten(&body).into_owned();
+                // D182, before the `_rev` guard and before D174's refusal,
+                // because neither one is about this case. Two machines that
+                // each ran `tasqx memory import docs/` hold one file under one
+                // `source` (D179) and two ids, because each store minted its
+                // own — and D174 already says the source IS the doc's
+                // identity, so the arriving row is that doc, not a second
+                // holder of its source. It merges onto the stored row the way
+                // D177's task takes a free number: the id this store addresses
+                // the doc by is kept, the payload's is dropped, and the remap
+                // carries every link and event that named it onto the survivor.
+                //
+                // The `_rev` guard cannot decide which copy is newer here: the
+                // two counters were minted independently, on two stores that
+                // never saw each other's writes, so a payload at `_rev` 99 says
+                // nothing about a stored row at 3. `modified` is the one field
+                // that means the same thing on both machines, so the later edit
+                // carries the text — and a tie keeps the store's copy, which is
+                // what makes importing the same document twice a no-op.
+                let held: Option<(String, String)> =
+                    match source.as_deref().filter(|s| !s.is_empty()) {
+                        Some(s) => tx
+                            .query_row(
+                                // `source <> ''` restates the D174 index's
+                                // predicate so the planner can use it.
+                                "SELECT id, modified FROM docs WHERE source = ?1 AND source <> ''",
+                                params![s],
+                                |r| Ok((r.get(0)?, r.get(1)?)),
+                            )
+                            .optional()?,
+                        None => None,
+                    };
+                if let Some((kept_id, held_modified)) = held.filter(|(id, _)| *id != did) {
+                    let took = if parse_ts(&modified) > parse_ts(&held_modified) {
+                        // D143's rule for a text-changing write: the KEPT row's
+                        // own counter, one past where it stands, never the
+                        // payload's. `origin_*` is left alone — D180 says it
+                        // describes one machine's read of one file, and this
+                        // row was read on the other machine.
+                        tx.execute(
+                            "UPDATE docs SET title = ?2, body = ?3, search_body = ?4, \
+                             project = ?5, standing = ?6, modified = ?7, rev = rev + 1 \
+                             WHERE id = ?1",
+                            params![
+                                kept_id,
+                                title,
+                                body,
+                                search_body,
+                                project,
+                                standing,
+                                modified
+                            ],
+                        )?;
+                        "payload"
+                    } else {
+                        "store"
+                    };
+                    docs_merged.push(json!({
+                        "source": source,
+                        "kept_id": kept_id,
+                        "dropped_id": did,
+                        "took": took,
+                    }));
+                    // D181's seam, used for the first time: the payload's id is
+                    // not a row here, so a link or an event naming it has to be
+                    // re-pointed at the doc that kept the source.
+                    remap.insert((NodeType::Memory, did.clone()), kept_id.clone());
+                    insert_event(
+                        &tx,
+                        Entity::Doc,
+                        &kept_id,
+                        "memory.add",
+                        &json!({ "title": title, "source": source, "via": "store.import" }),
+                    )?;
+                    docs_imported += 1;
+                    continue;
+                }
                 // #84: the doc counterpart of the #177 guard above. An older
                 // payload would rewind the doc's body and rev, reopening D143's
                 // stale-`expected_rev` clobber; same or higher rev still passes (D12).
@@ -1071,6 +1153,18 @@ impl Engine {
                     link_events.push((eid, entity_id, op, payload.to_string(), ts, actor));
                     continue;
                 }
+                // D182: a doc event naming an id this import merged away lands
+                // under the doc that kept the source, the way a link event
+                // passes through `link_remap` below. Nothing is staged for it:
+                // the docs pass runs ABOVE this one, so the table already knows
+                // where every doc in this document landed.
+                let entity_id = match entity {
+                    Entity::Doc => remap
+                        .get(&(NodeType::Memory, entity_id.clone()))
+                        .cloned()
+                        .unwrap_or(entity_id),
+                    _ => entity_id,
+                };
                 let n = tx.execute(
                     "INSERT OR IGNORE INTO events (id, entity, entity_id, op, payload, ts, actor) \
                      VALUES (?1,?2,?3,?4,?5,?6,?7)",
@@ -1831,7 +1925,7 @@ impl Engine {
         let default_project = standing.or_else(|| want_default.clone());
         tx.commit()?;
 
-        // All nine always present: a machine consumer must be able to tell "no
+        // All ten always present: a machine consumer must be able to tell "no
         // projects in the document" from "this build does not report them", the
         // same reason `dropped_dependencies` and `default_cleared` are never
         // omitted.
@@ -1855,6 +1949,9 @@ impl Engine {
             "links_imported": links_imported,
             "default_project": default_project,
             "renumbered": renumbered,
+            // D182: every doc that merged onto a row this store already held
+            // under the same `source`, and which copy's text won.
+            "docs_merged": docs_merged,
         }))
     }
 }
@@ -2544,6 +2641,294 @@ mod tests {
         let after = e.store_export(&json!({})).expect("export");
         assert_eq!(after["docs"][0]["_rev"], json!(5), "{after}");
         assert_eq!(after["docs"][0]["body"], json!("v2"), "{after}");
+    }
+
+    /// D182: two machines that each ran `tasqx memory import docs/` hold one
+    /// file under one `source` (D179) and two ids, because each store minted
+    /// its own. D174 already says the source IS the doc's identity, so the
+    /// arriving row is the same doc, not a second holder to refuse — and the
+    /// later `modified` carries the text, the way the later edit does
+    /// everywhere else.
+    #[test]
+    fn store_import_merges_a_doc_onto_the_one_holding_its_source_when_the_payload_is_newer() {
+        const OURS: &str = "0193aaaa-0000-7000-8000-0000000000a1";
+        const THEIRS: &str = "0193aaaa-0000-7000-8000-0000000000b1";
+        let e = Engine::open_in_memory().expect("open");
+        e.store_import(&json!({
+            "tasks": [],
+            "docs": [{
+                "id": OURS,
+                "source": "docs/a.md",
+                "title": "this store's spelling",
+                "body": "the copy imported here",
+                "modified": "2026-09-01T00:00:00Z",
+                "_rev": 3,
+            }],
+        }))
+        .expect("seed the destination");
+
+        let r = e
+            .store_import(&json!({
+                "tasks": [],
+                "docs": [{
+                    "id": THEIRS,
+                    "source": "docs/a.md",
+                    "title": "the other machine's spelling",
+                    "body": "the copy imported there, later",
+                    "modified": "2026-09-02T00:00:00Z",
+                    "_rev": 0,
+                }],
+            }))
+            .expect("a doc whose source another id holds must merge, not conflict");
+
+        assert_eq!(r["docs_imported"], json!(1), "{r}");
+        assert_eq!(
+            r["docs_merged"],
+            json!([{
+                "source": "docs/a.md",
+                "kept_id": OURS,
+                "dropped_id": THEIRS,
+                "took": "payload",
+            }]),
+            "every merge is reported, with both ids and which copy won: {r}"
+        );
+
+        let after = e.store_export(&json!({})).expect("export");
+        assert_eq!(
+            after["docs"].as_array().expect("docs").len(),
+            1,
+            "one source is one doc (D174): {after}"
+        );
+        assert_eq!(after["docs"][0]["id"], json!(OURS), "{after}");
+        assert_eq!(
+            after["docs"][0]["body"],
+            json!("the copy imported there, later"),
+            "the later `modified` carries the text: {after}"
+        );
+        assert_eq!(
+            after["docs"][0]["title"],
+            json!("the other machine's spelling"),
+            "{after}"
+        );
+        assert_eq!(
+            after["docs"][0]["_rev"],
+            json!(4),
+            "a text-changing write bumps the kept row's own counter (D143): {after}"
+        );
+
+        let err = e
+            .memory_get(&json!({ "id": THEIRS }))
+            .expect_err("the payload's id is dropped, not stored beside the one it merged onto");
+        assert_eq!(err.code, ErrorCode::NotFound, "{}", err.message);
+    }
+
+    /// The other half of D182's tiebreak: a payload no newer than the row
+    /// already here changes nothing — the merge is still reported, because the
+    /// caller's id was dropped either way.
+    #[test]
+    fn store_import_keeps_the_stored_doc_when_the_payload_is_older_or_equal() {
+        const OURS: &str = "0193aaaa-0000-7000-8000-0000000000a2";
+        const THEIRS: &str = "0193aaaa-0000-7000-8000-0000000000b2";
+        let e = Engine::open_in_memory().expect("open");
+        e.store_import(&json!({
+            "tasks": [],
+            "docs": [{
+                "id": OURS,
+                "source": "docs/a.md",
+                "title": "kept",
+                "body": "the copy this store already has",
+                "modified": "2026-09-02T00:00:00Z",
+                "_rev": 3,
+            }],
+        }))
+        .expect("seed the destination");
+        let before = e.store_export(&json!({})).expect("export");
+
+        let r = e
+            .store_import(&json!({
+                "tasks": [],
+                "docs": [{
+                    "id": THEIRS,
+                    "source": "docs/a.md",
+                    "title": "older",
+                    "body": "the copy imported there, earlier",
+                    "modified": "2026-09-01T00:00:00Z",
+                    "_rev": 99,
+                }],
+            }))
+            .expect("import");
+
+        assert_eq!(
+            r["docs_merged"],
+            json!([{
+                "source": "docs/a.md",
+                "kept_id": OURS,
+                "dropped_id": THEIRS,
+                "took": "store",
+            }]),
+            "{r}"
+        );
+        assert_eq!(
+            e.store_export(&json!({})).expect("export"),
+            before,
+            "an older payload must not touch the row, not even its rev — a high \
+             `_rev` on an independently minted row is not a later edit"
+        );
+    }
+
+    /// Idempotence, the rule every other section of this method follows: the
+    /// same document imported twice leaves the store exactly as the first run
+    /// left it. The second run still REPORTS the merge — the report is about
+    /// the payload id that was dropped, not about bytes that changed.
+    #[test]
+    fn store_import_of_the_same_merged_document_twice_is_a_no_op() {
+        const OURS: &str = "0193aaaa-0000-7000-8000-0000000000a3";
+        const THEIRS: &str = "0193aaaa-0000-7000-8000-0000000000b3";
+        let e = Engine::open_in_memory().expect("open");
+        e.store_import(&json!({
+            "tasks": [],
+            "docs": [{
+                "id": OURS,
+                "source": "docs/a.md",
+                "title": "ours",
+                "body": "v1",
+                "modified": "2026-09-01T00:00:00Z",
+            }],
+        }))
+        .expect("seed the destination");
+        let payload = json!({
+            "tasks": [],
+            "docs": [{
+                "id": THEIRS,
+                "source": "docs/a.md",
+                "title": "theirs",
+                "body": "v2",
+                "modified": "2026-09-02T00:00:00Z",
+            }],
+        });
+
+        e.store_import(&payload).expect("first import");
+        let once = e.store_export(&json!({})).expect("export");
+
+        let r = e.store_import(&payload).expect("second import");
+        assert_eq!(
+            r["docs_merged"][0]["took"],
+            json!("store"),
+            "the second run finds its own text already here, at the same instant: {r}"
+        );
+        assert_eq!(
+            e.store_export(&json!({})).expect("export"),
+            once,
+            "importing the same document twice must change nothing the second time"
+        );
+    }
+
+    /// A payload doc the store ALREADY holds under the SAME id is untouched by
+    /// D182 — it is not a second holder of anything, so #84's rewind guard is
+    /// still the rule that decides it.
+    #[test]
+    fn store_import_same_id_doc_still_goes_through_the_rev_guard() {
+        const ID: &str = "0193aaaa-0000-7000-8000-0000000000a4";
+        let e = Engine::open_in_memory().expect("open");
+        e.store_import(&json!({
+            "tasks": [],
+            "docs": [{
+                "id": ID,
+                "source": "docs/a.md",
+                "title": "note",
+                "body": "v2",
+                "modified": "2026-09-01T00:00:00Z",
+                "_rev": 2,
+            }],
+        }))
+        .expect("seed");
+
+        let err = e
+            .store_import(&json!({
+                "tasks": [],
+                "docs": [{
+                    "id": ID,
+                    "source": "docs/a.md",
+                    "title": "note",
+                    "body": "v1",
+                    "modified": "2026-09-09T00:00:00Z",
+                    "_rev": 1,
+                }],
+            }))
+            .expect_err("a stale _rev on the doc's OWN id is still a conflict");
+        assert_eq!(err.code, ErrorCode::Conflict, "{}", err.message);
+        assert_eq!(
+            e.store_export(&json!({})).expect("export")["docs"][0]["body"],
+            json!("v2"),
+            "the refusal wrote nothing"
+        );
+    }
+
+    /// D181 built the remap seam for exactly this: a link naming the payload's
+    /// doc id has to land on the row this store kept, or the restored graph
+    /// points at a doc nobody here holds. Its events follow the same table.
+    #[test]
+    fn a_link_to_a_merged_doc_follows_the_kept_id() {
+        const OURS: &str = "0193aaaa-0000-7000-8000-0000000000a5";
+        const THEIRS: &str = "0193aaaa-0000-7000-8000-0000000000b5";
+        const TASK: &str = "0193aaaa-0000-7000-8000-0000000000c5";
+        const LINK: &str = "0193aaaa-0000-7000-8000-0000000000d5";
+        const EVENT: &str = "0193aaaa-0000-7000-8000-0000000000e5";
+        let e = Engine::open_in_memory().expect("open");
+        e.store_import(&json!({
+            "tasks": [],
+            "docs": [{
+                "id": OURS,
+                "source": "docs/a.md",
+                "title": "ours",
+                "body": "v1",
+                "modified": "2026-09-01T00:00:00Z",
+            }],
+        }))
+        .expect("seed the destination");
+
+        e.store_import(&json!({
+            "tasks": [{ "id": TASK, "short_id": 40, "title": "cites the doc" }],
+            "docs": [{
+                "id": THEIRS,
+                "source": "docs/a.md",
+                "title": "theirs",
+                "body": "v2",
+                "modified": "2026-09-02T00:00:00Z",
+            }],
+            "links": [{
+                "id": LINK,
+                "from": format!("task:{TASK}"),
+                "to": format!("memory:{THEIRS}"),
+                "relation": "references",
+            }],
+            "events": [{
+                "id": EVENT,
+                "entity": "doc",
+                "entity_id": THEIRS,
+                "op": "memory.update",
+                "ts": "2026-09-02T00:00:00Z",
+            }],
+        }))
+        .expect("import");
+
+        let links = e.link_list(&json!({})).expect("link.list");
+        assert_eq!(
+            links["links"][0]["to"],
+            json!(format!("memory:{OURS}")),
+            "the end must follow the merge onto the row this store kept: {links}"
+        );
+        let events = e
+            .event_list(&json!({ "entity": "doc" }))
+            .expect("event.list");
+        assert!(
+            events["events"]
+                .as_array()
+                .expect("events")
+                .iter()
+                .any(|ev| ev["id"] == json!(EVENT) && ev["entity_id"] == json!(OURS)),
+            "the merged doc's history must land under the id that kept the source: {events}"
+        );
     }
 
     /// #88: a lowercase-`z` stamp must sort by instant, not by bytes.
