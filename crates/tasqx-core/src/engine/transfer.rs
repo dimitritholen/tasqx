@@ -903,6 +903,29 @@ impl Engine {
         // `projects` above.
         let docs_param = opt_array(p, "docs")?.cloned();
         let docs_declared = docs_param.is_some();
+        // #800(a): a payload `docs` array naming one non-empty source twice
+        // would insert the first entry and merge the second onto it (D183),
+        // so the document imports order-dependently and `docs_imported`
+        // counts both — the same fault `memory.import` already refuses for
+        // its own `docs` array, in the same words (D174). Checked over the
+        // whole array before any doc is written.
+        if let Some(rows) = &docs_param {
+            let mut seen = HashSet::new();
+            let mut twice: Vec<&str> = Vec::new();
+            let sources = rows.iter().filter_map(|d| d.get("source")?.as_str());
+            for src in sources.filter(|s| !s.is_empty()) {
+                if !seen.insert(src) && !twice.contains(&src) {
+                    twice.push(src);
+                }
+            }
+            if !twice.is_empty() {
+                return Err(ApiError::bad_request(format!(
+                    "store.import names the same source more than once: {} — a source \
+                     names one doc (D174), so send each file once",
+                    twice.join(", ")
+                )));
+            }
+        }
         let mut docs_imported = 0i64;
         // D183: every doc that landed on a row this store already held under
         // the same `source`. Always reported, empty when nothing merged — the
@@ -991,6 +1014,26 @@ impl Engine {
                         None => None,
                     };
                 if let Some((kept_id, held_modified)) = held.filter(|(id, _)| *id != did) {
+                    // #800(b): the lookup above matched on `source`, not on
+                    // `did` — so `did` can itself already be a LIVE doc here,
+                    // under some other source, the destination's own second
+                    // identity for a different file. Merging it onto
+                    // `kept_id` would fold two files into one row and drop
+                    // whichever text lost the race, so this is refused
+                    // before anything moves.
+                    let did_is_live: bool = tx
+                        .query_row("SELECT 1 FROM docs WHERE id = ?1", params![did], |_| Ok(()))
+                        .optional()?
+                        .is_some();
+                    if did_is_live {
+                        let s = source.as_deref().unwrap_or_default();
+                        return Err(ApiError::conflict(format!(
+                            "store.import: doc {did} carries source {s:?}, which doc \
+                             {kept_id} already holds, and {did} is itself a different doc \
+                             here — two identities for one file cannot be merged (update \
+                             one of them first)"
+                        )));
+                    }
                     let took = if parse_ts(&modified) > parse_ts(&held_modified) {
                         // D143's rule for a text-changing write: the KEPT row's
                         // own counter, one past where it stands, never the
@@ -1866,6 +1909,11 @@ impl Engine {
         // only the entity_id passes through the table.
         for (eid, entity_id, op, payload, ts, actor) in link_events {
             let entity_id = link_remap.get(&entity_id).unwrap_or(&entity_id);
+            // #800(c): `entity_id` above is the LINK's own remap; the event's
+            // `payload` names its ends as free-standing `from`/`to` strings
+            // that remap never touches. A doc end D183's merge folded away
+            // still spells the dropped id there unless it is rewritten too.
+            let payload = remap_memory_ends(&payload, &remap);
             let n = tx.execute(
                 "INSERT OR IGNORE INTO events (id, entity, entity_id, op, payload, ts, actor) \
                  VALUES (?1,?2,?3,?4,?5,?6,?7)",
@@ -1998,6 +2046,41 @@ fn import_link_end(
         )));
     }
     Ok((ty, id.to_string()))
+}
+
+/// #800(c): rewrite a staged link event's `payload` so a `memory` end D183's
+/// docs pass merged away names the row it landed on, not the id the merge
+/// dropped.
+///
+/// `entity_id` above is `store_import`'s pass 2c re-pointing the EVENT ROW
+/// itself through `link_remap` — a different table, for a different reason
+/// (the twin-link branch). This is one field over: `from`/`to` are
+/// free-standing `<type>:<uuid>` strings INSIDE the payload's own JSON,
+/// which no remap touches on its way to the `events` table. Only a `memory`
+/// end with an id `remap` actually names is rewritten; any other shape —
+/// unparsable JSON, no `from`/`to`, a task or project end, an id `remap`
+/// does not carry — is passed through byte for byte, because this only ever
+/// tightens a doc end onto the row the docs pass already merged it onto.
+fn remap_memory_ends(payload: &str, remap: &HashMap<(NodeType, String), String>) -> String {
+    let Ok(Value::Object(mut obj)) = serde_json::from_str::<Value>(payload) else {
+        return payload.to_string();
+    };
+    for key in ["from", "to"] {
+        let Some((ty, id)) = obj
+            .get(key)
+            .and_then(Value::as_str)
+            .and_then(|s| s.split_once(':'))
+        else {
+            continue;
+        };
+        if ty != NodeType::Memory.as_str() {
+            continue;
+        }
+        if let Some(kept) = remap.get(&(NodeType::Memory, id.to_string())) {
+            obj.insert(key.to_string(), json!(format!("memory:{kept}")));
+        }
+    }
+    Value::Object(obj).to_string()
 }
 
 #[cfg(test)]
@@ -2643,6 +2726,110 @@ mod tests {
         assert_eq!(after["docs"][0]["body"], json!("v2"), "{after}");
     }
 
+    /// #800(a): a source names one doc (D174) — a payload `docs` array
+    /// naming it twice used to insert the first entry and merge the second
+    /// onto it (D183), so the document imported order-dependently. Refused
+    /// whole, the same rule `memory.import` already enforces for its own
+    /// `docs` array.
+    #[test]
+    fn store_import_refuses_a_duplicate_source_within_one_payload() {
+        let e = Engine::open_in_memory().expect("open");
+        let before = e.store_export(&json!({})).expect("export")["docs"]
+            .as_array()
+            .expect("docs")
+            .len();
+
+        let err = e
+            .store_import(&json!({
+                "tasks": [],
+                "docs": [
+                    {
+                        "id": "0193aaaa-0000-7000-8000-0000000000f1",
+                        "source": "docs/a.md",
+                        "title": "first",
+                        "body": "v1",
+                    },
+                    {
+                        "id": "0193aaaa-0000-7000-8000-0000000000f2",
+                        "source": "docs/a.md",
+                        "title": "second",
+                        "body": "v2",
+                    },
+                ],
+            }))
+            .expect_err("one source names one doc, so a payload cannot state it twice");
+        assert_eq!(err.code, ErrorCode::BadRequest, "{}", err.message);
+        assert!(
+            err.message.contains("docs/a.md"),
+            "the refusal must name the duplicated source: {}",
+            err.message
+        );
+        assert_eq!(
+            e.store_export(&json!({})).expect("export")["docs"]
+                .as_array()
+                .expect("docs")
+                .len(),
+            before,
+            "a refused import writes nothing at all"
+        );
+    }
+
+    /// #800(b): the D183 lookup above matches a payload doc by `source`, not
+    /// by its own `id` — so that `id` can already be a DIFFERENT live doc
+    /// here, under some other source. Folding it onto `kept_id` would merge
+    /// two files into one row, so this is a `conflict`, not a merge.
+    #[test]
+    fn store_import_refuses_a_payload_id_that_names_a_different_live_doc() {
+        const X: &str = "0193aaaa-0000-7000-8000-0000000000f3";
+        const Y: &str = "0193aaaa-0000-7000-8000-0000000000f4";
+        let e = Engine::open_in_memory().expect("open");
+        e.store_import(&json!({
+            "tasks": [],
+            "docs": [
+                {
+                    "id": X,
+                    "source": "docs/a.md",
+                    "title": "x",
+                    "body": "x's text",
+                },
+                {
+                    "id": Y,
+                    "source": "docs/b.md",
+                    "title": "y",
+                    "body": "y's text",
+                },
+            ],
+        }))
+        .expect("seed the destination");
+        let before = e.store_export(&json!({})).expect("export");
+
+        let err = e
+            .store_import(&json!({
+                "tasks": [],
+                "docs": [{
+                    "id": X,
+                    "source": "docs/b.md",
+                    "title": "x, relabelled as y's file",
+                    "body": "must not land anywhere",
+                    "modified": "2026-09-03T00:00:00Z",
+                }],
+            }))
+            .expect_err("X is itself a live doc here, not a second holder of Y's source");
+        assert_eq!(err.code, ErrorCode::Conflict, "{}", err.message);
+        for named in [X, Y, "docs/b.md"] {
+            assert!(
+                err.message.contains(named),
+                "the refusal must name both docs and the source ({named}): {}",
+                err.message
+            );
+        }
+        assert_eq!(
+            e.store_export(&json!({})).expect("export"),
+            before,
+            "a refused import writes nothing at all"
+        );
+    }
+
     /// D183: two machines that each ran `tasqx memory import docs/` hold one
     /// file under one `source` (D179) and two ids, because each store minted
     /// its own. D174 already says the source IS the doc's identity, so the
@@ -2928,6 +3115,85 @@ mod tests {
                 .iter()
                 .any(|ev| ev["id"] == json!(EVENT) && ev["entity_id"] == json!(OURS)),
             "the merged doc's history must land under the id that kept the source: {events}"
+        );
+    }
+
+    /// #800(c): a staged link EVENT's `entity_id` follows `link_remap` (pass
+    /// 2c, the twin-link table), but its own `payload` also spells the edge's
+    /// ends as free-standing `from`/`to` strings, which that remap never
+    /// touches. A doc end D183's docs pass merged away must be rewritten
+    /// there too, or the replayed history still names an id nobody here
+    /// holds.
+    #[test]
+    fn a_staged_link_event_names_the_kept_doc_in_its_payload() {
+        const KEPT: &str = "0193aaaa-0000-7000-8000-0000000000f5";
+        const DROPPED: &str = "0193aaaa-0000-7000-8000-0000000000f6";
+        const TASK: &str = "0193aaaa-0000-7000-8000-0000000000f7";
+        const LINK: &str = "0193aaaa-0000-7000-8000-0000000000f8";
+        const EVENT: &str = "0193aaaa-0000-7000-8000-0000000000f9";
+        let e = Engine::open_in_memory().expect("open");
+        e.store_import(&json!({
+            "tasks": [],
+            "docs": [{
+                "id": KEPT,
+                "source": "docs/a.md",
+                "title": "kept",
+                "body": "v1",
+                "modified": "2026-09-01T00:00:00Z",
+            }],
+        }))
+        .expect("seed the destination");
+
+        let r = e
+            .store_import(&json!({
+                "tasks": [{ "id": TASK, "short_id": 41, "title": "cites the doc" }],
+                "docs": [{
+                    "id": DROPPED,
+                    "source": "docs/a.md",
+                    "title": "dropped",
+                    "body": "v2",
+                    "modified": "2026-09-02T00:00:00Z",
+                }],
+                "links": [{
+                    "id": LINK,
+                    "from": format!("task:{TASK}"),
+                    "to": format!("memory:{DROPPED}"),
+                    "relation": "references",
+                }],
+                "events": [{
+                    "id": EVENT,
+                    "entity": "link",
+                    "entity_id": LINK,
+                    "op": "link.add",
+                    "payload": {
+                        "from": format!("task:{TASK}"),
+                        "to": format!("memory:{DROPPED}"),
+                        "relation": "references",
+                    },
+                    "ts": "2026-09-02T00:00:00Z",
+                }],
+            }))
+            .expect("import");
+        assert_eq!(r["docs_merged"][0]["kept_id"], json!(KEPT), "{r}");
+
+        let events = e
+            .event_list(&json!({ "entity": "link" }))
+            .expect("event.list");
+        let events = events["events"].as_array().expect("events array");
+        let stored = events
+            .iter()
+            .find(|ev| ev["id"] == json!(EVENT))
+            .expect("the staged event lands under its own id");
+        assert_eq!(
+            stored["payload"]["to"],
+            json!(format!("memory:{KEPT}")),
+            "the payload must name the doc that kept the source, not the one the merge \
+             dropped: {stored}"
+        );
+        assert_eq!(
+            stored["payload"]["from"],
+            json!(format!("task:{TASK}")),
+            "a non-memory end is left exactly as given: {stored}"
         );
     }
 
