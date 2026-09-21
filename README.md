@@ -1,6 +1,6 @@
 <div align="center">
 
-<img src="docs/brand/tasqx-wordmark-transparent.svg" alt="tasqx" width="440">
+<img src="docs/brand/tasqx-wordmark-outlined.svg" alt="tasqx" width="440">
 
 **The organiser for your AI.**
 
