@@ -131,6 +131,12 @@ tasqx memory import docs/adr
   like when it was read, so a later check can tell whether it has changed
   since; identity is still `source`, and `memory add` never sets them.
 
+Put together, this is one model, not three separate features: memory
+remembers which file a document came from, and checks that file only when
+you ask — a search, a brief, `--refresh`, or an agent session starting — never
+by watching the filesystem in the background. Nothing is ever deleted because
+a file moved or disappeared; it's named so you can decide what to do about it.
+
 ## tasqx memory rm
 
 Remove one document, permanently, by id.
