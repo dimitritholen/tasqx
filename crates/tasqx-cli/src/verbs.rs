@@ -1253,7 +1253,7 @@ pub(crate) fn run_memory_import(
     };
 
     // #784: `import_source` moved what this batch stores in `source` to the
-    // git-toplevel-relative spelling (D174 extends D178). A doc already
+    // git-toplevel-relative spelling (D174 extends D179). A doc already
     // holding an older spelling of the SAME file (`./docs/a.md`,
     // `/abs/.../docs/a.md`) is now a separate, stale-looking doc rather than
     // the one this batch just replaced — named here so a caller can retire it
