@@ -46,6 +46,14 @@ tasqx import backup.json
 tasqx export | tasqx import -
 ```
 
+A task whose number is already taken by a *different* task in this store keeps
+its id and gets the next free number instead of refusing the import; every move
+is listed under `renumbered`, with the number it came in as and the one it took.
+Dependencies, annotations and checks follow the id, so nothing breaks — but a
+branch name or a `#n` written down somewhere still points at the old number.
+A task this store already holds keeps the number it has here, so importing the
+same document twice changes nothing.
+
 Import is also the one way to un-archive a project: the export document
 records each project's archived flag, and importing restores it. See
 [Projects](Projects.md#tasqx-archive).
