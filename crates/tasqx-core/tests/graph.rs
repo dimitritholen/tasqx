@@ -137,6 +137,42 @@ fn a_missing_endpoint_is_not_found_by_short_id_and_by_uuid() {
     );
 }
 
+/// `annotation.remove` keeps the row and sets `removed` (D113); `link.add`
+/// must treat that row the way `store.import`'s own endpoint check now does
+/// (task #799) — a tombstone is not a node, on either door.
+#[test]
+fn a_removed_annotation_is_not_found_as_a_link_endpoint() {
+    let e = engine();
+    fixture(&e);
+    let annotation = ok(&e, "annotation.add", json!({ "ref": 1, "body": "note" }))["annotation"]
+        ["id"]
+        .as_str()
+        .expect("annotation id")
+        .to_string();
+    ok(
+        &e,
+        "annotation.remove",
+        json!({ "ref": 1, "annotation_id": annotation.clone() }),
+    );
+
+    let err = call(
+        &e,
+        "link.add",
+        json!({
+            "from": 2,
+            "to": format!("annotation:{annotation}"),
+            "relation": "references",
+        }),
+    )
+    .expect_err("a tombstoned annotation is not a live node to link to");
+    assert_eq!(err.code, ErrorCode::NotFound);
+    assert!(
+        err.message.contains(&annotation),
+        "the refusal must name the reference: {}",
+        err.message
+    );
+}
+
 /// An unknown prefix is a malformed request, not a store miss — the split
 /// `require_uuid_shape` already makes for memory ids, so a script can branch on
 /// the exit code without parsing JSON.
