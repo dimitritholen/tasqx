@@ -82,7 +82,7 @@ impl NodeType {
 type Node = (NodeType, String);
 
 /// The id a node is known by everywhere outside the store: `task:<uuid>`.
-fn node_id((ty, id): &Node) -> String {
+pub(super) fn node_id((ty, id): &Node) -> String {
     format!("{}:{}", ty.as_str(), id)
 }
 

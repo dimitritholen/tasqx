@@ -23,7 +23,10 @@ tasqx export project:work > work.json
   (`tasqx link`) is kept only when *both* of its ends are in the document, and
   the rest are counted under `dropped_links` for the same reason.
 - **An unfiltered export carries every project, every memory doc, every link
-  and the whole event log** — the full backup. Any *other* filter scopes those
+  and the whole event log** — the full backup. The one link it leaves out is
+  one pointing at an annotation you removed: a removed annotation is not in the
+  document, so the edge to it is dropped and counted under `dropped_links` like
+  any other. Any *other* filter scopes those
   four to what the exported tasks actually need, and reports what it left out
   (`dropped_projects`, `dropped_docs`, `dropped_links`, `dropped_events`):
   sharing

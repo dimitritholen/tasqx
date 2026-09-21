@@ -990,6 +990,11 @@ fn import_doc_field<T>(id: &str, field: &str, r: Result<T, ApiError>) -> Result<
     r.map_err(|e| ApiError::bad_request(format!("store.import: doc {id}, {field}: {}", e.message)))
 }
 
+/// [`import_field`] for a link: same context, keyed by the link's id (D181).
+fn import_link_field<T>(id: &str, field: &str, r: Result<T, ApiError>) -> Result<T, ApiError> {
+    r.map_err(|e| ApiError::bad_request(format!("store.import: link {id}, {field}: {}", e.message)))
+}
+
 /// Write a project row, keyed by NAME, and answer the row's id. D37.
 ///
 /// Name, not id, because `name` is what a task points at and what the UNIQUE
