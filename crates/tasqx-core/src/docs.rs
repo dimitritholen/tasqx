@@ -1424,6 +1424,7 @@ pub const R_STORE_IMPORT: &[FieldDoc] = &[
     f("links_imported", "integer", "How many explicit links came in (D181) — an edge this store already held under a different id counts, because that is the same edge stated twice. Zero for a document with no `links` section."),
     n("default_project", "string", "The default project after the import, or null."),
     f("renumbered", "array", "Every task whose `short_id` a DIFFERENT task in this store already held, as `{id, from, to}` — it kept its id and took the next free number (D177). Empty when nothing moved."),
+    f("docs_merged", "array", "Every memory doc that landed on a doc this store already held under the same `source`, as `{source, kept_id, dropped_id, took}` — the stored id is kept, the payload's is dropped, and `took` is `payload` when the payload's `modified` was later (its title, body, project and standing were written) or `store` when it was not (nothing was written). D182. Empty when nothing merged."),
 ];
 
 /// `event.list`'s result.

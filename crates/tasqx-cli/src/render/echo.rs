@@ -1723,6 +1723,27 @@ pub fn imported(ctx: &Ctx, result: &Value) -> String {
             ),
         ));
     }
+    // D182: one line per memory doc that landed on a row this store already
+    // held under the same `source`. Named for the renumbering's reason — the
+    // payload's id is gone afterwards, and which copy's text survived is the
+    // thing the caller cannot see from the doc count.
+    for merged in result
+        .get("docs_merged")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+    {
+        out.push_str(&note_line(
+            ctx,
+            &format!(
+                "merged: {} already here as {}; took the {} copy (payload id {} dropped)",
+                s(merged, "source"),
+                s(merged, "kept_id"),
+                s(merged, "took"),
+                s(merged, "dropped_id"),
+            ),
+        ));
+    }
     let minted: Vec<String> = result
         .get("projects_created")
         .and_then(Value::as_array)

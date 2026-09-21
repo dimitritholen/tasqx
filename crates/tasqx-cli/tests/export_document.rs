@@ -514,6 +514,64 @@ fn an_import_names_every_task_whose_number_this_store_was_already_using() {
     );
 }
 
+/// D182, through the real `import` VERB: a memory doc that merges onto the row
+/// this store already holds under the same `source` drops the payload's id, so
+/// the merge is named — both ids, the source, and which copy's text won.
+#[test]
+fn an_import_names_every_memory_doc_that_merged_onto_one_already_holding_its_source() {
+    let (dir, db) = store("docmerge", "a");
+    const OURS: &str = "019f6a0f-99df-7000-8000-0000000000a1";
+    const THEIRS: &str = "019f6a0f-99df-7000-8000-0000000000b1";
+
+    let seeded = json!({
+        "tasks": [],
+        "docs": [{
+            "id": OURS,
+            "source": "docs/a.md",
+            "title": "ours",
+            "body": "the copy imported here",
+            "modified": "2026-09-01T00:00:00Z",
+        }],
+    });
+    let seed_path = dir.join("ours.json");
+    std::fs::write(&seed_path, seeded.to_string()).expect("write payload");
+    ok(
+        &dir,
+        &db,
+        &["import", seed_path.to_str().expect("utf8 path")],
+    );
+
+    let payload = json!({
+        "tasks": [],
+        "docs": [{
+            "id": THEIRS,
+            "source": "docs/a.md",
+            "title": "theirs",
+            "body": "the copy imported on the other machine, later",
+            "modified": "2026-09-02T00:00:00Z",
+        }],
+    });
+    let path = dir.join("theirs.json");
+    std::fs::write(&path, payload.to_string()).expect("write payload");
+
+    let out = ok(&dir, &db, &["import", path.to_str().expect("utf8 path")]);
+    assert!(
+        out.contains(&format!(
+            "note: merged: docs/a.md already here as {OURS}; took the payload copy \
+             (payload id {THEIRS} dropped)"
+        )),
+        "the merge must be named, with the source, both ids and the copy that won: {out}"
+    );
+
+    // Nothing merged is nothing said.
+    let (_, b) = store("docmerge", "b");
+    let out = ok(&dir, &b, &["import", path.to_str().expect("utf8 path")]);
+    assert!(
+        !out.contains("merged"),
+        "an import with no merge must print no such line: {out}"
+    );
+}
+
 /// D171 (finding #627), through the real `export` VERB: a project filter must
 /// not ship another project's memory docs, and `--include-unscoped` widens
 /// it back to docs with no project — refused with no filter to widen from.

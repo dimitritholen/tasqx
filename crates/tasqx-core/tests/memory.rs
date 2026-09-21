@@ -1978,11 +1978,13 @@ fn memory_import_refuses_a_batch_that_names_one_source_twice() {
     );
 }
 
-/// D174: `store.import` restoring a doc whose source a DIFFERENT id already
-/// holds is a clean `conflict` naming both, not a raw SQLite constraint
-/// failure; re-importing the holder itself (same id) still upserts.
+/// D182 amends D174 at this one door: `store.import` restoring a doc whose
+/// source a DIFFERENT id already holds MERGES it onto that doc — two machines
+/// that each imported the same file hold it under two minted ids, and that is
+/// one doc, not a conflict. The other two doors still refuse (below), and
+/// re-importing the holder itself (same id) still upserts.
 #[test]
-fn store_import_refuses_a_doc_whose_source_another_id_holds() {
+fn store_import_merges_a_doc_whose_source_another_id_holds() {
     let e = engine();
     let mine = call(
         &e,
@@ -1993,28 +1995,36 @@ fn store_import_refuses_a_doc_whose_source_another_id_holds() {
     let mine_id = mine["id"].as_str().unwrap().to_string();
 
     const THEIRS: &str = "0193aaaa-0000-7000-8000-00000000d0c5";
-    let err = call(
+    let r = call(
         &e,
         "store.import",
         json!({ "tasks": [], "docs": [
-            { "id": THEIRS, "title": "Deploy", "body": "there", "source": "docs/deploy.md" }
+            { "id": THEIRS, "title": "Deploy", "body": "there", "source": "docs/deploy.md",
+              "modified": "2099-01-01T00:00:00Z" }
         ] }),
     )
-    .expect_err("a second id must not take the source");
-    assert_eq!(err.code, ErrorCode::Conflict, "{}", err.message);
-    for needle in [mine_id.as_str(), THEIRS, "docs/deploy.md"] {
-        assert!(
-            err.message.contains(needle),
-            "the refusal must name {needle}: {}",
-            err.message
-        );
-    }
+    .expect("a second id merges onto the doc holding the source");
+    assert_eq!(
+        r["docs_merged"],
+        json!([{
+            "source": "docs/deploy.md",
+            "kept_id": mine_id,
+            "dropped_id": THEIRS,
+            "took": "payload",
+        }]),
+        "{r}"
+    );
+    let listed = call(&e, "memory.list", json!({})).unwrap();
+    assert_eq!(listed["total"], 1, "one source is one doc: {listed}");
+    let kept = call(&e, "memory.get", json!({ "id": mine_id })).unwrap();
+    assert_eq!(kept["body"], json!("there"), "the later copy won: {kept}");
 
     call(
         &e,
         "store.import",
         json!({ "tasks": [], "docs": [
-            { "id": mine_id, "title": "Deploy", "body": "restored", "source": "docs/deploy.md" }
+            { "id": mine_id, "title": "Deploy", "body": "restored", "source": "docs/deploy.md",
+              "_rev": 9 }
         ] }),
     )
     .expect("the holder itself re-imports over its own row");

@@ -61,6 +61,15 @@ branch name or a `#n` written down somewhere still points at the old number.
 A task this store already holds keeps the number it has here, so importing the
 same document twice changes nothing.
 
+A memory doc whose `source` a *different* doc in this store already holds is the
+same doc under two ids — which is what two machines that each imported the same
+`docs/` folder end up with — so it merges onto the doc already here instead of
+refusing the import. The stored id is kept, the payload's is dropped, and the
+later `modified` wins the text; a payload no newer than the copy here leaves it
+untouched. Every merge is listed under `docs_merged`, with the source, both ids
+and which copy won, and links pointing at the dropped id follow the doc that
+kept the source.
+
 Links come in last, after everything they point at, and are counted under
 `links_imported`. Both ends are resolved against what this store holds *after*
 the import — a project it already knew keeps its own row, and the link follows
