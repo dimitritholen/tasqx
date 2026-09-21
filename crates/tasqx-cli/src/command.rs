@@ -1526,8 +1526,19 @@ pub(super) enum MemoryAction {
         // `AnyPath`, not `FilePath`: this verb genuinely takes either, and
         // `FilePath` sorts every directory below every file in the listing —
         // backwards for the form most people use.
-        #[arg(value_hint = ValueHint::AnyPath)]
-        path: String,
+        //
+        // Optional only because `--refresh` takes no path at all; every other
+        // invocation still has to name one, which is what
+        // `required_unless_present` keeps true.
+        #[arg(value_hint = ValueHint::AnyPath, required_unless_present = "refresh")]
+        path: Option<String>,
+        /// Re-read every already-imported doc whose file changed since, and
+        /// name the ones whose file is gone (maps to memory.refresh).
+        // No path and no --project: the sweep reads what the store itself
+        // recorded at import time (D180) and keeps each doc's own scope, so
+        // either argument would be a value it has to ignore.
+        #[arg(long, conflicts_with_all = ["path", "project"])]
+        refresh: bool,
         /// Scope every imported doc to this project. Omitted, they stay
         /// global, same as `memory add` with no `--project`; re-importing the
         /// same directory with a different one MOVES the scope (#657).

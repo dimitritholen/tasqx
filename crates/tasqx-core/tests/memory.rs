@@ -2136,3 +2136,303 @@ fn memory_add_never_sets_an_origin_and_a_wrong_typed_one_is_refused() {
         );
     }
 }
+
+// ---- memory.refresh (#789) --------------------------------------------------
+
+/// A scratch directory of markdown files, and the docs they import as.
+///
+/// Every refresh test needs the same three steps — write files, import them
+/// with the origin metadata the CLI's importer would send (D180), then change
+/// something on disk — and the metadata is the half that is easy to get
+/// subtly wrong in each test separately.
+struct OriginFixture {
+    dir: std::path::PathBuf,
+}
+
+impl OriginFixture {
+    fn new(name: &str) -> Self {
+        static SEQ: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let seq = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let dir =
+            std::env::temp_dir().join(format!("tasqx-refresh-{name}-{}-{seq}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("scratch dir");
+        Self { dir }
+    }
+
+    fn write(&self, name: &str, text: &str) -> std::path::PathBuf {
+        let path = self.dir.join(name);
+        std::fs::write(&path, text).expect("write a doc file");
+        path
+    }
+
+    /// One `memory.import` entry for `path`, exactly as the CLI's importer
+    /// builds it: title and body off the file, `source` the repo-relative
+    /// spelling, and all three origin columns from this read of it.
+    fn doc(&self, path: &std::path::Path) -> Value {
+        let text = std::fs::read_to_string(path).expect("read the file back");
+        let title = text
+            .lines()
+            .find_map(|l| l.strip_prefix("# "))
+            .expect("the fixture files all open with a heading");
+        let meta = std::fs::metadata(path).expect("metadata");
+        json!({
+            "title": title,
+            "body": text,
+            "source": format!("docs/{}", path.file_name().unwrap().to_string_lossy()),
+            "origin_path": path.to_string_lossy(),
+            "origin_mtime": tasqx_core::memory_doc::unix_seconds(&meta).expect("an mtime"),
+            "origin_size": meta.len(),
+        })
+    }
+}
+
+impl Drop for OriginFixture {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.dir);
+    }
+}
+
+/// The doc's `(rev, body, origin_mtime, origin_size)`, as the store holds it.
+fn doc_state(e: &Engine, id: &str) -> Value {
+    let got = call(e, "memory.get", json!({ "id": id })).expect("read the doc back");
+    json!([
+        got["_rev"],
+        got["body"],
+        got["origin_mtime"],
+        got["origin_size"]
+    ])
+}
+
+/// #789/D180: the point of recording an origin. A file edited after it was
+/// imported is re-read and the doc rewritten in place — same id, new body,
+/// `rev` bumped (D143) — and the three origin columns restated from the read
+/// that just happened, so the NEXT sweep compares against the bytes now
+/// stored instead of refreshing the same doc forever.
+#[test]
+fn memory_refresh_reimports_a_doc_whose_file_changed_and_restates_its_origin() {
+    let e = engine();
+    let files = OriginFixture::new("edited");
+    let file = files.write("a.md", "# A\n\nbefore");
+    let imported =
+        call(&e, "memory.import", json!({ "docs": [files.doc(&file)] })).expect("import the doc");
+    let id = imported["docs"][0]["id"]
+        .as_str()
+        .expect("an id")
+        .to_string();
+    let before = doc_state(&e, &id);
+
+    std::fs::write(&file, "# A\n\nafter, and longer than before").expect("edit the file");
+    let out = call(&e, "memory.refresh", json!({})).expect("refresh");
+
+    assert_eq!(out["checked"], 1, "{out}");
+    assert_eq!(out["unchanged"], 0, "{out}");
+    assert_eq!(out["missing"], json!([]), "{out}");
+    assert_eq!(
+        out["refreshed"],
+        json!([{ "id": id, "source": "docs/a.md" }]),
+        "the edited doc must be reported by id and source: {out}"
+    );
+
+    let after = doc_state(&e, &id);
+    assert_eq!(
+        after[1], "# A\n\nafter, and longer than before",
+        "the body must be the file's current text: {after}"
+    );
+    assert_eq!(
+        after[0].as_i64().unwrap(),
+        before[0].as_i64().unwrap() + 1,
+        "a refresh is a revision of the same doc (D143): {before} -> {after}"
+    );
+    let meta = std::fs::metadata(&file).expect("metadata");
+    assert_eq!(
+        after[3],
+        json!(meta.len()),
+        "origin_size must describe the bytes just stored: {after}"
+    );
+    assert_eq!(
+        after[2],
+        json!(tasqx_core::memory_doc::unix_seconds(&meta).unwrap()),
+        "origin_mtime must describe the read that just happened: {after}"
+    );
+    assert_fts_intact(&e);
+}
+
+/// #789: a store nobody's files moved under is a sweep that writes nothing.
+/// The `rev` is the assertion that matters — a refresh that rewrote every
+/// doc on every run would conflict every `expected_rev` a client holds
+/// (D143), and would say `unchanged` while doing it.
+#[test]
+fn memory_refresh_leaves_an_untouched_file_alone() {
+    let e = engine();
+    let files = OriginFixture::new("untouched");
+    let file = files.write("a.md", "# A\n\nbody");
+    let imported =
+        call(&e, "memory.import", json!({ "docs": [files.doc(&file)] })).expect("import the doc");
+    let id = imported["docs"][0]["id"]
+        .as_str()
+        .expect("an id")
+        .to_string();
+    let before = doc_state(&e, &id);
+
+    let out = call(&e, "memory.refresh", json!({})).expect("refresh");
+
+    assert_eq!(
+        (&out["checked"], &out["unchanged"]),
+        (&json!(1), &json!(1)),
+        "{out}"
+    );
+    assert_eq!(out["refreshed"], json!([]), "{out}");
+    assert_eq!(doc_state(&e, &id), before, "nothing may have moved");
+}
+
+/// #789: a `touch` is not a change. The stored mtime and size are a FAST
+/// FILTER, not the answer — every build tool that rewrites a file with the
+/// same bytes, every `git checkout` that restores one, moves the mtime — so
+/// the bytes decide, and the doc keeps its rev.
+#[test]
+fn memory_refresh_reads_the_bytes_when_only_the_mtime_moved() {
+    let e = engine();
+    let files = OriginFixture::new("touched");
+    let file = files.write("a.md", "# A\n\nbody");
+    let imported =
+        call(&e, "memory.import", json!({ "docs": [files.doc(&file)] })).expect("import the doc");
+    let id = imported["docs"][0]["id"]
+        .as_str()
+        .expect("an id")
+        .to_string();
+    let before = doc_state(&e, &id);
+
+    // The same bytes, written again with a stamp an hour on. Set explicitly
+    // rather than by re-writing the file, because a second write inside the
+    // same second would leave the mtime where it was and the test would pass
+    // without the byte compare ever running.
+    let touched = std::fs::File::options()
+        .write(true)
+        .open(&file)
+        .expect("open the file");
+    touched
+        .set_modified(std::time::SystemTime::now() + std::time::Duration::from_secs(3600))
+        .expect("move the mtime");
+    drop(touched);
+    let stored_mtime = before[2].as_i64().expect("an mtime was stored");
+    let fresh_mtime =
+        tasqx_core::memory_doc::unix_seconds(&std::fs::metadata(&file).expect("metadata"))
+            .expect("an mtime");
+    assert_ne!(
+        stored_mtime, fresh_mtime,
+        "the fixture must actually move the mtime, or this test proves nothing"
+    );
+
+    let out = call(&e, "memory.refresh", json!({})).expect("refresh");
+
+    assert_eq!(out["unchanged"], 1, "a touch is not a change: {out}");
+    assert_eq!(out["refreshed"], json!([]), "{out}");
+    assert_eq!(doc_state(&e, &id), before, "nothing may have moved");
+}
+
+/// #789: the sweep NEVER deletes. A file that is gone may be on a machine
+/// this store was copied off, or behind a volume that is not mounted, so the
+/// doc is reported and kept with the text it already had — retiring it stays
+/// a human act (`tasqx memory rm`).
+#[test]
+fn memory_refresh_reports_a_deleted_file_and_keeps_the_doc() {
+    let e = engine();
+    let files = OriginFixture::new("deleted");
+    let file = files.write("a.md", "# A\n\nbody");
+    let imported =
+        call(&e, "memory.import", json!({ "docs": [files.doc(&file)] })).expect("import the doc");
+    let id = imported["docs"][0]["id"]
+        .as_str()
+        .expect("an id")
+        .to_string();
+    let before = doc_state(&e, &id);
+    std::fs::remove_file(&file).expect("delete the file");
+
+    let out = call(&e, "memory.refresh", json!({})).expect("refresh");
+
+    assert_eq!(
+        out["missing"],
+        json!([{
+            "id": id,
+            "source": "docs/a.md",
+            "origin_path": file.to_string_lossy(),
+        }]),
+        "a missing file is named with the path that could not be read: {out}"
+    );
+    assert_eq!(out["checked"], 1, "{out}");
+    assert_eq!(
+        out["unchanged"], 0,
+        "a missing file is not 'unchanged': {out}"
+    );
+    assert_eq!(
+        doc_state(&e, &id),
+        before,
+        "the doc and its text must survive the file"
+    );
+}
+
+/// #789: a doc written by `memory.add` has no file behind it (D180), so the
+/// sweep must not count it, not report it, and above all not read a NULL
+/// `origin_path` as a path it failed to open — which would list every
+/// hand-written doc as missing on every run.
+#[test]
+fn memory_refresh_never_looks_at_a_doc_with_no_origin() {
+    let e = engine();
+    call(
+        &e,
+        "memory.add",
+        json!({ "title": "hand-written", "body": "no file behind it", "source": "x.md" }),
+    )
+    .expect("add a doc");
+
+    let out = call(&e, "memory.refresh", json!({})).expect("refresh");
+
+    assert_eq!(
+        out,
+        json!({ "checked": 0, "refreshed": [], "missing": [], "unchanged": 0 }),
+        "a store of hand-written docs has nothing to refresh: {out}"
+    );
+}
+
+/// #789: `dry_run` answers exactly what the real sweep would and writes
+/// nothing — the point of asking before a store full of documents is
+/// rewritten. The doc's `rev` and body are the proof, because a report is
+/// cheap to fake and a write is not.
+#[test]
+fn memory_refresh_dry_run_reports_the_same_answer_and_writes_nothing() {
+    let e = engine();
+    let files = OriginFixture::new("dry-run");
+    let file = files.write("a.md", "# A\n\nbefore");
+    let imported =
+        call(&e, "memory.import", json!({ "docs": [files.doc(&file)] })).expect("import the doc");
+    let id = imported["docs"][0]["id"]
+        .as_str()
+        .expect("an id")
+        .to_string();
+    let before = doc_state(&e, &id);
+    std::fs::write(&file, "# A\n\nafter, and longer than before").expect("edit the file");
+
+    let dry = call(&e, "memory.refresh", json!({ "dry_run": true })).expect("dry run");
+    assert_eq!(
+        dry["refreshed"],
+        json!([{ "id": id, "source": "docs/a.md" }]),
+        "a dry run still names what it would do: {dry}"
+    );
+    assert_eq!(
+        doc_state(&e, &id),
+        before,
+        "a dry run must not have touched the doc"
+    );
+
+    let wet = call(&e, "memory.refresh", json!({})).expect("refresh");
+    assert_eq!(
+        wet["refreshed"], dry["refreshed"],
+        "the real sweep must find exactly what the dry run promised"
+    );
+    assert_ne!(
+        doc_state(&e, &id),
+        before,
+        "and this one must actually write"
+    );
+}

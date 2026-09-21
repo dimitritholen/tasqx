@@ -1053,6 +1053,59 @@ pub const IMPORTED_DOC_ROW: &[FieldDoc] = &[
     f("_rev", "integer", "The row's revision counter, bumped by every write. Send it back as `expected_rev` to make a change conditional."),
 ];
 
+/// `memory.refresh`'s result (#789).
+pub const R_MEMORY_REFRESH: &[FieldDoc] = &[
+    f(
+        "checked",
+        "integer",
+        "How many docs named an origin file and were examined. `refreshed`, `missing` and `unchanged` account for all of them.",
+    ),
+    f(
+        "refreshed",
+        "array",
+        "The docs whose file had changed and were re-read from it.",
+    ),
+    f(
+        "missing",
+        "array",
+        "The docs whose file could not be read — gone, renamed, or on a volume that is not mounted. Reported, never removed.",
+    ),
+    f(
+        "unchanged",
+        "integer",
+        "How many docs still matched their file, byte for byte, and were left alone — their `rev` did not move.",
+    ),
+];
+
+/// One doc a refresh re-read from its file.
+pub const REFRESHED_DOC_ROW: &[FieldDoc] = &[
+    f(
+        "id",
+        "string",
+        "The doc's id, unchanged — a refresh replaces the text in place.",
+    ),
+    n(
+        "source",
+        "string",
+        "The source it is keyed on, or null for a doc that has an origin file and no source.",
+    ),
+];
+
+/// One doc whose origin file a refresh could not read.
+pub const MISSING_DOC_ROW: &[FieldDoc] = &[
+    f(
+        "id",
+        "string",
+        "The doc, still stored with the text it already had.",
+    ),
+    n("source", "string", "The source it is keyed on, or null."),
+    f(
+        "origin_path",
+        "string",
+        "The file that could not be read, as the import recorded it (D180).",
+    ),
+];
+
 /// `memory.list`'s result.
 pub const R_MEMORY_LIST: &[FieldDoc] = &[
     f("count", "integer", "How many docs came back."),
@@ -1584,6 +1637,11 @@ pub fn result_shape(method: &str) -> &'static [(&'static str, &'static [FieldDoc
         "memory.import" => &[
             ("result", R_MEMORY_IMPORT),
             ("result.docs[]", IMPORTED_DOC_ROW),
+        ],
+        "memory.refresh" => &[
+            ("result", R_MEMORY_REFRESH),
+            ("result.refreshed[]", REFRESHED_DOC_ROW),
+            ("result.missing[]", MISSING_DOC_ROW),
         ],
         "memory.list" => &[
             ("result", R_MEMORY_LIST),

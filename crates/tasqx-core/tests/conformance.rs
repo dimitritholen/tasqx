@@ -1062,6 +1062,25 @@ const R_MEMORY_IMPORT: Shape = &[&[
     req_of("docs", Ty::Array, &[IMPORTED_DOC_ROW]),
 ]];
 
+/// One doc `memory.refresh` re-read from its file (#789).
+const REFRESHED_DOC_ROW: &[Field] = &[req("id", Ty::Str), nul("source", Ty::Str)];
+
+/// One doc whose origin file the sweep could not read. `origin_path` is
+/// required and non-null: the row exists because that path was stored, and a
+/// report that cannot say which file is gone reports nothing.
+const MISSING_DOC_ROW: &[Field] = &[
+    req("id", Ty::Str),
+    nul("source", Ty::Str),
+    req("origin_path", Ty::Str),
+];
+
+const R_MEMORY_REFRESH: Shape = &[&[
+    req("checked", Ty::Int),
+    req_of("refreshed", Ty::Array, &[REFRESHED_DOC_ROW]),
+    req_of("missing", Ty::Array, &[MISSING_DOC_ROW]),
+    req("unchanged", Ty::Int),
+]];
+
 /// The group key is *named by* `group_by` and the metric columns are exactly
 /// the ones the caller selected, so this row shape belongs to the case that
 /// asks for it (`group_by: "project"`, three metrics) rather than to the method.
@@ -2133,6 +2152,54 @@ fn cases() -> Vec<Case> {
                 ]})
             },
             R_MEMORY_IMPORT,
+        ),
+        case(
+            "memory.refresh",
+            "one doc whose file was edited, one whose file is gone, one untouched",
+            |e| {
+                // A dir per CALL, not per process: several tests walk
+                // `cases()` and they run on parallel threads, so one setup
+                // clearing a shared directory would delete the files another
+                // had just written.
+                static SEQ: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+                let seq = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                let dir = std::env::temp_dir().join(format!(
+                    "tasqx-conformance-refresh-{}-{seq}",
+                    std::process::id()
+                ));
+                let _ = std::fs::remove_dir_all(&dir);
+                std::fs::create_dir_all(&dir).expect("scratch dir");
+                let write = |name: &str, text: &str| {
+                    let path = dir.join(name);
+                    std::fs::write(&path, text).expect("write a doc file");
+                    path
+                };
+                let edited = write("edited.md", "# edited\n\nbefore");
+                let doomed = write("doomed.md", "# doomed\n\nstill here");
+                let steady = write("steady.md", "# steady\n\nunchanged");
+                // No `origin_mtime`/`origin_size`, so every doc takes the byte
+                // compare rather than the metadata fast filter — the arm that
+                // has to be right, and the one a second-granularity mtime
+                // cannot make flaky.
+                let doc = |title: &str, body: &str, path: &std::path::Path| {
+                    json!({
+                        "title": title,
+                        "body": body,
+                        "source": format!("docs/{}", path.file_name().unwrap().to_string_lossy()),
+                        "origin_path": path.to_string_lossy(),
+                    })
+                };
+                e.memory_import(&json!({ "docs": [
+                    doc("edited", "# edited\n\nbefore", &edited),
+                    doc("doomed", "# doomed\n\nstill here", &doomed),
+                    doc("steady", "# steady\n\nunchanged", &steady),
+                ]}))
+                .expect("import three docs off real files");
+                std::fs::write(&edited, "# edited\n\nafter").expect("edit one");
+                std::fs::remove_file(&doomed).expect("delete one");
+                json!({})
+            },
+            R_MEMORY_REFRESH,
         ),
         case(
             "memory.list",

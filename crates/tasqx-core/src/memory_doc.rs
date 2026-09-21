@@ -53,6 +53,24 @@ pub fn read_doc(path: &Path) -> Result<(String, String), ApiError> {
     Ok((title, body.to_string()))
 }
 
+/// `meta`'s modification time in whole seconds since the unix epoch, or
+/// `None` where the platform has no answer — `modified()` is documented as
+/// unavailable on some, and a file stamped before 1970 fails the subtraction
+/// rather than the call.
+///
+/// Moved out of `tasqx-cli`'s importer (#789) so the side that WRITES
+/// `origin_mtime` and the side that compares against it derive the number the
+/// same way (D180). Two derivations of "the file's mtime" that round
+/// differently would make every doc look changed.
+pub fn unix_seconds(meta: &std::fs::Metadata) -> Option<i64> {
+    let since = meta
+        .modified()
+        .ok()?
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()?;
+    i64::try_from(since.as_secs()).ok()
+}
+
 /// The title a frontmatter block would have given the document, if any:
 /// `title:` or `name:` (`title` first), a bare or single-quoted scalar value.
 /// Deliberately not a YAML parser — the values this needs to read are the
@@ -139,6 +157,29 @@ mod tests {
         assert!(
             body.contains("How releases actually ship."),
             "the real prose must survive the cut: {body:?}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// #789: the helper the CLI's importer used to own privately. It is the
+    /// one derivation of `origin_mtime` now, so it answers in WHOLE seconds
+    /// — the unit the column stores — and a file written just now has a
+    /// plausible one, not a zero the freshness check would read as 1970.
+    #[test]
+    fn unix_seconds_answers_whole_seconds_for_a_file_written_now() {
+        let dir = std::env::temp_dir().join(format!("tasqx-memdoc-mtime-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("a.md");
+        std::fs::write(&file, "# A\n\nbody").unwrap();
+
+        let meta = std::fs::metadata(&file).expect("metadata");
+        let secs = unix_seconds(&meta).expect("a platform that answers modified()");
+        // 2020-01-01, safely below any clock this runs on and safely above a
+        // zero or a value in milliseconds.
+        assert!(
+            (1_577_836_800..4_102_444_800).contains(&secs),
+            "not a plausible unix-seconds mtime: {secs}"
         );
         let _ = std::fs::remove_dir_all(&dir);
     }

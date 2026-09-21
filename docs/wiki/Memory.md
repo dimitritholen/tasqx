@@ -109,6 +109,16 @@ tasqx memory import docs/adr
   collapses onto it too — same `source` once resolved — so only the real file
   becomes a document, and the alias is named in a `note:` line instead of
   refusing the batch.
+- `tasqx memory import --refresh` takes no path. It walks the documents
+  already imported, compares each against the file it was read from, and
+  re-reads the ones whose file has changed — keeping the document's id, its
+  project and its standing flag, and bumping its revision. A file that was
+  only touched, without its text changing, counts as unchanged: the stored
+  size and timestamp are a fast filter, and the bytes are what decides. A
+  document whose file can no longer be read is *named and kept*, never
+  deleted — the file may be on another machine or a volume that is not
+  mounted — and the command still exits 0, so a refresh in a script does not
+  fail over a file somebody moved.
 - Each imported document also records where it came from: `origin_path` (the
   file's absolute path on this machine), `origin_mtime` (its modification
   time in unix seconds) and `origin_size` (its size in bytes), all shown by

@@ -1096,9 +1096,20 @@ pub(crate) fn run_memory(be: &mut Backend, ctx: &Ctx, action: &MemoryAction) -> 
             let text = format!("Removed {}\n", render::san(id));
             Ok((result, text))
         }
-        MemoryAction::Import { path, project } => {
-            run_memory_import(be, ctx, path, project.as_deref())
-        }
+        MemoryAction::Import {
+            path,
+            refresh,
+            project,
+        } => match (refresh, path) {
+            (true, _) => run_memory_refresh(be, ctx),
+            (false, Some(path)) => run_memory_import(be, ctx, path, project.as_deref()),
+            // clap's `required_unless_present = "refresh"` refuses this before
+            // the verb runs; the arm is here because a silent `Imported 0` is
+            // the one answer an import must never give.
+            (false, None) => Err(tasqx_core::ApiError::bad_request(
+                "memory import needs a path, or --refresh to re-read the files already imported",
+            )),
+        },
         MemoryAction::List {
             limit,
             offset,
@@ -1276,6 +1287,59 @@ pub(crate) fn run_memory_import(
     if let Some(v) = superseded_json {
         result["superseded"] = v;
     }
+    Ok((result, text))
+}
+
+/// `tasqx memory import --refresh` (#789): the sweep over what is already
+/// imported, rather than a directory read again.
+///
+/// No path, because the store already records which file each doc came from
+/// (D180). The engine does the comparing; this prints one line per doc it
+/// re-read and one per file it could not, then the four counts. A missing
+/// file is NOT an error — the sweep found it and said so, the doc is still
+/// there, and exiting non-zero would make a routine `--refresh` in a script
+/// fail over a file somebody moved.
+pub(crate) fn run_memory_refresh(be: &mut Backend, ctx: &Ctx) -> CmdOutcome {
+    let result = be.call("memory.refresh", &json!({}))?;
+    let rows = |key: &str| -> Vec<Value> { result[key].as_array().cloned().unwrap_or_default() };
+    let (refreshed, missing) = (rows("refreshed"), rows("missing"));
+    // The doc's `source` is what a person recognises; its id is the fallback
+    // for a doc imported over the JSON API with an origin file and no source.
+    let source_of = |doc: &Value| {
+        render::san(
+            doc["source"]
+                .as_str()
+                .or_else(|| doc["id"].as_str())
+                .unwrap_or("?"),
+        )
+    };
+
+    let mut text = String::new();
+    for doc in &refreshed {
+        text.push_str(&render::note_line(
+            ctx,
+            &format!("refreshed {}", source_of(doc)),
+        ));
+    }
+    for doc in &missing {
+        text.push_str(&render::note_line(
+            ctx,
+            &format!(
+                "{} is gone from {} — the doc is kept; `tasqx memory rm {}` retires it",
+                source_of(doc),
+                render::san(doc["origin_path"].as_str().unwrap_or("?")),
+                render::san(doc["id"].as_str().unwrap_or("?")),
+            ),
+        ));
+    }
+    let n = |key: &str| result[key].as_u64().unwrap_or(0);
+    text.push_str(&format!(
+        "{} checked, {} refreshed, {} unchanged, {} missing\n",
+        n("checked"),
+        refreshed.len(),
+        n("unchanged"),
+        missing.len(),
+    ));
     Ok((result, text))
 }
 
@@ -1485,26 +1549,13 @@ pub(crate) fn memory_docs_from_path(
         // real size and a 1970 mtime.
         if let Ok(meta) = std::fs::metadata(file) {
             doc["origin_size"] = json!(meta.len());
-            if let Some(secs) = unix_seconds(&meta) {
+            if let Some(secs) = tasqx_core::memory_doc::unix_seconds(&meta) {
                 doc["origin_mtime"] = json!(secs);
             }
         }
         docs.push(doc);
     }
     Ok((docs, notes))
-}
-
-/// `meta`'s modification time in whole seconds since the unix epoch, or
-/// `None` where the platform has no answer — `modified()` is documented as
-/// unavailable on some, and a file stamped before 1970 fails the subtraction
-/// rather than the call.
-fn unix_seconds(meta: &std::fs::Metadata) -> Option<i64> {
-    let since = meta
-        .modified()
-        .ok()?
-        .duration_since(std::time::UNIX_EPOCH)
-        .ok()?;
-    i64::try_from(since.as_secs()).ok()
 }
 
 /// The `source` `memory.import` stores for `file` — a doc's identity (D174),

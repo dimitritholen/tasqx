@@ -278,10 +278,11 @@ pub const NOT_UNDOABLE: &[(&str, &str)] = &[
     ),
     (
         "memory.add",
-        "A doc written by `memory.import` REPLACES the doc that shared its `source`, and the \
-         replaced text is already gone by the time the event is written — so undo can delete \
-         the new doc but can never bring the old one back. `tasqx memory rm <id>` removes the \
-         doc you name, and says so.",
+        "A doc written by `memory.import` REPLACES the doc that shared its `source` — and so \
+         does one re-read by `memory import --refresh` (#789) — and the replaced text is \
+         already gone by the time the event is written, so undo can delete the new doc but can \
+         never bring the old one back. `tasqx memory rm <id>` removes the doc you name, and \
+         says so.",
     ),
     (
         "memory.remove",
