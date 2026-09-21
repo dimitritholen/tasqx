@@ -98,12 +98,19 @@ the fields that can only have one value (title, status, priority, project, the
 dates) are taken from whichever side was modified later. The `_rev` check is
 skipped for those tasks, because two stores count their own revisions and
 neither number means anything to the other. One line per task says which copy
-won. A task the document carries and this store has never seen is imported
-exactly as it would be without the flag.
+won. A note or a check both sides hold under the same id stays one row: a check
+follows its own last edit, so a `passed` recorded here is not rolled back by a
+copy that never saw it pass, and a note follows the task's. A task the document
+carries and this store has never seen is imported exactly as it would be
+without the flag.
 
 Without `--merge`, the document stays authoritative about a task it names: its
 notes, checks, tags and edges replace what is here. That is what a restore
 should do, so it stays the default.
+
+Either way, a note or a check id the document hands to one task while a
+*different* task here already holds it refuses the whole import, naming both
+tasks: one note, and one criterion, belongs to exactly one task.
 
 ## Merging two machines
 

@@ -235,9 +235,9 @@ impl Engine {
     /// even when it rewrote the same bytes, so the statement's own count
     /// cannot answer "did this merge bring anything in" — and that question
     /// decides whether `rev` moves. Counting rows can only say "more than
-    /// before", which is exactly the case the counter has to notice: a state
-    /// change on a row both stores already hold travels with the scalars, and
-    /// those are decided by `modified`.
+    /// before", so the two changes it cannot see are reported separately: the
+    /// scalars moving (`take_payload`), and a check both stores hold taking
+    /// the payload's state on its own `modified` (`import_checks`' return).
     fn child_row_count(tx: &rusqlite::Transaction, id: &str) -> Result<i64, ApiError> {
         Ok(tx.query_row(
             "SELECT (SELECT COUNT(*) FROM annotations WHERE task_id = ?1) \
@@ -260,11 +260,19 @@ impl Engine {
     /// written on either machine since the export survives. Without it the
     /// payload's task object stays authoritative about its own child rows
     /// (D138) and they are replaced wholesale.
+    ///
+    /// `take_payload` decides a note both stores hold under ONE id (task
+    /// #802). An annotation carries only `created` — there is no per-row stamp
+    /// to compare, the way a check has its own `modified` — so it follows the
+    /// task-level winner: the stored body stands when the store's `modified`
+    /// is the later one, and an older replica cannot overwrite an edit written
+    /// since. An id this task does not hold is inserted either way.
     fn import_annotations(
         tx: &rusqlite::Transaction,
         id: &str,
         tv: &Value,
         merge: bool,
+        take_payload: bool,
     ) -> Result<(), ApiError> {
         if !merge {
             tx.execute("DELETE FROM annotations WHERE task_id = ?1", params![id])?;
@@ -289,15 +297,30 @@ impl Engine {
                 let acreated =
                     import_field(id, "annotations[].created", opt_str_nonempty(a, "created"))?
                         .unwrap_or_else(now);
+                let holder = child_owner(
+                    tx,
+                    "annotations",
+                    "annotations[].id",
+                    "annotation",
+                    id,
+                    &aid,
+                )?;
+                // D185 (task #802): the task-level winner decides a note both
+                // stores hold, because an annotation has no stamp of its own.
+                // Keeping the stored row is the whole of it — the store won,
+                // so its body stands and nothing is written.
+                if merge && !take_payload && holder.is_some() {
+                    continue;
+                }
                 // ON CONFLICT DO UPDATE, never INSERT OR REPLACE: REPLACE
                 // deletes the old row WITHOUT firing the delete trigger
-                // (recursive_triggers is off), so a payload that moves an
-                // annotation id from a task outside the payload left a
-                // dangling entry in annotations_fts — and once the freed
-                // rowid was reused, memory.search answered the OLD text
-                // with an UNRELATED annotation. The UPDATE path keeps the
-                // rowid and fires annotations_fts_au, which does the
-                // delete+insert pair the index needs (D41 review finding).
+                // (recursive_triggers is off), so a payload that rewrote an
+                // annotation's body left a dangling entry in annotations_fts
+                // — and once the freed rowid was reused, memory.search
+                // answered the OLD text with an UNRELATED annotation. The
+                // UPDATE path keeps the rowid and fires annotations_fts_au,
+                // which does the delete+insert pair the index needs (D41
+                // review finding).
                 tx.execute(
                     "INSERT INTO annotations (id, task_id, body, created) \
                      VALUES (?1,?2,?3,?4) \
@@ -314,13 +337,20 @@ impl Engine {
     /// (D138): the payload's task object is authoritative about its own child
     /// rows.
     ///
-    /// `merge` (D185) unions them instead, like annotations — and `take_payload`
-    /// is the one place the two differ. A check carries STATE, so a criterion
-    /// both stores hold has two answers, and the one to keep is the later
-    /// write's: `take_payload` is true only when the payload task's `modified`
-    /// is past the stored one, and a stored `passed` is otherwise not rolled
-    /// back to `open` by a copy that never saw it pass. A check the store does
-    /// not hold at all is inserted either way.
+    /// `merge` (D185) unions them instead, like annotations — and a check is
+    /// the one child row that resolves a same-id conflict on a stamp of its
+    /// OWN. A check carries STATE, so a criterion both stores hold has two
+    /// answers, and the one to keep is the later write's: the payload's body,
+    /// state, evidence and position land only when the payload check's
+    /// `modified` is strictly past the stored one (task #802). A stored
+    /// `passed` is not rolled back to `open` by a copy that never saw it pass,
+    /// and a criterion edited here is not thrown away because the payload's
+    /// TASK happened to be the later write. A check the store does not hold at
+    /// all is inserted either way.
+    ///
+    /// Answers whether a merge updated a check the store already held — the
+    /// caller's [`Self::child_row_count`] sees inserts and nothing else, and
+    /// that update is a change `rev` has to move for.
     ///
     /// `state` passes the same closed-vocabulary gate `check.set` enforces,
     /// with `import_field` naming the task — carrying an unknown state
@@ -331,26 +361,19 @@ impl Engine {
         id: &str,
         tv: &Value,
         merge: bool,
-        take_payload: bool,
-    ) -> Result<(), ApiError> {
+    ) -> Result<bool, ApiError> {
         if !merge {
             tx.execute("DELETE FROM checks WHERE task_id = ?1", params![id])?;
         }
         let Some(rows) = import_field(id, "checks", opt_array(tv, "checks"))? else {
-            return Ok(());
+            return Ok(false);
         };
-        let sql = format!(
-            "INSERT INTO checks (id, task_id, body, state, evidence, position, created, \
-             modified) VALUES (?1,?2,?3,?4,?5,?6,?7,?8) ON CONFLICT(id) {}",
-            if merge && !take_payload {
-                "DO NOTHING"
-            } else {
-                "DO UPDATE SET \
-                 task_id=excluded.task_id, body=excluded.body, state=excluded.state, \
-                 evidence=excluded.evidence, position=excluded.position, \
-                 created=excluded.created, modified=excluded.modified"
-            }
-        );
+        let sql = "INSERT INTO checks (id, task_id, body, state, evidence, position, created, \
+             modified) VALUES (?1,?2,?3,?4,?5,?6,?7,?8) ON CONFLICT(id) DO UPDATE SET \
+             task_id=excluded.task_id, body=excluded.body, state=excluded.state, \
+             evidence=excluded.evidence, position=excluded.position, \
+             created=excluded.created, modified=excluded.modified";
+        let mut updated = false;
         for (n, c) in rows.iter().enumerate() {
             import_keys(&format!("task {id}, "), "checks[]", c, IMPORT_CHECK_KEYS)?;
             let cid = import_field(id, "checks[].id", opt_str_nonempty(c, "id"))?
@@ -374,12 +397,28 @@ impl Engine {
                 .unwrap_or_else(now);
             let modified = import_field(id, "checks[].modified", opt_str_nonempty(c, "modified"))?
                 .unwrap_or_else(|| created.clone());
+            // The same last-writer-wins the scalars follow, read off the row
+            // itself: a check this task already holds stands unless the
+            // payload's copy was written strictly later. A tie keeps the
+            // store's, which is what makes merging one document twice a no-op.
+            let owner = child_owner(tx, "checks", "checks[].id", "check", id, &cid)?;
+            if merge && owner.is_some() {
+                let held: String = tx.query_row(
+                    "SELECT modified FROM checks WHERE id = ?1",
+                    params![cid],
+                    |r| r.get(0),
+                )?;
+                if parse_ts(&modified) <= parse_ts(&held) {
+                    continue;
+                }
+                updated = true;
+            }
             tx.execute(
-                &sql,
+                sql,
                 params![cid, id, body, state, evidence, position, created, modified],
             )?;
         }
-        Ok(())
+        Ok(updated)
     }
 
     /// Replace one task's token measurements, wholesale like tags and
@@ -402,6 +441,12 @@ impl Engine {
         if !merge {
             tx.execute("DELETE FROM token_usage WHERE task_id = ?1", params![id])?;
         }
+        // Measurement ids this task's own payload has already carried (task
+        // #802). A merge skips an id the task already holds, and the skip
+        // cannot tell a re-import from a payload that lists one id TWICE —
+        // the store's row is there either way — so the payload's own repeats
+        // are counted here instead of read off the table.
+        let mut seen: HashSet<String> = HashSet::new();
         if let Some(measurements) = import_field(id, "tokens", opt_array(tv, "tokens"))? {
             for m in measurements {
                 import_keys(&format!("task {id}, "), "tokens[]", m, IMPORT_TOKEN_KEYS)?;
@@ -445,8 +490,11 @@ impl Engine {
                 // D185: on a merge nothing was deleted, so a row this very
                 // task already holds under that id is the SAME measurement
                 // arriving a second time, not a stolen one — the idempotent
-                // answer is to leave it alone. An id held by a DIFFERENT
-                // task is still the fault above, merge or not.
+                // answer is to leave it alone, ONCE. A second copy inside the
+                // same payload (task #802) is not a re-import: it is one
+                // measurement id standing for two rows of spend, and taking
+                // the first silently drops the second.
+                let repeat = !seen.insert(mid.clone());
                 let holder: Option<String> = tx
                     .query_row(
                         "SELECT task_id FROM token_usage WHERE id = ?1",
@@ -454,13 +502,13 @@ impl Engine {
                         |r| r.get(0),
                     )
                     .optional()?;
-                if merge && holder.as_deref() == Some(id) {
+                if merge && !repeat && holder.as_deref() == Some(id) {
                     continue;
                 }
                 import_field(
                     id,
                     "tokens[].id",
-                    if holder.is_some() {
+                    if repeat || holder.is_some() {
                         Err(ApiError::bad_request(format!(
                             "measurement id {mid:?} appears more than once in the \
                              import (or belongs to a task outside it) — every \
@@ -1828,8 +1876,8 @@ impl Engine {
                 ensure_tag_link(&tx, id, &tg)?;
             }
 
-            Self::import_annotations(&tx, id, tv, merging)?;
-            Self::import_checks(&tx, id, tv, merging, take_payload)?;
+            Self::import_annotations(&tx, id, tv, merging, take_payload)?;
+            let checks_updated = Self::import_checks(&tx, id, tv, merging)?;
             Self::import_token_measurements(&tx, id, tv, merging)?;
 
             // Edges are deferred to pass 2: a payload may list a target *after*
@@ -1848,9 +1896,13 @@ impl Engine {
             if merging {
                 // An upsert reports a row affected even when it rewrote the
                 // same bytes, so "did this merge add anything" is counted from
-                // the child rows themselves; pass 2 finishes the answer with
+                // the child rows themselves — plus the one change a count
+                // cannot see, a check both stores held taking the payload's
+                // state on its own `modified`. Pass 2 finishes the answer with
                 // the edges it inserts.
-                let changed = take_payload || Self::child_row_count(&tx, id)? != children_before;
+                let changed = take_payload
+                    || checks_updated
+                    || Self::child_row_count(&tx, id)? != children_before;
                 merged.push((
                     id.to_string(),
                     if take_payload { "payload" } else { "store" },
@@ -2196,6 +2248,42 @@ impl Engine {
             // other additive result field in this answer already follows.
             "dry_run": dry_run,
         }))
+    }
+}
+
+/// The task already holding child row `child_id` in `table` — `None` when
+/// nothing does, and a refusal when it is a task other than `task` (#802).
+///
+/// Annotation and check ids are global primary keys, so a payload can name one
+/// another task owns, and the upserts above would MOVE the row: the owner
+/// loses a note or a criterion it still lists, and its search index entry or
+/// its evidence follows the thief. One annotation, and one check, belongs to
+/// exactly one task — `import_token_measurements` has refused the same theft
+/// at its own door since it was written, and this is that refusal at the other
+/// two. `table`, `field` and `noun` are literals from the two call sites,
+/// never anything the payload supplies.
+fn child_owner(
+    tx: &rusqlite::Transaction,
+    table: &str,
+    field: &str,
+    noun: &str,
+    task: &str,
+    child_id: &str,
+) -> Result<Option<String>, ApiError> {
+    let holder: Option<String> = tx
+        .query_row(
+            &format!("SELECT task_id FROM {table} WHERE id = ?1"),
+            params![child_id],
+            |r| r.get(0),
+        )
+        .optional()?;
+    match &holder {
+        Some(other) if other != task => Err(ApiError::bad_request(format!(
+            "store.import: task {task}, {field} {child_id} already belongs to task {other} in \
+             this store — one {noun} belongs to exactly one task (drop it from the payload, or \
+             give it a fresh id)"
+        ))),
+        _ => Ok(holder),
     }
 }
 
@@ -2912,6 +3000,294 @@ mod tests {
             );
         }
         assert_eq!(checks.len(), 3, "and nothing else: {checks:?}");
+    }
+
+    /// Two stores holding one task, with one annotation under one id and two
+    /// different bodies. The store is seeded from the payload, so the ids
+    /// match; `payload_modified` then decides which side wrote last, and it
+    /// is the TASK's stamp because an annotation carries only `created`.
+    fn one_note_under_two_bodies(payload_modified: &str) -> (Engine, Value) {
+        let a = Engine::open_in_memory().expect("open a");
+        let added = a.task_add(&json!({ "title": "shared work" })).expect("add");
+        a.annotation_add(&json!({
+            "ref": added["short_id"].clone(),
+            "body": "the body the store holds",
+        }))
+        .expect("note");
+        let mut payload = a.store_export(&json!({})).expect("export");
+        let b = Engine::open_in_memory().expect("open b");
+        b.store_import(&payload).expect("seed b");
+        payload["tasks"][0]["annotations"][0]["body"] = json!("the body the payload carries");
+        payload["tasks"][0]["modified"] = json!(payload_modified);
+        payload["merge"] = json!(true);
+        (b, payload)
+    }
+
+    /// The annotations of the merged task, body-only, in export order.
+    fn merged_note_bodies(b: &Engine) -> Vec<String> {
+        b.store_export(&json!({})).expect("export b")["tasks"][0]["annotations"]
+            .as_array()
+            .expect("annotations")
+            .iter()
+            .map(|a| a["body"].as_str().expect("body").to_string())
+            .collect()
+    }
+
+    /// D185 (task #802): an annotation carries `created` and nothing else, so
+    /// there is no per-row stamp to resolve a note both stores hold under one
+    /// id — it follows the task-level winner. The store won here, so an older
+    /// replica's copy of the note does not overwrite the edit written since.
+    #[test]
+    fn store_import_merge_keeps_the_stored_note_body_when_the_store_won() {
+        let (b, payload) = one_note_under_two_bodies("2000-01-01T00:00:00Z");
+        b.store_import(&payload).expect("a merge must not refuse");
+        assert_eq!(
+            merged_note_bodies(&b),
+            ["the body the store holds"],
+            "one id is one note, and the store's copy is the later write"
+        );
+    }
+
+    /// The other side of the same rule: the payload's task is the later write,
+    /// so its copy of the note stands.
+    #[test]
+    fn store_import_merge_takes_the_payload_note_body_when_the_payload_won() {
+        let (b, payload) = one_note_under_two_bodies("2099-01-01T00:00:00Z");
+        b.store_import(&payload).expect("a merge must not refuse");
+        assert_eq!(
+            merged_note_bodies(&b),
+            ["the body the payload carries"],
+            "one id is one note, and the payload's copy is the later write"
+        );
+    }
+
+    /// D185 (task #802): a check carries its OWN `modified`, so it resolves on
+    /// that stamp rather than on the task-level winner. The payload's task is
+    /// the later write here — its title lands — and its copy of the check is
+    /// still the older one, so a `passed` this store recorded is not rolled
+    /// back by a machine that never saw it pass. The reverse import proves the
+    /// same stamp lets a newer check through while the store holds the task.
+    #[test]
+    fn store_import_merge_updates_a_check_only_when_its_own_modified_is_newer() {
+        let a = Engine::open_in_memory().expect("open a");
+        let added = a
+            .task_add(&json!({ "title": "the title both stores start with" }))
+            .expect("add");
+        let sid = added["short_id"].clone();
+        a.check_add(&json!({ "ref": sid, "body": "the criterion" }))
+            .expect("check");
+        let mut payload = a.store_export(&json!({})).expect("export");
+        let b = Engine::open_in_memory().expect("open b");
+        b.store_import(&payload).expect("seed b");
+        let cid = payload["tasks"][0]["checks"][0]["id"].clone();
+        b.check_set(&json!({
+            "ref": sid,
+            "check_id": cid,
+            "state": "passed",
+            "evidence": "the proof only b saw",
+        }))
+        .expect("passed on b");
+
+        payload["tasks"][0]["title"] = json!("the title the payload wrote later");
+        payload["tasks"][0]["modified"] = json!("2099-01-01T00:00:00Z");
+        payload["tasks"][0]["checks"][0]["evidence"] = json!("nothing was proven here");
+        payload["tasks"][0]["checks"][0]["modified"] = json!("2000-01-01T00:00:00Z");
+        payload["merge"] = json!(true);
+        b.store_import(&payload).expect("a merge must not refuse");
+
+        let after = b.store_export(&json!({})).expect("export b");
+        assert_eq!(
+            after["tasks"][0]["title"],
+            json!("the title the payload wrote later"),
+            "precondition: the payload is the task-level winner: {after}"
+        );
+        assert_eq!(
+            after["tasks"][0]["checks"][0]["state"],
+            json!("passed"),
+            "an older check must not roll the stored state back: {after}"
+        );
+        assert_eq!(
+            after["tasks"][0]["checks"][0]["evidence"],
+            json!("the proof only b saw"),
+            "nor take its evidence: {after}"
+        );
+
+        // The reverse. The task's stamp is now a tie, so the STORE holds the
+        // scalars, and the check still lands because its own stamp is later.
+        payload["tasks"][0]["checks"][0]["modified"] = json!("2100-01-01T00:00:00Z");
+        b.store_import(&payload).expect("a merge must not refuse");
+        let after = b.store_export(&json!({})).expect("export b");
+        assert_eq!(
+            after["tasks"][0]["checks"][0]["state"],
+            json!("open"),
+            "a newer check is the later write, whoever holds the task: {after}"
+        );
+        assert_eq!(
+            after["tasks"][0]["checks"][0]["evidence"],
+            json!("nothing was proven here"),
+            "and it carries its own evidence with it: {after}"
+        );
+    }
+
+    /// D185 (task #802): annotation ids are global primary keys, and one
+    /// annotation belongs to exactly one task. A payload handing another
+    /// task's note id to a task of its own is refused rather than silently
+    /// moving the row — the owner would lose a note it still lists, and the
+    /// search index would follow the thief. Same rule with `merge` and
+    /// without; this is the plain restore path, and the check twin below is
+    /// the merge one.
+    #[test]
+    fn store_import_refuses_an_annotation_id_that_belongs_to_another_task() {
+        let e = Engine::open_in_memory().expect("open");
+        let owner = e
+            .task_add(&json!({ "title": "owns the note" }))
+            .expect("add");
+        let note = e
+            .annotation_add(
+                &json!({ "ref": owner["short_id"].clone(), "body": "the owner's note" }),
+            )
+            .expect("note")["annotation"]["id"]
+            .as_str()
+            .expect("annotation id")
+            .to_string();
+        let thief = e.task_add(&json!({ "title": "claims it" })).expect("add");
+
+        let document = json!({ "tasks": [{
+            "id": thief["id"],
+            "short_id": thief["short_id"],
+            "title": "claims it",
+            "created": "2026-09-16T09:00:00Z",
+            "modified": "2026-09-16T09:00:00Z",
+            "_rev": 99,
+            "annotations": [{ "id": note, "body": "the note, stolen" }],
+        }] });
+        let err = e
+            .store_import(&document)
+            .expect_err("one annotation belongs to exactly one task");
+        assert_eq!(err.code, ErrorCode::BadRequest, "{}", err.message);
+        for named in [note.as_str(), owner["id"].as_str().expect("id")] {
+            assert!(
+                err.message.contains(named),
+                "the refusal must name the note and the task holding it ({named}): {}",
+                err.message
+            );
+        }
+        let after = e.store_export(&json!({})).expect("export");
+        let held = after["tasks"]
+            .as_array()
+            .expect("tasks")
+            .iter()
+            .find(|t| t["id"] == owner["id"])
+            .expect("the owner is still here")
+            .clone();
+        assert_eq!(
+            held["annotations"][0]["body"],
+            json!("the owner's note"),
+            "a refused import moves nothing: {after}"
+        );
+    }
+
+    /// The check twin of the annotation refusal above, through the `merge`
+    /// door: a check id is a global primary key too, and a payload cannot hand
+    /// one task's criterion — with its state and its evidence — to another.
+    #[test]
+    fn store_import_merge_refuses_a_check_id_that_belongs_to_another_task() {
+        let e = Engine::open_in_memory().expect("open");
+        let owner = e
+            .task_add(&json!({ "title": "owns the criterion" }))
+            .expect("add");
+        let check = e
+            .check_add(
+                &json!({ "ref": owner["short_id"].clone(), "body": "the owner's criterion" }),
+            )
+            .expect("check")["check"]["id"]
+            .as_str()
+            .expect("check id")
+            .to_string();
+        let thief = e.task_add(&json!({ "title": "claims it" })).expect("add");
+
+        let document = json!({ "merge": true, "tasks": [{
+            "id": thief["id"],
+            "short_id": thief["short_id"],
+            "title": "claims it",
+            "created": "2026-09-16T09:00:00Z",
+            "modified": "2026-09-16T09:00:00Z",
+            "_rev": 99,
+            "checks": [{ "id": check, "body": "the criterion, stolen", "state": "passed" }],
+        }] });
+        let err = e
+            .store_import(&document)
+            .expect_err("one check belongs to exactly one task");
+        assert_eq!(err.code, ErrorCode::BadRequest, "{}", err.message);
+        for named in [check.as_str(), owner["id"].as_str().expect("id")] {
+            assert!(
+                err.message.contains(named),
+                "the refusal must name the check and the task holding it ({named}): {}",
+                err.message
+            );
+        }
+        let after = e.store_export(&json!({})).expect("export");
+        let held = after["tasks"]
+            .as_array()
+            .expect("tasks")
+            .iter()
+            .find(|t| t["id"] == owner["id"])
+            .expect("the owner is still here")
+            .clone();
+        assert_eq!(
+            held["checks"][0]["body"],
+            json!("the owner's criterion"),
+            "a refused import moves nothing: {after}"
+        );
+        assert_eq!(held["checks"][0]["state"], json!("open"), "{after}");
+    }
+
+    /// D185 (task #802): a merge skips a measurement this task already holds,
+    /// which is what makes importing one document twice a no-op — but the skip
+    /// must not swallow a payload that lists one `tokens[].id` TWICE. That
+    /// document cannot be applied: one measurement id is one row of spend, and
+    /// taking the first silently drops the second.
+    #[test]
+    fn store_import_merge_refuses_a_token_id_repeated_in_one_payload() {
+        let a = Engine::open_in_memory().expect("open a");
+        let added = a
+            .task_add(&json!({ "title": "spends tokens" }))
+            .expect("add");
+        a.token_add(&json!({
+            "ref": added["short_id"].clone(),
+            "tool": "claude-code",
+            "source": "self-report",
+            "confidence": "medium",
+            "input_tokens": 100,
+        }))
+        .expect("token.add");
+        let mut payload = a.store_export(&json!({})).expect("export");
+        let b = Engine::open_in_memory().expect("open b");
+        b.store_import(&payload).expect("seed b");
+        payload["merge"] = json!(true);
+
+        let measurements = |e: &Engine| -> usize {
+            e.store_export(&json!({})).expect("export")["tasks"][0]["tokens"]
+                .as_array()
+                .map_or(0, Vec::len)
+        };
+        b.store_import(&payload)
+            .expect("the same measurement arriving again is a skip, not an error");
+        assert_eq!(measurements(&b), 1, "and it is skipped exactly once");
+
+        let m = payload["tasks"][0]["tokens"][0].clone();
+        let mid = m["id"].as_str().expect("measurement id").to_string();
+        payload["tasks"][0]["tokens"] = json!([m.clone(), m]);
+        let err = b
+            .store_import(&payload)
+            .expect_err("one measurement id, one row");
+        assert_eq!(err.code, ErrorCode::BadRequest, "{}", err.message);
+        assert!(
+            err.message.contains(&mid),
+            "the refusal must name the repeated id: {}",
+            err.message
+        );
+        assert_eq!(measurements(&b), 1, "a refused import writes nothing");
     }
 
     /// D185: tags and dependency edges are sets, so a merge unions them — the
