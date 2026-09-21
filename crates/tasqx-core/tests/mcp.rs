@@ -8,6 +8,17 @@
 use serde_json::{json, Value};
 use tasqx_core::{Engine, McpServer, Scope};
 
+/// Guards every test below that reads `instructions()` — directly, through
+/// `instructions_of`/`instructions_from`/`rulings_of`, or through an
+/// `initialize` response that carries it. `PATH` is process-global and
+/// `cargo test` runs functions as threads in one binary, so a test that sets
+/// `PATH` (the two ripwire tests) could otherwise flip it mid-read for any
+/// other thread comparing two live calls to `instructions()` — the exact
+/// flake `DISCOVERY_ENV` in `attribution.rs` names for `CLAUDE_CONFIG_DIR`.
+/// Every reader takes this lock for its whole body, not only the writers, so
+/// no interleaving is possible rather than merely unlikely.
+static RIPWIRE_PATH_ENV: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 fn engine() -> Engine {
     Engine::open_in_memory().expect("open in-memory store")
 }
@@ -444,6 +455,7 @@ fn tool_names_in(text: &str) -> Vec<String> {
 /// write back.
 #[test]
 fn initialize_instructions_carry_the_write_scope_workflow() {
+    let _guard = RIPWIRE_PATH_ENV.lock().unwrap_or_else(|e| e.into_inner());
     let text = instructions_of(Scope::Write);
     assert!(!text.is_empty(), "instructions must not be an empty string");
     for phrase in [
@@ -466,6 +478,7 @@ fn initialize_instructions_carry_the_write_scope_workflow() {
 /// scope. The read variant says the scope out loud instead.
 #[test]
 fn initialize_instructions_under_read_scope_name_no_write_tool() {
+    let _guard = RIPWIRE_PATH_ENV.lock().unwrap_or_else(|e| e.into_inner());
     let text = instructions_of(Scope::Read);
     assert!(
         text.contains("tasqx_search_memory"),
@@ -502,6 +515,7 @@ fn initialize_instructions_under_read_scope_name_no_write_tool() {
 /// could survive in exactly the half the other test does not read.
 #[test]
 fn initialize_instructions_name_only_tools_that_exist() {
+    let _guard = RIPWIRE_PATH_ENV.lock().unwrap_or_else(|e| e.into_inner());
     let roster = tasqx_core::mcp::tool_roster();
     for scope in [Scope::Read, Scope::Write] {
         let text = instructions_of(scope);
@@ -522,6 +536,75 @@ fn initialize_instructions_name_only_tools_that_exist() {
             );
         }
     }
+}
+
+// ---- initialize ripwire nudge (D178) -------------------------------------------
+
+/// A fresh, empty `PATH` directory, holding a `ripwire` (or `ripwire.exe`)
+/// file when `with_ripwire` is set. Named per test tag and per process so
+/// parallel runs and pid reuse cannot collide (regressions.rs's fixture
+/// naming, same reasoning).
+fn ripwire_path_dir(tag: &str, with_ripwire: bool) -> std::path::PathBuf {
+    let dir = std::env::temp_dir().join(format!("tasqx-mcp-ripwire-{tag}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("create the PATH directory");
+    if with_ripwire {
+        let name = if cfg!(windows) {
+            "ripwire.exe"
+        } else {
+            "ripwire"
+        };
+        std::fs::write(dir.join(name), b"").expect("plant the ripwire file");
+    }
+    dir
+}
+
+/// `instructions_of` with `PATH` replaced for the call and restored after.
+/// The caller holds [`RIPWIRE_PATH_ENV`] for its whole body, so this does not
+/// lock on its own — nesting the same non-reentrant `Mutex` would deadlock.
+fn instructions_with_path(scope: Scope, path: &std::path::Path) -> String {
+    let prev = std::env::var_os("PATH");
+    // SAFETY: restored below, and the caller's lock keeps every other test
+    // that reads `instructions()` from observing this override.
+    unsafe { std::env::set_var("PATH", path) };
+    let text = instructions_of(scope);
+    match prev {
+        Some(v) => unsafe { std::env::set_var("PATH", v) },
+        None => unsafe { std::env::remove_var("PATH") },
+    }
+    text
+}
+
+/// D178: `ripwire` on `PATH` gets the map-before-grep nudge, and tasqx never
+/// calls it to find out — a directory scan is the whole check.
+#[test]
+fn initialize_instructions_name_ripwire_when_it_is_on_path() {
+    let _guard = RIPWIRE_PATH_ENV.lock().unwrap_or_else(|e| e.into_inner());
+    let dir = ripwire_path_dir("found", true);
+    let text = instructions_with_path(Scope::Write, &dir);
+    assert!(
+        text.contains(
+            "ripwire is on PATH: map before you grep (ripwire <dir> --for=\"<task>\" \
+             --legend=compact)."
+        ),
+        "ripwire on PATH must carry the map-before-grep nudge:\n{text}"
+    );
+}
+
+/// D178: no `ripwire` on `PATH` points the agent at `tasqx setup` instead of
+/// naming a tool it cannot use.
+#[test]
+fn initialize_instructions_point_at_setup_when_ripwire_is_missing() {
+    let _guard = RIPWIRE_PATH_ENV.lock().unwrap_or_else(|e| e.into_inner());
+    let dir = ripwire_path_dir("missing", false);
+    let text = instructions_with_path(Scope::Write, &dir);
+    assert!(
+        text.contains(
+            "No code mapper on PATH: tell the user once that `tasqx setup` shows how to \
+             install ripwire."
+        ),
+        "an empty PATH must point at `tasqx setup`:\n{text}"
+    );
 }
 
 // ---- initialize standing rulings (#96, D157) ----------------------------------
@@ -572,6 +655,7 @@ fn add_doc(engine: &Engine, title: &str, body: &str, project: Option<&str>, stan
 /// start charging every prompt for them.
 #[test]
 fn initialize_instructions_on_an_empty_store_are_byte_identical_to_the_workflow_text() {
+    let _guard = RIPWIRE_PATH_ENV.lock().unwrap_or_else(|e| e.into_inner());
     let dir = temp_workdir("empty/sub");
     for filled in [false, true] {
         let engine = engine();
@@ -597,6 +681,7 @@ fn initialize_instructions_on_an_empty_store_are_byte_identical_to_the_workflow_
 /// a task worktree's own basename is `<id>-<slug>`.
 #[test]
 fn standing_rulings_follow_the_working_directory_before_the_default_project() {
+    let _guard = RIPWIRE_PATH_ENV.lock().unwrap_or_else(|e| e.into_inner());
     let engine = engine();
     engine.project_create(&json!({ "name": "alpha" })).unwrap();
     engine.project_create(&json!({ "name": "beta" })).unwrap();
@@ -634,6 +719,7 @@ fn standing_rulings_follow_the_working_directory_before_the_default_project() {
 
 #[test]
 fn with_no_project_inferred_only_unscoped_standing_docs_are_shown() {
+    let _guard = RIPWIRE_PATH_ENV.lock().unwrap_or_else(|e| e.into_inner());
     let engine = engine();
     engine.project_create(&json!({ "name": "alpha" })).unwrap();
     engine.project_archive(&json!({ "name": "alpha" })).unwrap();
@@ -652,6 +738,7 @@ fn with_no_project_inferred_only_unscoped_standing_docs_are_shown() {
 /// and the whole section stays inside the per-prompt budget.
 #[test]
 fn topical_fill_uses_only_the_projects_own_docs_and_stays_within_the_budget() {
+    let _guard = RIPWIRE_PATH_ENV.lock().unwrap_or_else(|e| e.into_inner());
     let engine = engine();
     engine.project_create(&json!({ "name": "alpha" })).unwrap();
     add_doc(&engine, "the one rule", "short", Some("alpha"), true);
@@ -691,6 +778,7 @@ fn topical_fill_uses_only_the_projects_own_docs_and_stays_within_the_budget() {
 /// — it sits under its own heading, after every standing entry.
 #[test]
 fn topical_entries_sit_under_their_own_heading_after_standing_entries() {
+    let _guard = RIPWIRE_PATH_ENV.lock().unwrap_or_else(|e| e.into_inner());
     let engine = engine();
     engine.project_create(&json!({ "name": "alpha" })).unwrap();
     add_doc(&engine, "alpha rule", "scoped", Some("alpha"), true);
@@ -716,6 +804,7 @@ fn topical_entries_sit_under_their_own_heading_after_standing_entries() {
 /// rulings it does not have — only the "Recent notes" heading appears.
 #[test]
 fn with_only_topical_docs_the_section_carries_no_standing_rulings_heading() {
+    let _guard = RIPWIRE_PATH_ENV.lock().unwrap_or_else(|e| e.into_inner());
     let engine = engine();
     engine.project_create(&json!({ "name": "alpha" })).unwrap();
     add_doc(
@@ -741,6 +830,7 @@ fn with_only_topical_docs_the_section_carries_no_standing_rulings_heading() {
 /// once a project holds more than that.
 #[test]
 fn the_footer_counts_every_topical_doc_not_only_the_ones_read() {
+    let _guard = RIPWIRE_PATH_ENV.lock().unwrap_or_else(|e| e.into_inner());
     let engine = engine();
     engine.project_create(&json!({ "name": "alpha" })).unwrap();
     for i in 0..300 {
@@ -769,6 +859,7 @@ fn the_footer_counts_every_topical_doc_not_only_the_ones_read() {
 /// budget every title is still listed, and the section says to consolidate.
 #[test]
 fn an_oversized_standing_set_lists_every_title_and_warns() {
+    let _guard = RIPWIRE_PATH_ENV.lock().unwrap_or_else(|e| e.into_inner());
     let engine = engine();
     engine.project_create(&json!({ "name": "alpha" })).unwrap();
     let long = "gisttext ".repeat(40);
@@ -798,6 +889,7 @@ fn an_oversized_standing_set_lists_every_title_and_warns() {
 
 #[test]
 fn the_gist_is_the_first_paragraph_without_frontmatter() {
+    let _guard = RIPWIRE_PATH_ENV.lock().unwrap_or_else(|e| e.into_inner());
     let engine = engine();
     add_doc(
         &engine,
@@ -829,6 +921,7 @@ fn the_gist_is_the_first_paragraph_without_frontmatter() {
 /// section's own prose (here with its footer) names no tool this scope lacks.
 #[test]
 fn initialize_instructions_under_read_scope_carry_standing_rulings() {
+    let _guard = RIPWIRE_PATH_ENV.lock().unwrap_or_else(|e| e.into_inner());
     let engine = engine();
     engine.project_create(&json!({ "name": "alpha" })).unwrap();
     add_doc(&engine, "global rule", "everywhere", None, true);
