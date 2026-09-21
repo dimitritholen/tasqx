@@ -4968,6 +4968,174 @@ fn memory_import_project_scopes_the_batch_and_a_reimport_moves_it() {
     let _ = std::fs::remove_dir_all(&src);
 }
 
+/// #784/D178: `docs/`, `./docs/`, the absolute path and `../docs` (run from a
+/// subdirectory) all name the same folder, so an import from any of them
+/// lands the SAME doc — `source` is stored relative to the git toplevel, not
+/// spelled the way the caller typed the path.
+#[test]
+fn memory_import_source_is_relative_to_the_git_toplevel_from_any_starting_directory() {
+    let dir = fresh_config_dir("memory-import-source-git");
+    let repo = std::env::temp_dir().join(format!(
+        "tasqx-reg-memory-import-source-git-repo-{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&repo);
+    std::fs::create_dir_all(repo.join("docs")).expect("create docs dir");
+    std::fs::create_dir_all(repo.join(".git")).expect("create .git dir");
+    std::fs::write(repo.join("docs").join("a.md"), "# A\n\nbody").expect("write doc");
+    // A sibling of `docs`, not nested inside it: `../docs` from a directory
+    // UNDER `docs` would resolve to `docs/docs`, not back to `docs` itself.
+    let sub = repo.join("sub");
+    std::fs::create_dir_all(&sub).expect("create sub");
+    let abs_docs = repo.join("docs");
+
+    let run = |args: &[&str], cwd: &std::path::Path| {
+        bin("memory-import-source-git", &dir)
+            .current_dir(cwd)
+            .args(args)
+            .output()
+            .expect("run tasqx")
+    };
+
+    let abs_str = abs_docs.to_str().expect("utf-8 path").to_string();
+    for (args, cwd) in [
+        (vec!["memory", "import", "docs"], repo.as_path()),
+        (vec!["memory", "import", "./docs"], repo.as_path()),
+        (vec!["memory", "import", abs_str.as_str()], repo.as_path()),
+        (vec!["memory", "import", "../docs"], sub.as_path()),
+    ] {
+        let out = run(&args, cwd);
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+
+    let list = run(&["--json", "memory", "list"], &repo);
+    assert!(list.status.success());
+    let v: serde_json::Value = serde_json::from_slice(&list.stdout).expect("json");
+    assert_eq!(
+        v["count"], 1,
+        "one doc for one file, however the path was spelled: {v}"
+    );
+    assert_eq!(v["docs"][0]["source"], "docs/a.md");
+
+    let _ = std::fs::remove_dir_all(&repo);
+}
+
+/// #784: outside a git work tree, `source` falls back to the path relative to
+/// the current directory.
+#[test]
+fn memory_import_source_outside_a_git_tree_is_relative_to_cwd() {
+    let dir = fresh_config_dir("memory-import-source-nogit");
+    let base = std::env::temp_dir().join(format!(
+        "tasqx-reg-memory-import-source-nogit-{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&base);
+    std::fs::create_dir_all(base.join("notes")).expect("create notes dir");
+    std::fs::write(base.join("notes").join("n.md"), "# N\n\nbody").expect("write doc");
+
+    let run = |args: &[&str]| {
+        bin("memory-import-source-nogit", &dir)
+            .current_dir(&base)
+            .args(args)
+            .output()
+            .expect("run tasqx")
+    };
+
+    let out = run(&["memory", "import", "notes"]);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let list = run(&["--json", "memory", "list"]);
+    assert!(list.status.success());
+    let v: serde_json::Value = serde_json::from_slice(&list.stdout).expect("json");
+    assert_eq!(v["count"], 1, "{v}");
+    assert_eq!(v["docs"][0]["source"], "notes/n.md");
+
+    let _ = std::fs::remove_dir_all(&base);
+}
+
+/// #784: a doc already holding an older spelling of a file this import just
+/// landed under the new spelling is named in a `note:` line (and under
+/// `--json`, `superseded`) — never removed, since only a person can confirm
+/// it really is the same file.
+#[test]
+fn memory_import_notes_an_older_spelling_of_the_same_file_without_removing_it() {
+    let dir = fresh_config_dir("memory-import-source-note");
+    let repo = std::env::temp_dir().join(format!(
+        "tasqx-reg-memory-import-source-note-{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&repo);
+    std::fs::create_dir_all(repo.join("docs")).expect("create docs dir");
+    std::fs::create_dir_all(repo.join(".git")).expect("create .git dir");
+    std::fs::write(repo.join("docs").join("a.md"), "# A\n\nbody").expect("write doc");
+
+    let run = |args: &[&str]| {
+        bin("memory-import-source-note", &dir)
+            .current_dir(&repo)
+            .args(args)
+            .output()
+            .expect("run tasqx")
+    };
+
+    // Plant a doc under the spelling a pre-#784 import would have stored for
+    // `./docs`.
+    let planted = run(&[
+        "--json",
+        "memory",
+        "add",
+        "Old A",
+        "old body",
+        "--source",
+        "./docs/a.md",
+    ]);
+    assert!(
+        planted.status.success(),
+        "{}",
+        String::from_utf8_lossy(&planted.stderr)
+    );
+    let planted_v: serde_json::Value = serde_json::from_slice(&planted.stdout).expect("json");
+    let old_id = planted_v["id"].as_str().expect("planted id").to_string();
+
+    let out = run(&["--json", "memory", "import", "docs"]);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).expect("json");
+    let superseded = v["superseded"].as_array().expect("superseded array");
+    assert_eq!(superseded.len(), 1, "{v}");
+    assert_eq!(superseded[0]["id"], old_id);
+    assert_eq!(superseded[0]["source"], "./docs/a.md");
+    assert_eq!(superseded[0]["matches"][0], "docs/a.md");
+
+    let text_out = run(&["memory", "import", "docs"]);
+    assert!(text_out.status.success());
+    let stdout = String::from_utf8_lossy(&text_out.stdout);
+    assert!(
+        stdout.contains("looks like an older spelling of"),
+        "expected a note about the old source, got: {stdout}"
+    );
+
+    // Nothing was deleted.
+    let show = run(&["--json", "memory", "show", &old_id]);
+    assert!(
+        show.status.success(),
+        "the old doc must still exist: {}",
+        String::from_utf8_lossy(&show.stderr)
+    );
+
+    let _ = std::fs::remove_dir_all(&repo);
+}
+
 /// #229 item 8: a store the engine cannot open (`TASQX_DB` pointing at an
 /// unwritable path) printed `error: cannot open store ...` at exit 1 — a bare
 /// `error:` prefix with no bracketed code, which DESIGN.md reserves for

@@ -99,6 +99,13 @@ tasqx memory import docs/adr
   stays global and an existing one keeps whatever scope it already had (like
   `--standing` on a re-import); naming a project moves an existing document's
   scope there, so re-pointing an import at a different project rescopes it.
+- The stored `source` is the path relative to the git toplevel above the
+  file, or, outside a git work tree, relative to the current directory — so
+  the same folder imported as `docs/`, `./docs/` or its absolute path, from
+  any directory and any machine, is one document per file, not several. An
+  import that finds a doc already holding an older spelling of the same file
+  name never removes it, but prints a `note:` line naming it so it can be
+  retired by hand.
 
 ## tasqx memory rm
 

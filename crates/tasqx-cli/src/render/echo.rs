@@ -1525,7 +1525,7 @@ fn record(ctx: &Ctx, name: Option<&str>, fixed: Vec<Fact>, droppable: Vec<Fact>)
 
 /// A note under a record, wrapped at words to the terminal (never cut), and
 /// one line off it.
-fn note_line(ctx: &Ctx, text: &str) -> String {
+pub fn note_line(ctx: &Ctx, text: &str) -> String {
     let label = quiet(ctx, "card.label", "note:");
     if !on_terminal(ctx) {
         return format!("{label} {text}\n");
