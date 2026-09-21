@@ -514,7 +514,7 @@ fn an_import_names_every_task_whose_number_this_store_was_already_using() {
     );
 }
 
-/// D182, through the real `import` VERB: a memory doc that merges onto the row
+/// D183, through the real `import` VERB: a memory doc that merges onto the row
 /// this store already holds under the same `source` drops the payload's id, so
 /// the merge is named — both ids, the source, and which copy's text won.
 #[test]

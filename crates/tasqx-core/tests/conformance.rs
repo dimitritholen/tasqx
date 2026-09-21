@@ -1382,7 +1382,7 @@ const R_STORE_IMPORT: Shape = &[&[
     // same rule `projects_created` follows, and for the same reason: a write
     // the caller did not ask for has to be visible.
     req("renumbered", Ty::Array),
-    // D182: `{source, kept_id, dropped_id, took}` per memory doc that merged
+    // D183: `{source, kept_id, dropped_id, took}` per memory doc that merged
     // onto a doc this store already held under the same `source`. Always
     // present, empty when nothing merged — `renumbered`'s rule, and its
     // reason: the payload's id is gone afterwards.

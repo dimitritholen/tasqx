@@ -1978,7 +1978,7 @@ fn memory_import_refuses_a_batch_that_names_one_source_twice() {
     );
 }
 
-/// D182 amends D174 at this one door: `store.import` restoring a doc whose
+/// D183 amends D174 at this one door: `store.import` restoring a doc whose
 /// source a DIFFERENT id already holds MERGES it onto that doc — two machines
 /// that each imported the same file hold it under two minted ids, and that is
 /// one doc, not a conflict. The other two doors still refuse (below), and

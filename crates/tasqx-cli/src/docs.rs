@@ -601,7 +601,7 @@ const METHODS: [(&str, &str, &str); 49] = [
          <code>{id, from, to}</code> (D177). A memory doc whose <code>source</code> a DIFFERENT \
          doc here already holds merges onto that doc — the later <code>modified</code> wins the \
          text — listed in <code>docs_merged</code> as \
-         <code>{source, kept_id, dropped_id, took}</code> (D182). Links are restored last, both \
+         <code>{source, kept_id, dropped_id, took}</code> (D183). Links are restored last, both \
          ends resolved against what this store now holds; an end it does not have refuses the \
          import by name (D181).",
     ),

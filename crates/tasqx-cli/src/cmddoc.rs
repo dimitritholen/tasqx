@@ -936,7 +936,7 @@ pub const COMMAND_REF: &[CmdDoc] = &[
             ex_norun("tasqx export | tasqx import -", "from stdin"),
         ],
         notes: &["A task whose number a DIFFERENT task here already holds keeps its id and takes the next free one; every move is printed and reported as `renumbered` (D177). A task this store already holds keeps the number it has here.",
-                 "A memory doc whose `source` a DIFFERENT doc here already holds merges onto that doc rather than being refused: the stored id is kept, the later `modified` wins the text, and every merge is printed and reported as `docs_merged` (D182).",
+                 "A memory doc whose `source` a DIFFERENT doc here already holds merges onto that doc rather than being refused: the stored id is kept, the later `modified` wins the text, and every merge is printed and reported as `docs_merged` (D183).",
                  "Links are restored after everything they point at, counted in `links_imported`; a link naming an end neither the document nor this store holds refuses the whole import by name (D181)."],
         see_also: &["export", "api"],
         topic: Topic::JsonApi,
