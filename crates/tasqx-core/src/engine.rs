@@ -954,7 +954,7 @@ pub const IMPORT_DOC_KEYS: &[&str] = &[
     "origin_size",
 ];
 
-/// Every key an exported link object can carry (D180). Deliberately the row
+/// Every key an exported link object can carry (D181). Deliberately the row
 /// `link.list` pages, so the document spells a link the way every reader here
 /// already does; `created_by` is absent from both for the reason `LINK_COLS`
 /// names. `id` and `created_at` are optional so a hand-written link still

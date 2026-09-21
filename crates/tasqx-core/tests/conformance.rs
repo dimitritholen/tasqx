@@ -1338,10 +1338,10 @@ const R_STORE_EXPORT: Shape = &[&[
     // D171: how many memory docs a filtered export left out — scoped to a
     // project it does not carry, or unscoped without `include_unscoped`.
     req("dropped_docs", Ty::Int),
-    // D180: the graph's explicit edges, in the SAME row shape `link.list`
+    // D181: the graph's explicit edges, in the SAME row shape `link.list`
     // freezes, because it is the same table read through the same function.
     req_of("links", Ty::Array, &[LINK_ROW]),
-    // D180: how many links a filtered export left out because one of their
+    // D181: how many links a filtered export left out because one of their
     // ends is a node this document does not carry.
     req("dropped_links", Ty::Int),
     // The whole audit log (minus the bookkeeping `store.import` itself
@@ -1368,7 +1368,7 @@ const R_STORE_IMPORT: Shape = &[&[
     // missing one, and could not tell them apart on its own.
     req("docs_declared", Ty::Bool),
     req("events_imported", Ty::Int),
-    // D180: how many links the document restored. Always present, zero for a
+    // D181: how many links the document restored. Always present, zero for a
     // document written before the section existed — the same rule every other
     // counter here follows.
     req("links_imported", Ty::Int),
@@ -2407,7 +2407,7 @@ fn cases() -> Vec<Case> {
                 let doc = e
                     .memory_add(&json!({ "title": "kept", "body": "knowledge", "source": "x.md" }))
                     .expect("doc");
-                // D180: `links` is an array like `tasks` and `docs`, so its row
+                // D181: `links` is an array like `tasks` and `docs`, so its row
                 // shape below is checked PER ROW — a document carrying none
                 // would leave every key under it unexamined, which is how the
                 // conditional `tokens` key went unfrozen for so long.
@@ -2486,7 +2486,7 @@ fn cases() -> Vec<Case> {
                 let doc = source
                     .memory_add(&json!({ "title": "kept", "body": "knowledge" }))
                     .expect("doc");
-                // D180: so the document carries a `links` section and
+                // D181: so the document carries a `links` section and
                 // `links_imported` counts something rather than freezing the
                 // key over a path nothing walked.
                 source

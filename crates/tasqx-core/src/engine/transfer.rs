@@ -131,7 +131,7 @@ impl Engine {
         let (projects, dropped_projects) = self.export_projects(needed_projects.as_ref())?;
         let project_ids: HashSet<&str> = projects.iter().filter_map(|p| p["id"].as_str()).collect();
 
-        // D180: the ids, per node kind, that this document actually carries —
+        // D181: the ids, per node kind, that this document actually carries —
         // what BOTH ends of a link are checked against. `None` on an unfiltered
         // export, where every node in the store is present by definition, which
         // is the same "no restriction" shape `needed_projects` itself follows.
@@ -194,7 +194,7 @@ impl Engine {
             // doc with no project is nobody's in particular.
             "docs": docs,
             "dropped_docs": dropped_docs,
-            // D160/D180: the graph's own edges. A backup used to restore with
+            // D160/D181: the graph's own edges. A backup used to restore with
             // none of them, beside an event log describing every edge that was
             // supposed to be there. Scoped like everything else on a filtered
             // export — a link travels only when BOTH its ends are nodes this
@@ -475,7 +475,7 @@ impl Engine {
         Ok((out, dropped))
     }
 
-    /// Every link row, id-ordered (creation order, since UUIDv7). D160/D180.
+    /// Every link row, id-ordered (creation order, since UUIDv7). D160/D181.
     ///
     /// The row is `link.list`'s own, read through the same `link_row`, so the
     /// archive and the reader cannot come to disagree about what a link is.
@@ -529,7 +529,7 @@ impl Engine {
     /// `via: "store.import"`).
     ///
     /// `present` is the SAME set `export_task` trims `depends_on` against, and
-    /// `doc_ids`/`project_ids` (D171) and `link_ids` (D180) are the ids of the
+    /// `doc_ids`/`project_ids` (D171) and `link_ids` (D181) are the ids of the
     /// rows `export_docs`/`export_projects`/`export_links` actually kept: an
     /// event is emitted only when its `entity_id` names something this document
     /// carries, so a filtered export cannot leak an excluded task's title, an
@@ -583,7 +583,7 @@ impl Engine {
                 Some(Entity::Task) => present.contains(entity_id.as_str()),
                 Some(Entity::Doc) => doc_ids.contains(entity_id.as_str()),
                 Some(Entity::Project) => project_ids.contains(entity_id.as_str()),
-                // D180: the `links` table IS part of the archive now, so a link
+                // D181: the `links` table IS part of the archive now, so a link
                 // event is scoped to the link this document carries, exactly
                 // like the three kinds above. It used to travel whole, which on
                 // a filtered export left the log describing edges the document
@@ -812,7 +812,7 @@ impl Engine {
         // D177: every task whose number this store was already using, and the
         // number it took instead. Always reported, empty when nothing moved.
         let mut renumbered: Vec<Value> = Vec::new();
-        // D180: payload id -> the id that row actually landed under, per node
+        // D181: payload id -> the id that row actually landed under, per node
         // kind, filled by the passes that write those rows and read by the
         // links pass. It holds the kinds whose stored id CAN differ from the
         // document's — a project, because `upsert_project` keys on NAME and
@@ -866,7 +866,7 @@ impl Engine {
                     &created,
                     payload_id.as_deref(),
                 )?;
-                // D180: the one remap entry that is routinely NOT the identity
+                // D181: the one remap entry that is routinely NOT the identity
                 // — a destination that already knows this name kept its own row
                 // and its own id, so a link naming the payload's project id has
                 // to follow the row here.
@@ -992,7 +992,7 @@ impl Engine {
                         origin_size
                     ],
                 )?;
-                // D180: the identity today — the upsert keys on the doc's own
+                // D181: the identity today — the upsert keys on the doc's own
                 // id — and stated through the table anyway, so #782's
                 // source-merge has one place to say otherwise.
                 remap.insert((NodeType::Memory, did.clone()), did.clone());
@@ -1606,7 +1606,7 @@ impl Engine {
                 )?;
             }
         }
-        // Pass 2b, D180: the graph's edges, after every task, annotation, doc
+        // Pass 2b, D181: the graph's edges, after every task, annotation, doc
         // and project the document carries has been written — a link spans all
         // four kinds, and there is no FOREIGN KEY to lean on, because the
         // endpoint columns are polymorphic. Optional, so a document written
@@ -1756,7 +1756,7 @@ impl Engine {
             "docs_imported": docs_imported,
             "docs_declared": docs_declared,
             "events_imported": events_imported,
-            // D180: how many of the document's links this store now holds —
+            // D181: how many of the document's links this store now holds —
             // including one it already held under another id, which is the
             // same edge stated twice, not a second one.
             "links_imported": links_imported,
@@ -1766,7 +1766,7 @@ impl Engine {
     }
 }
 
-/// Resolve one end of an imported link to the row it names HERE (D180).
+/// Resolve one end of an imported link to the row it names HERE (D181).
 ///
 /// Three steps, in order: the `<type>:<uuid>` grammar `link.list` emits, then
 /// the remap table (`store_import`'s `remap` — payload id to the id that row
@@ -2609,7 +2609,7 @@ mod tests {
             json!(false),
             "no `docs` key at all must be reported as undeclared: {r}"
         );
-        // D180: a document written before the `links` section existed carries
+        // D181: a document written before the `links` section existed carries
         // no such key either, and imports exactly as it did — the counter is
         // present and zero, never absent.
         assert_eq!(
@@ -2630,7 +2630,7 @@ mod tests {
         );
     }
 
-    /// D180: the `links` table used to be left out of the archive entirely, so
+    /// D181: the `links` table used to be left out of the archive entirely, so
     /// a full backup restored with no graph edges at all — beside an event log
     /// that described every edge that was supposed to be there. The document
     /// carries the rows now, and a restore reproduces them one for one.
