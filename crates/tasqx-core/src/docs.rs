@@ -1276,6 +1276,16 @@ pub const R_STORE_EXPORT: &[FieldDoc] = &[
         "How many memory docs a filtered export left out, scoped or unscoped.",
     ),
     f(
+        "links",
+        "array",
+        "Every explicit link (D160) whose BOTH ends are nodes this document carries — the same row `link.list` pages.",
+    ),
+    f(
+        "dropped_links",
+        "integer",
+        "How many links a filtered export left out because one of their ends is a node this document does not carry.",
+    ),
+    f(
         "events",
         "array",
         "The whole audit log for what this document carries, minus the bookkeeping rows an import itself writes.",
@@ -1283,7 +1293,7 @@ pub const R_STORE_EXPORT: &[FieldDoc] = &[
     f(
         "dropped_events",
         "integer",
-        "How many events a filtered export left out because they belong to a task, doc or project this document does not carry.",
+        "How many events a filtered export left out because they belong to a task, doc, project or link this document does not carry.",
     ),
     n(
         "default_project",
@@ -1357,6 +1367,7 @@ pub const R_STORE_IMPORT: &[FieldDoc] = &[
     f("docs_imported", "integer", "How many knowledge docs came in."),
     f("docs_declared", "boolean", "Whether the document had a `docs` section at all — an empty one told apart from a missing one (#179)."),
     f("events_imported", "integer", "How many audit rows came in."),
+    f("links_imported", "integer", "How many explicit links came in (D180) — an edge this store already held under a different id counts, because that is the same edge stated twice. Zero for a document with no `links` section."),
     n("default_project", "string", "The default project after the import, or null."),
     f("renumbered", "array", "Every task whose `short_id` a DIFFERENT task in this store already held, as `{id, from, to}` — it kept its id and took the next free number (D177). Empty when nothing moved."),
 ];
@@ -1622,6 +1633,7 @@ pub fn result_shape(method: &str) -> &'static [(&'static str, &'static [FieldDoc
             ("result.tasks[].checks[]", TASK_CHECK),
             ("result.projects[]", PROJECT_EXPORT_ROW),
             ("result.docs[]", DOC_EXPORT_ROW),
+            ("result.links[]", LINK_ROW),
             ("result.events[]", EVENT_ROW),
         ],
         "store.import" => &[("result", R_STORE_IMPORT)],

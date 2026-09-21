@@ -1319,6 +1319,12 @@ const R_STORE_EXPORT: Shape = &[&[
     // D171: how many memory docs a filtered export left out — scoped to a
     // project it does not carry, or unscoped without `include_unscoped`.
     req("dropped_docs", Ty::Int),
+    // D180: the graph's explicit edges, in the SAME row shape `link.list`
+    // freezes, because it is the same table read through the same function.
+    req_of("links", Ty::Array, &[LINK_ROW]),
+    // D180: how many links a filtered export left out because one of their
+    // ends is a node this document does not carry.
+    req("dropped_links", Ty::Int),
     // The whole audit log (minus the bookkeeping `store.import` itself
     // writes, #176) — the SAME row shape `event.list` freezes, because it is
     // the same table.
@@ -1343,6 +1349,10 @@ const R_STORE_IMPORT: Shape = &[&[
     // missing one, and could not tell them apart on its own.
     req("docs_declared", Ty::Bool),
     req("events_imported", Ty::Int),
+    // D180: how many links the document restored. Always present, zero for a
+    // document written before the section existed — the same rule every other
+    // counter here follows.
+    req("links_imported", Ty::Int),
     nul("default_project", Ty::Str),
     // D177: `{id, from, to}` per task whose number a DIFFERENT task in the
     // destination already held. Always present, empty when nothing moved — the
@@ -2327,8 +2337,19 @@ fn cases() -> Vec<Case> {
                 // without one leaves that row's nested keys unexamined.
                 e.check_add(&json!({ "ref": 2, "body": "a second criterion" }))
                     .expect("check");
-                e.memory_add(&json!({ "title": "kept", "body": "knowledge", "source": "x.md" }))
+                let doc = e
+                    .memory_add(&json!({ "title": "kept", "body": "knowledge", "source": "x.md" }))
                     .expect("doc");
+                // D180: `links` is an array like `tasks` and `docs`, so its row
+                // shape below is checked PER ROW — a document carrying none
+                // would leave every key under it unexamined, which is how the
+                // conditional `tokens` key went unfrozen for so long.
+                e.link_add(&json!({
+                    "from": 1,
+                    "to": format!("memory:{}", doc["id"].as_str().expect("doc id")),
+                    "relation": "references",
+                }))
+                .expect("link");
                 // A start/stop inside one test run banks zero seconds — both
                 // timestamps land in the same second — and `tracked_seconds` is
                 // omitted when it is zero, so the export above would carry the
@@ -2395,9 +2416,19 @@ fn cases() -> Vec<Case> {
                 // engine's.
                 let source = Engine::open_in_memory().expect("source store");
                 rich_task(&source);
-                source
+                let doc = source
                     .memory_add(&json!({ "title": "kept", "body": "knowledge" }))
                     .expect("doc");
+                // D180: so the document carries a `links` section and
+                // `links_imported` counts something rather than freezing the
+                // key over a path nothing walked.
+                source
+                    .link_add(&json!({
+                        "from": 1,
+                        "to": format!("memory:{}", doc["id"].as_str().expect("doc id")),
+                        "relation": "references",
+                    }))
+                    .expect("link");
                 source.store_export(&json!({})).expect("export")
             },
             R_STORE_IMPORT,

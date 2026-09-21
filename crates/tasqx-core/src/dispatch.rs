@@ -295,7 +295,14 @@ pub const PARAMS: &[(&str, &[&str], bool)] = &[
     ("store.export", &["filter", "include_unscoped"], false),
     (
         "store.import",
-        &["tasks", "projects", "default_project", "docs", "events"],
+        &[
+            "tasks",
+            "projects",
+            "default_project",
+            "docs",
+            "events",
+            "links",
+        ],
         true,
     ),
     ("event.list", &["limit", "ref", "entity", "from"], false),
