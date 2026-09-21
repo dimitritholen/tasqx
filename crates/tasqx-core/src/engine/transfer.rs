@@ -356,11 +356,19 @@ impl Engine {
     /// with `import_field` naming the task — carrying an unknown state
     /// verbatim would let one bad payload re-export the corruption to every
     /// downstream store (D16).
+    ///
+    /// `created`/`modified` pass the same date gate the task's own timestamps
+    /// do (`opt_when`, #803): they used to be read raw with `opt_str_nonempty`,
+    /// so a malformed `checks[].modified` parsed as `None` and the merge
+    /// comparison below (`parse_ts(&modified) <= parse_ts(&held)`) read that as
+    /// older than anything, silently skipping the payload's body, state,
+    /// evidence and position rather than refusing the document by name.
     fn import_checks(
         tx: &rusqlite::Transaction,
         id: &str,
         tv: &Value,
         merge: bool,
+        now_ts: Timestamp,
     ) -> Result<bool, ApiError> {
         if !merge {
             tx.execute("DELETE FROM checks WHERE task_id = ?1", params![id])?;
@@ -393,9 +401,9 @@ impl Engine {
             // still round-trips in the order it was written.
             let position =
                 import_field(id, "checks[].position", opt_i64(c, "position"))?.unwrap_or(n as i64);
-            let created = import_field(id, "checks[].created", opt_str_nonempty(c, "created"))?
+            let created = import_field(id, "checks[].created", opt_when(c, "created", now_ts))?
                 .unwrap_or_else(now);
-            let modified = import_field(id, "checks[].modified", opt_str_nonempty(c, "modified"))?
+            let modified = import_field(id, "checks[].modified", opt_when(c, "modified", now_ts))?
                 .unwrap_or_else(|| created.clone());
             // The same last-writer-wins the scalars follow, read off the row
             // itself: a check this task already holds stands unless the
@@ -1411,6 +1419,12 @@ impl Engine {
         if let Some(above) = floor.and_then(|n| n.checked_add(1)) {
             bump_short_id_floor(&tx, above)?;
         }
+        // #803: same pass, same reason — an annotation or check id claimed by
+        // a task other than its actual owner is a property of the payload
+        // against the store as it stood before this call, not something the
+        // write loop below should discover task by task.
+        preflight_child_claims(&tx, tasks, "annotations", "annotation")?;
+        preflight_child_claims(&tx, tasks, "checks", "check")?;
 
         for tv in tasks {
             // Shape first, fields second: a non-object entry used to be
@@ -1877,7 +1891,7 @@ impl Engine {
             }
 
             Self::import_annotations(&tx, id, tv, merging, take_payload)?;
-            let checks_updated = Self::import_checks(&tx, id, tv, merging)?;
+            let checks_updated = Self::import_checks(&tx, id, tv, merging, now_ts)?;
             Self::import_token_measurements(&tx, id, tv, merging)?;
 
             // Edges are deferred to pass 2: a payload may list a target *after*
@@ -2285,6 +2299,63 @@ fn child_owner(
         ))),
         _ => Ok(holder),
     }
+}
+
+/// #803 (Qodo review of PR #129): refuse a payload `annotations[].id` or
+/// `checks[].id` that belongs to a DIFFERENT task, walked once against the
+/// store as it stood before a single task in this payload was written.
+///
+/// `child_owner` above already refuses this theft — but it was only ever
+/// called from inside `import_annotations`/`import_checks`, per task, as the
+/// write loop reached it. By then the non-merge path had already DELETEd
+/// the CURRENT task's own children, so an owner listed earlier in the
+/// payload WITHOUT this child left the id reading as free the moment a
+/// later payload task claimed it: the theft this door exists to catch went
+/// through, and the guard's answer depended on payload order rather than on
+/// who actually holds the row. Run here, in the same pre-loop pass that
+/// builds the short_id claims map and raises the mint floor (D177), for the
+/// same reason: a property of the payload — and of the payload against the
+/// store as it stood before this call — is decided once, before anything
+/// moves. The in-loop `child_owner` calls stay: a merge still needs `Some`
+/// to compare a check's `modified` or skip an annotation whose task already
+/// holds it, and by the time they run this pass has already ruled out every
+/// case where the holder they see is a task other than the one asking.
+///
+/// A same-payload double-claim — two different payload tasks naming one id
+/// — is refused too, the same shape the short_id claims loop above uses:
+/// `table` doubles as the task's own array field name (`"annotations"` /
+/// `"checks"`), which is also every call site's literal.
+fn preflight_child_claims(
+    tx: &rusqlite::Transaction,
+    tasks: &[Value],
+    table: &str,
+    noun: &str,
+) -> Result<(), ApiError> {
+    let field = format!("{table}[].id");
+    let mut claims: HashMap<String, String> = HashMap::new();
+    for tv in tasks {
+        let Ok(Some(id)) = opt_str(tv, "id") else {
+            continue;
+        };
+        let Ok(Some(rows)) = opt_array(tv, table) else {
+            continue;
+        };
+        for row in rows {
+            let Ok(Some(cid)) = opt_str_nonempty(row, "id") else {
+                continue;
+            };
+            child_owner(tx, table, &field, noun, &id, &cid)?;
+            let claimant = claims.entry(cid.clone()).or_insert_with(|| id.clone());
+            if *claimant != id {
+                return Err(ApiError::conflict(format!(
+                    "store.import: task {id}, {field} {cid} is also claimed by task {claimant} \
+                     in the same payload — one {noun} belongs to exactly one task, so this \
+                     document cannot be restored anywhere"
+                )));
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Resolve one end of an imported link to the row it names HERE (D181).
@@ -3129,6 +3200,55 @@ mod tests {
         );
     }
 
+    /// #803 (Qodo review of PR #129): `checks[].created`/`modified` used to
+    /// be read raw with `opt_str_nonempty`, so `parse_ts` turned a malformed
+    /// value into `None` and the merge comparison above
+    /// (`parse_ts(&modified) <= parse_ts(&held)`) read that as OLDER than
+    /// anything the store already held — a check whose payload carried the
+    /// newer body, state and evidence was silently skipped rather than the
+    /// document refused. Routed through the same `opt_when` gate the task's
+    /// own timestamps pass: a malformed value is refused by name, naming
+    /// `checks[].modified`, and a genuinely later one still wins the merge as
+    /// before.
+    #[test]
+    fn store_import_merge_refuses_a_malformed_check_modified_timestamp() {
+        let a = Engine::open_in_memory().expect("open a");
+        let added = a.task_add(&json!({ "title": "shared work" })).expect("add");
+        let sid = added["short_id"].clone();
+        a.check_add(&json!({ "ref": sid, "body": "the criterion" }))
+            .expect("check");
+        let mut payload = a.store_export(&json!({})).expect("export");
+        let b = Engine::open_in_memory().expect("open b");
+        b.store_import(&payload).expect("seed b");
+
+        payload["tasks"][0]["modified"] = json!("2099-01-01T00:00:00Z");
+        payload["tasks"][0]["checks"][0]["body"] = json!("a body a malformed stamp must not land");
+        payload["tasks"][0]["checks"][0]["modified"] = json!("not a time");
+        payload["merge"] = json!(true);
+        let err = b.store_import(&payload).expect_err(
+            "a malformed checks[].modified must be refused, not read as older than everything",
+        );
+        assert_eq!(err.code, ErrorCode::BadRequest, "{}", err.message);
+        assert!(err.message.contains("checks[].modified"), "{}", err.message);
+        let after = b.store_export(&json!({})).expect("export b");
+        assert_eq!(
+            after["tasks"][0]["checks"][0]["body"],
+            json!("the criterion"),
+            "a refused import writes nothing: {after}"
+        );
+
+        // The same payload, a genuinely later stamp: the merge still applies it.
+        payload["tasks"][0]["checks"][0]["modified"] = json!("2100-01-01T00:00:00Z");
+        b.store_import(&payload)
+            .expect("a valid later modified must merge");
+        let after = b.store_export(&json!({})).expect("export b");
+        assert_eq!(
+            after["tasks"][0]["checks"][0]["body"],
+            json!("a body a malformed stamp must not land"),
+            "a genuinely later modified still wins: {after}"
+        );
+    }
+
     /// D185 (task #802): annotation ids are global primary keys, and one
     /// annotation belongs to exactly one task. A payload handing another
     /// task's note id to a task of its own is refused rather than silently
@@ -3240,6 +3360,182 @@ mod tests {
             "a refused import moves nothing: {after}"
         );
         assert_eq!(held["checks"][0]["state"], json!("open"), "{after}");
+    }
+
+    /// #803 (Qodo review of PR #129): the guard above used to run per task,
+    /// inside `import_annotations`, AFTER the non-merge path had already
+    /// DELETEd the current task's own children. The owner is listed FIRST in
+    /// this payload, dropping the note as an ordinary wholesale edit (no
+    /// `merge`) — which the old code let free the id before the claimant,
+    /// listed second, was even read. Refused now, before either task is
+    /// written, because the theft is decided against the store as it stood
+    /// before this call, not against whatever the loop has deleted so far.
+    #[test]
+    fn store_import_refuses_an_annotation_the_owner_dropped_before_a_later_task_claims_it() {
+        let e = Engine::open_in_memory().expect("open");
+        let owner = e
+            .task_add(&json!({ "title": "owns the note" }))
+            .expect("add");
+        let note = e
+            .annotation_add(
+                &json!({ "ref": owner["short_id"].clone(), "body": "the owner's note" }),
+            )
+            .expect("note")["annotation"]["id"]
+            .as_str()
+            .expect("annotation id")
+            .to_string();
+        let claimant = e.task_add(&json!({ "title": "claims it" })).expect("add");
+
+        let export = e.store_export(&json!({})).expect("export");
+        let exported = export["tasks"].as_array().expect("tasks");
+        let mut owner_row = exported
+            .iter()
+            .find(|t| t["id"] == owner["id"])
+            .expect("owner exported")
+            .clone();
+        let mut claimant_row = exported
+            .iter()
+            .find(|t| t["id"] == claimant["id"])
+            .expect("claimant exported")
+            .clone();
+        owner_row["annotations"] = json!([]);
+        claimant_row["annotations"] = json!([{ "id": note, "body": "the note, stolen" }]);
+        // Owner first, unchanged.
+        let document = json!({ "tasks": [owner_row, claimant_row] });
+
+        let err = e.store_import(&document).expect_err(
+            "the owner dropping its own note must not let a later payload task claim the id",
+        );
+        assert_eq!(err.code, ErrorCode::BadRequest, "{}", err.message);
+        for named in [note.as_str(), owner["id"].as_str().expect("id")] {
+            assert!(
+                err.message.contains(named),
+                "the refusal must name the note and the task holding it ({named}): {}",
+                err.message
+            );
+        }
+        let after = e.store_export(&json!({})).expect("export");
+        let held = after["tasks"]
+            .as_array()
+            .expect("tasks")
+            .iter()
+            .find(|t| t["id"] == owner["id"])
+            .expect("the owner is still here")
+            .clone();
+        assert_eq!(
+            held["annotations"][0]["body"],
+            json!("the owner's note"),
+            "a refused import moves and deletes nothing: {after}"
+        );
+    }
+
+    /// The mirror of the test above, row order reversed: the claimant is
+    /// listed FIRST and the owner — still holding the note, unchanged —
+    /// second. The old per-task guard caught this direction already, since
+    /// the owner's delete had not run yet when the claimant was processed;
+    /// the preflight refuses it the same way, before either task is written,
+    /// so the answer no longer depends on which order the payload happens to
+    /// list the two tasks in.
+    #[test]
+    fn store_import_refuses_an_annotation_a_task_claims_before_the_owner_is_read() {
+        let e = Engine::open_in_memory().expect("open");
+        let owner = e
+            .task_add(&json!({ "title": "owns the note" }))
+            .expect("add");
+        let note = e
+            .annotation_add(
+                &json!({ "ref": owner["short_id"].clone(), "body": "the owner's note" }),
+            )
+            .expect("note")["annotation"]["id"]
+            .as_str()
+            .expect("annotation id")
+            .to_string();
+        let claimant = e.task_add(&json!({ "title": "claims it" })).expect("add");
+
+        let export = e.store_export(&json!({})).expect("export");
+        let exported = export["tasks"].as_array().expect("tasks");
+        let owner_row = exported
+            .iter()
+            .find(|t| t["id"] == owner["id"])
+            .expect("owner exported")
+            .clone();
+        let mut claimant_row = exported
+            .iter()
+            .find(|t| t["id"] == claimant["id"])
+            .expect("claimant exported")
+            .clone();
+        claimant_row["annotations"] = json!([{ "id": note, "body": "the note, stolen" }]);
+        // Claimant first this time.
+        let document = json!({ "tasks": [claimant_row, owner_row] });
+
+        let err = e
+            .store_import(&document)
+            .expect_err("a claimant listed before its owner must still be refused");
+        assert_eq!(err.code, ErrorCode::BadRequest, "{}", err.message);
+        assert!(err.message.contains(note.as_str()), "{}", err.message);
+        let after = e.store_export(&json!({})).expect("export");
+        let held = after["tasks"]
+            .as_array()
+            .expect("tasks")
+            .iter()
+            .find(|t| t["id"] == owner["id"])
+            .expect("the owner is still here")
+            .clone();
+        assert_eq!(
+            held["annotations"][0]["body"],
+            json!("the owner's note"),
+            "a refused import moves nothing: {after}"
+        );
+    }
+
+    /// Two DIFFERENT payload tasks naming the same annotation id — no store
+    /// ever held it, so `child_owner`'s own-store check has nothing to say,
+    /// and only a same-payload claims map catches it. The document is
+    /// incoherent on its own terms, the same shape the `short_id` claims loop
+    /// already refuses.
+    #[test]
+    fn store_import_refuses_two_payload_tasks_claiming_one_annotation_id() {
+        let e = Engine::open_in_memory().expect("open");
+        let a = e
+            .task_add(&json!({ "title": "first claimant" }))
+            .expect("add");
+        let b = e
+            .task_add(&json!({ "title": "second claimant" }))
+            .expect("add");
+        let shared = crate::clock::uuid_v7().to_string();
+
+        let export = e.store_export(&json!({})).expect("export");
+        let exported = export["tasks"].as_array().expect("tasks");
+        let mut a_row = exported
+            .iter()
+            .find(|t| t["id"] == a["id"])
+            .expect("a exported")
+            .clone();
+        let mut b_row = exported
+            .iter()
+            .find(|t| t["id"] == b["id"])
+            .expect("b exported")
+            .clone();
+        a_row["annotations"] = json!([{ "id": shared, "body": "claimed by a" }]);
+        b_row["annotations"] = json!([{ "id": shared, "body": "claimed by b" }]);
+        let document = json!({ "tasks": [a_row, b_row] });
+
+        let err = e
+            .store_import(&document)
+            .expect_err("one annotation id cannot address two tasks");
+        assert_eq!(err.code, ErrorCode::Conflict, "{}", err.message);
+        for named in [shared.as_str(), a["id"].as_str().expect("id")] {
+            assert!(err.message.contains(named), "{}", err.message);
+        }
+        let after = e.store_export(&json!({})).expect("export");
+        assert!(
+            after["tasks"]
+                .as_array()
+                .expect("tasks")
+                .iter()
+                .all(|t| t["annotations"].as_array().expect("annotations").is_empty()),
+            "a refused import writes nothing: {after}"
+        );
     }
 
     /// D185 (task #802): a merge skips a measurement this task already holds,
