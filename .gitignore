@@ -47,6 +47,10 @@ docs/plans/
 # Console logs and page snapshots a browser agent writes while verifying a page.
 .playwright-mcp/
 
+# Stage events the dev-cycle plugin logs while it routes a session. Same class
+# as HANDOFF.md: agent bookkeeping, not part of the project.
+.dev-cycle/
+
 # Bytecode from importing the doc generators under docs/.
 __pycache__/
 *.pyc
