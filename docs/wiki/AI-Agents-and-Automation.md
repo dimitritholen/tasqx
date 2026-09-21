@@ -118,6 +118,11 @@ Safety properties worth knowing:
   names no write tool. It also carries the session's standing memory docs,
   for the project named by the directory `mcp serve` runs in (or one of its
   parents), else the default project, within a 3 KB budget.
+- **A write-scoped `initialize` also refreshes imported docs from disk**
+  before it answers (D180), so a session opens on the working tree with no
+  watcher and no daemon job needed; a read-only session skips the sweep, and
+  `instructions` names how many docs were refreshed or went missing only when
+  that count is not zero.
 
 `tasqx_get_task` and `tasqx_brief_task` take a `view` argument, `"markdown"`
 by default. Pass `view: "card"` when a person has to decide on the task — one

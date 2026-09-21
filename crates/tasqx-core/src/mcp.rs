@@ -1914,6 +1914,17 @@ impl<'e> McpServer<'e> {
             Some(v) if SUPPORTED_PROTOCOL_VERSIONS.contains(&v) => v,
             _ => PROTOCOL_VERSION,
         };
+        let mut instructions = match self.rulings_section() {
+            // D141: what to do with the tools, not just which ones exist. Read
+            // off the session's own scope, because the read variant may not
+            // name a tool this server will refuse. D157 appends the session's
+            // standing rulings, and only when there are any.
+            Some(section) => format!("{}\n\n{section}", instructions(self.scope)),
+            None => instructions(self.scope),
+        };
+        if let Some(line) = self.memory_refresh_line() {
+            instructions = format!("{instructions}\n\n{line}");
+        }
         json!({
             "protocolVersion": version,
             "capabilities": { "tools": {} },
@@ -1921,15 +1932,43 @@ impl<'e> McpServer<'e> {
                 "name": SERVER_NAME,
                 "version": env!("CARGO_PKG_VERSION")
             },
-            // D141: what to do with the tools, not just which ones exist. Read
-            // off the session's own scope, because the read variant may not
-            // name a tool this server will refuse. D157 appends the session's
-            // standing rulings, and only when there are any.
-            "instructions": match self.rulings_section() {
-                Some(section) => format!("{}\n\n{section}", instructions(self.scope)),
-                None => instructions(self.scope),
-            }
+            "instructions": instructions,
         })
+    }
+
+    /// Runs the memory-freshness sweep (D180, #789) so a session opens on
+    /// docs that match the working tree, with no watcher and no daemon job —
+    /// the moment freshness matters is the moment a session starts. `None`
+    /// under a read-only scope (it may not write the re-read docs), when
+    /// nothing was refreshed or missing, or when the sweep itself errors —
+    /// `initialize` must never fail on its account, so a failure is logged
+    /// and otherwise treated as nothing to report.
+    fn memory_refresh_line(&self) -> Option<String> {
+        if !self.scope.allows_write() {
+            return None;
+        }
+        let result = match self.engine.memory_refresh(&json!({ "dry_run": false })) {
+            Ok(r) => r,
+            Err(e) => {
+                eprintln!("tasqx mcp: memory refresh failed: {e}");
+                return None;
+            }
+        };
+        let refreshed = result["refreshed"].as_array().map_or(0, Vec::len);
+        let missing = result["missing"].as_array().map_or(0, Vec::len);
+        if refreshed == 0 && missing == 0 {
+            return None;
+        }
+        let mut parts = Vec::new();
+        if refreshed > 0 {
+            parts.push(format!("{refreshed} doc(s) refreshed from disk"));
+        }
+        if missing > 0 {
+            parts.push(format!(
+                "{missing} source file(s) missing (tasqx memory import --refresh lists them)"
+            ));
+        }
+        Some(format!("memory: {}.", parts.join(", ")))
     }
 
     /// The standing-rulings section `initialize` appends (#96, D157), or

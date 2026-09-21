@@ -946,6 +946,122 @@ fn initialize_instructions_under_read_scope_carry_standing_rulings() {
     }
 }
 
+// ---- initialize's memory-refresh sweep (D180, #791) -------------------------
+
+/// One file on disk, imported with the origin metadata `memory.import` needs
+/// to track it (D180) — the same triple `memory.refresh`'s own tests build by
+/// hand, trimmed to the one doc each sweep test here needs.
+fn import_origin_doc(engine: &Engine, dir: &std::path::Path, name: &str, text: &str) -> String {
+    let path = dir.join(name);
+    std::fs::write(&path, text).expect("write the doc file");
+    let meta = std::fs::metadata(&path).expect("metadata");
+    let imported = engine
+        .memory_import(&json!({
+            "docs": [{
+                "title": name,
+                "body": text,
+                "source": format!("docs/{name}"),
+                "origin_path": path.to_string_lossy(),
+                "origin_mtime": tasqx_core::memory_doc::unix_seconds(&meta).expect("an mtime"),
+                "origin_size": meta.len(),
+            }]
+        }))
+        .expect("import the doc");
+    imported["docs"][0]["id"]
+        .as_str()
+        .expect("an id")
+        .to_string()
+}
+
+/// #791: a write-scoped `initialize` runs the sweep before it answers, so a
+/// session that opens on a stale doc sees the edit that happened on disk
+/// since the doc was imported — both through `tasqx_search_memory` and
+/// through the one line `instructions` gained to say so.
+#[test]
+fn initialize_runs_the_memory_refresh_sweep_before_answering() {
+    let _guard = RIPWIRE_PATH_ENV.lock().unwrap_or_else(|e| e.into_inner());
+    let engine = engine();
+    let dir = temp_workdir("refresh-a");
+    import_origin_doc(&engine, &dir, "a.md", "before the edit");
+
+    std::fs::write(dir.join("a.md"), "after the edit, freshly reimported").expect("edit the file");
+
+    let server = McpServer::new(&engine, Scope::Write);
+    let text = instructions_from(&server);
+    assert!(
+        text.ends_with("\n\nmemory: 1 doc(s) refreshed from disk."),
+        "{text}"
+    );
+
+    let found = call(
+        &server,
+        2,
+        "tasqx_search_memory",
+        json!({ "query": "reimported" }),
+    );
+    assert!(!is_error(&found), "search failed: {found}");
+    assert_eq!(
+        tool_text(&found)["count"],
+        1,
+        "search must return the text now on disk: {found}"
+    );
+}
+
+/// #791: a store nothing has imported with an origin is a sweep with nothing
+/// to check, so the handshake stays exactly D141's text — the same guarantee
+/// the empty-store test above already holds for a store with no docs at all,
+/// restated for the sweep this task adds.
+#[test]
+fn initialize_with_no_origin_docs_leaves_instructions_byte_identical() {
+    let _guard = RIPWIRE_PATH_ENV.lock().unwrap_or_else(|e| e.into_inner());
+    let engine = engine();
+    add_doc(&engine, "hand-written", "no file behind it", None, false);
+    let server = McpServer::new(&engine, Scope::Write);
+    assert_eq!(
+        instructions_from(&server),
+        tasqx_core::mcp::instructions(Scope::Write),
+        "a store with no origin docs must add no memory line"
+    );
+}
+
+/// #791: a read-only scope may not write the re-read docs the sweep would
+/// store, so it must not run at all — the old text is still all
+/// `tasqx_search_memory` finds, and `instructions` carries no memory line.
+#[test]
+fn initialize_under_read_scope_does_not_run_the_sweep() {
+    let _guard = RIPWIRE_PATH_ENV.lock().unwrap_or_else(|e| e.into_inner());
+    let engine = engine();
+    let dir = temp_workdir("refresh-c");
+    import_origin_doc(&engine, &dir, "a.md", "before the edit");
+    std::fs::write(dir.join("a.md"), "after the edit, freshly reimported").expect("edit the file");
+
+    let server = McpServer::new(&engine, Scope::Read);
+    assert_eq!(
+        instructions_from(&server),
+        tasqx_core::mcp::instructions(Scope::Read),
+        "a read-only initialize must carry no memory line"
+    );
+
+    let old = call(
+        &server,
+        2,
+        "tasqx_search_memory",
+        json!({ "query": "before" }),
+    );
+    assert_eq!(tool_text(&old)["count"], 1, "the old text: {old}");
+    let new = call(
+        &server,
+        3,
+        "tasqx_search_memory",
+        json!({ "query": "reimported" }),
+    );
+    assert_eq!(
+        tool_text(&new)["count"],
+        0,
+        "a read-only session must not have re-read the file: {new}"
+    );
+}
+
 // ---- annotation.add over MCP -------------------------------------------------
 
 #[test]
