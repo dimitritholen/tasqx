@@ -1243,30 +1243,6 @@ pub(crate) fn run_memory_import(be: &mut Backend, path: &str, project: Option<&s
     Ok((result, text))
 }
 
-/// The title a frontmatter block would have given the document, if any:
-/// `title:` or `name:` (`title` first), a bare or single-quoted scalar value.
-/// Deliberately not a YAML parser — the values this needs to read are the
-/// simple ones a memory doc's frontmatter actually carries, and a partial
-/// parser that silently mis-reads a list or a block scalar would be worse
-/// than not trying.
-fn frontmatter_title(fm: &str) -> Option<String> {
-    for key in ["title", "name"] {
-        for line in fm.lines() {
-            let Some(rest) = line.strip_prefix(key) else {
-                continue;
-            };
-            let Some(value) = rest.trim_start().strip_prefix(':') else {
-                continue;
-            };
-            let value = value.trim().trim_matches(['"', '\'']);
-            if !value.is_empty() {
-                return Some(value.to_string());
-            }
-        }
-    }
-    None
-}
-
 /// Read `path` (a file, or a directory's direct `*.md` children) into
 /// `memory.import` doc objects. Pure I/O — no store access — so the whole
 /// failure surface of an import is exhausted before anything is written.
@@ -1300,45 +1276,13 @@ pub(crate) fn memory_docs_from_path(path: &str) -> Result<Vec<Value>, tasqx_core
         vec![std::path::PathBuf::from(path)]
     };
 
+    // BOM strip, frontmatter cut and title derivation live in
+    // `tasqx_core::memory_doc::read_doc` (#787) — the engine needs the same
+    // file-to-`(title, body)` reader for its own refresh sweep (#789) and
+    // stale-flag check (#790), including under the MCP server.
     let mut docs = Vec::new();
     for file in &files {
-        let body = std::fs::read_to_string(file).map_err(|e| {
-            tasqx_core::ApiError::bad_request(format!("cannot read {}: {e}", file.display()))
-        })?;
-        // A UTF-8 BOM would defeat the `# ` heading match below AND end up in
-        // the stored body and the index; strip it once, here.
-        let body = body.strip_prefix('\u{FEFF}').unwrap_or(&body);
-        // #228.4: YAML frontmatter was indexed and shown as document body —
-        // every file in a `~/.claude/.../memory/` directory (the corpus this
-        // importer's own `--help` example points at, `docs/adr`, is the same
-        // idiom) opens with one, and `originSessionId`/`modified`/`type` then
-        // dominated search snippets over the prose that answers the query.
-        // Cut before the title/heading scan below, so a frontmatter `title:`
-        // does not race the body's own `# ` heading. `frontmatter::block` is
-        // the one fence-finder (task #12/D135) — shared with the memory
-        // browser's own renderer and `render::doc_summary` instead of each
-        // reading `---\n...\n---\n` its own way.
-        let (frontmatter, body) = match tasqx_core::frontmatter::block(body) {
-            Some((fm, rest)) => (Some(fm), rest),
-            None => (None, body),
-        };
-        // Title: the first `# ` heading, else frontmatter's `title:`/`name:`,
-        // else the file stem. The heading STAYS in the body — the title is an
-        // index entry, not a cut. Frontmatter is cut; nothing there is prose
-        // meant to be read.
-        let title = body
-            .lines()
-            .find_map(|l| l.strip_prefix("# "))
-            .map(str::trim)
-            .filter(|t| !t.is_empty())
-            .map(String::from)
-            .or_else(|| frontmatter.and_then(frontmatter_title))
-            .unwrap_or_else(|| {
-                file.file_stem()
-                    .and_then(|s| s.to_str())
-                    .unwrap_or("untitled")
-                    .to_string()
-            });
+        let (title, body) = tasqx_core::memory_doc::read_doc(file)?;
         docs.push(json!({ "title": title, "body": body, "source": file.display().to_string() }));
     }
     Ok(docs)

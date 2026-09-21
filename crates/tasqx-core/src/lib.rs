@@ -73,6 +73,7 @@ pub mod filter;
 pub mod frontmatter;
 pub mod markdown;
 pub mod mcp;
+pub mod memory_doc;
 pub mod notify;
 pub mod otlp;
 pub mod recur;
