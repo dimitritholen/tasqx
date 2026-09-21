@@ -109,6 +109,12 @@ tasqx memory import docs/adr
   collapses onto it too — same `source` once resolved — so only the real file
   becomes a document, and the alias is named in a `note:` line instead of
   refusing the batch.
+- Each imported document also records where it came from: `origin_path` (the
+  file's absolute path on this machine), `origin_mtime` (its modification
+  time in unix seconds) and `origin_size` (its size in bytes), all shown by
+  `memory show --json` and carried by `export`. They say what the file looked
+  like when it was read, so a later check can tell whether it has changed
+  since; identity is still `source`, and `memory add` never sets them.
 
 ## tasqx memory rm
 

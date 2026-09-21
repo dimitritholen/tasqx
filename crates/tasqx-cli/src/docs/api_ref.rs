@@ -1172,7 +1172,7 @@ const PARAM_DOCS: &[(&str, &str, &str, &str, &str)] = &[
         "docs",
         "array of object",
         "",
-        "The documents to store, each `{title, body, source?}`. One transaction: same `source` replaces in place, keeping the doc's id and creation date (D143); a batch naming one `source` twice is refused whole (D174).",
+        "The documents to store, each `{title, body, source?}`. One transaction: same `source` replaces in place, keeping the doc's id and creation date (D143); a batch naming one `source` twice is refused whole (D174). A doc may also carry `origin_path` (the absolute path of the file it was read from), `origin_mtime` (that file's modification time in unix seconds) and `origin_size` (its size in bytes) — all optional, stored as given and overwritten on every re-import, never used as identity (D180).",
     ),
     (
         "memory.import",
@@ -1503,7 +1503,7 @@ const EXAMPLES: &[Example] = &[
         method: "store.export",
         request: r#"{"tasqx":"1","id":"x1","method":"store.export","params":{"filter":"+docs"}}"#,
         fixture: "",
-        response: r##"{"id":"x1","ok":true,"result":{"default_project":"website","docs":[{"_rev":0,"body":"# Pricing page…","created":"2026-09-09T09:15:00Z","id":"0787b26d-9e2e-4be5-ab66-ec953102fad3","modified":"2026-09-11T09:15:00Z","project":"website","source":"notes/pricing.md","standing":false,"title":"pricing-page-decisions"}],"dropped_dependencies":0,"dropped_docs":1,"dropped_events":2,"dropped_projects":0,"events":[{"actor":"user","entity":"task","entity_id":"46773aad-c4aa-435a-abe1-fcde8ce09658","id":"37e2265e-0745-46cf-ab75-44127cc95bc2","op":"add","payload":{"title":"Write the migration guide for SDK 3.0"},"ts":"2026-08-26T10:00:00Z"}],"projects":[{"archived":false,"created":"2026-06-18T09:00:00Z","description":"Public REST API and its SDKs","id":"309d6b79-965e-4a32-9ae4-45508201e2bd","name":"api"}],"tasks":[{"…":"one whole task per row"}]},"tasqx":"1"}"##,
+        response: r##"{"id":"x1","ok":true,"result":{"default_project":"website","docs":[{"_rev":0,"body":"# Pricing page…","created":"2026-09-09T09:15:00Z","id":"0787b26d-9e2e-4be5-ab66-ec953102fad3","modified":"2026-09-11T09:15:00Z","origin_mtime":null,"origin_path":null,"origin_size":null,"project":"website","source":"notes/pricing.md","standing":false,"title":"pricing-page-decisions"}],"dropped_dependencies":0,"dropped_docs":1,"dropped_events":2,"dropped_projects":0,"events":[{"actor":"user","entity":"task","entity_id":"46773aad-c4aa-435a-abe1-fcde8ce09658","id":"37e2265e-0745-46cf-ab75-44127cc95bc2","op":"add","payload":{"title":"Write the migration guide for SDK 3.0"},"ts":"2026-08-26T10:00:00Z"}],"projects":[{"archived":false,"created":"2026-06-18T09:00:00Z","description":"Public REST API and its SDKs","id":"309d6b79-965e-4a32-9ae4-45508201e2bd","name":"api"}],"tasks":[{"…":"one whole task per row"}]},"tasqx":"1"}"##,
         why: "the real answer is the entire store — every task, project, doc and audit row, in one payload. What matters here is its shape, so this example is a single row of each with the bodies elided.",
     },
     Example {

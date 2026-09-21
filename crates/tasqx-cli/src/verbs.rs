@@ -1467,9 +1467,44 @@ pub(crate) fn memory_docs_from_path(
     let mut docs = Vec::new();
     for (file, source) in &winners {
         let (title, body) = tasqx_core::memory_doc::read_doc(file)?;
-        docs.push(json!({ "title": title, "body": body, "source": source }));
+        let mut doc = json!({
+            "title": title,
+            "body": body,
+            "source": source,
+            // #788/D180: the file this doc was read from, so a later
+            // freshness check (#789) can compare the stored doc against the
+            // file without a directory walk. The ABSOLUTE path, not
+            // `source`'s repo-relative spelling: `source` is identity and has
+            // to read the same on every machine (D179), while this one is a
+            // pointer back at THIS machine's filesystem.
+            "origin_path": canonical(file).to_string_lossy(),
+        });
+        // Best effort on purpose: a file whose metadata the platform will not
+        // answer for still imports, with the fields it cannot state left out
+        // rather than filled with a zero a freshness check would read as a
+        // real size and a 1970 mtime.
+        if let Ok(meta) = std::fs::metadata(file) {
+            doc["origin_size"] = json!(meta.len());
+            if let Some(secs) = unix_seconds(&meta) {
+                doc["origin_mtime"] = json!(secs);
+            }
+        }
+        docs.push(doc);
     }
     Ok((docs, notes))
+}
+
+/// `meta`'s modification time in whole seconds since the unix epoch, or
+/// `None` where the platform has no answer — `modified()` is documented as
+/// unavailable on some, and a file stamped before 1970 fails the subtraction
+/// rather than the call.
+fn unix_seconds(meta: &std::fs::Metadata) -> Option<i64> {
+    let since = meta
+        .modified()
+        .ok()?
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()?;
+    i64::try_from(since.as_secs()).ok()
 }
 
 /// The `source` `memory.import` stores for `file` — a doc's identity (D174),
@@ -1486,7 +1521,7 @@ pub(crate) fn memory_docs_from_path(
 /// Always `/`-joined, even on Windows, so the same folder imported from
 /// either platform names the same doc (task #784).
 fn import_source(file: &std::path::Path) -> String {
-    let canon = std::fs::canonicalize(file).unwrap_or_else(|_| file.to_path_buf());
+    let canon = canonical(file);
     if let Some(toplevel) = git_toplevel(&canon) {
         if let Ok(rel) = canon.strip_prefix(&toplevel) {
             return slash_joined(rel);
@@ -1498,6 +1533,15 @@ fn import_source(file: &std::path::Path) -> String {
         }
     }
     slash_joined(&canon)
+}
+
+/// `file`'s canonical absolute path, falling back to the path as given when
+/// the filesystem cannot answer — a broken symlink, or a race with whoever is
+/// editing the directory being imported. Shared by `source` (D179) and
+/// `origin_path` (D180) so the two can never disagree about which file this
+/// is.
+fn canonical(file: &std::path::Path) -> std::path::PathBuf {
+    std::fs::canonicalize(file).unwrap_or_else(|_| file.to_path_buf())
 }
 
 /// The git toplevel above `file`: the nearest ancestor directory (starting at

@@ -395,7 +395,8 @@ impl Engine {
         include_unscoped: bool,
     ) -> Result<(Vec<Value>, i64), ApiError> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, source, title, body, created, modified, project, rev, standing \
+            "SELECT id, source, title, body, created, modified, project, rev, standing, \
+             origin_path, origin_mtime, origin_size \
              FROM docs ORDER BY id",
         )?;
         let rows = stmt.query_map([], |r| {
@@ -411,6 +412,12 @@ impl Engine {
                 // #101: the export is the backup (D12/D37), so a standing doc
                 // must come back standing — the flag travels with the row.
                 "standing": r.get::<_, i64>(8)? != 0,
+                // #788/D180: on the same terms — a restored store must know
+                // which file each doc came from, or the first freshness check
+                // after a restore would report every imported doc as unknown.
+                "origin_path": r.get::<_, Option<String>>(9)?,
+                "origin_mtime": r.get::<_, Option<i64>>(10)?,
+                "origin_size": r.get::<_, Option<i64>>(11)?,
             }))
         })?;
         let mut out = Vec::new();
@@ -825,6 +832,12 @@ impl Engine {
                 // restore as ordinary memory rather than as standing orders
                 // nobody issued.
                 let standing = opt_bool(dv, "standing")?.unwrap_or(false);
+                // #788/D180: additive again — a legacy export carries no
+                // origin, and its docs restore with none rather than with one
+                // invented for them.
+                let origin_path = opt_str_nonempty(dv, "origin_path")?;
+                let origin_mtime = opt_i64(dv, "origin_mtime")?;
+                let origin_size = opt_i64(dv, "origin_size")?;
                 // D135: `search_body` is derived, never carried by the export
                 // itself (it is not part of the exported doc shape) — always
                 // recomputed here from the imported `body`, the same way
@@ -852,13 +865,15 @@ impl Engine {
                 tx.execute(
                     "INSERT INTO docs \
                      (id, source, title, body, search_body, project, rev, standing, \
-                      created, modified) \
-                     VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10) \
+                      created, modified, origin_path, origin_mtime, origin_size) \
+                     VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13) \
                      ON CONFLICT(id) DO UPDATE SET \
                      source=excluded.source, title=excluded.title, body=excluded.body, \
                      search_body=excluded.search_body, project=excluded.project, \
                      rev=excluded.rev, standing=excluded.standing, \
-                     created=excluded.created, modified=excluded.modified",
+                     created=excluded.created, modified=excluded.modified, \
+                     origin_path=excluded.origin_path, origin_mtime=excluded.origin_mtime, \
+                     origin_size=excluded.origin_size",
                     params![
                         did,
                         source,
@@ -869,7 +884,10 @@ impl Engine {
                         rev,
                         standing,
                         created,
-                        modified
+                        modified,
+                        origin_path,
+                        origin_mtime,
+                        origin_size
                     ],
                 )?;
                 insert_event(

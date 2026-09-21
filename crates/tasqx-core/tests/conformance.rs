@@ -527,6 +527,13 @@ const DOC_EXPORT_ROW: &[Field] = &[
     // #101: additive — every doc states whether it is standing, so a restore
     // carries the flag and a reader never has to infer it from absence.
     req("standing", Ty::Bool),
+    // #788/D180: the origin file this doc was imported from. Nullable on
+    // every read, because a doc `memory.add` wrote has no file behind it —
+    // and stated rather than omitted, so "no origin" and "an older build"
+    // are not the same answer.
+    nul("origin_path", Ty::Str),
+    nul("origin_mtime", Ty::Int),
+    nul("origin_size", Ty::Int),
 ];
 
 const EVENT_ROW: &[Field] = &[
