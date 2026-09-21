@@ -597,6 +597,18 @@ completions_step() {
     fi
 }
 
+# D178/#795: the same nudge `tasqx setup` and `--help` print
+# (crates/tasqx-cli/src/setup.rs, RIPWIRE_INSTALL_HINT), so the three cannot
+# drift apart. ripwire ships no Homebrew formula and no Scoop manifest tasqx
+# could depend on, so this names the upstream repository instead — never a
+# package name, and never a download.
+ripwire_hint() {
+    if ! command -v ripwire >/dev/null 2>&1; then
+        printf '%s\n' \
+            "ripwire not found on PATH: install it from https://github.com/redhat-et/ripwire and put it on PATH."
+    fi
+}
+
 # Takes the completion block back out, while there is still a binary able to do
 # it.
 #
@@ -808,6 +820,10 @@ main() {
     if [ "$want_completions" = "yes" ]; then
         completions_step
     fi
+
+    # Very last: a missing ripwire is a hint, never a reason to fail an
+    # install that otherwise succeeded.
+    ripwire_hint
 }
 
 main "$@"

@@ -34,10 +34,12 @@ const MCP_REMOVE: [&str; 5] = ["mcp", "remove", "--scope", "user", "tasqx"];
 
 /// The nudge `run` prints when `ripwire` is not on `PATH`, and the same words
 /// `tasqx setup --help` shows for the same case (D178, `cmddoc.rs`), so the
-/// two cannot drift apart. Names no package and no URL tasqx has no way to
-/// keep current — it points at ripwire's own install instructions instead.
-pub(crate) const RIPWIRE_INSTALL_HINT: &str = "ripwire not found on PATH: install ripwire and \
-    put it on PATH, following its own install instructions.";
+/// two cannot drift apart. Names the upstream repository — ripwire ships no
+/// Homebrew formula and no Scoop manifest tasqx could depend on — but never a
+/// package name tasqx would have to keep current, and runs no download.
+pub(crate) const RIPWIRE_INSTALL_HINT: &str =
+    "ripwire not found on PATH: install it from https://github.com/redhat-et/ripwire and put \
+     it on PATH.";
 
 /// One thing setup can install.
 pub struct Item {

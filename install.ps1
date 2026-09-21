@@ -775,6 +775,17 @@ function Show-InstallReport {
     Write-Err "warning: 'tasqx' on your PATH resolves to $resolved ($otherVersion), not the one just installed."
 }
 
+# D178/#795: the same nudge `tasqx setup` and `--help` print
+# (crates/tasqx-cli/src/setup.rs, RIPWIRE_INSTALL_HINT), so the two cannot
+# drift apart. ripwire ships no Windows build, so there is no Scoop manifest
+# to depend on either -- this names the upstream repository instead of a
+# package, and runs no download.
+function Show-RipwireHint {
+    if ($null -eq (Get-Command ripwire -ErrorAction SilentlyContinue)) {
+        Write-Output 'ripwire not found on PATH: install it from https://github.com/redhat-et/ripwire and put it on PATH.'
+    }
+}
+
 # The three things the install did, undone in the one order that works.
 #
 # The completion block goes first because removing it means RUNNING the binary,
@@ -1157,6 +1168,10 @@ function Invoke-Main {
         } elseif ($pathState -eq 'present') {
             Write-Output "$installDir is already on your PATH."
         }
+
+        # Very last: a missing ripwire is a hint, never a reason to fail an
+        # install that otherwise succeeded.
+        Show-RipwireHint
         exit 0
     } finally {
         Remove-Item -LiteralPath $temp -Recurse -Force -ErrorAction SilentlyContinue

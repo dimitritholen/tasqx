@@ -30,6 +30,9 @@
 #   * completions, no shell  — `--completions` where no shell can be identified
 #                              must warn and still exit 0, because the binary is
 #                              already installed by then
+#   * ripwire hint           — a PATH without `ripwire` (D178/#795) prints the
+#                              same install-it-from-here sentence setup.rs does,
+#                              after an install that otherwise succeeded
 #
 # WHAT THIS DOES NOT COVER, said out loud rather than left for a reader to
 # assume. The version is PINNED to $PINNED_TAG below, so the `/releases/latest`
@@ -414,6 +417,36 @@ $(find "$home" -type f | sed 's/^/      /')"
   pass "$name"
 }
 
+# ---- case: the ripwire hint on a PATH without ripwire ------------------------
+#
+# D178/#795: install.sh names https://github.com/redhat-et/ripwire, the same
+# sentence RIPWIRE_INSTALL_HINT (crates/tasqx-cli/src/setup.rs) carries, once an
+# install otherwise succeeds. The sandbox never symlinks `ripwire` in — it is
+# not in $base_tools — so the assertion holds whether or not this host happens
+# to have ripwire installed for real.
+case_ripwire_hint() {
+  local name="ripwire hint on a PATH without ripwire" dest="$tmp/ripwire/bin" sandbox out code
+  if [ -z "$fetcher" ] || [ -z "$hasher" ] || ! have tar; then
+    skip "$name" "a real install is needed first, and curl/wget, a hasher or tar is missing"
+    return
+  fi
+  sandbox=$(sandbox_path ripwire "${base_tools[@]}" "$hasher")
+  out=$(env -i PATH="$sandbox" HOME="$HOME" TASQX_DB="$tmp/ripwire/tasks.db" \
+    TASQX_VERSION="$PINNED_TAG" TASQX_INSTALL="$dest" \
+    sh "$install_sh" 2>&1) && code=0 || code=$?
+  if [ "$code" -ne 0 ]; then
+    fail "$name: the install exited $code:
+$(printf '%s\n' "$out" | sed 's/^/      /')"
+    return
+  fi
+  if ! printf '%s\n' "$out" | grep -q 'install it from https://github.com/redhat-et/ripwire'; then
+    fail "$name: no ripwire hint in:
+$(printf '%s\n' "$out" | sed 's/^/      /')"
+    return
+  fi
+  pass "$name"
+}
+
 # ---- run ---------------------------------------------------------------------
 
 case_dry_run
@@ -421,6 +454,7 @@ case_real_install
 case_truncated_pipe
 case_no_hasher
 case_completions_without_shell
+case_ripwire_hint
 
 say ""
 # Counted before it is expanded. bash 3.2 — which is the bash macOS still ships,
