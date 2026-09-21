@@ -2200,68 +2200,22 @@ mod tests {
         out
     }
 
-    /// Review findings on `memory import`: the `*.md` filter was
-    /// case-sensitive (README.MD silently skipped, on the OS whose filesystems
-    /// are case-insensitive), and a UTF-8 BOM defeated the `# ` title match
-    /// and leaked into the stored body.
+    /// The `*.md` filter is case-insensitive: README.MD is a markdown file on
+    /// every platform, and skipping it silently on the OS whose filesystems
+    /// are case-insensitive was the exact wrong place to be strict. BOM
+    /// stripping and frontmatter/title handling are `tasqx_core::memory_doc`'s
+    /// own tests (#787) — this only covers the directory walk still done
+    /// here.
     #[test]
-    fn memory_import_reads_upper_case_md_and_strips_the_bom() {
+    fn memory_import_reads_upper_case_md() {
         let dir = std::env::temp_dir().join(format!("tasqx-memimp-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("lower.md"), "# Lower doc\n\nbody").unwrap();
-        std::fs::write(dir.join("UPPER.MD"), "\u{FEFF}# Upper doc\n\nbody").unwrap();
+        std::fs::write(dir.join("UPPER.MD"), "# Upper doc\n\nbody").unwrap();
 
         let docs = memory_docs_from_path(dir.to_str().unwrap()).expect("both files import");
         assert_eq!(docs.len(), 2, "UPPER.MD must not be skipped");
-        let titles: Vec<&str> = docs.iter().map(|d| d["title"].as_str().unwrap()).collect();
-        assert!(
-            titles.contains(&"Upper doc"),
-            "the BOM must not defeat title derivation: {titles:?}"
-        );
-        for d in &docs {
-            assert!(
-                !d["body"].as_str().unwrap().starts_with('\u{FEFF}'),
-                "the BOM must not reach the stored body"
-            );
-        }
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    /// #228.4: YAML frontmatter (the shape every file in a
-    /// `~/.claude/.../memory/` directory carries) was indexed and shown as
-    /// document body, so `originSessionId`/`modified`/`type` dominated search
-    /// snippets over the prose that answers the query. It must be cut before
-    /// storage, and its `title:` used when the body has no `# ` heading of
-    /// its own.
-    #[test]
-    fn memory_import_strips_frontmatter_and_reads_its_title() {
-        let dir = std::env::temp_dir().join(format!("tasqx-memimp-fm-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(
-            dir.join("note.md"),
-            "---\ntitle: \"release workflow\"\noriginSessionId: 71aa288e\nmodified: 2026-07-23\n---\nHow releases actually ship.\n",
-        )
-        .unwrap();
-
-        let docs = memory_docs_from_path(dir.to_str().unwrap()).expect("import");
-        assert_eq!(docs.len(), 1);
-        let d = &docs[0];
-        assert_eq!(
-            d["title"].as_str().unwrap(),
-            "release workflow",
-            "frontmatter's `title:` must be used when there is no `# ` heading"
-        );
-        let body = d["body"].as_str().unwrap();
-        assert!(
-            !body.contains("originSessionId"),
-            "frontmatter metadata must not reach the stored/indexed body: {body:?}"
-        );
-        assert!(
-            body.contains("How releases actually ship."),
-            "the real prose must survive the cut: {body:?}"
-        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
