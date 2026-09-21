@@ -14,15 +14,19 @@ tasqx export > backup.json
 tasqx export project:work > work.json
 ```
 
-- The document carries projects and your default-project setting too, so a
-  restore gives back the store, not just its tasks.
+- The document carries projects, your memory docs, the graph's links and your
+  default-project setting too, so a restore gives back the store, not just its
+  tasks.
 - A filtered export that cuts across a dependency (one task in, its
   prerequisite out) drops that edge and *says so* in the answer
-  (`dropped_dependencies`), rather than exporting a broken reference.
-- **An unfiltered export carries every project, every memory doc and the
-  whole event log** — the full backup. Any *other* filter scopes those three
-  to what the exported tasks actually need, and reports what it left out
-  (`dropped_projects`, `dropped_docs`, `dropped_events`): sharing
+  (`dropped_dependencies`), rather than exporting a broken reference. A link
+  (`tasqx link`) is kept only when *both* of its ends are in the document, and
+  the rest are counted under `dropped_links` for the same reason.
+- **An unfiltered export carries every project, every memory doc, every link
+  and the whole event log** — the full backup. Any *other* filter scopes those
+  four to what the exported tasks actually need, and reports what it left out
+  (`dropped_projects`, `dropped_docs`, `dropped_links`, `dropped_events`):
+  sharing
   `tasqx export project:ledger` no longer ships every other project's
   knowledge along with it. A doc that carries no project ships only with
   `--include-unscoped`, which is refused on an unfiltered export — there is
@@ -53,6 +57,13 @@ Dependencies, annotations and checks follow the id, so nothing breaks — but a
 branch name or a `#n` written down somewhere still points at the old number.
 A task this store already holds keeps the number it has here, so importing the
 same document twice changes nothing.
+
+Links come in last, after everything they point at, and are counted under
+`links_imported`. Both ends are resolved against what this store holds *after*
+the import — a project it already knew keeps its own row, and the link follows
+it there. A link naming an end that is neither in the document nor already
+here refuses the whole import, naming the link and the missing end, rather
+than restoring an edge nothing can see.
 
 Import is also the one way to un-archive a project: the export document
 records each project's archived flag, and importing restores it. See

@@ -1,5 +1,6 @@
 //! Transfer domain methods for Engine.
 
+use super::graph::{link_row, node_exists, LINK_COLS};
 use super::*;
 use crate::engine::CHECK_STATES;
 
@@ -129,7 +130,33 @@ impl Engine {
         let doc_ids: HashSet<&str> = docs.iter().filter_map(|d| d["id"].as_str()).collect();
         let (projects, dropped_projects) = self.export_projects(needed_projects.as_ref())?;
         let project_ids: HashSet<&str> = projects.iter().filter_map(|p| p["id"].as_str()).collect();
-        let (events, dropped_events) = self.export_events(&present, &doc_ids, &project_ids)?;
+
+        // D180: the ids, per node kind, that this document actually carries —
+        // what BOTH ends of a link are checked against. `None` on an unfiltered
+        // export, where every node in the store is present by definition, which
+        // is the same "no restriction" shape `needed_projects` itself follows.
+        // An annotation is a node too (D160) and travels inside its task, so
+        // the ones this document carries are exactly the selected tasks'.
+        let carried: Option<HashSet<(NodeType, &str)>> = needed_projects.as_ref().map(|_| {
+            let mut set: HashSet<(NodeType, &str)> = HashSet::new();
+            set.extend(present.iter().map(|id| (NodeType::Task, *id)));
+            set.extend(doc_ids.iter().map(|id| (NodeType::Memory, *id)));
+            set.extend(project_ids.iter().map(|id| (NodeType::Project, *id)));
+            for snapshot in &selected {
+                set.extend(
+                    snapshot
+                        .annotations
+                        .iter()
+                        .filter_map(|a| a["id"].as_str())
+                        .map(|id| (NodeType::Annotation, id)),
+                );
+            }
+            set
+        });
+        let (links, dropped_links) = self.export_links(carried.as_ref())?;
+        let link_ids: HashSet<&str> = links.iter().filter_map(|l| l["id"].as_str()).collect();
+        let (events, dropped_events) =
+            self.export_events(&present, &doc_ids, &project_ids, &link_ids)?;
 
         // D171 review finding: `default_project` names the STORE's default
         // regardless of `filter`, so a filtered export whose scope drops that
@@ -167,6 +194,14 @@ impl Engine {
             // doc with no project is nobody's in particular.
             "docs": docs,
             "dropped_docs": dropped_docs,
+            // D160/D180: the graph's own edges. A backup used to restore with
+            // none of them, beside an event log describing every edge that was
+            // supposed to be there. Scoped like everything else on a filtered
+            // export — a link travels only when BOTH its ends are nodes this
+            // document carries, because an end it does not hold is the dangling
+            // pointer `store.import` refuses outright.
+            "links": links,
+            "dropped_links": dropped_links,
             // The audit trail for the tasks, docs and projects THIS document
             // carries (#176, D171): a restored store used to answer `chart
             // heatmap`/`chart throughput` with zero `done`s while `list
@@ -433,20 +468,67 @@ impl Engine {
         Ok((out, dropped))
     }
 
+    /// Every link row, id-ordered (creation order, since UUIDv7). D160/D180.
+    ///
+    /// The row is `link.list`'s own, read through the same `link_row`, so the
+    /// archive and the reader cannot come to disagree about what a link is.
+    /// `created_by` is not in it for the reason `LINK_COLS` names: nothing
+    /// reads the column and `'user'` is the only value anything writes.
+    ///
+    /// `carried` is the scope: `None` on an unfiltered export keeps every row,
+    /// matching D12's byte-identical round trip; `Some(set)` keeps a link only
+    /// when BOTH ends are in it. A `from_type`/`to_type` outside [`NodeType`]
+    /// cannot be written by this engine, and is treated as a node no document
+    /// carries rather than waved through — the only end a filtered export may
+    /// emit is one it can prove it holds. Returns the kept rows and how many
+    /// were dropped.
+    fn export_links(
+        &self,
+        carried: Option<&HashSet<(NodeType, &str)>>,
+    ) -> Result<(Vec<Value>, i64), ApiError> {
+        let mut stmt = self
+            .conn
+            .prepare(&format!("SELECT {LINK_COLS} FROM links ORDER BY id"))?;
+        let rows = stmt.query_map([], |r| {
+            Ok((
+                (r.get::<_, String>(1)?, r.get::<_, String>(2)?),
+                (r.get::<_, String>(3)?, r.get::<_, String>(4)?),
+                link_row(r)?,
+            ))
+        })?;
+        let carries = |(ty, id): &(String, String)| match carried {
+            None => true,
+            Some(set) => NodeType::parse(ty).is_some_and(|ty| set.contains(&(ty, id.as_str()))),
+        };
+        let mut out = Vec::new();
+        let mut dropped = 0i64;
+        for r in rows {
+            let (from, to, link) = r?;
+            if carries(&from) && carries(&to) {
+                out.push(link);
+            } else {
+                dropped += 1;
+            }
+        }
+        Ok((out, dropped))
+    }
+
     /// Every event this store has recorded, id-ordered (UUIDv7, so
-    /// chronological), for the tasks in `present`, the docs in `doc_ids` and
-    /// the projects in `project_ids` — MINUS the bookkeeping rows
+    /// chronological), for the tasks in `present`, the docs in `doc_ids`, the
+    /// projects in `project_ids` and the links in `link_ids` — MINUS the
+    /// bookkeeping rows
     /// `store.import` itself writes on every call it makes (`import` on a
     /// task or project, and a doc's `memory.add` carrying
     /// `via: "store.import"`).
     ///
     /// `present` is the SAME set `export_task` trims `depends_on` against, and
-    /// `doc_ids`/`project_ids` (D171) are the ids of the rows `export_docs`/
-    /// `export_projects` actually kept: a task-, doc- or project-entity event
-    /// is emitted only when its `entity_id` names something this document
+    /// `doc_ids`/`project_ids` (D171) and `link_ids` (D180) are the ids of the
+    /// rows `export_docs`/`export_projects`/`export_links` actually kept: an
+    /// event is emitted only when its `entity_id` names something this document
     /// carries, so a filtered export cannot leak an excluded task's title, an
-    /// excluded project's name, or an excluded doc's own title through the
-    /// event log after `tasks`/`docs`/`projects` correctly left it out. On an
+    /// excluded project's name, an excluded doc's own title or an excluded
+    /// link's endpoints through the event log after `tasks`/`docs`/`projects`/
+    /// `links` correctly left it out. On an
     /// unfiltered export every id set already names everything, so nothing
     /// here is trimmed — the same "no restriction" shape `needed_projects`
     /// itself follows. Returns the kept rows and how many were dropped by
@@ -470,6 +552,7 @@ impl Engine {
         present: &HashSet<&str>,
         doc_ids: &HashSet<&str>,
         project_ids: &HashSet<&str>,
+        link_ids: &HashSet<&str>,
     ) -> Result<(Vec<Value>, i64), ApiError> {
         let mut stmt = self.conn.prepare(
             "SELECT id, entity, entity_id, op, payload, ts, actor FROM events ORDER BY id",
@@ -493,10 +576,12 @@ impl Engine {
                 Some(Entity::Task) => present.contains(entity_id.as_str()),
                 Some(Entity::Doc) => doc_ids.contains(entity_id.as_str()),
                 Some(Entity::Project) => project_ids.contains(entity_id.as_str()),
-                // Links are not scoped by this export yet (the `links` table
-                // is not part of the archive), so their events travel whole,
-                // like an entity kind this build does not know.
-                Some(Entity::Link) => true,
+                // D180: the `links` table IS part of the archive now, so a link
+                // event is scoped to the link this document carries, exactly
+                // like the three kinds above. It used to travel whole, which on
+                // a filtered export left the log describing edges the document
+                // had no row for.
+                Some(Entity::Link) => link_ids.contains(entity_id.as_str()),
                 // A future entity kind this build does not know: pass it
                 // through rather than silently dropping history it cannot
                 // scope — the same "refuse or widen, never guess" stance as
@@ -720,6 +805,16 @@ impl Engine {
         // D177: every task whose number this store was already using, and the
         // number it took instead. Always reported, empty when nothing moved.
         let mut renumbered: Vec<Value> = Vec::new();
+        // D180: payload id -> the id that row actually landed under, per node
+        // kind, filled by the passes that write those rows and read by the
+        // links pass. It holds the kinds whose stored id CAN differ from the
+        // document's — a project, because `upsert_project` keys on NAME and
+        // keeps the destination's own row when it already knows that name, and
+        // a doc, which is where #782's source-merge will land one. A kind (or
+        // an id) the table does not name resolves as itself, which is what
+        // every task and annotation does: D177 moves a task's `short_id` and
+        // never its id.
+        let mut remap: HashMap<(NodeType, String), String> = HashMap::new();
         let tx = self.begin_mutation()?;
 
         // Pass 0: projects, before any task, so a task's `project` can be checked
@@ -764,6 +859,13 @@ impl Engine {
                     &created,
                     payload_id.as_deref(),
                 )?;
+                // D180: the one remap entry that is routinely NOT the identity
+                // — a destination that already knows this name kept its own row
+                // and its own id, so a link naming the payload's project id has
+                // to follow the row here.
+                if let Some(payload_id) = payload_id {
+                    remap.insert((NodeType::Project, payload_id), row_id.clone());
+                }
                 insert_event(
                     &tx,
                     Entity::Project,
@@ -872,6 +974,10 @@ impl Engine {
                         modified
                     ],
                 )?;
+                // D180: the identity today — the upsert keys on the doc's own
+                // id — and stated through the table anyway, so #782's
+                // source-merge has one place to say otherwise.
+                remap.insert((NodeType::Memory, did.clone()), did.clone());
                 insert_event(
                     &tx,
                     Entity::Doc,
@@ -1482,6 +1588,95 @@ impl Engine {
                 )?;
             }
         }
+        // Pass 2b, D180: the graph's edges, after every task, annotation, doc
+        // and project the document carries has been written — a link spans all
+        // four kinds, and there is no FOREIGN KEY to lean on, because the
+        // endpoint columns are polymorphic. Optional, so a document written
+        // before this section existed still imports with nothing to restore.
+        let mut links_imported = 0i64;
+        if let Some(rows) = opt_array(p, "links")?.cloned() {
+            for lv in &rows {
+                let lv = import_shape("", "link", lv)?;
+                import_keys("", "link", lv, IMPORT_LINK_KEYS)?;
+                let lid = opt_str_nonempty(lv, "id")?
+                    .unwrap_or_else(|| crate::clock::uuid_v7().to_string());
+                let from = import_link_end(&tx, &lid, "from", &req_str(lv, "from")?, &remap)?;
+                let to = import_link_end(&tx, &lid, "to", &req_str(lv, "to")?, &remap)?;
+                // The closed vocabulary `link.add` enforces, on the same terms
+                // every other import gate applies one (D16): carrying an
+                // unknown relation verbatim would let one bad payload
+                // re-export the corruption to every downstream store.
+                let relation = req_str(lv, "relation")?;
+                if !LINK_RELATIONS.contains(&relation.as_str()) {
+                    return Err(ApiError::bad_request(format!(
+                        "store.import: link {lid} has relation {relation:?} — expected one of {}",
+                        LINK_RELATIONS.join(", ")
+                    )));
+                }
+                // `link.add`'s rule, restated at this door and for its reason:
+                // the caller's own JSON, stored verbatim, and a non-object
+                // refused rather than wrapped.
+                let metadata = match lv.get("metadata") {
+                    None | Some(Value::Null) => None,
+                    Some(v) if v.is_object() => Some(v.to_string()),
+                    Some(other) => {
+                        return Err(ApiError::bad_request(format!(
+                            "store.import: link {lid}, metadata must be an object, but {} was \
+                             given ({other})",
+                            crate::util::type_of(other)
+                        )))
+                    }
+                };
+                let created = opt_str_nonempty(lv, "created_at")?.unwrap_or_else(now);
+
+                // The table's OTHER uniqueness — (from, to, relation) — which
+                // an `ON CONFLICT(id)` upsert cannot see: a payload stating an
+                // edge this store already holds under a different id is
+                // stating something already true, so the stored row stands and
+                // the import counts it rather than raising the raw constraint
+                // violation as `internal`. Idempotence for the same reason
+                // `link.add` answers `created: false` instead of erroring.
+                let twin: Option<String> = tx
+                    .query_row(
+                        "SELECT id FROM links WHERE from_type = ?1 AND from_id = ?2 \
+                           AND to_type = ?3 AND to_id = ?4 AND relation = ?5",
+                        params![from.0.as_str(), from.1, to.0.as_str(), to.1, relation],
+                        |r| r.get(0),
+                    )
+                    .optional()?;
+                if twin.is_some_and(|other| other != lid) {
+                    links_imported += 1;
+                    continue;
+                }
+                // ON CONFLICT DO UPDATE, never INSERT OR REPLACE: the rule the
+                // annotations upsert above states in full. Nothing writes
+                // `created_by` here, so re-importing a row leaves whatever the
+                // store holds and a new one takes the column's `'user'`
+                // default — the value `link.add` is the only writer of.
+                tx.execute(
+                    "INSERT INTO links \
+                     (id, from_type, from_id, to_type, to_id, relation, metadata, created) \
+                     VALUES (?1,?2,?3,?4,?5,?6,?7,?8) \
+                     ON CONFLICT(id) DO UPDATE SET \
+                     from_type=excluded.from_type, from_id=excluded.from_id, \
+                     to_type=excluded.to_type, to_id=excluded.to_id, \
+                     relation=excluded.relation, metadata=excluded.metadata, \
+                     created=excluded.created",
+                    params![
+                        lid,
+                        from.0.as_str(),
+                        from.1,
+                        to.0.as_str(),
+                        to.1,
+                        relation,
+                        metadata,
+                        created
+                    ],
+                )?;
+                links_imported += 1;
+            }
+        }
+
         // Pass 3: the default, last, because it must be checked against the
         // projects this very transaction wrote. D21's rule — nothing silently
         // steals the default — applies here more than anywhere else: import is
@@ -1525,7 +1720,7 @@ impl Engine {
         let default_project = standing.or_else(|| want_default.clone());
         tx.commit()?;
 
-        // All seven always present: a machine consumer must be able to tell "no
+        // All nine always present: a machine consumer must be able to tell "no
         // projects in the document" from "this build does not report them", the
         // same reason `dropped_dependencies` and `default_cleared` are never
         // omitted.
@@ -1543,10 +1738,58 @@ impl Engine {
             "docs_imported": docs_imported,
             "docs_declared": docs_declared,
             "events_imported": events_imported,
+            // D180: how many of the document's links this store now holds —
+            // including one it already held under another id, which is the
+            // same edge stated twice, not a second one.
+            "links_imported": links_imported,
             "default_project": default_project,
             "renumbered": renumbered,
         }))
     }
+}
+
+/// Resolve one end of an imported link to the row it names HERE (D180).
+///
+/// Three steps, in order: the `<type>:<uuid>` grammar `link.list` emits, then
+/// the remap table (`store_import`'s `remap` — payload id to the id that row
+/// actually landed under), then existence. A node the store does not hold after
+/// all three is refused by name, the shape a dangling `depends_on` already
+/// gets: an edge to an unknown id means the operator exported the wrong slice,
+/// and inventing the node or dropping the edge would hide that (D12).
+///
+/// The reference is NOT resolved through `parse_node_ref_on`: that grammar
+/// accepts a short id and a project NAME, which would silently re-point an
+/// imported edge at whatever this store happens to hold under the same number
+/// or name. A document states ids.
+fn import_link_end(
+    tx: &rusqlite::Transaction,
+    link_id: &str,
+    side: &str,
+    reference: &str,
+    remap: &HashMap<(NodeType, String), String>,
+) -> Result<(NodeType, String), ApiError> {
+    let malformed = || {
+        ApiError::bad_request(format!(
+            "store.import: link {link_id}, {side}: {reference:?} is not a node reference — \
+             expected `<type>:<uuid>`, where type is {}",
+            NodeType::accepted()
+        ))
+    };
+    let (ty, payload_id) = reference.split_once(':').ok_or_else(malformed)?;
+    let ty = NodeType::parse(ty).ok_or_else(malformed)?;
+    let id = remap
+        .get(&(ty, payload_id.to_string()))
+        .map(String::as_str)
+        .unwrap_or(payload_id);
+    if !node_exists(tx, ty, id)? {
+        return Err(ApiError::bad_request(format!(
+            "store.import: link {link_id} points at {}:{id}, which is neither in the payload \
+             nor in the store (export the {} too, or drop the link)",
+            ty.as_str(),
+            ty.as_str()
+        )));
+    }
+    Ok((ty, id.to_string()))
 }
 
 #[cfg(test)]
@@ -2348,6 +2591,14 @@ mod tests {
             json!(false),
             "no `docs` key at all must be reported as undeclared: {r}"
         );
+        // D180: a document written before the `links` section existed carries
+        // no such key either, and imports exactly as it did — the counter is
+        // present and zero, never absent.
+        assert_eq!(
+            r["links_imported"],
+            json!(0),
+            "a legacy document restores no links, and says so: {r}"
+        );
 
         let empty_section = Engine::open_in_memory().expect("open");
         let r = empty_section
@@ -2358,6 +2609,194 @@ mod tests {
             r["docs_declared"],
             json!(true),
             "an explicit empty `docs` array must be reported as declared: {r}"
+        );
+    }
+
+    /// D180: the `links` table used to be left out of the archive entirely, so
+    /// a full backup restored with no graph edges at all — beside an event log
+    /// that described every edge that was supposed to be there. The document
+    /// carries the rows now, and a restore reproduces them one for one.
+    #[test]
+    fn store_export_then_import_reproduces_every_link_row() {
+        let a = Engine::open_in_memory().expect("open");
+        let one = a.task_add(&json!({ "title": "one" })).expect("add");
+        let two = a.task_add(&json!({ "title": "two" })).expect("add");
+        let doc = a
+            .memory_add(&json!({ "title": "the ruling", "body": "why it is so" }))
+            .expect("doc");
+        let doc_ref = format!("memory:{}", doc["id"].as_str().expect("doc id"));
+        a.link_add(&json!({
+            "from": one["short_id"].clone(),
+            "to": two["short_id"].clone(),
+            "relation": "references",
+        }))
+        .expect("task -> task");
+        a.link_add(&json!({
+            "from": two["short_id"].clone(),
+            "to": doc_ref,
+            "relation": "derived_from",
+            "metadata": { "why": "the note" },
+        }))
+        .expect("task -> doc");
+
+        let document = a.store_export(&json!({})).expect("export");
+        assert_eq!(
+            document["links"].as_array().expect("links array").len(),
+            2,
+            "an unfiltered export carries every row: {document}"
+        );
+        assert_eq!(document["dropped_links"], json!(0), "{document}");
+
+        let b = Engine::open_in_memory().expect("open");
+        let r = b.store_import(&document).expect("import");
+        assert_eq!(r["links_imported"], json!(2), "{r}");
+
+        let links = |e: &Engine| e.link_list(&json!({})).expect("link.list")["links"].clone();
+        assert_eq!(
+            links(&b),
+            links(&a),
+            "every link row comes back whole — id, both ends, relation and metadata"
+        );
+        // And the document the restored store writes is the one it was handed:
+        // D12's round trip now covers the graph's edges too.
+        assert_eq!(
+            b.store_export(&json!({})).expect("re-export")["links"],
+            document["links"],
+            "export -> import -> export is identity for links"
+        );
+    }
+
+    /// A filtered export carries a link only when BOTH its ends are nodes the
+    /// document itself carries — the same trim `depends_on` has had since D12,
+    /// for the same reason: an edge naming a node this document does not hold
+    /// is a dangling pointer the import would refuse outright.
+    #[test]
+    fn filtered_export_keeps_only_links_with_both_ends_and_reports_dropped_links() {
+        let e = Engine::open_in_memory().expect("open");
+        e.project_create(&json!({ "name": "kept" })).expect("kept");
+        e.project_create(&json!({ "name": "other" }))
+            .expect("other");
+        let inside = e
+            .task_add(&json!({ "title": "inside", "project": "kept" }))
+            .expect("add");
+        let also = e
+            .task_add(&json!({ "title": "also inside", "project": "kept" }))
+            .expect("add");
+        let outside = e
+            .task_add(&json!({ "title": "outside", "project": "other" }))
+            .expect("add");
+        let within = e
+            .link_add(&json!({
+                "from": inside["short_id"].clone(),
+                "to": also["short_id"].clone(),
+                "relation": "references",
+            }))
+            .expect("both ends inside");
+        e.link_add(&json!({
+            "from": inside["short_id"].clone(),
+            "to": outside["short_id"].clone(),
+            "relation": "references",
+        }))
+        .expect("one end outside");
+
+        let document = e
+            .store_export(&json!({ "filter": "project:kept" }))
+            .expect("export");
+        let links = document["links"].as_array().expect("links array");
+        assert_eq!(links.len(), 1, "only the edge inside the slice: {document}");
+        assert_eq!(links[0]["id"], within["id"], "{document}");
+        assert_eq!(
+            document["dropped_links"],
+            json!(1),
+            "losing an edge silently is what this counter exists to prevent: {document}"
+        );
+
+        // The count reports the FILTER, not the store: unfiltered, both rows
+        // travel and nothing is dropped.
+        let whole = e.store_export(&json!({})).expect("export");
+        assert_eq!(whole["links"].as_array().expect("links").len(), 2);
+        assert_eq!(whole["dropped_links"], json!(0), "{whole}");
+    }
+
+    /// The import's own half of the same rule: a link naming an end that is
+    /// neither in the payload nor already in the store is refused by name,
+    /// exactly as a dangling `depends_on` is — and the whole import writes
+    /// nothing, because it is one transaction.
+    #[test]
+    fn store_import_refuses_a_link_whose_end_is_absent() {
+        let e = Engine::open_in_memory().expect("open");
+        let t = e.task_add(&json!({ "title": "here" })).expect("add");
+        let mut document = e.store_export(&json!({})).expect("export");
+        const GONE: &str = "0193aaaa-0000-7000-8000-0000000000ee";
+        const LINK: &str = "0193aaaa-0000-7000-8000-0000000000dd";
+        document["links"] = json!([{
+            "id": LINK,
+            "from": format!("task:{}", t["id"].as_str().expect("id")),
+            "to": format!("task:{GONE}"),
+            "relation": "references",
+            "metadata": null,
+            "created_at": "2026-09-16T09:00:00Z",
+        }]);
+
+        let b = Engine::open_in_memory().expect("open");
+        let err = b
+            .store_import(&document)
+            .expect_err("an end nobody holds is a dangling pointer");
+        assert_eq!(err.code, ErrorCode::BadRequest, "{}", err.message);
+        for named in [LINK, GONE, "task"] {
+            assert!(
+                err.message.contains(named),
+                "the refusal must name the link and the missing end ({named}): {}",
+                err.message
+            );
+        }
+        assert_eq!(
+            exported_task_count(&b),
+            0,
+            "a refused import writes nothing at all"
+        );
+    }
+
+    /// Both ends are resolved through the remap table the task, doc and project
+    /// passes build, never through the payload's own id: `upsert_project` keeps
+    /// the DESTINATION's row when a project of that name is already here, so a
+    /// `project:<payload id>` end has to land on the id this store holds.
+    #[test]
+    fn store_import_resolves_link_ends_through_the_remap_table() {
+        let a = Engine::open_in_memory().expect("open");
+        let theirs = a
+            .project_create(&json!({ "name": "shared" }))
+            .expect("project")["id"]
+            .as_str()
+            .expect("id")
+            .to_string();
+        let t = a
+            .task_add(&json!({ "title": "cites the project", "project": "shared" }))
+            .expect("add");
+        a.link_add(&json!({
+            "from": t["short_id"].clone(),
+            "to": format!("project:{theirs}"),
+            "relation": "references",
+        }))
+        .expect("task -> project");
+        let document = a.store_export(&json!({})).expect("export");
+
+        let b = Engine::open_in_memory().expect("open");
+        let ours = b
+            .project_create(&json!({ "name": "shared" }))
+            .expect("the same name, this store's own row")["id"]
+            .as_str()
+            .expect("id")
+            .to_string();
+        assert_ne!(theirs, ours, "precondition: two stores mint two ids");
+
+        let r = b.store_import(&document).expect("import");
+        assert_eq!(r["links_imported"], json!(1), "{r}");
+        let links = b.link_list(&json!({})).expect("link.list");
+        assert_eq!(
+            links["links"][0]["to"],
+            json!(format!("project:{ours}")),
+            "the end must follow the remap onto the row this store kept: {links}"
         );
     }
 }

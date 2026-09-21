@@ -941,6 +941,13 @@ pub const IMPORT_DOC_KEYS: &[&str] = &[
     "id", "source", "title", "body", "created", "modified", "project", "_rev", "standing",
 ];
 
+/// Every key an exported link object can carry (D180). Deliberately the row
+/// `link.list` pages, so the document spells a link the way every reader here
+/// already does; `created_by` is absent from both for the reason `LINK_COLS`
+/// names. `id` and `created_at` are optional so a hand-written link still
+/// imports — the two ends and the relation are the edge's identity.
+pub const IMPORT_LINK_KEYS: &[&str] = &["id", "from", "to", "relation", "metadata", "created_at"];
+
 /// Every key an exported event object can carry (#176). `id`, `payload`,
 /// `ts` and `actor` are optional so a hand-written or trimmed event still
 /// imports — only `entity`, `entity_id` and `op` are the row's identity.
