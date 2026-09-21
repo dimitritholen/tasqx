@@ -474,14 +474,19 @@ fn removing_an_unknown_id_is_not_found_and_unknown_params_are_refused() {
 /// Confirmed by three independent review lenses: `store.import` wrote
 /// annotations with `INSERT OR REPLACE`, and SQLite's REPLACE deletes the old
 /// row WITHOUT firing the delete trigger (recursive_triggers is off), leaving
-/// the external-content FTS index holding a dangling entry. Moving an
-/// annotation id between tasks through import then answered searches with a
-/// stale or unrelated hit — silently, forever.
+/// the external-content FTS index holding a dangling entry, so a rewritten
+/// annotation answered searches with a stale or unrelated hit — silently,
+/// forever.
+///
+/// The payload that used to reach that path moved an annotation id to another
+/// task; task #802 refuses that outright, one annotation belonging to exactly
+/// one task. What still reaches the upsert's UPDATE arm is a merge (D185)
+/// rewriting a note the destination already holds, so that is what this
+/// guards with.
 #[test]
-fn import_moving_an_annotation_between_tasks_keeps_the_index_in_sync() {
+fn import_rewriting_an_annotation_through_a_merge_keeps_the_index_in_sync() {
     let e = engine();
     let a = call(&e, "task.add", json!({ "title": "task alpha" })).unwrap();
-    call(&e, "task.add", json!({ "title": "task beta" })).unwrap();
     call(
         &e,
         "annotation.add",
@@ -489,48 +494,42 @@ fn import_moving_an_annotation_between_tasks_keeps_the_index_in_sync() {
     )
     .unwrap();
 
-    // Build a PARTIAL import payload: only task beta, now claiming annotation
-    // id X. Task alpha — where X currently lives — is absent, so the per-task
-    // annotation DELETE never touches the old row and the upsert must handle
-    // the PK collision itself. With `INSERT OR REPLACE`, SQLite deletes the
-    // old row WITHOUT firing the delete trigger, leaving a dangling FTS entry
-    // on X's freed rowid.
+    // A merge does not DELETE the task's annotations first, so the payload's
+    // copy of annotation X collides with the stored row and the upsert must
+    // handle the PK collision itself. With `INSERT OR REPLACE`, SQLite deletes
+    // the old row WITHOUT firing the delete trigger, leaving a dangling FTS
+    // entry on X's freed rowid.
     let mut doc = call(&e, "store.export", json!({})).unwrap();
-    let tasks = doc["tasks"].as_array_mut().unwrap();
-    let ann = tasks
-        .iter_mut()
-        .find(|t| t["title"] == "task alpha")
-        .and_then(|t| t["annotations"].as_array_mut())
-        .and_then(Vec::pop)
-        .expect("alpha carries the annotation");
-    tasks.retain(|t| t["title"] == "task beta");
-    tasks[0]["annotations"] = json!([{
-        "id": ann["id"],
-        "body": "the relocated searchable needle",
-        "created": ann["created"],
-    }]);
     let doc_for_clear = {
         let mut d2 = doc.clone();
         d2["tasks"][0]["annotations"] = json!([]);
+        // The merge below moves the task's `_rev`, and this second import is
+        // an ordinary wholesale one — it has to be ahead of what it replaces.
+        d2["tasks"][0]["_rev"] = json!(99);
         d2
     };
-    call(&e, "store.import", doc).expect("import the partial document");
+    doc["merge"] = json!(true);
+    // A note both sides hold follows the task-level winner (#802), so the
+    // payload has to be the later write for its body to land at all.
+    doc["tasks"][0]["modified"] = json!("2099-01-01T00:00:00Z");
+    doc["tasks"][0]["annotations"][0]["body"] = json!("the relocated searchable needle");
+    call(&e, "store.import", doc).expect("merge the rewritten note");
 
     let new = call(&e, "memory.search", json!({ "query": "relocated" })).unwrap();
-    assert_eq!(new["count"], 1, "the moved body must be findable");
+    assert_eq!(new["count"], 1, "the rewritten body must be findable");
     assert_eq!(
-        new["hits"][0]["title"], "task beta",
-        "hit names the NEW task"
+        new["hits"][0]["title"], "task alpha",
+        "hit names the task that holds it"
     );
 
-    // Surface a dangling index entry through the public API: clear beta's
+    // Surface a dangling index entry through the public API: clear the task's
     // annotations (freeing the current max rowid) so the next insert reuses
     // the slot a dangling entry would still point at. With the broken
     // REPLACE, the bystander answered a search for ORIGINAL (the row REPLACE
     // deleted without firing annotations_fts_ad); with an emptied
     // annotations_fts_ad it answers RELOCATED (the row the clear-import
     // DELETE removed). Both stay guarded.
-    call(&e, "store.import", doc_for_clear).expect("clear beta's annotations");
+    call(&e, "store.import", doc_for_clear).expect("clear the task's annotations");
     call(
         &e,
         "annotation.add",
