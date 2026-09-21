@@ -1059,10 +1059,15 @@ impl Engine {
         // whole array before any doc is written.
         if let Some(rows) = &docs_param {
             let mut seen = HashSet::new();
+            // #801(a): a second set of sources ALREADY reported, so a source
+            // repeated three or more times pushes onto `twice` once instead
+            // of `twice.contains()` scanning it on every further repeat —
+            // linear in the payload instead of quadratic in its duplicates.
+            let mut reported = HashSet::new();
             let mut twice: Vec<&str> = Vec::new();
             let sources = rows.iter().filter_map(|d| d.get("source")?.as_str());
             for src in sources.filter(|s| !s.is_empty()) {
-                if !seen.insert(src) && !twice.contains(&src) {
+                if !seen.insert(src) && reported.insert(src) {
                     twice.push(src);
                 }
             }
@@ -1085,7 +1090,15 @@ impl Engine {
             for dv in &rows {
                 let dv = import_shape("", "doc", dv)?;
                 import_keys("", "doc", dv, IMPORT_DOC_KEYS)?;
-                let did = opt_str_nonempty(dv, "id")?
+                // #801(b): whether the PAYLOAD named an id, kept apart from
+                // `did` (which always holds one, minted here when it did
+                // not) — a merge below reports `dropped_id` from this, not
+                // from `did`, so a doc without an id reports `null` rather
+                // than a mint that D184's rollback then discards, which is
+                // what let a dry run and the real run disagree.
+                let payload_id = opt_str_nonempty(dv, "id")?;
+                let did = payload_id
+                    .clone()
                     .unwrap_or_else(|| crate::clock::uuid_v7().to_string());
                 let title = req_str(dv, "title").map_err(|e| {
                     ApiError::bad_request(format!(
@@ -1209,7 +1222,7 @@ impl Engine {
                     docs_merged.push(json!({
                         "source": source,
                         "kept_id": kept_id,
-                        "dropped_id": did,
+                        "dropped_id": payload_id,
                         "took": took,
                     }));
                     // D181's seam, used for the first time: the payload's id is
@@ -3969,6 +3982,47 @@ mod tests {
         );
     }
 
+    /// #801(a): the precheck above reports a duplicated source once even
+    /// when the payload repeats it MORE than twice, and names every
+    /// duplicated source in the payload, in first-seen order — the
+    /// `reported` set stops the naive `twice.contains()` scan from turning
+    /// three-or-more repeats into a per-repeat linear search.
+    #[test]
+    fn store_import_reports_every_duplicate_source_once_in_first_seen_order() {
+        let e = Engine::open_in_memory().expect("open");
+        let mk = |n: usize, source: &str| {
+            json!({
+                "id": format!("0193aaaa-0000-7000-8000-{n:012}"),
+                "source": source,
+                "title": "note",
+                "body": "v",
+            })
+        };
+        let err = e
+            .store_import(&json!({
+                "tasks": [],
+                "docs": [
+                    mk(1, "docs/a.md"),
+                    mk(2, "docs/b.md"),
+                    mk(3, "docs/c.md"),
+                    mk(4, "docs/a.md"),
+                    mk(5, "docs/b.md"),
+                    mk(6, "docs/c.md"),
+                    mk(7, "docs/a.md"),
+                    mk(8, "docs/b.md"),
+                    mk(9, "docs/c.md"),
+                ],
+            }))
+            .expect_err("a payload naming three sources three times each must be refused");
+        assert_eq!(err.code, ErrorCode::BadRequest, "{}", err.message);
+        assert_eq!(
+            err.message,
+            "store.import names the same source more than once: docs/a.md, docs/b.md, \
+             docs/c.md — a source names one doc (D174), so send each file once",
+            "each duplicated source names once, in first-seen order"
+        );
+    }
+
     /// #800(b): the D183 lookup above matches a payload doc by `source`, not
     /// by its own `id` — so that `id` can already be a DIFFERENT live doc
     /// here, under some other source. Folding it onto `kept_id` would merge
@@ -4665,6 +4719,57 @@ mod tests {
         assert_eq!(real["docs_merged"], r["docs_merged"], "{real}");
         assert_eq!(real["links_imported"], r["links_imported"], "{real}");
         assert_eq!(real["dry_run"], json!(false), "{real}");
+    }
+
+    /// #801(b): a payload doc with no `id` of its own mints one to merge
+    /// under (D183) — under a rolled-back `dry_run` (D184) that id is
+    /// undone, and a real run mints a DIFFERENT one, so `dropped_id` used
+    /// to name a different, made-up id on each run. `docs_merged` must
+    /// report `dropped_id: null` instead, so a dry run and the real run it
+    /// previews agree.
+    #[test]
+    fn store_import_dry_run_and_real_run_agree_on_docs_merged_for_a_doc_without_id() {
+        const DEST_DOC: &str = "0193aaaa-0000-7000-8000-0000000000f5";
+        let e = Engine::open_in_memory().expect("open");
+        e.store_import(&json!({
+            "tasks": [],
+            "docs": [{
+                "id": DEST_DOC,
+                "source": "docs/a.md",
+                "title": "this store's spelling",
+                "body": "the copy already here",
+                "modified": "2026-09-01T00:00:00Z",
+                "_rev": 1,
+            }],
+        }))
+        .expect("seed the destination");
+
+        // No `id` at all — the payload leaves it to be minted.
+        let payload = json!({
+            "tasks": [],
+            "docs": [{
+                "source": "docs/a.md",
+                "title": "the other machine's spelling",
+                "body": "the newer copy",
+                "modified": "2026-09-02T00:00:00Z",
+            }],
+        });
+
+        let mut dry = payload.clone();
+        dry["dry_run"] = json!(true);
+        let previewed = e.store_import(&dry).expect("dry run");
+        let real = e.store_import(&payload).expect("real run");
+
+        assert_eq!(
+            previewed["docs_merged"][0]["dropped_id"],
+            json!(null),
+            "a payload doc without an id must report a null dropped_id, not a minted one: \
+             {previewed}"
+        );
+        assert_eq!(
+            previewed["docs_merged"], real["docs_merged"],
+            "a dry run must preview exactly what the real run then reports"
+        );
     }
 
     /// D184: a refusal surfaces on a dry run exactly as it does on a real one
