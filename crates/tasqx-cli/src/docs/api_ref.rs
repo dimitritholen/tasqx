@@ -1279,7 +1279,7 @@ const EXAMPLES: &[Example] = &[
         method: "task.brief",
         request: r#"{"tasqx":"1","id":"b1","method":"task.brief","params":{"ref":"51","memory_limit":3}}"#,
         fixture: "",
-        response: r#"{"id":"b1","ok":true,"result":{"memory":{"annotations_total":3,"count":1,"docs_total":1,"has_more":true,"hits":[{"id":"eb864f1e-e68a-4d96-af89-597bd0d2d52e","kind":"doc","project":"api","rank":-0.9096037228757,"snippet":"Cut the release branch on Monday, tag after the canary has run…","source":"docs/release.md","standing":false,"title":"release-process"}],"matched":"guide OR migration OR sdk OR docs OR api","project":"api","reserved_docs":2,"total":4},"neighbourhood":{"blocks":[],"depends_on":[{"annotation":null,"short_id":50,"status":"pending","title":"Rate-limit the /search endpoint"}]},"task":{"…":"task.get's own result, verbatim"}},"tasqx":"1"}"#,
+        response: r#"{"id":"b1","ok":true,"result":{"memory":{"annotations_total":3,"count":1,"docs_total":1,"has_more":true,"hits":[{"id":"eb864f1e-e68a-4d96-af89-597bd0d2d52e","kind":"doc","project":"api","rank":-0.9096037228757,"snippet":"Cut the release branch on Monday, tag after the canary has run…","source":"docs/release.md","stale":false,"standing":false,"title":"release-process"}],"matched":"guide OR migration OR sdk OR docs OR api","project":"api","reserved_docs":2,"total":4},"neighbourhood":{"blocks":[],"depends_on":[{"annotation":null,"short_id":50,"status":"pending","title":"Rate-limit the /search endpoint"}]},"task":{"…":"task.get's own result, verbatim"}},"tasqx":"1"}"#,
         why: "every hit carries an FTS bm25 `rank`, computed through the platform's `log()` — captured on macOS the last digits differ on Linux, and the drift job goes red for everyone but whoever captured last. The `tasqx brief` SCREEN is captured instead; it prints snippets and never the number.",
     },
     Example {
@@ -1461,7 +1461,7 @@ const EXAMPLES: &[Example] = &[
         method: "memory.search",
         request: r#"{"tasqx":"1","id":"ms1","method":"memory.search","params":{"query":"release canary","limit":2}}"#,
         fixture: "",
-        response: r#"{"id":"ms1","ok":true,"result":{"count":1,"has_more":false,"hits":[{"id":"eb864f1e-e68a-4d96-af89-597bd0d2d52e","kind":"doc","project":"api","rank":-1.2419537228757,"snippet":"Cut the release branch on Monday, tag after the canary has run for a day…","source":"docs/release.md","standing":false,"title":"release-process"}],"matched":"release AND canary","total":1},"tasqx":"1"}"#,
+        response: r#"{"id":"ms1","ok":true,"result":{"count":1,"has_more":false,"hits":[{"id":"eb864f1e-e68a-4d96-af89-597bd0d2d52e","kind":"doc","project":"api","rank":-1.2419537228757,"snippet":"Cut the release branch on Monday, tag after the canary has run for a day…","source":"docs/release.md","stale":false,"standing":false,"title":"release-process"}],"matched":"release AND canary","total":1},"tasqx":"1"}"#,
         why: "every hit carries an FTS bm25 `rank` whose last digits are the platform's `log()`, so a capture is reproducible only on the machine that took it. The `tasqx memory search` screen is captured instead — it prints the snippet, never the number.",
     },
     Example {

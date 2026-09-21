@@ -52,6 +52,9 @@ tasqx memory search blue-green
 - Power users can pass `--raw` for FTS5 operator syntax.
 - The answer includes the query that actually ran, so "no hits" is
   distinguishable from "nothing stored about this".
+- A doc hit whose origin file has changed since it was imported (or last
+  refreshed) is marked `stale`, so you can tell a ruling that is behind its
+  file from one that still matches it.
 
 ## tasqx memory show
 

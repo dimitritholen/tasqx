@@ -5327,6 +5327,64 @@ fn memory_import_refresh_re_reads_an_edited_file_and_names_a_deleted_one() {
     let _ = std::fs::remove_dir_all(&repo);
 }
 
+/// #790/D180: `memory search` marks a doc hit `stale` once its origin file has
+/// moved on since it was imported — no `memory import --refresh` run, the
+/// case a reader has no other way to notice. Nothing prints before the edit.
+#[test]
+fn memory_search_prints_the_stale_word_after_an_edit_and_not_before() {
+    let dir = fresh_config_dir("memory-search-stale");
+    let repo = std::env::temp_dir().join(format!(
+        "tasqx-reg-memory-search-stale-{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&repo);
+    std::fs::create_dir_all(repo.join("docs")).expect("create docs dir");
+    std::fs::create_dir_all(repo.join(".git")).expect("create .git dir");
+    let file = repo.join("docs").join("a.md");
+    std::fs::write(
+        &file,
+        "# Deploy runbook\n\nRun the smoke tests before the deploy.",
+    )
+    .expect("write doc");
+
+    let run = |args: &[&str]| {
+        bin("memory-search-stale", &dir)
+            .current_dir(&repo)
+            .args(args)
+            .output()
+            .expect("run tasqx")
+    };
+
+    let out = run(&["memory", "import", "docs"]);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let out = run(&["memory", "search", "deploy"]);
+    let text = String::from_utf8(out.stdout).expect("UTF-8");
+    assert!(
+        out.status.success() && !text.contains("stale"),
+        "an untouched file must not print stale: {text}"
+    );
+
+    std::fs::write(
+        &file,
+        "# Deploy runbook\n\nRun the smoke tests before the deploy, twice now.",
+    )
+    .expect("edit the file on disk, without running memory import --refresh");
+
+    let out = run(&["memory", "search", "deploy"]);
+    let text = String::from_utf8(out.stdout).expect("UTF-8");
+    assert!(
+        text.contains("stale"),
+        "the file moved on and the search hit must say so: {text}"
+    );
+
+    let _ = std::fs::remove_dir_all(&repo);
+}
+
 /// #229 item 8: a store the engine cannot open (`TASQX_DB` pointing at an
 /// unwritable path) printed `error: cannot open store ...` at exit 1 — a bare
 /// `error:` prefix with no bracketed code, which DESIGN.md reserves for
