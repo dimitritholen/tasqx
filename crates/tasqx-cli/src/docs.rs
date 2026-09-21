@@ -571,7 +571,7 @@ const METHODS: [(&str, &str, &str); 48] = [
          <code>events</code> is the whole audit log except the bookkeeping rows a `store.import` \
          itself writes. An unfiltered export carries every project/doc/link/event (D12); any \
          other filter scopes those four to what the exported tasks need and reports what it \
-         dropped (D171, D180) — <code>include_unscoped</code> widens that scope back to docs \
+         dropped (D171, D181) — <code>include_unscoped</code> widens that scope back to docs \
          with no project. A link travels only when BOTH its ends are nodes the document \
          carries.",
     ),
@@ -587,7 +587,7 @@ const METHODS: [(&str, &str, &str); 48] = [
          takes the next free number, listed in <code>renumbered</code> as \
          <code>{id, from, to}</code> (D177). Links are restored last, both ends resolved \
          against what this store now holds; an end it does not have refuses the import by name \
-         (D180).",
+         (D181).",
     ),
     (
         "event.list",

@@ -1367,7 +1367,7 @@ pub const R_STORE_IMPORT: &[FieldDoc] = &[
     f("docs_imported", "integer", "How many knowledge docs came in."),
     f("docs_declared", "boolean", "Whether the document had a `docs` section at all — an empty one told apart from a missing one (#179)."),
     f("events_imported", "integer", "How many audit rows came in."),
-    f("links_imported", "integer", "How many explicit links came in (D180) — an edge this store already held under a different id counts, because that is the same edge stated twice. Zero for a document with no `links` section."),
+    f("links_imported", "integer", "How many explicit links came in (D181) — an edge this store already held under a different id counts, because that is the same edge stated twice. Zero for a document with no `links` section."),
     n("default_project", "string", "The default project after the import, or null."),
     f("renumbered", "array", "Every task whose `short_id` a DIFFERENT task in this store already held, as `{id, from, to}` — it kept its id and took the next free number (D177). Empty when nothing moved."),
 ];

@@ -1291,7 +1291,7 @@ impl Engine {
 ///
 /// One function for both readers, so the duplicate `link.add` hands back and
 /// the rows `link.list` pages cannot come to disagree about what a link row is.
-/// `store.export` is the third (D180), for the same reason: the archive states
+/// `store.export` is the third (D181), for the same reason: the archive states
 /// a link in the one spelling every reader here already speaks.
 pub(super) fn link_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<Value> {
     let metadata: Option<String> = r.get(6)?;
