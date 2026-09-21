@@ -946,6 +946,10 @@ pub(super) enum Command {
         // types one character.
         #[arg(value_hint = ValueHint::FilePath)]
         file: String,
+        /// Run the import and roll it back (D184): report every renumbering,
+        /// merge and refusal against this store without writing anything.
+        #[arg(long)]
+        dry_run: bool,
     },
     /// Print the single highest-urgency unblocked task (the "what now" button).
     #[command(after_help = crate::cmddoc::after_help("next"))]

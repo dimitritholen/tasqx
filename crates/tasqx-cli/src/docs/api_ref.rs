@@ -993,6 +993,13 @@ const PARAM_DOCS: &[(&str, &str, &str, &str, &str)] = &[
         "The explicit links to restore, in the shape `store.export` emits. Written after everything they point at; an end neither the document nor this store holds refuses the import by name (D181).",
     ),
     (
+        "store.import",
+        "dry_run",
+        "boolean",
+        "false",
+        "Run the whole import — every renumbering, merge and refusal — and roll it back instead of committing, so the result previews what a real import would do without writing anything (D184).",
+    ),
+    (
         "event.list",
         "limit",
         "integer",

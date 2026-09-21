@@ -776,14 +776,21 @@ impl Engine {
     // ---- store.import --------------------------------------------------------
 
     /// `store.import` — load an export document. Params: `tasks` (required),
-    /// `projects`, `default_project`, `docs`.
+    /// `projects`, `default_project`, `docs`, `dry_run`.
     ///
     /// The one method whose params are a DOCUMENT, not a request (the `document`
     /// flag in [`crate::PARAMS`]): an export written by a newer tasqx must stay
     /// readable here, so an unrecognized top-level key is a future field rather
     /// than a typo. That tolerance is only safe because `tasks` is required — a
     /// misspelled `taskss` is still refused, by absence.
+    ///
+    /// D184: `dry_run` (default false) runs the import exactly as below and
+    /// rolls the transaction back instead of committing it. There is no
+    /// second, predictive code path — every rule, every refusal and every
+    /// renumbering decision runs for real, against this store, inside the
+    /// same `BEGIN IMMEDIATE`; only the very last step differs.
     pub fn store_import(&self, p: &Value) -> Result<Value, ApiError> {
+        let dry_run = opt_bool(p, "dry_run")?.unwrap_or(false);
         let tasks = req_array(p, "tasks").map_err(|e| {
             ApiError::bad_request(format!(
                 "{} — store.import requires a `tasks` array",
@@ -1923,7 +1930,16 @@ impl Engine {
             }
         }
         let default_project = standing.or_else(|| want_default.clone());
-        tx.commit()?;
+        // D184: the whole import above ran for real, inside this one
+        // transaction; `dry_run` only decides whether it is kept. A rollback
+        // undoes every row this call wrote AND every event it inserted, so
+        // nothing survives to be listed by `event.list` or seen by another
+        // connection.
+        if dry_run {
+            tx.rollback()?;
+        } else {
+            tx.commit()?;
+        }
 
         // All ten always present: a machine consumer must be able to tell "no
         // projects in the document" from "this build does not report them", the
@@ -1952,6 +1968,9 @@ impl Engine {
             // D183: every doc that merged onto a row this store already held
             // under the same `source`, and which copy's text won.
             "docs_merged": docs_merged,
+            // D184: always present, false on a real run — the same rule every
+            // other additive result field in this answer already follows.
+            "dry_run": dry_run,
         }))
     }
 }
@@ -3106,6 +3125,141 @@ mod tests {
             json!(true),
             "an explicit empty `docs` array must be reported as declared: {r}"
         );
+    }
+
+    /// D184: `dry_run` runs the whole import — renumbering (D177), a doc merge
+    /// (D183), a link (D181) — and rolls the transaction back. The answer
+    /// must name every one of those outcomes exactly as a real import would,
+    /// while the store itself, its event log and the payload's own ids are
+    /// left exactly as they were.
+    #[test]
+    fn store_import_dry_run_reports_everything_and_writes_nothing() {
+        const DEST_TASK: &str = "0193aaaa-0000-7000-8000-0000000000d1";
+        const DEST_DOC: &str = "0193aaaa-0000-7000-8000-0000000000d2";
+        const PAYLOAD_TASK: &str = "0193aaaa-0000-7000-8000-0000000000d3";
+        const PAYLOAD_DOC: &str = "0193aaaa-0000-7000-8000-0000000000d4";
+        const LINK: &str = "0193aaaa-0000-7000-8000-0000000000d5";
+
+        let e = Engine::open_in_memory().expect("open");
+        e.store_import(&json!({
+            "tasks": [{ "id": DEST_TASK, "short_id": 1, "title": "destination task" }],
+            "docs": [{
+                "id": DEST_DOC,
+                "source": "docs/a.md",
+                "title": "this store's spelling",
+                "body": "the copy already here",
+                "modified": "2026-09-01T00:00:00Z",
+                "_rev": 1,
+            }],
+        }))
+        .expect("seed the destination");
+
+        let payload = json!({
+            // Collides with DEST_TASK's short_id, so it must renumber.
+            "tasks": [{ "id": PAYLOAD_TASK, "short_id": 1, "title": "payload task" }],
+            // Collides with DEST_DOC's source, newer `modified`, so it must merge.
+            "docs": [{
+                "id": PAYLOAD_DOC,
+                "source": "docs/a.md",
+                "title": "the other machine's spelling",
+                "body": "the newer copy",
+                "modified": "2026-09-02T00:00:00Z",
+                "_rev": 0,
+            }],
+            "links": [{
+                "id": LINK,
+                "from": format!("task:{PAYLOAD_TASK}"),
+                "to": format!("memory:{PAYLOAD_DOC}"),
+                "relation": "references",
+            }],
+        });
+
+        let before = e.store_export(&json!({})).expect("export before dry run");
+        let events_before =
+            e.event_list(&json!({ "limit": 1000 })).expect("event.list")["count"].clone();
+
+        let mut dry = payload.clone();
+        dry["dry_run"] = json!(true);
+        let r = e.store_import(&dry).expect("dry run");
+
+        assert_eq!(r["dry_run"], json!(true), "{r}");
+        assert_eq!(
+            r["renumbered"].as_array().expect("renumbered array").len(),
+            1,
+            "{r}"
+        );
+        assert_eq!(
+            r["docs_merged"]
+                .as_array()
+                .expect("docs_merged array")
+                .len(),
+            1,
+            "{r}"
+        );
+        assert_eq!(r["links_imported"], json!(1), "{r}");
+
+        let after = e.store_export(&json!({})).expect("export after dry run");
+        assert_eq!(
+            after, before,
+            "a dry run must leave the store byte-identical"
+        );
+        let events_after =
+            e.event_list(&json!({ "limit": 1000 })).expect("event.list")["count"].clone();
+        assert_eq!(
+            events_after, events_before,
+            "no event survives a rolled-back transaction"
+        );
+        assert_eq!(
+            e.task_get(&json!({ "ref": PAYLOAD_TASK }))
+                .unwrap_err()
+                .code,
+            ErrorCode::NotFound,
+            "the payload's task was never kept"
+        );
+
+        // The same document, for real, must report the same outcomes.
+        let real = e.store_import(&payload).expect("real run");
+        assert_eq!(real["renumbered"], r["renumbered"], "{real}");
+        assert_eq!(real["docs_merged"], r["docs_merged"], "{real}");
+        assert_eq!(real["links_imported"], r["links_imported"], "{real}");
+        assert_eq!(real["dry_run"], json!(false), "{real}");
+    }
+
+    /// D184: a refusal surfaces on a dry run exactly as it does on a real one
+    /// — the transaction never reaches its rollback-or-commit line at all.
+    #[test]
+    fn store_import_dry_run_still_refuses_what_the_real_run_refuses() {
+        let e = Engine::open_in_memory().expect("open");
+        const FIRST: &str = "0193aaaa-0000-7000-8000-0000000000e1";
+        const SECOND: &str = "0193aaaa-0000-7000-8000-0000000000e2";
+        let err = e
+            .store_import(&json!({
+                "dry_run": true,
+                "tasks": [
+                    { "id": FIRST, "short_id": 9, "title": "first" },
+                    { "id": SECOND, "short_id": 9, "title": "second" },
+                ],
+            }))
+            .expect_err("one short_id cannot address two tasks, dry run or not");
+        assert_eq!(err.code, ErrorCode::Conflict, "{}", err.message);
+        assert_eq!(
+            exported_task_count(&e),
+            0,
+            "a refused document writes nothing"
+        );
+    }
+
+    /// `dry_run` guards a real write, so a value that is not a boolean is
+    /// refused rather than coerced — the same rule `opt_bool` enforces
+    /// everywhere else.
+    #[test]
+    fn store_import_refuses_a_non_boolean_dry_run() {
+        let e = Engine::open_in_memory().expect("open");
+        let err = e
+            .store_import(&json!({ "tasks": [], "dry_run": "true" }))
+            .expect_err("a string is not a boolean");
+        assert_eq!(err.code, ErrorCode::BadRequest, "{}", err.message);
+        assert!(err.message.contains("dry_run"), "{}", err.message);
     }
 
     /// D181: the `links` table used to be left out of the archive entirely, so

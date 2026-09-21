@@ -81,6 +81,15 @@ Import is also the one way to un-archive a project: the export document
 records each project's archived flag, and importing restores it. See
 [Projects](Projects.md#tasqx-archive).
 
+`tasqx import backup.json --dry-run` runs the whole import against this store
+and rolls it back instead of keeping it: every renumbering, merge and refusal
+prints exactly as a real import would, and the run ends with `nothing was
+written`. There is no separate preview logic — it is the same import, undone.
+
+```console
+tasqx import backup.json --dry-run
+```
+
 ## Good habits
 
 A dated backup, in one line:

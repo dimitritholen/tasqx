@@ -630,3 +630,54 @@ fn the_export_verb_scopes_docs_to_the_named_project_and_include_unscoped_widens_
     assert_eq!(code, 2, "must be refused as bad_request: {se}");
     assert!(se.contains("include_unscoped"), "{se}");
 }
+
+/// D184, through the real `import` VERB: `--dry-run` prints the same report a
+/// real import would, says so up front and at the end, and leaves the store
+/// exactly as it was.
+#[test]
+fn the_import_verb_dry_run_previews_and_writes_nothing() {
+    let (dir, db) = store("dryrun", "a");
+    ok(&dir, &db, &["add", "already here"]);
+
+    const THEIRS: &str = "019f6a0f-99df-7000-8000-0000000000dd";
+    let payload = json!([{
+        "id": THEIRS,
+        "short_id": 1,
+        "title": "from the other machine",
+    }]);
+    let path = dir.join("theirs.json");
+    std::fs::write(&path, payload.to_string()).expect("write payload");
+
+    let out = ok(
+        &dir,
+        &db,
+        &["import", path.to_str().expect("utf8 path"), "--dry-run"],
+    );
+    assert!(out.starts_with("dry run:"), "{out}");
+    assert!(
+        out.contains(&format!(
+            "note: renumbered: #1 is taken here, so task {THEIRS} is now #2"
+        )),
+        "a dry run must report the same renumbering a real import would: {out}"
+    );
+    assert!(
+        out.trim_end().ends_with("nothing was written"),
+        "the run must end saying nothing was kept: {out}"
+    );
+
+    let list: Value = serde_json::from_str(&ok(&dir, &db, &["list", "--json"])).expect("list");
+    assert_eq!(
+        list["count"],
+        json!(1),
+        "a dry run must leave the store exactly as it was: {list}"
+    );
+
+    let real = api(&dir, &db, "store.import", json!({ "tasks": payload }));
+    assert_eq!(real["result"]["dry_run"], json!(false), "{real}");
+    let list: Value = serde_json::from_str(&ok(&dir, &db, &["list", "--json"])).expect("list");
+    assert_eq!(
+        list["count"],
+        json!(2),
+        "the real import must still land: {list}"
+    );
+}

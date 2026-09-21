@@ -1658,7 +1658,7 @@ pub(crate) fn run_export(
     Ok((result, text))
 }
 
-pub(crate) fn run_import(be: &mut Backend, ctx: &Ctx, file: String) -> CmdOutcome {
+pub(crate) fn run_import(be: &mut Backend, ctx: &Ctx, file: String, dry_run: bool) -> CmdOutcome {
     let raw = if file == "-" {
         let mut s = String::new();
         std::io::stdin()
@@ -1693,7 +1693,7 @@ pub(crate) fn run_import(be: &mut Backend, ctx: &Ctx, file: String) -> CmdOutcom
     // array is still wrapped, because that is precisely what an older export is:
     // a document with no projects section, which `store.import` reads as "infer
     // them" rather than refusing.
-    let params = match parsed {
+    let mut params = match parsed {
         Value::Array(_) => json!({ "tasks": parsed }),
         Value::Object(ref o) => {
             if !o.contains_key("tasks") {
@@ -1706,6 +1706,9 @@ pub(crate) fn run_import(be: &mut Backend, ctx: &Ctx, file: String) -> CmdOutcom
         Value::Bool(_) => return Err(shape("the top level is a JSON boolean")),
         Value::Null => return Err(shape("the top level is JSON null")),
     };
+    if dry_run {
+        params["dry_run"] = json!(true);
+    }
     let result = be.call("store.import", &params)?;
     let text = render::imported(ctx, &result);
     Ok((result, text))
