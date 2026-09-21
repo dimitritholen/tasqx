@@ -66,9 +66,10 @@ same doc under two ids — which is what two machines that each imported the sam
 `docs/` folder end up with — so it merges onto the doc already here instead of
 refusing the import. The stored id is kept, the payload's is dropped, and the
 later `modified` wins the text; a payload no newer than the copy here leaves it
-untouched. Every merge is listed under `docs_merged`, with the source, both ids
-and which copy won, and links pointing at the dropped id follow the doc that
-kept the source.
+untouched. Every merge is listed under `docs_merged`, with the source, the kept
+id, the copy that won, and the dropped id — `null` when the payload document
+carried no id of its own — and links pointing at the dropped id follow the doc
+that kept the source.
 
 Links come in last, after everything they point at, and are counted under
 `links_imported`. Both ends are resolved against what this store holds *after*
