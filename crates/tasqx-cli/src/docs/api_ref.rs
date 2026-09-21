@@ -1000,6 +1000,13 @@ const PARAM_DOCS: &[(&str, &str, &str, &str, &str)] = &[
         "Run the whole import — every renumbering, merge and refusal — and roll it back instead of committing, so the result previews what a real import would do without writing anything (D184).",
     ),
     (
+        "store.import",
+        "merge",
+        "boolean",
+        "false",
+        "Merge a task this store ALREADY holds instead of replacing it (D185): its annotations, checks, token measurements, tags and dependency edges are unioned with what is here, its `_rev` guard is skipped, and its scalars are taken from the payload only when the payload's `modified` is later. Reported per task in `merged`. Default false keeps the wholesale replace a restore wants (D138).",
+    ),
+    (
         "event.list",
         "limit",
         "integer",

@@ -1756,6 +1756,24 @@ pub fn imported(ctx: &Ctx, result: &Value) -> String {
             ),
         ));
     }
+    // D185: one line per task this store already held and `--merge` unioned.
+    // Named for the doc merge's reason — the counts above cannot say which
+    // side's title, status and dates the task now carries.
+    for task in result
+        .get("merged")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+    {
+        out.push_str(&note_line(
+            ctx,
+            &format!(
+                "merged: task {} took the {} copy",
+                s(task, "id"),
+                s(task, "took"),
+            ),
+        ));
+    }
     let minted: Vec<String> = result
         .get("projects_created")
         .and_then(Value::as_array)

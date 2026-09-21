@@ -1426,6 +1426,7 @@ pub const R_STORE_IMPORT: &[FieldDoc] = &[
     f("renumbered", "array", "Every task whose `short_id` a DIFFERENT task in this store already held, as `{id, from, to}` — it kept its id and took the next free number (D177). Empty when nothing moved."),
     f("docs_merged", "array", "Every memory doc that landed on a doc this store already held under the same `source`, as `{source, kept_id, dropped_id, took}` — the stored id is kept, the payload's is dropped, and `took` is `payload` when the payload's `modified` was later (its title, body, project and standing were written) or `store` when it was not (nothing was written). D183. Empty when nothing merged."),
     f("dry_run", "boolean", "Echoes the `dry_run` param (D184). True means every row above was written and then rolled back — the answer describes what WOULD have happened, not what is now on disk."),
+    f("merged", "array", "Every task this store ALREADY held that `merge` unioned rather than replaced, as `{id, took}` — `payload` when the payload's `modified` was later (its scalars were written) or `store` when it was not (the stored row stands). Its annotations, checks, tokens, tags and edges are unioned either way. D185. Empty when `merge` was not asked for, or when the document carried nothing this store had seen."),
 ];
 
 /// `event.list`'s result.

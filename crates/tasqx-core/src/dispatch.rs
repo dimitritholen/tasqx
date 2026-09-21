@@ -306,6 +306,7 @@ pub const PARAMS: &[(&str, &[&str], bool)] = &[
             "events",
             "links",
             "dry_run",
+            "merge",
         ],
         true,
     ),

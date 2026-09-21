@@ -1658,7 +1658,13 @@ pub(crate) fn run_export(
     Ok((result, text))
 }
 
-pub(crate) fn run_import(be: &mut Backend, ctx: &Ctx, file: String, dry_run: bool) -> CmdOutcome {
+pub(crate) fn run_import(
+    be: &mut Backend,
+    ctx: &Ctx,
+    file: String,
+    dry_run: bool,
+    merge: bool,
+) -> CmdOutcome {
     let raw = if file == "-" {
         let mut s = String::new();
         std::io::stdin()
@@ -1708,6 +1714,9 @@ pub(crate) fn run_import(be: &mut Backend, ctx: &Ctx, file: String, dry_run: boo
     };
     if dry_run {
         params["dry_run"] = json!(true);
+    }
+    if merge {
+        params["merge"] = json!(true);
     }
     let result = be.call("store.import", &params)?;
     let text = render::imported(ctx, &result);
