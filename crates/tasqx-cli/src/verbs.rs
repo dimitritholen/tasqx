@@ -1237,7 +1237,7 @@ pub(crate) fn run_memory_import(
     // before a single write, then one `memory.import` lands the batch in one
     // transaction with replace-by-source semantics — a failure imports
     // nothing, and a re-run replaces instead of duplicating.
-    let (docs, alias_notes) = memory_docs_from_path(path)?;
+    let (docs, alias_groups) = memory_docs_from_path(path)?;
     let batch_sources: Vec<String> = docs
         .iter()
         .filter_map(|d| d["source"].as_str().map(String::from))
@@ -1264,10 +1264,26 @@ pub(crate) fn run_memory_import(
     };
     // #797: a symlink alias `memory_docs_from_path` collapsed onto the file it
     // points at (D179) — named so a caller understands why the directory held
-    // more `.md` names than docs landed.
-    for note in &alias_notes {
-        text.push_str(&render::note_line(ctx, note));
+    // more `.md` names than docs landed. #798: `--json` gets the same fact
+    // structured, under `aliases_skipped`, always present (empty when
+    // nothing was collapsed) — the rule every other additive result field
+    // here already follows — so automation sees the skip too, not just the
+    // text a script never reads.
+    for group in &alias_groups {
+        text.push_str(&render::note_line(
+            ctx,
+            &format!(
+                "{} symlink alias(es) skipped: {} also reached via {}",
+                group.via.len(),
+                group.source,
+                group.via.join(", ")
+            ),
+        ));
     }
+    result["aliases_skipped"] = json!(alias_groups
+        .iter()
+        .map(|g| json!({ "source": g.source, "via": g.via }))
+        .collect::<Vec<_>>());
 
     // #784: `import_source` moved what this batch stores in `source` to the
     // git-toplevel-relative spelling (D174 extends D179). A doc already
@@ -1448,23 +1464,42 @@ fn find_superseded_sources(
     Ok(out)
 }
 
+/// One alias group `memory_docs_from_path` collapsed onto a single doc: the
+/// `source` the winning file computed, and every symlink path that reached
+/// the same `source` without becoming its own doc.
+pub(crate) struct AliasGroup {
+    pub(crate) source: String,
+    pub(crate) via: Vec<String>,
+}
+
+/// True when `symlink_metadata` says `path` IS a symlink — the file-type
+/// check `memory_docs_from_path` uses to pick a group's winner (#798), rather
+/// than `std::fs::metadata`, which follows the link and would answer for
+/// whatever it points at instead.
+fn is_symlink(path: &std::path::Path) -> bool {
+    std::fs::symlink_metadata(path)
+        .map(|m| m.file_type().is_symlink())
+        .unwrap_or(false)
+}
+
 /// Read `path` (a file, or a directory's direct `*.md` children) into
-/// `memory.import` doc objects, plus one `note:`-ready message per symlink
-/// alias skipped along the way.
+/// `memory.import` doc objects, plus one alias group per `source` this batch
+/// reached more than once.
 ///
 /// `import_source` canonicalises (D179), so a directory holding `a.md` and a
 /// symlink `b.md -> a.md` computes the SAME `source` for both — and
 /// `memory.import` refuses a batch with a duplicated source outright (D174).
 /// Rather than surface that refusal, the alias is dropped here before the
-/// batch is built: the first file in the directory's sorted order to reach a
-/// given `source` wins, and every later file computing the same `source` is
-/// named in a returned message instead of a doc.
+/// batch is built: a NON-symlink entry wins its group regardless of where it
+/// sorts (#798 — a sorted-first alias used to win and name the real file as
+/// the one skipped), and every entry `symlink_metadata` actually marks as a
+/// symlink is reported as an alias of the winner.
 ///
 /// Pure I/O — no store access — so the whole failure surface of an import is
 /// exhausted before anything is written.
 pub(crate) fn memory_docs_from_path(
     path: &str,
-) -> Result<(Vec<Value>, Vec<String>), tasqx_core::ApiError> {
+) -> Result<(Vec<Value>, Vec<AliasGroup>), tasqx_core::ApiError> {
     let meta = std::fs::metadata(path)
         .map_err(|e| tasqx_core::ApiError::bad_request(format!("cannot read {path}: {e}")))?;
     let files: Vec<std::path::PathBuf> = if meta.is_dir() {
@@ -1494,35 +1529,43 @@ pub(crate) fn memory_docs_from_path(
         vec![std::path::PathBuf::from(path)]
     };
 
-    // Compute every source before reading a single body, so a later file
-    // computing the same source as an earlier one (a symlink alias) is caught
-    // — and skipped — before its content is read at all. `files` is already
-    // sorted, so "first to reach a source" is the directory's sorted order.
+    // Compute every source before reading a single body, so a group sharing
+    // one source (a symlink alias) is settled — and the losers skipped —
+    // before any content is read. Grouped by first-seen order in `files`,
+    // which is already sorted; within a group, the winner is decided by file
+    // type, not by which entry got there first (#798).
+    let sourced: Vec<(String, &std::path::Path)> = files
+        .iter()
+        .map(|f| (import_source(f), f.as_path()))
+        .collect();
+
     let mut winners: Vec<(&std::path::Path, String)> = Vec::new();
-    let mut aliases: std::collections::BTreeMap<String, Vec<&std::path::Path>> =
-        std::collections::BTreeMap::new();
-    for file in &files {
-        let source = import_source(file);
-        if winners.iter().any(|(_, s)| s == &source) {
-            aliases.entry(source).or_default().push(file);
-        } else {
-            winners.push((file, source));
+    let mut aliases: Vec<AliasGroup> = Vec::new();
+    let mut seen: std::collections::HashSet<&str> = std::collections::HashSet::new();
+    for (source, _) in &sourced {
+        if !seen.insert(source) {
+            continue;
+        }
+        let group: Vec<&std::path::Path> = sourced
+            .iter()
+            .filter(|(s, _)| s == source)
+            .map(|(_, p)| *p)
+            .collect();
+        let winner_idx = group.iter().position(|p| !is_symlink(p)).unwrap_or(0);
+        let via: Vec<String> = group
+            .iter()
+            .enumerate()
+            .filter(|&(i, p)| i != winner_idx && is_symlink(p))
+            .map(|(_, p)| p.display().to_string())
+            .collect();
+        winners.push((group[winner_idx], source.clone()));
+        if !via.is_empty() {
+            aliases.push(AliasGroup {
+                source: source.clone(),
+                via,
+            });
         }
     }
-    let notes: Vec<String> = aliases
-        .into_iter()
-        .map(|(source, extra)| {
-            let via = extra
-                .iter()
-                .map(|p| p.display().to_string())
-                .collect::<Vec<_>>()
-                .join(", ");
-            format!(
-                "{} symlink alias(es) skipped: {source} also reached via {via}",
-                extra.len()
-            )
-        })
-        .collect();
 
     // BOM strip, frontmatter cut and title derivation live in
     // `tasqx_core::memory_doc::read_doc` (#787) — the engine needs the same
@@ -1555,7 +1598,7 @@ pub(crate) fn memory_docs_from_path(
         }
         docs.push(doc);
     }
-    Ok((docs, notes))
+    Ok((docs, aliases))
 }
 
 /// The `source` `memory.import` stores for `file` — a doc's identity (D174),
@@ -1610,8 +1653,20 @@ fn git_toplevel(file: &std::path::Path) -> Option<std::path::PathBuf> {
 /// `rel` spelled with `/`, so a source string is the same text on Windows and
 /// on Unix — the one line all three `import_source` branches share, the
 /// absolute fallback included (#797).
+///
+/// Windows-only replace: `\` IS that platform's path separator, so
+/// `PathBuf`'s own components already used it. On unix `\` is legal INSIDE a
+/// single filename — `docs/a\b.md` is one file, not two path segments — so
+/// replacing it there turned a literal backslash into a `/` and made that
+/// file compute the same `source` as an unrelated `docs/a/b.md` (#798).
+#[cfg(windows)]
 fn slash_joined(rel: &std::path::Path) -> String {
     rel.to_string_lossy().replace('\\', "/")
+}
+
+#[cfg(not(windows))]
+fn slash_joined(rel: &std::path::Path) -> String {
+    rel.to_string_lossy().into_owned()
 }
 
 pub(crate) fn run_export(
@@ -1993,6 +2048,34 @@ mod import_source_tests {
         assert!(!import_source(&file).contains('\\'));
 
         let _ = std::fs::remove_dir_all(&outside);
+    }
+
+    /// #798 (Qodo, PR #116): `slash_joined` used to replace every `\` with
+    /// `/` on every platform, but a unix filename may legally CONTAIN a
+    /// literal backslash — so `docs/a\b.md` and the real subdirectory file
+    /// `docs/a/b.md` computed the same `source`, and the second import
+    /// silently replaced the first's text under D174. Unix-only: `\` is a
+    /// path separator on Windows, so the two names are not even distinct
+    /// paths there.
+    #[test]
+    #[cfg(unix)]
+    fn import_source_keeps_a_literal_backslash_in_a_unix_filename() {
+        let repo = temp_dir("literal-backslash");
+        let docs = repo.join("docs");
+        std::fs::create_dir_all(docs.join("a")).unwrap();
+        std::fs::create_dir_all(repo.join(".git")).unwrap();
+        let flat = docs.join("a\\b.md");
+        std::fs::write(&flat, "# flat").unwrap();
+        let nested = docs.join("a").join("b.md");
+        std::fs::write(&nested, "# nested").unwrap();
+
+        assert_ne!(
+            import_source(&flat),
+            import_source(&nested),
+            "a literal backslash in a unix filename must not collide with a real subdirectory"
+        );
+
+        let _ = std::fs::remove_dir_all(&repo);
     }
 }
 

@@ -5188,6 +5188,68 @@ fn memory_import_collapses_a_symlink_alias_to_one_doc() {
     let _ = std::fs::remove_dir_all(&repo);
 }
 
+/// #798 (Qodo, PR #116): the sorted-first entry used to win a group and name
+/// every later entry an alias — backwards when the ALIAS name sorts before
+/// the real file's (`a.md` before `z.md`), because the note then named the
+/// real file as the one skipped. A non-symlink entry now wins regardless of
+/// sort order, and `--json` carries the skip structurally under
+/// `aliases_skipped` — always present, empty when nothing collapsed — so a
+/// caller that never reads the text still sees it.
+#[test]
+#[cfg(unix)]
+fn memory_import_alias_that_sorts_first_still_loses_to_the_real_file() {
+    let dir = fresh_config_dir("memory-import-symlink-alias-sorts-first");
+    let repo = std::env::temp_dir().join(format!(
+        "tasqx-reg-memory-import-symlink-alias-sorts-first-{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&repo);
+    std::fs::create_dir_all(repo.join("docs")).expect("create docs dir");
+    std::fs::create_dir_all(repo.join(".git")).expect("create .git dir");
+    std::fs::write(repo.join("docs").join("z.md"), "# Z\n\nbody").expect("write doc");
+    std::os::unix::fs::symlink(
+        repo.join("docs").join("z.md"),
+        repo.join("docs").join("a.md"),
+    )
+    .expect("create symlink");
+
+    let run = |args: &[&str]| {
+        bin("memory-import-symlink-alias-sorts-first", &dir)
+            .current_dir(&repo)
+            .args(args)
+            .output()
+            .expect("run tasqx")
+    };
+
+    let out = run(&["--json", "memory", "import", "docs"]);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).expect("json");
+    assert_eq!(
+        v["imported"], 1,
+        "the alias must not count as a second doc: {v}"
+    );
+    assert_eq!(
+        v["aliases_skipped"],
+        serde_json::json!([{ "source": "docs/z.md", "via": ["docs/a.md"] }]),
+        "the alias, not the real file, must be named as skipped: {v}"
+    );
+
+    let list = run(&["--json", "memory", "list"]);
+    assert!(list.status.success());
+    let list_v: serde_json::Value = serde_json::from_slice(&list.stdout).expect("json");
+    assert_eq!(list_v["count"], 1, "{list_v}");
+    assert_eq!(
+        list_v["docs"][0]["source"], "docs/z.md",
+        "the real file must win, not the alias that sorted first: {list_v}"
+    );
+
+    let _ = std::fs::remove_dir_all(&repo);
+}
+
 /// #788/D180: `memory import` records which file each doc came from and what
 /// it looked like — the ABSOLUTE path (`source` stays the git-relative
 /// spelling D179 made it), the file's size in bytes and its mtime — so a
