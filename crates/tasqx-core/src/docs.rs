@@ -1017,6 +1017,9 @@ pub const DOC_EXPORT_ROW: &[FieldDoc] = &[
     n("project", "string", "The project it is scoped to, or null."),
     f("_rev", "integer", "The row's revision counter, bumped by every write. Send it back as `expected_rev` to make a change conditional."),
     f("standing", "boolean", "Whether it is a standing ruling, meant for every session of its scope (D156). Stated on every doc, so a restore carries it."),
+    n("origin_path", "string", "The absolute path of the file `memory.import` read this doc from, or null when no import set one (D180)."),
+    n("origin_mtime", "integer", "That file's modification time in unix seconds when it was read, or null (D180)."),
+    n("origin_size", "integer", "That file's size in bytes when it was read, or null (D180)."),
 ];
 
 /// `memory.remove`'s result.

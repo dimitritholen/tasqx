@@ -2037,3 +2037,102 @@ fn memory_add_lets_two_docs_share_an_empty_source() {
     let listed = call(&e, "memory.list", json!({})).unwrap();
     assert_eq!(listed["total"], 2, "{listed}");
 }
+
+/// #788/D180: a doc imported from a file remembers which file and what it
+/// looked like — and remembers only THIS read of it. The three columns go
+/// into the upsert's SET list plainly, unlike `standing` and `project`, so a
+/// re-import with new numbers overwrites them and a re-import carrying none
+/// nulls them out. A row left holding a path from an import that happened on
+/// another machine would make the freshness check (#789) compare a doc
+/// against a file that is not the one it came from.
+#[test]
+fn memory_import_stores_the_origin_file_and_every_reimport_restates_it() {
+    let e = engine();
+    let import =
+        |doc: Value| call(&e, "memory.import", json!({ "docs": [doc] })).expect("import one doc");
+    let origin = |id: &str| {
+        let got = call(&e, "memory.get", json!({ "id": id })).expect("read the doc back");
+        json!([got["origin_path"], got["origin_mtime"], got["origin_size"]])
+    };
+
+    let first = import(json!({
+        "title": "A",
+        "body": "first body",
+        "source": "docs/a.md",
+        "origin_path": "/repo/docs/a.md",
+        "origin_mtime": 1_757_000_000i64,
+        "origin_size": 10i64,
+    }));
+    let id = first["docs"][0]["id"].as_str().expect("an id").to_string();
+    assert_eq!(
+        origin(&id),
+        json!(["/repo/docs/a.md", 1_757_000_000i64, 10i64]),
+        "the import must store all three as given"
+    );
+
+    import(json!({
+        "title": "A",
+        "body": "edited body",
+        "source": "docs/a.md",
+        "origin_path": "/elsewhere/docs/a.md",
+        "origin_mtime": 1_757_009_999i64,
+        "origin_size": 11i64,
+    }));
+    assert_eq!(
+        origin(&id),
+        json!(["/elsewhere/docs/a.md", 1_757_009_999i64, 11i64]),
+        "a re-import describes the file it just read, not the one before it"
+    );
+
+    import(json!({ "title": "A", "body": "edited again", "source": "docs/a.md" }));
+    assert_eq!(
+        origin(&id),
+        json!([Value::Null, Value::Null, Value::Null]),
+        "a re-import that names no origin must leave none behind"
+    );
+}
+
+/// #788/D180: `memory.add` has no file behind it, so it leaves the three
+/// columns null rather than inventing an origin — and `memory.import` refuses
+/// an origin field of the wrong type by naming it, instead of storing a
+/// string where a freshness check will later expect a number.
+#[test]
+fn memory_add_never_sets_an_origin_and_a_wrong_typed_one_is_refused() {
+    let e = engine();
+    let added = call(
+        &e,
+        "memory.add",
+        json!({ "title": "hand-written", "body": "no file behind it", "source": "x.md" }),
+    )
+    .expect("add a doc");
+    let got = call(&e, "memory.get", json!({ "id": added["id"] })).expect("read it back");
+    for key in ["origin_path", "origin_mtime", "origin_size"] {
+        // Present and null, not absent: `Value::Null` is also what indexing a
+        // key that was never emitted answers, so the presence is the claim.
+        assert_eq!(
+            got.get(key),
+            Some(&Value::Null),
+            "{key} on a hand-written doc: {got}"
+        );
+    }
+
+    for (key, bad, expected) in [
+        ("origin_path", json!(7), "a string"),
+        ("origin_mtime", json!("yesterday"), "an integer"),
+        ("origin_size", json!("10"), "an integer"),
+    ] {
+        let mut doc = json!({ "title": "A", "body": "b", "source": "docs/a.md" });
+        doc[key] = bad;
+        let err = call(&e, "memory.import", json!({ "docs": [doc] }))
+            .expect_err("a wrong-typed origin field is a bad request");
+        assert_eq!(err.code, ErrorCode::BadRequest, "{key}: {err:?}");
+        // The type, not just the key: an "unknown field" refusal also names
+        // the key, and a build that had never heard of `origin_mtime` would
+        // otherwise pass this as if it were validating the value.
+        assert!(
+            err.message.contains(key) && err.message.contains(expected),
+            "the refusal must say `{key}` must be {expected}: {}",
+            err.message
+        );
+    }
+}

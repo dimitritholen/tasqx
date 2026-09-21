@@ -937,8 +937,21 @@ pub const IMPORT_TOKEN_KEYS: &[&str] = &[
 // `opt_str_nonempty`/`opt_i64` exactly as the rest of this list does.
 // #101: `standing` joins them on the same terms — absent in a legacy export,
 // which imports as an ordinary (non-standing) doc.
+// #788/D180: so do the three origin columns, so a backup restores a doc
+// knowing which file it came from.
 pub const IMPORT_DOC_KEYS: &[&str] = &[
-    "id", "source", "title", "body", "created", "modified", "project", "_rev", "standing",
+    "id",
+    "source",
+    "title",
+    "body",
+    "created",
+    "modified",
+    "project",
+    "_rev",
+    "standing",
+    "origin_path",
+    "origin_mtime",
+    "origin_size",
 ];
 
 /// Every key an exported event object can carry (#176). `id`, `payload`,

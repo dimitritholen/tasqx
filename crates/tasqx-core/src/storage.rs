@@ -594,6 +594,16 @@ fn migrate_memory(conn: &Connection) -> Result<(), ApiError> {
     // store written before this reads back as ordinary memory rather than
     // being promoted by a migration nobody asked for.
     add_column_if_missing(&tx, "docs", "standing", "INTEGER NOT NULL DEFAULT 0")?;
+    // #788: where an imported doc came from and what that file looked like
+    // when it was read — the absolute path, its mtime in unix seconds and its
+    // size in bytes. Nullable with NO default, unlike the four above: "this
+    // doc has no origin file" is the truth for every doc `memory.add` ever
+    // wrote and for every row a store already holds, and the freshness check
+    // this feeds (#789) has to tell an unknown origin from a stale one. Only
+    // `memory.import` sets them; `source` remains the identity (D174, D180).
+    add_column_if_missing(&tx, "docs", "origin_path", "TEXT")?;
+    add_column_if_missing(&tx, "docs", "origin_mtime", "INTEGER")?;
+    add_column_if_missing(&tx, "docs", "origin_size", "INTEGER")?;
 
     // Any row still at that default needs backfilling: every row on a store
     // that just got the column for the first time (the common case, once
@@ -1875,6 +1885,56 @@ mod tests {
 
         drop(e);
         let _ = std::fs::remove_file(&path);
+    }
+
+    /// #788/D180: a store written before `docs.origin_path`/`origin_mtime`/
+    /// `origin_size` existed gains all three, and the docs already in it read
+    /// back with no origin at all — NULL, not a zero mtime or an empty path.
+    /// The freshness check these feed (#789) branches on exactly that
+    /// difference: a doc nobody imported from a file has nothing to compare
+    /// against, and a migration that invented a value would make every legacy
+    /// doc look like a file that had since changed.
+    #[test]
+    fn migration_adds_the_origin_columns_as_null_on_an_existing_doc() {
+        let conn = Connection::open_in_memory().unwrap();
+        configure(&conn).unwrap();
+        // The pre-#788 `docs` shape: every column the three arrived next to,
+        // and no origin.
+        conn.execute_batch(
+            "CREATE TABLE docs (
+                id          TEXT PRIMARY KEY,
+                source      TEXT,
+                title       TEXT NOT NULL,
+                body        TEXT NOT NULL,
+                created     TEXT NOT NULL,
+                modified    TEXT NOT NULL,
+                project     TEXT,
+                rev         INTEGER NOT NULL DEFAULT 0,
+                search_body TEXT NOT NULL DEFAULT '',
+                standing    INTEGER NOT NULL DEFAULT 0
+            );",
+        )
+        .unwrap();
+        conn.execute_batch(
+            "INSERT INTO docs (id, source, title, body, created, modified) \
+             VALUES ('d1', 'docs/a.md', 'the ruling', 'reinstall after merging', 't', 't');",
+        )
+        .unwrap();
+
+        migrate(&conn).unwrap();
+
+        let origin: (Option<String>, Option<i64>, Option<i64>) = conn
+            .query_row(
+                "SELECT origin_path, origin_mtime, origin_size FROM docs WHERE id = 'd1'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(
+            origin,
+            (None, None, None),
+            "an existing doc must gain the columns with no origin invented for it"
+        );
     }
 
     /// D174 (task #85): `docs.source` is a doc's identity, backed by a partial

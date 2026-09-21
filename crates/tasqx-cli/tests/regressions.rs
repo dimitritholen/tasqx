@@ -5188,6 +5188,73 @@ fn memory_import_collapses_a_symlink_alias_to_one_doc() {
     let _ = std::fs::remove_dir_all(&repo);
 }
 
+/// #788/D180: `memory import` records which file each doc came from and what
+/// it looked like — the ABSOLUTE path (`source` stays the git-relative
+/// spelling D179 made it), the file's size in bytes and its mtime — so a
+/// later check can tell whether the file has changed since.
+#[test]
+fn memory_import_records_the_origin_file_of_every_doc_it_lands() {
+    let dir = fresh_config_dir("memory-import-origin");
+    let repo = std::env::temp_dir().join(format!(
+        "tasqx-reg-memory-import-origin-{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&repo);
+    std::fs::create_dir_all(repo.join("docs")).expect("create docs dir");
+    std::fs::create_dir_all(repo.join(".git")).expect("create .git dir");
+    let file = repo.join("docs").join("a.md");
+    let text = "# A\n\nbody";
+    std::fs::write(&file, text).expect("write doc");
+
+    let run = |args: &[&str]| {
+        bin("memory-import-origin", &dir)
+            .current_dir(&repo)
+            .args(args)
+            .output()
+            .expect("run tasqx")
+    };
+
+    // Relative, from inside the repo: `origin_path` must still come back
+    // absolute, which is the whole difference from `source`.
+    let out = run(&["memory", "import", "docs"]);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let list = run(&["--json", "memory", "list"]);
+    let listed: serde_json::Value = serde_json::from_slice(&list.stdout).expect("json");
+    let id = listed["docs"][0]["id"].as_str().expect("an id").to_string();
+    let show = run(&["--json", "memory", "show", &id]);
+    assert!(
+        show.status.success(),
+        "{}",
+        String::from_utf8_lossy(&show.stderr)
+    );
+    let doc: serde_json::Value = serde_json::from_slice(&show.stdout).expect("json");
+
+    assert_eq!(doc["source"], "docs/a.md", "{doc}");
+    let origin_path = doc["origin_path"].as_str().expect("an origin_path");
+    assert!(
+        std::path::Path::new(origin_path).is_absolute(),
+        "origin_path must be absolute, got {origin_path:?}"
+    );
+    assert!(
+        origin_path.ends_with("a.md"),
+        "origin_path must name the file, got {origin_path:?}"
+    );
+    assert_eq!(
+        doc["origin_size"],
+        serde_json::json!(text.len()),
+        "origin_size is the file's length on disk: {doc}"
+    );
+    let mtime = doc["origin_mtime"].as_i64().expect("an origin_mtime");
+    assert!(mtime > 0, "an mtime in unix seconds, got {mtime}");
+
+    let _ = std::fs::remove_dir_all(&repo);
+}
+
 /// #229 item 8: a store the engine cannot open (`TASQX_DB` pointing at an
 /// unwritable path) printed `error: cannot open store ...` at exit 1 — a bare
 /// `error:` prefix with no bracketed code, which DESIGN.md reserves for

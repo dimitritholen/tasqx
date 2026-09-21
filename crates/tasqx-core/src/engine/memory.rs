@@ -289,7 +289,19 @@ impl Engine {
         let mut replaced = 0i64;
         for dv in docs {
             let dv = import_shape("", "doc", dv)?;
-            import_keys("", "doc", dv, &["title", "body", "source"])?;
+            import_keys(
+                "",
+                "doc",
+                dv,
+                &[
+                    "title",
+                    "body",
+                    "source",
+                    "origin_path",
+                    "origin_mtime",
+                    "origin_size",
+                ],
+            )?;
             let title = req_str(dv, "title")?;
             // The CLI's own importer already cuts frontmatter before it ever
             // reaches this call (#228.4's throwaway agent-memory metadata),
@@ -299,6 +311,14 @@ impl Engine {
             let body = req_str(dv, "body")?;
             let search_body = crate::frontmatter::flatten(&body).into_owned();
             let source = opt_str_nonempty(dv, "source")?;
+            // #788/D180: where the file was and what it looked like when it
+            // was read. Optional on every entry — the JSON API is reachable
+            // by a caller with no filesystem at all — and never identity:
+            // `source` is what a re-import keys on (D174), these three are
+            // only what a later freshness check (#789) compares against.
+            let origin_path = opt_str_nonempty(dv, "origin_path")?;
+            let origin_mtime = opt_i64(dv, "origin_mtime")?;
+            let origin_size = opt_i64(dv, "origin_size")?;
             // A doc whose `source` matches an existing row is a RE-IMPORT of
             // the same logical document (a directory re-run after an edit),
             // not a new one — so it UPDATES that row rather than deleting and
@@ -358,16 +378,39 @@ impl Engine {
             // the way `memory_update` and `store.import` do it; the lookup
             // and the upsert sit in one IMMEDIATE transaction
             // (`begin_mutation`), so nothing can move the row between them.
+            //
+            // #788: the three origin columns ARE in the SET list, plainly and
+            // without a COALESCE — the opposite rule from `standing` and
+            // `project` above, because they describe THIS read of the file
+            // and nothing else. A re-import that carries no origin (a caller
+            // on the JSON API, not the CLI's importer) must leave the row
+            // saying it has no origin rather than keeping a path and an mtime
+            // from an import that happened on another machine a year ago.
             tx.execute(
                 "INSERT INTO docs \
-                 (id, source, title, body, search_body, project, rev, created, modified) \
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?8) \
+                 (id, source, title, body, search_body, project, rev, created, modified, \
+                  origin_path, origin_mtime, origin_size) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?8, ?9, ?10, ?11) \
                  ON CONFLICT(id) DO UPDATE SET \
                  source=excluded.source, title=excluded.title, body=excluded.body, \
                  search_body=excluded.search_body, \
                  project=COALESCE(excluded.project, docs.project), \
-                 modified=excluded.modified, rev=excluded.rev",
-                params![id, source, title, body, search_body, project, rev, ts],
+                 modified=excluded.modified, rev=excluded.rev, \
+                 origin_path=excluded.origin_path, origin_mtime=excluded.origin_mtime, \
+                 origin_size=excluded.origin_size",
+                params![
+                    id,
+                    source,
+                    title,
+                    body,
+                    search_body,
+                    project,
+                    rev,
+                    ts,
+                    origin_path,
+                    origin_mtime,
+                    origin_size
+                ],
             )?;
             insert_event(
                 &tx,
@@ -661,7 +704,8 @@ impl Engine {
         let found = self
             .conn
             .query_row(
-                "SELECT id, source, title, body, created, modified, project, rev, standing \
+                "SELECT id, source, title, body, created, modified, project, rev, standing, \
+                 origin_path, origin_mtime, origin_size \
                  FROM docs WHERE id = ?1",
                 params![id],
                 |r| {
@@ -677,6 +721,12 @@ impl Engine {
                         // #101: read as an integer, because SQLite has no
                         // boolean type of its own.
                         "standing": r.get::<_, i64>(8)? != 0,
+                        // #788/D180: null on every doc nobody imported from a
+                        // file — stated, not omitted, so a client can tell
+                        // "no origin" from "this build does not know".
+                        "origin_path": r.get::<_, Option<String>>(9)?,
+                        "origin_mtime": r.get::<_, Option<i64>>(10)?,
+                        "origin_size": r.get::<_, Option<i64>>(11)?,
                     }))
                 },
             )
