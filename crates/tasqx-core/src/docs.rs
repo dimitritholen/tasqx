@@ -1004,6 +1004,7 @@ pub const MEMORY_HIT_ROW: &[FieldDoc] = &[
     f("rank", "number", "The bm25 score. Lower is a better match; the number itself is not comparable between searches."),
     n("standing", "boolean", "For a doc hit, whether it is a standing ruling (D156); null on an annotation hit, which has no such flag."),
     n("project", "string", "Which project this hit is scoped to — a doc's own column, or the annotation's task's — or null for global knowledge (#657)."),
+    n("stale", "boolean", "true when the doc's origin file no longer matches what was imported; null for annotations and docs with no origin (D180)."),
 ];
 
 /// One knowledge doc, whole. The same row `memory.get` and `store.export` both answer with.

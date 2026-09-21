@@ -566,6 +566,10 @@ const MEMORY_HIT_ROW: &[Field] = &[
     // a doc's own column, or the annotation's task's, same split `source`
     // already draws.
     nul("project", Ty::Str),
+    // #790/D180: whether a doc hit's origin file has moved on since it was
+    // imported — null on an annotation hit and on a doc `memory.add` wrote,
+    // which has no origin file to compare against.
+    nul("stale", Ty::Bool),
 ];
 
 const TOKEN_BUCKETS_ROW: &[Field] = &[

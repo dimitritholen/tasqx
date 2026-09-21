@@ -863,12 +863,22 @@ pub fn memory_hits(ctx: &Ctx, result: &Value, query: &str, raw: bool) -> String 
                 let task = source
                     .strip_prefix("task:#")
                     .filter(|n| !n.is_empty() && n.chars().all(|c| c.is_ascii_digit()));
-                let (source, handle) = match (s(h, "kind").as_str(), task) {
+                let (mut source, handle) = match (s(h, "kind").as_str(), task) {
                     // The source already names the task, and the handle says
                     // it, so the source column stays empty (rule 11).
                     ("annotation", Some(n)) => (String::new(), format!("annotation on #{n}")),
                     _ => (source, s(h, "id")),
                 };
+                // #790/D180: a doc hit whose file moved on since it was
+                // imported. Nothing when false or null — an annotation and a
+                // doc `memory.add` wrote both have no origin to be behind.
+                if h.get("stale").and_then(Value::as_bool).unwrap_or(false) {
+                    source = if source.is_empty() {
+                        "stale".to_string()
+                    } else {
+                        format!("{source} stale")
+                    };
+                }
                 Hit {
                     title: s(h, "title"),
                     source,
@@ -2151,8 +2161,11 @@ pub fn task_brief(ctx: &Ctx, result: &Value, now: Timestamp) -> String {
             // an older recorded response with no `project` key) prints
             // nothing, since a bracket that never says anything is noise.
             let project = s(h, "project");
+            // #790/D180: nothing when false or null — an annotation and a
+            // doc `memory.add` wrote both have no origin to be behind.
+            let stale = h.get("stale").and_then(Value::as_bool).unwrap_or(false);
             out.push_str(&format!(
-                "  {}{}{}\n",
+                "  {}{}{}{}\n",
                 san(&s(h, "title")),
                 if source.is_empty() {
                     String::new()
@@ -2163,6 +2176,11 @@ pub fn task_brief(ctx: &Ctx, result: &Value, now: Timestamp) -> String {
                     String::new()
                 } else {
                     format!("  {}", ctx.paint("muted", &format!("[{}]", san(&project))))
+                },
+                if stale {
+                    format!("  {}", ctx.paint("muted", "stale"))
+                } else {
+                    String::new()
                 }
             ));
             let snippet = san(&s(h, "snippet"));

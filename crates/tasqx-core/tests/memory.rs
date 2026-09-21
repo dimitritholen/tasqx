@@ -2436,3 +2436,136 @@ fn memory_refresh_dry_run_reports_the_same_answer_and_writes_nothing() {
         "and this one must actually write"
     );
 }
+
+// ---- the stale flag (#790, D180) --------------------------------------------
+
+/// The doc's `stale` field, as `memory.search` reports it for the one hit its
+/// `id` names — the "one place computes it" `memory_search_excluding` is.
+fn hit_stale(e: &Engine, id: &str, query: &str) -> Value {
+    let found = call(e, "memory.search", json!({ "query": query })).expect("search");
+    found["hits"]
+        .as_array()
+        .expect("hits")
+        .iter()
+        .find(|h| h["id"] == id)
+        .unwrap_or_else(|| panic!("no hit named {id} in {found}"))["stale"]
+        .clone()
+}
+
+/// #790: a doc imported from a file it still matches reports `stale: false` —
+/// the same fast filter `origin_changed` (#789) uses, computed on the hit
+/// `memory.search` already read rather than a second per-doc lookup.
+#[test]
+fn a_search_hit_reports_stale_false_when_its_file_still_matches() {
+    let e = engine();
+    let files = OriginFixture::new("hit-fresh");
+    let file = files.write("a.md", "# A\n\nthe shibboleth is here");
+    let imported =
+        call(&e, "memory.import", json!({ "docs": [files.doc(&file)] })).expect("import");
+    let id = imported["docs"][0]["id"].as_str().expect("an id");
+
+    assert_eq!(
+        hit_stale(&e, id, "shibboleth"),
+        json!(false),
+        "an untouched file's doc must not read stale"
+    );
+}
+
+/// #790: editing the file on disk — no `memory.refresh` run — flips the next
+/// search's hit to `stale: true`. This is the whole point of the flag: the
+/// stored doc and its file have drifted apart, and a reader can now tell.
+#[test]
+fn a_search_hit_reports_stale_true_after_the_file_is_edited_without_a_refresh() {
+    let e = engine();
+    let files = OriginFixture::new("hit-edited");
+    let file = files.write("a.md", "# A\n\nthe shibboleth is here");
+    let imported =
+        call(&e, "memory.import", json!({ "docs": [files.doc(&file)] })).expect("import");
+    let id = imported["docs"][0]["id"].as_str().expect("an id");
+    assert_eq!(
+        hit_stale(&e, id, "shibboleth"),
+        json!(false),
+        "before the edit"
+    );
+
+    std::fs::write(&file, "# A\n\nthe shibboleth moved on").expect("edit the file");
+
+    assert_eq!(
+        hit_stale(&e, id, "shibboleth"),
+        json!(true),
+        "the file changed and nobody ran memory.refresh"
+    );
+}
+
+/// #790: a file that has vanished since import is neither fresh nor stale —
+/// `origin_changed` cannot tell content drift from an unreadable path, and
+/// mistaking one for the other is exactly what D180's `None` case exists to
+/// prevent (`memory.refresh` reports the same file under `missing`).
+#[test]
+fn a_search_hit_reports_stale_null_once_its_file_is_deleted() {
+    let e = engine();
+    let files = OriginFixture::new("hit-deleted");
+    let file = files.write("a.md", "# A\n\nthe shibboleth is here");
+    let imported =
+        call(&e, "memory.import", json!({ "docs": [files.doc(&file)] })).expect("import");
+    let id = imported["docs"][0]["id"].as_str().expect("an id");
+    assert_eq!(
+        hit_stale(&e, id, "shibboleth"),
+        json!(false),
+        "before the delete"
+    );
+
+    std::fs::remove_file(&file).expect("delete the file");
+
+    assert_eq!(
+        hit_stale(&e, id, "shibboleth"),
+        Value::Null,
+        "a doc whose file is gone is neither fresh nor stale"
+    );
+}
+
+/// #790: a doc `memory.add` wrote has no origin file to be behind, so it
+/// reports `stale: null`, never `false` — `false` would claim a check that
+/// never ran.
+#[test]
+fn a_memory_add_doc_hit_reports_stale_null() {
+    let e = engine();
+    call(
+        &e,
+        "memory.add",
+        json!({ "title": "hand-written", "body": "the shibboleth is here" }),
+    )
+    .expect("add a doc");
+
+    let found = call(&e, "memory.search", json!({ "query": "shibboleth" })).expect("search");
+    let hit = &found["hits"][0];
+    assert_eq!(hit["kind"], "doc", "{hit}");
+    assert_eq!(
+        hit["stale"],
+        Value::Null,
+        "a doc with no origin has nothing to compare: {hit}"
+    );
+}
+
+/// #790: an annotation hit has no file behind it at all, so it reports
+/// `stale: null` beside its own already-null `standing`.
+#[test]
+fn an_annotation_hit_reports_stale_null() {
+    let e = engine();
+    let t = call(&e, "task.add", json!({ "title": "Ship" })).expect("task.add");
+    call(
+        &e,
+        "annotation.add",
+        json!({ "ref": t["short_id"], "body": "the shibboleth again" }),
+    )
+    .expect("annotate");
+
+    let found = call(&e, "memory.search", json!({ "query": "shibboleth" })).expect("search");
+    let hit = found["hits"]
+        .as_array()
+        .expect("hits")
+        .iter()
+        .find(|h| h["kind"] == "annotation")
+        .expect("an annotation hit");
+    assert_eq!(hit["stale"], Value::Null, "{hit}");
+}

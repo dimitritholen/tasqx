@@ -749,15 +749,22 @@ impl Engine {
         // frozen `MEMORY_HIT_ROW` (D56): a store-wide search mixes projects and
         // a reader could not previously tell which one a hit came from without
         // opening it, which is how #607's cross-project noise went unnoticed.
+        //
+        // #790: the four origin columns ride the same way, doc-only, so
+        // `stale` (below) can be computed off the hit this query already read
+        // rather than a second per-id lookup or a store-wide scan.
         const DOCS_ARM: &str = "SELECT d.id AS id, 'doc' AS kind, d.title AS title, \
              d.source AS source, snippet(docs_fts, 1, '', '', '…', 12) AS snip, \
-             bm25(docs_fts) AS score, d.standing AS standing, d.project AS project \
+             bm25(docs_fts) AS score, d.standing AS standing, d.project AS project, \
+             d.origin_path AS origin_path, d.origin_mtime AS origin_mtime, \
+             d.origin_size AS origin_size, d.body AS body \
              FROM docs_fts JOIN docs d ON d.rowid = docs_fts.rowid \
              WHERE docs_fts MATCH :match";
         const ANN_ARM: &str = "SELECT a.id AS id, 'annotation' AS kind, t.title AS title, \
              'task:#' || t.short_id AS source, \
              snippet(annotations_fts, 0, '', '', '…', 12) AS snip, \
-             bm25(annotations_fts) AS score, NULL AS standing, t.project AS project \
+             bm25(annotations_fts) AS score, NULL AS standing, t.project AS project, \
+             NULL AS origin_path, NULL AS origin_mtime, NULL AS origin_size, NULL AS body \
              FROM annotations_fts \
              JOIN annotations a ON a.rowid = annotations_fts.rowid \
              JOIN tasks t ON t.id = a.task_id \
@@ -825,10 +832,34 @@ impl Engine {
             let mut all_params = named.clone();
             all_params.push((":limit", &limit));
             let rows = stmt.query_map(all_params.as_slice(), |r| {
+                let kind: String = r.get(1)?;
+                let title: String = r.get(2)?;
+                let origin_path: Option<String> = r.get(8)?;
+                let origin_mtime: Option<i64> = r.get(9)?;
+                let origin_size: Option<i64> = r.get(10)?;
+                let body: Option<String> = r.get(11)?;
+                // #790: a doc hit says whether the file it was imported from
+                // has moved on since — computed here, on the page this
+                // query already read, never a second scan. `null` for an
+                // annotation (no such file) and for a doc `memory.add` wrote
+                // (no `origin_path` to compare against).
+                let stale = if kind == "doc" {
+                    origin_path.as_deref().and_then(|path| {
+                        self.origin_changed(
+                            path,
+                            origin_mtime,
+                            origin_size,
+                            &title,
+                            body.as_deref().unwrap_or(""),
+                        )
+                    })
+                } else {
+                    None
+                };
                 Ok(json!({
                     "id": r.get::<_, String>(0)?,
-                    "kind": r.get::<_, String>(1)?,
-                    "title": r.get::<_, String>(2)?,
+                    "kind": kind,
+                    "title": title,
                     "source": r.get::<_, Option<String>>(3)?,
                     "snippet": r.get::<_, String>(4)?,
                     "rank": r.get::<_, f64>(5)?,
@@ -841,6 +872,7 @@ impl Engine {
                     // global knowledge, same as `memory.get`/`memory.list`
                     // already answer for a doc's own `project` column.
                     "project": r.get::<_, Option<String>>(7)?,
+                    "stale": stale,
                 }))
             })?;
             rows.collect()

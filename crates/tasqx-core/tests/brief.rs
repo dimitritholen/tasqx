@@ -958,3 +958,58 @@ fn memory_limit_zero_answers_no_hits_and_no_panic() {
         "a page of zero over a store of two withheld both: {m}"
     );
 }
+
+/// #790/D180: a derived doc hit carries `stale` the same way `memory.search`'s
+/// own hits do, because `derived_memory` runs through `memory_search_excluding`
+/// — the one place that computes it. Imported from a real file so an edit on
+/// disk, with no `memory.refresh` run, is what flips the flag.
+#[test]
+fn a_derived_doc_hit_carries_stale_after_an_on_disk_edit() {
+    let e = engine();
+    let dir = std::env::temp_dir().join(format!("tasqx-brief-stale-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("scratch dir");
+    let file = dir.join("a.md");
+    let body = "Every payment write carries an idempotency key; \
+                retries must not double-charge.";
+    std::fs::write(&file, format!("# Idempotency keys on payments\n\n{body}")).expect("write doc");
+    let meta = std::fs::metadata(&file).expect("metadata");
+    call(
+        &e,
+        "memory.import",
+        json!({ "docs": [{
+            "title": "Idempotency keys on payments",
+            "body": body,
+            "source": "docs/a.md",
+            "origin_path": file.to_string_lossy(),
+            "origin_mtime": tasqx_core::memory_doc::unix_seconds(&meta).expect("an mtime"),
+            "origin_size": meta.len(),
+        }] }),
+    )
+    .expect("import the doc");
+
+    let t = add(&e, "Audit the payments retry path", json!({}));
+    let before = brief(&e, t);
+    assert_eq!(hit_titles(&before), ["Idempotency keys on payments"]);
+    assert_eq!(
+        before["memory"]["hits"][0]["stale"],
+        json!(false),
+        "{before}"
+    );
+
+    std::fs::write(
+        &file,
+        "# Idempotency keys on payments\n\nEvery payment write carries an idempotency \
+         key; retries must not double-charge, ever.",
+    )
+    .expect("edit the file on disk, without running memory.refresh");
+
+    let after = brief(&e, t);
+    assert_eq!(
+        after["memory"]["hits"][0]["stale"],
+        json!(true),
+        "the file moved on and the brief must say so: {after}"
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}

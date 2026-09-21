@@ -879,7 +879,8 @@ fn build_tool_specs() -> Vec<ToolSpec> {
                 and every word is REQUIRED, so `matched` explains a zero-hit answer; \
                 `raw: true` takes FTS5 syntax instead. A hit is an excerpt: `tasqx_get_memory` \
                 reads a doc whole, `tasqx_get_task` an annotation. `hits` is sorted best-first \
-                (LOWER bm25 `rank` is better); `total` and `has_more` say what `limit` cut.",
+                (LOWER bm25 `rank` is better); `total` and `has_more` say what `limit` cut. A \
+                doc hit adds `stale` (D180).",
             schema: json!({
                 "type": "object",
                 "properties": {
