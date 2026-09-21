@@ -32,6 +32,13 @@ const MCP_ADD: [&str; 11] = [
 /// What runs ahead of `MCP_ADD` when a differing registration is replaced.
 const MCP_REMOVE: [&str; 5] = ["mcp", "remove", "--scope", "user", "tasqx"];
 
+/// The nudge `run` prints when `ripwire` is not on `PATH`, and the same words
+/// `tasqx setup --help` shows for the same case (D178, `cmddoc.rs`), so the
+/// two cannot drift apart. Names no package and no URL tasqx has no way to
+/// keep current — it points at ripwire's own install instructions instead.
+pub(crate) const RIPWIRE_INSTALL_HINT: &str = "ripwire not found on PATH: install ripwire and \
+    put it on PATH, following its own install instructions.";
+
 /// One thing setup can install.
 pub struct Item {
     pub name: &'static str,
@@ -366,14 +373,22 @@ pub struct Args<'a> {
 pub fn run(ctx: &Ctx, a: Args) -> crate::CmdOutcome {
     let items = select(a.only)?;
     let home = home_dir(a.home)?;
-    if a.yes {
+    let (json, mut text) = if a.yes {
         let chosen: Vec<(&Item, bool)> = items.iter().map(|i| (*i, a.force)).collect();
-        return apply(ctx, &home, &chosen);
+        apply(ctx, &home, &chosen)?
+    } else if a.list || a.json || !tui::is_interactive(&ctx.caps) {
+        list(ctx, &home, &items)
+    } else {
+        screen(ctx, &home, &items)?
+    };
+    // D178: tasqx never fetches ripwire, only says once whether it is there;
+    // silent when found, so this never grows into a nag on every run.
+    if !tasqx_core::mcp::ripwire_on_path() {
+        text.push('\n');
+        text.push_str(&ctx.paint("muted", RIPWIRE_INSTALL_HINT));
+        text.push('\n');
     }
-    if a.list || a.json || !tui::is_interactive(&ctx.caps) {
-        return Ok(list(ctx, &home, &items));
-    }
-    screen(ctx, &home, &items)
+    Ok((json, text))
 }
 
 fn screen(ctx: &Ctx, home: &Path, items: &[&'static Item]) -> crate::CmdOutcome {

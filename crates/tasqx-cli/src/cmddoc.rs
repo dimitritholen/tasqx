@@ -1102,6 +1102,7 @@ pub const COMMAND_REF: &[CmdDoc] = &[
             "Three items: `mcp` registers `tasqx mcp serve --scope write` with Claude Code at user scope by running `claude mcp add`; `tasqx-workflow` and `retro` are skills written to `~/.claude/skills/<name>/SKILL.md` from copies compiled into this binary, so they match the tasqx you run (D159).",
             "A skill that exists and is not byte-equal to the bundled copy reads `differs` — an older copy and your own edit look the same — and is kept unless you pass --force or tick it on the screen. So is an MCP registration that runs anything else, such as the read-only `tasqx mcp serve`; replacing it runs `claude mcp remove` first.",
             "It never writes `~/.claude.json` itself. Without the `claude` command on PATH, the mcp item prints the exact command to run instead. Piped, with no flags, it prints the list and exits 0.",
+            crate::setup::RIPWIRE_INSTALL_HINT,
         ],
         see_also: &["mcp"],
         topic: Topic::Automation,
