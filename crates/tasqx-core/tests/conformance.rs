@@ -1385,7 +1385,8 @@ const R_STORE_IMPORT: Shape = &[&[
     // D183: `{source, kept_id, dropped_id, took}` per memory doc that merged
     // onto a doc this store already held under the same `source`. Always
     // present, empty when nothing merged — `renumbered`'s rule, and its
-    // reason: the payload's id is gone afterwards.
+    // reason: the payload's id is gone afterwards. `dropped_id` is null when
+    // the payload doc carried no `id` of its own (#801).
     req("docs_merged", Ty::Array),
     // D184: echoes the `dry_run` param — always present, false on a real run.
     req("dry_run", Ty::Bool),

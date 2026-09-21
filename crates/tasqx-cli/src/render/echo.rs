@@ -1745,14 +1745,21 @@ pub fn imported(ctx: &Ctx, result: &Value) -> String {
         .into_iter()
         .flatten()
     {
+        // #801(b): `dropped_id` is null for a payload doc that named no id of
+        // its own (a minted one would disagree between a dry run and the
+        // real run it previews) — said in words rather than as a blank
+        // where an id belongs.
+        let dropped = match merged.get("dropped_id").and_then(Value::as_str) {
+            Some(id) => format!("payload id {id} dropped"),
+            None => "the payload doc named no id of its own".to_string(),
+        };
         out.push_str(&note_line(
             ctx,
             &format!(
-                "merged: {} already here as {}; took the {} copy (payload id {} dropped)",
+                "merged: {} already here as {}; took the {} copy ({dropped})",
                 s(merged, "source"),
                 s(merged, "kept_id"),
                 s(merged, "took"),
-                s(merged, "dropped_id"),
             ),
         ));
     }
