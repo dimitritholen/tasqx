@@ -1326,11 +1326,18 @@ fn required_node_ref<'a>(p: &'a Value, key: &str) -> Result<&'a Value, ApiError>
 /// Does a row of this kind exist with this id?
 ///
 /// The table and column are literals chosen by the match, never caller text.
+/// An annotation `annotation.remove` tombstoned (D113) does not count: every
+/// other reader of `annotations` treats `removed IS NULL` as "the row is
+/// here" (`task.rs`'s listings, `relationships.rs`'s own guards), and a node
+/// existence check that disagreed would let `link.add` and `store.import`
+/// (D181) attach an edge to a row that is a corpse everywhere else — an edge
+/// D181's own export then drops on the next round trip, so import refuses it
+/// up front instead of writing a link that cannot survive a backup.
 pub(super) fn node_exists(conn: &Connection, ty: NodeType, id: &str) -> Result<bool, ApiError> {
     let sql = match ty {
         NodeType::Task => "SELECT 1 FROM tasks WHERE id = ?1",
         NodeType::Memory => "SELECT 1 FROM docs WHERE id = ?1",
-        NodeType::Annotation => "SELECT 1 FROM annotations WHERE id = ?1",
+        NodeType::Annotation => "SELECT 1 FROM annotations WHERE id = ?1 AND removed IS NULL",
         NodeType::Project => "SELECT 1 FROM projects WHERE id = ?1",
     };
     Ok(conn

@@ -2868,6 +2868,79 @@ mod tests {
         );
     }
 
+    /// `annotation.remove` keeps the row and sets `removed` (D113). A payload
+    /// link naming that id is the same dangling end as one naming nothing at
+    /// all (task #799): the destination holds a corpse, not a node, and a
+    /// `node_exists` that disagreed would let the edge in only for D181's own
+    /// export to drop it on the very next round trip.
+    ///
+    /// The owning task is deliberately NOT in the payload's `tasks` array:
+    /// `import_annotations` replaces a task's annotations wholesale on every
+    /// import that touches it, which would wipe the tombstone as a side
+    /// effect and test the wrong thing — the dangling-end refusal this test
+    /// is after, not "the row is gone entirely" the GONE test above already
+    /// covers.
+    #[test]
+    fn store_import_refuses_a_link_to_an_annotation_the_destination_holds_as_a_tombstone() {
+        let e = Engine::open_in_memory().expect("open");
+        let owner = e
+            .task_add(&json!({ "title": "owns the annotation" }))
+            .expect("add");
+        let note = e
+            .annotation_add(&json!({ "ref": owner["short_id"].clone(), "body": "a note" }))
+            .expect("annotate");
+        let note = note["annotation"]["id"]
+            .as_str()
+            .expect("annotation id")
+            .to_string();
+        e.annotation_remove(&json!({ "ref": owner["short_id"].clone(), "annotation_id": note }))
+            .expect("remove");
+
+        const LINKER: &str = "0193aaaa-0000-7000-8000-0000000000aa";
+        const LINK: &str = "0193aaaa-0000-7000-8000-0000000000ab";
+        let document = json!({ "tasks": [{
+            "id": LINKER,
+            "short_id": 99,
+            "title": "from another store",
+            "created": "2026-09-16T09:00:00Z",
+            "modified": "2026-09-16T09:00:00Z",
+            "_rev": 1,
+        }], "links": [{
+            "id": LINK,
+            "from": format!("task:{LINKER}"),
+            "to": format!("annotation:{note}"),
+            "relation": "references",
+            "metadata": null,
+            "created_at": "2026-09-16T09:00:00Z",
+        }] });
+
+        let before = exported_task_count(&e);
+        let err = e
+            .store_import(&document)
+            .expect_err("a tombstoned annotation is not a node a link can name");
+        assert_eq!(err.code, ErrorCode::BadRequest, "{}", err.message);
+        for named in [LINK, note.as_str(), "annotation"] {
+            assert!(
+                err.message.contains(named),
+                "the refusal must name the link and the tombstoned end ({named}): {}",
+                err.message
+            );
+        }
+        assert_eq!(
+            exported_task_count(&e),
+            before,
+            "a refused import writes nothing at all"
+        );
+        assert_eq!(
+            e.link_list(&json!({})).expect("link.list")["links"]
+                .as_array()
+                .expect("links array")
+                .len(),
+            0,
+            "no link row for a refused import"
+        );
+    }
+
     /// Both ends are resolved through the remap table the task, doc and project
     /// passes build, never through the payload's own id: `upsert_project` keeps
     /// the DESTINATION's row when a project of that name is already here, so a
