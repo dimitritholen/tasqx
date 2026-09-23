@@ -1977,15 +1977,7 @@ impl Engine {
         for mut snapshot in all.drain(..) {
             let t = &mut snapshot.task;
             t.urgency = urgency::score_at(t.priority, t.due.as_deref(), &t.created, now_ts);
-            let ctx = MatchCtx {
-                status: t.status,
-                priority: t.priority,
-                project: t.project.as_deref(),
-                tags: &snapshot.tags,
-                due: t.due.as_deref(),
-                completed: t.completed.as_deref(),
-                blocked: snapshot.blocked,
-            };
+            let ctx = MatchCtx::from(&snapshot);
             if filter.matches(&ctx) {
                 let totals = if want_tokens {
                     tokens::measurement_totals(&snapshot.tokens)

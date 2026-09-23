@@ -75,16 +75,7 @@ impl Engine {
         // against the *whole* selected set, so nothing is emitted yet.
         let mut selected = Vec::new();
         for snapshot in snapshots {
-            let t = &snapshot.task;
-            let ctx = MatchCtx {
-                status: t.status,
-                priority: t.priority,
-                project: t.project.as_deref(),
-                tags: &snapshot.tags,
-                due: t.due.as_deref(),
-                completed: t.completed.as_deref(),
-                blocked: snapshot.blocked,
-            };
+            let ctx = MatchCtx::from(&snapshot);
             if !filter.matches(&ctx) {
                 continue;
             }

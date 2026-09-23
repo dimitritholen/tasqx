@@ -313,6 +313,25 @@ struct TaskSnapshot {
     spawned_from: Option<String>,
 }
 
+/// The filter DSL's read view of a snapshot. `task.rs`, `transfer.rs` and
+/// `reports.rs` (twice) each built this by hand from `snapshot.task` plus
+/// `snapshot.tags`/`snapshot.blocked` — four byte-identical literals wherever
+/// a snapshot needed filtering.
+impl<'a> From<&'a TaskSnapshot> for MatchCtx<'a> {
+    fn from(snapshot: &'a TaskSnapshot) -> Self {
+        let t = &snapshot.task;
+        MatchCtx {
+            status: t.status,
+            priority: t.priority,
+            project: t.project.as_deref(),
+            tags: &snapshot.tags,
+            due: t.due.as_deref(),
+            completed: t.completed.as_deref(),
+            blocked: snapshot.blocked,
+        }
+    }
+}
+
 impl Engine {
     /// Open (creating if needed) a file-backed store.
     pub fn open(path: &str) -> Result<Engine, ApiError> {
