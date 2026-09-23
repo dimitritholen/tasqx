@@ -168,3 +168,23 @@ fn restarting_the_task_that_already_holds_the_clock_is_still_idempotent() {
     assert_eq!(out["already_running"], true);
     assert_eq!(status(&e, a), "active");
 }
+
+/// The clock holder is whoever made the LATEST start of the active task. A task
+/// started by agent-1, stopped, then restarted by agent-2 carries two start
+/// events; reading the older one hands agent-2's clock back to agent-1, whose
+/// next start then auto-stops it — the D140 defect again.
+#[test]
+fn the_clock_belongs_to_the_most_recent_start_not_the_first() {
+    let e = engine();
+    let (a, b) = (add(&e, "handed over"), add(&e, "agent one's next"));
+    call(&e, "task.start", json!({ "ref": a, "actor": "agent-1" })).expect("start a");
+    call(&e, "task.stop", json!({ "ref": a })).expect("stop a");
+    call(&e, "task.start", json!({ "ref": a, "actor": "agent-2" })).expect("restart a");
+
+    let got = call(&e, "task.start", json!({ "ref": b, "actor": "agent-1" }));
+    let err = got.expect_err("agent-2 holds the clock now; agent-1 must not stop it");
+    assert_eq!(err.code, ErrorCode::Conflict);
+    assert!(err.message.contains("agent-2"), "{}", err.message);
+    assert_eq!(status(&e, a), "active");
+    assert_eq!(status(&e, b), "pending");
+}
