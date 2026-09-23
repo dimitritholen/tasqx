@@ -1,6 +1,7 @@
 // @vitest-environment node
 import { execFileSync, spawn, type ChildProcess } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
+import { once } from 'node:events';
 import { existsSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
@@ -124,8 +125,26 @@ describe('a real daemon over a real socket', { timeout: 60_000 }, () => {
     // Stop before killing: a dropped transport would otherwise put the
     // controller on its retry ladder and keep the process alive.
     await controller?.stop();
-    daemon?.kill('SIGTERM');
-    if (scratch !== '') rmSync(scratch, { recursive: true, force: true });
+    if (daemon && daemon.exitCode === null && daemon.signalCode === null) {
+      daemon.kill('SIGTERM');
+      // Windows still holds tasks.db open until the process is actually gone,
+      // so rmSync below has to wait for it — but bounded, so a daemon that
+      // ignores SIGTERM can never hang teardown.
+      const exited = once(daemon, 'exit');
+      const timedOut = await Promise.race([
+        exited.then(() => false),
+        new Promise<boolean>((resolve) => setTimeout(() => resolve(true), 5_000)),
+      ]);
+      if (timedOut) {
+        daemon.kill('SIGKILL');
+        await once(daemon, 'exit');
+      }
+    }
+    // maxRetries/retryDelay: the OS can lag a beat behind the exit event in
+    // releasing its handle on tasks.db.
+    if (scratch !== '') {
+      rmSync(scratch, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+    }
   });
 
   it('loads the baseline live and follows a task the CLI adds behind it', async () => {
