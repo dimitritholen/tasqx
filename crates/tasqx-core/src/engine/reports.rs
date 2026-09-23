@@ -173,7 +173,7 @@ impl Engine {
         for snapshot in
             self.load_task_snapshots_for(super::task::SnapshotParts::REPORT_SUMMARY, now_ts)?
         {
-            let t = snapshot.task;
+            let t = &snapshot.task;
             if apply_default && !t.status.counts_in_reports() {
                 let spent = snapshot.tokens.iter().any(|m| {
                     let n = |key: &str| m.get(key).and_then(Value::as_i64).unwrap_or(0);
@@ -188,15 +188,7 @@ impl Engine {
                 }
                 continue;
             }
-            let ctx = MatchCtx {
-                status: t.status,
-                priority: t.priority,
-                project: t.project.as_deref(),
-                tags: &snapshot.tags,
-                due: t.due.as_deref(),
-                completed: t.completed.as_deref(),
-                blocked: snapshot.blocked,
-            };
+            let ctx = MatchCtx::from(&snapshot);
             if !filter.matches(&ctx) {
                 continue;
             }
@@ -545,7 +537,7 @@ impl Engine {
         for snapshot in
             self.load_task_snapshots_for(super::task::SnapshotParts::REPORT_SUMMARY, now_ts)?
         {
-            let t = snapshot.task;
+            let t = &snapshot.task;
             let Some(close) = history.get(&t.id) else {
                 // Never closed: open work is not an outcome yet. This is the
                 // one exclusion in the report and it is a definition, not a
@@ -562,15 +554,7 @@ impl Engine {
                     continue;
                 }
             }
-            let ctx = MatchCtx {
-                status: t.status,
-                priority: t.priority,
-                project: t.project.as_deref(),
-                tags: &snapshot.tags,
-                due: t.due.as_deref(),
-                completed: t.completed.as_deref(),
-                blocked: snapshot.blocked,
-            };
+            let ctx = MatchCtx::from(&snapshot);
             if !filter.matches(&ctx) {
                 continue;
             }
