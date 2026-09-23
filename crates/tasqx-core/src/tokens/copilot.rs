@@ -29,7 +29,7 @@ use std::path::{Path, PathBuf};
 use serde_json::{Map, Value};
 
 use crate::error::ApiError;
-use crate::tokens::UsageSample;
+use crate::tokens::{env_path, UsageSample};
 
 /// File-level exporter override. When set, Copilot writes its OTEL export to
 /// this exact path instead of the default directory (ccusage honors the same
@@ -196,13 +196,12 @@ impl ResponseAcc {
     }
 }
 
-/// Home directory from `HOME` (Unix) or `USERPROFILE` (Windows). No `dirs`
-/// dependency in this crate, so resolve the env vars directly.
+/// Home directory: `HOME` unconditionally first, falling back to
+/// `USERPROFILE` if unset — unlike the sibling parsers' shared
+/// `tokens::home_dir`, this is not gated on `cfg!(windows)` (kept as-is; see
+/// #736 part A).
 fn home_dir() -> Option<PathBuf> {
-    std::env::var_os("HOME")
-        .filter(|h| !h.is_empty())
-        .or_else(|| std::env::var_os("USERPROFILE").filter(|h| !h.is_empty()))
-        .map(PathBuf::from)
+    env_path("HOME").or_else(|| env_path("USERPROFILE"))
 }
 
 /// Parent directory of the file-level exporter override, if configured.
