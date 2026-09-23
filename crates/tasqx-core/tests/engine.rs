@@ -127,19 +127,73 @@ fn lifecycle_start_stop_done() {
     assert!(done["completed"].is_string());
 }
 
+/// The whole transition table, every verb from every status, pinned here in
+/// `tasqx-core`. Before this was a matrix it tried two cells (stop and start
+/// on a done task), so widening `task_stop` to accept pending/backlog or
+/// `task_done` to accept a terminal status survived this crate and was caught
+/// only by fixtures in other crates.
 #[test]
 fn invalid_transition_returns_conflict() {
-    let e = engine();
-    let sid = e.task_add(&json!({ "title": "t" })).unwrap()["short_id"].clone();
+    type Verb = fn(&Engine, &Value) -> Result<Value, tasqx_core::ApiError>;
+    let verbs: [(&str, Verb, &str); 5] = [
+        ("start", Engine::task_start, "active"),
+        ("stop", Engine::task_stop, "pending"),
+        ("done", Engine::task_done, "done"),
+        ("cancel", Engine::task_cancel, "cancelled"),
+        ("reopen", Engine::task_reopen, "pending"),
+    ];
+    // (from, verbs that are allowed from it). Everything else is a conflict.
+    // `start` on an active task is D105's idempotent observation.
+    let table: [(&str, &[&str]); 5] = [
+        ("backlog", &["cancel"]),
+        ("pending", &["start", "done", "cancel"]),
+        ("active", &["start", "stop", "done", "cancel"]),
+        ("done", &["reopen"]),
+        ("cancelled", &["reopen"]),
+    ];
 
-    // Complete it, then try to stop a done task => conflict.
-    e.task_done(&json!({ "ref": sid })).unwrap();
-    let err = e.task_stop(&json!({ "ref": sid })).unwrap_err();
-    assert_eq!(err.code, ErrorCode::Conflict);
+    for (from, allowed) in table {
+        for (verb, call, lands_in) in verbs {
+            let e = engine();
+            // `wait` in the future is what parks a task in `backlog`.
+            let add = if from == "backlog" {
+                json!({ "title": "t", "wait": "2999-01-01T00:00:00Z" })
+            } else {
+                json!({ "title": "t" })
+            };
+            let sid = e.task_add(&add).unwrap()["short_id"].clone();
+            let r = json!({ "ref": sid });
+            match from {
+                "active" => drop(e.task_start(&r).unwrap()),
+                "done" => drop(e.task_done(&r).unwrap()),
+                "cancelled" => drop(e.task_cancel(&r).unwrap()),
+                _ => {}
+            }
+            assert_eq!(
+                e.task_get(&r).unwrap()["status"],
+                from,
+                "fixture must actually be {from}"
+            );
 
-    // And starting a done task is also a conflict.
-    let err2 = e.task_start(&json!({ "ref": sid })).unwrap_err();
-    assert_eq!(err2.code, ErrorCode::Conflict);
+            let got = call(&e, &r);
+            if allowed.contains(&verb) {
+                assert!(got.is_ok(), "{verb} from {from} must be allowed: {got:?}");
+                assert_eq!(
+                    e.task_get(&r).unwrap()["status"],
+                    lands_in,
+                    "{verb} from {from}"
+                );
+            } else {
+                let err = got.expect_err(&format!("{verb} from {from} must be refused"));
+                assert_eq!(err.code, ErrorCode::Conflict, "{verb} from {from}");
+                assert_eq!(
+                    e.task_get(&r).unwrap()["status"],
+                    from,
+                    "a refused {verb} changes nothing"
+                );
+            }
+        }
+    }
 }
 
 #[test]

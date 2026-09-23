@@ -252,6 +252,24 @@ fn dependency_self_and_cycle_are_conflicts() {
     assert_eq!(cycle_err.code, ErrorCode::Conflict);
 }
 
+/// The two-node case above never walks: B's only edge IS the goal. A cycle
+/// three long needs `reaches` to follow A->B->C, not just compare direct edges.
+#[test]
+fn a_transitive_dependency_cycle_is_a_conflict() {
+    let e = engine();
+    let a = e.task_add(&json!({ "title": "A" })).unwrap()["short_id"].clone();
+    let b = e.task_add(&json!({ "title": "B" })).unwrap()["short_id"].clone();
+    let c = e.task_add(&json!({ "title": "C" })).unwrap()["short_id"].clone();
+    e.dependency_add(&json!({ "ref": a, "depends_on": b }))
+        .unwrap();
+    e.dependency_add(&json!({ "ref": b, "depends_on": c }))
+        .unwrap();
+    let err = e
+        .dependency_add(&json!({ "ref": c, "depends_on": a }))
+        .unwrap_err();
+    assert_eq!(err.code, ErrorCode::Conflict);
+}
+
 #[test]
 fn cancelled_dependency_releases_dependent() {
     // DESIGN §3 + D11: a dependency is *resolved* when done OR cancelled. A
@@ -395,6 +413,31 @@ fn task_reopen_from_done_and_cancelled() {
     // Reopening a pending task is a conflict.
     let err = e.task_reopen(&json!({ "ref": s1 })).unwrap_err();
     assert_eq!(err.code, ErrorCode::Conflict);
+
+    let s2 = e.task_add(&json!({ "title": "cancelled one" })).unwrap()["short_id"].clone();
+    e.task_cancel(&json!({ "ref": s2 })).unwrap();
+    let re = e.task_reopen(&json!({ "ref": s2 })).unwrap();
+    assert_eq!(re["status"], "pending");
+    assert_eq!(
+        e.task_get(&json!({ "ref": s2 })).unwrap()["status"],
+        "pending"
+    );
+}
+
+/// A done task is closed; cancelling it would keep its `completed` stamp while
+/// silently dropping it out of `report.summary`'s D24 scope. The only way out
+/// of `done` is `task.reopen`.
+#[test]
+fn a_done_task_cannot_be_cancelled() {
+    let e = engine();
+    let sid = e.task_add(&json!({ "title": "shipped" })).unwrap()["short_id"].clone();
+    e.task_done(&json!({ "ref": sid })).unwrap();
+    let err = e.task_cancel(&json!({ "ref": sid })).unwrap_err();
+    assert_eq!(err.code, ErrorCode::Conflict);
+    assert_eq!(
+        e.task_get(&json!({ "ref": sid })).unwrap()["status"],
+        "done"
+    );
 }
 
 /// #229 item 15: "cannot reopen a active task" — the transition-conflict
