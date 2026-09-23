@@ -3364,6 +3364,15 @@ fn every_mcp_tool_hands_back_the_frozen_result_of_its_method() {
                     obj.remove("confidence");
                 }
             }
+            // D186: `tasqx_start_timer` gains a `memory` block by default, so
+            // the frozen `task.start` shape checked below has to ask this
+            // ONE call not to carry it — the inverse of `include_json`
+            // above, which asks a call to carry a block the default omits.
+            if tool == "tasqx_start_timer" {
+                if let Some(obj) = params.as_object_mut() {
+                    obj.insert("include_memory".to_string(), json!(false));
+                }
+            }
             let response = server
                 .handle_message(&json!({
                     "jsonrpc": "2.0",
