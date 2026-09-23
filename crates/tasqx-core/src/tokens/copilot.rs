@@ -29,6 +29,7 @@ use std::path::{Path, PathBuf};
 use serde_json::{Map, Value};
 
 use crate::error::ApiError;
+use crate::tokens::otel;
 use crate::tokens::{env_path, UsageSample};
 
 /// File-level exporter override. When set, Copilot writes its OTEL export to
@@ -68,16 +69,7 @@ pub fn default_roots() -> Vec<PathBuf> {
 /// JSON, no `attributes`, no usage, no timestamp — skips just that line. A file
 /// with nothing usable returns `Ok(vec![])`.
 pub fn samples_from_file(path: &Path) -> Result<Vec<UsageSample>, ApiError> {
-    // Read bytes and decode lossily: only *opening* the file is a hard error, so
-    // a stray non-UTF8 byte must not sink an otherwise-parseable file. The bad
-    // byte becomes U+FFFD and only that line fails to parse; the rest survive.
-    let bytes = std::fs::read(path).map_err(|e| {
-        ApiError::internal(format!(
-            "failed to read Copilot otel file {}: {e}",
-            path.display()
-        ))
-    })?;
-    let content = String::from_utf8_lossy(&bytes);
+    let content = otel::read_lossy(path, "Copilot otel")?;
 
     // Copilot re-emits one model response under several record shapes (a chat
     // span, an inference-details log, an agent-turn log) and the copies expose
@@ -303,7 +295,9 @@ fn normalize_rfc3339(text: &str) -> Option<String> {
 }
 
 /// Coerce a JSON value to `u64`, accepting numbers and numeric strings (OTEL
-/// exporters render attribute values as both).
+/// exporters render attribute values as both). Used by the `hrTime`/epoch
+/// timestamp decoders below, which read a bare array element or scalar rather
+/// than an attribute-map entry, so [`otel::attr_u64`] does not fit here.
 fn value_to_u64(value: &Value) -> Option<u64> {
     match value {
         Value::Number(n) => n
@@ -315,8 +309,10 @@ fn value_to_u64(value: &Value) -> Option<u64> {
 }
 
 /// A single attribute as `u64`, defaulting to 0 when absent or non-numeric.
+/// `accept_float = false` matches this parser's original `value_to_u64`
+/// fallback (a non-negative `i64`), not gemini's float tolerance.
 fn attr_number(attributes: &Map<String, Value>, key: &str) -> u64 {
-    attributes.get(key).and_then(value_to_u64).unwrap_or(0)
+    otel::attr_u64(attributes, key, false)
 }
 
 /// First of `keys` that yields a positive count, else 0.
@@ -329,9 +325,7 @@ fn attr_number_first(attributes: &Map<String, Value>, keys: &[&str]) -> u64 {
 
 /// A single attribute as a trimmed non-empty string.
 fn attr_string(attributes: &Map<String, Value>, key: &str) -> Option<String> {
-    attributes
-        .get(key)
-        .and_then(Value::as_str)
+    otel::first_str(attributes, &[key])
         .map(str::trim)
         .filter(|s| !s.is_empty())
         .map(str::to_string)

@@ -38,6 +38,7 @@
 //!   once verified against a real install.
 
 use crate::error::ApiError;
+use crate::tokens::otel;
 use crate::tokens::{home_dir, UsageSample};
 use serde_json::Value;
 use std::path::{Path, PathBuf};
@@ -67,16 +68,7 @@ pub fn default_roots() -> Vec<PathBuf> {
 /// unparseable documents and records without a usable timestamp are skipped so
 /// one corrupt record never sinks the whole file.
 pub fn samples_from_file(path: &Path) -> Result<Vec<UsageSample>, ApiError> {
-    // Read bytes and decode lossily: only *opening* the file is a hard error, so
-    // a stray non-UTF8 byte must not sink an otherwise-parseable file. The bad
-    // byte becomes U+FFFD and only that object fails to parse; the rest survive.
-    let bytes = std::fs::read(path).map_err(|e| {
-        ApiError::internal(format!(
-            "failed to read Gemini telemetry file {}: {e}",
-            path.display()
-        ))
-    })?;
-    let content = String::from_utf8_lossy(&bytes);
+    let content = otel::read_lossy(path, "Gemini telemetry")?;
 
     let mut samples = Vec::new();
     for chunk in split_json_objects(&content) {
@@ -156,10 +148,13 @@ fn sample_from_record(value: &Value) -> Option<UsageSample> {
 
     let ts = event_timestamp(record, attrs)?;
 
-    let input = u64_field(attrs, "input_token_count");
-    let output = u64_field(attrs, "output_token_count")
-        .saturating_add(u64_field(attrs, "thoughts_token_count"));
-    let cache_read = u64_field(attrs, "cached_content_token_count");
+    let input = otel::attr_u64(attrs, "input_token_count", true);
+    let output = otel::attr_u64(attrs, "output_token_count", true).saturating_add(otel::attr_u64(
+        attrs,
+        "thoughts_token_count",
+        true,
+    ));
+    let cache_read = otel::attr_u64(attrs, "cached_content_token_count", true);
     let model = attrs
         .get("model")
         .and_then(Value::as_str)
@@ -182,14 +177,8 @@ fn event_name<'a>(
     record: &'a serde_json::Map<String, Value>,
     attrs: &'a serde_json::Map<String, Value>,
 ) -> Option<&'a str> {
-    ["event.name", "name"]
-        .iter()
-        .find_map(|k| attrs.get(*k).and_then(Value::as_str))
-        .or_else(|| {
-            ["event.name", "name", "body"]
-                .iter()
-                .find_map(|k| record.get(*k).and_then(Value::as_str))
-        })
+    otel::first_str(attrs, &["event.name", "name"])
+        .or_else(|| otel::first_str(record, &["event.name", "name", "body"]))
 }
 
 /// Resolve the event timestamp as RFC3339, or `None` when unusable.
@@ -218,23 +207,6 @@ fn event_timestamp(
             .and_then(|nanos| jiff::Timestamp::from_nanosecond(nanos).ok())
             .map(|t| t.to_string()),
         _ => None,
-    }
-}
-
-/// Read a token counter tolerantly: JSON integer, non-negative float, or a
-/// numeric string all count; anything else (or absent, or negative) is 0.
-fn u64_field(attrs: &serde_json::Map<String, Value>, key: &str) -> u64 {
-    match attrs.get(key) {
-        Some(Value::Number(n)) => n
-            .as_u64()
-            .or_else(|| {
-                n.as_f64()
-                    .filter(|f| f.is_finite() && *f >= 0.0)
-                    .map(|f| f as u64)
-            })
-            .unwrap_or(0),
-        Some(Value::String(s)) => s.trim().parse::<u64>().unwrap_or(0),
-        _ => 0,
     }
 }
 
