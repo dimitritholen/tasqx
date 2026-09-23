@@ -296,6 +296,55 @@ capture_pipe() {
     return $status
 }
 
+# A `pipe-isolated` row: like `capture_pipe color`, plus HOME, PATH and the
+# working directory pointed away from this machine and this checkout.
+#
+# Two things a captured row can read answer from whichever machine is
+# capturing rather than from the pinned store, both found on CI after passing
+# on a Mac (#740 PR #145 review): `ripwire_on_path` (D178) — `tasqx setup`'s
+# hint line AND every MCP `initialize`'s own `instructions` — scans `$PATH`,
+# so it answers differently depending on whether the CAPTURING machine
+# happens to have `ripwire` installed. And `session_rulings`' workdir-ancestor
+# project inference (D157) reads `std::env::current_dir()`: GitHub Actions
+# checks this repo out under `/home/runner/work/tasqx/tasqx`, whose ancestor
+# `home` IS one of the demo store's own project names (`scripts/demo-store.py`
+# ships one), so `initialize` answered with THAT project's rulings on ubuntu
+# and fell through to the store's default project on a Mac, whose checkout
+# path matches no project by coincidence. Neither is a rendering difference
+# `--check` should tolerate finding, and neither is a reason to exclude the
+# row: both answer identically once the row cannot see the real machine.
+#
+# `$work` (this run's own `mktemp -d`, already torn down by `cleanup`) is
+# under `/tmp`, a SIBLING of `/home`, not a descendant of it, so running from
+# there rather than from wherever this script was invoked clears the second
+# bug the same way a fixed, nonexistent `PATH`/`HOME` clears the first.
+capture_pipe_isolated() {
+    local cols=$1 db=$2 stdin=$3 dest=$4
+    shift 4
+    local status=0
+    if [ "$stdin" = "-" ]; then
+        (
+            cd "$work" &&
+                clean_env TASQX_DB="$db" TASQX_CONFIG_DIR="$demo_config" TASQX_NOW="$PIN" \
+                    TASQX_FORCE_COLOR=1 TERM=xterm-256color COLUMNS="$cols" \
+                    HOME=/nonexistent-tasqx-baseline-home \
+                    PATH=/nonexistent-tasqx-baseline-path \
+                    "$TASQX" --no-daemon "$@"
+        ) >"$dest" 2>&1 </dev/null || status=$?
+    else
+        printf '%b' "$stdin" |
+            (
+                cd "$work" &&
+                    clean_env TASQX_DB="$db" TASQX_CONFIG_DIR="$demo_config" TASQX_NOW="$PIN" \
+                        TASQX_FORCE_COLOR=1 TERM=xterm-256color COLUMNS="$cols" \
+                        HOME=/nonexistent-tasqx-baseline-home \
+                        PATH=/nonexistent-tasqx-baseline-path \
+                        "$TASQX" --no-daemon "$@"
+            ) >"$dest" 2>&1 || status=$?
+    fi
+    return $status
+}
+
 names=()
 while IFS=$'\t' read -r name kind cols rows args keys stdin <&3 || [ -n "${name:-}" ]; do
     case "$name" in '' | '#'*) continue ;; esac
@@ -324,6 +373,13 @@ while IFS=$'\t' read -r name kind cols rows args keys stdin <&3 || [ -n "${name:
         ;;
     pipe-plain | pipe-plain-mut)
         if ! capture_pipe plain "$cols" "$db" "$stdin" "$dest" "$@"; then
+            echo "docs-capture: row '$name' exited nonzero; its output was:" >&2
+            cat "$dest" >&2
+            exit 1
+        fi
+        ;;
+    pipe-isolated)
+        if ! capture_pipe_isolated "$cols" "$db" "$stdin" "$dest" "$@"; then
             echo "docs-capture: row '$name' exited nonzero; its output was:" >&2
             cat "$dest" >&2
             exit 1

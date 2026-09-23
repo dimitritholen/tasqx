@@ -27,6 +27,9 @@ captured screen, same seven columns as the site's own
 - `pipe-plain`: the render path a script or agent actually gets piping tasqx
   with no terminal behind it, as distinct from every `pipe`/`pipe-mut` row's
   forced coloured terminal layout;
+- `pipe-isolated`: HOME, PATH and the working directory pointed away from the
+  capturing machine, for the three rows that read one of them (`setup-list`,
+  the two `mcp-initialize-*` rows below);
 - `tasqx docs --stdout`, one static page carrying the CLI reference, the API
   reference, the MCP tool reference, the object reference, the filter grammar
   and the config key list;
@@ -110,6 +113,24 @@ never reads a real machine's `~/.claude`. `completions bash` and
 `completions powershell` stand in for the other three shells `clap_complete`
 emits (elvish, fish, zsh): same code path, a different grammar, not worth
 three more near-identical fixtures.
+
+**`setup-list` and the two `mcp-initialize-*` rows are `pipe-isolated`, not
+plain `pipe`.** CI's first run of this corpus (#740 PR #145) passed on a Mac
+and failed on ubuntu, on exactly these three: `ripwire_on_path` (D178) — read
+by `tasqx setup`'s hint line AND by every MCP `initialize`'s own
+`instructions` — scans `$PATH`, so it answered differently depending on
+whether the CAPTURING machine happened to have `ripwire` installed. And
+`session_rulings`' workdir-ancestor project inference (D157) reads the
+process's own working directory: GitHub Actions checks this repo out under
+`/home/runner/work/tasqx/tasqx`, whose ancestor `home` IS one of the demo
+store's own project names (`scripts/demo-store.py` ships one), so
+`initialize` answered with THAT project's rulings on ubuntu and fell through
+to the store's default project on a Mac, whose checkout path matches none by
+coincidence. `pipe-isolated` runs the row from a fixed, project-name-free
+directory with `HOME`/`PATH` pointed at paths nothing has ever installed
+into, so every machine now answers "nothing installed" and infers the same
+default project — proved by running `--check` under `env -i` with a fresh
+`HOME` and a `PATH` built from scratch.
 
 ## Proving it
 
