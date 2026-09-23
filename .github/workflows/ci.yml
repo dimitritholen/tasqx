@@ -655,7 +655,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: taiki-e/install-action@v2.83.4
         with:
-          tool: cargo-semver-checks
+          tool: cargo-semver-checks@0.50.0
       - uses: Swatinem/rust-cache@v2
       - run: cargo semver-checks check-release -p tasqx-core --baseline-rev origin/main
 
