@@ -11,6 +11,7 @@ import {
   taskDetail,
   taskList,
 } from '../test/scripted';
+import { DEFAULT_MEMORY_FILTERS, rowFromListRow } from '../state/memory';
 
 const EMPTY_PAGE = taskList([]);
 
@@ -181,5 +182,103 @@ describe('MemoryScreen', () => {
 
     await waitFor(() => expect(added).toMatchObject({ title: 'New runbook', body: 'the body' }));
     await waitFor(() => expect(it.transport.countOf('memory.list')).toBe(2));
+  });
+
+  it('does not remove a document on the first click; Cancel backs out, Confirm removes it', async () => {
+    const it = await live(
+      memoryScript({
+        'memory.list': {
+          count: 1,
+          total: 1,
+          next_offset: null,
+          docs: [memoryListRow({ id: 'd1', title: 'Runbook' })],
+        },
+        'memory.get': memoryDoc({ id: 'd1', title: 'Runbook' }),
+        'link.list': { count: 0, total: 0, next_offset: null, links: [] },
+        'memory.remove': { id: 'd1', removed: '2026-09-20T00:00:00.000Z' },
+      }),
+      '#/memory',
+    );
+    await waitFor(() => expect(screen.getByText('Runbook')).toBeInTheDocument());
+    await it.user.click(screen.getByText('Runbook'));
+    const panel = inspector();
+    await waitFor(() => expect(within(panel).getByRole('button', { name: 'Remove document' })).toBeInTheDocument());
+
+    // First click only opens the inline prompt; nothing is called yet.
+    await it.user.click(within(panel).getByRole('button', { name: 'Remove document' }));
+    expect(within(panel).getByText('Remove permanently?')).toBeInTheDocument();
+    expect(it.transport.countOf('memory.remove')).toBe(0);
+
+    // Cancel backs out without calling memory.remove.
+    await it.user.click(within(panel).getByRole('button', { name: 'Cancel' }));
+    expect(within(panel).queryByText('Remove permanently?')).toBeNull();
+    expect(it.transport.countOf('memory.remove')).toBe(0);
+
+    // Confirm is what actually calls it.
+    await it.user.click(within(panel).getByRole('button', { name: 'Remove document' }));
+    await it.user.click(within(panel).getByRole('button', { name: 'Confirm' }));
+    await waitFor(() => expect(it.transport.countOf('memory.remove')).toBe(1));
+    expect(it.transport.calls.find((call) => call.method === 'memory.remove')?.params).toEqual({ id: 'd1' });
+  });
+
+  it('does not remove a note on the first click; Cancel backs out, Confirm removes it', async () => {
+    const it = await live(
+      memoryScript({
+        'memory.list': { count: 0, total: 0, next_offset: null, docs: [] },
+        'memory.search': {
+          count: 1,
+          total: 1,
+          has_more: false,
+          matched: '"deploy"',
+          hits: [memoryHit({ id: 'a1', kind: 'annotation', title: 'Task 7', source: 'task:#7' })],
+        },
+        'task.get': taskDetail({
+          short_id: 7,
+          title: 'Ship it',
+          annotations: [{ id: 'n1', body: 'a note', created: '2026-09-01T00:00:00.000Z' }],
+          annotations_total: 1,
+        }),
+        'link.list': { count: 0, total: 0, next_offset: null, links: [] },
+        'annotation.remove': { id: 'n1', removed: '2026-09-20T00:00:00.000Z' },
+      }),
+      '#/memory',
+    );
+
+    await it.user.type(screen.getByLabelText('Search'), 'deploy');
+    await waitFor(() => expect(screen.getByText('Task 7')).toBeInTheDocument(), { timeout: 2000 });
+    await it.user.click(screen.getByText('Task 7'));
+    const panel = inspector();
+    await waitFor(() => expect(within(panel).getByText('a note')).toBeInTheDocument());
+
+    await it.user.click(within(panel).getByRole('button', { name: 'Remove' }));
+    expect(within(panel).getByText('Remove permanently?')).toBeInTheDocument();
+    expect(it.transport.countOf('annotation.remove')).toBe(0);
+
+    await it.user.click(within(panel).getByRole('button', { name: 'Cancel' }));
+    expect(within(panel).queryByText('Remove permanently?')).toBeNull();
+    expect(it.transport.countOf('annotation.remove')).toBe(0);
+
+    await it.user.click(within(panel).getByRole('button', { name: 'Remove' }));
+    await it.user.click(within(panel).getByRole('button', { name: 'Confirm' }));
+    await waitFor(() => expect(it.transport.countOf('annotation.remove')).toBe(1));
+    expect(it.transport.calls.find((call) => call.method === 'annotation.remove')?.params).toEqual({
+      ref: 7,
+      annotation_id: 'n1',
+    });
+  });
+
+  it('keeps stale results on screen, marked busy, beside the app’s stale pill', () => {
+    const it = harness(memoryScript(), '#/memory');
+    it.store.setMemoryResults({
+      rows: [rowFromListRow(memoryListRow({ id: 'd1', title: 'Runbook' }))],
+      matched: null,
+      storeEmpty: false,
+      filters: DEFAULT_MEMORY_FILTERS,
+    });
+    mount(it);
+
+    expect(screen.getByText('Runbook')).toBeInTheDocument();
+    expect(screen.getByRole('grid', { name: 'Memory search results' })).toHaveAttribute('aria-busy', 'true');
+    expect(screen.getByText('stale')).toHaveClass('pill');
   });
 });
