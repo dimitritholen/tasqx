@@ -25,7 +25,7 @@
 # capture is that fixture plus whatever rows below add for it.
 #
 # Columns are identical to ../manifest.tsv (name, kind, cols, rows, args,
-# keys, stdin), with two more `kind`s docs-capture.sh understands:
+# keys, stdin), with three more `kind`s docs-capture.sh understands:
 #
 #   pipe-plain      like `pipe`, but TASQX_FORCE_COLOR/TERM are left unset —
 #                   the render path a script or agent actually gets piping
@@ -37,6 +37,17 @@
 #                   it.
 #   pipe-plain-mut  `pipe-plain` against a copy of the store, for the same
 #                   reason `pipe-mut` exists.
+#   pipe-isolated   `pipe`, plus HOME, PATH and the working directory pointed
+#                   away from this machine and this checkout (see
+#                   `capture_pipe_isolated` in docs-capture.sh). `setup-list`
+#                   and the two `mcp-initialize-*` rows below need it: each
+#                   reads something a maintainer's Mac and a GitHub Actions
+#                   ubuntu runner answered differently — whether `ripwire` is
+#                   on `$PATH` (D178), and which project the demo store's own
+#                   `home` looks like from a checkout under
+#                   `/home/runner/work/...` (D157's workdir-ancestor
+#                   inference) — found by this corpus's own CI job going red
+#                   on ubuntu after passing on a Mac (#740 PR #145 review).
 #
 # Naming: `help-<verb>` / `help-<verb>-<sub>` is `tasqx <verb> [<sub>] --help`;
 # `<verb>-json` / `<verb>-card` / `<verb>-plain` name the output mode; a bare
@@ -188,7 +199,7 @@ chart-throughput	pipe	100	-	chart throughput	-	-
 theme-show	pipe	100	-	theme show	-	-
 config-get	pipe	100	-	config get theme.name	-	-
 config-describe	pipe	100	-	config describe theme.name	-	-
-setup-list	pipe	100	-	setup --list --home /nonexistent-tasqx-baseline-home	-	-
+setup-list	pipe-isolated	100	-	setup --list --home /nonexistent-tasqx-baseline-home	-	-
 completions-bash	pipe	100	-	completions bash	-	-
 completions-powershell	pipe	100	-	completions powershell	-	-
 docs-stdout	pipe	100	-	docs --stdout	-	-
@@ -210,5 +221,5 @@ unannotate	pipe-mut	100	-	unannotate 51 17dd6621-7db4-43b5-9f36-ddf89018081e	-	-
 # `instructions` string and a different tool roster (D141), so both are
 # captured. `notifications/initialized` carries no `id` and gets no reply
 # (JSON-RPC), so only two response lines follow the three requests. ---
-mcp-initialize-tools-list	pipe	100	-	mcp serve	-	{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","clientInfo":{"name":"docs-capture","version":"1"}}}\n{"jsonrpc":"2.0","method":"notifications/initialized"}\n{"jsonrpc":"2.0","id":2,"method":"tools/list"}
-mcp-initialize-tools-list-write	pipe	100	-	mcp serve --scope write	-	{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","clientInfo":{"name":"docs-capture","version":"1"}}}\n{"jsonrpc":"2.0","method":"notifications/initialized"}\n{"jsonrpc":"2.0","id":2,"method":"tools/list"}
+mcp-initialize-tools-list	pipe-isolated	100	-	mcp serve	-	{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","clientInfo":{"name":"docs-capture","version":"1"}}}\n{"jsonrpc":"2.0","method":"notifications/initialized"}\n{"jsonrpc":"2.0","id":2,"method":"tools/list"}
+mcp-initialize-tools-list-write	pipe-isolated	100	-	mcp serve --scope write	-	{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","clientInfo":{"name":"docs-capture","version":"1"}}}\n{"jsonrpc":"2.0","method":"notifications/initialized"}\n{"jsonrpc":"2.0","id":2,"method":"tools/list"}
