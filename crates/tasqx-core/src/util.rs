@@ -434,29 +434,30 @@ mod tests {
         // eighths of the engine unguarded behind a doc claiming the opposite.
         // `sample_ids` in engine/tokens.rs sat in that blind spot, reading
         // `.get("sample_ids").and_then(Value::as_array)`, so a present-but-
-        // wrong-typed value was banked as an absent one at `ok: true`. A new
-        // `engine/*.rs` must be added here or its handlers are simply not
-        // checked; that is the cost of a source scan, and the reason the file
-        // list is spelled out rather than globbed (`include_str!` needs a
-        // literal path, and it is also what makes each file a rebuild
-        // dependency, so the scan can never read a stale copy).
-        const ENGINE_SOURCES: [(&str, &str); 9] = [
-            ("engine.rs", include_str!("engine.rs")),
-            ("engine/commands.rs", include_str!("engine/commands.rs")),
-            ("engine/memory.rs", include_str!("engine/memory.rs")),
-            ("engine/projects.rs", include_str!("engine/projects.rs")),
-            (
-                "engine/relationships.rs",
-                include_str!("engine/relationships.rs"),
-            ),
-            ("engine/reports.rs", include_str!("engine/reports.rs")),
-            ("engine/task.rs", include_str!("engine/task.rs")),
-            ("engine/tokens.rs", include_str!("engine/tokens.rs")),
-            ("engine/transfer.rs", include_str!("engine/transfer.rs")),
+        // wrong-typed value was banked as an absent one at `ok: true`. A file
+        // missing from `engine_sources!` (in `engine.rs`) has its handlers
+        // simply not checked — that is the cost of a source scan, and the
+        // reason the list is spelled out there rather than globbed
+        // (`include_str!` needs a literal path, and it is also what makes each
+        // file a rebuild dependency, so the scan can never read a stale copy).
+        // KNOWN, PRE-EXISTING, OUT OF SCOPE FOR #736: `engine/undo.rs` was
+        // never scanned by this test before `engine_sources!` (#736 part A)
+        // closed the file-list gap — it used to be absent from the list
+        // above — and closing it surfaces five raw reads this test bans.
+        // Fixing those is a behavior-adjacent change, not a de-bloat, so they
+        // are grandfathered here by `(file, key)` rather than silently
+        // dropped from the scan again: a SIXTH raw read anywhere, including a
+        // new one in `undo.rs`, still fails this test.
+        const KNOWN_HOLES: [(&str, &str); 5] = [
+            ("engine/undo.rs", "\"tracked\""),
+            ("engine/undo.rs", "\"tags\""),
+            ("engine/undo.rs", "\"depends_on\""),
+            ("engine/undo.rs", "\"id\""),
+            ("engine/undo.rs", "\"delta_seconds\""),
         ];
 
         let mut holes = Vec::new();
-        for (file, source) in ENGINE_SOURCES {
+        for (file, source) in crate::engine::engine_sources!() {
             // `//` lines are stripped first: the prose in these files *quotes*
             // the banned shape when explaining why it is banned.
             let code: String = source
@@ -473,7 +474,9 @@ mod tests {
                     continue;
                 };
                 let (key, after) = (&rest[..close], &rest[close + 1..]);
-                if after.starts_with(".and_then(") || after.starts_with(".as_") {
+                if (after.starts_with(".and_then(") || after.starts_with(".as_"))
+                    && !KNOWN_HOLES.contains(&(file, key))
+                {
                     holes.push(format!(
                         "{file}: .get({key}){}",
                         &after[..after.len().min(24)]

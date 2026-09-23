@@ -21,8 +21,12 @@ use tasqx_core::{dispatch, handle_envelope, storage, Engine, ErrorCode};
 /// vocabulary scan — and two copies of "which files hold the engine" is exactly
 /// the drift that once left `engine/tokens.rs` and `engine/reports.rs` unscanned
 /// for as long as they had existed.
-const SOURCES: [(&str, &str); 10] = [
+const SOURCES: [(&str, &str); 11] = [
     ("engine.rs", include_str!("../src/engine.rs")),
+    (
+        "engine/commands.rs",
+        include_str!("../src/engine/commands.rs"),
+    ),
     ("engine/graph.rs", include_str!("../src/engine/graph.rs")),
     ("engine/memory.rs", include_str!("../src/engine/memory.rs")),
     (
@@ -45,6 +49,41 @@ const SOURCES: [(&str, &str); 10] = [
     ),
     ("engine/undo.rs", include_str!("../src/engine/undo.rs")),
 ];
+
+/// `SOURCES` is hand-typed (`include_str!` needs a literal path), so nothing
+/// stops a new `engine/*.rs` from landing on disk without joining it — which is
+/// exactly the drift the doc comment above already names once (`engine/tokens.rs`
+/// and `engine/reports.rs`) and which left `engine/commands.rs` missing here
+/// until this test started failing on it (#736 part A). Read the directory and
+/// diff it against `SOURCES`'s own names so a fifth `engine/*.rs` fails the
+/// build here instead of going unscanned silently.
+#[test]
+fn every_engine_file_on_disk_is_in_sources() {
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/engine");
+    let mut on_disk: Vec<String> = std::fs::read_dir(&dir)
+        .unwrap_or_else(|e| panic!("reading {}: {e}", dir.display()))
+        .filter_map(|entry| entry.ok())
+        .map(|entry| entry.file_name().to_string_lossy().into_owned())
+        .filter(|name| name.ends_with(".rs"))
+        .collect();
+    on_disk.sort();
+    assert!(
+        on_disk.len() > 3,
+        "only {} files found under {} — the read is broken, not the crate",
+        on_disk.len(),
+        dir.display()
+    );
+
+    let rostered: std::collections::HashSet<&str> = SOURCES.iter().map(|(name, _)| *name).collect();
+    for name in &on_disk {
+        let path = format!("engine/{name}");
+        assert!(
+            rostered.contains(path.as_str()),
+            "{path} is on disk but missing from SOURCES — add it or every scan \
+             built on that list silently stops covering it"
+        );
+    }
+}
 
 fn engine() -> Engine {
     Engine::open_in_memory().expect("open in-memory store")

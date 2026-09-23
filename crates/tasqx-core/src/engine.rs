@@ -1490,6 +1490,53 @@ fn opt_magnitude_cmp_last(a: Option<i64>, b: Option<i64>, desc: bool) -> std::cm
     }
 }
 
+/// The engine's own source, as `(display path, source text)` pairs:
+/// `engine.rs` itself plus every `engine/*.rs` submodule. `include_str!`
+/// makes each one a rebuild dependency, so no scan built on this can ever
+/// read a stale copy.
+///
+/// This was four hand-typed copies (here, `dispatch.rs`, `util.rs`, and
+/// `tests/engine.rs`, which is a separate compilation unit and keeps its own)
+/// and each had drifted from the directory: this file's own copy was
+/// missing `engine/undo.rs`, and `util.rs`'s was missing both that and
+/// `engine/graph.rs` — exactly the "unscanned handler" failure mode D30 is
+/// about, on the very lists D30 was written to guard. One macro now, and
+/// `every_engine_file_on_disk_is_in_the_roster` below fails the build the
+/// day the list falls behind the directory again.
+///
+/// Placed here, immediately before `mod tests`, and not near the top of the
+/// file: `tests/engine.rs`'s own scans cut a source string at its first
+/// `"\n#[cfg(test)]"` to see production code only, so an earlier `#[cfg(test)]`
+/// item anywhere above a handler would truncate it out of every one of those
+/// scans without a word.
+///
+/// `#[cfg(test)]`: every current use is a test/guard, in this file,
+/// `dispatch.rs` and `util.rs`; ungating it would make a non-test build warn
+/// on an unused macro.
+#[cfg(test)]
+macro_rules! engine_sources {
+    () => {
+        [
+            ("engine.rs", include_str!("engine.rs")),
+            ("engine/commands.rs", include_str!("engine/commands.rs")),
+            ("engine/graph.rs", include_str!("engine/graph.rs")),
+            ("engine/memory.rs", include_str!("engine/memory.rs")),
+            ("engine/projects.rs", include_str!("engine/projects.rs")),
+            (
+                "engine/relationships.rs",
+                include_str!("engine/relationships.rs"),
+            ),
+            ("engine/reports.rs", include_str!("engine/reports.rs")),
+            ("engine/task.rs", include_str!("engine/task.rs")),
+            ("engine/tokens.rs", include_str!("engine/tokens.rs")),
+            ("engine/transfer.rs", include_str!("engine/transfer.rs")),
+            ("engine/undo.rs", include_str!("engine/undo.rs")),
+        ]
+    };
+}
+#[cfg(test)]
+pub(crate) use engine_sources;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1762,19 +1809,11 @@ mod tests {
 
     #[test]
     fn every_mutation_locks_before_authoritative_reads() {
-        let source = [
-            include_str!("engine.rs"),
-            include_str!("engine/commands.rs"),
-            include_str!("engine/graph.rs"),
-            include_str!("engine/memory.rs"),
-            include_str!("engine/projects.rs"),
-            include_str!("engine/relationships.rs"),
-            include_str!("engine/reports.rs"),
-            include_str!("engine/task.rs"),
-            include_str!("engine/tokens.rs"),
-            include_str!("engine/transfer.rs"),
-        ]
-        .join("\n");
+        let source = engine_sources!()
+            .into_iter()
+            .map(|(_, text)| text)
+            .collect::<Vec<_>>()
+            .join("\n");
         let handlers = [
             "project_create",
             "project_use",
@@ -1829,6 +1868,43 @@ mod tests {
                     "{handler} performs authoritative read {forbidden} before begin_mutation"
                 );
             }
+        }
+    }
+
+    /// [`engine_sources!`] is hand-typed, not globbed (`include_str!` needs a
+    /// literal path), so nothing stops a new `engine/*.rs` file from landing on
+    /// disk without joining the list — which is exactly the drift that once
+    /// left `engine/undo.rs` and `engine/graph.rs` unscanned by guards built on
+    /// this list, silently. Read the directory and diff it against the macro's
+    /// own names so a fifth `engine/*.rs` fails the build here instead.
+    #[test]
+    fn every_engine_file_on_disk_is_in_the_roster() {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/engine");
+        let mut on_disk: Vec<String> = std::fs::read_dir(&dir)
+            .unwrap_or_else(|e| panic!("reading {}: {e}", dir.display()))
+            .filter_map(|entry| entry.ok())
+            .map(|entry| entry.file_name().to_string_lossy().into_owned())
+            .filter(|name| name.ends_with(".rs"))
+            .collect();
+        on_disk.sort();
+        assert!(
+            on_disk.len() > 3,
+            "only {} files found under {} — the read is broken, not the crate",
+            on_disk.len(),
+            dir.display()
+        );
+
+        let rostered: std::collections::HashSet<&str> = engine_sources!()
+            .into_iter()
+            .map(|(name, _)| name)
+            .collect();
+        for name in &on_disk {
+            let path = format!("engine/{name}");
+            assert!(
+                rostered.contains(path.as_str()),
+                "{path} is on disk but missing from engine_sources! — add it or every \
+                 scan built on that list silently stops covering it"
+            );
         }
     }
 
