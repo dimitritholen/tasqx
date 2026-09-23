@@ -102,6 +102,10 @@ struct PreparedCall {
     /// row on the way out, because a default row nobody asked for should not
     /// spend bytes saying a field is unset.
     fields_defaulted_by_us: bool,
+    /// Whether `tasqx_start_timer`'s answer carries a `memory` block (D186).
+    /// True unless the caller said otherwise: the whole point is that a
+    /// session which never calls `task.brief` still sees it.
+    include_memory: bool,
 }
 
 /// Which of a task's two human renderings the rendered block carries (D146).
@@ -263,6 +267,24 @@ const LIST_PAGE: u64 = crate::engine::task::DEFAULT_TASK_LIST_LIMIT;
 /// The bound lives here and not in `memory_list` for D63's reason: the CLI and
 /// `tasqx api` have no payload limit and keep answering whole.
 const MEMORY_LIST_PAGE: u64 = 20;
+
+/// `tasqx_start_timer`'s own memory page (D186), smaller than
+/// [`crate::engine::BRIEF_MEMORY_LIMIT`]'s five: a caller who only starts the
+/// clock reads no task half beside it, so the whole answer has to be small
+/// enough to arrive as a bonus on top of `task.start`'s own tiny result rather
+/// than as its own read. Lives here, not beside `BRIEF_MEMORY_LIMIT`, because
+/// unlike that constant this one has no `tasqx api`/CLI caller to share it
+/// with — it is spent only inside this transport's own envelope.
+const START_MEMORY_LIMIT: u64 = 3;
+
+/// How many standing-rulings titles the tiny addendum on `tasqx_list_tasks`'s
+/// `@working` page and on `tasqx_add_task` carries (D186).
+///
+/// Titles only, not the gist [`McpServer::rulings_section`] renders at
+/// `initialize`: a call that already returns a task or a page of them has no
+/// room left in its own byte budget for a paragraph per doc, only for the
+/// short list of what to go read.
+const TASK_RULINGS_TITLES: u64 = 3;
 
 /// The fields one `tasqx_list_tasks` row carries when the caller names none
 /// (D152).
@@ -572,6 +594,11 @@ const TRANSPORT_ONLY_ARGS: &[(&str, &str, &str)] = &[
         "tasqx_annotate_task",
         "include_body",
         "whether the response echoes the annotation body back beside its id and timestamp.      D72/D75 keep the echo ON by default — it is the caller's only evidence that a body      promised to be stored verbatim really was — so this is opt-OUT, not a reversal: a      caller who already holds every byte it sent (the common case for a long note) can      decline paying to receive them again, and one that wants the verbatim proof still      gets it by doing nothing. `annotation.add` has no opinion on how its own result is      echoed back over one particular transport.",
+    ),
+    (
+        "tasqx_start_timer",
+        "include_memory",
+        "whether the response carries the same memory half `task.brief` computes for this task, reused through `task_start_memory` so the two tools agree, at a smaller three-hit page than the brief's five (D186). Default TRUE: transcript evidence is that starting a task and reading its brief are two separate calls an agent often skips the second of, so the rulings that govern the task have to reach it from the call it does make. `false` answers exactly `task.start`'s own frozen result, byte for byte, for a caller that already briefed the task and would otherwise pay for the same memory search twice.",
     ),
 ];
 
@@ -1221,6 +1248,13 @@ fn build_tool_specs() -> Vec<ToolSpec> {
                             this connection's id when omitted. Starting while ANOTHER actor \
                             holds an active clock is a `conflict`, not a silent stop of their \
                             timer; pass `keep: true` to run both."
+                    },
+                    "include_memory": {
+                        "type": "boolean",
+                        "description": format!(
+                            "Add `task.brief`'s memory search, {START_MEMORY_LIMIT} hits \
+                             (D186). Default true; false answers the bare result."
+                        )
                     }
                 },
                 "required": ["ref"]
@@ -2301,6 +2335,14 @@ impl<'e> McpServer<'e> {
             .get("include_preview")
             .and_then(Value::as_bool)
             .unwrap_or(false);
+        // D186: true unless the caller said otherwise, like `include_body`
+        // above and unlike the two D154 flags — the memory block is the
+        // reason this call is worth making twice as expensive, not an extra
+        // a caller has to ask for.
+        let include_memory = consumed
+            .get("include_memory")
+            .and_then(Value::as_bool)
+            .unwrap_or(true);
         // D146, and the one transport-only argument that is not a boolean.
         //
         // An unreadable value is REFUSED rather than defaulted, which is the
@@ -2435,6 +2477,7 @@ impl<'e> McpServer<'e> {
             include_preview,
             paged_list_by_us,
             fields_defaulted_by_us,
+            include_memory,
         })
     }
 
@@ -2644,8 +2687,75 @@ impl<'e> McpServer<'e> {
                         }
                     }
                 }
+                // D186: the tiny standing-rulings addendum, on the one page
+                // `tasqx_list_tasks` returns for picking work — the filter's
+                // own `@working` keyword, not a second argument, is what asks
+                // for it, so an agent gets it from the call `TRACK` already
+                // tells it to make. Scoped to the SESSION's own project
+                // (workdir or default, `session_rulings`'s own inference,
+                // D157) rather than the union of whatever projects the page
+                // happens to list — the same project `initialize`'s own
+                // rulings section already answers for. Before the budget
+                // below, like the two narrowings above, so an oversized page
+                // spends this addendum's bytes on the same bisection.
+                if spec.method == "task.list"
+                    && prepared
+                        .args
+                        .get("filter")
+                        .and_then(Value::as_str)
+                        .is_some_and(|f| f.contains("@working"))
+                {
+                    let project = self
+                        .engine
+                        .session_rulings(self.workdir.as_deref())
+                        .ok()
+                        .and_then(|r| r.project)
+                        .map(|(name, _)| name);
+                    let titles = self.rulings_titles(project.as_deref());
+                    if !titles.is_empty() {
+                        result["rulings"] = json!(titles);
+                    }
+                }
                 if prepared.paged_list_by_us {
                     return self.fit_list_to_budget(result, &prepared.args);
+                }
+                // D186: the same addendum on the task a caller just created,
+                // scoped to the project it actually landed in (`task.add`'s
+                // own `project` field, D21) rather than the session's —
+                // a task can be filed under a project the session is not in.
+                if spec.method == "task.add" {
+                    let titles = self.rulings_titles(result["project"].as_str());
+                    if !titles.is_empty() {
+                        result["rulings"] = json!(titles);
+                    }
+                }
+                // D186: `tasqx_start_timer` gains the same memory half
+                // `task.brief` computes, at a smaller page (D186's own
+                // `START_MEMORY_LIMIT`) — the call an agent that skips
+                // `task.brief` actually makes. A failed read-back (the ref
+                // could not be re-resolved, which `task.start` above already
+                // proved possible) is silently omitted rather than failing a
+                // completed start, the same degradation D153's card read
+                // uses.
+                if spec.method == "task.start" && prepared.include_memory {
+                    if let Ok(mut memory) = self
+                        .engine
+                        .task_start_memory(&prepared.args, Some(START_MEMORY_LIMIT))
+                    {
+                        // D154's own rank strip, inline: `tasqx_start_timer`
+                        // advertises no `include_rank` of its own — a caller
+                        // wanting the bm25 float already has `task.brief` and
+                        // `tasqx_search_memory` for it — so there is no
+                        // opt-in to check and the float is dropped every time.
+                        if let Some(hits) = memory.get_mut("hits").and_then(Value::as_array_mut) {
+                            for hit in hits {
+                                if let Some(obj) = hit.as_object_mut() {
+                                    obj.remove("rank");
+                                }
+                            }
+                        }
+                        result["memory"] = memory;
+                    }
                 }
                 tool_ok(&result)
             }
@@ -3020,6 +3130,39 @@ impl<'e> McpServer<'e> {
             Some(v) if !v.trim().is_empty() => Some(format!("{name} {v}")),
             _ => Some(name),
         }
+    }
+
+    /// Up to [`TASK_RULINGS_TITLES`] titles for `project` (D186): its standing
+    /// docs if it has any, else its newest — the same "standing if there is
+    /// one, else newest" `session_rulings` (#96/D157) already answers, run
+    /// here through `memory.list` rather than a second SQL statement because
+    /// the project this addendum scopes to is data a CALLER supplied
+    /// (`task.add`'s own resolved `project`), not the workdir `session_rulings`
+    /// infers. `None` skips the call rather than reading every project's
+    /// standing docs: an unscoped result here would answer a wider question
+    /// than the tiny one this addendum exists to answer.
+    fn rulings_titles(&self, project: Option<&str>) -> Vec<String> {
+        let Some(project) = project else {
+            return Vec::new();
+        };
+        let read = |standing: Option<bool>| -> Vec<Value> {
+            let mut params = json!({ "project": project, "limit": TASK_RULINGS_TITLES });
+            if let Some(flag) = standing {
+                params["standing"] = json!(flag);
+            }
+            dispatch(self.engine, "memory.list", &params)
+                .ok()
+                .and_then(|r| r["docs"].as_array().cloned())
+                .unwrap_or_default()
+        };
+        let mut docs = read(Some(true));
+        if docs.is_empty() {
+            docs = read(None);
+        }
+        docs.iter()
+            .filter_map(|d| d["title"].as_str())
+            .map(str::to_string)
+            .collect()
     }
 
     /// Read a task's current `_rev` via `task.get` for the optimistic-concurrency

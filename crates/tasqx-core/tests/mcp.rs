@@ -3591,6 +3591,10 @@ fn the_read_only_refusal_names_the_flag_that_fixes_it() {
 /// D167's tools: 32 tools, 34,704 bytes, so the cap moved from 34,304 to
 /// 34,816.
 ///
+/// D186 added `include_memory` to `tasqx_start_timer`. Measured beside every
+/// tool above: 32 tools, 34,946 bytes, so the cap moved from 34,816 to
+/// 35,072.
+///
 /// The floor is not zero. With every `description` key removed from the roster
 /// the same serialization is 11,597 bytes of schema skeleton — property names,
 /// `type`, the closed `enum` lists D30 renders from the engine's own consts,
@@ -3601,7 +3605,7 @@ fn the_read_only_refusal_names_the_flag_that_fixes_it() {
 fn the_whole_tool_roster_stays_inside_its_per_prompt_budget() {
     const MAX_DESCRIPTION: usize = 800;
     const MAX_ENTRY: usize = 3_072;
-    const MAX_ROSTER: usize = 34_816;
+    const MAX_ROSTER: usize = 35_072;
 
     let engine = engine();
     let server = McpServer::new(&engine, Scope::Write);
@@ -4268,4 +4272,166 @@ fn tasqx_add_tokens_refuses_a_caller_set_source_or_confidence() {
         .query_row("SELECT COUNT(*) FROM token_usage", [], |r| r.get(0))
         .unwrap();
     assert_eq!(n, 0);
+}
+
+// ---- D186: task.start's memory block and the standing-rulings addendum ------
+
+/// `tasqx_start_timer` gains the same memory half `task.brief` computes: a
+/// doc matching the task's own title comes back under `memory.hits`, the way
+/// it already does for the brief.
+#[test]
+fn start_timer_carries_the_briefs_memory_block() {
+    let engine = engine();
+    engine
+        .memory_add(&json!({ "title": "envelope rules", "body": "every envelope carries an id" }))
+        .expect("doc");
+    engine
+        .task_add(&json!({ "title": "envelope rules" }))
+        .expect("task");
+    let server = McpServer::new(&engine, Scope::Write);
+
+    let started = tool_json(&call(&server, 1, "tasqx_start_timer", json!({ "ref": 1 })));
+    assert_eq!(started["status"], json!("active"), "{started}");
+    let hit = &started["memory"]["hits"][0];
+    assert_eq!(
+        hit["title"],
+        json!("envelope rules"),
+        "a hit came back: {started}"
+    );
+    assert!(
+        hit.get("rank").is_none(),
+        "start_timer advertises no `include_rank` of its own: {hit}"
+    );
+}
+
+/// `include_memory: false` drops the block, and the rest of the answer is
+/// `task.start`'s own frozen result — checked here against the JSON API's
+/// direct call on an identically seeded store.
+#[test]
+fn include_memory_false_drops_the_block_and_leaves_the_rest_unchanged() {
+    let with_docs = |engine: &Engine| {
+        engine
+            .memory_add(&json!({ "title": "envelope rules", "body": "every envelope" }))
+            .expect("doc");
+        engine
+            .task_add(&json!({ "title": "envelope rules" }))
+            .expect("task");
+    };
+
+    let engine = engine();
+    with_docs(&engine);
+    let server = McpServer::new(&engine, Scope::Write);
+    let via_mcp = tool_json(&call(
+        &server,
+        1,
+        "tasqx_start_timer",
+        json!({ "ref": 1, "include_memory": false }),
+    ));
+    assert!(
+        via_mcp.get("memory").is_none(),
+        "include_memory: false must drop the block: {via_mcp}"
+    );
+
+    let direct_engine = Engine::open_in_memory().expect("open in-memory store");
+    with_docs(&direct_engine);
+    let via_api = direct_engine
+        .task_start(&json!({ "ref": 1 }))
+        .expect("task.start");
+    // `id` and `interval_started` are UUIDv7/clock-derived and differ between
+    // the two separate stores this test seeds; every other key of the frozen
+    // `R_TASK_START` shape must still agree byte for byte.
+    let mut mcp_keys: Vec<&String> = via_mcp.as_object().unwrap().keys().collect();
+    let mut api_keys: Vec<&String> = via_api.as_object().unwrap().keys().collect();
+    mcp_keys.sort();
+    api_keys.sort();
+    assert_eq!(
+        mcp_keys, api_keys,
+        "include_memory: false must carry exactly task.start's own key set"
+    );
+    for key in [
+        "status",
+        "title",
+        "short_id",
+        "already_running",
+        "auto_stopped",
+    ] {
+        assert_eq!(
+            via_mcp[key], via_api[key],
+            "`{key}` must agree: {via_mcp} vs {via_api}"
+        );
+    }
+}
+
+/// `tasqx_add_task` carries a tiny `rulings` addendum: the standing docs of
+/// the project the new task actually landed in, titles only.
+#[test]
+fn add_task_carries_the_standing_rulings_for_the_project_it_landed_in() {
+    let engine = engine();
+    engine.project_create(&json!({ "name": "beta" })).unwrap();
+    add_doc(&engine, "beta rule", "beta only", Some("beta"), true);
+    let server = McpServer::new(&engine, Scope::Write);
+
+    let added = tool_json(&call(
+        &server,
+        1,
+        "tasqx_add_task",
+        json!({ "title": "t", "project": "beta" }),
+    ));
+    assert_eq!(
+        added["rulings"],
+        json!(["beta rule"]),
+        "the task's own project's standing doc: {added}"
+    );
+
+    // A project with nothing standing and nothing else carries no block.
+    engine.project_create(&json!({ "name": "gamma" })).unwrap();
+    let bare = tool_json(&call(
+        &server,
+        2,
+        "tasqx_add_task",
+        json!({ "title": "t2", "project": "gamma" }),
+    ));
+    assert!(
+        bare.get("rulings").is_none(),
+        "an empty block must be omitted, not sent empty: {bare}"
+    );
+}
+
+/// `tasqx_list_tasks` carries the same addendum on an `@working` page,
+/// scoped to the session's own project (workdir inference, D157) — and not
+/// on a filter that does not ask to pick work.
+#[test]
+fn list_tasks_at_working_carries_the_rulings_block_a_plain_filter_does_not() {
+    let _guard = RIPWIRE_PATH_ENV.lock().unwrap_or_else(|e| e.into_inner());
+    let engine = engine();
+    engine.project_create(&json!({ "name": "beta" })).unwrap();
+    add_doc(&engine, "beta rule", "beta only", Some("beta"), true);
+    engine
+        .task_add(&json!({ "title": "t", "project": "beta" }))
+        .expect("task");
+    let server =
+        McpServer::new(&engine, Scope::Write).with_workdir(Some(temp_workdir("beta/sub-186")));
+
+    let working = tool_json(&call(
+        &server,
+        1,
+        "tasqx_list_tasks",
+        json!({ "filter": "@working" }),
+    ));
+    assert_eq!(
+        working["rulings"],
+        json!(["beta rule"]),
+        "an @working page names the session's own project's rulings: {working}"
+    );
+
+    let plain = tool_json(&call(
+        &server,
+        2,
+        "tasqx_list_tasks",
+        json!({ "filter": "project:beta" }),
+    ));
+    assert!(
+        plain.get("rulings").is_none(),
+        "a filter that is not picking work carries no addendum: {plain}"
+    );
 }

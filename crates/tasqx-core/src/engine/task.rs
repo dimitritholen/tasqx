@@ -2725,6 +2725,23 @@ impl Engine {
         Ok(out)
     }
 
+    /// The same memory half [`Self::task_brief`] computes, for a caller that
+    /// only holds a `ref` (D186) — `tasqx_start_timer`'s MCP envelope, so a
+    /// session that never calls `task.brief` still sees the rulings that
+    /// apply. `pub(crate)`, not a JSON-API method of its own: the MCP
+    /// transport is `mcp.rs`'s to reach and `task.start`'s frozen dispatch
+    /// result (D56) is untouched by it, exactly as `derived_memory` is not
+    /// itself exposed.
+    pub(crate) fn task_start_memory(
+        &self,
+        p: &Value,
+        limit: Option<u64>,
+    ) -> Result<Value, ApiError> {
+        let task = self.resolve_ref(p)?;
+        let tags = task_tags(&self.conn, &task.id)?;
+        self.derived_memory(&task, &tags, limit)
+    }
+
     /// The short_id of the task a recurrence spawned `task_id` from (D170).
     fn spawned_from_short_id(&self, task_id: &str) -> Result<Option<i64>, ApiError> {
         Ok(self
