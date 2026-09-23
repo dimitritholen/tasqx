@@ -1,7 +1,8 @@
 //! Tauri host for Tasqx Desktop.
 //!
 //! Thin by design (DESIGN.md D160): the host owns the OS seam — the daemon
-//! socket on Unix, the named pipe on Windows — and nothing else. It never
+//! socket on Unix, the named pipe on Windows — plus the one local file the
+//! graph's saved views live in, and nothing else. It never
 //! parses a frame, never knows a method name, and never applies a task rule.
 //! Lines go out as the frontend wrote them and come back as the daemon sent
 //! them, over the `tasqx://line` / `tasqx://closed` events.
@@ -194,6 +195,63 @@ fn daemon_disconnect(daemon: State<'_, Arc<Daemon>>) -> Result<(), String> {
     Ok(())
 }
 
+/// Saved graph views (D160): presentation state in `appDataDir()`, never in
+/// the tasqx store. The host only moves bytes — what the JSON means, and when
+/// a file is corrupt, is decided in src/state/graphViews.ts.
+const VIEWS_FILE: &str = "graph-views.json";
+
+fn views_read_in(dir: &std::path::Path) -> std::io::Result<Option<String>> {
+    match std::fs::read_to_string(dir.join(VIEWS_FILE)) {
+        Ok(text) => Ok(Some(text)),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(err) => Err(err),
+    }
+}
+
+/// Write a temp file beside the target, flush it to disk, then rename it over:
+/// a crash mid-write leaves the old file or the new one, never half of either.
+fn views_write_in(dir: &std::path::Path, contents: &str) -> std::io::Result<()> {
+    std::fs::create_dir_all(dir)?;
+    let tmp = dir.join(format!("{VIEWS_FILE}.tmp"));
+    {
+        let mut file = std::fs::File::create(&tmp)?;
+        file.write_all(contents.as_bytes())?;
+        file.sync_all()?;
+    }
+    std::fs::rename(&tmp, dir.join(VIEWS_FILE))
+}
+
+/// Move an unreadable file aside as `graph-views.json.corrupt-<unix secs>.bak`
+/// and answer that name. The stamp keeps an earlier casualty from being
+/// overwritten; the `.bak` suffix is the one D160 names.
+fn views_quarantine_in(dir: &std::path::Path, stamp: u64) -> std::io::Result<String> {
+    let name = format!("{VIEWS_FILE}.corrupt-{stamp}.bak");
+    std::fs::rename(dir.join(VIEWS_FILE), dir.join(&name))?;
+    Ok(name)
+}
+
+fn app_data_dir(app: &AppHandle) -> Result<std::path::PathBuf, String> {
+    app.path().app_data_dir().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn graph_views_read(app: AppHandle) -> Result<Option<String>, String> {
+    views_read_in(&app_data_dir(&app)?).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn graph_views_write(app: AppHandle, contents: String) -> Result<(), String> {
+    views_write_in(&app_data_dir(&app)?, &contents).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn graph_views_quarantine(app: AppHandle) -> Result<String, String> {
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs());
+    views_quarantine_in(&app_data_dir(&app)?, stamp).map_err(|e| e.to_string())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -205,7 +263,10 @@ pub fn run() {
             daemon_default_socket,
             daemon_connect,
             daemon_send,
-            daemon_disconnect
+            daemon_disconnect,
+            graph_views_read,
+            graph_views_write,
+            graph_views_quarantine
         ])
         .run(tauri::generate_context!())
         .expect("error while running tasqx desktop");
@@ -225,5 +286,24 @@ mod tests {
         assert_eq!(socket_from_env(Some("")), default);
         assert_eq!(socket_from_env(None), default);
         assert!(!default.is_empty());
+    }
+
+    #[test]
+    fn views_file_is_replaced_whole_and_moved_aside_on_demand() {
+        let dir = std::env::temp_dir().join(format!("tasqx-views-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+
+        assert_eq!(views_read_in(&dir).unwrap(), None);
+        views_write_in(&dir, "{\"schema\":1,\"views\":[]}").unwrap();
+        views_write_in(&dir, "second").unwrap();
+        assert_eq!(views_read_in(&dir).unwrap().as_deref(), Some("second"));
+        assert!(!dir.join(format!("{VIEWS_FILE}.tmp")).exists());
+
+        let name = views_quarantine_in(&dir, 42).unwrap();
+        assert_eq!(name, "graph-views.json.corrupt-42.bak");
+        assert_eq!(std::fs::read_to_string(dir.join(&name)).unwrap(), "second");
+        assert_eq!(views_read_in(&dir).unwrap(), None);
+
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 }

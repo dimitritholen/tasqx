@@ -504,3 +504,167 @@
   color: var(--color-muted);
   font-size: var(--text-secondary);
 }
+
+/* --- Graph ------------------------------------------------------------- */
+.graph-toolbar {
+  flex-wrap: wrap;
+  align-items: flex-end;
+}
+
+.graph-toolbar form {
+  flex: 1;
+  min-width: 200px;
+}
+
+.graph-views,
+.graph-filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2) var(--space-3);
+  align-items: flex-end;
+  margin: 0;
+  padding: var(--panel-pad);
+  border: var(--border-width) solid var(--color-border);
+  border-radius: var(--radius-panel);
+}
+
+.graph-filter-group {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1) var(--space-3);
+  align-items: center;
+}
+
+.graph-save,
+.graph-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  align-items: flex-end;
+}
+
+/* The file input belongs to the label; the label is what looks like a button. */
+.graph-import {
+  position: relative;
+}
+
+.graph-import input {
+  position: absolute;
+  inset: 0;
+  opacity: 0;
+  cursor: pointer;
+}
+
+.graph-import:focus-within {
+  outline: var(--focus-ring);
+  outline-offset: var(--focus-offset);
+}
+
+.graph-notice,
+.graph-truncated {
+  display: flex;
+  gap: var(--space-2);
+  align-items: center;
+  justify-content: space-between;
+  padding: var(--space-2) var(--panel-pad);
+  border: var(--border-width) solid var(--color-warning);
+  border-radius: var(--radius-panel);
+  background: var(--color-elevated);
+}
+
+.graph-stage {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.graph-canvas {
+  height: 60vh;
+  min-height: 320px;
+  border: var(--border-width) solid var(--color-border);
+  border-radius: var(--radius-panel);
+  background: var(--color-panel);
+}
+
+.graph-hover {
+  overflow: hidden;
+  color: var(--color-muted);
+  font-size: var(--text-secondary);
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.graph-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  overflow: auto;
+}
+
+.graph-list-title {
+  font-size: var(--text-body);
+}
+
+.graph-grid {
+  display: flex;
+  flex-direction: column;
+  min-width: 720px;
+}
+
+.graph-row {
+  display: grid;
+  align-items: center;
+  gap: var(--space-2);
+  min-height: var(--row-secondary);
+  padding: var(--space-1) var(--space-2);
+  border-bottom: var(--border-width) solid var(--color-border);
+  cursor: pointer;
+  transition: background-color 120ms ease;
+}
+
+.graph-grid-nodes .graph-row {
+  grid-template-columns: 96px minmax(160px, 3fr) minmax(120px, 2fr) minmax(96px, 1fr) 96px 96px 64px;
+}
+
+.graph-grid-edges .graph-row {
+  grid-template-columns: minmax(120px, 2fr) 144px minmax(120px, 2fr) 112px 96px minmax(120px, 2fr);
+}
+
+.graph-row:hover {
+  background: var(--color-elevated);
+}
+
+.graph-row:active {
+  background: var(--color-border);
+}
+
+.graph-row[aria-selected='true'] {
+  background: var(--color-elevated);
+  box-shadow: inset 2px 0 0 var(--color-accent);
+}
+
+.graph-row:focus-visible {
+  position: relative;
+  z-index: 1;
+}
+
+.graph-head {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  background: var(--color-panel);
+  color: var(--color-muted);
+  font-size: var(--text-secondary);
+  cursor: default;
+}
+
+.graph-head:hover {
+  background: var(--color-panel);
+}
+
+.graph-cell {
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}

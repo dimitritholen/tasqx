@@ -16,8 +16,11 @@
   },
   "dependencies": {
     "@tauri-apps/api": "^2",
+    "graphology": "^0.26.0",
+    "graphology-layout-forceatlas2": "^0.10.1",
     "react": "^19",
-    "react-dom": "^19"
+    "react-dom": "^19",
+    "sigma": "^3.0.3"
   },
   "devDependencies": {
     "@eslint/js": "^10",
@@ -31,6 +34,7 @@
     "@vitejs/plugin-react": "^6",
     "eslint": "^10",
     "eslint-plugin-react-hooks": "^7",
+    "graphology-types": "^0.24.8",
     "jsdom": "^30",
     "typescript": "^5.9",
     "typescript-eslint": "^8",

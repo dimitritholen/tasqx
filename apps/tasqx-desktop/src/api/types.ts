@@ -229,3 +229,54 @@ export interface LinkListResult {
   next_offset: number | null;
   links: Link[];
 }
+
+/** `link.add`'s answer: the link, plus whether this call is what created it. */
+export interface LinkAddResult extends Link {
+  created: boolean;
+}
+
+/** The fixed relation registry `link.add` accepts (D160). */
+export const LINK_RELATIONS = ['references', 'supersedes', 'implements_decision', 'derived_from', 'contradicts'] as const;
+
+/** The four kinds of node `graph.query` projects. */
+export const GRAPH_NODE_TYPES = ['task', 'memory', 'annotation', 'project'] as const;
+
+export type GraphNodeType = (typeof GRAPH_NODE_TYPES)[number];
+
+/** One node of a `graph.query` projection; `id` is `<type>:<uuid>`. */
+export interface GraphNodeRow {
+  id: string;
+  type: GraphNodeType;
+  label: string;
+  summary: string | null;
+  project: string | null;
+  status: string | null;
+  modified: string | null;
+  short_id: number | null;
+  /** The owning task's node id, on an annotation and nothing else. */
+  task: string | null;
+}
+
+/** One edge; `confidence` is null on a structural edge — a stored fact has none. */
+export interface GraphEdgeRow {
+  id: string;
+  from: string;
+  to: string;
+  relation: string;
+  kind: 'structural' | 'inferred';
+  confidence: number | null;
+  source: string;
+}
+
+export interface GraphQueryResult {
+  root: string;
+  depth: number;
+  nodes: GraphNodeRow[];
+  edges: GraphEdgeRow[];
+  node_count: number;
+  edge_count: number;
+  truncated: boolean;
+  omitted_nodes: number;
+  omitted_edges: number;
+  include_inferred: boolean;
+}

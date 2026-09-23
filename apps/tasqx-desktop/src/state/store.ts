@@ -4,7 +4,10 @@ import type { ApiClient } from '../api/client';
 import { ApiError } from '../api/envelope';
 import type {
   EventRow,
+  GraphEdgeRow,
+  GraphQueryResult,
   Link,
+  LinkAddResult,
   LinkListResult,
   MemoryDoc,
   MemoryListResult,
@@ -24,6 +27,8 @@ import {
   type MemoryFilters,
   type MemoryResultRow,
 } from './memory';
+import { graphDataOf, graphQueryParams, mergeGraphData, promoteInGraphData } from './graph';
+import type { GraphData, GraphPins, GraphRequest } from './graph';
 
 /**
  * Everything the dashboard reads, in one `useSyncExternalStore` store: no
@@ -93,6 +98,9 @@ export interface MemoryDetail {
   links: Link[];
 }
 
+/** What the Graph inspector shows: one node or one edge of the loaded neighbourhood. */
+export type GraphSelection = { kind: 'node'; id: string } | { kind: 'edge'; id: string } | null;
+
 function idleMemoryDetail(): MemoryDetail {
   return { doc: null, task: null, links: [] };
 }
@@ -108,10 +116,26 @@ export interface DashboardState {
   memoryResults: Slice<MemoryResults>;
   memorySelection: MemorySelection;
   memoryDetail: Slice<MemoryDetail>;
+  /** The loaded neighbourhood, merged across expansions; null before the first query. */
+  graph: Slice<GraphData | null>;
+  /** The request `graph` answers — what an expansion and a reload repeat. */
+  graphRequest: GraphRequest | null;
+  graphSelection: GraphSelection;
+  graphPins: GraphPins;
+  /** A node to centre the camera on; `seq` makes a repeat focus a new request. */
+  graphFocus: { id: string; seq: number } | null;
 }
 
 /** The slices a call can be in flight on. */
-export type SliceKey = 'projects' | 'tasks' | 'summary' | 'selected' | 'activity' | 'memoryResults' | 'memoryDetail';
+export type SliceKey =
+  | 'projects'
+  | 'tasks'
+  | 'summary'
+  | 'selected'
+  | 'activity'
+  | 'memoryResults'
+  | 'memoryDetail'
+  | 'graph';
 
 function idle<T>(data: T): Slice<T> {
   return { data, loading: false, error: null };
@@ -129,6 +153,11 @@ function initialState(): DashboardState {
     memoryResults: idle<MemoryResults>({ rows: [], matched: null, storeEmpty: false, filters: DEFAULT_MEMORY_FILTERS }),
     memorySelection: null,
     memoryDetail: idle<MemoryDetail>(idleMemoryDetail()),
+    graph: idle<GraphData | null>(null),
+    graphRequest: null,
+    graphSelection: null,
+    graphPins: {},
+    graphFocus: null,
   };
 }
 
@@ -144,6 +173,8 @@ export class DashboardStore {
   private readonly listeners = new Set<() => void>();
   /** Bumped on every Memory Explorer query; a stale answer checks it and drops itself. */
   private memorySeq = 0;
+  /** The same guard for `graph.query`: only the newest load or expansion lands. */
+  private graphSeq = 0;
 
   getState(): DashboardState {
     return this.state;
@@ -450,6 +481,134 @@ export class DashboardStore {
     this.setSlice('memoryDetail', { data: { ...current, task }, loading: false, error: null });
   }
 
+  /**
+   * Open a fresh neighbourhood: one `graph.query`, replacing what was loaded.
+   * Pins and selection belong to the old graph unless the caller keeps them.
+   */
+  async loadGraph(request: GraphRequest, keep: { pins?: GraphPins } = {}): Promise<void> {
+    const seq = ++this.graphSeq;
+    this.set({ graphRequest: request, graphSelection: null, graphPins: keep.pins ?? {} });
+    const client = this.client;
+    if (client === null) {
+      this.fail('graph', new ApiError('transport_unavailable', 'transport unavailable: not connected'));
+      return;
+    }
+    this.startLoading('graph');
+    try {
+      const result = await client.request<GraphQueryResult>('graph.query', graphQueryParams(request));
+      if (seq !== this.graphSeq) return;
+      this.setSlice('graph', { data: graphDataOf(result), loading: false, error: null });
+    } catch (err) {
+      if (seq !== this.graphSeq) return;
+      this.fail('graph', err);
+    }
+  }
+
+  reloadGraph(): Promise<void> {
+    const request = this.state.graphRequest;
+    return request === null ? Promise.resolve() : this.loadGraph(request, { pins: this.state.graphPins });
+  }
+
+  /** Re-query one hop from a node, with the current request's filters, and merge. */
+  async expandGraphNode(id: string): Promise<void> {
+    const request = this.state.graphRequest;
+    const client = this.client;
+    if (request === null || client === null || this.state.graph.data === null) return;
+    const seq = ++this.graphSeq;
+    this.startLoading('graph');
+    try {
+      const result = await client.request<GraphQueryResult>(
+        'graph.query',
+        graphQueryParams({ ...request, root: id, depth: 1 }),
+      );
+      const current = this.state.graph.data;
+      if (seq !== this.graphSeq || current === null) return;
+      this.setSlice('graph', { data: mergeGraphData(current, result), loading: false, error: null });
+    } catch (err) {
+      if (seq !== this.graphSeq) return;
+      this.fail('graph', err);
+    }
+  }
+
+  selectGraph(selection: GraphSelection): void {
+    this.set({ graphSelection: selection });
+  }
+
+  focusGraphNode(id: string): void {
+    this.set({ graphSelection: { kind: 'node', id }, graphFocus: { id, seq: (this.state.graphFocus?.seq ?? 0) + 1 } });
+  }
+
+  /** Pin where the node stands now, or unpin. */
+  toggleGraphPin(id: string): void {
+    const pins = { ...this.state.graphPins };
+    if (id in pins) delete pins[id];
+    else pins[id] = null;
+    this.set({ graphPins: pins });
+  }
+
+  setGraphPins(pins: GraphPins): void {
+    this.set({ graphPins: pins });
+  }
+
+  /**
+   * Promote an inferred edge to an explicit link (D160): `link.add` with the
+   * `from` endpoint's last-read `_rev` as `expected_rev` where that endpoint
+   * has one (a task or a memory doc), read immediately before so a stale page
+   * cannot write over a concurrent change. The inferred edge is replaced by
+   * the structural one the server now stores. Throws the API's error as-is.
+   */
+  async promoteGraphEdge(edgeId: string, relation: string): Promise<LinkAddResult> {
+    const client = this.client;
+    const data = this.state.graph.data;
+    if (client === null || data === null) {
+      throw new ApiError('transport_unavailable', 'transport unavailable: not connected');
+    }
+    const edge = data.edges.find((candidate) => candidate.id === edgeId);
+    if (edge === undefined || edge.kind !== 'inferred') {
+      throw new ApiError('bad_request', `desktop client: ${edgeId} is not an inferred edge on screen`);
+    }
+    const rev = await this.nodeRev(client, edge.from);
+    const link = await client.request<LinkAddResult>('link.add', {
+      from: edge.from,
+      to: edge.to,
+      relation,
+      ...(rev !== null && client.supportsParam('link.add', 'expected_rev') ? { expected_rev: rev } : {}),
+    });
+    const structural: GraphEdgeRow = {
+      id: `link:${link.id}`,
+      from: link.from,
+      to: link.to,
+      relation: link.relation,
+      kind: 'structural',
+      confidence: null,
+      source: 'links',
+    };
+    const current = this.state.graph.data;
+    if (current !== null) {
+      this.set({
+        graph: { ...this.state.graph, data: promoteInGraphData(current, edgeId, structural) },
+        graphSelection: { kind: 'edge', id: structural.id },
+      });
+    }
+    return link;
+  }
+
+  /** The `_rev` of a task or memory node, or null for a kind that carries none. */
+  private async nodeRev(client: ApiClient, nodeId: string): Promise<number | null> {
+    const [type, id] = splitNodeId(nodeId);
+    if (type === 'task') {
+      return (await client.request<TaskDetail>('task.get', { ref: id, annotations_limit: 1 }))._rev;
+    }
+    if (type === 'memory') return (await client.request<MemoryDoc>('memory.get', { id }))._rev;
+    return null;
+  }
+
+  /** A task's short id from its uuid — what the Tasks screen's route selects by. */
+  async taskShortId(uuid: string): Promise<number | null> {
+    if (this.client === null) return null;
+    return (await this.client.request<TaskDetail>('task.get', { ref: uuid, annotations_limit: 1 })).short_id;
+  }
+
   /** A link's endpoints may not support it yet (D160); a failed read is just no backlinks. */
   private async readLinks(client: ApiClient, ref: string): Promise<Link[]> {
     try {
@@ -468,6 +627,12 @@ export class DashboardStore {
     this.state = { ...this.state, ...patch };
     for (const listener of [...this.listeners]) listener();
   }
+}
+
+/** `task:<uuid>` → `['task', '<uuid>']`. */
+export function splitNodeId(nodeId: string): [string, string] {
+  const at = nodeId.indexOf(':');
+  return at < 0 ? ['', nodeId] : [nodeId.slice(0, at), nodeId.slice(at + 1)];
 }
 
 /** The one `task.get` shape everything uses, so paging stays consistent. */
