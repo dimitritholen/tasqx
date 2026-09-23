@@ -8,6 +8,11 @@ is the same mechanism pointed at the whole user-visible surface instead of the
 66 screens the guide shows, so that after a refactor the answer to "did
 anything change" is a diff, not an opinion (D187).
 
+CI checks it on every push: the `docs-fixtures` job ("captured screens still
+match the binary") runs this corpus's `--check` right after the site's own, in
+the same required job, so a de-bloat PR cannot merge on a status that never
+looked at the baseline.
+
 ## What it covers
 
 One row of `crates/tasqx-cli/docs-fixtures/baseline/manifest.tsv` is one
