@@ -213,6 +213,11 @@ export class DashboardStore {
     this.setSlice('activity', { data: events, loading: false, error: null });
   }
 
+  /** The Memory Explorer's own `setTasks`: puts rows on screen without a request. */
+  setMemoryResults(data: MemoryResults): void {
+    this.setSlice('memoryResults', { data, loading: false, error: null });
+  }
+
   /** Replace one page row in place; a row not on this page is left alone. */
   patchRow(row: TaskRow): void {
     const rows = this.state.tasks.data;

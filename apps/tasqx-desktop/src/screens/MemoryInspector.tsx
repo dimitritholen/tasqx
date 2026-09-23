@@ -16,6 +16,54 @@ import { navigate } from '../shell/router';
  * untrusted, never rendered as HTML.
  */
 
+/**
+ * Two-step remove, in-app: a WKWebView/WebView2 without the Tauri dialog
+ * plugin does not reliably show `window.confirm` (silently `false` on
+ * macOS), so the confirmation is a second inline state rather than a native
+ * dialog. Escape backs out; the Cancel button takes focus the moment the
+ * prompt appears, so a stray second Enter cannot land on Confirm.
+ */
+function RemoveConfirm({ label, busy, onConfirm }: { label: string; busy: boolean; onConfirm: () => void }) {
+  const [confirming, setConfirming] = useState(false);
+
+  if (!confirming) {
+    return (
+      <Button variant="danger" size="sm" onClick={() => setConfirming(true)}>
+        {label}
+      </Button>
+    );
+  }
+
+  return (
+    <span
+      className="remove-confirm"
+      onKeyDown={(event) => {
+        if (event.key === 'Escape') {
+          event.preventDefault();
+          setConfirming(false);
+        }
+      }}
+    >
+      <span className="remove-confirm-prompt">Remove permanently?</span>
+      <Button
+        variant="danger"
+        size="sm"
+        loading={busy}
+        onClick={() => {
+          setConfirming(false);
+          onConfirm();
+        }}
+      >
+        Confirm
+      </Button>
+      {/* Mounts fresh each time the prompt opens, so autoFocus lands every time. */}
+      <Button variant="ghost" size="sm" autoFocus onClick={() => setConfirming(false)}>
+        Cancel
+      </Button>
+    </span>
+  );
+}
+
 function BackLinks({ links }: { links: Link[] }) {
   if (links.length === 0) return null;
   return (
@@ -40,7 +88,6 @@ function DocInspector({ onChanged }: { onChanged: () => void }) {
 
   async function onRemove(): Promise<void> {
     if (doc === null) return;
-    if (!window.confirm(`Remove "${doc.title}"? This cannot be undone.`)) return;
     setBusy(true);
     try {
       await store.removeMemoryDoc(doc.id);
@@ -83,9 +130,7 @@ function DocInspector({ onChanged }: { onChanged: () => void }) {
 
       <BackLinks links={links} />
 
-      <Button variant="danger" size="sm" loading={busy} onClick={() => void onRemove()}>
-        Remove document
-      </Button>
+      <RemoveConfirm label="Remove document" busy={busy} onConfirm={() => void onRemove()} />
     </div>
   );
 }
@@ -130,7 +175,6 @@ function AnnotationInspector({ onChanged }: { onChanged: () => void }) {
   const taskRef = task.short_id;
 
   async function onRemove(annotationId: string): Promise<void> {
-    if (!window.confirm('Remove this note? This cannot be undone.')) return;
     setRemoving(annotationId);
     try {
       await store.removeMemoryAnnotation(taskRef, annotationId);
@@ -163,14 +207,7 @@ function AnnotationInspector({ onChanged }: { onChanged: () => void }) {
                 {relativeTime(note.created).relative}
               </span>
               <p className="note-body">{note.body}</p>
-              <Button
-                size="sm"
-                variant="danger"
-                loading={removing === note.id}
-                onClick={() => void onRemove(note.id)}
-              >
-                Remove
-              </Button>
+              <RemoveConfirm label="Remove" busy={removing === note.id} onConfirm={() => void onRemove(note.id)} />
             </li>
           ))}
         </ul>
