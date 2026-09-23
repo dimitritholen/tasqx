@@ -623,3 +623,88 @@ jobs:
           if ($version -notmatch '0\.3\.0') {
             throw "the installed binary reports '$version', which does not name 0.3.0"
           }
+
+  # Unused dependencies: run cargo-machete with stable toolchain. This is a
+  # required gate to catch new unused dependencies before they land; the
+  # baseline on this tree is zero. It runs in about a second and requires no
+  # nightly, so it can be fast feedback on every push.
+  machete:
+    name: unused dependencies
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: taiki-e/install-action@v2.83.4
+        with:
+          tool: cargo-machete
+      - run: cargo machete
+
+  # Semver contract: run cargo-semver-checks against the previous main to catch
+  # removed or incompatibly changed public items. This is a required gate, and it
+  # is the only check that tasqx-core's public API ever receives — the crate is
+  # meant for crates.io, and nothing currently notices when a public item
+  # disappears. Registry baseline does NOT work: tasqx-core is not on crates.io,
+  # so comparing to origin/main is the right baseline for a PR.
+  semver-checks:
+    name: semver-checks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: taiki-e/install-action@v2.83.4
+        with:
+          tool: cargo-semver-checks
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo semver-checks check-release -p tasqx-core --baseline-rev origin/main
+
+  # Pedantic clippy report: run clippy with pedantic, nursery and cargo lints
+  # to track hidden complexity, dependency issues and potential trouble over
+  # time. continue-on-error because we do NOT gate on it — the tree carries too
+  # many findings for that to be useful. The point is the trend: each de-bloat
+  # PR that lands should move the number down. Publish the count to
+  # GITHUB_STEP_SUMMARY so it appears on every PR.
+  pedantic-report:
+    name: clippy pedantic + nursery + cargo (report only)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: Run clippy with pedantic, nursery and cargo lints
+        run: cargo clippy --workspace --all-targets -- -W clippy::pedantic -W clippy::nursery -W clippy::cargo -A clippy::missing_errors_doc -A clippy::missing_panics_doc -A clippy::module_name_repetitions 2>&1 | tee clippy-output.txt
+      - name: Count warnings and publish to summary
+        if: always()
+        run: |
+          warning_count=$(grep '^warning:' clippy-output.txt | grep -vc 'generated [0-9]* warning' || true)
+          echo "## Pedantic Clippy Report" >> "$GITHUB_STEP_SUMMARY"
+          echo "Warnings: $warning_count" >> "$GITHUB_STEP_SUMMARY"
+
+  # Binary bloat report: run cargo-bloat on the release binary to track shipped
+  # code size and ensure de-bloat work actually reduces the binary rather than
+  # just the source. continue-on-error because we do NOT gate on it — the point
+  # is the trend. Published to GITHUB_STEP_SUMMARY so it appears on every PR.
+  bloat-report:
+    name: binary bloat (report only)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: taiki-e/install-action@v2.83.4
+        with:
+          tool: cargo-bloat
+      - uses: Swatinem/rust-cache@v2
+      - name: Run cargo-bloat on release binary
+        run: cargo bloat --release -p tasqx-cli --crates > bloat-output.txt 2>&1 || true
+      - name: Publish bloat report to summary
+        if: always()
+        run: |
+          echo "## Binary Bloat Report" >> "$GITHUB_STEP_SUMMARY"
+          echo '```text' >> "$GITHUB_STEP_SUMMARY"
+          cat bloat-output.txt >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
