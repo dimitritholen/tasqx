@@ -38,7 +38,7 @@
 //!   once verified against a real install.
 
 use crate::error::ApiError;
-use crate::tokens::UsageSample;
+use crate::tokens::{home_dir, UsageSample};
 use serde_json::Value;
 use std::path::{Path, PathBuf};
 
@@ -236,14 +236,6 @@ fn u64_field(attrs: &serde_json::Map<String, Value>, key: &str) -> u64 {
         Some(Value::String(s)) => s.trim().parse::<u64>().unwrap_or(0),
         _ => 0,
     }
-}
-
-/// Home directory from the environment, no external crate.
-fn home_dir() -> Option<PathBuf> {
-    let key = if cfg!(windows) { "USERPROFILE" } else { "HOME" };
-    std::env::var_os(key)
-        .filter(|v| !v.is_empty())
-        .map(PathBuf::from)
 }
 
 #[cfg(test)]

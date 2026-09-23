@@ -25,7 +25,7 @@ use jiff::Timestamp;
 use serde::Deserialize;
 
 use crate::error::ApiError;
-use crate::tokens::UsageSample;
+use crate::tokens::{env_path, home_dir, UsageSample};
 
 /// Read and parse one transcript file. An io error opening the file is a hard
 /// error (it names the path); every per-line problem is skipped, so a file with
@@ -80,12 +80,6 @@ pub fn default_roots() -> Vec<PathBuf> {
         env_path("CLAUDE_CONFIG_DIR").as_deref(),
         home_dir().as_deref(),
     )
-}
-
-/// Best-effort home directory without a dependency: `$HOME` on Unix,
-/// `%USERPROFILE%` on Windows (matching the sibling parsers).
-fn home_dir() -> Option<PathBuf> {
-    env_path(if cfg!(windows) { "USERPROFILE" } else { "HOME" })
 }
 
 /// A transcript line. Unknown fields are ignored on purpose (version
@@ -197,13 +191,6 @@ fn roots_from(config_dir: Option<&Path>, home: Option<&Path>) -> Vec<PathBuf> {
     let mut seen = HashSet::new();
     roots.retain(|p| seen.insert(p.clone()));
     roots
-}
-
-/// A non-empty environment path, or `None` (an empty variable means "unset").
-fn env_path(name: &str) -> Option<PathBuf> {
-    std::env::var_os(name)
-        .filter(|v| !v.is_empty())
-        .map(PathBuf::from)
 }
 
 #[cfg(test)]

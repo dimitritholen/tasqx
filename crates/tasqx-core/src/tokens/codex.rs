@@ -48,7 +48,7 @@ use std::path::{Path, PathBuf};
 use serde_json::Value;
 
 use crate::error::ApiError;
-use crate::tokens::UsageSample;
+use crate::tokens::{home_dir, UsageSample};
 
 /// Session-level context from the first `session_meta` line. `id` is the field
 /// that earns its keep: it is the only anchor tying a rollout file to a tasqx
@@ -312,15 +312,6 @@ fn codex_home() -> Option<PathBuf> {
         return Some(PathBuf::from(dir));
     }
     home_dir().map(|h| h.join(".codex"))
-}
-
-/// Best-effort home directory without pulling in a dependency: `$HOME` on Unix,
-/// `%USERPROFILE%` on Windows.
-fn home_dir() -> Option<PathBuf> {
-    let key = if cfg!(windows) { "USERPROFILE" } else { "HOME" };
-    std::env::var_os(key)
-        .filter(|v| !v.is_empty())
-        .map(PathBuf::from)
 }
 
 #[cfg(test)]

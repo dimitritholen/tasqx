@@ -19,6 +19,8 @@ pub mod codex;
 pub mod copilot;
 pub mod gemini;
 
+use std::path::PathBuf;
+
 use crate::error::ApiError;
 
 /// Read out of the tool's own on-disk transcript by the daemon's asynchronous
@@ -209,6 +211,24 @@ impl TokenTotals {
             .saturating_add(self.cache_creation)
             .saturating_add(self.unsplit)
     }
+}
+
+/// A non-empty environment path, or `None` (an empty variable means "unset").
+/// Shared by the per-tool transcript parsers, which otherwise each hand-rolled
+/// this same `var_os` + filter + map.
+pub(crate) fn env_path(name: &str) -> Option<PathBuf> {
+    std::env::var_os(name)
+        .filter(|v| !v.is_empty())
+        .map(PathBuf::from)
+}
+
+/// Best-effort home directory without a `dirs` dependency: `$HOME` on Unix,
+/// `%USERPROFILE%` on Windows. Used by the `claude_code`, `codex` and `gemini`
+/// parsers, which agreed on this `cfg!(windows)` fork; `copilot` checks `HOME`
+/// unconditionally before falling back to `USERPROFILE` and keeps that
+/// distinct behavior via [`env_path`] directly rather than this function.
+pub(crate) fn home_dir() -> Option<PathBuf> {
+    env_path(if cfg!(windows) { "USERPROFILE" } else { "HOME" })
 }
 
 #[cfg(test)]
