@@ -19,6 +19,12 @@ pub mod codex;
 pub mod copilot;
 pub mod gemini;
 
+// Scaffolding shared by the two OTEL-record parsers (`copilot`, `gemini`):
+// the file-level lossy read and the small attribute-map lookups. The
+// envelope shapes and timestamp encodings differ enough between the two that
+// only this narrow layer, not a full parser, is shared (#736 part A).
+mod otel;
+
 use std::path::PathBuf;
 
 use crate::error::ApiError;
