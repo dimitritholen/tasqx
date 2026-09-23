@@ -567,20 +567,11 @@ mod tests {
     /// sync). The import loop is invisible to this on purpose — it reads its
     /// keys off `tv`, the task document, not off `p`.
     fn keys_read_per_fn() -> BTreeMap<String, BTreeSet<String>> {
-        let src = [
-            include_str!("engine.rs"),
-            include_str!("engine/commands.rs"),
-            include_str!("engine/graph.rs"),
-            include_str!("engine/memory.rs"),
-            include_str!("engine/projects.rs"),
-            include_str!("engine/relationships.rs"),
-            include_str!("engine/reports.rs"),
-            include_str!("engine/task.rs"),
-            include_str!("engine/tokens.rs"),
-            include_str!("engine/transfer.rs"),
-            include_str!("engine/undo.rs"),
-        ]
-        .join("\n");
+        let src = crate::engine::engine_sources!()
+            .into_iter()
+            .map(|(_, text)| text)
+            .collect::<Vec<_>>()
+            .join("\n");
         // Strip comments and collapse whitespace: a chain split across lines
         // must read as one, and the prose quotes param names constantly.
         let flat: String = src
