@@ -1,7 +1,19 @@
 import type { ErrorCode } from '../api/envelope';
 import { FakeTransport } from '../api/fakeTransport';
 import type { Capabilities } from '../api/envelope';
-import type { Link, MemoryDoc, MemoryHit, MemoryListRow, Project, TaskDetail, TaskListResult, TaskRow } from '../api/types';
+import type {
+  GraphEdgeRow,
+  GraphNodeRow,
+  GraphQueryResult,
+  Link,
+  MemoryDoc,
+  MemoryHit,
+  MemoryListRow,
+  Project,
+  TaskDetail,
+  TaskListResult,
+  TaskRow,
+} from '../api/types';
 
 /**
  * A daemon that answers by method from a script and remembers the order it was
@@ -79,6 +91,30 @@ export const MEMORY_CAPABILITIES: Capabilities = {
     'annotation.add': ['ref', 'body'],
     'annotation.remove': ['ref', 'annotation_id'],
     'link.list': ['ref', 'relation', 'limit', 'offset'],
+  },
+};
+
+/** `MEMORY_CAPABILITIES` plus the graph's methods (#693). */
+export const GRAPH_CAPABILITIES: Capabilities = {
+  ...MEMORY_CAPABILITIES,
+  methods: [...MEMORY_CAPABILITIES.methods, 'graph.query', 'link.add'],
+  params: {
+    ...MEMORY_CAPABILITIES.params,
+    'graph.query': [
+      'root',
+      'depth',
+      'node_types',
+      'relation_types',
+      'project',
+      'status',
+      'tags',
+      'modified_after',
+      'modified_before',
+      'include_inferred',
+      'max_nodes',
+      'max_edges',
+    ],
+    'link.add': ['from', 'to', 'relation', 'metadata', 'expected_rev'],
   },
 };
 
@@ -254,6 +290,60 @@ export function linkRow(overrides: Partial<Link> & { id: string; from: string; t
     relation: 'references',
     metadata: null,
     created_at: EPOCH,
+    ...overrides,
+  };
+}
+
+/** A `graph.query` node; `id` is `<type>:<uuid>`, the type is read off it. */
+export function graphNode(id: string, overrides: Partial<GraphNodeRow> = {}): GraphNodeRow {
+  const type = id.slice(0, id.indexOf(':')) as GraphNodeRow['type'];
+  return {
+    id,
+    type,
+    label: id,
+    summary: null,
+    project: null,
+    status: type === 'task' ? 'pending' : null,
+    modified: type === 'project' ? null : EPOCH,
+    short_id: null,
+    task: null,
+    ...overrides,
+  };
+}
+
+/** A structural edge unless `kind: 'inferred'` is passed. */
+export function graphEdge(from: string, to: string, overrides: Partial<GraphEdgeRow> = {}): GraphEdgeRow {
+  const inferred = overrides.kind === 'inferred';
+  return {
+    id: `${inferred ? 'search' : 'dep'}:${from}:${to}`,
+    from,
+    to,
+    relation: inferred ? 'search_match' : 'depends_on',
+    kind: 'structural',
+    confidence: inferred ? 0.5 : null,
+    source: inferred ? 'memory.search: words' : 'dependencies',
+    ...overrides,
+  };
+}
+
+/** A `graph.query` answer around `root`, with its counts filled in. */
+export function graphResult(
+  root: string,
+  nodes: GraphNodeRow[],
+  edges: GraphEdgeRow[],
+  overrides: Partial<GraphQueryResult> = {},
+): GraphQueryResult {
+  return {
+    root,
+    depth: 2,
+    nodes,
+    edges,
+    node_count: nodes.length,
+    edge_count: edges.length,
+    truncated: false,
+    omitted_nodes: 0,
+    omitted_edges: 0,
+    include_inferred: false,
     ...overrides,
   };
 }

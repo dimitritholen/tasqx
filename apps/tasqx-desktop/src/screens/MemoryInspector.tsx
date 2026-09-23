@@ -23,7 +23,7 @@ import { navigate } from '../shell/router';
  * dialog. Escape backs out; the Cancel button takes focus the moment the
  * prompt appears, so a stray second Enter cannot land on Confirm.
  */
-function RemoveConfirm({ label, busy, onConfirm }: { label: string; busy: boolean; onConfirm: () => void }) {
+export function RemoveConfirm({ label, busy, onConfirm }: { label: string; busy: boolean; onConfirm: () => void }) {
   const [confirming, setConfirming] = useState(false);
 
   if (!confirming) {

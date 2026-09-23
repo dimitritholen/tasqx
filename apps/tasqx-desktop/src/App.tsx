@@ -14,6 +14,7 @@ import { attachEvents } from './state/events';
 import { DashboardStore, StoreContext, useStore } from './state/store';
 import {
   DashboardScreen,
+  GraphInspector,
   GraphScreen,
   MemoryInspector,
   MemoryScreen,
@@ -133,6 +134,8 @@ function ConnectedApp() {
         inspector={
           route.screen === 'memory' ? (
             <MemoryInspector onChanged={() => void store.reloadMemoryResults()} />
+          ) : route.screen === 'graph' ? (
+            <GraphInspector />
           ) : (
             <TaskInspector />
           )

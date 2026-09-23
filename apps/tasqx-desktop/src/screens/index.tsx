@@ -5,6 +5,8 @@ import type { Theme } from '../shell/theme';
 import { EmptyState, Field } from '../ui/primitives';
 
 export { DashboardScreen } from './DashboardScreen';
+export { GraphInspector } from './GraphInspector';
+export { GraphScreen } from './GraphScreen';
 export { MemoryInspector } from './MemoryInspector';
 export { MemoryScreen } from './MemoryScreen';
 export { ProjectsScreen } from './ProjectsScreen';
@@ -19,16 +21,6 @@ function Placeholder({ title, lede, empty }: { title: string; lede: string; empt
       <p className="screen-lede">{lede}</p>
       <EmptyState title="Not connected" message={empty} />
     </div>
-  );
-}
-
-export function GraphScreen() {
-  return (
-    <Placeholder
-      title="Graph"
-      lede="Dependencies between tasks."
-      empty="Connect to the tasqx daemon to draw the graph."
-    />
   );
 }
 
