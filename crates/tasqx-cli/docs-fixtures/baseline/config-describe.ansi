@@ -1,0 +1,3 @@
+theme.name
+  Terminal theme: a built-in (nord, gruvbox, dracula, solarized, mono) or a user file.
+  type: string, default: nord

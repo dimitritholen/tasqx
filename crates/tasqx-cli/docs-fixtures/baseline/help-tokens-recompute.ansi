@@ -1,0 +1,12 @@
+Re-run log-parse attribution over stored history under the D50 refusal rule (maps to tokens.recompute): samples claimed by more than one task's window drop out, and a task whose transcript is gone keeps its counts with confidence downgraded to low. Dry-run by default: prints the per-task delta and writes nothing
+
+Usage: tasqx tokens recompute [OPTIONS]
+
+Options:
+      --apply            Actually write the repair. The dry-run default is not a convenience but the safety: this is the one verb in the API built to delete measurement rows, so destruction must be asked for by name
+      --json             Print the raw JSON API result instead of the human table
+      --theme <THEME>    Theme name (built-in nord|gruvbox|dracula|solarized|mono, or a user file). Overrides $TASQX_THEME and the config file (DESIGN.md §8)
+      --socket <SOCKET>  Local socket / named-pipe address of a tasqx daemon. Overrides $TASQX_SOCK. When a daemon is reachable, one-shot commands route through it (single writer); otherwise they run in-process. Also selects the address for `daemon` and `watch`
+      --no-daemon        Never route through a daemon; always run one-shot in-process (the pre-daemon behaviour). Escape hatch for scripts
+  -h, --help             Print help
+  -V, --version          Print version

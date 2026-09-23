@@ -1,0 +1,11 @@
+{
+  "active": "nord",
+  "builtin": [
+    "nord",
+    "gruvbox",
+    "dracula",
+    "solarized",
+    "mono"
+  ],
+  "user": null
+}

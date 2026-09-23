@@ -1,0 +1,45 @@
+Print the single highest-urgency unblocked task (the "what now" button)
+
+Usage: tasqx next [OPTIONS] [FILTER]...
+
+Arguments:
+  [FILTER]...
+          Filter DSL, ANDed with `@working` (default: `@working` alone).
+          
+          Hyphen-tolerant via the `argv` pre-pass so `-tag` is typable; see `List::filter`. Unlike `list`/`pick`, a caller's filter never REPLACES `@working` — it narrows it — so `tasqx next project:x` still skips blocked and backlog tasks in that project rather than widening to every status the way `tasqx list project:x` does.
+
+Options:
+      --card
+          Print the task as a 72-column box-drawn card, for pasting into a document
+
+      --json
+          Print the raw JSON API result instead of the human table
+
+      --ascii
+          With --card: draw the borders with + - | instead of box-drawing characters
+
+      --theme <THEME>
+          Theme name (built-in nord|gruvbox|dracula|solarized|mono, or a user file). Overrides $TASQX_THEME and the config file (DESIGN.md §8)
+
+      --socket <SOCKET>
+          Local socket / named-pipe address of a tasqx daemon. Overrides $TASQX_SOCK. When a daemon is reachable, one-shot commands route through it (single writer); otherwise they run in-process. Also selects the address for `daemon` and `watch`
+
+      --no-daemon
+          Never route through a daemon; always run one-shot in-process (the pre-daemon behaviour). Escape hatch for scripts
+
+  -h, --help
+          Print help (see a summary with '-h')
+
+  -V, --version
+          Print version
+
+EXAMPLES
+  tasqx next
+  tasqx next project:work
+  tasqx next --card
+
+NOTE  The single highest-urgency unblocked task — the "what now" button.
+      A filter narrows `@working` rather than replacing it: `tasqx next project:work` still skips blocked and backlog tasks in that project, unlike `tasqx list project:work` which shows every status once a filter is given.
+      `--card` prints the picked task as a fixed 72-column box-drawn card meant to be pasted into a document (a chat, a PR); `--ascii` draws its borders with `+ - |`. The default screen is unchanged (D146).
+
+See also: list · why · start        Full manual: tasqx manual

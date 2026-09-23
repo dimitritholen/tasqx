@@ -1,0 +1,18 @@
+Store a knowledge doc (maps to memory.add). Body is stored verbatim
+
+Usage: tasqx memory add [OPTIONS] <TITLE> <BODY>
+
+Arguments:
+  <TITLE>  Doc title
+  <BODY>   Body text — multi-line markdown is fine
+
+Options:
+      --json               Print the raw JSON API result instead of the human table
+      --source <SOURCE>    Where this came from: a path, URL, or ticket
+      --project <PROJECT>  Optional project scope. Omitted, the doc stays global
+      --theme <THEME>      Theme name (built-in nord|gruvbox|dracula|solarized|mono, or a user file). Overrides $TASQX_THEME and the config file (DESIGN.md §8)
+      --socket <SOCKET>    Local socket / named-pipe address of a tasqx daemon. Overrides $TASQX_SOCK. When a daemon is reachable, one-shot commands route through it (single writer); otherwise they run in-process. Also selects the address for `daemon` and `watch`
+      --standing           Mark the doc standing: a ruling meant for every session of its scope, kept until cleared and sent to MCP clients at session start (D156, D157)
+      --no-daemon          Never route through a daemon; always run one-shot in-process (the pre-daemon behaviour). Escape hatch for scripts
+  -h, --help               Print help
+  -V, --version            Print version

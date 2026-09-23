@@ -1,0 +1,83 @@
+Grouped summary report (maps to report.summary), or a self-contained HTML review with `--html` (DESIGN.md §8)
+
+Usage: tasqx report [OPTIONS] [ARGS]...
+
+Arguments:
+  [ARGS]...
+          Optional group_by (project|status|priority) then optional filter DSL
+
+Options:
+      --html
+          Emit a single self-contained HTML report (inline CSS + SVG, no external requests) instead of the terminal table
+
+      --json
+          Print the raw JSON API result instead of the human table
+
+      --out <PATH>
+          Write the HTML report to this file (default: stdout). Requires --html.
+          
+          `requires` because only the `--html` branch of `execute` ever reads it: the terminal-table branch destructures it away with `..`, so `report --out r.html` used to print the table, write no file, and exit 0. Under a CI redirect that reads as a report that was written. Same silent omission `--all` below is guarded against.
+
+      --theme <THEME>
+          Theme name (built-in nord|gruvbox|dracula|solarized|mono, or a user file). Overrides $TASQX_THEME and the config file (DESIGN.md §8)
+
+      --all
+          Count cancelled tasks too. By default a report excludes cancelled tasks, unless the filter itself names a status (DESIGN D24).
+          
+          Rejected alongside `--html`: the HTML page builds its own scope and has no way to honour this yet, and accepting a flag we then ignore is exactly the silent omission D24 exists to stop.
+
+      --socket <SOCKET>
+          Local socket / named-pipe address of a tasqx daemon. Overrides $TASQX_SOCK. When a daemon is reachable, one-shot commands route through it (single writer); otherwise they run in-process. Also selects the address for `daemon` and `watch`
+
+      --no-daemon
+          Never route through a daemon; always run one-shot in-process (the pre-daemon behaviour). Escape hatch for scripts
+
+      --since <WHEN>
+          Window `tracked_total`/the token buckets to work done or spend measured at or after this instant, instead of each task's lifetime total — same date grammar as `--due` (D97).
+          
+          A different axis from `completed.after:` in the filter DSL above: that selects tasks by completion date, this bounds WHEN the tracked time or token measurement itself landed, regardless of whether or when its task completed.
+          
+          Rejected alongside `--html`, same as `--all` above and for the same reason: the HTML page builds its own scope and has no windowed path yet.
+          
+          `allow_hyphen_values` for the same reason as `--due` above: a signed relative offset (`--since -7d`) is a leading-hyphen value.
+
+      --until <WHEN>
+          The other end of `--since`'s window: excludes anything at or after this instant
+
+      --metrics <METRICS>
+          Show the four token buckets (cache read/write, in, out) as their own columns instead of the single largest-bucket cell (#212, D48a) — comma-separated, from the same vocabulary `report.summary`'s `metrics` param accepts. Naming a non-token metric here is accepted but has no effect: COUNT/EST/OVERDUE/ TRACKED already always show, and this flag only changes the TOKENS display
+          
+          [possible values: count, est_total, overdue, tracked_total, tokens_in, tokens_out, tokens_cache_read, tokens_cache_creation, tokens_unsplit]
+
+      --outcomes
+          Report outcomes instead of counts (D137): rework, estimate calibration, cost, silent completions and abandoned work, over the tasks that CLOSED.
+          
+          A second method under one verb rather than a verb of its own, because a reader asking "how is this going" reaches for `report` either way — the same shape `--html` already has.
+          
+          Rejected alongside `--html` and `--all`: the HTML page builds its own scope and has no outcomes section, and `--all` is D24's cancelled-work escape hatch, which `report.outcomes` has no use for — there a cancellation is a measured outcome, not noise. Accepting either and ignoring it is the silent omission `--out` above is guarded against.
+
+  -h, --help
+          Print help (see a summary with '-h')
+
+  -V, --version
+          Print version
+
+EXAMPLES
+  tasqx report
+  tasqx report project
+  tasqx report --all
+  tasqx report --metrics tokens_in,tokens_out,tokens_cache_read,tokens_cache_creation
+  tasqx report --since -7d
+  tasqx report --outcomes
+  tasqx report --outcomes project --since -30d
+  tasqx report --html --out review.html    # self-contained HTML
+  tasqx report +urgent --html --out sprint.html    # scoped HTML
+
+NOTE  group_by ∈ project|status|priority. `--html` defaults to stdout.
+      A filter scopes BOTH output modes — the HTML page and the terminal table answer the same question.
+      Cancelled tasks are not counted, unless you pass `--all` or your filter names a status.
+      The terminal's TOKENS column names the largest of four buckets by volume; `--metrics` naming a tokens_* bucket shows all four as their own columns instead, same as `--html` and `--json`.
+      `--since`/`--until` window `tracked_total` and the token buckets by WHEN the time or spend happened (D97) — a different axis from `completed.after:`/`completed.before:` in the filter, which selects tasks by completion date. Rejected alongside `--html`, which has no windowed path yet.
+      --socket is refused with `--html` (DESIGN.md D73): the HTML page renders from a direct local read of the store, never through a daemon.
+
+See also: chart · list · why        Full manual: tasqx manual

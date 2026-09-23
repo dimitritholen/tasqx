@@ -1,0 +1,16 @@
+Remaining open tasks over the last N days (reconstructed backwards from each task's current status, not read forwards off the events table — D59/D60)
+
+Usage: tasqx chart burndown [OPTIONS] [FILTER]...
+
+Arguments:
+  [FILTER]...  Filter DSL, e.g. "project:work" (default: the whole store) — see `throughput`'s
+
+Options:
+      --json               Print the raw JSON API result instead of the human table
+      --project <PROJECT>  Restrict to a project (else all tasks). Shorthand for appending `project:<name>` (quoted) to `filter` above — kept for scripts and docs already spelling it this way; `project:work` on the positional says the same thing and composes with a second predicate the flag alone cannot (`chart burndown project:work +urgent`)
+      --days <DAYS>        Number of days to show (1-3650; default 30)
+      --theme <THEME>      Theme name (built-in nord|gruvbox|dracula|solarized|mono, or a user file). Overrides $TASQX_THEME and the config file (DESIGN.md §8)
+      --socket <SOCKET>    Local socket / named-pipe address of a tasqx daemon. Overrides $TASQX_SOCK. When a daemon is reachable, one-shot commands route through it (single writer); otherwise they run in-process. Also selects the address for `daemon` and `watch`
+      --no-daemon          Never route through a daemon; always run one-shot in-process (the pre-daemon behaviour). Escape hatch for scripts
+  -h, --help               Print help
+  -V, --version            Print version

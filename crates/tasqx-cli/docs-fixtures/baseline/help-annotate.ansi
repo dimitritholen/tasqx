@@ -1,0 +1,24 @@
+Annotate a task (maps to annotation.add), or correct one note in place with `--edit <annotation-id>` (maps to annotation.update, D165)
+
+Usage: tasqx annotate [OPTIONS] <REF> [TEXT]...
+
+Arguments:
+  <REF>      short_id or UUID
+  [TEXT]...  The annotation text
+
+Options:
+      --edit <ANNOTATION_ID>  Replace the body of this annotation instead of adding one; its id, timestamp and position are kept
+      --json                  Print the raw JSON API result instead of the human table
+      --theme <THEME>         Theme name (built-in nord|gruvbox|dracula|solarized|mono, or a user file). Overrides $TASQX_THEME and the config file (DESIGN.md §8)
+      --socket <SOCKET>       Local socket / named-pipe address of a tasqx daemon. Overrides $TASQX_SOCK. When a daemon is reachable, one-shot commands route through it (single writer); otherwise they run in-process. Also selects the address for `daemon` and `watch`
+      --no-daemon             Never route through a daemon; always run one-shot in-process (the pre-daemon behaviour). Escape hatch for scripts
+  -h, --help                  Print help
+  -V, --version               Print version
+
+EXAMPLES
+  tasqx annotate 1 Called the plumber, waiting on a quote
+
+NOTE  Wrote something you shouldn't have? `tasqx unannotate <ref> <annotation-id>` scrubs it — there is no other way back.
+      Wrote something wrong? `--edit <annotation-id>` replaces that note's text in place (D165): its id, timestamp and position stay, so a corrected first note is still the card's Description, and `tasqx undo` puts the old text back.
+
+See also: show · modify · unannotate        Full manual: tasqx manual

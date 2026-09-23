@@ -1,0 +1,11 @@
+PROJECT  COUNT  EST  OVERDUE  TRACKED                TOKENS
+api          9  16h        0   4h 15m   cacheR 7.0M ~medium
+home         2    -        0        -                     -
+infra       11  15h        1   5h 10m   cacheR 2.8M ~medium
+mobile      16  18h        0   9h 50m   cacheR 7.7M ~medium
+website     17  38h        0  36h 25m   cacheR 2.4M ~medium
+
+TOTAL       55  87h        1  55h 40m  cacheR 20.1M ~medium
+
+TOKENS shows the largest of four buckets (cacheR/cacheW/in/out) by volume; --metrics
+tokens_in,tokens_out,tokens_cache_read,tokens_cache_creation or --html shows all four.

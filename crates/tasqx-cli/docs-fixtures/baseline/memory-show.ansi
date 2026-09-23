@@ -1,0 +1,4 @@
+release-process  (docs/release.md)
+description  How an SDK release is cut, tagged and announced
+
+Cut the release branch on Monday, tag after the canary has run for a day, and announce in the changelog feed once the packages are live.

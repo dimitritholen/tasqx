@@ -1,0 +1,85 @@
+Change a task (maps to task.modify). Takes the same inline sugar and natural-language dates as `add`; clear a field with `--clear <field>`.
+
+Setting and clearing are deliberately different shapes (DESIGN.md §12-D13): a value is `due:friday` / `--due friday`, and removal is only ever `--clear due`. There is no magic empty value — `--due ""` is a bad date, not an erasure, so a shell that expands a variable to nothing can never silently wipe a field it meant to set.
+
+Usage: tasqx modify [OPTIONS] <REF> [REST]...
+
+Arguments:
+  <REF>
+          short_id or UUID
+
+  [REST]...
+          New title words and/or inline sugar (due:friday, +tag, project:p, !high, est:4h, repeat:"every week", remind:-1h). Bare words become the new title; omit them to leave the title alone
+
+Options:
+      --json
+          Print the raw JSON API result instead of the human table
+
+      --project <PROJECT>
+          Move the task to an existing project (see `tasqx projects`)
+
+  -p, --priority <PRIORITY>
+          Priority: H, M, or L (or high/medium/low)
+          
+          [possible values: H, M, L]
+
+      --theme <THEME>
+          Theme name (built-in nord|gruvbox|dracula|solarized|mono, or a user file). Overrides $TASQX_THEME and the config file (DESIGN.md §8)
+
+      --due <DUE>
+          Due date — natural language ok (friday, "in 3 days", eom, -1d)
+
+      --socket <SOCKET>
+          Local socket / named-pipe address of a tasqx daemon. Overrides $TASQX_SOCK. When a daemon is reachable, one-shot commands route through it (single writer); otherwise they run in-process. Also selects the address for `daemon` and `watch`
+
+      --no-daemon
+          Never route through a daemon; always run one-shot in-process (the pre-daemon behaviour). Escape hatch for scripts
+
+      --scheduled <SCHEDULED>
+          Scheduled date — natural language ok
+
+      --wait <WAIT>
+          Wait-until date — natural language ok
+
+      --repeat <REPEAT>
+          Recurrence rule, e.g. "every 3 days" or "weekly on mon,wed,fri". Clear it with `--clear recurrence`
+
+      --remind <REMIND>
+          Reminder: a due-anchored offset (-1h, -30m) or an absolute date
+
+  -e, --estimate <ESTIMATE>
+          Effort estimate — human duration (4h, 90m, 1h30m, 2d) or ISO PT4H
+
+      --tracked <TRACKED>
+          Correct the tracked-time total — human duration (4h, 90m, 1h30m, 2d) or ISO PT4H. Overwrites the stored total outright rather than adding to it; clear it back to zero with `--clear tracked`
+
+      --budget-tokens <N>
+          Token budget — a size gauge over FRESH tokens (input + output + cache creation; cache reads are not counted). It stops nothing: tasqx is a store an agent calls between turns and cannot preempt one. An overrun is a signal that the task was probably too big to hand over whole
+
+  -t, --tag <TAG>
+          Add a tag (repeatable). Routed to tag.add
+
+      --clear <FIELD>
+          Clear a field back to unset (repeatable). The only removal syntax for a steering field; a tag comes off with `tasqx untag <ref> <tag>`
+          
+          [possible values: project, priority, due, scheduled, wait, remind, recurrence, estimate, tracked, budget_tokens]
+
+      --expected-rev <REV>
+          Optimistic concurrency: fail with `conflict` (exit 5) unless the task is still at this rev, so a concurrent edit is reported instead of clobbered. `tasqx show <ref> --json` reports the current `_rev`, and every successful modify prints the new one
+
+  -h, --help
+          Print help (see a summary with '-h')
+
+  -V, --version
+          Print version
+
+EXAMPLES
+  tasqx modify 42 due:friday !high est:4h    # set fields
+  tasqx modify 42 --clear due --clear remind    # clear fields
+  tasqx modify 42 repeat:"every monday"    # set a recurrence
+
+NOTE  Setting is `due:friday`/`--due friday`; removal is only ever `--clear <field>` — there is no magic empty value.
+      `--clear` covers the steering fields only. `modify 42 +api` adds a tag; taking one off is `tasqx untag 42 api`.
+      `--expected-rev` fails with conflict (exit 5) if the task moved on.
+
+See also: add · show · why · untag        Full manual: tasqx manual

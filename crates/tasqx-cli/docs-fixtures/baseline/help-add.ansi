@@ -1,0 +1,35 @@
+Add a task (maps to task.add). Supports inline +tag / project: / !prio sugar
+
+Usage: tasqx add [OPTIONS] [TITLE]...
+
+Arguments:
+  [TITLE]...  The task title (may carry inline sugar)
+
+Options:
+      --json                   Print the raw JSON API result instead of the human table
+      --project <PROJECT>      File the task under an existing project (see `tasqx projects`)
+  -p, --priority <PRIORITY>    Priority: H, M, or L (or high/medium/low) [possible values: H, M, L]
+      --theme <THEME>          Theme name (built-in nord|gruvbox|dracula|solarized|mono, or a user file). Overrides $TASQX_THEME and the config file (DESIGN.md §8)
+      --due <DUE>              Due date — natural language ok (e.g. friday, "in 3 days", eom, -1d)
+      --socket <SOCKET>        Local socket / named-pipe address of a tasqx daemon. Overrides $TASQX_SOCK. When a daemon is reachable, one-shot commands route through it (single writer); otherwise they run in-process. Also selects the address for `daemon` and `watch`
+      --no-daemon              Never route through a daemon; always run one-shot in-process (the pre-daemon behaviour). Escape hatch for scripts
+      --scheduled <SCHEDULED>  Scheduled date — natural language ok
+      --wait <WAIT>            Wait-until date — natural language ok (task stays in backlog)
+      --repeat <REPEAT>        Recurrence rule, e.g. "every 3 days" or "weekly on mon,wed,fri"
+      --remind <REMIND>        Reminder: a due-anchored offset (-1h, -30m, -2d) or an absolute date ("friday 9am"). Without this, the task never notifies (§9)
+  -e, --estimate <ESTIMATE>    Effort estimate — human duration (4h, 90m, 1h30m, 2d) or ISO PT4H
+      --budget-tokens <N>      Token budget — a size gauge over FRESH tokens (input + output + cache creation; cache reads are not counted). It stops nothing: tasqx is a store an agent calls between turns and cannot preempt one. An overrun is a signal that the task was probably too big to hand over whole
+  -t, --tag <TAG>              Repeatable tag flag
+  -h, --help                   Print help
+  -V, --version                Print version
+
+EXAMPLES
+  tasqx add Buy milk
+  tasqx add Ship it due:friday +api !high --project work
+  tasqx add Water plants repeat:"every 3 days"
+  tasqx add Call bank due:"friday 9am" --remind -30m    # reminder 30m before due
+
+NOTE  Inline sugar: `+tag`, `project:p` (or `proj:`), `!high`, `due:…`, `scheduled:…` (or `sched:`), `wait:…`, `repeat:…` (or `every:`/`recur:`), `remind:…`, `est:4h` (or `estimate:`).
+      A bare add lands in the default project (`tasqx use` to change it).
+
+See also: modify · use · list · next        Full manual: tasqx manual

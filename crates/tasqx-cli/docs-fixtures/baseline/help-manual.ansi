@@ -1,0 +1,23 @@
+Browse the complete manual in your terminal: a themed, navigable guide. `tasqx manual` prints the table of contents; `tasqx manual <command|topic>` opens that page, or both where a name is a command and a topic (`projects`, `daemon`). Needs no store and no network
+
+Usage: tasqx manual [OPTIONS] [TOPIC]
+
+Arguments:
+  [TOPIC]  A command (e.g. `init`), an alias, or a topic slug (e.g. `filters`)
+
+Options:
+      --json             Print the raw JSON API result instead of the human table
+      --theme <THEME>    Theme name (built-in nord|gruvbox|dracula|solarized|mono, or a user file). Overrides $TASQX_THEME and the config file (DESIGN.md §8)
+      --socket <SOCKET>  Local socket / named-pipe address of a tasqx daemon. Overrides $TASQX_SOCK. When a daemon is reachable, one-shot commands route through it (single writer); otherwise they run in-process. Also selects the address for `daemon` and `watch`
+      --no-daemon        Never route through a daemon; always run one-shot in-process (the pre-daemon behaviour). Escape hatch for scripts
+  -h, --help             Print help
+  -V, --version          Print version
+
+EXAMPLES
+  tasqx manual
+  tasqx manual init
+  tasqx manual filters
+
+NOTE  No store, no network. `tasqx docs` is the fuller browser guide.
+
+See also: docs        Full manual: tasqx manual

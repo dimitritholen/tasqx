@@ -1,0 +1,46 @@
+Browse tasks on a full-screen list, and start one (maps to task.list, task.get, then task.start).
+
+Each row is the row `tasqx list` prints. j/k or the arrows move, enter opens the task's `tasqx show` card (esc goes back), and `s` starts the task under the cursor. `/` searches: a fuzzy subsequence match over id, title, project and tags, whitespace splitting it into terms that all have to match; enter or esc keeps the filter, and esc in the list clears it and then leaves.
+
+`s` is the only key with a side effect, and it has one: this verb starts the task it selects. Leaving without starting one exits 0 — a browser you close is not a failed run — while a filter that matches no task exits 4, having started nothing either way. Under `--json` the body's `started` says whether this call actually opened a timer: false when you left, and false on a task that was already running, which `start` answers idempotently.
+
+It needs a real terminal on BOTH stdin and stdout, so it refuses in a pipe rather than writing escape codes into it (exit 2, D26).
+
+Usage: tasqx pick [OPTIONS] [FILTER]...
+
+Arguments:
+  [FILTER]...
+          Filter DSL, e.g. "project:work +api" (default: the working set).
+          
+          Hyphen-tolerant via the `argv` pre-pass so `-tag` is typable; see `List::filter` for why the pre-pass and not `allow_hyphen_values`. Being named `filter` is what puts this positional under `argv::tests::every_filter_positional_is_registered`, which fails the build unless `pick` is in `FILTER_COMMANDS` too — and, since that guard reads only the escaping half, under `every_filter_command_gets_its_dashes_back`, which is what makes the sentence above true rather than intended. It was intended and not true when this verb shipped: `pick` was registered for escaping and missing from [`Command::filter_tail_mut`], so `tasqx pick -api` filtered on `"\u{1}api"`.
+
+Options:
+      --json
+          Print the raw JSON API result instead of the human table
+
+      --theme <THEME>
+          Theme name (built-in nord|gruvbox|dracula|solarized|mono, or a user file). Overrides $TASQX_THEME and the config file (DESIGN.md §8)
+
+      --socket <SOCKET>
+          Local socket / named-pipe address of a tasqx daemon. Overrides $TASQX_SOCK. When a daemon is reachable, one-shot commands route through it (single writer); otherwise they run in-process. Also selects the address for `daemon` and `watch`
+
+      --no-daemon
+          Never route through a daemon; always run one-shot in-process (the pre-daemon behaviour). Escape hatch for scripts
+
+  -h, --help
+          Print help (see a summary with '-h')
+
+  -V, --version
+          Print version
+
+EXAMPLES
+  tasqx pick    # browse the working set, and start a task from it
+  tasqx pick project:work +api    # narrow the candidates first
+
+NOTE  Each row is the row `tasqx list` prints: the running and blocked rail, the priority and urgency gauge, the title, the project, the deadline as a calendar day and the tags. The header names the filter and what the set holds — overdue, due today, running, blocked — as `list`'s summary does.
+      `j`/`k` or the arrows move, `g`/`G` jump to the ends. Enter opens the task's `tasqx show` card; there `j`/`k`/space/`b` scroll and `esc` or `q` goes back to the list. `s` starts the task under the cursor, from the list or from its card — the one key on this screen with a side effect, and the same single-active rule `tasqx start` follows. `q` leaves.
+      `/` opens the search on the header line: a fuzzy SUBSEQUENCE match over id, title, project and tags, so `wac` finds `Write API conformance tests`, and a term found whole ranks above the same letters scattered. Whitespace splits it into terms that must all match. Every letter is a letter there; up/down or ctrl-p/ctrl-n move, ctrl-u clears, ctrl-w deletes a word, and Enter or `esc` goes back to the list with the filter kept. `esc` in the list clears the filter, and only then leaves.
+      Leaving without starting a task exits 0: `pick` is a browser, and a browser you close is not a failed run — `tasqx pick && …`, a prompt indicator and any script that opens it to look all survive `q`. A filter that matches no task still exits 4, and so does an empty working set: that is a request `pick` could not serve, not a session you ended.
+      It needs a real terminal on stdin AND stdout, so `tasqx pick | …` and `$(tasqx pick)` refuse with exit 2 rather than writing escape codes into your pipe (D26). Non-interactively, `tasqx next` answers the same question and `tasqx start <ref>` acts on it.
+
+See also: next · list · start · agenda        Full manual: tasqx manual

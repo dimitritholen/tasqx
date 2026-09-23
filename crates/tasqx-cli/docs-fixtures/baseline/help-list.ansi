@@ -1,0 +1,52 @@
+List tasks (maps to task.list). Bare `tasqx` shows the working set
+
+Usage: tasqx list [OPTIONS] [FILTER]...
+
+Arguments:
+  [FILTER]...
+          Filter DSL, e.g. "project:work status:pending +api"
+
+Options:
+      --json
+          Print the raw JSON API result instead of the human table
+
+      --sort <SORT>
+          Sort key(s), e.g. `due` or `-due` for descending (repeatable, or comma-separated). Maps straight onto `task.list`'s own `sort` param — see `tasqx docs` for the valid names. Default: `-urgency`, unchanged from before this flag existed.
+          
+          `allow_hyphen_values`, unlike the filter positional above: a sort key's OWN grammar puts the descending marker on the value (`--sort -due`), so clap must not mistake it for another flag. Left unvalidated here on purpose — the engine already refuses an unknown key naming every valid one (`bad_request`), and repeating that list in a second parser is exactly the copy this codebase keeps paying for (D30).
+
+      --limit <LIMIT>
+          Cap the number of rows returned. Maps to `task.list`'s `limit`. Defaults to 100 when omitted, and is clamped to 10,000 even when given explicitly
+
+      --theme <THEME>
+          Theme name (built-in nord|gruvbox|dracula|solarized|mono, or a user file). Overrides $TASQX_THEME and the config file (DESIGN.md §8)
+
+      --offset <OFFSET>
+          Skip this many matching rows before `--limit` is applied. Maps to `task.list`'s `offset`
+
+      --socket <SOCKET>
+          Local socket / named-pipe address of a tasqx daemon. Overrides $TASQX_SOCK. When a daemon is reachable, one-shot commands route through it (single writer); otherwise they run in-process. Also selects the address for `daemon` and `watch`
+
+      --fields <FIELDS>
+          Return only these task fields (repeatable, or comma-separated) — see `tasqx docs` for the valid names. Maps to `task.list`'s `fields`; an unknown name is refused by the engine, same as above
+
+      --no-daemon
+          Never route through a daemon; always run one-shot in-process (the pre-daemon behaviour). Escape hatch for scripts
+
+  -h, --help
+          Print help (see a summary with '-h')
+
+  -V, --version
+          Print version
+
+EXAMPLES
+  tasqx list
+  tasqx list project:work status:pending +api
+  tasqx list due.before:friday
+
+NOTE  Bare `tasqx` is `tasqx list` over the working set.
+      A value containing a space is double-quoted, and the quotes must reach tasqx: `tasqx list 'project:"Home Renovation"'`. Nothing is guessed back together, so the shell-stripped form is refused rather than answered wrongly.
+      `--sort`, `--limit`, `--offset` and `--fields` map straight onto `task.list`'s own params (`core.capabilities` names all five) — `tasqx list --sort due --limit 20 --fields short_id,title,due`. An unknown sort key or field name is refused, naming the valid set.
+      The piped table (no TTY) is a fixed 100 cells wide; on a terminal it sizes to `$COLUMNS` (clamped 40–160) or the terminal's own width, whichever it can read. Widen a truncated title with `COLUMNS=200 tasqx list` or narrow the row with `--fields`.
+
+See also: next · report · show        Full manual: tasqx manual

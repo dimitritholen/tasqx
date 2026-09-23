@@ -1,0 +1,35 @@
+{
+  "count": 1,
+  "next_offset": 1,
+  "store_empty": false,
+  "tasks": [
+    {
+      "_rev": 1,
+      "active_since": null,
+      "blocked": false,
+      "budget_tokens": null,
+      "completed": null,
+      "created": "2026-09-03T10:00:00Z",
+      "due": "2026-09-14T00:00:00Z",
+      "estimate": "PT1H",
+      "id": "cc5dcd5f-d17f-47d2-9dbc-8dddb8d0c65d",
+      "modified": "2026-09-03T10:00:00Z",
+      "priority": "H",
+      "project": "infra",
+      "recurrence": null,
+      "remind": null,
+      "scheduled": null,
+      "short_id": 47,
+      "status": "pending",
+      "tags": [
+        "ops"
+      ],
+      "title": "Renew the TLS certificate for api.example.dev",
+      "tracked": "PT0S",
+      "tracked_adjustment": "PT0S",
+      "urgency": 18.1,
+      "wait": null
+    }
+  ],
+  "total": 14
+}

@@ -1,0 +1,108 @@
+{
+  "settings": [
+    {
+      "default": "nord",
+      "home": "config.toml",
+      "key": "theme.name",
+      "source": "default",
+      "summary": "Terminal theme: a built-in (nord, gruvbox, dracula, solarized, mono) or a user file.",
+      "value": "nord"
+    },
+    {
+      "default": "true",
+      "home": "config.toml",
+      "key": "dashboard.enabled",
+      "source": "default",
+      "summary": "Open the dashboard when `tasqx` is run bare on a terminal (D58).",
+      "value": "true"
+    },
+    {
+      "default": "tasks,projects,burndown,pulse,effort,tokens",
+      "home": "config.toml",
+      "key": "dashboard.panels",
+      "source": "config.toml",
+      "summary": "Panels the dashboard draws; membership is visibility, position is focus and tab order (D58).",
+      "value": "tasks,projects,burndown,pulse,effort"
+    },
+    {
+      "default": "auto",
+      "home": "config.toml",
+      "key": "dashboard.refresh",
+      "source": "default",
+      "summary": "Whether the dashboard re-reads on a timer, or only on `r` (D58).",
+      "value": "auto"
+    },
+    {
+      "default": "week",
+      "home": "config.toml",
+      "key": "dashboard.window",
+      "source": "default",
+      "summary": "The burndown window the dashboard opens on; `w` cycles it live (D58).",
+      "value": "week"
+    },
+    {
+      "default": "false",
+      "home": "config.toml",
+      "key": "notify.enabled",
+      "source": "default",
+      "summary": "Allow the daemon to raise native OS notifications for reminders.",
+      "value": "false"
+    },
+    {
+      "default": "false",
+      "home": "config.toml",
+      "key": "tokens.enabled",
+      "source": "default",
+      "summary": "Allow the daemon to attribute AI token usage by parsing local tool transcripts (#17).",
+      "value": "false"
+    },
+    {
+      "default": "false",
+      "home": "config.toml",
+      "key": "otlp.enabled",
+      "source": "default",
+      "summary": "Run a local OTLP/HTTP receiver in the daemon to ingest token telemetry from AI tools (#18).",
+      "value": "false"
+    },
+    {
+      "default": "4318",
+      "home": "config.toml",
+      "key": "otlp.port",
+      "source": "default",
+      "summary": "TCP port the OTLP receiver binds on 127.0.0.1 (OTLP/HTTP convention: 4318).",
+      "value": "4318"
+    },
+    {
+      "default": "0",
+      "home": "config.toml",
+      "key": "daemon.idle_timeout",
+      "source": "default",
+      "summary": "Minutes with no clients and no work after which `tasqx daemon` exits by itself; 0 stays up until Ctrl-C (D5).",
+      "value": "0"
+    },
+    {
+      "default": "true",
+      "home": "config.toml",
+      "key": "completion.hint",
+      "source": "default",
+      "summary": "Mention `tasqx completions --install` once, on a terminal, when Tab completion does not look switched on (D57).",
+      "value": "true"
+    },
+    {
+      "default": "",
+      "home": "store",
+      "key": "default_project",
+      "source": "store",
+      "summary": "Project a bare `tasqx add` files into. Lives in the store; set it with `tasqx use`.",
+      "value": "website"
+    },
+    {
+      "default": "both",
+      "home": "config.toml",
+      "key": "detail.time_format",
+      "source": "default",
+      "summary": "How the task-detail view (`show`, MCP) writes timestamps and durations.",
+      "value": "both"
+    }
+  ]
+}

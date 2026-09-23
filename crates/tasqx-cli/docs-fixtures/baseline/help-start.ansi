@@ -1,0 +1,28 @@
+Start a task timer (maps to task.start)
+
+Usage: tasqx start [OPTIONS] <REF>
+
+Arguments:
+  <REF>  short_id or UUID
+
+Options:
+      --json                    Print the raw JSON API result instead of the human table
+      --keep                    Keep other active tasks running (opt out of single-active)
+      --client <TOOL>           Calling tool as "<name> <version>", e.g. "claude-code 2.1". Selects the transcript parser; without it no transcript is ever read
+      --theme <THEME>           Theme name (built-in nord|gruvbox|dracula|solarized|mono, or a user file). Overrides $TASQX_THEME and the config file (DESIGN.md §8)
+      --session-id <ID>         Agent session id, verified against the transcript to earn high confidence. Requires --client
+      --socket <SOCKET>         Local socket / named-pipe address of a tasqx daemon. Overrides $TASQX_SOCK. When a daemon is reachable, one-shot commands route through it (single writer); otherwise they run in-process. Also selects the address for `daemon` and `watch`
+      --no-daemon               Never route through a daemon; always run one-shot in-process (the pre-daemon behaviour). Escape hatch for scripts
+      --transcript-path <PATH>  Absolute path to the session transcript the tokens will be found in. Requires --client
+  -h, --help                    Print help
+  -V, --version                 Print version
+
+EXAMPLES
+  tasqx start 1    # single-active by default
+  tasqx start 1 --keep    # keep others running
+  tasqx start 1 --client 'claude-code 2.1' --session-id $SID    # record who is working, for token attribution
+
+NOTE  The correlation flags are for AI agents: they tell the attribution engine which session and transcript to measure this interval from. Without them a task is never attributed and reports zero tokens.
+      --session-id and --transcript-path require --client, which is what selects the transcript parser. Given without it, attribution would store a permanent zero instead of a measurement.
+
+See also: stop · done · next        Full manual: tasqx manual

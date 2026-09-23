@@ -1,0 +1,214 @@
+# The behaviour baseline: every CLI verb the command enum knows, in every
+# output mode it supports, every --help, the generated references, the MCP
+# tool specs and the config/filter surface — captured against the SAME pinned
+# demo store as ../manifest.tsv, by the SAME script
+# (scripts/docs-capture.sh --dir=crates/tasqx-cli/docs-fixtures/baseline).
+#
+#   TASQX=target/debug/tasqx scripts/docs-capture.sh \
+#       --dir=crates/tasqx-cli/docs-fixtures/baseline --no-daemon   # regenerate
+#   TASQX=target/debug/tasqx scripts/docs-capture.sh \
+#       --dir=crates/tasqx-cli/docs-fixtures/baseline --check --no-daemon
+#
+# Why a second directory rather than more rows in ../manifest.tsv: that file's
+# rows are embedded into the docs site verbatim
+# (crates/tasqx-cli/src/fixtures.rs's `screens!` macro), held equal to it in
+# both directions by
+# `fixtures::tests::the_manifest_the_directory_and_the_embedded_names_agree`.
+# A row added there ships in the guide whether or not it belongs there; a row
+# added HERE captures the same way without ever reaching `tasqx docs`. See
+# docs/maintainers/behaviour-baseline.md for what this corpus proves and does
+# not.
+#
+# Rows here do not repeat what ../manifest.tsv already captures for a verb —
+# this file only ADDS coverage: the modes and verbs that manifest never
+# exercises. The baseline for a verb already in the site's default-mode
+# capture is that fixture plus whatever rows below add for it.
+#
+# Columns are identical to ../manifest.tsv (name, kind, cols, rows, args,
+# keys, stdin), with two more `kind`s docs-capture.sh understands:
+#
+#   pipe-plain      like `pipe`, but TASQX_FORCE_COLOR/TERM are left unset —
+#                   the render path a script or agent actually gets piping
+#                   tasqx with no terminal behind it, which every `pipe`/
+#                   `pipe-mut` row in EITHER manifest forces to the coloured
+#                   terminal layout instead (docs-capture.sh's own comment on
+#                   `capture_pipe`). Untested before this file: a change that
+#                   only shows up off the colour path had no fixture watching
+#                   it.
+#   pipe-plain-mut  `pipe-plain` against a copy of the store, for the same
+#                   reason `pipe-mut` exists.
+#
+# Naming: `help-<verb>` / `help-<verb>-<sub>` is `tasqx <verb> [<sub>] --help`;
+# `<verb>-json` / `<verb>-card` / `<verb>-plain` name the output mode; a bare
+# verb name is its default-mode capture where ../manifest.tsv has none.
+#
+# Ids reused below (51, 49, the check/annotation/memory-doc uuids) are the
+# same ones ../manifest.tsv's rows already use, so a fresh reader who has read
+# that file recognises them; every mutating row still runs against its own
+# copy of the store, so the reuse is only for the reader.
+#
+#name	kind	cols	rows	args	keys	stdin
+# --- every --help: top-level, then subcommand (#740) ---
+help	pipe	100	-	--help	-	-
+help-init	pipe	100	-	init --help	-	-
+help-add	pipe	100	-	add --help	-	-
+help-modify	pipe	100	-	modify --help	-	-
+help-list	pipe	100	-	list --help	-	-
+help-agenda	pipe	100	-	agenda --help	-	-
+help-start	pipe	100	-	start --help	-	-
+help-stop	pipe	100	-	stop --help	-	-
+help-adjust	pipe	100	-	adjust --help	-	-
+help-done	pipe	100	-	done --help	-	-
+help-show	pipe	100	-	show --help	-	-
+help-brief	pipe	100	-	brief --help	-	-
+help-check	pipe	100	-	check --help	-	-
+help-cancel	pipe	100	-	cancel --help	-	-
+help-reopen	pipe	100	-	reopen --help	-	-
+help-undo	pipe	100	-	undo --help	-	-
+help-annotate	pipe	100	-	annotate --help	-	-
+help-unannotate	pipe	100	-	unannotate --help	-	-
+help-tag	pipe	100	-	tag --help	-	-
+help-untag	pipe	100	-	untag --help	-	-
+help-dep	pipe	100	-	dep --help	-	-
+help-undep	pipe	100	-	undep --help	-	-
+help-use	pipe	100	-	use --help	-	-
+help-archive	pipe	100	-	archive --help	-	-
+help-projects	pipe	100	-	projects --help	-	-
+help-report	pipe	100	-	report --help	-	-
+help-chart	pipe	100	-	chart --help	-	-
+help-theme	pipe	100	-	theme --help	-	-
+help-config	pipe	100	-	config --help	-	-
+help-memory	pipe	100	-	memory --help	-	-
+help-tokens	pipe	100	-	tokens --help	-	-
+help-export	pipe	100	-	export --help	-	-
+help-import	pipe	100	-	import --help	-	-
+help-next	pipe	100	-	next --help	-	-
+help-dashboard	pipe	100	-	dashboard --help	-	-
+help-pick	pipe	100	-	pick --help	-	-
+help-why	pipe	100	-	why --help	-	-
+help-api	pipe	100	-	api --help	-	-
+help-daemon	pipe	100	-	daemon --help	-	-
+help-watch	pipe	100	-	watch --help	-	-
+help-mcp	pipe	100	-	mcp --help	-	-
+help-docs	pipe	100	-	docs --help	-	-
+help-about	pipe	100	-	about --help	-	-
+help-manual	pipe	100	-	manual --help	-	-
+help-completions	pipe	100	-	completions --help	-	-
+help-setup	pipe	100	-	setup --help	-	-
+help-check-add	pipe	100	-	check add --help	-	-
+help-check-set	pipe	100	-	check set --help	-	-
+help-check-remove	pipe	100	-	check remove --help	-	-
+help-chart-throughput	pipe	100	-	chart throughput --help	-	-
+help-chart-heatmap	pipe	100	-	chart heatmap --help	-	-
+help-chart-burndown	pipe	100	-	chart burndown --help	-	-
+help-theme-list	pipe	100	-	theme list --help	-	-
+help-theme-show	pipe	100	-	theme show --help	-	-
+help-theme-set	pipe	100	-	theme set --help	-	-
+help-config-list	pipe	100	-	config list --help	-	-
+help-config-get	pipe	100	-	config get --help	-	-
+help-config-describe	pipe	100	-	config describe --help	-	-
+help-config-set	pipe	100	-	config set --help	-	-
+help-config-unset	pipe	100	-	config unset --help	-	-
+help-config-path	pipe	100	-	config path --help	-	-
+help-config-store	pipe	100	-	config store --help	-	-
+help-config-edit	pipe	100	-	config edit --help	-	-
+help-memory-add	pipe	100	-	memory add --help	-	-
+help-memory-list	pipe	100	-	memory list --help	-	-
+help-memory-update	pipe	100	-	memory update --help	-	-
+help-memory-search	pipe	100	-	memory search --help	-	-
+help-memory-show	pipe	100	-	memory show --help	-	-
+help-memory-rm	pipe	100	-	memory rm --help	-	-
+help-memory-import	pipe	100	-	memory import --help	-	-
+help-tokens-add	pipe	100	-	tokens add --help	-	-
+help-tokens-recompute	pipe	100	-	tokens recompute --help	-	-
+help-mcp-serve	pipe	100	-	mcp serve --help	-	-
+
+# --- --json, for read verbs ../manifest.tsv only shows in the human table
+# (task.brief and memory.search stay out: their JSON carries an FTS `rank`,
+# platform-dependent bm25 digits per ../manifest.tsv's own header) ---
+list-json	pipe	100	-	list --json	-	-
+agenda-json	pipe	100	-	agenda --json	-	-
+next-json	pipe	100	-	next --json	-	-
+why-json	pipe	100	-	why 51 --json	-	-
+projects-json	pipe	100	-	projects --json	-	-
+report-json	pipe	100	-	report --json	-	-
+chart-burndown-json	pipe	100	-	chart burndown --json	-	-
+chart-heatmap-json	pipe	100	-	chart heatmap --json	-	-
+chart-throughput-json	pipe	100	-	chart throughput --json	-	-
+memory-list-json	pipe	100	-	memory list --json	-	-
+theme-list-json	pipe	100	-	theme list --json	-	-
+config-list-json	pipe	100	-	config list --json	-	-
+dashboard-json	pipe	100	-	dashboard --json	-	-
+
+# --- --card / --card --ascii, the four verbs that take it ---
+show-card	pipe	100	-	show 51 --card	-	-
+show-card-ascii	pipe	100	-	show 51 --card --ascii	-	-
+brief-card	pipe	100	-	brief 51 --card	-	-
+next-card	pipe	100	-	next --card	-	-
+why-card	pipe	100	-	why 51 --card	-	-
+
+# --- pipe-plain: the render path with no terminal behind it (see the `kind`
+# note above) ---
+list-plain	pipe-plain	100	-	list	-	-
+agenda-plain	pipe-plain	100	-	agenda	-	-
+next-plain	pipe-plain	100	-	next	-	-
+why-plain	pipe-plain	100	-	why 51	-	-
+show-plain	pipe-plain	100	-	show 51	-	-
+brief-plain	pipe-plain	100	-	brief 51	-	-
+projects-plain	pipe-plain	100	-	projects	-	-
+report-plain	pipe-plain	100	-	report	-	-
+memory-list-plain	pipe-plain	100	-	memory list	-	-
+theme-list-plain	pipe-plain	100	-	theme list	-	-
+
+# --- default-mode captures for verbs ../manifest.tsv does not show at all.
+# `config set`/`config unset`/`theme set` and `config path`/`config store` are
+# deliberately absent: the first three write config.toml, which (unlike
+# tasks.db) this harness does not copy per row, so a mutating config row would
+# make every row after it depend on manifest order; the last two print an
+# absolute path (TASQX_CONFIG_DIR / TASQX_DB), which is this machine's, the
+# same reason ../manifest.tsv drops `about`. `setup --list` uses a fixed,
+# nonexistent --home so its ITEM/STATUS table never reads a real machine's
+# ~/.claude. `memory import` names a real path in this repo
+# (docs/maintainers/dependency-policy.md) rather than a scratch file: the
+# command run from the repo root does not echo it back (checked), and the
+# imported prose is real content worth a fixture over a throwaway string.
+# `completions bash`/`completions powershell` stand in for the other three
+# shells clap_complete emits (elvish, fish, zsh): same code path, different
+# grammar, not worth five near-identical fixtures.
+#
+# `export` and `memory add` are absent too, found by this file's own
+# determinism proof (two captures, diffed): the demo store's one RUNNING task
+# is left running by a live `tasqx start` inside demo-store.py, which mints a
+# real event id at the pin instant, and `export`'s full-store dump prints that
+# id's random tail; `memory add`'s echo prints the fresh doc UUID it just
+# minted, with no short-id form the way `add-echo`'s task id has. Same class
+# as `api task.add`'s exclusion in ../manifest.tsv, one layer further in. ---
+chart-heatmap	pipe	100	-	chart heatmap	-	-
+chart-throughput	pipe	100	-	chart throughput	-	-
+theme-show	pipe	100	-	theme show	-	-
+config-get	pipe	100	-	config get theme.name	-	-
+config-describe	pipe	100	-	config describe theme.name	-	-
+setup-list	pipe	100	-	setup --list --home /nonexistent-tasqx-baseline-home	-	-
+completions-bash	pipe	100	-	completions bash	-	-
+completions-powershell	pipe	100	-	completions powershell	-	-
+docs-stdout	pipe	100	-	docs --stdout	-	-
+tokens-recompute	pipe	100	-	tokens recompute	-	-
+import	pipe-mut	100	-	import -	-	{"tasks":[{"id":"9a1f3c52-0b44-4a2e-9d6f-7c5b1e08a4d2","short_id":902,"title":"Baseline import via CLI","status":"pending","priority":"L","project":"baseline","created":"2026-09-10T08:00:00Z","modified":"2026-09-10T08:00:00Z","_rev":1,"tags":["baseline"],"depends_on":[],"annotations":[]}]}
+memory-show	pipe	100	-	memory show eb864f1e-e68a-4d96-af89-597bd0d2d52e	-	-
+memory-update	pipe-mut	100	-	memory update 1bce1a9b-5134-4ab7-8665-34cd79fe0c5f --body "The handover happens Friday at 16:00, in the on-call channel."	-	-
+memory-rm	pipe-mut	100	-	memory rm 091eb5ff-05d5-4cb2-ba2f-0afdc77f7935	-	-
+memory-import	pipe-mut	100	-	memory import docs/maintainers/dependency-policy.md	-	-
+tokens-add	pipe-mut	100	-	tokens add 49 --total 500 --tool claude-code	-	-
+check-set	pipe-mut	100	-	check set 51 7e37a508-7921-4cb2-bf0c-0a2944eb31e4 passed --evidence "docs/guides/sdk-3.0.md#rate-limits"	-	-
+check-remove	pipe-mut	100	-	check remove 51 e6a1096b-6f05-4e95-96f5-52452080f2ac	-	-
+unannotate	pipe-mut	100	-	unannotate 51 17dd6621-7db4-43b5-9f36-ddf89018081e	-	-
+
+# --- the MCP tool specs: an `initialize` handshake, then `tools/list`, piped
+# as newline-delimited JSON-RPC into `tasqx mcp serve` (`%b` expands the `\n`
+# escapes below into real newlines — see the `capture_pipe` comment in
+# scripts/docs-capture.sh). Read scope and write scope answer a different
+# `instructions` string and a different tool roster (D141), so both are
+# captured. `notifications/initialized` carries no `id` and gets no reply
+# (JSON-RPC), so only two response lines follow the three requests. ---
+mcp-initialize-tools-list	pipe	100	-	mcp serve	-	{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","clientInfo":{"name":"docs-capture","version":"1"}}}\n{"jsonrpc":"2.0","method":"notifications/initialized"}\n{"jsonrpc":"2.0","id":2,"method":"tools/list"}
+mcp-initialize-tools-list-write	pipe	100	-	mcp serve --scope write	-	{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","clientInfo":{"name":"docs-capture","version":"1"}}}\n{"jsonrpc":"2.0","method":"notifications/initialized"}\n{"jsonrpc":"2.0","id":2,"method":"tools/list"}

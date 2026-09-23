@@ -1,0 +1,23 @@
+[1;38;2;191;97;106m▌[0m [38;2;138;138;138m#51[0m  [1mWrite the migration guide for SDK 3.0[0m
+[1;38;2;191;97;106m▌[0m
+[1;38;2;191;97;106m▌[0m [1;38;2;191;97;106m⊘ blocked[0m[1;38;2;191;97;106m by #50 · Rate-limit the /search endpoint[0m
+[1;38;2;191;97;106m▌[0m
+[1;38;2;191;97;106m▌[0m [38;2;138;138;138mstatus[0m      pending           [38;2;138;138;138murgency[0m     [38;2;235;203;139mM[0m [1;38;2;191;97;106m▄▄▄▄[0m[2;38;2;76;86;106m[0m [1;38;2;191;97;106m12.2[0m
+[1;38;2;191;97;106m▌[0m [38;2;138;138;138mproject[0m     api               [38;2;138;138;138mdue[0m         [1mMon (in 5 days)[0m
+[1;38;2;191;97;106m▌[0m [38;2;138;138;138mestimate[0m    5h                [38;2;138;138;138mtags[0m        +docs
+[1;38;2;191;97;106m▌[0m [38;2;138;138;138mcreated[0m     16 Aug (31 days ago)
+[1;38;2;191;97;106m▌[0m [38;2;138;138;138mmodified[0m    today 09:00 UTC (just now)
+[1;38;2;191;97;106m▌[0m [38;2;138;138;138mrev[0m         2
+[1;38;2;191;97;106m▌[0m
+[1;38;2;191;97;106m▌[0m [x] Every renamed symbol has a row in the table
+[1;38;2;191;97;106m▌[0m [x] One worked example per SDK (js, py, go)
+[1;38;2;191;97;106m▌[0m [x] The rate-limit ceiling is stated with its real number
+[1;38;2;191;97;106m▌[0m     docs/guides/sdk-3.0.md#rate-limits
+[1;38;2;191;97;106m▌[0m [2;38;2;76;86;106m[ ][0m Reviewed by whoever ships 3.0
+[1;38;2;191;97;106m▌[0m
+[1;38;2;191;97;106m▌[0m [38;2;138;138;138m·[0m Ruling: the guide ships WITH the 3.0 release, not after it. A migration note that lands a week
+[1;38;2;191;97;106m▌[0m   late is a support ticket that already happened.
+[1;38;2;191;97;106m▌[0m [38;2;138;138;138m·[0m Blocked until the rate limit lands: the guide has to state the real ceiling, and quoting a
+[1;38;2;191;97;106m▌[0m   number that then changes is worse than waiting.
+[1;38;2;191;97;106m▌[0m [38;2;138;138;138m·[0m Scope: the 2.x → 3.0 rename table, the auth change, and a worked example per SDK. Not the
+[1;38;2;191;97;106m▌[0m   reference — that generates itself.

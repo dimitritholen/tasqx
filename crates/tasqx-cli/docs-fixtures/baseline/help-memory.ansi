@@ -1,0 +1,43 @@
+Memory: store and search knowledge docs + annotations (DESIGN.md §12-D41)
+
+Usage: tasqx memory [OPTIONS] <COMMAND>
+
+Commands:
+  add     Store a knowledge doc (maps to memory.add). Body is stored verbatim
+  list    Browse docs without a query (maps to memory.list). Newest first
+  update  Correct a doc in place (maps to memory.update)
+  search  Search docs + annotations, bm25-ranked (maps to memory.search)
+  show    Show one doc whole, by id (maps to memory.get)
+  rm      Remove a doc by id (maps to memory.remove)
+  import  Import markdown files as docs: one doc per file (maps to memory.add)
+
+Options:
+      --json             Print the raw JSON API result instead of the human table
+      --theme <THEME>    Theme name (built-in nord|gruvbox|dracula|solarized|mono, or a user file). Overrides $TASQX_THEME and the config file (DESIGN.md §8)
+      --socket <SOCKET>  Local socket / named-pipe address of a tasqx daemon. Overrides $TASQX_SOCK. When a daemon is reachable, one-shot commands route through it (single writer); otherwise they run in-process. Also selects the address for `daemon` and `watch`
+      --no-daemon        Never route through a daemon; always run one-shot in-process (the pre-daemon behaviour). Escape hatch for scripts
+  -h, --help             Print help
+  -V, --version          Print version
+
+EXAMPLES
+  tasqx memory add "Deploy runbook" "deploys go through the blue-green pipeline"
+  tasqx memory search blue-green
+  tasqx memory search 'pipel*' --raw    # FTS5 operator syntax: prefix search, AND/OR, column filters
+  tasqx memory list    # browse without a query, newest first
+  tasqx memory import docs/adr    # one doc per .md file; title from the first # heading
+  tasqx memory import docs/adr --project ledger    # scopes every doc in the batch; a re-import naming a different project moves it (#657)
+  tasqx memory import --refresh    # re-reads every imported doc whose file changed; takes no path
+  tasqx memory update 019f8422-7b3e-7c41-a2d9-6f1b0e5c8a12 --body "corrected text"    # in-place correction; add/remove leave the stale doc searchable or lose it for good
+  tasqx memory rm 019f8422-7b3e-7c41-a2d9-6f1b0e5c8a12    # by the id search printed
+
+NOTE  A hit is two lines: the title, where it came from and the handle that opens it, then the words that matched. The handle is a doc's id, which `tasqx memory show <id>` reads, or `annotation on #N`, which `tasqx show N` opens — `memory show` refuses an annotation's id and names the task instead (exit 4).
+      Search covers your imported docs AND task annotations, bm25-ranked, with stemming ("reviewing" matches "review"). Plain words are matched as phrases (hyphens and dots are safe); pass --raw for FTS5 operator syntax. The response's total/has_more say what --limit left out.
+      list browses every doc without a query — the enumeration search can't do without one — newest-modified first, paged the same way as `tasqx list`.
+      update replaces title/body/source/project in place, guarded by the same optimistic-concurrency rev `tasqx modify` uses. rm is permanent; update is the correction path that keeps the id and doesn't pollute search with a stale duplicate.
+      Import is one transaction: a bad file imports nothing, and re-importing a directory replaces docs from the same source instead of duplicating them. --project scopes the whole batch; omitted, an existing doc keeps whatever scope it already had (like --standing), a new one stays global, and naming a different project on a re-import moves the doc's scope there.
+      `import --refresh` takes no path: it re-reads every doc that recorded an origin file (D180) whose file has changed since, keeping each doc's id, scope and standing flag and bumping its rev; a file that only got a newer timestamp counts as unchanged, because the bytes are compared. A doc whose file can no longer be read is named and kept, never deleted — the file may be on another machine or an unmounted volume — and the command still exits 0.
+      A file's stored source is its path relative to the git toplevel above it, or, outside a git work tree, relative to the current directory — so docs/, ./docs/ and its absolute path are one document per file from any starting directory or machine (D179); an older spelling already in memory is named in a note rather than removed.
+      An MCP agent reaches the same store: tasqx_search_memory works even read-only, so agents can consult knowledge while executing tasks.
+      A standing doc (`--standing`) is a ruling meant for every session of its scope — a correction given once, sent to MCP clients at session start — and `list --standing` shows them; more than 15 in one scope earns a hint to merge or retract (D156).
+
+See also: annotate · mcp · api        Full manual: tasqx manual

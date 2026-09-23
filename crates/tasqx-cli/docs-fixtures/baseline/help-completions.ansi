@@ -1,0 +1,52 @@
+Print — or install — the line that turns on Tab completion for tasqx.
+
+With no flags it writes one line to stdout, so `tasqx completions bash >> ~/.bashrc` works. `--install` edits the shell's own startup file for you, inside a marked block it can take back out again, and asks before writing anything.
+
+Usage: tasqx completions [OPTIONS] [SHELL]
+
+Arguments:
+  [SHELL]
+          Which shell (bash, elvish, fish, powershell, zsh). Detected from $SHELL when omitted; on Windows nothing sets $SHELL, so name it
+
+Options:
+      --install
+          Add the activation line to the shell's startup file (asks first)
+
+      --json
+          Print the raw JSON API result instead of the human table
+
+      --theme <THEME>
+          Theme name (built-in nord|gruvbox|dracula|solarized|mono, or a user file). Overrides $TASQX_THEME and the config file (DESIGN.md §8)
+
+      --uninstall
+          Take the block a previous --install added back out again
+
+      --profile <PATH>
+          The file to edit instead of the shell's default startup file. Required for PowerShell: run it as `--profile $PROFILE` and let PowerShell expand the path it alone knows
+
+      --socket <SOCKET>
+          Local socket / named-pipe address of a tasqx daemon. Overrides $TASQX_SOCK. When a daemon is reachable, one-shot commands route through it (single writer); otherwise they run in-process. Also selects the address for `daemon` and `watch`
+
+      --no-daemon
+          Never route through a daemon; always run one-shot in-process (the pre-daemon behaviour). Escape hatch for scripts
+
+  -y, --yes
+          Confirm the edit on the command line. Required when stdin is not a terminal — a pipeline has nobody to ask, and this feature will not edit a startup file on a guess
+
+  -h, --help
+          Print help (see a summary with '-h')
+
+  -V, --version
+          Print version
+
+EXAMPLES
+  tasqx completions bash
+  tasqx completions bash >> ~/.bashrc    # the printed line is one line for exactly this
+  tasqx completions --install    # detects the shell from $SHELL, shows the block, asks first
+  tasqx completions powershell --install --profile $PROFILE    # PowerShell expands $PROFILE; tasqx will not guess it
+  tasqx completions zsh --uninstall    # removes the block, restoring the file byte for byte
+
+NOTE  --install edits your shell's startup file inside a marked block, asks before writing, and refuses when stdin is not a terminal (pass --yes from a script).
+      cmd.exe cannot be completed by any program and is a permanent non-goal; nushell is a gap clap_complete has no generator for.
+
+See also: manual · docs        Full manual: tasqx manual

@@ -1,0 +1,394 @@
+{
+  "burndown": {
+    "days": 7,
+    "series": [
+      {
+        "date": "2026-09-10",
+        "remaining": 16
+      },
+      {
+        "date": "2026-09-11",
+        "remaining": 16
+      },
+      {
+        "date": "2026-09-12",
+        "remaining": 16
+      },
+      {
+        "date": "2026-09-13",
+        "remaining": 16
+      },
+      {
+        "date": "2026-09-14",
+        "remaining": 16
+      },
+      {
+        "date": "2026-09-15",
+        "remaining": 15
+      },
+      {
+        "date": "2026-09-16",
+        "remaining": 15
+      }
+    ],
+    "truncated": false
+  },
+  "dashboard": "panels",
+  "panels": [
+    "tasks",
+    "projects",
+    "burndown",
+    "pulse",
+    "effort"
+  ],
+  "projects": {
+    "rows": [
+      {
+        "archived": false,
+        "default": true,
+        "est_secs": 136800,
+        "name": "website",
+        "open": 4,
+        "overdue": 0,
+        "tracked_secs": 131100
+      },
+      {
+        "archived": false,
+        "default": false,
+        "est_secs": 57600,
+        "name": "api",
+        "open": 3,
+        "overdue": 0,
+        "tracked_secs": 15300
+      },
+      {
+        "archived": false,
+        "default": false,
+        "est_secs": 54000,
+        "name": "infra",
+        "open": 3,
+        "overdue": 1,
+        "tracked_secs": 18600
+      },
+      {
+        "archived": false,
+        "default": false,
+        "est_secs": 64800,
+        "name": "mobile",
+        "open": 3,
+        "overdue": 0,
+        "tracked_secs": 35400
+      },
+      {
+        "archived": false,
+        "default": false,
+        "est_secs": 0,
+        "name": "home",
+        "open": 2,
+        "overdue": 0,
+        "tracked_secs": 0
+      }
+    ]
+  },
+  "status": {
+    "active": 1,
+    "blocked": 1,
+    "done_week": 3,
+    "open": 15,
+    "overdue": 1,
+    "project": "website"
+  },
+  "tasks": {
+    "groups": [
+      {
+        "open": 3,
+        "overdue": 1,
+        "project": "infra",
+        "rows": [
+          {
+            "active_since": null,
+            "blocked": false,
+            "completed": null,
+            "due": "2026-09-14T00:00:00Z",
+            "estimate_secs": 3600,
+            "id": "cc5dcd5f-d17f-47d2-9dbc-8dddb8d0c65d",
+            "modified": "2026-09-03T10:00:00Z",
+            "priority": "H",
+            "project": "infra",
+            "short_id": 47,
+            "status": "pending",
+            "title": "Renew the TLS certificate for api.example.dev",
+            "tracked_secs": 0,
+            "urgency": 18.1
+          },
+          {
+            "active_since": null,
+            "blocked": false,
+            "completed": null,
+            "due": null,
+            "estimate_secs": 21600,
+            "id": "84a991f3-b93b-4587-a68b-92e4843afa19",
+            "modified": "2026-08-11T10:00:00Z",
+            "priority": "M",
+            "project": "infra",
+            "short_id": 54,
+            "status": "pending",
+            "title": "Cut build time under five minutes",
+            "tracked_secs": 0,
+            "urgency": 4.3
+          },
+          {
+            "active_since": null,
+            "blocked": false,
+            "completed": null,
+            "due": null,
+            "estimate_secs": 10800,
+            "id": "ea7f7301-c9b4-43b5-afc3-eec055c2d7f4",
+            "modified": "2026-08-15T10:00:00Z",
+            "priority": "M",
+            "project": "infra",
+            "short_id": 53,
+            "status": "pending",
+            "title": "Move nightly backups to object storage",
+            "tracked_secs": 0,
+            "urgency": 4.2
+          }
+        ],
+        "total": 3,
+        "truncated": false
+      },
+      {
+        "open": 4,
+        "overdue": 0,
+        "project": "website",
+        "rows": [
+          {
+            "active_since": "2026-09-16T09:00:00Z",
+            "blocked": false,
+            "completed": null,
+            "due": "2026-09-16T17:00:00Z",
+            "estimate_secs": 21600,
+            "id": "63e5a05b-e665-459b-be06-d750369a9ad7",
+            "modified": "2026-09-16T09:00:00Z",
+            "priority": "H",
+            "project": "website",
+            "short_id": 48,
+            "status": "active",
+            "title": "Ship the v2 pricing page",
+            "tracked_secs": 0,
+            "urgency": 17.8
+          },
+          {
+            "active_since": null,
+            "blocked": false,
+            "completed": null,
+            "due": "2026-09-28T00:00:00Z",
+            "estimate_secs": 18000,
+            "id": "8f0be063-86d3-49a0-b07d-f76f38ae994e",
+            "modified": "2026-09-07T10:00:00Z",
+            "priority": "M",
+            "project": "website",
+            "short_id": 56,
+            "status": "pending",
+            "title": "Accessibility pass on the signup flow",
+            "tracked_secs": 0,
+            "urgency": 6.0
+          },
+          {
+            "active_since": null,
+            "blocked": false,
+            "completed": null,
+            "due": null,
+            "estimate_secs": 7200,
+            "id": "83a39808-85d5-46a8-aa12-dc9da38d0f39",
+            "modified": "2026-08-24T10:00:00Z",
+            "priority": "L",
+            "project": "website",
+            "short_id": 57,
+            "status": "pending",
+            "title": "Replace the carousel on the home page",
+            "tracked_secs": 0,
+            "urgency": 2.0
+          },
+          {
+            "active_since": null,
+            "blocked": false,
+            "completed": null,
+            "due": null,
+            "estimate_secs": 3600,
+            "id": "24226d81-d9cc-44c3-8df0-d47a354f305b",
+            "modified": "2026-08-23T10:00:00Z",
+            "priority": "L",
+            "project": "website",
+            "short_id": 59,
+            "status": "pending",
+            "title": "Archive last year's analytics dashboards",
+            "tracked_secs": 0,
+            "urgency": 2.0
+          }
+        ],
+        "total": 4,
+        "truncated": false
+      },
+      {
+        "open": 3,
+        "overdue": 0,
+        "project": "mobile",
+        "rows": [
+          {
+            "active_since": null,
+            "blocked": false,
+            "completed": null,
+            "due": "2026-09-17T17:00:00Z",
+            "estimate_secs": 14400,
+            "id": "eea93b6f-ca71-467b-ba0c-31f68975fcdb",
+            "modified": "2026-09-06T10:00:00Z",
+            "priority": "H",
+            "project": "mobile",
+            "short_id": 49,
+            "status": "pending",
+            "title": "Fix token refresh race on Android",
+            "tracked_secs": 0,
+            "urgency": 17.0
+          },
+          {
+            "active_since": null,
+            "blocked": false,
+            "completed": null,
+            "due": "2026-09-25T00:00:00Z",
+            "estimate_secs": 28800,
+            "id": "6dcea371-1066-47dc-9e17-b009cf23cf20",
+            "modified": "2026-09-02T10:00:00Z",
+            "priority": "M",
+            "project": "mobile",
+            "short_id": 52,
+            "status": "pending",
+            "title": "Dark mode for the settings screen",
+            "tracked_secs": 0,
+            "urgency": 8.6
+          },
+          {
+            "active_since": null,
+            "blocked": false,
+            "completed": null,
+            "due": null,
+            "estimate_secs": null,
+            "id": "693cc50d-3372-469f-bf65-d54d92af698d",
+            "modified": "2026-09-08T10:00:00Z",
+            "priority": null,
+            "project": "mobile",
+            "short_id": 60,
+            "status": "pending",
+            "title": "Investigate flaky checkout test",
+            "tracked_secs": 0,
+            "urgency": 0.1
+          }
+        ],
+        "total": 3,
+        "truncated": false
+      },
+      {
+        "open": 3,
+        "overdue": 0,
+        "project": "api",
+        "rows": [
+          {
+            "active_since": null,
+            "blocked": false,
+            "completed": null,
+            "due": "2026-09-19T00:00:00Z",
+            "estimate_secs": 10800,
+            "id": "813547e2-5937-41f0-8401-82fcdb14a009",
+            "modified": "2026-08-31T10:00:00Z",
+            "priority": "H",
+            "project": "api",
+            "short_id": 50,
+            "status": "pending",
+            "title": "Rate-limit the /search endpoint",
+            "tracked_secs": 0,
+            "urgency": 15.9
+          },
+          {
+            "active_since": null,
+            "blocked": true,
+            "completed": null,
+            "due": "2026-09-21T00:00:00Z",
+            "estimate_secs": 18000,
+            "id": "46773aad-c4aa-435a-abe1-fcde8ce09658",
+            "modified": "2026-08-16T10:00:00Z",
+            "priority": "M",
+            "project": "api",
+            "short_id": 51,
+            "status": "pending",
+            "title": "Write the migration guide for SDK 3.0",
+            "tracked_secs": 0,
+            "urgency": 12.2
+          },
+          {
+            "active_since": null,
+            "blocked": false,
+            "completed": null,
+            "due": null,
+            "estimate_secs": 14400,
+            "id": "94362459-7e19-4ec0-a143-aa65f21c805c",
+            "modified": "2026-09-05T10:00:00Z",
+            "priority": "M",
+            "project": "api",
+            "short_id": 55,
+            "status": "pending",
+            "title": "Add OpenAPI examples for every endpoint",
+            "tracked_secs": 0,
+            "urgency": 4.0
+          }
+        ],
+        "total": 3,
+        "truncated": false
+      },
+      {
+        "open": 2,
+        "overdue": 0,
+        "project": "home",
+        "rows": [
+          {
+            "active_since": null,
+            "blocked": false,
+            "completed": null,
+            "due": "2026-09-22T00:00:00Z",
+            "estimate_secs": null,
+            "id": "f46cc2ff-6197-4f87-abda-3a974fcb694e",
+            "modified": "2026-08-08T10:00:00Z",
+            "priority": "L",
+            "project": "home",
+            "short_id": 58,
+            "status": "pending",
+            "title": "Book the dentist",
+            "tracked_secs": 0,
+            "urgency": 9.4
+          },
+          {
+            "active_since": null,
+            "blocked": false,
+            "completed": null,
+            "due": null,
+            "estimate_secs": null,
+            "id": "89cf6d5a-071a-4c55-a085-0d669af034b9",
+            "modified": "2026-08-10T10:00:00Z",
+            "priority": null,
+            "project": "home",
+            "short_id": 61,
+            "status": "pending",
+            "title": "Sketch ideas for the Q4 offsite",
+            "tracked_secs": 0,
+            "urgency": 0.4
+          }
+        ],
+        "total": 2,
+        "truncated": false
+      }
+    ],
+    "sort": "urgency",
+    "total": 15
+  },
+  "today": "2026-09-16",
+  "window_days": 7
+}
