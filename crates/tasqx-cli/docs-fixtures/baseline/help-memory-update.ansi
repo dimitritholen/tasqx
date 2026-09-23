@@ -1,0 +1,20 @@
+Correct a doc in place (maps to memory.update)
+
+Usage: tasqx memory update [OPTIONS] <ID>
+
+Arguments:
+  <ID>  The doc UUID, as printed by `memory add`/`memory search`/`memory list`
+
+Options:
+      --json                   Print the raw JSON API result instead of the human table
+      --title <TITLE>          New title. Omit to leave it unchanged
+      --body <BODY>            New body. Omit to leave it unchanged
+      --theme <THEME>          Theme name (built-in nord|gruvbox|dracula|solarized|mono, or a user file). Overrides $TASQX_THEME and the config file (DESIGN.md §8)
+      --socket <SOCKET>        Local socket / named-pipe address of a tasqx daemon. Overrides $TASQX_SOCK. When a daemon is reachable, one-shot commands route through it (single writer); otherwise they run in-process. Also selects the address for `daemon` and `watch`
+      --source <SOURCE>        New source. Omit to leave it unchanged
+      --no-daemon              Never route through a daemon; always run one-shot in-process (the pre-daemon behaviour). Escape hatch for scripts
+      --project <PROJECT>      New project scope. Omit to leave it unchanged
+      --standing <true|false>  Set or clear the standing flag. Omit to leave it unchanged [possible values: true, false]
+      --expected-rev <REV>     Optimistic concurrency: fail with `conflict` (exit 5) unless the doc is still at this rev. Supplied automatically from the doc's current rev when omitted
+  -h, --help                   Print help
+  -V, --version                Print version

@@ -127,6 +127,11 @@ re-captures every screen the documentation ships, and `scripts/snap.sh <name>`
 rasterises one of them through `tasqx docs --screen` when a picture is what is
 wanted — the README's three, or your own eyes on a layout (§14 there).
 
+The same script also drives a second, wider corpus that never ships in the
+guide: [`docs/maintainers/behaviour-baseline.md`](docs/maintainers/behaviour-baseline.md)
+covers every verb, every output mode and every `--help`, for a de-bloat PR to
+diff against.
+
 ## Tests first
 
 A fix lands with a test that was **watched fail against the original code**. When

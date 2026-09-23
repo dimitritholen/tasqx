@@ -1,0 +1,40 @@
+Remove one or more tags from a task (maps to tag.remove).
+
+A tag the task does not carry is exit 4, not a quiet success — see the `tag.remove` docs in the engine for why this differs from `undep`.
+
+Usage: tasqx untag [OPTIONS] <REF> <TAG>...
+
+Arguments:
+  <REF>
+          short_id or UUID
+
+  <TAG>...
+          Tag names, with or without the leading `+`
+
+Options:
+      --json
+          Print the raw JSON API result instead of the human table
+
+      --theme <THEME>
+          Theme name (built-in nord|gruvbox|dracula|solarized|mono, or a user file). Overrides $TASQX_THEME and the config file (DESIGN.md §8)
+
+      --socket <SOCKET>
+          Local socket / named-pipe address of a tasqx daemon. Overrides $TASQX_SOCK. When a daemon is reachable, one-shot commands route through it (single writer); otherwise they run in-process. Also selects the address for `daemon` and `watch`
+
+      --no-daemon
+          Never route through a daemon; always run one-shot in-process (the pre-daemon behaviour). Escape hatch for scripts
+
+  -h, --help
+          Print help (see a summary with '-h')
+
+  -V, --version
+          Print version
+
+EXAMPLES
+  tasqx untag 1 api    # removes it, and prints what remains
+  tasqx untag 1 api release    # all or nothing: one unknown tag removes neither
+
+NOTE  Removing a tag the task does not have exits 4 and removes nothing, naming the tags it does have. A typo may not answer ok.
+      There is no `--clear tags`: a tag comes off by name, which is why this verb exists.
+
+See also: tag · show · list        Full manual: tasqx manual

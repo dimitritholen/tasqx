@@ -1,0 +1,20 @@
+Who made tasqx, where to find it, and what build this is. Prints the author, two links, this build's version and commit, and the store it would open. Needs no store and no network
+
+Usage: tasqx about [OPTIONS]
+
+Options:
+      --json             Print the raw JSON API result instead of the human table
+      --theme <THEME>    Theme name (built-in nord|gruvbox|dracula|solarized|mono, or a user file). Overrides $TASQX_THEME and the config file (DESIGN.md §8)
+      --socket <SOCKET>  Local socket / named-pipe address of a tasqx daemon. Overrides $TASQX_SOCK. When a daemon is reachable, one-shot commands route through it (single writer); otherwise they run in-process. Also selects the address for `daemon` and `watch`
+      --no-daemon        Never route through a daemon; always run one-shot in-process (the pre-daemon behaviour). Escape hatch for scripts
+  -h, --help             Print help
+  -V, --version          Print version
+
+EXAMPLES
+  tasqx about
+
+NOTE  Six lines: the author, two links, the build this binary was made from, the store it would open, and `times UTC` — every clock tasqx reads and prints is UTC, including one typed without an offset (D132). The build is the string `tasqx --version` prints — the crate version plus the commit — and reads `unknown` on a build from a source tarball, which has no git to ask.
+      It opens no store and no network. The store line is the path a command WOULD open, resolved without creating anything, so asking where things live never authors a data directory.
+      A credits screen is not data, so there is no API method and `--json` is declined with a note (D31's carve-out list, D127).
+
+See also: manual · docs        Full manual: tasqx manual

@@ -1,0 +1,41 @@
+Permanently scrub one annotation's text by id (maps to annotation.remove).
+
+A hard delete (D113): the body is overwritten in the store, not merely hidden, so a secret pasted into a note is actually gone. `tasqx undo` does not cover this — there is nothing left to restore.
+
+Usage: tasqx unannotate [OPTIONS] <REF> <ANNOTATION_ID>
+
+Arguments:
+  <REF>
+          short_id or UUID
+
+  <ANNOTATION_ID>
+          The annotation's id, as `tasqx show <ref>` reports it
+
+Options:
+      --json
+          Print the raw JSON API result instead of the human table
+
+      --theme <THEME>
+          Theme name (built-in nord|gruvbox|dracula|solarized|mono, or a user file). Overrides $TASQX_THEME and the config file (DESIGN.md §8)
+
+      --socket <SOCKET>
+          Local socket / named-pipe address of a tasqx daemon. Overrides $TASQX_SOCK. When a daemon is reachable, one-shot commands route through it (single writer); otherwise they run in-process. Also selects the address for `daemon` and `watch`
+
+      --no-daemon
+          Never route through a daemon; always run one-shot in-process (the pre-daemon behaviour). Escape hatch for scripts
+
+  -h, --help
+          Print help (see a summary with '-h')
+
+  -V, --version
+          Print version
+
+EXAMPLES
+  tasqx unannotate 1 018f2f7e-...
+
+NOTE  A HARD delete (D113): the text is overwritten in the store, not merely hidden — use it to take back a secret, a customer name, or a wrong root cause pasted into a note by mistake. This also redacts the original `annotate` event's own body, so `tasqx chart` (`event.list`) and `tasqx export` stop showing it too — not only `tasqx show`.
+      The annotation's id is not printed by `tasqx show` — read it from `tasqx show <ref> --json` (the `annotations[].id` field) or a prior `tasqx annotate` response.
+      `tasqx undo` does NOT cover this: the body is already gone from the log by the time the removal event exists, so there is nothing left to restore.
+      An unknown id, or one already removed, exits 4 (not_found) rather than answering ok for nothing.
+
+See also: annotate · show · undo        Full manual: tasqx manual

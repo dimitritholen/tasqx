@@ -1,0 +1,75 @@
+{
+  "all": false,
+  "filter": "",
+  "generated": "2026-09-16T09:00:00Z",
+  "groups": [
+    {
+      "count": 9,
+      "est_total": "PT16H",
+      "overdue": 0,
+      "project": "api",
+      "tokens_cache_creation": 216000,
+      "tokens_cache_read": 7068000,
+      "tokens_confidence": "medium",
+      "tokens_in": 676000,
+      "tokens_out": 81000,
+      "tokens_unsplit": 0,
+      "tracked_total": "PT4H15M"
+    },
+    {
+      "count": 2,
+      "est_total": "PT0S",
+      "overdue": 0,
+      "project": "home",
+      "tokens_cache_creation": 0,
+      "tokens_cache_read": 0,
+      "tokens_in": 0,
+      "tokens_out": 0,
+      "tokens_unsplit": 0,
+      "tracked_total": "PT0S"
+    },
+    {
+      "count": 11,
+      "est_total": "PT15H",
+      "overdue": 1,
+      "project": "infra",
+      "tokens_cache_creation": 147000,
+      "tokens_cache_read": 2895000,
+      "tokens_confidence": "medium",
+      "tokens_in": 364000,
+      "tokens_out": 38000,
+      "tokens_unsplit": 0,
+      "tracked_total": "PT5H10M"
+    },
+    {
+      "count": 16,
+      "est_total": "PT18H",
+      "overdue": 0,
+      "project": "mobile",
+      "tokens_cache_creation": 511000,
+      "tokens_cache_read": 7715000,
+      "tokens_confidence": "medium",
+      "tokens_in": 557000,
+      "tokens_out": 95000,
+      "tokens_unsplit": 0,
+      "tracked_total": "PT9H50M"
+    },
+    {
+      "count": 17,
+      "est_total": "PT38H",
+      "overdue": 0,
+      "project": "website",
+      "tokens_cache_creation": 446000,
+      "tokens_cache_read": 2473000,
+      "tokens_confidence": "medium",
+      "tokens_in": 770000,
+      "tokens_out": 44000,
+      "tokens_unsplit": 0,
+      "tracked_total": "PT36H25M"
+    }
+  ],
+  "since": null,
+  "store_empty": false,
+  "tokens_excluded_cancelled_tasks": 0,
+  "until": null
+}

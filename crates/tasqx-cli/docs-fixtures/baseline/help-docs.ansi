@@ -1,0 +1,46 @@
+Open the English user guide in your browser: one self-contained HTML file (inline CSS + JS, no external requests), generated from this binary.
+
+Needs no store and no network. The file IS the deliverable and opening it is a courtesy, so a missing browser is never an error — the launch is attempted, a failure is reported on stderr with the path, and the command exits 0. That keeps `docs` headless/CI-safe by default rather than by flag.
+
+Usage: tasqx docs [OPTIONS]
+
+Options:
+      --json
+          Print the raw JSON API result instead of the human table
+
+      --out <PATH>
+          Write the guide to this path instead of a temp file. Implies --no-open: naming an output file is asking for the file, not for a browser
+
+      --no-open
+          Write the file but never launch a browser. Prints the path instead
+
+      --theme <THEME>
+          Theme name (built-in nord|gruvbox|dracula|solarized|mono, or a user file). Overrides $TASQX_THEME and the config file (DESIGN.md §8)
+
+      --socket <SOCKET>
+          Local socket / named-pipe address of a tasqx daemon. Overrides $TASQX_SOCK. When a daemon is reachable, one-shot commands route through it (single writer); otherwise they run in-process. Also selects the address for `daemon` and `watch`
+
+      --stdout
+          Write the HTML to stdout instead of a file (pipe it anywhere)
+
+      --no-daemon
+          Never route through a daemon; always run one-shot in-process (the pre-daemon behaviour). Escape hatch for scripts
+
+      --screen <NAME>
+          Write ONE captured screen as a standalone page — the terminal styling of the guide, nothing else — to --out, or to stdout. An unknown name exits 2 listing the screens there are
+
+  -h, --help
+          Print help (see a summary with '-h')
+
+  -V, --version
+          Print version
+
+EXAMPLES
+  tasqx docs    # open the browser guide
+  tasqx docs --stdout
+  tasqx docs --screen list    # one captured screen, standalone
+
+NOTE  The exhaustive browser guide (self-contained HTML). For a quick in-terminal guide, `tasqx manual`.
+      `--screen NAME` writes ONE captured screen instead of the guide: a standalone page carrying the guide's terminal styling and nothing else, to `--out` or to stdout. It is the rasterisation path behind the README's pictures (`scripts/snap.sh`), and an unknown name exits 2 listing every screen there is.
+
+See also: manual        Full manual: tasqx manual

@@ -1,0 +1,28 @@
+Token accounting maintenance (DESIGN.md §12-D50)
+
+Usage: tasqx tokens [OPTIONS] <COMMAND>
+
+Commands:
+  add        Record token spend on a task after the fact (maps to token.add), e.g. a count that arrived after the task was completed. Stored as a self-report at medium confidence (D50, D167). Give --total alone when only one number is known, or the split counts — never both
+  recompute  Re-run log-parse attribution over stored history under the D50 refusal rule (maps to tokens.recompute): samples claimed by more than one task's window drop out, and a task whose transcript is gone keeps its counts with confidence downgraded to low. Dry-run by default: prints the per-task delta and writes nothing
+
+Options:
+      --json             Print the raw JSON API result instead of the human table
+      --theme <THEME>    Theme name (built-in nord|gruvbox|dracula|solarized|mono, or a user file). Overrides $TASQX_THEME and the config file (DESIGN.md §8)
+      --socket <SOCKET>  Local socket / named-pipe address of a tasqx daemon. Overrides $TASQX_SOCK. When a daemon is reachable, one-shot commands route through it (single writer); otherwise they run in-process. Also selects the address for `daemon` and `watch`
+      --no-daemon        Never route through a daemon; always run one-shot in-process (the pre-daemon behaviour). Escape hatch for scripts
+  -h, --help             Print help
+  -V, --version          Print version
+
+EXAMPLES
+  tasqx tokens add 602 --total 37898    # a count that arrived after completion, as one unsplit number
+  tasqx tokens add 602 --in 18400 --out 2600 --tool claude-code    # the same, split
+  tasqx tokens recompute
+  tasqx tokens recompute --apply    # write the repair, after reviewing the dry-run delta
+
+NOTE  `add` records a self-report at confidence `medium` — what `done`'s token flags record, for a count that arrives later (D167). `--total` is one unsplit number, kept apart from the four buckets and counted in full by a budget; give it alone or give the split flags, never both.
+      A bare `tasqx tokens recompute` prints the per-task delta and writes NOTHING; `--apply` is the explicit opt-in for the one verb in the API built to delete measurement rows.
+      Scope is `source=log-parse` measurements only: samples claimed by more than one task's window drop out, a task whose transcript is gone keeps its counts at confidence `low`, and self-reported/OTLP rows are never rewritten.
+      Stop any daemon on the store before `--apply`: the verb parses transcripts and runs in-process only (a daemon refuses it over the socket), and applying beside a live daemon is two writers — convergence on rerun is the safety net, not a license.
+
+See also: report · done · api        Full manual: tasqx manual

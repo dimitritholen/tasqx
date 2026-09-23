@@ -1,0 +1,25 @@
+Create a project (maps to project.create)
+
+Usage: tasqx init [OPTIONS] <NAME>
+
+Arguments:
+  <NAME>  Project name, e.g. work.tasqx
+
+Options:
+      --desc <DESC>      Optional description
+      --json             Print the raw JSON API result instead of the human table
+      --theme <THEME>    Theme name (built-in nord|gruvbox|dracula|solarized|mono, or a user file). Overrides $TASQX_THEME and the config file (DESIGN.md §8)
+      --socket <SOCKET>  Local socket / named-pipe address of a tasqx daemon. Overrides $TASQX_SOCK. When a daemon is reachable, one-shot commands route through it (single writer); otherwise they run in-process. Also selects the address for `daemon` and `watch`
+      --no-daemon        Never route through a daemon; always run one-shot in-process (the pre-daemon behaviour). Escape hatch for scripts
+  -h, --help             Print help
+  -V, --version          Print version
+
+EXAMPLES
+  tasqx init keuken-verbouwen
+  tasqx init work --desc "Day job"
+  tasqx init home && tasqx use home    # claim then set default
+
+NOTE  A project is just a name in the store — no folder is created.
+      init claims the default project only if the store has none yet.
+
+See also: use · add · projects        Full manual: tasqx manual

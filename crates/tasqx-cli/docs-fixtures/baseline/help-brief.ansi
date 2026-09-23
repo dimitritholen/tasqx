@@ -1,0 +1,29 @@
+Everything needed before starting a task, in one read (maps to task.brief)
+
+Usage: tasqx brief [OPTIONS] <REF>
+
+Arguments:
+  <REF>  short_id or UUID
+
+Options:
+      --json              Print the raw JSON API result instead of the human table
+      --memory-limit <N>  How many memory hits to show
+      --card              Print the task as a 72-column box-drawn card, for pasting into a document
+      --theme <THEME>     Theme name (built-in nord|gruvbox|dracula|solarized|mono, or a user file). Overrides $TASQX_THEME and the config file (DESIGN.md §8)
+      --ascii             With --card: draw the borders with + - | instead of box-drawing characters
+      --socket <SOCKET>   Local socket / named-pipe address of a tasqx daemon. Overrides $TASQX_SOCK. When a daemon is reachable, one-shot commands route through it (single writer); otherwise they run in-process. Also selects the address for `daemon` and `watch`
+      --no-daemon         Never route through a daemon; always run one-shot in-process (the pre-daemon behaviour). Escape hatch for scripts
+  -h, --help              Print help
+  -V, --version           Print version
+
+EXAMPLES
+  tasqx brief 1
+  tasqx brief 1 --memory-limit 3
+  tasqx brief 1 --card
+
+NOTE  The task, what each of its prerequisites concluded, what it blocks, and memory found under a query tasqx derives from the task's own title, tags and project — so nobody has to guess search terms.
+      Half the memory page (rounded up) is reserved for knowledge docs, so a ruling is never buried under a sibling task's own notes; annotations fill whatever slots docs leave (D147).
+      Memory is scoped to the task's project and does not widen when that finds nothing: `tasqx memory search` is the wider read.
+      `--card` prints a fixed 72-column box-drawn card meant to be pasted into a document (a chat, a PR); `--ascii` draws its borders with `+ - |`. The default screen is unchanged (D146).
+
+See also: show · next · memory        Full manual: tasqx manual

@@ -21,6 +21,15 @@
 #   --no-daemon   accepted and ignored. Every invocation below already passes
 #                 it; the flag exists so the CLAUDE.md dev-build rule can be
 #                 satisfied by the command line that calls this script.
+#   --dir=PATH    read PATH/manifest.tsv and write/check PATH/*.ansi instead of
+#                 crates/tasqx-cli/docs-fixtures, PATH relative to the repo
+#                 root. What is embedded into the docs site with
+#                 `include_str!` is exactly one directory —
+#                 crates/tasqx-cli/docs-fixtures itself, held to naming every
+#                 fixture it captures in `fixtures.rs` — so a corpus that must
+#                 NOT ship in the guide (e.g. the behaviour baseline,
+#                 docs/maintainers/behaviour-baseline.md) lives under its own
+#                 --dir instead of growing rows nothing renders.
 #
 # What it is
 #
@@ -48,12 +57,14 @@ set -euo pipefail
 PIN=2026-09-16T09:00:00Z
 
 check=0
+dir_override=
 for arg in "$@"; do
     case "$arg" in
     --check) check=1 ;;
     --no-daemon) ;;
+    --dir=*) dir_override=${arg#--dir=} ;;
     -h | --help)
-        sed -n '3,41p' "$0" | sed 's/^# \{0,1\}//'
+        sed -n '3,50p' "$0" | sed 's/^# \{0,1\}//'
         exit 0
         ;;
     *)
@@ -65,6 +76,9 @@ done
 
 root=$(cd "$(dirname "$0")/.." && pwd)
 fixtures=$root/crates/tasqx-cli/docs-fixtures
+if [ -n "$dir_override" ]; then
+    fixtures=$root/$dir_override
+fi
 manifest=$fixtures/manifest.tsv
 demo_db=$root/target/demo/tasks.db
 demo_config=$root/target/demo/config
@@ -235,19 +249,49 @@ capture_tui() {
 # TASQX_FORCE_COLOR and COLUMNS set, the binary renders the TERMINAL layout
 # (the `show`/`brief` card, its field grid), so a change to what a terminal
 # prints changes these fixtures too (#714's check-block fix did).
+#
+# `render` is "color" for every row above, and "plain" for a `pipe-plain`/
+# `pipe-plain-mut` row: the same call with TASQX_FORCE_COLOR and TERM left
+# unset, which is what a script actually gets piping tasqx with no terminal
+# behind it — a code path `[[ "$render" == color ]]` above never exercised, and
+# visibly different (no SGR, `-` for `·`, `*` for `▶`; see docs-fixtures/baseline).
+#
+# Two near-identical bodies rather than a `color_env=()` array threaded
+# through one: an empty array subscripted with `"${arr[@]}"` under `set -u` is
+# an unbound-variable error on bash 3.2 (macOS's `/usr/bin/env bash`), and this
+# script has to run on a maintainer's Mac as much as on CI.
 capture_pipe() {
-    local cols=$1 db=$2 stdin=$3 dest=$4
-    shift 4
+    local render=$1 cols=$2 db=$3 stdin=$4 dest=$5
+    shift 5
     local status=0
-    if [ "$stdin" = "-" ]; then
-        clean_env TASQX_DB="$db" TASQX_CONFIG_DIR="$demo_config" TASQX_NOW="$PIN" \
-            TASQX_FORCE_COLOR=1 TERM=xterm-256color COLUMNS="$cols" \
-            "$TASQX" --no-daemon "$@" >"$dest" 2>&1 </dev/null || status=$?
+    if [ "$render" = plain ]; then
+        if [ "$stdin" = "-" ]; then
+            clean_env TASQX_DB="$db" TASQX_CONFIG_DIR="$demo_config" TASQX_NOW="$PIN" \
+                COLUMNS="$cols" \
+                "$TASQX" --no-daemon "$@" >"$dest" 2>&1 </dev/null || status=$?
+        else
+            # `%b` rather than `%s`: an `mcp serve` row's stdin is more than one
+            # JSON-RPC message (an `initialize` request, then `tools/list`), and
+            # a TSV field cannot hold a real newline. The manifest spells the
+            # break as a literal `\n`, which only `%b` expands. No row before
+            # this one carried a backslash, so every other stdin column is
+            # unchanged by the switch.
+            printf '%b' "$stdin" |
+                clean_env TASQX_DB="$db" TASQX_CONFIG_DIR="$demo_config" TASQX_NOW="$PIN" \
+                    COLUMNS="$cols" \
+                    "$TASQX" --no-daemon "$@" >"$dest" 2>&1 || status=$?
+        fi
     else
-        printf '%s' "$stdin" |
+        if [ "$stdin" = "-" ]; then
             clean_env TASQX_DB="$db" TASQX_CONFIG_DIR="$demo_config" TASQX_NOW="$PIN" \
                 TASQX_FORCE_COLOR=1 TERM=xterm-256color COLUMNS="$cols" \
-                "$TASQX" --no-daemon "$@" >"$dest" 2>&1 || status=$?
+                "$TASQX" --no-daemon "$@" >"$dest" 2>&1 </dev/null || status=$?
+        else
+            printf '%b' "$stdin" |
+                clean_env TASQX_DB="$db" TASQX_CONFIG_DIR="$demo_config" TASQX_NOW="$PIN" \
+                    TASQX_FORCE_COLOR=1 TERM=xterm-256color COLUMNS="$cols" \
+                    "$TASQX" --no-daemon "$@" >"$dest" 2>&1 || status=$?
+        fi
     fi
     return $status
 }
@@ -272,7 +316,14 @@ while IFS=$'\t' read -r name kind cols rows args keys stdin <&3 || [ -n "${name:
     eval "set -- $args"
     case "$kind" in
     pipe | pipe-mut)
-        if ! capture_pipe "$cols" "$db" "$stdin" "$dest" "$@"; then
+        if ! capture_pipe color "$cols" "$db" "$stdin" "$dest" "$@"; then
+            echo "docs-capture: row '$name' exited nonzero; its output was:" >&2
+            cat "$dest" >&2
+            exit 1
+        fi
+        ;;
+    pipe-plain | pipe-plain-mut)
+        if ! capture_pipe plain "$cols" "$db" "$stdin" "$dest" "$@"; then
             echo "docs-capture: row '$name' exited nonzero; its output was:" >&2
             cat "$dest" >&2
             exit 1

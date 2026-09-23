@@ -1,0 +1,37 @@
+Complete a task (maps to task.done)
+
+Usage: tasqx done [OPTIONS] <REF>
+
+Arguments:
+  <REF>  short_id or UUID
+
+Options:
+      --force                      Complete the task even though some of its dependencies are still open (recorded; `report --outcomes` counts it under FORCED)
+      --json                       Print the raw JSON API result instead of the human table
+      --client <TOOL>              Calling tool as "<name> <version>", e.g. "claude-code 2.1". Selects the transcript parser; without it no transcript is ever read
+      --theme <THEME>              Theme name (built-in nord|gruvbox|dracula|solarized|mono, or a user file). Overrides $TASQX_THEME and the config file (DESIGN.md §8)
+      --session-id <ID>            Agent session id, verified against the transcript to earn high confidence. Requires --client
+      --socket <SOCKET>            Local socket / named-pipe address of a tasqx daemon. Overrides $TASQX_SOCK. When a daemon is reachable, one-shot commands route through it (single writer); otherwise they run in-process. Also selects the address for `daemon` and `watch`
+      --no-daemon                  Never route through a daemon; always run one-shot in-process (the pre-daemon behaviour). Escape hatch for scripts
+      --transcript-path <PATH>     Absolute path to the session transcript the tokens will be found in. Requires --client
+      --tool <TOOL>                The AI tool doing the work, free-form (e.g. "claude-code"). Recorded on the completion event on its own; when token counts are present it also names the measurement, defaulting to --client if omitted
+      --model <MODEL>              The model doing the work, e.g. "claude-opus-5". Recorded on the completion event on its own, and carried on the measurement when token counts are present
+      --input-tokens <N>           Self-reported input tokens this task cost (0 or more)
+      --output-tokens <N>          Self-reported output tokens this task cost (0 or more)
+      --cache-read-tokens <N>      Self-reported cache-read tokens this task cost (0 or more)
+      --cache-creation-tokens <N>  Self-reported cache-creation tokens this task cost (0 or more)
+      --total-tokens <N>           One unsplit token count, for a harness that reports only a total — instead of the four counts above, never beside them (D167)
+  -h, --help                       Print help
+  -V, --version                    Print version
+
+EXAMPLES
+  tasqx done 1    # completes; spawns the next recurrence if any
+  tasqx done 1 --force    # complete it although a dependency is still open; the override is recorded
+  tasqx done 1 --client 'claude-code 2.1' --session-id $SID    # close the interval an agent opened with the same ids
+  tasqx done 1 --tool claude-code --model claude-opus-5 --input-tokens 4200 --output-tokens 900    # self-report the turn's spend — the primary measurement channel (D50)
+
+NOTE  A task whose dependencies are still open is refused, naming them. --force completes it anyway; the override lands on the done event and `tasqx report --outcomes` counts it under FORCED (D150). Cancelling a blocked task needs no flag.
+      The correlation flags carry the same meaning as on `start`, and are recorded per occurrence: a task can start and finish many times, and attribution pairs the two events of one interval.
+      --tool/--model and the four *-tokens flags are the self-report channel (D50/D65): any present token count records a measurement, attributed to --tool (or --client if --tool is omitted). --tool/--model alone, with no count, still land on the completion event. Skip all of them and the response carries a tokens_hint explaining what was not recorded — printed under the Done line.
+
+See also: cancel · reopen · start        Full manual: tasqx manual

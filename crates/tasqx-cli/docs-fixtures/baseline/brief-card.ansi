@@ -1,0 +1,29 @@
+┌─────────────┬────────────────────────────────────────────────────────┐
+│ Task #51    │ Write the migration guide for SDK 3.0                  │
+├─────────────┼────────────────────────────────────────────────────────┤
+│ Status      │ pending · M · est 5h · project api                     │
+│ Tags        │ docs                                                   │
+│ Due         │ 2026-09-21 (in 5 days)                                 │
+│ Description │ Ruling: the guide ships WITH the 3.0 release, not      │
+│             │ after it. A migration note that lands a week late is a │
+│             │ support ticket that already happened.                  │
+│ Blocked by  │ #50 Rate-limit the /search endpoint                    │
+│ Checks      │ [#####-----] 2/4                                       │
+│             │ [x] Every renamed symbol has a row in the table        │
+│             │ [x] One worked example per SDK (js, py, go)            │
+│             │ [ ] The rate-limit ceiling is stated with its real     │
+│             │     number                                             │
+│             │ [ ] Reviewed by whoever ships 3.0                      │
+│ Notes       │ 3 annotations, newest 2026-09-04 (12 days ago)         │
+└─────────────┴────────────────────────────────────────────────────────┘
+
+### Depends on
+
+- **#50** Rate-limit the /search endpoint · pending
+
+### From memory
+
+**Docs** — 1 of 1
+
+- **release-process** · `docs/release.md` [api]
+  description How an SDK release is cut, tagged and announced Cut the…

@@ -1,0 +1,40 @@
+Read and change tasqx settings (DESIGN.md §12-D25)
+
+Usage: tasqx config [OPTIONS] <COMMAND>
+
+Commands:
+  list      Show every setting with its value, source and default
+  get       Print one setting's resolved value
+  describe  Print one setting's description, units and default (#236.2)
+  set       Set a setting in `config.toml`
+  unset     Remove a setting so it falls back to its default
+  path      Print the path of `config.toml` (it may not exist yet)
+  store     Print which store this command would actually write to
+  edit      Edit settings on an interactive screen, previewing themes live
+
+Options:
+      --json             Print the raw JSON API result instead of the human table
+      --theme <THEME>    Theme name (built-in nord|gruvbox|dracula|solarized|mono, or a user file). Overrides $TASQX_THEME and the config file (DESIGN.md §8)
+      --socket <SOCKET>  Local socket / named-pipe address of a tasqx daemon. Overrides $TASQX_SOCK. When a daemon is reachable, one-shot commands route through it (single writer); otherwise they run in-process. Also selects the address for `daemon` and `watch`
+      --no-daemon        Never route through a daemon; always run one-shot in-process (the pre-daemon behaviour). Escape hatch for scripts
+  -h, --help             Print help
+  -V, --version          Print version
+
+EXAMPLES
+  tasqx config list
+  tasqx config get theme.name
+  tasqx config describe daemon.idle_timeout
+  tasqx config path
+  tasqx config store
+  tasqx config set theme.name gruvbox    # writes config.toml, preserving your comments
+  tasqx config edit    # full-screen editor; arrow through themes and watch them apply
+
+NOTE  `describe` prints a setting's meaning, unit and default — for `daemon.idle_timeout` the number `get`/`list` show is minutes, and the unit is otherwise only visible in the daemon's own startup banner.
+      `store` answers which store you are actually writing to — and says so when a running daemon owns it, because the remote path never consults $TASQX_DB, so a correct $TASQX_DB is silently inert whenever a daemon is listening.
+      `list` shows both homes. Most settings live in `config.toml`; `default_project` lives in the store and is set with `tasqx use` (D21).
+      Resolution order is `--flag`, then `$TASQX_*`, then `config.toml`, then the built-in default (D9). The SOURCE column names the layer that won.
+      `edit` opens an interactive screen: up/down to move, enter to toggle a switch or open a theme picker, esc to leave. Moving through the theme list repaints the screen in that theme before anything is written.
+      `edit` needs a real terminal. Piped or redirected it refuses and exits 2 rather than writing escape codes into your pipe — scripts should use `set`/`unset` (D26).
+      `tokens.enabled` allows the daemon to attribute AI token usage from local tool transcripts; `otlp.enabled` (+ `otlp.port`) runs a local OTLP/HTTP receiver instead — see `tasqx manual reports` and `tasqx manual daemon`. Both require a running daemon; self-reported counts (`token.add`) work with both off.
+
+See also: use · theme · manual        Full manual: tasqx manual

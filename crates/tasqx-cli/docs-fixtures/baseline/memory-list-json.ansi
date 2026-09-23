@@ -1,0 +1,67 @@
+{
+  "count": 5,
+  "docs": [
+    {
+      "_rev": 0,
+      "body_preview": "# Pricing page\nThree tiers, annual billing shown first. The release of v2 waits for legal to sign off the new terms.",
+      "body_truncated": false,
+      "created": "2026-09-09T09:15:00Z",
+      "id": "0787b26d-9e2e-4be5-ab66-ec953102fad3",
+      "modified": "2026-09-14T09:15:00Z",
+      "project": "website",
+      "source": "notes/pricing.md",
+      "standing": false,
+      "title": "pricing-page-decisions"
+    },
+    {
+      "_rev": 0,
+      "body_preview": "---\ndescription: How an SDK release is cut, tagged and announced\n---\nCut the release branch on Monday, tag after the canary has run for a day, and announce in t",
+      "body_truncated": true,
+      "created": "2026-09-05T09:15:00Z",
+      "id": "eb864f1e-e68a-4d96-af89-597bd0d2d52e",
+      "modified": "2026-09-10T09:15:00Z",
+      "project": "api",
+      "source": "docs/release.md",
+      "standing": false,
+      "title": "release-process"
+    },
+    {
+      "_rev": 0,
+      "body_preview": "The handover happens Friday at 16:00. Walk the open incidents, the error budget and anything paged twice in the week, then rotate the pager.",
+      "body_truncated": false,
+      "created": "2026-08-29T09:15:00Z",
+      "id": "1bce1a9b-5134-4ab7-8665-34cd79fe0c5f",
+      "modified": "2026-09-03T09:15:00Z",
+      "project": "infra",
+      "source": null,
+      "standing": false,
+      "title": "on-call-handover"
+    },
+    {
+      "_rev": 0,
+      "body_preview": "The refresh race happens when two requests see an expired token at once. Serialise refresh behind one lock and retry the losing request.",
+      "body_truncated": false,
+      "created": "2026-08-22T09:15:00Z",
+      "id": "b3bd4390-2124-42ac-829d-f542ecde8a07",
+      "modified": "2026-08-27T09:15:00Z",
+      "project": "mobile",
+      "source": null,
+      "standing": false,
+      "title": "android-token-refresh"
+    },
+    {
+      "_rev": 0,
+      "body_preview": "Dr. Visser, Tuesdays and Thursdays, book two weeks ahead.",
+      "body_truncated": false,
+      "created": "2026-08-08T09:15:00Z",
+      "id": "091eb5ff-05d5-4cb2-ba2f-0afdc77f7935",
+      "modified": "2026-08-13T09:15:00Z",
+      "project": null,
+      "source": null,
+      "standing": false,
+      "title": "dentist"
+    }
+  ],
+  "next_offset": null,
+  "total": 5
+}

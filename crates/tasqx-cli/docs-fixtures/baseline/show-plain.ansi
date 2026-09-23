@@ -1,0 +1,18 @@
+#51  Write the migration guide for SDK 3.0
+  status     pending
+  blocked    by #50 · Rate-limit the /search endpoint
+  urgency    M 12.2
+  project    api
+  due        Mon (in 5 days)
+  estimate   5h
+  tags       +docs
+  created    16 Aug (31 days ago)
+  modified   16 Aug (31 days ago)
+  rev        1
+  [x] Every renamed symbol has a row in the table
+  [x] One worked example per SDK (js, py, go)
+  [ ] The rate-limit ceiling is stated with its real number
+  [ ] Reviewed by whoever ships 3.0
+  · Ruling: the guide ships WITH the 3.0 release, not after it. A migration note that lands a week late is a support ticket that already happened.
+  · Blocked until the rate limit lands: the guide has to state the real ceiling, and quoting a number that then changes is worse than waiting.
+  · Scope: the 2.x → 3.0 rename table, the auth change, and a worked example per SDK. Not the reference — that generates itself.

@@ -1,0 +1,28 @@
+through 30 Sep (+14d)   8 tasks - 1 overdue - #48 running - 1 blocked
+
+    ID     URG  TASK                                           PROJECT  WHEN        TAGS
+Overdue
+    47  H 18.1  Renew the TLS certificate for api.example.dev  infra    due 2d ago  +ops
+
+Today · Wed 16 Sep
+*   48  H 17.8  Ship the v2 pricing page                       website  due 17:00   +launch
+
+Tomorrow · Thu 17 Sep
+    49  H 17.0  Fix token refresh race on Android              mobile   due 17:00   +bug
+
+Sat 19 Sep
+    50  H 15.9  Rate-limit the /search endpoint                api                  +perf
+
+Mon 21 Sep
+B   51  M 12.2  Write the migration guide for SDK 3.0          api                  +docs
+
+Tue 22 Sep
+    58  L  9.4  Book the dentist                               home
+
+Fri 25 Sep
+    52  M  8.6  Dark mode for the settings screen              mobile               +ui
+
+Mon 28 Sep
+    56  M  6.0  Accessibility pass on the signup flow          website              +a11y
+
+7 undated — no due or scheduled date, so nothing puts them on a day; `tasqx list` shows them

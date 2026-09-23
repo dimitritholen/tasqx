@@ -1,0 +1,46 @@
+What is coming up, when (maps to task.list). `list` ordered by time and grouped by day, instead of by urgency.
+
+A task is placed on the EARLIER of its `due` and `scheduled` — the first day it asks anything of you — and the `WHEN` column says which of the two that was. A task carrying neither is not on any day, so it is not in the table; it is counted, and the footer names `tasqx list` as the view that shows it. Rows past the horizon are counted the same way. Those are the only two reasons this view holds a row back — done and cancelled work is not among them, because it never matched the filter to begin with (see the notes below), so there is no count for it here.
+
+Overdue rows are always shown, whatever `--days` says. A horizon is a question about the future, and an agenda that hid what you are already late on would be answering a different one.
+
+Usage: tasqx agenda [OPTIONS] [FILTER]...
+
+Arguments:
+  [FILTER]...
+          Filter DSL, e.g. "project:work +api" (default: the working set)
+
+Options:
+      --days <DAYS>
+          How many days ahead to look (1-3650; default 14). Overdue tasks are shown regardless
+
+      --json
+          Print the raw JSON API result instead of the human table
+
+      --theme <THEME>
+          Theme name (built-in nord|gruvbox|dracula|solarized|mono, or a user file). Overrides $TASQX_THEME and the config file (DESIGN.md §8)
+
+      --socket <SOCKET>
+          Local socket / named-pipe address of a tasqx daemon. Overrides $TASQX_SOCK. When a daemon is reachable, one-shot commands route through it (single writer); otherwise they run in-process. Also selects the address for `daemon` and `watch`
+
+      --no-daemon
+          Never route through a daemon; always run one-shot in-process (the pre-daemon behaviour). Escape hatch for scripts
+
+  -h, --help
+          Print help (see a summary with '-h')
+
+  -V, --version
+          Print version
+
+EXAMPLES
+  tasqx agenda
+  tasqx agenda --days 3
+  tasqx agenda project:work
+
+NOTE  A task is placed on the EARLIER of its `due` and `scheduled` — the first day it asks anything of you — and the WHEN column says which of the two that was.
+      Overdue tasks are always shown, whatever `--days` says: a horizon is a question about the future.
+      This view holds a row back for exactly two reasons, and both are COUNTED under the table rather than dropped in silence: no date at all, and past the horizon. Each count names the way to see them — the horizon line quotes the exact `--days` that reaches the furthest one, or, when the row is further out than the widest window `--days` accepts, says so and points at `tasqx list`.
+      Done and cancelled tasks are left out unless your filter names a status, the same rule `report` applies to cancelled tasks (D24). `tasqx agenda status:done` shows them.
+      Days are UTC days, because a date typed without a time is stored as midnight UTC; grouping by local time would file `--due 2026-08-05` under the 4th west of Greenwich.
+
+See also: list · next · add · modify        Full manual: tasqx manual

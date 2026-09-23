@@ -1,0 +1,60 @@
+The organiser for your AI: a backlog, a memory and a brief for your coding agent, and a fast, terminal-first task manager for you.
+
+Usage: tasqx [OPTIONS] [COMMAND]
+
+Commands:
+  init         Create a project (maps to project.create)
+  add          Add a task (maps to task.add). Supports inline +tag / project: / !prio sugar
+  modify       Change a task (maps to task.modify). Takes the same inline sugar and natural-language dates as `add`; clear a field with `--clear <field>`
+  list         List tasks (maps to task.list). Bare `tasqx` shows the working set
+  agenda       What is coming up, when (maps to task.list). `list` ordered by time and grouped by day, instead of by urgency
+  start        Start a task timer (maps to task.start)
+  stop         Stop the task timer (maps to task.stop)
+  adjust       Correct a task's tracked time by a signed duration (maps to task.adjust_tracked)
+  done         Complete a task (maps to task.done)
+  show         Show a task's full detail incl. tags/annotations/deps (maps to task.get)
+  brief        Everything needed before starting a task, in one read (maps to task.brief)
+  check        Acceptance criteria on a task (maps to check.add/set/remove)
+  cancel       Cancel a task (maps to task.cancel)
+  reopen       Reopen a done/cancelled task (maps to task.reopen)
+  undo         Undo the last thing this store recorded (maps to event.revert)
+  annotate     Annotate a task (maps to annotation.add), or correct one note in place with `--edit <annotation-id>` (maps to annotation.update, D165)
+  unannotate   Permanently scrub one annotation's text by id (maps to annotation.remove)
+  tag          Attach one or more tags to a task (maps to tag.add)
+  untag        Remove one or more tags from a task (maps to tag.remove)
+  dep          Add a dependency: <ref> depends on <depends_on> (maps to dependency.add)
+  undep        Remove a dependency (maps to dependency.remove)
+  use          Set the default project — where a bare `tasqx add` lands (maps to project.use)
+  archive      Retire a project — out of rotation, tasks untouched (maps to project.archive)
+  projects     List projects (maps to project.list)
+  report       Grouped summary report (maps to report.summary), or a self-contained HTML review with `--html` (DESIGN.md §8)
+  chart        Native terminal charts from the event log (DESIGN.md §8)
+  theme        Theme tools: list built-ins or preview a theme's roles (DESIGN.md §8)
+  config       Read and change tasqx settings (DESIGN.md §12-D25)
+  memory       Memory: store and search knowledge docs + annotations (DESIGN.md §12-D41)
+  tokens       Token accounting maintenance (DESIGN.md §12-D50)
+  export       Export tasks as canonical JSON (maps to store.export)
+  import       Import tasks from a file, or `-` for stdin (maps to store.import)
+  next         Print the single highest-urgency unblocked task (the "what now" button)
+  dashboard    Open the dashboard: an overview screen over the working set, deadlines, blocked work, projects, burndown and token spend (DESIGN.md §12-D58)
+  pick         Browse tasks on a full-screen list, and start one (maps to task.list, task.get, then task.start)
+  why          Explain a task's urgency breakdown (maps to task.get + the D1 formula)
+  api          stdio one-shot: read ONE JSON request envelope on stdin, write ONE response
+  daemon       Run the long-lived daemon: bind a local socket / named pipe and serve the JSON API to many concurrent clients, pushing live change notifications (DESIGN.md §2). Ctrl-C stops it cleanly
+  watch        Live view: connect to a daemon, subscribe, and re-render the working set on every `task.changed` push (DESIGN.md §6a). Needs a running daemon
+  mcp          Bundled MCP server (DESIGN.md §7, §12-D7)
+  docs         Open the English user guide in your browser: one self-contained HTML file (inline CSS + JS, no external requests), generated from this binary
+  about        Who made tasqx, where to find it, and what build this is. Prints the author, two links, this build's version and commit, and the store it would open. Needs no store and no network
+  manual       Browse the complete manual in your terminal: a themed, navigable guide. `tasqx manual` prints the table of contents; `tasqx manual <command|topic>` opens that page, or both where a name is a command and a topic (`projects`, `daemon`). Needs no store and no network
+  completions  Print — or install — the line that turns on Tab completion for tasqx
+  setup        Install the Claude Code integration: the MCP server and the bundled skills
+
+Options:
+      --json             Print the raw JSON API result instead of the human table
+      --theme <THEME>    Theme name (built-in nord|gruvbox|dracula|solarized|mono, or a user file). Overrides $TASQX_THEME and the config file (DESIGN.md §8)
+      --socket <SOCKET>  Local socket / named-pipe address of a tasqx daemon. Overrides $TASQX_SOCK. When a daemon is reachable, one-shot commands route through it (single writer); otherwise they run in-process. Also selects the address for `daemon` and `watch`
+      --no-daemon        Never route through a daemon; always run one-shot in-process (the pre-daemon behaviour). Escape hatch for scripts
+  -h, --help             Print help
+  -V, --version          Print version
+
+Run `tasqx manual` for the full in-terminal guide (COMMANDS lists every short alias), or `tasqx <command> -h` for examples.

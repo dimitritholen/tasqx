@@ -1,0 +1,28 @@
+Acceptance criteria on a task (maps to check.add/set/remove)
+
+Usage: tasqx check [OPTIONS] <COMMAND>
+
+Commands:
+  add     Add an acceptance criterion to a task
+  set     Mark a criterion passed or failed, with the evidence for it
+  remove  Drop a criterion that was the wrong thing to ask
+
+Options:
+      --json             Print the raw JSON API result instead of the human table
+      --theme <THEME>    Theme name (built-in nord|gruvbox|dracula|solarized|mono, or a user file). Overrides $TASQX_THEME and the config file (DESIGN.md §8)
+      --socket <SOCKET>  Local socket / named-pipe address of a tasqx daemon. Overrides $TASQX_SOCK. When a daemon is reachable, one-shot commands route through it (single writer); otherwise they run in-process. Also selects the address for `daemon` and `watch`
+      --no-daemon        Never route through a daemon; always run one-shot in-process (the pre-daemon behaviour). Escape hatch for scripts
+  -h, --help             Print help
+  -V, --version          Print version
+
+EXAMPLES
+  tasqx check add 1 the notes name every breaking change    # add a criterion
+  tasqx check set 1 019f-abc passed --evidence "suite green"    # mark it
+  tasqx check rm 1 019f-abc    # drop a criterion
+  tasqx check set 1 2 failed    # the second criterion, by position
+
+NOTE  tasqx NEVER RUNS a check. The criterion is a claim and the evidence is a citation; both are stored verbatim and neither is interpreted. A hook you installed is what runs commands, calling `check set` like any other client.
+      Completing with a criterion still open is not refused — nothing is blocked — but `tasqx report --outcomes` counts it as an unproven completion.
+      `failed` is a normal outcome. Use `rm` only when the criterion was the wrong thing to ask; removing one the work failed hides the finding.
+
+See also: done · show · report        Full manual: tasqx manual

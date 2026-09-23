@@ -1,0 +1,103 @@
+{
+  "chart": "throughput",
+  "series": [
+    {
+      "added": 2,
+      "done": 3,
+      "iso_week": 27,
+      "iso_year": 2026,
+      "label": "W27",
+      "net": -1
+    },
+    {
+      "added": 5,
+      "done": 2,
+      "iso_week": 28,
+      "iso_year": 2026,
+      "label": "W28",
+      "net": 3
+    },
+    {
+      "added": 5,
+      "done": 5,
+      "iso_week": 29,
+      "iso_year": 2026,
+      "label": "W29",
+      "net": 0
+    },
+    {
+      "added": 4,
+      "done": 4,
+      "iso_week": 30,
+      "iso_year": 2026,
+      "label": "W30",
+      "net": 0
+    },
+    {
+      "added": 1,
+      "done": 5,
+      "iso_week": 31,
+      "iso_year": 2026,
+      "label": "W31",
+      "net": -4
+    },
+    {
+      "added": 4,
+      "done": 2,
+      "iso_week": 32,
+      "iso_year": 2026,
+      "label": "W32",
+      "net": 2
+    },
+    {
+      "added": 7,
+      "done": 3,
+      "iso_week": 33,
+      "iso_year": 2026,
+      "label": "W33",
+      "net": 4
+    },
+    {
+      "added": 5,
+      "done": 1,
+      "iso_week": 34,
+      "iso_year": 2026,
+      "label": "W34",
+      "net": 4
+    },
+    {
+      "added": 6,
+      "done": 3,
+      "iso_week": 35,
+      "iso_year": 2026,
+      "label": "W35",
+      "net": 3
+    },
+    {
+      "added": 5,
+      "done": 4,
+      "iso_week": 36,
+      "iso_year": 2026,
+      "label": "W36",
+      "net": 1
+    },
+    {
+      "added": 2,
+      "done": 4,
+      "iso_week": 37,
+      "iso_year": 2026,
+      "label": "W37",
+      "net": -2
+    },
+    {
+      "added": 0,
+      "done": 1,
+      "iso_week": 38,
+      "iso_year": 2026,
+      "label": "W38",
+      "net": -1
+    }
+  ],
+  "velocity_4wk": 3.0,
+  "weeks": 12
+}

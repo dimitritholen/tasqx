@@ -1,0 +1,52 @@
+Install the Claude Code integration: the MCP server and the bundled skills.
+
+On a terminal it opens a checklist of what is installed: tick what you want and press enter. Piped, or with `--list`, it prints that list. The skills are compiled into this binary, and the MCP server is registered through `claude mcp add`. Needs no store.
+
+Usage: tasqx setup [OPTIONS]
+
+Options:
+      --json
+          Print the raw JSON API result instead of the human table
+
+      --list
+          Print each item and its status, then exit
+
+      --theme <THEME>
+          Theme name (built-in nord|gruvbox|dracula|solarized|mono, or a user file). Overrides $TASQX_THEME and the config file (DESIGN.md §8)
+
+      --yes
+          Install every item that is not installed, without the screen
+
+      --force
+          With --yes, also replace a skill file that differs from the bundled one
+
+      --socket <SOCKET>
+          Local socket / named-pipe address of a tasqx daemon. Overrides $TASQX_SOCK. When a daemon is reachable, one-shot commands route through it (single writer); otherwise they run in-process. Also selects the address for `daemon` and `watch`
+
+      --no-daemon
+          Never route through a daemon; always run one-shot in-process (the pre-daemon behaviour). Escape hatch for scripts
+
+      --only <NAME>
+          Only this item (mcp, tasqx-workflow, retro); repeat for more
+
+      --home <DIR>
+          Treat DIR as the home directory, the one holding `.claude`
+
+  -h, --help
+          Print help (see a summary with '-h')
+
+  -V, --version
+          Print version
+
+EXAMPLES
+  tasqx setup --list    # what is installed; writes nothing
+  tasqx setup    # a checklist: space ticks, enter installs what is ticked
+  tasqx setup --yes    # installs everything not installed, and keeps a skill you edited
+  tasqx setup --yes --force --only retro    # replaces the retro skill with the copy this build carries
+
+NOTE  Three items: `mcp` registers `tasqx mcp serve --scope write` with Claude Code at user scope by running `claude mcp add`; `tasqx-workflow` and `retro` are skills written to `~/.claude/skills/<name>/SKILL.md` from copies compiled into this binary, so they match the tasqx you run (D159).
+      A skill that exists and is not byte-equal to the bundled copy reads `differs` — an older copy and your own edit look the same — and is kept unless you pass --force or tick it on the screen. So is an MCP registration that runs anything else, such as the read-only `tasqx mcp serve`; replacing it runs `claude mcp remove` first.
+      It never writes `~/.claude.json` itself. Without the `claude` command on PATH, the mcp item prints the exact command to run instead. Piped, with no flags, it prints the list and exits 0.
+      ripwire not found on PATH: install it from https://github.com/redhat-et/ripwire and put it on PATH.
+
+See also: mcp        Full manual: tasqx manual

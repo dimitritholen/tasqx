@@ -1,0 +1,7 @@
+#51  Write the migration guide for SDK 3.0
+
+  priority   M           3.9
+  deadline   due Mon     8.0
+  age        30 days     0.3
+  urgency               12.2
+  blocked by #50 Rate-limit the /search endpoint — `next` skips this task

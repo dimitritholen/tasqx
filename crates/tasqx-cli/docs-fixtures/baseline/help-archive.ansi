@@ -1,0 +1,38 @@
+Retire a project — out of rotation, tasks untouched (maps to project.archive).
+
+D22: an archived project drops out of `tasqx projects` (`--all` still shows it) and no verb may name it — including this one, so archiving a project that is already archived is a `conflict` (exit 5) rather than a second success that changed nothing. (`store.import` restores the flag from a document and is the one write that still names one.) Archiving the project that IS the default clears the default in the same transaction, and the printed line says so — where a bare `tasqx add` lands is the fact this verb is most able to change silently.
+
+Usage: tasqx archive [OPTIONS] <PROJECT>
+
+Arguments:
+  <PROJECT>
+          An existing project name
+
+Options:
+      --json
+          Print the raw JSON API result instead of the human table
+
+      --theme <THEME>
+          Theme name (built-in nord|gruvbox|dracula|solarized|mono, or a user file). Overrides $TASQX_THEME and the config file (DESIGN.md §8)
+
+      --socket <SOCKET>
+          Local socket / named-pipe address of a tasqx daemon. Overrides $TASQX_SOCK. When a daemon is reachable, one-shot commands route through it (single writer); otherwise they run in-process. Also selects the address for `daemon` and `watch`
+
+      --no-daemon
+          Never route through a daemon; always run one-shot in-process (the pre-daemon behaviour). Escape hatch for scripts
+
+  -h, --help
+          Print help (see a summary with '-h')
+
+  -V, --version
+          Print version
+
+EXAMPLES
+  tasqx archive keuken-verbouwen    # retire it; archiving your default project clears the default
+
+NOTE  Archiving is a shelf, not a delete: the tasks keep their history and their project, and `tasqx projects --all` still lists the project.
+      An archived project is out of rotation for WRITES — `use` refuses it (exit 5), and so does an `add`/`modify` that names it, and so does a second `archive` of it (`project is already archived`, exit 5). No write may name an archived project, this one included; `store.import` restoring the flag from a document is the one write that still can. Reads are unaffected: `list`, `report` and `agenda` still show it and its tasks — archiving is a rotation change, not a hide.
+      There is no `unarchive` verb and no `project.unarchive` method: among the project methods, archiving is one-way. `store.import` does write a project's `archived` flag from the document, so restoring a saved export un-archives one — a data restore, not an undo.
+      Archiving the project that IS the default clears the default: a bare `tasqx add` then has no project until `tasqx use <project>`. The line says which of the two happened.
+
+See also: projects · use · init        Full manual: tasqx manual

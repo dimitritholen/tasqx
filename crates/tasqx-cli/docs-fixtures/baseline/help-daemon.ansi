@@ -1,0 +1,19 @@
+Run the long-lived daemon: bind a local socket / named pipe and serve the JSON API to many concurrent clients, pushing live change notifications (DESIGN.md §2). Ctrl-C stops it cleanly
+
+Usage: tasqx daemon [OPTIONS]
+
+Options:
+      --db <PATH>        Store path for the daemon's single Engine (default: $TASQX_DB or the platform data dir). The socket address comes from the global `--socket` / $TASQX_SOCK / the platform default
+      --json             Print the raw JSON API result instead of the human table
+      --theme <THEME>    Theme name (built-in nord|gruvbox|dracula|solarized|mono, or a user file). Overrides $TASQX_THEME and the config file (DESIGN.md §8)
+      --socket <SOCKET>  Local socket / named-pipe address of a tasqx daemon. Overrides $TASQX_SOCK. When a daemon is reachable, one-shot commands route through it (single writer); otherwise they run in-process. Also selects the address for `daemon` and `watch`
+      --no-daemon        Never route through a daemon; always run one-shot in-process (the pre-daemon behaviour). Escape hatch for scripts
+  -h, --help             Print help
+  -V, --version          Print version
+
+EXAMPLES
+  tasqx daemon    # bind the socket/named pipe and serve
+
+NOTE  Long-lived single-writer; one-shot commands auto-route through it. Ctrl-C stops it cleanly.
+
+See also: watch · api        Full manual: tasqx manual

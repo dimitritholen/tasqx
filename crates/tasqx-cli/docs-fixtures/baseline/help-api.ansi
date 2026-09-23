@@ -1,0 +1,19 @@
+stdio one-shot: read ONE JSON request envelope on stdin, write ONE response
+
+Usage: tasqx api [OPTIONS]
+
+Options:
+      --json             Print the raw JSON API result instead of the human table
+      --theme <THEME>    Theme name (built-in nord|gruvbox|dracula|solarized|mono, or a user file). Overrides $TASQX_THEME and the config file (DESIGN.md §8)
+      --socket <SOCKET>  Local socket / named-pipe address of a tasqx daemon. Overrides $TASQX_SOCK. When a daemon is reachable, one-shot commands route through it (single writer); otherwise they run in-process. Also selects the address for `daemon` and `watch`
+      --no-daemon        Never route through a daemon; always run one-shot in-process (the pre-daemon behaviour). Escape hatch for scripts
+  -h, --help             Print help
+  -V, --version          Print version
+
+EXAMPLES
+  tasqx api <<< '{"tasqx":"1","id":"1","method":"task.list","params":{}}'    # call any method
+
+NOTE  The stdio one-shot transport; the envelope key is `"tasqx":"1"`.
+      --socket is refused here rather than honoured (DESIGN.md D73): `api` runs against an in-process engine, never a daemon. --theme is likewise never read — there is nothing here to render.
+
+See also: mcp · daemon · export        Full manual: tasqx manual

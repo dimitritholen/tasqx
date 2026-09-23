@@ -1,0 +1,25 @@
+Explain a task's urgency breakdown (maps to task.get + the D1 formula)
+
+Usage: tasqx why [OPTIONS] <REF>
+
+Arguments:
+  <REF>  short_id or UUID
+
+Options:
+      --card             Print the task as a 72-column box-drawn card, for pasting into a document
+      --json             Print the raw JSON API result instead of the human table
+      --ascii            With --card: draw the borders with + - | instead of box-drawing characters
+      --theme <THEME>    Theme name (built-in nord|gruvbox|dracula|solarized|mono, or a user file). Overrides $TASQX_THEME and the config file (DESIGN.md §8)
+      --socket <SOCKET>  Local socket / named-pipe address of a tasqx daemon. Overrides $TASQX_SOCK. When a daemon is reachable, one-shot commands route through it (single writer); otherwise they run in-process. Also selects the address for `daemon` and `watch`
+      --no-daemon        Never route through a daemon; always run one-shot in-process (the pre-daemon behaviour). Escape hatch for scripts
+  -h, --help             Print help
+  -V, --version          Print version
+
+EXAMPLES
+  tasqx why 1
+  tasqx why 1 --card
+
+NOTE  Explains the urgency score component by component (DESIGN D1).
+      `--card` prints the fixed 72-column box-drawn card (D146) first, with the arithmetic underneath instead of the plain text header; `--ascii` draws the card's borders with `+ - |`.
+
+See also: next · show · list        Full manual: tasqx manual

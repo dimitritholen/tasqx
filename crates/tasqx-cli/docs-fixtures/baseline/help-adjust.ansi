@@ -1,0 +1,25 @@
+Correct a task's tracked time by a signed duration (maps to task.adjust_tracked)
+
+Usage: tasqx adjust [OPTIONS] --reason <REASON> <REF> <DELTA>
+
+Arguments:
+  <REF>    short_id or UUID
+  <DELTA>  Signed duration: -2h25m takes time off, +30m (or 30m) adds it
+
+Options:
+      --json             Print the raw JSON API result instead of the human table
+      --reason <REASON>  Why the time is being corrected (required; kept in the event log)
+      --theme <THEME>    Theme name (built-in nord|gruvbox|dracula|solarized|mono, or a user file). Overrides $TASQX_THEME and the config file (DESIGN.md §8)
+      --socket <SOCKET>  Local socket / named-pipe address of a tasqx daemon. Overrides $TASQX_SOCK. When a daemon is reachable, one-shot commands route through it (single writer); otherwise they run in-process. Also selects the address for `daemon` and `watch`
+      --no-daemon        Never route through a daemon; always run one-shot in-process (the pre-daemon behaviour). Escape hatch for scripts
+  -h, --help             Print help
+  -V, --version          Print version
+
+EXAMPLES
+  tasqx adjust 1 -2h25m --reason 'idle gap'    # take off time the clock ran while nobody worked
+  tasqx adjust 1 +30m --reason 'forgot to start'    # add time that never reached the clock
+
+NOTE  Works on any task, done included, so calibration in `report --outcomes` can be corrected after the fact. A correction that would take the banked total below zero is refused.
+      Each correction is its own event with its reason, and `tasqx undo` takes the newest one back. `show` prints the net of every correction beside the total: `tracked 2h30m (adjusted -2h25m)`.
+
+See also: stop · undo · report        Full manual: tasqx manual

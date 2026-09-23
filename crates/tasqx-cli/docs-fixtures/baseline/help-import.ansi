@@ -1,0 +1,30 @@
+Import tasks from a file, or `-` for stdin (maps to store.import)
+
+Usage: tasqx import [OPTIONS] <FILE>
+
+Arguments:
+  <FILE>  Path to a canonical JSON document (`{tasks, projects, default_project, docs}`, as `tasqx export` writes) or a bare array of tasks, or `-` for stdin
+
+Options:
+      --dry-run          Run the import and roll it back (D184): report every renumbering, merge and refusal against this store without writing anything
+      --json             Print the raw JSON API result instead of the human table
+      --merge            Merge a task this store already holds instead of replacing it (D185): union its notes, checks, tags and edges, and take its scalars from whichever side was modified later
+      --theme <THEME>    Theme name (built-in nord|gruvbox|dracula|solarized|mono, or a user file). Overrides $TASQX_THEME and the config file (DESIGN.md §8)
+      --socket <SOCKET>  Local socket / named-pipe address of a tasqx daemon. Overrides $TASQX_SOCK. When a daemon is reachable, one-shot commands route through it (single writer); otherwise they run in-process. Also selects the address for `daemon` and `watch`
+      --no-daemon        Never route through a daemon; always run one-shot in-process (the pre-daemon behaviour). Escape hatch for scripts
+  -h, --help             Print help
+  -V, --version          Print version
+
+EXAMPLES
+  tasqx import backup.json    # from a file
+  tasqx export | tasqx import -    # from stdin
+  tasqx import backup.json --dry-run    # preview it first
+  tasqx import other-machine.json --merge    # fold in another store
+
+NOTE  A task whose number a DIFFERENT task here already holds keeps its id and takes the next free one; every move is printed and reported as `renumbered` (D177). A task this store already holds keeps the number it has here.
+      A memory doc whose `source` a DIFFERENT doc here already holds merges onto that doc rather than being refused: the stored id is kept, the later `modified` wins the text, and every merge is printed and reported as `docs_merged` (D183).
+      Links are restored after everything they point at, counted in `links_imported`; a link naming an end neither the document nor this store holds refuses the whole import by name (D181).
+      `--dry-run` runs the whole import against this store and rolls it back: every renumbering, merge and refusal prints exactly as a real import would, and the run ends with `nothing was written` (D184).
+      `--merge` folds a second live store in rather than restoring over this one: a task this store already holds keeps its own annotations, checks, tags and edges and takes the payload's beside them, its `_rev` guard is skipped, and its title, status and the rest follow whichever side's `modified` is later — one line per task, reported as `merged` (D185). Without it the payload replaces a known task's child rows wholesale, which is what a restore wants.
+
+See also: export · api        Full manual: tasqx manual

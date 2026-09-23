@@ -1,0 +1,38 @@
+Browse docs without a query (maps to memory.list). Newest first.
+
+On a terminal this opens a full-screen browser: j/k to move, / to search, Enter to read a doc. Piped, under --json, or with --limit or --offset it prints a table instead, one doc per line.
+
+Usage: tasqx memory list [OPTIONS]
+
+Options:
+      --json
+          Print the raw JSON API result instead of the human table
+
+      --limit <LIMIT>
+          Max rows to return. Omit for everything from `--offset` on. Asking for a page prints the table, never the browser
+
+      --offset <OFFSET>
+          How many matching docs to skip. Like `--limit`, prints the table
+          
+          [default: 0]
+
+      --theme <THEME>
+          Theme name (built-in nord|gruvbox|dracula|solarized|mono, or a user file). Overrides $TASQX_THEME and the config file (DESIGN.md §8)
+
+      --project <PROJECT>
+          Restrict to docs stored with this project
+
+      --socket <SOCKET>
+          Local socket / named-pipe address of a tasqx daemon. Overrides $TASQX_SOCK. When a daemon is reachable, one-shot commands route through it (single writer); otherwise they run in-process. Also selects the address for `daemon` and `watch`
+
+      --no-daemon
+          Never route through a daemon; always run one-shot in-process (the pre-daemon behaviour). Escape hatch for scripts
+
+      --standing
+          Only standing docs. Like `--limit`, prints the table
+
+  -h, --help
+          Print help (see a summary with '-h')
+
+  -V, --version
+          Print version
