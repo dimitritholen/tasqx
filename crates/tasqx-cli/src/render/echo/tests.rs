@@ -1230,3 +1230,373 @@ fn modify_spells_an_absolute_reminder_as_a_day() {
         "an offset stays an offset: {out}"
     );
 }
+
+/// #214: `tokens_hint` used to target machine callers only, on the theory
+/// that the CLI `done` verb had no token flags of its own — so printing
+/// the hint would recommend the impossible. `done` now HAS those flags
+/// (`--input-tokens` etc., D50/D65), so the theory no longer holds: a
+/// terminal user who never passes them is exactly the reader the hint is
+/// for, and hiding it is how the feature stayed invisible from its
+/// primary surface. D126 moved it off the card: it is one line on stderr,
+/// after the card, and it still renders exactly once.
+#[test]
+fn done_renders_the_tokens_hint_once_muted() {
+    let ctx = Ctx::new(theme::default_theme(), Caps::PLAIN);
+    let hint = "no token counts were self-reported; log-parse \
+            attribution is a best-effort fallback";
+    let result = json!({
+        "short_id": 1, "title": "t",
+        "status": "done",
+        "completed": "2026-07-31T10:00:00Z",
+        "unblocked": [],
+        "tokens_hint": hint,
+    });
+    let out = done(&ctx, &result, &result, &Titles::new(), crate::clock::now());
+    assert!(
+        out.contains("done"),
+        "the completion line itself went missing: {out:?}"
+    );
+    assert!(
+        !out.contains("self-reported"),
+        "the hint is stderr's: {out:?}"
+    );
+    let note = tokens_note(hint, 200, true).expect("a hint the reader can act on prints");
+    assert_eq!(note.lines().count(), 1, "{note:?}");
+    assert_eq!(
+        note.matches("no token counts were self-reported").count(),
+        1,
+        "the hint should render exactly once: {note:?}"
+    );
+}
+
+/// D21: the copy must be TRUE. This line printed unconditionally, so it was
+/// a lie on every `init` after the first — the user read "now your default
+/// project" while the default had not moved (or, before the core fix, while
+/// it had been silently stolen).
+#[test]
+fn project_created_only_claims_the_default_when_it_actually_became_it() {
+    let ctx = Ctx::new(theme::default_theme(), Caps::PLAIN);
+
+    let claimed = project_created(&ctx, &json!({ "name": "work", "default": true }));
+    assert!(claimed.contains("work"));
+    assert!(
+        claimed.contains("default project"),
+        "the first project really is the default; say so: {claimed:?}"
+    );
+
+    let not_claimed = project_created(&ctx, &json!({ "name": "prive.klussen", "default": false }));
+    assert!(not_claimed.contains("prive.klussen"));
+    assert!(
+        !not_claimed.contains("default project"),
+        "claimed the default when it did not become it: {not_claimed:?}"
+    );
+    // And it must point at the verb that would do it, so the user is not
+    // left guessing (this is the whole complaint).
+    assert!(
+        not_claimed.contains("use"),
+        "must name the way to switch: {not_claimed:?}"
+    );
+}
+
+/// #229 item 13: `init " padded "` mints a project whose own printed
+/// re-selection command cannot be typed — `tasqx use  padded ` reads as
+/// `use`, a bare argument `padded`, and two stray tokens the shell drops,
+/// which is not the name the store actually holds. `project.create`'s
+/// D36 rule (`req_str_value`) is that a name's padding survives verbatim
+/// — the fix belongs in the PRINTED hint, quoted the way `filter::quote`
+/// already quotes a project name inside a composed filter, not in a
+/// trim at the write door that would fight the store-import round trip
+/// D36 exists to keep byte-identical.
+#[test]
+fn a_padded_project_names_own_re_selection_hint_is_typeable() {
+    let ctx = Ctx::new(theme::default_theme(), Caps::PLAIN);
+    let out = project_created(
+        &ctx,
+        &json!({ "name": " padded ", "default": false, "current_default": "work" }),
+    );
+    assert!(
+        out.contains("\" padded \"") || out.contains("' padded '"),
+        "the printed `tasqx use` hint must quote a name a bare shell word \
+             cannot carry: {out:?}"
+    );
+}
+
+/// The default is state; a switch must show both sides of it.
+#[test]
+fn default_switched_names_the_new_default_and_the_old_one() {
+    let ctx = Ctx::new(theme::default_theme(), Caps::PLAIN);
+    let out = default_switched(
+        &ctx,
+        &json!({ "name": "work", "previous": "prive.klussen" }),
+    );
+    assert!(out.contains("work"), "missing the new default: {out:?}");
+    assert!(
+        out.contains("prive.klussen"),
+        "missing the previous default: {out:?}"
+    );
+
+    // First-ever switch has no previous — no dangling "was" clause.
+    let fresh = default_switched(&ctx, &json!({ "name": "work", "previous": null }));
+    assert!(fresh.contains("work"));
+    assert!(
+        !fresh.contains("was"),
+        "invented a previous default: {fresh:?}"
+    );
+}
+
+/// Finding #3 (audit-2026-09): `start`/`stop`/`done` confirmed an action
+/// without ever naming the task, so a wrong ref printed a success line
+/// identical to the right one — and `done` never compared tracked time
+/// against the estimate, the entire payoff of `est:2h` at capture time.
+#[test]
+fn start_stop_done_name_the_task_and_done_compares_tracked_to_estimate() {
+    let ctx = Ctx::new(theme::default_theme(), Caps::PLAIN);
+    let now = crate::clock::now();
+    let none = Titles::new();
+
+    let started_json = json!({
+        "interval_started": "2026-09-09T10:43:48Z",
+        "short_id": 144,
+        "title": "Prod: mailbox sync 500 op staging",
+    });
+    let out = started(&ctx, &started_json, &started_json, &none, now);
+    assert!(out.contains("#144"), "{out:?}");
+    assert!(out.contains("Prod: mailbox sync 500 op staging"), "{out:?}");
+
+    let stopped_json = json!({
+        "interval": "PT12S", "tracked": "PT12S", "short_id": 9, "title": "some task"
+    });
+    let out = stopped(&ctx, &stopped_json, &stopped_json, now);
+    assert!(out.contains("#9"), "{out:?}");
+    assert!(out.contains("some task"), "{out:?}");
+    assert!(
+        out.contains("12s"),
+        "must humanize the ISO duration: {out:?}"
+    );
+
+    let done_json = json!({
+        "completed": "2026-09-09T10:44:18Z",
+        "unblocked": [],
+        "short_id": 144,
+        "title": "Prod: mailbox sync 500 op staging",
+        "tracked": "PT30S",
+        "estimate": "PT2H",
+    });
+    let out = done(&ctx, &done_json, &done_json, &none, now);
+    assert!(out.contains("#144"), "{out:?}");
+    assert!(out.contains("Prod: mailbox sync 500 op staging"), "{out:?}");
+    assert!(
+        out.contains("tracked 30s of 2h"),
+        "the tracked-vs-estimate clause is missing: {out:?}"
+    );
+}
+
+/// Finding #9 (audit-2026-09): `start` on an already-active task and `dep`
+/// on an already-existing edge both answered as if they had just done
+/// something — the same "Started"/"now depends on" a genuine change gets.
+#[test]
+fn start_and_dep_say_already_instead_of_claiming_a_fresh_action() {
+    let ctx = Ctx::new(theme::default_theme(), Caps::PLAIN);
+    let now = crate::clock::now();
+    let none = Titles::new();
+
+    let fresh = json!({
+        "interval_started": "2026-09-09T10:35:52Z", "short_id": 1, "title": "restart",
+        "already_running": false,
+    });
+    assert!(started(&ctx, &fresh, &fresh, &none, now).contains("started"));
+
+    let idempotent = json!({
+        "interval_started": "2026-09-09T10:35:52Z", "short_id": 1, "title": "restart",
+        "already_running": true,
+    });
+    let out = started(&ctx, &idempotent, &idempotent, &none, now);
+    assert!(
+        out.contains("already running"),
+        "must not claim a fresh start: {out:?}"
+    );
+    assert!(!out.contains("started"), "{out:?}");
+
+    let fresh_dep =
+        json!({ "short_id": 250, "depends_on": [249], "blocked": true, "inserted": true });
+    let out = dep_changed(&ctx, &fresh_dep, &fresh_dep, true, "249", now);
+    assert!(
+        out.contains("blocked by #249") && !out.contains("already"),
+        "{out:?}"
+    );
+
+    let existing_dep =
+        json!({ "short_id": 250, "depends_on": [249], "blocked": true, "inserted": false });
+    let out = dep_changed(&ctx, &existing_dep, &existing_dep, true, "249", now);
+    assert!(
+        out.contains("already blocked by #249"),
+        "must not claim a fresh edge: {out:?}"
+    );
+}
+
+/// A bare `add` inherits the default, so the confirmation has to say where
+/// the task actually went — otherwise the landing project stays invisible
+/// at the exact moment it matters.
+#[test]
+fn task_added_names_the_project_it_landed_in() {
+    let ctx = Ctx::new(theme::default_theme(), Caps::PLAIN);
+    let now = crate::clock::now();
+    let out = added(
+        &ctx,
+        &json!({ "short_id": 3, "title": "a task", "status": "pending",
+                     "urgency": 5.0, "project": "work" }),
+        now,
+    );
+    assert!(
+        out.contains("work"),
+        "the landing project is invisible: {out:?}"
+    );
+
+    // Finding #10 (audit-2026-09): a task landing with no default project
+    // must SAY so, naming the way out — not just omit the suffix, which
+    // reads identically to every other successful `add`.
+    let none = added(
+        &ctx,
+        &json!({ "short_id": 4, "title": "homeless", "status": "pending",
+                     "urgency": 5.0, "project": null }),
+        now,
+    );
+    assert!(
+        none.contains("no project"),
+        "did not say the task landed nowhere: {none:?}"
+    );
+    assert!(
+        none.contains("tasqx use"),
+        "did not name the way out: {none:?}"
+    );
+}
+
+// ---- undone (the line that says what undo actually did) -----------------
+
+/// The whole point of the line: `undo` takes no argument, so unless it names
+/// the operation, the task and what came back, the user has no way to check
+/// that it reversed the thing they meant. A bare "undone" is the failure.
+#[test]
+fn the_undo_line_names_the_operation_the_task_and_what_came_back() {
+    let ctx = Ctx::new(theme::default_theme(), Caps::PLAIN);
+    let result = json!({
+        "reverted": { "event": "e1", "op": "tag.remove", "ts": "2026-08-03T10:00:00Z" },
+        "short_id": 42,
+        "title": "Ship v1",
+        "restored": { "tags": ["api", "release"] },
+    });
+    let out = undone(&ctx, &result, &result, &Titles::new(), crate::clock::now());
+    // D126 names the operation by the verb that did it: `untag`.
+    assert!(
+        out.contains("undid untag"),
+        "the line must name the operation that was reversed: {out:?}"
+    );
+    assert!(
+        out.contains("#42"),
+        "the line must name the task it acted on: {out:?}"
+    );
+    assert!(
+        out.contains("Ship v1"),
+        "the line must carry the title — a short_id alone is not recognizable at a \
+             glance, and undo took no argument to echo back: {out:?}"
+    );
+    assert!(
+        out.contains("+api") && out.contains("+release"),
+        "the line must name what came back, or it says nothing an undo that \
+             restored nothing would not also say: {out:?}"
+    );
+}
+
+/// An annotation body and a tag are untrusted text — argv, `store.import`,
+/// an MCP client — and this line goes straight to a terminal.
+#[test]
+fn undone_sanitizes_control_bytes_in_the_text_it_echoes() {
+    let ctx = Ctx::new(theme::default_theme(), Caps::PLAIN);
+    let result = json!({
+        "reverted": { "event": "e1", "op": "annotation.add", "ts": "t" },
+        "short_id": 1,
+        "title": "\u{1b}[2Jclear",
+        "restored": { "annotation": "\u{1b}]0;evil\u{7}note" },
+    });
+    let out = undone(&ctx, &result, &result, &Titles::new(), crate::clock::now());
+    assert!(
+        !out.contains('\u{1b}'),
+        "escape byte reached the terminal: {out:?}"
+    );
+    assert!(
+        !out.contains('\u{7}'),
+        "bell byte reached the terminal: {out:?}"
+    );
+}
+
+// ---- tag_result (D39: what changed AND what remains) --------------------
+
+/// The line a removal prints must name the tag that went. Rendering only
+/// `tags` — the set that REMAINS — produces `#1 tags: +release` for a real
+/// removal and the same string for a call that removed nothing, which is
+/// the whole failure `dep_result` above was written to avoid, one noun over.
+#[test]
+fn an_untag_line_names_what_went_and_what_remains() {
+    let ctx = Ctx::new(theme::default_theme(), Caps::PLAIN);
+    let result = json!({ "short_id": 1, "tags": ["release"], "removed": ["api"] });
+    let out = tag_changed(
+        &ctx,
+        &result,
+        &result,
+        false,
+        &["api".to_string()],
+        crate::clock::now(),
+    );
+    assert!(out.contains("untagged"), "{out:?}");
+    assert!(out.contains("+api"), "the removed tag must appear: {out:?}");
+    assert!(
+        out.contains("+release"),
+        "the remaining set must appear: {out:?}"
+    );
+}
+
+/// The addition half, and the empty case. `tag.add` returns no `removed`
+/// key, so the changed set comes from the request there. A task left with
+/// no tags used to print `tags: (none)` so the label was not followed by a
+/// blank; D126 has no label to leave blank, and a zero is not a fact, so
+/// the line names what went and stops.
+#[test]
+fn a_tag_line_names_the_added_tag_and_an_empty_set_says_so() {
+    let ctx = Ctx::new(theme::default_theme(), Caps::PLAIN);
+    let now = crate::clock::now();
+    let added = json!({ "short_id": 7, "tags": ["api", "release"] });
+    let out = tag_changed(&ctx, &added, &added, true, &["api".to_string()], now);
+    assert!(out.contains("#7") && out.contains("tagged"), "{out:?}");
+    assert!(out.contains("+api") && out.contains("+release"), "{out:?}");
+    assert!(!out.contains("untagged"), "the verb must not flip: {out:?}");
+
+    let emptied = json!({ "short_id": 7, "tags": [], "removed": ["api"] });
+    let out = tag_changed(&ctx, &emptied, &emptied, false, &["api".to_string()], now);
+    assert!(out.contains("untagged   +api"), "{out:?}");
+    assert!(
+        !out.contains("(none)") && !out.contains("tags:"),
+        "no label left blank and no placeholder: {out:?}"
+    );
+}
+
+/// A tag is untrusted text: it comes from argv, from `store.import` and from
+/// an MCP client, and this line goes straight to a terminal. Every other
+/// renderer in this file runs its values through `san` for that reason.
+#[test]
+fn tag_result_sanitizes_control_bytes_in_a_tag_name() {
+    let ctx = Ctx::new(theme::default_theme(), Caps::PLAIN);
+    let result = json!({
+        "short_id": 1,
+        "tags": ["]0;evilsafe"],
+        "removed": ["[2Jgone"],
+    });
+    let out = tag_changed(&ctx, &result, &result, false, &[], crate::clock::now());
+    assert!(
+        !out.contains(''),
+        "escape byte reached the terminal: {out:?}"
+    );
+    assert!(
+        !out.contains(''),
+        "bell byte reached the terminal: {out:?}"
+    );
+}
