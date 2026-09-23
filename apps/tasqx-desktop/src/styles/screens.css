@@ -393,3 +393,103 @@
 .note-removed {
   border-style: dashed;
 }
+
+.note-open {
+  box-shadow: inset 2px 0 0 var(--color-accent);
+}
+
+/* --- Memory Explorer ---------------------------------------------------- */
+.memory-filter-bar {
+  flex-wrap: wrap;
+}
+
+.memory-filter-bar .field {
+  min-width: 160px;
+}
+
+.memory-grid {
+  display: flex;
+  flex-direction: column;
+  min-width: 880px;
+}
+
+.memory-row {
+  display: grid;
+  grid-template-columns: 96px minmax(200px, 3fr) minmax(120px, 1fr) minmax(96px, 1fr) 96px 96px;
+  align-items: center;
+  gap: var(--space-2);
+  min-height: var(--row-primary);
+  padding: var(--space-1) var(--space-2);
+  border-bottom: var(--border-width) solid var(--color-border);
+  cursor: pointer;
+  transition: background-color 120ms ease;
+}
+
+.memory-row:hover {
+  background: var(--color-elevated);
+}
+
+.memory-row:active {
+  background: var(--color-border);
+}
+
+.memory-row[aria-selected='true'] {
+  background: var(--color-elevated);
+  box-shadow: inset 2px 0 0 var(--color-accent);
+}
+
+.memory-row:focus-visible {
+  position: relative;
+  z-index: 1;
+}
+
+.memory-head {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  background: var(--color-panel);
+  color: var(--color-muted);
+  font-size: var(--text-secondary);
+  cursor: default;
+}
+
+.memory-head:hover {
+  background: var(--color-panel);
+}
+
+.memory-cell {
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.memory-cell-title {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  white-space: normal;
+}
+
+.memory-excerpt {
+  overflow: hidden;
+  font-size: var(--text-secondary);
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.memory-add-form,
+.memory-note-form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  max-width: 480px;
+  padding: var(--panel-pad);
+  border: var(--border-width) solid var(--color-border);
+  border-radius: var(--radius-panel);
+}
+
+.memory-add-actions {
+  display: flex;
+  gap: var(--space-2);
+}

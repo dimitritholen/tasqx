@@ -1,7 +1,7 @@
 import type { ErrorCode } from '../api/envelope';
 import { FakeTransport } from '../api/fakeTransport';
 import type { Capabilities } from '../api/envelope';
-import type { Project, TaskDetail, TaskListResult, TaskRow } from '../api/types';
+import type { Link, MemoryDoc, MemoryHit, MemoryListRow, Project, TaskDetail, TaskListResult, TaskRow } from '../api/types';
 
 /**
  * A daemon that answers by method from a script and remembers the order it was
@@ -22,7 +22,12 @@ export function fails(code: ErrorCode, message: string): ScriptedFailure {
   return new ScriptedFailure(code, message);
 }
 
-/** `(params) => result` when one method must answer two calls differently. */
+/**
+ * `(params) => result` when one method must answer two calls differently. A
+ * Handler may return a Promise to hold its reply back — a test that needs to
+ * control which of two in-flight requests answers first resolves them in
+ * whatever order it chooses.
+ */
 export type Handler = (params: Record<string, unknown>) => unknown;
 
 /** Method name to a canned result, a `fails(...)`, or a Handler. */
@@ -48,6 +53,33 @@ export const SCRIPTED_CAPABILITIES: Capabilities = {
   features: [],
   default_project: null,
   store: '/tmp/scripted/tasks.db',
+};
+
+/** `SCRIPTED_CAPABILITIES` plus the Memory Explorer's methods (#692). */
+export const MEMORY_CAPABILITIES: Capabilities = {
+  ...SCRIPTED_CAPABILITIES,
+  methods: [
+    ...SCRIPTED_CAPABILITIES.methods,
+    'memory.search',
+    'memory.list',
+    'memory.get',
+    'memory.add',
+    'memory.remove',
+    'annotation.add',
+    'annotation.remove',
+    'link.list',
+  ],
+  params: {
+    ...SCRIPTED_CAPABILITIES.params,
+    'memory.search': ['query', 'limit', 'scope', 'raw', 'project', 'include_unscoped'],
+    'memory.list': ['limit', 'offset', 'project', 'standing'],
+    'memory.get': ['id'],
+    'memory.add': ['title', 'body', 'source', 'project', 'standing'],
+    'memory.remove': ['id'],
+    'annotation.add': ['ref', 'body'],
+    'annotation.remove': ['ref', 'annotation_id'],
+    'link.list': ['ref', 'relation', 'limit', 'offset'],
+  },
 };
 
 export class ScriptedTransport extends FakeTransport {
@@ -76,7 +108,7 @@ export class ScriptedTransport extends FakeTransport {
     if (typeof frame.method !== 'string' || frame.method === 'subscribe') return;
     const params = (frame.params ?? {}) as Record<string, unknown>;
     this.calls.push({ method: frame.method, params });
-    this.answer(frame.id, frame.method, params);
+    void this.answer(frame.id, frame.method, params);
   }
 
   /** Forget the calls so far — a test asserting on events starts from zero. */
@@ -89,9 +121,9 @@ export class ScriptedTransport extends FakeTransport {
     this.pushLine(JSON.stringify({ event: 'task.changed', data }));
   }
 
-  private answer(id: unknown, method: string, params: Record<string, unknown>): void {
+  private async answer(id: unknown, method: string, params: Record<string, unknown>): Promise<void> {
     const entry = this.script[method];
-    const value = typeof entry === 'function' ? (entry as Handler)(params) : entry;
+    const value = typeof entry === 'function' ? await (entry as Handler)(params) : entry;
     if (value === undefined) {
       this.fail(id, 'bad_request', `desktop test: no scripted reply for "${method}"`);
       return;
@@ -164,6 +196,64 @@ export function taskDetail(overrides: Partial<TaskDetail> & { short_id: number }
     tokens: [],
     fresh_tokens: 0,
     over: null,
+    ...overrides,
+  };
+}
+
+/** A default-field `memory.search` hit; override only what the test is about. */
+export function memoryHit(overrides: Partial<MemoryHit> & { id: string; kind: MemoryHit['kind'] }): MemoryHit {
+  return {
+    title: 'A memory hit',
+    source: null,
+    snippet: 'a matching passage',
+    rank: 1,
+    standing: overrides.kind === 'annotation' ? null : false,
+    project: null,
+    stale: null,
+    ...overrides,
+  };
+}
+
+/** A default-field `memory.list` row; override only what the test is about. */
+export function memoryListRow(overrides: Partial<MemoryListRow> & { id: string }): MemoryListRow {
+  return {
+    title: 'A memory doc',
+    source: null,
+    project: null,
+    created: EPOCH,
+    modified: EPOCH,
+    _rev: 1,
+    body_preview: 'the opening of the body',
+    body_truncated: false,
+    standing: false,
+    ...overrides,
+  };
+}
+
+/** A default-field `memory.get` doc; override only what the test is about. */
+export function memoryDoc(overrides: Partial<MemoryDoc> & { id: string }): MemoryDoc {
+  return {
+    source: null,
+    title: 'A memory doc',
+    body: 'the whole body',
+    created: EPOCH,
+    modified: EPOCH,
+    project: null,
+    _rev: 1,
+    standing: false,
+    origin_path: null,
+    origin_mtime: null,
+    origin_size: null,
+    ...overrides,
+  };
+}
+
+/** A default-field `link.list` row; override only what the test is about. */
+export function linkRow(overrides: Partial<Link> & { id: string; from: string; to: string }): Link {
+  return {
+    relation: 'references',
+    metadata: null,
+    created_at: EPOCH,
     ...overrides,
   };
 }

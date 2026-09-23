@@ -15,6 +15,7 @@ import { DashboardStore, StoreContext, useStore } from './state/store';
 import {
   DashboardScreen,
   GraphScreen,
+  MemoryInspector,
   MemoryScreen,
   ProjectsScreen,
   ReportsScreen,
@@ -129,7 +130,13 @@ function ConnectedApp() {
             />
           )
         }
-        inspector={<TaskInspector />}
+        inspector={
+          route.screen === 'memory' ? (
+            <MemoryInspector onChanged={() => void store.reloadMemoryResults()} />
+          ) : (
+            <TaskInspector />
+          )
+        }
       >
         <View connection={<ConnectionPanel />} />
       </AppShell>

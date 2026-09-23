@@ -5,6 +5,8 @@ import type { Theme } from '../shell/theme';
 import { EmptyState, Field } from '../ui/primitives';
 
 export { DashboardScreen } from './DashboardScreen';
+export { MemoryInspector } from './MemoryInspector';
+export { MemoryScreen } from './MemoryScreen';
 export { ProjectsScreen } from './ProjectsScreen';
 export { TaskInspector } from './TaskInspector';
 export { TasksScreen } from './TasksScreen';
@@ -17,16 +19,6 @@ function Placeholder({ title, lede, empty }: { title: string; lede: string; empt
       <p className="screen-lede">{lede}</p>
       <EmptyState title="Not connected" message={empty} />
     </div>
-  );
-}
-
-export function MemoryScreen() {
-  return (
-    <Placeholder
-      title="Memory"
-      lede="Imported documents and the annotations written on tasks."
-      empty="Connect to the tasqx daemon to search memory."
-    />
   );
 }
 

@@ -153,3 +153,79 @@ export interface EventListResult {
   count: number;
   events: EventRow[];
 }
+
+/** One `memory.search` hit — a doc or an annotation, excerpt only (D160). */
+export interface MemoryHit {
+  id: string;
+  kind: 'doc' | 'annotation';
+  title: string;
+  source: string | null;
+  snippet: string;
+  rank: number;
+  /** For a doc hit; null on an annotation hit, which has no such flag. */
+  standing: boolean | null;
+  project: string | null;
+  stale: boolean | null;
+}
+
+export interface MemorySearchResult {
+  count: number;
+  total: number;
+  has_more: boolean;
+  hits: MemoryHit[];
+  matched: string;
+}
+
+/** One row of the `memory.list` browser: recency metadata and a preview. */
+export interface MemoryListRow {
+  id: string;
+  title: string;
+  source: string | null;
+  project: string | null;
+  created: string;
+  modified: string;
+  _rev: number;
+  body_preview: string;
+  body_truncated: boolean;
+  standing: boolean;
+}
+
+export interface MemoryListResult {
+  count: number;
+  total: number;
+  next_offset: number | null;
+  docs: MemoryListRow[];
+}
+
+/** `memory.get`'s whole doc, the same row `store.export` answers with. */
+export interface MemoryDoc {
+  id: string;
+  source: string | null;
+  title: string;
+  body: string;
+  created: string;
+  modified: string;
+  project: string | null;
+  _rev: number;
+  standing: boolean;
+  origin_path: string | null;
+  origin_mtime: number | null;
+  origin_size: number | null;
+}
+
+/** One explicit cross-entity link (D160); `link.list`'s row. */
+export interface Link {
+  id: string;
+  from: string;
+  to: string;
+  relation: string;
+  metadata: Record<string, unknown> | null;
+  created_at: string;
+}
+
+export interface LinkListResult {
+  count: number;
+  total: number;
+  next_offset: number | null;
+  links: Link[];
+}

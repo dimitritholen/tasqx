@@ -2,17 +2,16 @@ import { render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 
 import { reloadTheme } from '../shell/theme';
-import { GraphScreen, MemoryScreen, ReportsScreen, SettingsScreen } from './index';
+import { GraphScreen, ReportsScreen, SettingsScreen } from './index';
 
 beforeEach(() => {
   localStorage.clear();
   reloadTheme();
 });
 
-// Dashboard, Tasks and Projects read the store and are covered by their own
-// tests; these three are still waiting for the data behind them.
+// Dashboard, Tasks, Projects and Memory read the store and are covered by
+// their own tests; these two are still waiting for the data behind them.
 test.each([
-  [MemoryScreen, 'Memory'],
   [GraphScreen, 'Graph'],
   [ReportsScreen, 'Reports'],
 ])('%# a screen without data yet has a heading and a not-connected state', (Screen, title) => {

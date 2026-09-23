@@ -6,7 +6,19 @@ import {
   selectRow,
   type DashboardState,
 } from './store';
-import { fails, ScriptedTransport, taskDetail, taskList, taskRow, type Script } from '../test/scripted';
+import { DEFAULT_MEMORY_FILTERS } from './memory';
+import {
+  fails,
+  linkRow,
+  MEMORY_CAPABILITIES,
+  memoryDoc,
+  memoryHit,
+  ScriptedTransport,
+  taskDetail,
+  taskList,
+  taskRow,
+  type Script,
+} from '../test/scripted';
 
 async function connected(script: Script): Promise<{
   transport: ScriptedTransport;
@@ -173,5 +185,161 @@ describe('DashboardStore', () => {
       blocked: 0,
       recentlyCompleted: [],
     });
+  });
+});
+
+describe('DashboardStore memory', () => {
+  it('browses with memory.list on an empty query, and flags an unfiltered empty scope', async () => {
+    const { transport, store } = await connected({
+      'core.capabilities': MEMORY_CAPABILITIES,
+      'memory.list': { count: 0, total: 0, next_offset: null, docs: [] },
+    });
+
+    await store.runMemoryQuery(DEFAULT_MEMORY_FILTERS);
+
+    expect(transport.calls).toEqual([{ method: 'memory.list', params: { limit: 50, offset: 0 } }]);
+    expect(store.getState().memoryResults.data).toMatchObject({ rows: [], matched: null, storeEmpty: true });
+  });
+
+  it('searches with memory.search once a query is typed, and maps both hit kinds', async () => {
+    const { transport, store } = await connected({
+      'core.capabilities': MEMORY_CAPABILITIES,
+      'memory.search': {
+        count: 2,
+        total: 2,
+        has_more: false,
+        matched: '"backup"',
+        hits: [
+          memoryHit({ id: 'd1', kind: 'doc', title: 'Backup plan', standing: true, project: 'tasqx' }),
+          memoryHit({ id: 'a1', kind: 'annotation', title: 'Task 5', source: 'task:#5' }),
+        ],
+      },
+    });
+
+    await store.runMemoryQuery({ ...DEFAULT_MEMORY_FILTERS, query: 'backup' });
+
+    expect(transport.calls).toEqual([{ method: 'memory.search', params: { query: 'backup', limit: 50 } }]);
+    const { rows, matched } = store.getState().memoryResults.data;
+    expect(matched).toBe('"backup"');
+    expect(rows).toEqual([
+      expect.objectContaining({ id: 'd1', kind: 'doc', standing: true, modified: null }),
+      expect.objectContaining({ id: 'a1', kind: 'annotation', taskRef: 5, modified: null }),
+    ]);
+  });
+
+  it('drops a superseded answer rather than letting it stomp a newer query', async () => {
+    let resolveFirst: (value: unknown) => void = () => undefined;
+    const { store } = await connected({
+      'core.capabilities': MEMORY_CAPABILITIES,
+      'memory.search': (params: Record<string, unknown>) =>
+        params['query'] === 'slow'
+          ? new Promise((resolve) => {
+              resolveFirst = resolve;
+            })
+          : { count: 0, total: 0, has_more: false, matched: '"fast"', hits: [] },
+    });
+
+    const first = store.runMemoryQuery({ ...DEFAULT_MEMORY_FILTERS, query: 'slow' });
+    const second = store.runMemoryQuery({ ...DEFAULT_MEMORY_FILTERS, query: 'fast' });
+    await second;
+    resolveFirst({ count: 1, total: 1, has_more: false, matched: '"slow"', hits: [memoryHit({ id: 'x', kind: 'doc' })] });
+    await first;
+
+    // The slow answer landed last on the wire but is not the latest request,
+    // so it must never overwrite what the fast, later query already set.
+    expect(store.getState().memoryResults.data.matched).toBe('"fast"');
+  });
+
+  it('reads a doc whole and its backlinks on selection', async () => {
+    const { transport, store } = await connected({
+      'core.capabilities': MEMORY_CAPABILITIES,
+      'memory.get': memoryDoc({ id: 'd1', title: 'Backup plan', body: 'the whole body' }),
+      'link.list': { count: 1, total: 1, next_offset: null, links: [linkRow({ id: 'l1', from: 'memory:d1', to: 'task:1' })] },
+    });
+
+    await store.selectMemoryDoc('d1');
+
+    expect(transport.calls).toEqual([
+      { method: 'memory.get', params: { id: 'd1' } },
+      { method: 'link.list', params: { ref: 'memory:d1', limit: 20 } },
+    ]);
+    expect(store.getState().memorySelection).toEqual({ kind: 'doc', id: 'd1' });
+    expect(store.getState().memoryDetail.data.doc?.body).toBe('the whole body');
+    expect(store.getState().memoryDetail.data.links).toHaveLength(1);
+  });
+
+  it('has no backlinks rather than failing when link.list is refused', async () => {
+    const { store } = await connected({
+      'core.capabilities': MEMORY_CAPABILITIES,
+      'memory.get': memoryDoc({ id: 'd1' }),
+      'link.list': fails('bad_request', 'no such endpoint'),
+    });
+
+    await store.selectMemoryDoc('d1');
+
+    expect(store.getState().memoryDetail.data.links).toEqual([]);
+    expect(store.getState().memoryDetail.error).toBeNull();
+  });
+
+  it('reads an annotation’s owning task on selection', async () => {
+    const { transport, store } = await connected({
+      'core.capabilities': MEMORY_CAPABILITIES,
+      'task.get': taskDetail({ short_id: 5, title: 'Ship it' }),
+      'link.list': { count: 0, total: 0, next_offset: null, links: [] },
+    });
+
+    await store.selectMemoryAnnotation('a1', 5);
+
+    expect(transport.calls[0]).toMatchObject({ method: 'task.get', params: { ref: 5 } });
+    expect(store.getState().memorySelection).toEqual({ kind: 'annotation', id: 'a1', taskRef: 5 });
+    expect(store.getState().memoryDetail.data.task?.title).toBe('Ship it');
+  });
+
+  it('addMemoryDoc calls memory.add and removeMemoryDoc clears the open selection', async () => {
+    const { transport, store } = await connected({
+      'core.capabilities': MEMORY_CAPABILITIES,
+      'memory.add': { id: 'd2', title: 'New', project: null, standing: false, created: '2026-09-20T00:00:00.000Z' },
+      'memory.get': memoryDoc({ id: 'd2', title: 'New' }),
+      'link.list': { count: 0, total: 0, next_offset: null, links: [] },
+      'memory.remove': { id: 'd2', removed: '2026-09-20T00:00:01.000Z' },
+    });
+
+    await store.addMemoryDoc({ title: 'New', body: 'body' });
+    expect(transport.calls[0]).toEqual({ method: 'memory.add', params: { title: 'New', body: 'body' } });
+
+    await store.selectMemoryDoc('d2');
+    await store.removeMemoryDoc('d2');
+
+    expect(transport.calls.at(-1)).toEqual({ method: 'memory.remove', params: { id: 'd2' } });
+    expect(store.getState().memorySelection).toBeNull();
+  });
+
+  it('addMemoryAnnotation and removeMemoryAnnotation re-read the open task', async () => {
+    const { transport, store } = await connected({
+      'core.capabilities': MEMORY_CAPABILITIES,
+      'task.get': taskDetail({ short_id: 5, title: 'Ship it', annotations_total: 1 }),
+      'link.list': { count: 0, total: 0, next_offset: null, links: [] },
+      'annotation.add': { short_id: 5, annotation: { id: 'a2', body: 'noted', created: '2026-09-20T00:00:00.000Z' } },
+      'annotation.remove': { id: 'a2', removed: '2026-09-20T00:00:01.000Z' },
+    });
+    await store.selectMemoryAnnotation('a1', 5);
+    transport.clearCalls();
+
+    await store.addMemoryAnnotation(5, 'noted');
+    expect(transport.methods).toEqual(['annotation.add', 'task.get']);
+
+    transport.clearCalls();
+    await store.removeMemoryAnnotation(5, 'a2');
+    expect(transport.methods).toEqual(['annotation.remove', 'task.get']);
+  });
+
+  it('says so rather than throwing when memory calls run with nothing connected', async () => {
+    const store = new DashboardStore();
+
+    await store.runMemoryQuery(DEFAULT_MEMORY_FILTERS);
+    expect(store.getState().memoryResults.error?.code).toBe('transport_unavailable');
+
+    await store.selectMemoryDoc('d1');
+    expect(store.getState().memoryDetail.error?.code).toBe('transport_unavailable');
   });
 });

@@ -2,7 +2,28 @@ import { createContext, useCallback, useContext, useSyncExternalStore } from 're
 
 import type { ApiClient } from '../api/client';
 import { ApiError } from '../api/envelope';
-import type { EventRow, Project, Summary, TaskDetail, TaskListResult, TaskRow } from '../api/types';
+import type {
+  EventRow,
+  Link,
+  LinkListResult,
+  MemoryDoc,
+  MemoryListResult,
+  MemorySearchResult,
+  Project,
+  Summary,
+  TaskDetail,
+  TaskListResult,
+  TaskRow,
+} from '../api/types';
+import {
+  applyMemoryFilters,
+  DEFAULT_MEMORY_FILTERS,
+  MEMORY_PAGE,
+  rowFromHit,
+  rowFromListRow,
+  type MemoryFilters,
+  type MemoryResultRow,
+} from './memory';
 
 /**
  * Everything the dashboard reads, in one `useSyncExternalStore` store: no
@@ -52,6 +73,30 @@ export interface SummaryData {
   recentlyCompleted: TaskRow[];
 }
 
+/** The Memory Explorer's results, whichever of `memory.search`/`.list` answered. */
+export interface MemoryResults {
+  rows: MemoryResultRow[];
+  /** The FTS5 expression actually run, or null while browsing (no query). */
+  matched: string | null;
+  /** An unfiltered, query-less browse that came back with nothing at all. */
+  storeEmpty: boolean;
+  /** The filters this answer was read with — what a later `runMemoryQuery()` repeats. */
+  filters: MemoryFilters;
+}
+
+/** What is open in the Memory inspector: a doc, or an annotation on a task. */
+export type MemorySelection = { kind: 'doc'; id: string } | { kind: 'annotation'; id: string; taskRef: number } | null;
+
+export interface MemoryDetail {
+  doc: MemoryDoc | null;
+  task: TaskDetail | null;
+  links: Link[];
+}
+
+function idleMemoryDetail(): MemoryDetail {
+  return { doc: null, task: null, links: [] };
+}
+
 export interface DashboardState {
   route: RouteState;
   projects: Slice<Project[]>;
@@ -60,10 +105,13 @@ export interface DashboardState {
   summary: Slice<SummaryData>;
   selected: Slice<TaskDetail | null>;
   activity: Slice<EventRow[]>;
+  memoryResults: Slice<MemoryResults>;
+  memorySelection: MemorySelection;
+  memoryDetail: Slice<MemoryDetail>;
 }
 
 /** The slices a call can be in flight on. */
-export type SliceKey = 'projects' | 'tasks' | 'summary' | 'selected' | 'activity';
+export type SliceKey = 'projects' | 'tasks' | 'summary' | 'selected' | 'activity' | 'memoryResults' | 'memoryDetail';
 
 function idle<T>(data: T): Slice<T> {
   return { data, loading: false, error: null };
@@ -78,6 +126,9 @@ function initialState(): DashboardState {
     summary: idle<SummaryData>({ report: null, blocked: 0, recentlyCompleted: [] }),
     selected: idle<TaskDetail | null>(null),
     activity: idle<EventRow[]>([]),
+    memoryResults: idle<MemoryResults>({ rows: [], matched: null, storeEmpty: false, filters: DEFAULT_MEMORY_FILTERS }),
+    memorySelection: null,
+    memoryDetail: idle<MemoryDetail>(idleMemoryDetail()),
   };
 }
 
@@ -91,6 +142,8 @@ export class DashboardStore {
   private state = initialState();
   private client: ApiClient | null = null;
   private readonly listeners = new Set<() => void>();
+  /** Bumped on every Memory Explorer query; a stale answer checks it and drops itself. */
+  private memorySeq = 0;
 
   getState(): DashboardState {
     return this.state;
@@ -230,6 +283,175 @@ export class DashboardStore {
       this.setActivity(result.events);
     } catch (err) {
       this.fail('activity', err);
+    }
+  }
+
+  /**
+   * The Memory Explorer's one read: `memory.search` when there is a query,
+   * `memory.list` (docs only) to browse. A response whose `memorySeq` has
+   * moved on is a superseded request — the screen already asked again — and
+   * is dropped rather than stomping the newer answer (D160's debounce rule).
+   */
+  async runMemoryQuery(filters: MemoryFilters): Promise<void> {
+    const seq = ++this.memorySeq;
+    const client = this.client;
+    if (client === null) {
+      this.fail('memoryResults', new ApiError('transport_unavailable', 'transport unavailable: not connected'));
+      return;
+    }
+    this.startLoading('memoryResults');
+    try {
+      const query = filters.query.trim();
+      let rows: MemoryResultRow[];
+      let matched: string | null = null;
+      let storeEmpty = false;
+      if (query === '') {
+        if (filters.kind === 'annotation') {
+          // Annotations have no browser of their own: they surface only from
+          // a search hit, so there is nothing to list without a query.
+          rows = [];
+        } else {
+          const result = await client.request<MemoryListResult>('memory.list', {
+            limit: MEMORY_PAGE,
+            offset: 0,
+            ...(filters.project !== null ? { project: filters.project } : {}),
+            ...(filters.standing !== 'all' ? { standing: filters.standing === 'standing' } : {}),
+          });
+          rows = result.docs.map(rowFromListRow);
+          storeEmpty = result.total === 0 && filters.project === null && filters.standing === 'all';
+        }
+      } else {
+        const result = await client.request<MemorySearchResult>('memory.search', {
+          query,
+          limit: MEMORY_PAGE,
+          ...(filters.project !== null ? { project: filters.project } : {}),
+        });
+        rows = result.hits.map(rowFromHit);
+        matched = result.matched;
+      }
+      if (seq !== this.memorySeq) return;
+      this.setSlice('memoryResults', {
+        data: { rows: applyMemoryFilters(rows, filters), matched, storeEmpty, filters },
+        loading: false,
+        error: null,
+      });
+    } catch (err) {
+      if (seq !== this.memorySeq) return;
+      this.fail('memoryResults', err);
+    }
+  }
+
+  /** Repeat the last query this slice ran with — what an edit's `onChanged` calls. */
+  reloadMemoryResults(): Promise<void> {
+    return this.runMemoryQuery(this.state.memoryResults.data.filters);
+  }
+
+  /** Read a memory doc whole, plus its explicit backlinks (best-effort). */
+  async selectMemoryDoc(id: string): Promise<void> {
+    this.set({ memorySelection: { kind: 'doc', id } });
+    const client = this.client;
+    if (client === null) {
+      this.fail('memoryDetail', new ApiError('transport_unavailable', 'transport unavailable: not connected'));
+      return;
+    }
+    this.startLoading('memoryDetail');
+    try {
+      const doc = await client.request<MemoryDoc>('memory.get', { id });
+      const links = await this.readLinks(client, `memory:${id}`);
+      this.setSlice('memoryDetail', { data: { doc, task: null, links }, loading: false, error: null });
+    } catch (err) {
+      this.fail('memoryDetail', err);
+    }
+  }
+
+  /** Read an annotation's owning task, plus the annotation's own backlinks. */
+  async selectMemoryAnnotation(id: string, taskRef: number): Promise<void> {
+    this.set({ memorySelection: { kind: 'annotation', id, taskRef } });
+    const client = this.client;
+    if (client === null) {
+      this.fail('memoryDetail', new ApiError('transport_unavailable', 'transport unavailable: not connected'));
+      return;
+    }
+    this.startLoading('memoryDetail');
+    try {
+      const task = await taskGet(client, taskRef);
+      const links = await this.readLinks(client, `annotation:${id}`);
+      this.setSlice('memoryDetail', { data: { doc: null, task, links }, loading: false, error: null });
+    } catch (err) {
+      this.fail('memoryDetail', err);
+    }
+  }
+
+  clearMemorySelection(): void {
+    this.set({ memorySelection: null, memoryDetail: idle(idleMemoryDetail()) });
+  }
+
+  /** Append the next page of the open annotation's owning task's notes. */
+  async loadOlderMemoryAnnotations(): Promise<void> {
+    const current = this.state.memoryDetail.data.task;
+    const client = this.client;
+    if (current === null || client === null || current.annotations_next_offset === null) return;
+    this.startLoading('memoryDetail');
+    try {
+      const next = await taskGet(client, current.short_id, current.annotations_next_offset);
+      const merged = { ...next, annotations: [...current.annotations, ...next.annotations] };
+      this.setSlice('memoryDetail', { data: { ...this.state.memoryDetail.data, task: merged }, loading: false, error: null });
+    } catch (err) {
+      this.fail('memoryDetail', err);
+    }
+  }
+
+  /** `memory.add`; the caller re-runs its query to bring the new doc into view. */
+  addMemoryDoc(fields: { title: string; body: string; source?: string; project?: string; standing?: boolean }): Promise<MemoryDoc> {
+    if (this.client === null) {
+      throw new ApiError('transport_unavailable', 'transport unavailable: not connected');
+    }
+    return this.client.request<MemoryDoc>('memory.add', fields);
+  }
+
+  /** `memory.remove`; clears the selection if the removed doc was open. */
+  async removeMemoryDoc(id: string): Promise<void> {
+    if (this.client === null) {
+      throw new ApiError('transport_unavailable', 'transport unavailable: not connected');
+    }
+    await this.client.request('memory.remove', { id });
+    if (this.state.memorySelection?.kind === 'doc' && this.state.memorySelection.id === id) {
+      this.clearMemorySelection();
+    }
+  }
+
+  /** `annotation.add` on the open annotation's owning task, then re-reads it. */
+  async addMemoryAnnotation(taskRef: number, body: string): Promise<void> {
+    if (this.client === null) {
+      throw new ApiError('transport_unavailable', 'transport unavailable: not connected');
+    }
+    await this.client.request('annotation.add', { ref: taskRef, body });
+    await this.refreshMemoryTask(taskRef);
+  }
+
+  /** `annotation.remove`; the task re-read shows the tombstone (D113) in its place. */
+  async removeMemoryAnnotation(taskRef: number, annotationId: string): Promise<void> {
+    if (this.client === null) {
+      throw new ApiError('transport_unavailable', 'transport unavailable: not connected');
+    }
+    await this.client.request('annotation.remove', { ref: taskRef, annotation_id: annotationId });
+    await this.refreshMemoryTask(taskRef);
+  }
+
+  private async refreshMemoryTask(taskRef: number): Promise<void> {
+    const current = this.state.memoryDetail.data;
+    if (this.client === null || current.task === null || current.task.short_id !== taskRef) return;
+    const task = await taskGet(this.client, taskRef);
+    this.setSlice('memoryDetail', { data: { ...current, task }, loading: false, error: null });
+  }
+
+  /** A link's endpoints may not support it yet (D160); a failed read is just no backlinks. */
+  private async readLinks(client: ApiClient, ref: string): Promise<Link[]> {
+    try {
+      const result = await client.request<LinkListResult>('link.list', { ref, limit: 20 });
+      return result.links;
+    } catch {
+      return [];
     }
   }
 
