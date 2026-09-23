@@ -146,6 +146,12 @@ jobs:
   # any calendar day — a red job here means a screen really changed, and the fix
   # is to regenerate in the same pull request, never to edit a fixture by hand:
   #   cargo build -p tasqx-cli && TASQX=target/debug/tasqx scripts/docs-capture.sh
+  #
+  # The second `--check` below runs the same comparison against
+  # crates/tasqx-cli/docs-fixtures/baseline, the behaviour baseline (D187,
+  # docs/maintainers/behaviour-baseline.md) that never ships in the guide, in
+  # this job rather than a new one so a de-bloat PR cannot merge on a required
+  # check that never looked at it.
   docs-fixtures:
     name: captured screens still match the binary
     runs-on: ubuntu-latest
@@ -156,6 +162,7 @@ jobs:
       - run: sudo apt-get update && sudo apt-get install -y tmux
       - run: cargo build -p tasqx-cli
       - run: TASQX=target/debug/tasqx scripts/docs-capture.sh --check
+      - run: TASQX=target/debug/tasqx scripts/docs-capture.sh --dir=crates/tasqx-cli/docs-fixtures/baseline --check
 
   # The OS-notification backend is off by default and therefore compiled by
   # nothing in the normal test run — a break in it would surface only on a
