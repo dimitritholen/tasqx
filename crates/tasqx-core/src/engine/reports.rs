@@ -32,28 +32,7 @@ impl Engine {
         // `metrics:["overdeu"]` produced a table with the column missing — the
         // `fields` and sort-key drop again, on the surface that had already
         // published its valid set and simply did not enforce it.
-        let metrics: Vec<String> = match p.get("metrics") {
-            None => vec![SUMMARY_METRICS[0].to_string()],
-            Some(Value::Array(a)) => {
-                let mut v = Vec::with_capacity(a.len());
-                for m in a {
-                    let name = m.as_str().filter(|s| SUMMARY_METRICS.contains(s));
-                    let Some(name) = name else {
-                        return Err(ApiError::bad_request(format!(
-                            "unknown metric {m} (valid metrics: {})",
-                            SUMMARY_METRICS.join(", ")
-                        )));
-                    };
-                    v.push(name.to_string());
-                }
-                v
-            }
-            Some(_) => {
-                return Err(ApiError::bad_request(
-                    "`metrics` must be an array of metric names",
-                ))
-            }
-        };
+        let metrics = parse_metrics(p, &SUMMARY_METRICS, false)?;
 
         // Kept as a string as well as a parsed filter: the result echoes it,
         // because a report that names no scope is a total that can be read
@@ -192,28 +171,20 @@ impl Engine {
             if !filter.matches(&ctx) {
                 continue;
             }
-            let key = match group_by.as_str() {
-                "project" => t.project.clone().unwrap_or_else(|| "(none)".to_string()),
-                // D28: the group *key* is a read surface, so it goes through the
-                // one choke point (`Task::status_text`) that prefers the stored
-                // text over the in-memory placeholder. `t.status.as_str()` filed
-                // an unrecognized status under `pending` — the placeholder D24's
-                // scope check deliberately keeps counting, but which no surface
-                // may print as fact — while `task.list` and `store.export` named
-                // the same row `Done`. Only the label changes here: `ctx.status`
-                // above still carries the placeholder, because that is what keeps
-                // the anomalous row inside the default `@working` view.
-                //
-                // Arbitrary text in this slot is already the norm — `project`
-                // feeds user input through it — and both renderers sanitise it
-                // (render.rs `san`, html.rs `esc`).
-                "status" => t.status_text().to_string(),
-                "priority" => t
-                    .priority
-                    .map(|x| x.as_str().to_string())
-                    .unwrap_or_else(|| "(none)".to_string()),
-                _ => unreachable!(),
-            };
+            // D28: the group *key* is a read surface, so `group_key` goes through
+            // the one choke point (`Task::status_text`) that prefers the stored
+            // text over the in-memory placeholder. `t.status.as_str()` filed an
+            // unrecognized status under `pending` — the placeholder D24's scope
+            // check deliberately keeps counting, but which no surface may print
+            // as fact — while `task.list` and `store.export` named the same row
+            // `Done`. Only the label changes: `ctx.status` above still carries
+            // the placeholder, because that is what keeps the anomalous row
+            // inside the default `@working` view.
+            //
+            // Arbitrary text in this slot is already the norm — `project` feeds
+            // user input through it — and both renderers sanitise it (render.rs
+            // `san`, html.rs `esc`).
+            let key = group_key(t, &group_by);
             let agg = groups.entry(key).or_insert(Agg {
                 count: 0,
                 est_secs: 0,
@@ -428,28 +399,7 @@ impl Engine {
         // read together, and a rework rate with no cost beside it invites the
         // wrong fix. An unknown name is refused rather than dropped, the
         // `SUMMARY_METRICS` lesson applied before it can be relearned here.
-        let metrics: Vec<String> = match p.get("metrics") {
-            None => OUTCOME_METRICS.iter().map(|m| m.to_string()).collect(),
-            Some(Value::Array(a)) => {
-                let mut v = Vec::with_capacity(a.len());
-                for m in a {
-                    let name = m.as_str().filter(|s| OUTCOME_METRICS.contains(s));
-                    let Some(name) = name else {
-                        return Err(ApiError::bad_request(format!(
-                            "unknown metric {m} (valid metrics: {})",
-                            OUTCOME_METRICS.join(", ")
-                        )));
-                    };
-                    v.push(name.to_string());
-                }
-                v
-            }
-            Some(_) => {
-                return Err(ApiError::bad_request(
-                    "`metrics` must be an array of metric names",
-                ))
-            }
-        };
+        let metrics = parse_metrics(p, &OUTCOME_METRICS, true)?;
         let wants = |m: &str| metrics.iter().any(|x| x == m);
 
         let filter_str = opt_str(p, "filter")?.unwrap_or_default();
@@ -558,18 +508,10 @@ impl Engine {
             if !filter.matches(&ctx) {
                 continue;
             }
-            let key = match group_by.as_str() {
-                "project" => t.project.clone().unwrap_or_else(|| "(none)".to_string()),
-                // D28's choke point, for the same reason `report.summary` uses
-                // it: the group key is a read surface and may not print a
-                // placeholder as fact.
-                "status" => t.status_text().to_string(),
-                "priority" => t
-                    .priority
-                    .map(|x| x.as_str().to_string())
-                    .unwrap_or_else(|| "(none)".to_string()),
-                _ => unreachable!(),
-            };
+            // D28's choke point, for the same reason `report.summary` uses it:
+            // the group key is a read surface and may not print a placeholder
+            // as fact.
+            let key = group_key(t, &group_by);
             let agg = groups.entry(key).or_insert(Agg {
                 completions: 0,
                 closed: 0,
@@ -1043,6 +985,58 @@ impl Engine {
             out.entry(task_id).or_default().push((started, now_ts));
         }
         Ok(out)
+    }
+}
+
+/// The `metrics` param both reports validate identically: absent means either
+/// every name in `allowed` (`default_all`) or just its first (`report.
+/// summary`'s `count`-only default); present must be an array of names drawn
+/// from `allowed`, checked against the same closed set the MCP schema renders
+/// its `enum` from, so an unknown name is refused rather than silently
+/// dropped — a table quietly missing a column still looks like a valid one.
+fn parse_metrics(p: &Value, allowed: &[&str], default_all: bool) -> Result<Vec<String>, ApiError> {
+    match p.get("metrics") {
+        None if default_all => Ok(allowed.iter().map(|m| m.to_string()).collect()),
+        None => Ok(vec![allowed[0].to_string()]),
+        Some(Value::Array(a)) => {
+            let mut v = Vec::with_capacity(a.len());
+            for m in a {
+                let name = m.as_str().filter(|s| allowed.contains(s));
+                let Some(name) = name else {
+                    return Err(ApiError::bad_request(format!(
+                        "unknown metric {m} (valid metrics: {})",
+                        allowed.join(", ")
+                    )));
+                };
+                v.push(name.to_string());
+            }
+            Ok(v)
+        }
+        Some(_) => Err(ApiError::bad_request(
+            "`metrics` must be an array of metric names",
+        )),
+    }
+}
+
+/// The group-by axis's key for one task. `group_by` is validated against
+/// [`SUMMARY_GROUP_BY`] before either caller reaches this, so the wildcard arm
+/// is unreachable.
+///
+/// D28: the `status` arm goes through the one choke point (`Task::status_text`)
+/// that prefers the stored text over the in-memory placeholder — an
+/// unrecognized status files under `pending` for matching purposes (D24's
+/// scope check keeps counting it), but no read surface may print that
+/// placeholder as fact, so the group *label* still says what was actually
+/// stored.
+fn group_key(t: &Task, group_by: &str) -> String {
+    match group_by {
+        "project" => t.project.clone().unwrap_or_else(|| "(none)".to_string()),
+        "status" => t.status_text().to_string(),
+        "priority" => t
+            .priority
+            .map(|x| x.as_str().to_string())
+            .unwrap_or_else(|| "(none)".to_string()),
+        _ => unreachable!(),
     }
 }
 
