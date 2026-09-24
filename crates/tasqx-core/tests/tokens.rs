@@ -1891,6 +1891,11 @@ fn recompute_dry_run_reports_the_delta_and_writes_nothing() {
 
 #[test]
 fn recompute_removes_the_double_counted_subset_window() {
+    // Held for the whole test: the third pass below turns Y into a `locate`
+    // candidate (#819 — no log-parse row survives, and Y's client maps to
+    // Claude Code), so it must run under an isolated HOME like every other
+    // locate test, never the real one.
+    let _guard = LOCATE_ENV.lock().unwrap_or_else(|e| e.into_inner());
     let (e, dir, x, y) = seeded_double_count();
 
     let dry = dispatch(&e, "tokens.recompute", &json!({})).unwrap();
@@ -1942,13 +1947,26 @@ fn recompute_removes_the_double_counted_subset_window() {
     let v = event_payload_for(&e, &x_id, "tokens.attributed");
     assert_eq!(v["sample_ids"], json!(["b"]), "{v}");
 
-    // A third pass over the repaired store changes nothing: X is unchanged,
-    // Y — no log-parse rows left — is out of scope entirely.
-    let after = dispatch(&e, "tokens.recompute", &json!({})).unwrap();
+    // A third pass over the repaired store: X is unchanged. Y — no log-parse
+    // rows left, done, client mapping to Claude Code — is now a `locate`
+    // candidate too (#819: scope no longer requires a self-report), but the
+    // fixture's transcript carries no `tasqx_complete_task` call for Y, so it
+    // is `skipped`, not `locate`, and nothing is written or added to the
+    // totals.
+    let after =
+        with_isolated_home(&dir, || dispatch(&e, "tokens.recompute", &json!({})).unwrap());
     let tasks = after["tasks"].as_array().unwrap();
-    assert_eq!(tasks.len(), 1, "{after}");
-    assert_eq!(tasks[0]["task"], x);
-    assert_eq!(tasks[0]["action"], "unchanged");
+    assert_eq!(tasks.len(), 2, "{after}");
+    let x_entry = tasks
+        .iter()
+        .find(|t| t["task"] == x)
+        .unwrap_or_else(|| panic!("task X in report: {after}"));
+    assert_eq!(x_entry["action"], "unchanged");
+    let y_entry = tasks
+        .iter()
+        .find(|t| t["task"] == y)
+        .unwrap_or_else(|| panic!("task Y in report: {after}"));
+    assert_eq!(y_entry["action"], "skipped", "{after}");
     assert_eq!(after["totals"], json!({ "before": 1100, "after": 1100 }));
 
     let _ = std::fs::remove_dir_all(&dir);
@@ -3682,6 +3700,172 @@ fn locate_backfill_refuses_an_overlap_two_tasks_share_via_one_located_file() {
         )
         .unwrap();
     assert_eq!((b_input, b_output), (555, 666));
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// (a, #819) The `locate` candidate set widens past `self_reported`: a done
+/// task with NO self-report at all, whose completion tick found no
+/// transcript anywhere and terminated it with an EMPTY `tokens.attributed`
+/// marker (`found: false` — a pre-D188 binary's shape, or a tick that simply
+/// found nothing yet). The live daemon never revisits an attributed task, so
+/// a transcript holding this task's own `tasqx_complete_task` call that
+/// arrives only AFTER that marker is permanently invisible to it — before
+/// #819, `tokens.recompute`'s `locate` scope was keyed on `self_reported` too
+/// and never saw this task either. Dry-run must list `locate`; `--apply` must
+/// append the HIGH row.
+#[test]
+fn locate_reaches_a_done_task_with_no_self_report_and_an_empty_terminal_marker() {
+    use tasqx_core::attribution::{attribute_one, compute_attribution, pending_attributions};
+
+    let dir = scratch_dir("locate-no-self-report-terminal");
+    std::fs::create_dir_all(&dir).unwrap(); // isolated root, deliberately empty at first
+    let _guard = LOCATE_ENV.lock().unwrap_or_else(|e| e.into_inner());
+
+    let e = engine();
+    let sid = e.task_add(&json!({ "title": "t" })).unwrap()["short_id"]
+        .as_i64()
+        .unwrap();
+    // No `input_tokens`/`output_tokens` at all — no self-report.
+    e.task_done(&json!({ "ref": sid, "client": "claude-code" }))
+        .unwrap();
+    let uuid = task_uuid(&e, &json!(sid));
+    pin_created(&e, &uuid, "2026-07-24T10:00:00Z");
+    pin_done_client_only(&e, &uuid, "2026-07-24T10:10:00Z", "claude-code");
+
+    // First tick: no transcript exists anywhere, so discovery finds nothing
+    // and the tick terminates with an EMPTY marker — no self-report, no
+    // log-parse row, nothing measured at all.
+    let now: jiff::Timestamp = "2026-07-24T10:15:00Z".parse().unwrap();
+    with_isolated_home(&dir, || {
+        let pending = pending_attributions(&e).expect("pending_attributions");
+        let pa = pending
+            .iter()
+            .find(|p| p.short_id == sid)
+            .expect("the task is pending attribution");
+        let result = compute_attribution(pa, now).expect("compute_attribution");
+        assert!(
+            !result.found,
+            "no transcript exists yet — this tick must terminate empty"
+        );
+        attribute_one(&e, pa, &result).expect("attribute_one");
+    });
+    assert_eq!(
+        count(
+            &e,
+            &format!("SELECT COUNT(*) FROM token_usage WHERE task_id='{uuid}'")
+        ),
+        0,
+        "the empty tick wrote only a marker, never a measurement"
+    );
+
+    // The transcript arrives AFTER the marker — too late for the live
+    // daemon, which never revisits an attributed task.
+    let proj = dir.join("projects").join("proj");
+    std::fs::create_dir_all(&proj).unwrap();
+    std::fs::write(
+        proj.join("sess-1.jsonl"),
+        format!(
+            "{}\n{}\n",
+            claude_line("2026-07-24T10:05:00Z", "m1", 400, 105_000, 0, 0),
+            complete_task_call("2026-07-24T10:09:30Z", "m2", sid),
+        ),
+    )
+    .unwrap();
+
+    let dry = with_isolated_home(&dir, || {
+        dispatch(&e, "tokens.recompute", &json!({})).unwrap()
+    });
+    let entry = dry["tasks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|t| t["task"] == sid)
+        .unwrap_or_else(|| panic!("task #{sid} in report: {dry}"));
+    assert_eq!(entry["action"], "locate", "{dry}");
+    assert_eq!(entry["before"], b4c(0, 0, 0, 0), "{dry}");
+    assert_eq!(entry["after"], b4c(400, 105_000, 0, 0), "{dry}");
+    assert_eq!(
+        count(
+            &e,
+            "SELECT COUNT(*) FROM token_usage WHERE source = 'log-parse'"
+        ),
+        0,
+        "dry-run writes nothing"
+    );
+
+    let applied = with_isolated_home(&dir, || {
+        dispatch(&e, "tokens.recompute", &json!({ "dry_run": false })).unwrap()
+    });
+    assert_eq!(applied["tasks"], dry["tasks"], "apply performs the plan");
+
+    let (source, confidence, input, output): (String, String, i64, i64) = e
+        .conn()
+        .query_row(
+            "SELECT source, confidence, input_tokens, output_tokens FROM token_usage \
+             WHERE task_id = ?1",
+            [&uuid],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+        )
+        .unwrap();
+    assert_eq!(
+        (source.as_str(), confidence.as_str(), input, output),
+        ("log-parse", "high", 400, 105_000),
+        "the located transcript is the only measurement this task ever gets"
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// (b, #819) A task that already holds a log-parse row is never a `locate`
+/// candidate, self-report or not: `classify_task`'s `stored`-keyed loop
+/// already owns it, and folding it into `locate_candidates` too would ask
+/// `locate_backfill` to run a second, parallel decision over a task
+/// `classify_task` already covers.
+#[test]
+fn locate_skips_a_done_task_that_already_has_a_log_parse_row() {
+    let dir = scratch_dir("locate-already-has-log-parse");
+    std::fs::create_dir_all(&dir).unwrap(); // isolated root, deliberately empty
+    let _guard = LOCATE_ENV.lock().unwrap_or_else(|e| e.into_inner());
+
+    let e = engine();
+    let sid = e.task_add(&json!({ "title": "t" })).unwrap()["short_id"]
+        .as_i64()
+        .unwrap();
+    // No self-report — this is exactly the #819 shape the candidate set now
+    // reaches — but a log-parse row ALREADY exists.
+    e.task_done(&json!({ "ref": sid, "client": "claude-code" }))
+        .unwrap();
+    let uuid = task_uuid(&e, &json!(sid));
+    pin_created(&e, &uuid, "2026-07-24T10:00:00Z");
+    pin_done_client_only(&e, &uuid, "2026-07-24T10:10:00Z", "claude-code");
+    e.token_attribute(&json!({
+        "ref": sid, "source": "log-parse", "tool": "claude-code", "confidence": "high",
+        "samples": 1, "input_tokens": 10, "output_tokens": 20, "sample_ids": ["m1"],
+    }))
+    .unwrap();
+
+    let r = with_isolated_home(&dir, || {
+        dispatch(&e, "tokens.recompute", &json!({ "dry_run": false })).unwrap()
+    });
+    let entry = r["tasks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|t| t["task"] == sid)
+        .unwrap_or_else(|| panic!("task #{sid} in report: {r}"));
+    assert_ne!(
+        entry["action"], "locate",
+        "a task with a stored log-parse row is classify_task's, never locate's: {r}"
+    );
+    assert_eq!(
+        count(
+            &e,
+            &format!("SELECT COUNT(*) FROM token_usage WHERE task_id='{uuid}'")
+        ),
+        1,
+        "unchanged: still exactly the one row it started with"
+    );
 
     let _ = std::fs::remove_dir_all(&dir);
 }
