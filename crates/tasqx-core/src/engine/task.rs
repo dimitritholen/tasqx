@@ -1056,9 +1056,9 @@ impl Engine {
                 .filter_map(|(k, v)| v.as_ref().map(|_| k))
                 .collect();
             out["tokens_hint"] = json!(if already_self_reported {
-                "a self-report already covers this task; log-parse attribution is \
-                 skipped for it, and a second report on the same measurement would \
-                 double-count it — nothing further is needed here"
+                "a self-report already covers this task; log-parse attribution still runs \
+                 and takes over at higher confidence if it locates the transcript that \
+                 measured this task (D188) — nothing further is needed here"
                     .to_string()
             } else if recorded.is_empty() {
                 "no token counts were self-reported; log-parse attribution is \
@@ -2594,14 +2594,21 @@ impl Engine {
     /// Saturating, for `report_summary`'s reason: one measurement is bounded,
     /// a sum over arbitrarily many rows is not, and a clamped total is
     /// wrong-but-visible where a wrapped one is negative nonsense.
+    ///
+    /// D188: reads through `tokens::best_confidence_measurements` rather than
+    /// a raw SQL `SUM`, so a task carrying both a self-report and the
+    /// transcript that superseded it is not measured twice.
     fn fresh_tokens(&self, task_id: &str) -> Result<i64, ApiError> {
-        let sum: i64 = self.conn.query_row(
-            "SELECT COALESCE(SUM(input_tokens), 0) + COALESCE(SUM(output_tokens), 0) \
-                  + COALESCE(SUM(cache_creation_tokens), 0) + COALESCE(SUM(total_tokens), 0) \
-             FROM token_usage WHERE task_id = ?1",
-            params![task_id],
-            |r| r.get(0),
-        )?;
+        let measurements = self.tokens_of(task_id)?;
+        let sum = tokens::best_confidence_measurements(&measurements)
+            .into_iter()
+            .fold(0i64, |sum, m| {
+                let bucket = |name: &str| m.get(name).and_then(Value::as_i64).unwrap_or(0);
+                sum.saturating_add(bucket("input_tokens"))
+                    .saturating_add(bucket("output_tokens"))
+                    .saturating_add(bucket("cache_creation_tokens"))
+                    .saturating_add(bucket("total_tokens"))
+            });
         Ok(sum)
     }
 

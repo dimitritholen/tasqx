@@ -224,7 +224,11 @@ impl Engine {
             // the same reason as the duration roll-ups above. Scope is already
             // handled: this runs only for tasks that survived the D24 skip and
             // the filter, so cancelled work stays out unless `all:true`.
-            for m in &snapshot.tokens {
+            //
+            // D188: only the task's highest-confidence tier — a self-report
+            // superseded by a located transcript must not also add its own
+            // count here, or the group would bill the identical spend twice.
+            for m in tokens::best_confidence_measurements(&snapshot.tokens) {
                 // D97: windowed, a measurement counts only if IT was recorded
                 // inside `[since, until)` — `created` is the instant the spend
                 // was measured, independent of when its task completed (or
@@ -590,19 +594,25 @@ impl Engine {
             // cannot go stale against a budget somebody edited afterwards.
             if let Some(budget) = t.budget_tokens {
                 agg.budgeted += 1;
-                let fresh: i64 = snapshot.tokens.iter().fold(0, |sum, m| {
-                    let bucket = |name: &str| m.get(name).and_then(Value::as_i64).unwrap_or(0);
-                    sum.saturating_add(bucket("input_tokens"))
-                        .saturating_add(bucket("output_tokens"))
-                        .saturating_add(bucket("cache_creation_tokens"))
-                        .saturating_add(bucket("total_tokens"))
-                });
+                // D188: the same best-confidence-only filter `fresh_tokens`
+                // (`task.get`'s budget hint) applies, so a superseded
+                // self-report cannot add a second fresh count on top of the
+                // transcript that replaced it.
+                let fresh: i64 = tokens::best_confidence_measurements(&snapshot.tokens)
+                    .into_iter()
+                    .fold(0, |sum, m| {
+                        let bucket = |name: &str| m.get(name).and_then(Value::as_i64).unwrap_or(0);
+                        sum.saturating_add(bucket("input_tokens"))
+                            .saturating_add(bucket("output_tokens"))
+                            .saturating_add(bucket("cache_creation_tokens"))
+                            .saturating_add(bucket("total_tokens"))
+                    });
                 if fresh > budget {
                     agg.overrun.push(t.short_id);
                 }
             }
             let mut contributed = false;
-            for m in &snapshot.tokens {
+            for m in tokens::best_confidence_measurements(&snapshot.tokens) {
                 let bucket = |name: &str| m.get(name).and_then(Value::as_i64).unwrap_or(0);
                 let (i, o, cr, cc, t) = (
                     bucket("input_tokens"),
@@ -1367,6 +1377,46 @@ mod tests {
     /// of the rolled-up number can still tell it is not fully trustworthy.
     #[test]
     fn report_summary_carries_the_groups_worst_confidence() {
+        // D188: within ONE task, only the best-confidence tier is summed, so
+        // the worst tracked here has to come from a SECOND task in the same
+        // group rather than a second row on the same one (see the sibling
+        // test below for the single-task dedup itself).
+        let e = Engine::open_in_memory().unwrap();
+        let a = e.task_add(&json!({ "title": "a" })).unwrap()["short_id"].clone();
+        let b = e.task_add(&json!({ "title": "b" })).unwrap()["short_id"].clone();
+        e.token_add(&json!({
+            "ref": a, "tool": "claude-code", "source": "otel",
+            "input_tokens": 10, "confidence": "high",
+        }))
+        .unwrap();
+        e.token_add(&json!({
+            "ref": b, "tool": "claude-code", "source": "log-parse",
+            "input_tokens": 5, "confidence": "low",
+        }))
+        .unwrap();
+
+        let out = e
+            .report_summary(&json!({ "group_by": "project", "metrics": ["tokens_in"] }))
+            .unwrap();
+        assert_eq!(
+            out["groups"][0]["tokens_confidence"],
+            json!("low"),
+            "the low measurement must not be laundered away by the high one: {out}"
+        );
+        assert_eq!(
+            out["groups"][0]["tokens_in"],
+            json!(15),
+            "both tasks' own best tier still sums across the group: {out}"
+        );
+    }
+
+    /// D188: a single task carrying two measurements of DIFFERENT confidence
+    /// — a self-report superseded by a located transcript, or any other mix
+    /// — contributes only its highest tier to a report; the lower one is
+    /// never laundered IN either, the opposite risk from the sibling test
+    /// above.
+    #[test]
+    fn report_summary_counts_only_a_tasks_own_best_confidence_tier() {
         let e = Engine::open_in_memory().unwrap();
         let sid = e.task_add(&json!({ "title": "a" })).unwrap()["short_id"].clone();
         e.token_add(&json!({
@@ -1384,9 +1434,14 @@ mod tests {
             .report_summary(&json!({ "group_by": "project", "metrics": ["tokens_in"] }))
             .unwrap();
         assert_eq!(
+            out["groups"][0]["tokens_in"],
+            json!(10),
+            "only the HIGH row counts, not 10+5: {out}"
+        );
+        assert_eq!(
             out["groups"][0]["tokens_confidence"],
-            json!("low"),
-            "the low measurement must not be laundered away by the high one: {out}"
+            json!("high"),
+            "{out}"
         );
     }
 

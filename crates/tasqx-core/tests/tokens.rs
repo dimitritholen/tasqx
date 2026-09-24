@@ -297,14 +297,20 @@ fn a_replayed_self_report_with_the_same_idempotency_key_is_a_no_op() {
 /// elsewhere in this file to build fixtures) is deliberately NOT what the
 /// guard keys on, or `export_import_round_trips_token_measurements` above
 /// could no longer construct a two-row fixture.
+///
+/// D188 narrows this refusal to a NON-high existing measurement: only a
+/// HIGH-confidence bank is exempt (see the sibling test below), because only
+/// that one is never outranked by the self-report it would otherwise
+/// conflict with. A `medium` log-parse bank — an explicit path parsed with no
+/// session correlation — still refuses exactly as before.
 #[test]
-fn a_self_report_after_attribution_already_banked_is_refused() {
+fn a_self_report_after_a_non_high_attribution_is_still_refused() {
     let e = engine();
     let sid = e.task_add(&json!({ "title": "t" })).unwrap()["short_id"].clone();
     e.task_done(&json!({ "ref": sid, "client": "claude-code", "session_id": "sess-1" }))
         .unwrap();
     e.token_attribute(&json!({
-        "ref": sid, "source": "otel", "tool": "claude-code", "confidence": "high",
+        "ref": sid, "source": "log-parse", "tool": "claude-code", "confidence": "medium",
         "samples": 1, "input_tokens": 7000, "output_tokens": 3000,
         "cache_read_tokens": 111_111,
     }))
@@ -318,7 +324,7 @@ fn a_self_report_after_attribution_already_banked_is_refused() {
         }))
         .unwrap_err();
     assert_eq!(err.code, ErrorCode::Conflict);
-    assert!(err.message.contains("otel"), "{}", err.message);
+    assert!(err.message.contains("log-parse"), "{}", err.message);
 
     // The refusal wrote nothing: the ledger is not doubled.
     assert_eq!(count(&e, "SELECT COUNT(*) FROM token_usage"), 1);
@@ -329,6 +335,45 @@ fn a_self_report_after_attribution_already_banked_is_refused() {
         ),
         0
     );
+}
+
+/// D188: a HIGH-confidence bank — a located or session-verified transcript,
+/// or OTLP — is never outranked by a self-report, so the self-report lands
+/// beside it (kept for audit, D50's "rows are never rewritten") instead of
+/// being refused. `task.list`'s roll-up counts only the higher tier.
+#[test]
+fn a_self_report_after_a_high_confidence_attribution_is_allowed_and_counted_once() {
+    let e = engine();
+    let sid = e.task_add(&json!({ "title": "t" })).unwrap()["short_id"].clone();
+    e.task_done(&json!({ "ref": sid, "client": "claude-code", "session_id": "sess-1" }))
+        .unwrap();
+    e.token_attribute(&json!({
+        "ref": sid, "source": "otel", "tool": "claude-code", "confidence": "high",
+        "samples": 1, "input_tokens": 7000, "output_tokens": 3000,
+        "cache_read_tokens": 111_111,
+    }))
+    .unwrap();
+
+    let r = e
+        .token_add(&json!({
+            "ref": sid, "tool": "claude-code", "source": "self-report", "confidence": "medium",
+            "input_tokens": 1, "output_tokens": 1,
+        }))
+        .unwrap();
+    assert!(r["measurement"]["id"].is_string());
+    // Both rows are kept — the self-report is not silently rejected...
+    assert_eq!(count(&e, "SELECT COUNT(*) FROM token_usage"), 2);
+
+    // ...but the roll-up counts only the HIGH tier, never both.
+    let list = e
+        .task_list(&json!({ "fields": ["short_id", "tokens"] }))
+        .unwrap();
+    let tokens = &list["tasks"][0]["tokens"];
+    assert_eq!(
+        tokens["input_tokens"], 7000,
+        "the HIGH row, not 7000+1: {tokens}"
+    );
+    assert_eq!(tokens["output_tokens"], 3000, "{tokens}");
 }
 
 // ---- token.remove (#210) --------------------------------------------------------
