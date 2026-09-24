@@ -1733,7 +1733,11 @@ fn fit(s: &str, max: usize) -> String {
 /// How many display cells this text occupies — the only unit a card can be
 /// measured in, for the reason `crates/tasqx-cli/src/render.rs` names: a column
 /// is a grid position and a grid is made of cells, not of bytes or chars.
-fn width(s: &str) -> usize {
+///
+/// `pub`: the CLI renderer's own `width` (`render.rs`) is the identical
+/// one-line call into `unicode_width` and delegates here rather than keeping
+/// a second copy (#736 part B).
+pub fn width(s: &str) -> usize {
     unicode_width::UnicodeWidthStr::width(s)
 }
 

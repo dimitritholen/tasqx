@@ -164,8 +164,13 @@ fn summary_line(ctx: &Ctx, label: Option<&str>, parts: Vec<(&str, String)>) -> S
 /// chars forming one two-cell cluster. Every padded column in this module goes
 /// through here (or through [`pad`]/[`fit`], which do) so there is one answer to
 /// "how wide is this" rather than one per call site.
+///
+/// Delegates to `tasqx_core::markdown::width`, the byte-identical call this
+/// duplicated (#736 part B) — kept as its own `pub fn` here rather than
+/// switched to `tasqx_core::markdown::width` at every call site, since every
+/// module in this crate already imports it from `crate::render`.
 pub fn width(s: &str) -> usize {
-    unicode_width::UnicodeWidthStr::width(s)
+    tasqx_core::markdown::width(s)
 }
 
 /// Pad `s` out to at least `max` cells. Never truncates.
