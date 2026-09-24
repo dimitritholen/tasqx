@@ -3870,3 +3870,81 @@ fn locate_skips_a_done_task_that_already_has_a_log_parse_row() {
 
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// (c, #819 review — CodeRabbit finding on PR #152) A task already measured
+/// through OTLP is never a `locate` candidate, self-report or not:
+/// `rollup_measurements` only ever supersedes a self-report, never an `otel`
+/// row, so appending a fresh log-parse HIGH row beside a stored `otel` row
+/// would double every roll-up forever (`--apply` is append-only). No self-
+/// report here either — this is exactly the shape #819 widened the candidate
+/// set to reach — but the stored `otel` row alone must still keep the task
+/// out of scope, even with a transcript sitting right there holding its own
+/// `tasqx_complete_task` call.
+#[test]
+fn locate_skips_a_done_task_that_already_has_an_otel_row() {
+    let dir = scratch_dir("locate-already-has-otel");
+    let _guard = LOCATE_ENV.lock().unwrap_or_else(|e| e.into_inner());
+
+    let e = engine();
+    let sid = e.task_add(&json!({ "title": "t" })).unwrap()["short_id"]
+        .as_i64()
+        .unwrap();
+    // No self-report — but an OTLP measurement already covers this spend.
+    e.task_done(&json!({ "ref": sid, "client": "claude-code" }))
+        .unwrap();
+    let uuid = task_uuid(&e, &json!(sid));
+    pin_created(&e, &uuid, "2026-07-24T10:00:00Z");
+    pin_done_client_only(&e, &uuid, "2026-07-24T10:10:00Z", "claude-code");
+    e.token_attribute(&json!({
+        "ref": sid, "source": "otel", "tool": "claude-code", "confidence": "high",
+        "samples": 1, "input_tokens": 10, "output_tokens": 20, "sample_ids": ["otel-1"],
+    }))
+    .unwrap();
+
+    // A transcript holding this task's own call sits right there — if the
+    // candidate filter ever regresses to "no LOG-PARSE row" alone, this is
+    // located and banked beside the otel row.
+    let proj = dir.join("projects").join("proj");
+    std::fs::create_dir_all(&proj).unwrap();
+    std::fs::write(
+        proj.join("sess-1.jsonl"),
+        format!(
+            "{}\n{}\n",
+            claude_line("2026-07-24T10:05:00Z", "m1", 400, 105_000, 0, 0),
+            complete_task_call("2026-07-24T10:09:30Z", "m2", sid),
+        ),
+    )
+    .unwrap();
+
+    let r = with_isolated_home(&dir, || {
+        dispatch(&e, "tokens.recompute", &json!({ "dry_run": false })).unwrap()
+    });
+    assert!(
+        r["tasks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|t| t["task"] != sid),
+        "a task already measured through OTLP is never in scope for `locate`: {r}"
+    );
+    assert_eq!(
+        count(
+            &e,
+            &format!("SELECT COUNT(*) FROM token_usage WHERE task_id='{uuid}'")
+        ),
+        1,
+        "nothing written beside the original otel row"
+    );
+    assert_eq!(
+        count(
+            &e,
+            &format!(
+                "SELECT COUNT(*) FROM token_usage WHERE task_id='{uuid}' AND source='log-parse'"
+            )
+        ),
+        0,
+        "no log-parse row must ever join the otel measurement"
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
