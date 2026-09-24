@@ -255,7 +255,7 @@ pub(super) fn buckets(input: i64, output: i64, cache_read: i64, cache_creation: 
 /// other roll-up here.
 pub(super) fn measurement_totals(measurements: &[Value]) -> crate::tokens::TokenTotals {
     let mut totals = crate::tokens::TokenTotals::default();
-    for m in best_confidence_measurements(measurements) {
+    for m in rollup_measurements(measurements) {
         let get = |k: &str| m.get(k).and_then(Value::as_i64).unwrap_or(0) as u64;
         totals.input = totals.input.saturating_add(get("input_tokens"));
         totals.output = totals.output.saturating_add(get("output_tokens"));
@@ -279,25 +279,27 @@ pub(super) fn measurement_totals(measurements: &[Value]) -> crate::tokens::Token
 /// (D139's gauge and its cost buckets) all filter through this before
 /// summing.
 ///
-/// Ranks by [`crate::tokens::confidence_rank`], not by string equality, so an
-/// unrecognized confidence groups with `low` rather than becoming its own
-/// tier. Empty input answers empty.
-pub(super) fn best_confidence_measurements(measurements: &[Value]) -> Vec<&Value> {
+/// The rule: when the task (`measurements` is one task's rows) carries any
+/// HIGH-confidence row whose source is not a self-report, its self-report
+/// rows are dropped; everything else sums. Only a self-report is ever
+/// superseded — two self-reports, or a reopened task's HIGH located cycle
+/// beside a LOW discovery cycle, are separate spend and all count.
+pub(super) fn rollup_measurements(measurements: &[Value]) -> Vec<&Value> {
     // D32: a variable key, not a literal `.get("confidence")` chain — the
     // engine-wide lint bans the literal shape because it cannot tell "absent"
     // from "wrong type"; see `report_summary`'s `str_field` for the same
     // pattern over the same field.
-    let field = "confidence";
-    let rank_of = |m: &Value| {
-        m.get(field)
-            .and_then(Value::as_str)
-            .map(crate::tokens::confidence_rank)
-            .unwrap_or(0)
-    };
-    let Some(best) = measurements.iter().map(rank_of).max() else {
-        return Vec::new();
-    };
-    measurements.iter().filter(|m| rank_of(m) == best).collect()
+    fn str_field<'a>(m: &'a Value, key: &str) -> Option<&'a str> {
+        m.get(key).and_then(Value::as_str)
+    }
+    let is_self_report = |m: &Value| str_field(m, "source") == Some(SOURCE_SELF_REPORT);
+    let superseded = measurements
+        .iter()
+        .any(|m| !is_self_report(m) && str_field(m, "confidence") == Some(CONFIDENCE_HIGH));
+    measurements
+        .iter()
+        .filter(|m| !(superseded && is_self_report(m)))
+        .collect()
 }
 
 /// Render a rolled-up [`crate::tokens::TokenTotals`] as the same four-bucket
@@ -427,8 +429,8 @@ impl Engine {
         }
 
         // #208 / D50, amended by D188: "one task never mixes channels" no
-        // longer means "never two rows" — it means every roll-up counts only
-        // the highest-confidence one (`measurement_totals`). A HIGH existing
+        // longer means "never two rows" — it means every roll-up drops a
+        // self-report a HIGH row superseded (`rollup_measurements`). A HIGH existing
         // measurement (a located or session-verified transcript, or OTLP) is
         // never outranked by a self-report, so the self-report landing beside
         // it cannot double the ledger and is allowed through, kept for audit.
