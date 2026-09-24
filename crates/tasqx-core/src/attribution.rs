@@ -168,18 +168,6 @@ impl Parser {
     }
 }
 
-/// Sum the usage samples whose timestamp falls inside `[start, done]` (inclusive
-/// on both ends) into a [`TokenTotals`], returning the count of samples that
-/// landed in the window.
-///
-/// Pure and tolerant: an unparseable sample timestamp is skipped (never
-/// counted), and if either window bound fails to parse the window is empty — a
-/// bad window must never silently attribute *everything*.
-pub fn totals_in_window(samples: &[UsageSample], start: &str, done: &str) -> (TokenTotals, usize) {
-    let (totals, counted, _) = totals_in_window_excluding(samples, start, done, &[]);
-    (totals, counted)
-}
-
 /// Parse one `[start, end]` window's bounds. `None` when either bound fails to
 /// parse — an unusable window must never match anything. An inverted pair is
 /// normalized rather than treated as "everything is out of range in a confusing
@@ -191,47 +179,29 @@ fn parse_window(start: &str, end: &str) -> Option<(Timestamp, Timestamp)> {
     Some(if lo <= hi { (lo, hi) } else { (hi, lo) })
 }
 
-/// [`totals_in_window`] with the D50 refusal rule: an in-window sample that ALSO
-/// falls inside at least one `foreign` window — another task's `[window_start,
-/// window_end]` over the same sample source — is *contested* and banked for no
-/// one. Returns `(totals, counted, contested)` where `counted` covers only the
-/// uncontested in-window samples summed into `totals`.
+/// The full attribution engine: window-based summing, contested-sample refusal
+/// (D50), and consumed-sample deduplication. Returns `(totals, counted,
+/// contested, consumed_ids, agreed_model)` where `counted` covers only the
+/// uncontested, unconsumed in-window samples summed into `totals`.
 ///
-/// Foreign windows use the same inclusive-bounds semantics as the task's own
-/// window, and an unparseable foreign bound makes THAT window empty (it contests
-/// nothing) — symmetrical with the main window, where a bad bound attributes
-/// nothing.
-pub fn totals_in_window_excluding(
-    samples: &[UsageSample],
-    start: &str,
-    done: &str,
-    foreign: &[(String, String)],
-) -> (TokenTotals, usize, usize) {
-    let (totals, counted, contested, _, _) =
-        totals_in_window_refusing(samples, start, done, foreign, &HashSet::new());
-    (totals, counted, contested)
-}
-
-/// [`totals_in_window_excluding`] plus the identity half of the refusal rule:
-/// an in-window sample whose [`UsageSample::id`] is in `consumed` — already
-/// banked by another task on an earlier tick — is contested *regardless of what
-/// its current stamp says*, because a streamed re-emission can move a deduped
-/// stamp across a window edge between reads while the id never changes.
-/// Samples with no id keep the window-only contest semantics: there is nothing
-/// to look up in `consumed` and nothing to put in `counted_ids`, so a stamp that
-/// moved on such a sample cannot be caught here and it can be banked a second
-/// time on a later tick. Those samples are not hypothetical —
-/// `claude_code::parse_samples` keeps a line whose `message.id` is absent as its
-/// own reading, and Claude Code is the one parser whose stamps move — so this is
-/// where the identity half stops, not a case the parsers rule out.
+/// An in-window sample that ALSO falls inside at least one `foreign` window
+/// (another task's `[window_start, window_end]` over the same sample source)
+/// is *contested* and banked for no one. An in-window sample whose
+/// [`UsageSample::id`] is in `consumed` (already banked by another task on an
+/// earlier tick) is contested *regardless of what its current stamp says*,
+/// because a streamed re-emission can move a deduped stamp across a window
+/// edge between reads while the id never changes.
 ///
-/// The fourth return is the ids of the samples actually summed, so the caller
-/// can persist which samples this measurement consumed. The fifth (#213) is
-/// the model every counted sample agreed on — `Some` only when at least one
-/// counted sample named a model and none named a *different* one, `None` on
-/// disagreement or silence — so a measurement can be priced without ever
-/// claiming a model none of its evidence actually stated.
-pub fn totals_in_window_refusing(
+/// Window bounds are inclusive on both ends. An unparseable bound makes that
+/// window empty — a bad main window attributes nothing, a bad foreign window
+/// contests nothing. An inverted pair is normalized rather than treated as
+/// "everything is out of range".
+///
+/// The fourth return is the ids of the samples actually summed. The fifth
+/// is the model every counted sample agreed on — `Some` only when at least
+/// one counted sample named a model and none named a *different* one, `None`
+/// on disagreement or silence.
+fn totals_in_window_refusing(
     samples: &[UsageSample],
     start: &str,
     done: &str,
@@ -362,7 +332,7 @@ pub struct PendingAttribution {
     /// this task's sample source — an equal non-null `transcript_path` in the
     /// done payload, or an equal non-null `session_id` (D50). A sample inside
     /// this task's window that also falls inside any of these is *contested*
-    /// and banked for no one ([`totals_in_window_excluding`]).
+    /// and banked for no one (via the refusal rule in `totals_in_window_refusing`).
     ///
     /// Built from a scan of ALL correlated `done` events in the store —
     /// including tasks attributed on an earlier tick. Co-pending entries alone
@@ -1520,8 +1490,13 @@ mod tests {
             sample("2026-07-24T11:00:00Z", 1000, 2000), // exactly at end (inclusive)
             sample("2026-07-24T11:00:01Z", 1, 1),       // after window
         ];
-        let (totals, n) =
-            totals_in_window(&samples, "2026-07-24T10:00:00Z", "2026-07-24T11:00:00Z");
+        let (totals, n, _, _, _) = totals_in_window_refusing(
+            &samples,
+            "2026-07-24T10:00:00Z",
+            "2026-07-24T11:00:00Z",
+            &[],
+            &HashSet::new(),
+        );
         assert_eq!(n, 3, "only the three in-window samples count");
         assert_eq!(totals.input, 1110);
         assert_eq!(totals.output, 2220);
@@ -1534,11 +1509,12 @@ mod tests {
             "2026-07-25T09:46:53Z".to_string(),
             "2026-07-25T10:01:44Z".to_string(),
         )];
-        let (totals, counted, contested) = totals_in_window_excluding(
+        let (totals, counted, contested, _, _) = totals_in_window_refusing(
             &samples,
             "2026-07-25T09:46:53Z",
             "2026-07-25T09:49:37Z",
             &foreign,
+            &HashSet::new(),
         );
         assert_eq!(counted, 0);
         assert_eq!(contested, 1);
@@ -1552,11 +1528,12 @@ mod tests {
             "2026-07-25T10:30:00Z".to_string(),
             "2026-07-25T10:45:00Z".to_string(),
         )];
-        let (totals, counted, contested) = totals_in_window_excluding(
+        let (totals, counted, contested, _, _) = totals_in_window_refusing(
             &samples,
             "2026-07-25T09:46:53Z",
             "2026-07-25T09:49:37Z",
             &foreign,
+            &HashSet::new(),
         );
         assert_eq!((counted, contested), (1, 0));
         assert_eq!(totals.input, 1000);
@@ -1566,11 +1543,12 @@ mod tests {
     fn an_unparseable_foreign_window_contests_nothing() {
         let samples = vec![sample("2026-07-25T09:47:00Z", 1000, 2000)];
         let foreign = vec![("not-a-time".to_string(), "2026-07-25T10:01:44Z".to_string())];
-        let (_, counted, contested) = totals_in_window_excluding(
+        let (_, counted, contested, _, _) = totals_in_window_refusing(
             &samples,
             "2026-07-25T09:46:53Z",
             "2026-07-25T09:49:37Z",
             &foreign,
+            &HashSet::new(),
         );
         assert_eq!((counted, contested), (1, 0));
     }
@@ -1578,21 +1556,34 @@ mod tests {
     #[test]
     fn no_foreign_windows_matches_totals_in_window_exactly() {
         let samples = vec![sample("2026-07-25T09:47:00Z", 1000, 2000)];
-        let plain = totals_in_window(&samples, "2026-07-25T09:46:53Z", "2026-07-25T09:49:37Z");
-        let (totals, counted, contested) = totals_in_window_excluding(
+        let (totals1, n1, _, _, _) = totals_in_window_refusing(
             &samples,
             "2026-07-25T09:46:53Z",
             "2026-07-25T09:49:37Z",
             &[],
+            &HashSet::new(),
         );
-        assert_eq!((totals, counted), plain);
+        let (totals2, counted, contested, _, _) = totals_in_window_refusing(
+            &samples,
+            "2026-07-25T09:46:53Z",
+            "2026-07-25T09:49:37Z",
+            &[],
+            &HashSet::new(),
+        );
+        assert_eq!((totals2, counted), (totals1, n1));
         assert_eq!(contested, 0);
     }
 
     #[test]
     fn a_bad_window_attributes_nothing_rather_than_everything() {
         let samples = [sample("2026-07-24T10:30:00Z", 10, 20)];
-        let (totals, n) = totals_in_window(&samples, "not-a-timestamp", "2026-07-24T11:00:00Z");
+        let (totals, n, _, _, _) = totals_in_window_refusing(
+            &samples,
+            "not-a-timestamp",
+            "2026-07-24T11:00:00Z",
+            &[],
+            &HashSet::new(),
+        );
         assert_eq!(n, 0);
         assert_eq!(totals.total(), 0);
     }
@@ -1603,8 +1594,13 @@ mod tests {
             sample("garbage", 999, 999),
             sample("2026-07-24T10:30:00Z", 10, 20),
         ];
-        let (totals, n) =
-            totals_in_window(&samples, "2026-07-24T10:00:00Z", "2026-07-24T11:00:00Z");
+        let (totals, n, _, _, _) = totals_in_window_refusing(
+            &samples,
+            "2026-07-24T10:00:00Z",
+            "2026-07-24T11:00:00Z",
+            &[],
+            &HashSet::new(),
+        );
         assert_eq!(n, 1);
         assert_eq!(totals.input, 10);
     }
