@@ -6,12 +6,8 @@
 
 use super::*;
 
-pub(super) struct TaskTarget {
-    pub(super) value: Value,
-}
-
 pub(super) struct StartTask {
-    pub(super) target: TaskTarget,
+    pub(super) target: Value,
     pub(super) keep: bool,
     pub(super) correlation: Correlation,
     /// Who is asking for the clock (D140).
@@ -56,15 +52,9 @@ impl Correlation {
     }
 }
 
-pub(super) fn parse_task_target(p: &Value) -> Result<TaskTarget, ApiError> {
-    Ok(TaskTarget {
-        value: ref_param(p)?.clone(),
-    })
-}
-
 pub(super) fn parse_start_task(p: &Value) -> Result<StartTask, ApiError> {
     Ok(StartTask {
-        target: parse_task_target(p)?,
+        target: ref_param(p)?.clone(),
         keep: opt_bool(p, "keep")?.unwrap_or(false),
         correlation: parse_correlation(p)?,
         actor: opt_str_nonempty(p, "actor")?,

@@ -520,7 +520,7 @@ impl Engine {
     pub fn task_start(&self, p: &Value) -> Result<Value, ApiError> {
         let command = commands::parse_start_task(p)?;
         let tx = self.begin_mutation()?;
-        let task = self.resolve_ref_value_on(&tx, &command.target.value)?;
+        let task = self.resolve_ref_value_on(&tx, &command.target)?;
 
         match task.status {
             Status::Active => {
@@ -665,9 +665,9 @@ impl Engine {
     /// stopping anything else is `conflict` rather than a no-op, because there
     /// is no interval to close and reporting success would say there was.
     pub fn task_stop(&self, p: &Value) -> Result<Value, ApiError> {
-        let command = commands::parse_task_target(p)?;
+        let target = ref_param(p)?.clone();
         let tx = self.begin_mutation()?;
-        let task = self.resolve_ref_value_on(&tx, &command.value)?;
+        let task = self.resolve_ref_value_on(&tx, &target)?;
         if task.status != Status::Active {
             return Err(ApiError::conflict(format!(
                 "cannot stop {} {} task (only active -> pending)",
@@ -721,7 +721,7 @@ impl Engine {
     /// banked yet, and a negative column would fail `store.import`'s own check
     /// on the next restore.
     pub fn task_adjust_tracked(&self, p: &Value) -> Result<Value, ApiError> {
-        let command = commands::parse_task_target(p)?;
+        let target = ref_param(p)?.clone();
         let raw = req_str(p, "delta")?;
         let reason = req_str(p, "reason")?;
         let reason = reason.trim();
@@ -733,7 +733,7 @@ impl Engine {
         let delta = datetime::parse_signed_duration(&raw)?;
 
         let tx = self.begin_mutation()?;
-        let task = self.resolve_ref_value_on(&tx, &command.value)?;
+        let task = self.resolve_ref_value_on(&tx, &target)?;
         let total = task.tracked_seconds.saturating_add(delta);
         if total < 0 {
             return Err(ApiError::bad_request(format!(
@@ -1666,19 +1666,12 @@ impl Engine {
 
     // ---- task.list -----------------------------------------------------------
 
-    /// Load the complete task relation in a fixed number of statements. Bulk
-    /// readers need the same relationship data to evaluate filters; grouping
-    /// it here prevents each reader from drifting back to point queries.
-    pub(super) fn load_task_snapshots(
-        &self,
-        now: Timestamp,
-    ) -> Result<Vec<TaskSnapshot>, ApiError> {
-        self.load_task_snapshots_for(SnapshotParts::EVERYTHING, now)
-    }
-
-    /// As [`Engine::load_task_snapshots`], but reading only the side tables
-    /// `parts` asks for — see [`SnapshotParts`] for why that is not a
-    /// micro-optimization.
+    /// Load the complete task relation in a fixed number of statements, reading
+    /// every side table ([`SnapshotParts::EVERYTHING`]). Bulk readers need the
+    /// same relationship data to evaluate filters; grouping it here prevents
+    /// each reader from drifting back to point queries. `store_export` is the
+    /// one production caller that needs every part — everything narrower goes
+    /// through [`Engine::load_task_snapshots_for`] directly.
     pub(super) fn load_task_snapshots_for(
         &self,
         parts: SnapshotParts,
@@ -3064,9 +3057,9 @@ impl Engine {
     /// event log and the short_id sequence honest; it simply stops counting in
     /// reports ([`Status::counts_in_reports`]).
     pub fn task_cancel(&self, p: &Value) -> Result<Value, ApiError> {
-        let command = commands::parse_task_target(p)?;
+        let target = ref_param(p)?.clone();
         let tx = self.begin_mutation()?;
-        let task = self.resolve_ref_value_on(&tx, &command.value)?;
+        let task = self.resolve_ref_value_on(&tx, &target)?;
         match task.status {
             Status::Backlog | Status::Pending | Status::Active => {}
             other => {
@@ -3118,9 +3111,9 @@ impl Engine {
     /// still answer a `completed.after:` query about a week it is no longer
     /// finished in.
     pub fn task_reopen(&self, p: &Value) -> Result<Value, ApiError> {
-        let command = commands::parse_task_target(p)?;
+        let target = ref_param(p)?.clone();
         let tx = self.begin_mutation()?;
-        let task = self.resolve_ref_value_on(&tx, &command.value)?;
+        let task = self.resolve_ref_value_on(&tx, &target)?;
         match task.status {
             Status::Done | Status::Cancelled => {}
             other => {

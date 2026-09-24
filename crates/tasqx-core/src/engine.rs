@@ -1790,7 +1790,7 @@ mod tests {
     #[test]
     fn lifecycle_commands_parse_once_and_preserve_wire_results() {
         let start = commands::parse_start_task(&json!({ "ref": "42", "keep": true })).unwrap();
-        assert_eq!(start.target.value, json!("42"));
+        assert_eq!(start.target, json!("42"));
         assert!(start.keep);
 
         let started: Value = commands::TaskStarted {
