@@ -262,22 +262,20 @@ fn bash_command_names(verb: &str, command: &str, task_ref: &str) -> bool {
     if task_ref.is_empty() {
         return false;
     }
-    command
-        .split(|c| matches!(c, ';' | '|' | '&' | '\n'))
-        .any(|simple| {
-            let words: Vec<&str> = simple.split_whitespace().collect();
-            let Some(prog) = words
-                .iter()
-                .position(|w| !w.contains('=') && (*w == "tasqx" || w.ends_with("/tasqx")))
-            else {
-                return false;
-            };
-            !bash_command_targets_a_scratch_store(&words[..prog])
-                && words.get(prog + 1) == Some(&verb)
-                && words.get(prog + 2).is_some_and(|w| {
-                    w.trim_matches(|c: char| !c.is_alphanumeric() && c != '-') == task_ref
-                })
-        })
+    command.split([';', '|', '&', '\n']).any(|simple| {
+        let words: Vec<&str> = simple.split_whitespace().collect();
+        let Some(prog) = words
+            .iter()
+            .position(|w| !w.contains('=') && (*w == "tasqx" || w.ends_with("/tasqx")))
+        else {
+            return false;
+        };
+        !bash_command_targets_a_scratch_store(&words[..prog])
+            && words.get(prog + 1) == Some(&verb)
+            && words.get(prog + 2).is_some_and(|w| {
+                w.trim_matches(|c: char| !c.is_alphanumeric() && c != '-') == task_ref
+            })
+    })
 }
 
 /// Whether the words before a simple command's `tasqx` program word set
