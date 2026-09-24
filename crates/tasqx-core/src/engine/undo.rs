@@ -141,190 +141,157 @@ pub const UNDOABLE_OPS: [&str; 6] = [
 /// and fails if an op is in neither table, or if a table names an op nothing
 /// writes any more. A new mutation therefore arrives here the day it is written,
 /// instead of falling through to a message that says nothing.
+///
+/// One line each (#736 part B): the load-bearing property is that every
+/// refusal names the sanctioned inverse — the CLI verb or API call that takes
+/// it back — not the length of the explanation before it. The full essay each
+/// of these used to be, with the D-number or issue behind it, lives in git
+/// history and in this module's header for the shared shapes (payload
+/// records the new value, not the old one; an id-only event with nothing else
+/// to invent from; idempotent writes the log cannot tell apart).
 pub const NOT_UNDOABLE: &[(&str, &str)] = &[
     (
         "add",
-        "A task cannot be un-created: deleting the row would strand the `add` event that names \
-         it and hand back a short_id D4 promises never to recycle. This is also what a completed \
-         recurring task's next occurrence is — so if you have just completed one, the newest \
-         event is that spawn, and reversing it would delete a task the log still points at. \
-         `tasqx cancel <ref>` retires a task without pretending it never existed.",
+        "A task cannot be un-created without stranding the short_id D4 promises never to \
+         recycle; `tasqx cancel <ref>` retires it instead.",
     ),
     (
         "start",
-        "Starting a task auto-stops whatever else was running (D6), and those stops are their \
-         own events *behind* the start; reversing only the start would leave the other task \
-         stopped with nothing in the log saying why. `tasqx stop <ref>` closes the interval you \
-         just opened, and its `tracked` shows what the mistake cost.",
+        "Starting auto-stops whatever else was running (D6) as its own trailing events; \
+         `tasqx stop <ref>` closes the interval you just opened.",
     ),
     (
         "done",
-        "Completing a task can also spawn the next occurrence of a recurring rule and record a \
-         token measurement, both in the same transaction, and undoing the completion while \
-         leaving either behind is a store nobody asked for. `tasqx reopen <ref>` is the \
-         sanctioned way back and writes its own event.",
+        "Completing a task can also spawn a recurrence and record a token measurement in the \
+         same transaction; `tasqx reopen <ref>` is the sanctioned way back.",
     ),
     (
         "cancel",
-        "Cancelling a running task folds its open interval into tracked time, and the event \
-         records the status it came from but not where that interval started — so undo could \
-         restore the status or the clock, never both. `tasqx reopen <ref>` brings it back as \
-         pending.",
+        "Cancelling folds the open interval into tracked time without recording where it \
+         started, so undo could restore the status or the clock, never both; `tasqx reopen \
+         <ref>` brings it back as pending.",
     ),
     (
         "reopen",
-        "Reopening clears `completed`, and the event does not record the instant it cleared, so \
-         putting the task back into `done` would have to invent a completion date. `tasqx done \
+        "Reopening clears `completed` without recording the instant it cleared; `tasqx done \
          <ref>` completes it again with a real one.",
     ),
     (
         "check.add",
-        "A criterion cannot be un-added by this path: the `add` event names an id the check \
-         table would no longer hold, and the positions of everything after it have already \
-         closed over the gap. `tasqx check rm <ref> <id>` takes it back and writes its own \
-         event.",
+        "A criterion cannot be un-added: the positions of every check after it have already \
+         closed over the gap; `tasqx check rm <ref> <id>` takes it back.",
     ),
     (
         "check.set",
-        "A `check.set` event records the state that was SET, never the one it replaced, nor the \
-         evidence it overwrote — the same shape as `modify` below, and the log holds nothing to \
-         restore. `tasqx check set <ref> <id> <state>` puts back whatever it should have been.",
+        "A `check.set` event records only the state it was SET to, never what it replaced; \
+         `tasqx check set <ref> <id> <state>` puts back whatever it should have been.",
     ),
     (
         "check.remove",
-        "The row is gone and the event carries only its id, not the body, state, evidence or \
-         position it held — so an inverse would have to invent all four. `tasqx check add` \
-         writes the criterion again, at the end.",
+        "The row is gone and the event carries only its id, not the body, state or position it \
+         held; `tasqx check add` writes the criterion again, at the end.",
     ),
     (
         "modify",
-        "A `modify` event records the values that were SET, never the ones they replaced, so the \
-         log holds nothing to restore. `tasqx show <ref>` and a second `modify` is the way back \
-         — and `--expected-rev` makes that second edit refuse if anything moved meanwhile.",
+        "A `modify` event records only the values that were SET, never what they replaced; \
+         `tasqx show <ref>` then a second `modify` (with `--expected-rev`) is the way back.",
     ),
     (
         "tag.add",
-        "Attaching a tag is idempotent, so the event records the tags that were ASKED for, not \
-         the ones that were actually attached — undoing it could strip a tag the task already \
-         carried. `tasqx untag <ref> <tag>` removes exactly the one you name.",
+        "Attaching a tag is idempotent, so the event cannot tell a tag it attached from one \
+         already there; `tasqx untag <ref> <tag>` removes exactly the one you name.",
     ),
     (
         "tag.normalize",
-        "This is the D172 store migration folding a legacy tag into its lowercased, hyphenated \
-         form, not something typed — and it may have merged two tags into one, which the \
-         payload cannot split apart again. `tasqx tag <ref> <tag>` and `tasqx untag <ref> <tag>` \
-         set the task's tags to whatever they should be.",
+        "The D172 migration folding a legacy tag into its normalized form may have merged two \
+         tags irreversibly; `tasqx tag`/`tasqx untag <ref> <tag>` set the tags to whatever they \
+         should be.",
     ),
     (
         "dependency.add",
-        "The edge goes in with INSERT OR IGNORE and the event is written either way, so the log \
-         cannot tell an edge this call created from one it found already there. `tasqx undep \
-         <ref> <blocker>` removes the edge you name.",
+        "The edge is inserted with INSERT OR IGNORE, so the event cannot tell an edge this call \
+         created from one already there; `tasqx undep <ref> <blocker>` removes the edge you \
+         name.",
     ),
     (
         "token.add",
-        "A token measurement is the only record of what an agent turn cost, and nothing can \
-         recompute a self-reported one. `tasqx tokens recompute` re-derives the measurements \
-         attribution owns; a self-report written in error is retracted with `token.remove \
-         {measurement_id}` over the API (#210) — there is no CLI verb yet — which deletes the \
-         row outright rather than adding another one beside it.",
+        "A token measurement is the only record of what a turn cost, and a self-report cannot \
+         be recomputed; `tasqx tokens recompute` re-derives measurements, or `token.remove \
+         {measurement_id}` over the API (#210) retracts one written in error.",
     ),
     (
         "token.remove",
-        "Deleting a measurement is itself the correction (#210); reversing it would mean \
-         inserting the removed row back, and `record_token_usage` always mints a fresh id and \
-         `created` stamp for an insert, so what came back would be a new measurement, not the \
-         one that left. `tasqx api token.add` re-adds the counts this event's payload still \
-         names, under a receipt of its own.",
+        "Deleting a measurement is itself the correction (#210); reinserting it would mint a \
+         new id and stamp, not restore the one that left; `tasqx api token.add` re-adds the \
+         counts this event's payload still names.",
     ),
     (
         "tokens.attributed",
-        "Same as `token.add`: the measurement is evidence of spend, not an edit to the task. \
-         `tasqx tokens recompute` is the one sanctioned way to redo attribution over the \
-         windows already stored (D50).",
+        "Same as `token.add`: a measurement is evidence of spend, not an edit to undo; \
+         `tasqx tokens recompute` is the sanctioned way to redo attribution over stored \
+         windows (D50).",
     ),
     (
         "reminded",
-        "A `reminded` event is not a change to the store — it is the dedupe key that stops a \
-         reminder firing twice, across restarts and across the daemon and one-shot paths. \
-         Removing it would make the notification arrive again, which is the single thing the \
-         row exists to prevent. `tasqx modify <ref> --clear remind` stops the reminder instead.",
+        "A `reminded` event is the dedupe key stopping a reminder firing twice, not a store \
+         change; `tasqx modify <ref> --clear remind` stops the reminder instead.",
     ),
     (
         "create",
-        "A project cannot be un-created: its NAME is what every task in it stores, so removing \
-         it would leave those tasks pointing at nothing. `tasqx archive <name>` takes it out of \
-         rotation and leaves the tasks alone.",
+        "A project cannot be un-created: its NAME is what every task in it stores; `tasqx \
+         archive <name>` takes it out of rotation instead.",
     ),
     (
         "use",
-        "The event records the project the default moved to and the one it moved from, but \
-         putting the old one back is a `use` in its own right — it has to refuse an archived \
-         project (D22), which the previous name may since have become. `tasqx use <name>` says \
-         which project you mean instead of undo guessing.",
+        "Putting the old default project back is itself a `use`, which must re-check D22's \
+         archived-project rule the previous name may now trip; `tasqx use <name>` says which \
+         project you mean.",
     ),
     (
         "archive",
-        "Archiving may also have cleared the store's default project (D22), and there is no \
-         `project.unarchive` method for undo to reach for — archiving is deliberately one-way. \
-         `store.import` writes the `archived` flag from a document, so restoring a saved export \
-         is the way back; that is a data restore, not an undo.",
+        "Archiving is deliberately one-way and there is no `project.unarchive`; restoring a \
+         saved export via `store.import` is the way back — a data restore, not an undo.",
     ),
     (
         "import",
-        "An import writes a whole document in one transaction and records an event per row it \
-         touched, so undoing one event would take back a fraction of it and leave the rest. \
-         Import the document you meant into a fresh store instead.",
+        "An import writes one document across many events in a single transaction; undoing one \
+         event would take back only a fraction of it — import a fresh document instead.",
     ),
     (
         "memory.add",
-        "A doc written by `memory.import` REPLACES the doc that shared its `source` — and so \
-         does one re-read by `memory import --refresh` (#789) — and the replaced text is \
-         already gone by the time the event is written, so undo can delete the new doc but can \
-         never bring the old one back. `tasqx memory rm <id>` removes the doc you name, and \
-         says so.",
+        "The doc a `memory.import`/`refresh` (#789) replaced is already gone by the time this \
+         event is written; `tasqx memory rm <id>` removes the doc you name.",
     ),
     (
         "memory.remove",
-        "The event records the doc's id, not its title or its text, so there is nothing in the \
-         log to put back. `tasqx memory add` re-files it, or `tasqx memory import` restores it \
-         from the file it came from.",
+        "The event records only the doc's id, not its title or text; `tasqx memory add` \
+         re-files it, or `tasqx memory import` restores it from its file.",
     ),
     (
         "memory.update",
-        "The event records the doc's NEW title/source/project/rev, not what it replaced, so \
-         there is nothing in the log to restore the previous text from — the same asymmetry \
-         `memory.add` already has for a `memory.import` replace, one verb over. \
-         `tasqx memory update` again, with the old text, is the way back.",
+        "The event records the doc's NEW fields, never what they replaced; `tasqx memory \
+         update` again with the old text is the way back.",
     ),
     (
         "undo",
-        "There is no redo. Undoing an undo would put the store back into the state you just \
-         chose to leave, and since `undo` only ever reaches the newest event, the pair would \
-         toggle one change back and forth forever. Whatever the undo restored can be changed \
-         again with the verb that changes it.",
+        "There is no redo: reversing an undo would only toggle the same change back and forth \
+         forever; change it again with the verb that changes it.",
     ),
     (
         "link.add",
-        "An `add` is idempotent (D160): a repeat answers with the link that was already there, \
-         so the event cannot tell an edge this call created from one it found — the same \
-         asymmetry `dependency.add` has, one table over. `tasqx api link.remove {id}` deletes \
-         the edge the response names.",
+        "An `add` is idempotent (D160), so the event cannot tell an edge this call created from \
+         one already there; `tasqx api link.remove {id}` deletes the edge the response names.",
     ),
     (
         "link.remove",
-        "The row is gone and the event carries only the link's id, not its endpoints, relation \
-         or metadata — so an inverse would have to invent all four, and the id itself cannot \
-         come back (`link.add` mints a fresh one). `tasqx api link.add` writes the edge again.",
+        "The row is gone and the event carries only the link's id, not its endpoints or \
+         metadata; `tasqx api link.add` writes the edge again.",
     ),
     (
         "annotation.remove",
-        "D113: the body is overwritten in the same statement that records the removal, so by \
-         the time this event exists there is nothing left in the row to put back — undoing it \
-         would restore a tombstone, not the note. That is deliberate: the whole point of this \
-         op is a caller who pasted a secret and needs it gone, not gone-until-the-next-undo. \
-         `tasqx annotate <ref> <text>` writes a fresh note if the removal was itself the \
-         mistake.",
+        "D113: the body is overwritten in the same statement that records the removal, so \
+         nothing is left in the row to restore; `tasqx annotate <ref> <text>` writes a fresh \
+         note.",
     ),
 ];
 
