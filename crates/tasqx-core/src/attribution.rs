@@ -871,36 +871,47 @@ fn is_subagent_file(path: &Path) -> bool {
 fn discover_candidates(roots: &[PathBuf], max: usize) -> Vec<PathBuf> {
     let mut found: Vec<(std::time::SystemTime, PathBuf)> = Vec::new();
     for root in roots {
-        walk(root, 0, &mut found);
+        walk(root, 0, MAX_DISCOVERY_FILES * 8, &|_, _| true, &mut found);
     }
     found.sort_by_key(|(mtime, _)| std::cmp::Reverse(*mtime));
     found.truncate(max);
     found.into_iter().map(|(_, p)| p).collect()
 }
 
+/// Safety cap on [`locate_candidates`]: counts only ELIGIBLE files (main
+/// sessions written at or after the window start), so ineligible noise can
+/// never crowd a real session out. Set far above any real day's session
+/// count; it exists only so a pathological tree cannot stall a tick.
+const MAX_LOCATE_FILES: usize = 100_000;
+
 /// Every main `*.jsonl` under `roots` whose mtime is at or after `since` —
 /// [`locate_transcripts_by_task_call`]'s candidate set, deliberately NOT
 /// capped by recency the way [`discover_candidates`] is (see that function's
-/// doc). A subagent file is excluded here, at candidate-selection time,
-/// rather than filtered out after a recency cut that no longer applies —
-/// bounded only by [`walk`]'s own pathological-tree guard.
+/// doc). The subagent and mtime filters run INSIDE the walk, so only
+/// eligible files count toward [`MAX_LOCATE_FILES`]: a real `~/.claude` with
+/// thousands of old or subagent files must not drop a session by read order.
 fn locate_candidates(roots: &[PathBuf], since: Timestamp) -> Vec<PathBuf> {
+    let eligible = |p: &Path, mtime: std::time::SystemTime| {
+        !is_subagent_file(p) && Timestamp::try_from(mtime).is_ok_and(|t| t >= since)
+    };
     let mut found: Vec<(std::time::SystemTime, PathBuf)> = Vec::new();
     for root in roots {
-        walk(root, 0, &mut found);
+        walk(root, 0, MAX_LOCATE_FILES, &eligible, &mut found);
     }
-    found
-        .into_iter()
-        .filter(|(_, p)| !is_subagent_file(p))
-        .filter(|(mtime, _)| Timestamp::try_from(*mtime).is_ok_and(|t| t >= since))
-        .map(|(_, p)| p)
-        .collect()
+    found.into_iter().map(|(_, p)| p).collect()
 }
 
-/// Recursive directory walk collecting `*.jsonl` files with their mtime. Bounded
-/// in depth and total collection so a huge or looping tree cannot stall a tick.
-fn walk(dir: &Path, depth: usize, out: &mut Vec<(std::time::SystemTime, PathBuf)>) {
-    if depth > MAX_DISCOVERY_DEPTH || out.len() >= MAX_DISCOVERY_FILES * 8 {
+/// Recursive directory walk collecting the `*.jsonl` files `keep` accepts,
+/// with their mtime. Bounded in depth and in `cap` kept files so a huge or
+/// looping tree cannot stall a tick.
+fn walk(
+    dir: &Path,
+    depth: usize,
+    cap: usize,
+    keep: &dyn Fn(&Path, std::time::SystemTime) -> bool,
+    out: &mut Vec<(std::time::SystemTime, PathBuf)>,
+) {
+    if depth > MAX_DISCOVERY_DEPTH || out.len() >= cap {
         return;
     }
     let Ok(entries) = std::fs::read_dir(dir) else {
@@ -912,15 +923,17 @@ fn walk(dir: &Path, depth: usize, out: &mut Vec<(std::time::SystemTime, PathBuf)
             continue;
         };
         if ft.is_dir() {
-            walk(&path, depth + 1, out);
+            walk(&path, depth + 1, cap, keep, out);
         } else if ft.is_file() && path.extension().is_some_and(|e| e == "jsonl") {
             let mtime = entry
                 .metadata()
                 .and_then(|m| m.modified())
                 .unwrap_or(std::time::UNIX_EPOCH);
-            out.push((mtime, path));
+            if keep(&path, mtime) {
+                out.push((mtime, path));
+            }
         }
-        if out.len() >= MAX_DISCOVERY_FILES * 8 {
+        if out.len() >= cap {
             return;
         }
     }
@@ -2728,7 +2741,10 @@ mod tests {
         // Explicitly backdate the file's own mtime to match its content: the
         // walk sees mtime, not the timestamps inside the file.
         let old_mtime = std::time::SystemTime::now() - std::time::Duration::from_secs(6960);
-        std::fs::File::open(&old_path)
+        // Opened for write: Windows needs FILE_WRITE_ATTRIBUTES to set a time.
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(&old_path)
             .unwrap()
             .set_modified(old_mtime)
             .unwrap();
@@ -2766,6 +2782,78 @@ mod tests {
         assert!(r.found, "the old session's usage must be banked");
         assert_eq!(r.totals.input, 55);
         assert_eq!(r.totals.output, 66);
+    }
+
+    /// Review finding on PR #149: the location walk stopped after
+    /// `MAX_DISCOVERY_FILES * 8` files and counted EVERY `*.jsonl` — subagent
+    /// files and files older than the window included — before its filters
+    /// ran, so a real `~/.claude` with thousands of files dropped arbitrary
+    /// sessions. Only eligible files may count toward any cap.
+    #[test]
+    fn location_is_not_starved_by_thousands_of_ineligible_files() {
+        let dir =
+            std::env::temp_dir().join(format!("tasqx-attr-locate-cap-{}", crate::clock::uuid_v7()));
+        let projects = dir.join("projects");
+        let now = crate::clock::now();
+        let start = now - jiff::SignedDuration::from_secs(3600);
+        let end = now - jiff::SignedDuration::from_secs(60);
+
+        // Over the old cap of ineligible noise, named to sort before the real
+        // session: main files written before the window began, plus subagent
+        // files (never a session of their own).
+        let old = projects.join("aaa-noise");
+        let subagents = old.join("noise-sess").join("subagents");
+        std::fs::create_dir_all(&subagents).unwrap();
+        let before_window = std::time::SystemTime::now() - std::time::Duration::from_secs(7200);
+        for i in 0..1100 {
+            std::fs::File::create(old.join(format!("old-{i}.jsonl")))
+                .unwrap()
+                .set_modified(before_window)
+                .unwrap();
+        }
+        for i in 0..1000 {
+            std::fs::write(subagents.join(format!("agent-{i}.jsonl")), "").unwrap();
+        }
+
+        let proj = projects.join("zzz-proj");
+        std::fs::create_dir_all(&proj).unwrap();
+        std::fs::write(
+            proj.join("sess.jsonl"),
+            [
+                format!(
+                    r#"{{"type":"assistant","timestamp":"{}","message":{{"id":"m1","usage":{{"input_tokens":7,"output_tokens":8,"cache_read_input_tokens":0,"cache_creation_input_tokens":0}}}}}}"#,
+                    now - jiff::SignedDuration::from_secs(600)
+                ),
+                format!(
+                    r#"{{"type":"assistant","timestamp":"{end}","message":{{"id":"m2","content":[{{"type":"tool_use","name":"mcp__tasqx__tasqx_complete_task","input":{{"ref":42}}}}]}}}}"#
+                ),
+            ]
+            .join("\n"),
+        )
+        .unwrap();
+
+        let pa = PendingAttribution {
+            task_id: "uuid-42".into(),
+            short_id: 42,
+            window_start: start.to_string(),
+            window_end: end.to_string(),
+            client: Some("claude-code".into()),
+            transcript_path: None,
+            session_id: None,
+            otel_samples: Vec::new(),
+            otel_tool: None,
+            self_reported: false,
+            foreign_windows: vec![],
+            consumed_sample_ids: HashSet::new(),
+        };
+
+        let _guard = DISCOVERY_ENV.lock().unwrap_or_else(|e| e.into_inner());
+        let r = with_isolated_roots(&dir, || compute_attribution(&pa, crate::clock::now()));
+        let _ = std::fs::remove_dir_all(&dir);
+
+        let r = r.expect("the in-window session must still be located");
+        assert_eq!(r.confidence, CONFIDENCE_HIGH);
+        assert_eq!((r.totals.input, r.totals.output), (7, 8));
     }
 
     #[test]
