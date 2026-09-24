@@ -1448,6 +1448,29 @@ impl WindowScan {
             .map(|(_, ws, we)| (ws.as_str(), we.as_str()))
     }
 
+    /// The `client` a correlated task's `done` named, when it named one and
+    /// the task is correlated at all. `token_recompute`'s `locate` candidate
+    /// set (#817) needs this to pre-filter to a client `locate_backfill` can
+    /// actually act on (Claude Code only, today) WITHOUT reaching into
+    /// `DoneInfo`'s other private fields from outside this module.
+    pub(crate) fn client_for(&self, task_id: &str) -> Option<&str> {
+        self.correlated.get(task_id)?.client.as_deref()
+    }
+
+    /// Whether a correlated task's `done` carried an EXPLICIT
+    /// `transcript_path` (non-empty). `classify_task`'s D188 parity guard
+    /// (#817) needs this to tell a `locate`d row — HIGH confidence, no
+    /// explicit path, the call itself is the only anchor — apart from a HIGH
+    /// row [`recompute_measurement`] could still re-verify against a named
+    /// file (an explicit path whose file later vanished must still downgrade,
+    /// not be left alone).
+    pub(crate) fn has_explicit_transcript_path(&self, task_id: &str) -> bool {
+        self.correlated
+            .get(task_id)
+            .and_then(|info| info.transcript_path.as_deref())
+            .is_some_and(|s| !s.is_empty())
+    }
+
     /// The windows of every OTHER task drawing samples from the same
     /// transcript or session — contested-sample refusal needs them all,
     /// attributed neighbours included (D50).
@@ -1603,6 +1626,76 @@ pub(crate) fn recompute_measurement(
         samples: counted,
         tool: info.client.clone(),
         confidence: confidence_for(true, correlated),
+        sample_ids,
+        contested,
+    })
+}
+
+/// D188 backfill (task #817): every `token_usage` row banked before this
+/// feature landed is a self-report with nothing above it, because
+/// `compute_attribution`'s old early return never looked at a transcript for
+/// one. This is [`recompute_measurement`]'s sibling for that gap — same
+/// window (`WindowScan::window_for`), same D50 refusal
+/// (`totals_in_window_refusing`) against the SAME running claim set the rest
+/// of the recompute pass builds — except there is no explicit
+/// `transcript_path` to re-read: the only evidence is the task's own
+/// start/done call, located exactly as [`compute_attribution`]'s
+/// self-reported branch locates it (`locate_transcripts_by_task_call`).
+/// `Engine::token_recompute` calls this only for a task with no log-parse row
+/// of its own; a task that already has one goes through [`classify_task`]
+/// instead.
+///
+/// `Err` names why nothing was written — no correlated window, a client this
+/// build has no parser for, a client not implemented for location (today,
+/// anything but Claude Code), no transcript located, or a transcript located
+/// but empty/fully contested for the window. `Ok` carries the located
+/// measurement at `CONFIDENCE_HIGH`, matching `compute_attribution`'s own
+/// grade for this evidence (D188: the call itself is the correlation).
+pub(crate) fn locate_backfill(
+    scan: &WindowScan,
+    task_id: &str,
+    short_id: &str,
+    claims: &HashSet<String>,
+) -> Result<RecomputedMeasurement, &'static str> {
+    let info = scan
+        .correlated
+        .get(task_id)
+        .ok_or("no correlated done event")?;
+    let (window_start, window_end) = scan.window_for(task_id).ok_or("no correlated done event")?;
+    let parser = info
+        .client
+        .as_deref()
+        .and_then(parser_for)
+        .ok_or("client has no matching parser")?;
+    if parser != Parser::ClaudeCode {
+        return Err("locate is only implemented for Claude Code");
+    }
+    let located =
+        locate_transcripts_by_task_call(parser, short_id, task_id, window_start, window_end);
+    if located.is_empty() {
+        return Err("no transcript located for this task's own start/done call");
+    }
+    let mut samples = Vec::new();
+    for f in &located {
+        if let Ok(mut s) = parser.samples_from_file(f) {
+            samples.append(&mut s);
+        }
+    }
+    let foreign = scan.foreign_windows_for(task_id);
+    let (totals, counted, contested, sample_ids, _model) =
+        totals_in_window_refusing(&samples, window_start, window_end, &foreign, claims);
+    if totals.total() == 0 {
+        return Err(if contested > 0 {
+            "every sample in the window was already claimed by another task"
+        } else {
+            "no usage in the located transcript's window"
+        });
+    }
+    Ok(RecomputedMeasurement {
+        totals,
+        samples: counted,
+        tool: info.client.clone(),
+        confidence: CONFIDENCE_HIGH,
         sample_ids,
         contested,
     })
