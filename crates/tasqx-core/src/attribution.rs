@@ -383,14 +383,20 @@ pub struct LocatedNeighbour {
 /// files: its own D50 foreign windows plus every located neighbour that
 /// shares one of those files — by explicit path, or by its own call recorded
 /// in it (D188 treats the located file as the task's sample source).
+///
+/// Takes the two raw pieces (`foreign_windows`, `located_neighbours`) rather
+/// than a whole `PendingAttribution`, so [`locate_backfill`]'s one-shot
+/// repair path (#817) — which builds neither, only a `WindowScan` — can share
+/// this exact contest with the live tick instead of re-implementing it.
 fn foreign_windows_with_located(
-    pa: &PendingAttribution,
+    foreign_windows: &[(String, String)],
+    located_neighbours: &[LocatedNeighbour],
     located: &[PathBuf],
 ) -> Vec<(String, String)> {
     let canon: HashSet<PathBuf> = located.iter().map(|f| canonical_path(f)).collect();
-    let mut out = pa.foreign_windows.clone();
+    let mut out = foreign_windows.to_vec();
     out.extend(
-        pa.located_neighbours
+        located_neighbours
             .iter()
             .filter(|n| {
                 n.canon_path.as_ref().is_some_and(|c| canon.contains(c))
@@ -566,7 +572,11 @@ pub fn compute_attribution(
             &samples,
             &pa.window_start,
             &pa.window_end,
-            &foreign_windows_with_located(pa, &located_transcripts),
+            &foreign_windows_with_located(
+                &pa.foreign_windows,
+                &pa.located_neighbours,
+                &located_transcripts,
+            ),
             &pa.consumed_sample_ids,
         );
         if n == 0 && contested > 0 && !transcript_gave_up(now, &pa.window_end) {
@@ -744,7 +754,11 @@ pub fn compute_attribution(
                         samples.append(&mut s);
                     }
                 }
-                let foreign = foreign_windows_with_located(pa, &located);
+                let foreign = foreign_windows_with_located(
+                    &pa.foreign_windows,
+                    &pa.located_neighbours,
+                    &located,
+                );
                 (samples, true, true, foreign)
             }
         }
@@ -1681,7 +1695,17 @@ pub(crate) fn locate_backfill(
             samples.append(&mut s);
         }
     }
-    let foreign = scan.foreign_windows_for(task_id);
+    // The live tick's own located-neighbour contest (D188, #816 review): two
+    // tasks located to the SAME session file with overlapping windows share
+    // no `transcript_path`/`session_id` in their done payloads, so
+    // `foreign_windows_for` alone would let both bank the overlap. Reused
+    // exactly, not re-implemented — see `foreign_windows_with_located`'s doc.
+    let located_neighbours = scan.located_neighbours_for(task_id);
+    let foreign = foreign_windows_with_located(
+        &scan.foreign_windows_for(task_id),
+        &located_neighbours,
+        &located,
+    );
     let (totals, counted, contested, sample_ids, _model) =
         totals_in_window_refusing(&samples, window_start, window_end, &foreign, claims);
     if totals.total() == 0 {
