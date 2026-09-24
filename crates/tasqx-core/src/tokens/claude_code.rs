@@ -168,6 +168,12 @@ fn line_targets_task(
     start: Timestamp,
     end: Timestamp,
 ) -> bool {
+    // Every call this can match names `tasqx` (the MCP tool or the Bash
+    // command), so a substring test skips the JSON parse for nearly every
+    // line of a multi-megabyte transcript, on every attribution retry.
+    if !line.contains("tasqx") {
+        return false;
+    }
     let Ok(value) = serde_json::from_str::<Value>(line.trim()) else {
         return false;
     };
