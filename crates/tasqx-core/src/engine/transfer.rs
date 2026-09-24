@@ -68,7 +68,8 @@ impl Engine {
         // `Transaction` borrows this very `Connection`, so every `self.conn`
         // read below already runs inside it.
         let _snapshot = self.conn.unchecked_transaction()?;
-        let mut snapshots = self.load_task_snapshots(now_ts)?;
+        let mut snapshots =
+            self.load_task_snapshots_for(super::task::SnapshotParts::EVERYTHING, now_ts)?;
         snapshots.sort_by_key(|snapshot| snapshot.task.short_id);
 
         // Pass 1: which tasks survive the filter. Edges can only be resolved
@@ -2875,7 +2876,7 @@ mod tests {
             .find("unchecked_transaction()")
             .expect("store_export must open a transaction so its reads share one snapshot");
         let first_read = body
-            .find("self.load_task_snapshots(")
+            .find("self.load_task_snapshots_for(")
             .expect("store_export loads the task relation");
         assert!(
             guard < first_read,
