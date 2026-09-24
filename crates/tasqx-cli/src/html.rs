@@ -753,6 +753,12 @@ impl<'a> Report<'a> {
     /// every bucket is zero: tiles that vanish on an unmeasured store would
     /// leave a reader guessing whether the work was free or never measured,
     /// and those are different answers — so the caption says which.
+    ///
+    /// #818: `run_html_report` passes `since`/`until` as `None`, so these
+    /// figures are all-time, not the header's rolling 7 days. The heading
+    /// names that scope the way the header tiles name theirs ("done · last 7
+    /// days"), so it cannot be misread as a week's spend just for sitting
+    /// next to one.
     fn tokens_section(&self, buckets: &[(&str, i64)]) -> String {
         let tiles: String = buckets
             .iter()
@@ -765,7 +771,7 @@ impl<'a> Report<'a> {
             "No token measurements in this scope — unmeasured, not free. Four buckets, never one total: cache tokens cost a fraction of input and output, so a blended figure would misprice any mix."
         };
         section(
-            "Token spend",
+            "Token spend · all time",
             sub,
             &format!("<div class=\"tiles\">{tiles}</div>"),
         )
@@ -1763,6 +1769,18 @@ fn role_hex(theme: &Theme, role: &str, fallback: Rgb) -> String {
     theme.role(role).fg.unwrap_or(fallback).hex()
 }
 
+/// The Monday–Sunday span a `WeekBucket` covers, for an axis label a reader
+/// can place on a calendar without mistaking the start for the end (#818):
+/// same month reads "21–27 Sep", crossing a month boundary "28 Sep – 4 Oct".
+fn week_range_label(start: jiff::civil::Date) -> String {
+    let end = start.saturating_add(jiff::ToSpan::days(6i64));
+    if start.month() == end.month() {
+        format!("{}–{} {}", start.day(), end.day(), end.strftime("%b"))
+    } else {
+        format!("{} – {}", start.strftime("%-d %b"), end.strftime("%-d %b"))
+    }
+}
+
 fn svg_throughput(buckets: &[chart::WeekBucket], theme: &Theme) -> String {
     let w = 720.0;
     let h = 220.0;
@@ -1799,16 +1817,19 @@ fn svg_throughput(buckets: &[chart::WeekBucket], theme: &Theme) -> String {
         } else {
             ""
         };
-        // Dated by the Monday it starts on; "W37" is a key, not a place on
-        // a calendar.
-        let label = b
-            .start()
-            .map(|d| d.strftime("%-d %b").to_string())
-            .unwrap_or_else(|| b.label());
+        // Dated by the Monday–Sunday span it covers, not just the Monday it
+        // starts on — "21 Sep" alone read as the week ending on the 21st,
+        // although the bar holds the whole week (#818).
+        let label = b.start().map(week_range_label).unwrap_or_else(|| b.label());
+        let is_current = i + 1 == buckets.len();
+        // Consistent with `throughput_caption`'s own "the last bar is the
+        // current, partial week" (#818): named here too, in the tooltip
+        // rather than the axis label so the label stays short enough to fit.
+        let tip_suffix = if is_current { ", partial" } else { "" };
         // added bar (left), done bar (right); the group's <title> is the
         // native tooltip.
         bars.push_str(&format!(
-            "<g><title>Week of {lbl}: {added} added, {done} done</title>\
+            "<g><title>Week of {lbl}{tip_suffix}: {added} added, {done} done</title>\
              <rect x=\"{x:.1}\" y=\"{y:.1}\" width=\"{bw:.1}\" height=\"{hh:.1}\" rx=\"2\" fill=\"{accent}\"{opacity}/>",
             lbl = esc(&label), added = b.added, done = b.done,
             x = cx - bar_w - 1.0, y = base - added_h, bw = bar_w, hh = added_h,
@@ -1817,8 +1838,11 @@ fn svg_throughput(buckets: &[chart::WeekBucket], theme: &Theme) -> String {
             "<rect x=\"{x:.1}\" y=\"{y:.1}\" width=\"{bw:.1}\" height=\"{hh:.1}\" rx=\"2\" fill=\"{done_c}\"{opacity}/></g>",
             x = cx + 1.0, y = base - done_h, bw = bar_w, hh = done_h,
         ));
+        // A range label ("28 Sep – 4 Oct") runs wider than the old single
+        // date, so the week axis gets its own smaller class rather than
+        // crowding into `.axl`'s 11px (#818).
         labels.push_str(&format!(
-            "<text x=\"{cx:.1}\" y=\"{ly:.1}\" text-anchor=\"middle\" class=\"axl\">{lbl}</text>",
+            "<text x=\"{cx:.1}\" y=\"{ly:.1}\" text-anchor=\"middle\" class=\"axl wk\">{lbl}</text>",
             ly = h - 8.0,
             lbl = esc(&label),
         ));
@@ -1944,6 +1968,7 @@ fn svg_wrap(w: f64, h: f64, inner: &str) -> String {
          <defs><style>\
          .axis {{ stroke: var(--line); stroke-width: 1; }}\
          .axl {{ fill: var(--muted); font: 11px ui-monospace, monospace; }}\
+         .wk {{ font-size: 9px; }}\
          </style></defs>{inner}</svg></figure>"
     )
 }
@@ -2751,6 +2776,20 @@ mod tests {
         );
     }
 
+    /// #818: `run_html_report` hard-codes `since`/`until` to `None`
+    /// (`verbs.rs::run_html_report`), so the token buckets are all-time —
+    /// but the section used to read as "Token spend" with no window, sitting
+    /// right under the header's "done · last 7 days" tile. It now names its
+    /// scope the way the header tiles name theirs.
+    #[test]
+    fn token_section_names_its_scope_as_all_time() {
+        let doc = render_with("nord");
+        assert!(
+            doc.contains("<h2>Token spend · all time</h2>"),
+            "the token section must state it is not windowed: {doc}"
+        );
+    }
+
     /// #166: at 390px the eight-tile `.stats` strip (628px, unwrappable) drags
     /// the WHOLE PAGE into horizontal scroll, which is also why the sticky
     /// header (which only sticks vertically) slides sideways with it. And the
@@ -2985,6 +3024,29 @@ mod tests {
         assert!(
             doc.contains("<title>Week of "),
             "each week needs a native tooltip with its counts: {doc}"
+        );
+    }
+
+    /// #818: a bar labelled by its Monday alone ("13 Jul") read as the week
+    /// ENDING on the 13th, although the anchor (2026-07-15) falls inside
+    /// that very week. Each bar is now labelled by its whole Monday–Sunday
+    /// span: the anchor's own week (2026-07-13..19, same month) and the
+    /// series' oldest week (2026-04-27..05-03, crossing one) exercise both
+    /// the same-month and cross-month formats in one fixed fixture.
+    #[test]
+    fn throughput_bars_are_labelled_by_their_monday_to_sunday_span() {
+        let doc = render_with("nord");
+        assert!(
+            doc.contains(">13–19 Jul</text>"),
+            "the current, same-month week must read as a range: {doc}"
+        );
+        assert!(
+            doc.contains(">27 Apr – 3 May</text>"),
+            "a week crossing a month boundary must spell both months: {doc}"
+        );
+        assert!(
+            doc.contains("Week of 13–19 Jul, partial:"),
+            "the current bar's tooltip must name it partial, matching the caption: {doc}"
         );
     }
 
