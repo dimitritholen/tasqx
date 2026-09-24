@@ -352,35 +352,6 @@ impl Priority {
     }
 }
 
-/// A project — hierarchy is expressed via dotted names (`work.api`).
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Project {
-    /// Stable UUID. The identity that survives a rename; `name` does not.
-    pub id: String,
-    /// The dotted path (`work.api`). This IS the hierarchy — there is no parent
-    /// column — so `work` and `work.api` are related only by this string.
-    pub name: String,
-    /// Free-text description. Omitted from the JSON entirely when absent, so a
-    /// client cannot tell "unset" from "set to null" (there is no null case).
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub description: Option<String>,
-    /// Archived projects stay in the store and keep their tasks; they are hidden
-    /// from `project.list` unless the caller asks for them.
-    pub archived: bool,
-    /// RFC3339 instant the project row was written.
-    pub created: String,
-}
-
-/// A tag. Many-to-many with tasks via the `task_tags` join.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Tag {
-    /// Stable UUID for the tag row.
-    pub id: String,
-    /// The tag text as the user typed it, without the `+`/`-` filter sigil —
-    /// those are filter syntax ([`crate::filter`]), never part of the name.
-    pub name: String,
-}
-
 /// The full task record as stored, mirroring the `tasks` table columns.
 /// Output shapes for specific methods are built per-handler; this is the
 /// canonical in-memory row used internally and for `task.list` rendering.
