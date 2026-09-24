@@ -112,26 +112,70 @@ pub fn session_files(main: &Path) -> Vec<PathBuf> {
     files
 }
 
+/// How close a start or done call's own line `timestamp` must sit to the
+/// window boundary it names, in the direction it names (a start call near
+/// `window_start`, a done call near `window_end`). Real hook latency is
+/// milliseconds, so this is generous slack for clock skew and queuing, not a
+/// tolerance anyone should need to rely on — it exists so the check has SOME
+/// bound rather than none. Without one, `contains_task_call` matched a ref
+/// anywhere in a transcript's whole history: this machine's own Claude Code
+/// history holds a REAL `tasqx_complete_task` call for ref "1" from a wholly
+/// unrelated session, so a `TASQX_DB=/scratch tasqx --no-daemon done 1` run
+/// today would otherwise have been "located" as that real task's transcript.
+const LOCATE_SLACK_SECS: i64 = 10 * 60;
+
 /// Whether this transcript file's own records hold the tool call that started
-/// or completed `task_ref` — the evidence D188 uses to locate the session that
-/// measured a task, rather than guessing from time-window overlap alone. A
-/// match is either an MCP `tool_use` named `*tasqx_start_timer` /
-/// `*tasqx_complete_task` whose `input.ref` equals `short_id` or `uuid`, or a
-/// `Bash` `tool_use` running `tasqx start <id>` / `tasqx done <id>` against
-/// either spelling. Best-effort like every other read here: an unreadable file
-/// answers `false`, never an error.
-pub fn contains_task_call(path: &Path, short_id: &str, uuid: &str) -> bool {
+/// or completed `task_ref` inside its task's window — the evidence D188 uses
+/// to locate the session that measured a task, rather than guessing from
+/// time-window overlap alone. A match is either an MCP `tool_use` named
+/// `*tasqx_start_timer` / `*tasqx_complete_task` whose `input.ref` equals
+/// `short_id` or `uuid`, or a `Bash` `tool_use` running `tasqx start <id>` /
+/// `tasqx done <id>` against either spelling — in both cases only when the
+/// call's own line `timestamp` falls within `LOCATE_SLACK_SECS` of the
+/// window edge it names (start near `window_start`, done near `window_end`).
+/// A Bash command that sets `TASQX_DB=` before invoking `tasqx` targets a
+/// scratch store (`CONTRIBUTING.md`'s dev-build rule) and never matches: a
+/// developer's own `tasqx start`/`done` against a throwaway database must
+/// never be mistaken for the real daemon completing this task. Best-effort
+/// like every other read here: an unreadable file, or a window bound that
+/// does not parse, answers `false`, never an error.
+pub fn contains_task_call(
+    path: &Path,
+    short_id: &str,
+    uuid: &str,
+    window_start: &str,
+    window_end: &str,
+) -> bool {
+    let (Ok(start), Ok(end)) = (
+        window_start.parse::<Timestamp>(),
+        window_end.parse::<Timestamp>(),
+    ) else {
+        return false;
+    };
     let Ok(bytes) = std::fs::read(path) else {
         return false;
     };
     let content = String::from_utf8_lossy(&bytes);
     content
         .lines()
-        .any(|line| line_targets_task(line, short_id, uuid))
+        .any(|line| line_targets_task(line, short_id, uuid, start, end))
 }
 
-fn line_targets_task(line: &str, short_id: &str, uuid: &str) -> bool {
+fn line_targets_task(
+    line: &str,
+    short_id: &str,
+    uuid: &str,
+    start: Timestamp,
+    end: Timestamp,
+) -> bool {
     let Ok(value) = serde_json::from_str::<Value>(line.trim()) else {
+        return false;
+    };
+    let Some(ts) = value
+        .get("timestamp")
+        .and_then(|t| t.as_str())
+        .and_then(|s| s.parse::<Timestamp>().ok())
+    else {
         return false;
     };
     let Some(blocks) = value.pointer("/message/content").and_then(|c| c.as_array()) else {
@@ -139,10 +183,17 @@ fn line_targets_task(line: &str, short_id: &str, uuid: &str) -> bool {
     };
     blocks
         .iter()
-        .any(|block| block_targets_task(block, short_id, uuid))
+        .any(|block| block_targets_task(block, short_id, uuid, ts, start, end))
 }
 
-fn block_targets_task(block: &Value, short_id: &str, uuid: &str) -> bool {
+fn block_targets_task(
+    block: &Value,
+    short_id: &str,
+    uuid: &str,
+    ts: Timestamp,
+    window_start: Timestamp,
+    window_end: Timestamp,
+) -> bool {
     if block.get("type").and_then(|t| t.as_str()) != Some("tool_use") {
         return false;
     }
@@ -152,33 +203,78 @@ fn block_targets_task(block: &Value, short_id: &str, uuid: &str) -> bool {
         let Some(r) = input.and_then(|i| i.get("ref")) else {
             return false;
         };
-        return r.as_str() == Some(short_id)
+        let matches_ref = r.as_str() == Some(short_id)
             || r.as_str() == Some(uuid)
             || r.as_i64().map(|n| n.to_string()).as_deref() == Some(short_id);
+        if !matches_ref {
+            return false;
+        }
+        let anchor = if name.ends_with("tasqx_start_timer") {
+            window_start
+        } else {
+            window_end
+        };
+        return near(ts, anchor);
     }
     if name == "Bash" {
         let command = input
             .and_then(|i| i.get("command"))
             .and_then(|c| c.as_str())
             .unwrap_or("");
-        return bash_command_targets(command, short_id) || bash_command_targets(command, uuid);
+        if bash_command_targets_a_scratch_store(command) {
+            return false;
+        }
+        if bash_command_names("start", command, short_id)
+            || bash_command_names("start", command, uuid)
+        {
+            return near(ts, window_start);
+        }
+        if bash_command_names("done", command, short_id)
+            || bash_command_names("done", command, uuid)
+        {
+            return near(ts, window_end);
+        }
+        return false;
     }
     false
 }
 
-/// Whether `command` runs `tasqx start <task_ref>` or `tasqx done <task_ref>`
-/// as whole words — a substring match alone would let ref `4` match a command
-/// naming task `42`.
-fn bash_command_targets(command: &str, task_ref: &str) -> bool {
+/// Whether `ts` sits within [`LOCATE_SLACK_SECS`] of `anchor`, in either
+/// direction — `Timestamp::duration_since` is signed, so the ordering of the
+/// two arguments does not matter here.
+fn near(ts: Timestamp, anchor: Timestamp) -> bool {
+    ts.duration_since(anchor).as_secs().abs() <= LOCATE_SLACK_SECS
+}
+
+/// Whether `command` runs `tasqx <verb> <task_ref>` as whole words — a
+/// substring match alone would let ref `4` match a command naming task `42`.
+fn bash_command_names(verb: &str, command: &str, task_ref: &str) -> bool {
     if task_ref.is_empty() {
         return false;
     }
     let words: Vec<&str> = command.split_whitespace().collect();
     words.windows(3).any(|w| {
         w[0].ends_with("tasqx")
-            && (w[1] == "start" || w[1] == "done")
+            && w[1] == verb
             && w[2].trim_matches(|c: char| !c.is_alphanumeric() && c != '-') == task_ref
     })
+}
+
+/// Whether `command` sets `TASQX_DB=` as a word anywhere before the `tasqx`
+/// word it invokes — the dev-build shape `CONTRIBUTING.md` requires
+/// (`TASQX_DB=<scratch>/tasks.db tasqx --no-daemon done 42`). Such a run
+/// targets a scratch store, never the real one this task's own history
+/// lives in, so it must never be read as evidence of this task's real
+/// completion. No `tasqx` word at all answers `false`; the caller has
+/// already established the command names one before checking this.
+fn bash_command_targets_a_scratch_store(command: &str) -> bool {
+    let words: Vec<&str> = command.split_whitespace().collect();
+    let Some(tasqx_idx) = words.iter().position(|w| w.ends_with("tasqx")) else {
+        return false;
+    };
+    words[..tasqx_idx]
+        .iter()
+        .any(|w| w.starts_with("TASQX_DB="))
 }
 
 /// A transcript line. Unknown fields are ignored on purpose (version
@@ -508,8 +604,10 @@ mod tests {
         )
         .unwrap();
 
-        assert!(contains_task_call(&path, "42", "uuid-x"));
-        assert!(!contains_task_call(&path, "7", "uuid-x"));
+        // A start call is checked against `window_start`.
+        let (start, end) = ("2026-07-24T10:00:05Z", "2026-07-24T11:00:00Z");
+        assert!(contains_task_call(&path, "42", "uuid-x", start, end));
+        assert!(!contains_task_call(&path, "7", "uuid-x", start, end));
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -524,9 +622,52 @@ mod tests {
         )
         .unwrap();
 
-        assert!(contains_task_call(&path, "42", "uuid-x"));
+        // A done call is checked against `window_end`.
+        let (start, end) = ("2026-07-24T09:00:00Z", "2026-07-24T10:00:05Z");
+        assert!(contains_task_call(&path, "42", "uuid-x", start, end));
         // "4" must not match a command naming task 42.
-        assert!(!contains_task_call(&path, "4", "uuid-x"));
+        assert!(!contains_task_call(&path, "4", "uuid-x", start, end));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn contains_task_call_refuses_a_ref_match_far_outside_the_window() {
+        // The false-match this whole check exists to close: a real
+        // `tasqx_complete_task` call for this ref, but hours away from the
+        // task's own window, must not be read as evidence for THIS task.
+        let dir = std::env::temp_dir().join(format!("tasqx-cc-far-{}", crate::clock::uuid_v7()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("sess.jsonl");
+        std::fs::write(
+            &path,
+            r#"{"type":"assistant","timestamp":"2026-07-24T10:00:00Z","message":{"id":"m","content":[{"type":"tool_use","name":"mcp__tasqx__tasqx_complete_task","input":{"ref":1}}]}}"#,
+        )
+        .unwrap();
+
+        assert!(!contains_task_call(
+            &path,
+            "1",
+            "uuid-x",
+            "2026-07-24T08:00:00Z",
+            "2026-07-24T08:05:00Z",
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn contains_task_call_refuses_a_bash_run_against_a_scratch_db() {
+        let dir =
+            std::env::temp_dir().join(format!("tasqx-cc-scratch-{}", crate::clock::uuid_v7()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("sess.jsonl");
+        std::fs::write(
+            &path,
+            r#"{"type":"assistant","timestamp":"2026-07-24T10:00:00Z","message":{"id":"m","content":[{"type":"tool_use","name":"Bash","input":{"command":"TASQX_DB=/tmp/x tasqx --no-daemon done 42"}}]}}"#,
+        )
+        .unwrap();
+
+        let (start, end) = ("2026-07-24T09:00:00Z", "2026-07-24T10:00:05Z");
+        assert!(!contains_task_call(&path, "42", "uuid-x", start, end));
         let _ = std::fs::remove_dir_all(&dir);
     }
 
