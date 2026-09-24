@@ -3122,3 +3122,351 @@ fn token_add_names_every_missing_required_field_at_once() {
         err.message
     );
 }
+
+// ---- tokens.recompute: D188 backfill via `locate` (#817) -------------------
+//
+// A self-reported task with NO log-parse row of its own is out of
+// `classify_task`'s `stored`-keyed scope entirely; these tests exercise the
+// separate `locate` path `token_recompute` runs for exactly that gap.
+
+/// Serialises the tests below that override `$HOME`/`$CLAUDE_CONFIG_DIR`/
+/// `$USERPROFILE` to isolate `locate_transcripts_by_task_call`'s filesystem
+/// scan from a developer's real `~/.claude` — the same hazard, and the same
+/// fix, `attribution.rs`'s own `DISCOVERY_ENV` guards against.
+static LOCATE_ENV: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// Points every one of Claude Code's default root candidates at `dir` for the
+/// duration of `f`, restoring every variable afterward. The caller must
+/// already hold [`LOCATE_ENV`].
+fn with_isolated_home<R>(dir: &std::path::Path, f: impl FnOnce() -> R) -> R {
+    let prev_cfg = std::env::var_os("CLAUDE_CONFIG_DIR");
+    let prev_home = std::env::var_os("HOME");
+    let prev_profile = std::env::var_os("USERPROFILE");
+    // SAFETY: the caller holds `LOCATE_ENV`, the only lock this binary uses
+    // around these three variables.
+    unsafe {
+        std::env::set_var("CLAUDE_CONFIG_DIR", dir);
+        std::env::set_var("HOME", dir);
+        std::env::set_var("USERPROFILE", dir);
+    }
+    let out = f();
+    unsafe {
+        match prev_cfg {
+            Some(v) => std::env::set_var("CLAUDE_CONFIG_DIR", v),
+            None => std::env::remove_var("CLAUDE_CONFIG_DIR"),
+        }
+        match prev_home {
+            Some(v) => std::env::set_var("HOME", v),
+            None => std::env::remove_var("HOME"),
+        }
+        match prev_profile {
+            Some(v) => std::env::set_var("USERPROFILE", v),
+            None => std::env::remove_var("USERPROFILE"),
+        }
+    }
+    out
+}
+
+/// A `done` payload carrying only a `client` — no `transcript_path`, no
+/// `session_id` — a `locate` candidate's completion: D188's only anchor for
+/// it is the task's own call, never an explicit path.
+fn pin_done_client_only(e: &Engine, task_uuid: &str, completed: &str, client: &str) {
+    e.conn()
+        .execute(
+            "UPDATE events SET payload = ?1 WHERE entity_id = ?2 AND op = 'done'",
+            (
+                json!({ "completed": completed, "client": client }).to_string(),
+                task_uuid,
+            ),
+        )
+        .unwrap();
+}
+
+/// A Claude Code transcript line recording a `tasqx_complete_task` MCP call
+/// naming `short_id`, timestamped `ts` — D188's location anchor.
+fn complete_task_call(ts: &str, msg_id: &str, short_id: i64) -> String {
+    json!({
+        "type": "assistant",
+        "timestamp": ts,
+        "message": {
+            "id": msg_id,
+            "content": [{
+                "type": "tool_use",
+                "name": "mcp__tasqx__tasqx_complete_task",
+                "input": { "ref": short_id },
+            }],
+        },
+    })
+    .to_string()
+}
+
+/// A self-reported, done task with no log-parse row and no explicit
+/// `transcript_path` — a `locate` candidate — with a Claude Code session file
+/// under `dir` holding its own `tasqx_complete_task` call plus one usage line,
+/// both timestamped inside `[window_start, window_end]`
+/// (`2026-07-24T10:00:00Z..10:10:00Z`).
+fn seeded_locate_candidate(dir: &std::path::Path) -> (Engine, i64, String) {
+    let e = engine();
+    let sid = e.task_add(&json!({ "title": "t" })).unwrap()["short_id"]
+        .as_i64()
+        .unwrap();
+    e.task_done(&json!({
+        "ref": sid, "client": "claude-code", "input_tokens": 50, "output_tokens": 90,
+    }))
+    .unwrap();
+    let uuid = task_uuid(&e, &json!(sid));
+    pin_created(&e, &uuid, "2026-07-24T10:00:00Z");
+    pin_done_client_only(&e, &uuid, "2026-07-24T10:10:00Z", "claude-code");
+
+    let proj = dir.join("projects").join("proj");
+    std::fs::create_dir_all(&proj).unwrap();
+    std::fs::write(
+        proj.join("sess-1.jsonl"),
+        format!(
+            "{}\n{}\n",
+            claude_line("2026-07-24T10:05:00Z", "m1", 400, 105_000, 43_000_000, 0),
+            complete_task_call("2026-07-24T10:09:30Z", "m2", sid),
+        ),
+    )
+    .unwrap();
+
+    (e, sid, uuid)
+}
+
+/// (a) D188 backfill: a dry-run lists `locate` with the transcript's own
+/// buckets; `--apply` appends a fresh HIGH log-parse row beside the untouched
+/// self-report, and the task's rolled-up total (`fresh_tokens`, D188's
+/// best-confidence aggregation) reads the transcript, not the self-report.
+#[test]
+fn locate_dry_run_lists_the_transcript_and_apply_supersedes_the_self_report() {
+    let dir = scratch_dir("locate-found");
+    let _guard = LOCATE_ENV.lock().unwrap_or_else(|e| e.into_inner());
+    let (e, sid, uuid) = with_isolated_home(&dir, || seeded_locate_candidate(&dir));
+
+    let dry = with_isolated_home(&dir, || {
+        dispatch(&e, "tokens.recompute", &json!({})).unwrap()
+    });
+    let entry = dry["tasks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|t| t["task"] == sid)
+        .unwrap_or_else(|| panic!("task #{sid} in report: {dry}"));
+    assert_eq!(entry["action"], "locate", "{dry}");
+    assert_eq!(entry["before"], b4c(0, 0, 0, 0), "{dry}");
+    assert_eq!(entry["after"], b4c(400, 105_000, 43_000_000, 0), "{dry}");
+    assert_eq!(
+        count(
+            &e,
+            "SELECT COUNT(*) FROM token_usage WHERE source = 'log-parse'"
+        ),
+        0,
+        "dry-run writes nothing"
+    );
+
+    let applied = with_isolated_home(&dir, || {
+        dispatch(&e, "tokens.recompute", &json!({ "dry_run": false })).unwrap()
+    });
+    assert_eq!(applied["tasks"], dry["tasks"], "apply performs the plan");
+
+    let rows: Vec<(String, String, i64, i64)> = {
+        let mut stmt = e
+            .conn()
+            .prepare(
+                "SELECT source, confidence, input_tokens, output_tokens FROM token_usage \
+                 WHERE task_id = ?1 ORDER BY id",
+            )
+            .unwrap();
+        stmt.query_map([&uuid], |r| {
+            Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))
+        })
+        .unwrap()
+        .map(Result::unwrap)
+        .collect()
+    };
+    assert_eq!(
+        rows,
+        vec![
+            ("self-report".to_string(), "medium".to_string(), 50, 90),
+            ("log-parse".to_string(), "high".to_string(), 400, 105_000),
+        ],
+        "the self-report stays for audit, superseded by a fresh HIGH row"
+    );
+
+    // D188's aggregation: the roll-up counts only the best tier present.
+    let got = e.task_get(&json!({ "ref": sid })).unwrap();
+    assert_eq!(
+        got["fresh_tokens"], 105_400,
+        "the transcript's own numbers, not summed with the self-report: {got}"
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// (b) A second `--apply` over an already-located task is a no-op: the row it
+/// wrote last time has no explicit `transcript_path` to re-verify against, so
+/// `classify_task`'s generic "missing evidence" fallback must not treat it as
+/// drift and downgrade it, nor treat it as a fresh conflict with its own
+/// self-report (D188 parity, #817).
+#[test]
+fn locate_second_apply_is_a_no_op() {
+    let dir = scratch_dir("locate-idempotent");
+    let _guard = LOCATE_ENV.lock().unwrap_or_else(|e| e.into_inner());
+    let (e, sid, uuid) = with_isolated_home(&dir, || seeded_locate_candidate(&dir));
+    with_isolated_home(&dir, || {
+        dispatch(&e, "tokens.recompute", &json!({ "dry_run": false })).unwrap()
+    });
+    let rows_after_first = count(
+        &e,
+        &format!("SELECT COUNT(*) FROM token_usage WHERE task_id='{uuid}'"),
+    );
+
+    let second = with_isolated_home(&dir, || {
+        dispatch(&e, "tokens.recompute", &json!({ "dry_run": false })).unwrap()
+    });
+    let entry = second["tasks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|t| t["task"] == sid)
+        .unwrap_or_else(|| panic!("task #{sid} in second report: {second}"));
+    assert_eq!(entry["action"], "unchanged", "{second}");
+    assert_eq!(
+        count(
+            &e,
+            &format!("SELECT COUNT(*) FROM token_usage WHERE task_id='{uuid}'")
+        ),
+        rows_after_first,
+        "no row added, and the located HIGH row is not deleted"
+    );
+    assert_eq!(
+        count(
+            &e,
+            &format!(
+                "SELECT COUNT(*) FROM token_usage WHERE task_id='{uuid}' AND source='log-parse' \
+                 AND confidence='high'"
+            )
+        ),
+        1,
+        "the located row survives untouched"
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// (c) Nothing located: `skipped`, with a reason, and nothing written.
+#[test]
+fn locate_skips_a_self_reported_task_with_no_located_transcript() {
+    let dir = scratch_dir("locate-nothing");
+    std::fs::create_dir_all(&dir).unwrap(); // isolated root, deliberately empty
+    let _guard = LOCATE_ENV.lock().unwrap_or_else(|e| e.into_inner());
+
+    let e = engine();
+    let sid = e.task_add(&json!({ "title": "t" })).unwrap()["short_id"]
+        .as_i64()
+        .unwrap();
+    e.task_done(&json!({
+        "ref": sid, "client": "claude-code", "input_tokens": 5, "output_tokens": 9,
+    }))
+    .unwrap();
+    let uuid = task_uuid(&e, &json!(sid));
+    pin_created(&e, &uuid, "2026-07-24T10:00:00Z");
+    pin_done_client_only(&e, &uuid, "2026-07-24T10:10:00Z", "claude-code");
+
+    let r = with_isolated_home(&dir, || {
+        dispatch(&e, "tokens.recompute", &json!({ "dry_run": false })).unwrap()
+    });
+    let entry = r["tasks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|t| t["task"] == sid)
+        .unwrap_or_else(|| panic!("task #{sid} in report: {r}"));
+    assert_eq!(entry["action"], "skipped", "{r}");
+    assert!(entry["after"].is_null(), "{r}");
+    assert!(
+        entry["reason"].as_str().is_some_and(|s| !s.is_empty()),
+        "{r}"
+    );
+    assert_eq!(
+        count(
+            &e,
+            &format!("SELECT COUNT(*) FROM token_usage WHERE task_id='{uuid}'")
+        ),
+        1,
+        "only the original self-report row — nothing written"
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// (d) A sample another task already consumed is refused, exactly like the
+/// D50 refusal `classify_task`'s own recompute arm honours — even though this
+/// task never banked anything before.
+#[test]
+fn locate_refuses_a_sample_already_consumed_by_another_task() {
+    let dir = scratch_dir("locate-consumed");
+    let _guard = LOCATE_ENV.lock().unwrap_or_else(|e| e.into_inner());
+
+    let e = engine();
+
+    // A: already holds a HIGH log-parse row that banked sample "m1" — seeded
+    // directly, no real transcript needed for A's own half of this fixture.
+    let a = e.task_add(&json!({ "title": "A" })).unwrap()["short_id"]
+        .as_i64()
+        .unwrap();
+    e.task_done(&json!({ "ref": a })).unwrap();
+    e.token_attribute(&json!({
+        "ref": a, "source": "log-parse", "tool": "claude-code", "confidence": "high",
+        "samples": 1, "input_tokens": 10, "output_tokens": 20, "sample_ids": ["m1"],
+    }))
+    .unwrap();
+
+    // B: a `locate` candidate whose only in-window sample is the SAME id.
+    let b = e.task_add(&json!({ "title": "B" })).unwrap()["short_id"]
+        .as_i64()
+        .unwrap();
+    e.task_done(&json!({
+        "ref": b, "client": "claude-code", "input_tokens": 1, "output_tokens": 1,
+    }))
+    .unwrap();
+    let b_uuid = task_uuid(&e, &json!(b));
+    pin_created(&e, &b_uuid, "2026-07-24T10:00:00Z");
+    pin_done_client_only(&e, &b_uuid, "2026-07-24T10:10:00Z", "claude-code");
+
+    let proj = dir.join("projects").join("proj");
+    std::fs::create_dir_all(&proj).unwrap();
+    std::fs::write(
+        proj.join("sess-1.jsonl"),
+        format!(
+            "{}\n{}\n",
+            claude_line("2026-07-24T10:05:00Z", "m1", 400, 105_000, 0, 0),
+            complete_task_call("2026-07-24T10:09:30Z", "m2", b),
+        ),
+    )
+    .unwrap();
+
+    let r = with_isolated_home(&dir, || {
+        dispatch(&e, "tokens.recompute", &json!({ "dry_run": false })).unwrap()
+    });
+    let entry = r["tasks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|t| t["task"] == b)
+        .unwrap_or_else(|| panic!("task #{b} in report: {r}"));
+    assert_eq!(entry["action"], "skipped", "{r}");
+    assert!(entry["after"].is_null(), "{r}");
+    assert_eq!(
+        count(
+            &e,
+            &format!(
+                "SELECT COUNT(*) FROM token_usage WHERE task_id='{b_uuid}' AND source='log-parse'"
+            )
+        ),
+        0,
+        "the consumed sample must not be re-banked onto B"
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}

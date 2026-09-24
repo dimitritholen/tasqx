@@ -786,6 +786,7 @@ pub fn tokens_recompute(ctx: &Ctx, result: &Value) -> String {
     out.push('\n');
 
     let mut unchanged = 0usize;
+    let mut skipped = 0usize;
     for t in tasks {
         let sid = t.get("task").and_then(Value::as_i64).unwrap_or(0);
         let action = t.get("action").and_then(Value::as_str).unwrap_or("");
@@ -809,6 +810,24 @@ pub fn tokens_recompute(ctx: &Ctx, result: &Value) -> String {
                 "conflict     log-parse rows removed; the self-report is the measurement"
                     .to_string()
             }
+            // D188 backfill (#817): no log-parse row existed at all — a
+            // transcript located by the task's own start/done call banked a
+            // fresh HIGH row over the self-report, which stays for audit.
+            "locate" => format!(
+                "locate       {}",
+                bucket_delta(cell("before"), cell("after"))
+            ),
+            // A `locate` candidate with nothing to write: counted in the
+            // totals line rather than listed like `unchanged`, because the
+            // reason varies per task and is worth a line of its own.
+            "skipped" => {
+                skipped += 1;
+                let reason = t
+                    .get("reason")
+                    .and_then(Value::as_str)
+                    .unwrap_or("no evidence found");
+                format!("skipped      {reason}")
+            }
             // A verb action this build has not heard of: show it rather than
             // silently dropping a task from a report about deletions.
             other => format!("{other}   {}", bucket_delta(cell("before"), cell("after"))),
@@ -820,9 +839,14 @@ pub fn tokens_recompute(ctx: &Ctx, result: &Value) -> String {
     }
 
     out.push_str(&format!(
-        "totals  {}  ·  {} task(s) in scope, {unchanged} unchanged\n",
+        "totals  {}  ·  {} task(s) in scope, {unchanged} unchanged{}\n",
         bucket_delta(&sum_buckets(tasks, "before"), &sum_buckets(tasks, "after")),
-        tasks.len()
+        tasks.len(),
+        if skipped > 0 {
+            format!(", {skipped} skipped")
+        } else {
+            String::new()
+        }
     ));
     if dry_run {
         out.push_str("Dry-run: nothing was written. Run `tasqx tokens recompute --apply` to perform this repair.\n");

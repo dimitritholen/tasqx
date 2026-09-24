@@ -10,7 +10,9 @@ use std::collections::{HashMap, HashSet};
 use rusqlite::Row;
 
 use super::*;
-use crate::attribution::{consumed_sample_ids_by_task, recompute_measurement, WindowScan};
+use crate::attribution::{
+    consumed_sample_ids_by_task, locate_backfill, recompute_measurement, WindowScan,
+};
 use crate::otlp::OtlpSample;
 use crate::tokens::{
     require_confidence, require_source, CONFIDENCE_HIGH, CONFIDENCE_LOW, SOURCE_LOG_PARSE,
@@ -235,6 +237,14 @@ fn marker_banked_measurement(payload: &str) -> bool {
 /// without the two ever colliding on a bare string.
 fn idempotency_extra(key: &str) -> String {
     json!({ "idempotency_key": key }).to_string()
+}
+
+/// A `TokenTotals` bucket (`u64`) clamped into the `i64` column it is stored
+/// in — the same saturating cast `classify_task`'s own `clamp` closure
+/// applies to a `RecomputedMeasurement`'s totals, factored out so the D188
+/// backfill path (`token_recompute`'s `locate` arm) does not repeat it.
+fn clamp_u64(n: u64) -> i64 {
+    i64::try_from(n).unwrap_or(i64::MAX)
 }
 
 /// The four-bucket object the recompute report speaks — the same four keys as
@@ -888,9 +898,16 @@ impl Engine {
     /// a marker at all (hand-recorded via `token.add`) sorts last, by task
     /// id, so it can never displace a banked claim.
     ///
-    /// Per task, one of four actions, reported as
+    /// Scope, amended by D188 (#817): a self-reported task with NO log-parse
+    /// row of its own is *also* in scope, for exactly one action —
+    /// `"locate"` — which `classify_task`'s `stored`-keyed loop below never
+    /// reaches (it only iterates tasks it has a row for). These candidates
+    /// are folded into the SAME bank-ordered pass so their identity claims
+    /// resolve the same way the daemon would.
+    ///
+    /// Per task, one of five actions, reported as
     /// `{ "task": short_id, "action", "before": {four buckets},
-    ///    "after": {four buckets}|null }`:
+    ///    "after": {four buckets}|null, "reason"? }`:
     /// - `"recomputed"` — the transcript is readable and the re-derived
     ///   measurement differs FOR A CONTEST REASON (or only its shape differs:
     ///   duplicate-row collapse, sample-id backfill, confidence re-earn): the
@@ -916,10 +933,25 @@ impl Engine {
     ///   window edge — mixed drift included, so a row never silently
     ///   shrinks): the counts are kept (`after` == `before`) with
     ///   `confidence` stripped to `low`, never deleted blind.
-    /// - `"unchanged"` — readable, identical, already claimed: no writes.
+    /// - `"unchanged"` — readable, identical, already claimed: no writes. A
+    ///   task already carrying a `locate`d HIGH row also lands here on every
+    ///   later pass — it has no explicit `transcript_path` to re-verify, so
+    ///   it is left exactly as `locate` left it rather than downgraded or
+    ///   treated as a conflict with its own self-report (D188 parity).
+    /// - `"locate"` (#817, D188) — no log-parse row existed at all: a
+    ///   transcript located by the task's own start/done call carried real,
+    ///   uncontested spend, banked as a fresh `source=log-parse`,
+    ///   `confidence=high` row (append-only — there is no prior row to
+    ///   replace). Nothing located, or nothing survived the D50 refusal, is
+    ///   `"skipped"` instead (below), not `"locate"` with an empty `after`.
+    /// - `"skipped"` (#817) — a `locate` candidate with nothing to write:
+    ///   `after` is `null` and `"reason"` names why (no correlated window, no
+    ///   parser for the client, not Claude Code, no transcript located, or
+    ///   the located transcript's window was empty or fully contested).
     ///
     /// Writes go per task in ONE IMMEDIATE transaction through this module's
-    /// own doors (`Engine::recompute_replace` / a confidence UPDATE) —
+    /// own doors (`Engine::recompute_replace` / `Engine::recompute_locate` / a
+    /// confidence UPDATE) —
     /// deliberately NOT [`Engine::token_attribute`], whose
     /// `has_attributed_event` guard no-ops on every already-attributed task,
     /// which is every task this migration exists to repair. Old markers stay
@@ -1029,21 +1061,6 @@ impl Engine {
                 task.clone(),
             )
         };
-        let mut order: Vec<String> = stored.keys().cloned().collect();
-        order.sort_by_key(bank_order);
-
-        let mut short_ids: HashMap<String, i64> = HashMap::new();
-        {
-            let mut stmt = self.conn.prepare("SELECT id, short_id FROM tasks")?;
-            let rows = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))?;
-            for r in rows {
-                let (id, short_id) = r?;
-                if stored.contains_key(&id) {
-                    short_ids.insert(id, short_id);
-                }
-            }
-        }
-
         // Tasks that also self-reported: Decision 1's channel-conflict set.
         let self_reported: HashSet<String> = {
             let mut stmt = self
@@ -1058,6 +1075,47 @@ impl Engine {
         };
 
         let scan = WindowScan::build(self)?;
+
+        // D188 backfill (#817): self-reported tasks that hold NO log-parse row
+        // of their own at all — `classify_task`'s `stored`-keyed loop below
+        // never sees these, since it only iterates tasks it has a row for.
+        // `locate_backfill` tries the one thing D50/D188 never got to for
+        // them: locating a transcript by the task's own start/done call.
+        // Pre-filtered here to a task `locate_backfill` can actually act on —
+        // correlated at all, and a client mapping to the Claude Code parser —
+        // so an ordinary self-reported completion with no correlation info
+        // (a human's `tasqx done`, or a client this build has no parser for)
+        // never appears in the report as a permanently-unactionable `skipped`
+        // row.
+        let locate_candidates: HashSet<String> = self_reported
+            .iter()
+            .filter(|id| !stored.contains_key(*id))
+            .filter(|id| {
+                scan.client_for(id).and_then(crate::attribution::parser_for)
+                    == Some(crate::attribution::Parser::ClaudeCode)
+            })
+            .cloned()
+            .collect();
+
+        let mut order: Vec<String> = stored
+            .keys()
+            .cloned()
+            .chain(locate_candidates.iter().cloned())
+            .collect();
+        order.sort_by_key(bank_order);
+
+        let mut short_ids: HashMap<String, i64> = HashMap::new();
+        {
+            let mut stmt = self.conn.prepare("SELECT id, short_id FROM tasks")?;
+            let rows = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))?;
+            for r in rows {
+                let (id, short_id) = r?;
+                if stored.contains_key(&id) || locate_candidates.contains(&id) {
+                    short_ids.insert(id, short_id);
+                }
+            }
+        }
+
         let banked = consumed_sample_ids_by_task(self)?;
         // The rebuilt claim set starts from every task OUTSIDE the recompute
         // scope (their banks are not re-derived here, so their claims stand);
@@ -1076,12 +1134,67 @@ impl Engine {
         let mut report = Vec::new();
         let (mut total_before, mut total_after) = (0i64, 0i64);
         for task_id in &order {
-            let rows = &stored[task_id];
             // A scoped row without a task row is impossible (FK), but a
             // migration must tolerate a strange store rather than die halfway.
             let Some(short_id) = short_ids.get(task_id).copied() else {
                 continue;
             };
+
+            let Some(rows) = stored.get(task_id) else {
+                // D188 backfill (#817): no log-parse row at all — a `locate`
+                // candidate, handled entirely separately from `classify_task`.
+                match locate_backfill(&scan, task_id, &short_id.to_string(), &claims) {
+                    Ok(rc) => {
+                        let usage = NewTokenUsage {
+                            tool: rc.tool.clone().unwrap_or_default(),
+                            source: SOURCE_LOG_PARSE.to_string(),
+                            model: None,
+                            input_tokens: clamp_u64(rc.totals.input),
+                            output_tokens: clamp_u64(rc.totals.output),
+                            cache_read_tokens: clamp_u64(rc.totals.cache_read),
+                            cache_creation_tokens: clamp_u64(rc.totals.cache_creation),
+                            total_tokens: 0,
+                            confidence: CONFIDENCE_HIGH.to_string(),
+                            extra: None,
+                        };
+                        let after = buckets(
+                            usage.input_tokens,
+                            usage.output_tokens,
+                            usage.cache_read_tokens,
+                            usage.cache_creation_tokens,
+                        );
+                        let after_total = usage
+                            .input_tokens
+                            .saturating_add(usage.output_tokens)
+                            .saturating_add(usage.cache_read_tokens)
+                            .saturating_add(usage.cache_creation_tokens);
+                        // Re-earned ids contest every later task in this pass,
+                        // exactly like a `classify_task` recompute's.
+                        claims.extend(rc.sample_ids.iter().cloned());
+                        if !dry_run {
+                            self.recompute_locate(task_id, &usage, rc.samples, &rc.sample_ids)?;
+                        }
+                        total_after = total_after.saturating_add(after_total);
+                        report.push(json!({
+                            "task": short_id,
+                            "action": "locate",
+                            "before": buckets(0, 0, 0, 0),
+                            "after": after,
+                        }));
+                    }
+                    Err(reason) => {
+                        report.push(json!({
+                            "task": short_id,
+                            "action": "skipped",
+                            "before": buckets(0, 0, 0, 0),
+                            "after": Value::Null,
+                            "reason": reason,
+                        }));
+                    }
+                }
+                continue;
+            };
+
             let c = classify_task(&scan, task_id, &claims, &banked, &self_reported, rows);
             let action = c.action.as_str();
             // The ids this task holds onto contest every later task in this
@@ -1186,6 +1299,45 @@ impl Engine {
         }
         if !removed.is_empty() {
             payload["measurements"] = json!(removed);
+        }
+        insert_event(&tx, Entity::Task, task_id, "tokens.attributed", &payload)?;
+        tx.commit()
+    }
+
+    /// The D188 backfill's write door (#817): insert the located `HIGH`
+    /// measurement and append its own `tokens.attributed` marker, in one
+    /// IMMEDIATE transaction. Unlike [`Engine::recompute_replace`] this never
+    /// deletes: a `locate` candidate carries no log-parse row of its own by
+    /// construction (`token_recompute` only calls this for a task absent from
+    /// `stored`), so there is nothing to replace — only append. The task's
+    /// self-report row is untouched, kept for audit exactly as D188 already
+    /// keeps a superseded self-report on the live path.
+    fn recompute_locate(
+        &self,
+        task_id: &str,
+        usage: &NewTokenUsage,
+        samples: usize,
+        sample_ids: &[String],
+    ) -> Result<(), ApiError> {
+        let tx = self.begin_mutation()?;
+        let measurement = record_token_usage(&tx, task_id, usage)?;
+        let mut payload = json!({
+            "recompute": true,
+            "action": "locate",
+            "samples": samples,
+            "source": usage.source,
+            "tool": usage.tool,
+            "confidence": usage.confidence,
+            "totals": {
+                "input_tokens": usage.input_tokens,
+                "output_tokens": usage.output_tokens,
+                "cache_read_tokens": usage.cache_read_tokens,
+                "cache_creation_tokens": usage.cache_creation_tokens,
+            },
+            "measurement": measurement.get("id").cloned().unwrap_or(Value::Null),
+        });
+        if !sample_ids.is_empty() {
+            payload["sample_ids"] = json!(sample_ids);
         }
         insert_event(&tx, Entity::Task, task_id, "tokens.attributed", &payload)?;
         tx.commit()
@@ -1325,8 +1477,36 @@ fn classify_task(
         .saturating_add(sums.2)
         .saturating_add(sums.3);
 
-    let clamp = |n: u64| i64::try_from(n).unwrap_or(i64::MAX);
+    let clamp = clamp_u64;
     let banked_ids = || banked.get(task_id).cloned().unwrap_or_default();
+
+    // D188 parity (#817): a HIGH row with NO explicit `transcript_path` can
+    // only be `locate`'s own — the call itself was its only anchor, so
+    // `recompute_measurement` below has nothing to re-verify it against, and
+    // the generic "missing evidence" fallback further down would otherwise
+    // strip it to `low` on every later pass. `token_attribute`'s
+    // `self_reported_meanwhile` guard and `token_add`'s
+    // self-report-after-attribution refusal both already exempt a HIGH row
+    // from the self-report/log-parse conflict (D188); this is the same
+    // exemption, narrowly, for the one-shot repair path: a `locate`d
+    // measurement is left exactly alone rather than treated as a conflict
+    // with its own self-report. A HIGH row that DOES carry an explicit path
+    // is a different, pre-existing case this guard leaves untouched — an
+    // explicit transcript that later vanished must still downgrade, exactly
+    // as it always has.
+    if self_reported.contains(task_id)
+        && rows.iter().any(|row| row.confidence == CONFIDENCE_HIGH)
+        && !scan.has_explicit_transcript_path(task_id)
+    {
+        return Classified {
+            action: RecomputeAction::Unchanged,
+            claim_ids: banked_ids(),
+            after: before.clone(),
+            after_total: before_total,
+            before,
+            before_total,
+        };
+    }
 
     if self_reported.contains(task_id) {
         // The rows move aside for the self-report, but the samples the bank
