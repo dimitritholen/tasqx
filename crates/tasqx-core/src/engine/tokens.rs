@@ -933,11 +933,14 @@ impl Engine {
     ///   window edge — mixed drift included, so a row never silently
     ///   shrinks): the counts are kept (`after` == `before`) with
     ///   `confidence` stripped to `low`, never deleted blind.
-    /// - `"unchanged"` — readable, identical, already claimed: no writes. A
-    ///   task already carrying a `locate`d HIGH row also lands here on every
-    ///   later pass — it has no explicit `transcript_path` to re-verify, so
-    ///   it is left exactly as `locate` left it rather than downgraded or
-    ///   treated as a conflict with its own self-report (D188 parity).
+    /// - `"unchanged"` — readable, identical, already claimed: no writes. Any
+    ///   HIGH row with no explicit `transcript_path` also lands here on every
+    ///   later pass, self-reported or not — that shape can only be a
+    ///   D188-located row (pre-D188, HIGH required an explicit path with a
+    ///   verified session), so it has no path to re-verify and is left
+    ///   exactly as `locate` (or the live daemon) left it, rather than
+    ///   downgraded or treated as a conflict with a self-report (D188
+    ///   parity).
     /// - `"locate"` (#817, D188) — no log-parse row existed at all: a
     ///   transcript located by the task's own start/done call carried real,
     ///   uncontested spend, banked as a fresh `source=log-parse`,
@@ -1480,22 +1483,28 @@ fn classify_task(
     let clamp = clamp_u64;
     let banked_ids = || banked.get(task_id).cloned().unwrap_or_default();
 
-    // D188 parity (#817): a HIGH row with NO explicit `transcript_path` can
-    // only be `locate`'s own — the call itself was its only anchor, so
-    // `recompute_measurement` below has nothing to re-verify it against, and
-    // the generic "missing evidence" fallback further down would otherwise
-    // strip it to `low` on every later pass. `token_attribute`'s
-    // `self_reported_meanwhile` guard and `token_add`'s
-    // self-report-after-attribution refusal both already exempt a HIGH row
-    // from the self-report/log-parse conflict (D188); this is the same
-    // exemption, narrowly, for the one-shot repair path: a `locate`d
-    // measurement is left exactly alone rather than treated as a conflict
-    // with its own self-report. A HIGH row that DOES carry an explicit path
-    // is a different, pre-existing case this guard leaves untouched — an
-    // explicit transcript that later vanished must still downgrade, exactly
-    // as it always has.
-    if self_reported.contains(task_id)
-        && rows.iter().any(|row| row.confidence == CONFIDENCE_HIGH)
+    // D188 parity (#817, review finding): a HIGH row with NO explicit
+    // `transcript_path` can ONLY be a D188-located row — pre-D188, HIGH
+    // required an explicit path with a verified session, so a HIGH row
+    // without one has no other origin, self-reported task or not. Applies
+    // whether or not `self_reported` holds this task: the live daemon's own
+    // location path (`compute_attribution`'s `pa.self_reported` branch, and
+    // — going forward, as agents stop self-reporting at all — its plain
+    // no-self-report branch, both via `attribute_one`) writes exactly this
+    // shape, and `recompute_measurement` below has nothing to re-verify
+    // EITHER against (no explicit path to re-read), so the generic "missing
+    // evidence" fallback further down would otherwise strip every located
+    // measurement to `low` on the very first `--apply` — not only the
+    // narrower self-reported case this guard first shipped for.
+    // `token_attribute`'s `self_reported_meanwhile` guard and `token_add`'s
+    // self-report-after-attribution refusal exempt the self-reported half of
+    // this same shape on the live path (D188); this is its one-shot-repair
+    // counterpart, widened to the row's shape rather than the task's
+    // self-report status. A HIGH row that DOES carry an explicit path is a
+    // different, pre-existing case this guard leaves untouched — an explicit
+    // transcript that later vanished must still downgrade, exactly as it
+    // always has.
+    if rows.iter().any(|row| row.confidence == CONFIDENCE_HIGH)
         && !scan.has_explicit_transcript_path(task_id)
     {
         return Classified {

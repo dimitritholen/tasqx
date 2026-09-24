@@ -3470,3 +3470,111 @@ fn locate_refuses_a_sample_already_consumed_by_another_task() {
 
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// Review finding on #817: the D188 parity guard originally required
+/// `self_reported.contains(task_id)`, but the LIVE daemon's own location path
+/// (`compute_attribution` via `attribute_one`) writes the identical shape —
+/// HIGH, no explicit `transcript_path` — for a task that never self-reported
+/// at all, which is the ordinary case once agents stop self-reporting. This
+/// drives that real path (not a hand-inserted row): `pending_attributions` +
+/// `compute_attribution` + `attribute_one`, exactly like a daemon tick, over
+/// a task with no self-report and no explicit `transcript_path` — then
+/// asserts `tokens.recompute --apply` leaves the HIGH row exactly alone.
+#[test]
+fn locate_via_the_live_attribution_tick_survives_recompute_apply_with_no_self_report() {
+    use tasqx_core::attribution::{attribute_one, compute_attribution, pending_attributions};
+
+    let dir = scratch_dir("locate-live-tick");
+    let _guard = LOCATE_ENV.lock().unwrap_or_else(|e| e.into_inner());
+
+    let e = engine();
+    let sid = e.task_add(&json!({ "title": "t" })).unwrap()["short_id"]
+        .as_i64()
+        .unwrap();
+    // No `input_tokens`/`output_tokens` at all — no self-report, the shape
+    // most tasks will carry once agents stop self-reporting.
+    e.task_done(&json!({ "ref": sid, "client": "claude-code" }))
+        .unwrap();
+    let uuid = task_uuid(&e, &json!(sid));
+    pin_created(&e, &uuid, "2026-07-24T10:00:00Z");
+    pin_done_client_only(&e, &uuid, "2026-07-24T10:10:00Z", "claude-code");
+
+    let proj = dir.join("projects").join("proj");
+    std::fs::create_dir_all(&proj).unwrap();
+    std::fs::write(
+        proj.join("sess-1.jsonl"),
+        format!(
+            "{}\n{}\n",
+            claude_line("2026-07-24T10:05:00Z", "m1", 400, 105_000, 0, 0),
+            complete_task_call("2026-07-24T10:09:30Z", "m2", sid),
+        ),
+    )
+    .unwrap();
+
+    let now: jiff::Timestamp = "2026-07-24T10:15:00Z".parse().unwrap();
+    with_isolated_home(&dir, || {
+        let pending = pending_attributions(&e).expect("pending_attributions");
+        let pa = pending
+            .iter()
+            .find(|p| p.short_id == sid)
+            .expect("the task is pending attribution");
+        let result = compute_attribution(pa, now).expect("compute_attribution");
+        assert!(result.found, "the located transcript must be banked");
+        assert_eq!(result.source, "log-parse");
+        assert_eq!(result.confidence, "high");
+        attribute_one(&e, pa, &result).expect("attribute_one");
+    });
+
+    // The live tick wrote a HIGH log-parse row — no self-report anywhere.
+    assert_eq!(
+        count(
+            &e,
+            &format!(
+                "SELECT COUNT(*) FROM token_usage WHERE task_id='{uuid}' AND source='self-report'"
+            )
+        ),
+        0,
+        "this task never self-reported"
+    );
+    let (before_input, before_output, before_confidence): (i64, i64, String) = e
+        .conn()
+        .query_row(
+            "SELECT input_tokens, output_tokens, confidence FROM token_usage \
+             WHERE task_id = ?1 AND source = 'log-parse'",
+            [&uuid],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .unwrap();
+    assert_eq!((before_input, before_output), (400, 105_000));
+    assert_eq!(before_confidence, "high");
+
+    // `tokens.recompute --apply` must leave it exactly alone.
+    let r = with_isolated_home(&dir, || {
+        dispatch(&e, "tokens.recompute", &json!({ "dry_run": false })).unwrap()
+    });
+    let entry = r["tasks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|t| t["task"] == sid)
+        .unwrap_or_else(|| panic!("task #{sid} in report: {r}"));
+    assert_eq!(entry["action"], "unchanged", "{r}");
+    assert_eq!(entry["before"], entry["after"], "{r}");
+
+    let (after_input, after_output, after_confidence): (i64, i64, String) = e
+        .conn()
+        .query_row(
+            "SELECT input_tokens, output_tokens, confidence FROM token_usage \
+             WHERE task_id = ?1 AND source = 'log-parse'",
+            [&uuid],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .unwrap();
+    assert_eq!(
+        (after_input, after_output, after_confidence.as_str()),
+        (400, 105_000, "high"),
+        "recompute must not downgrade a live-tick-located row"
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
