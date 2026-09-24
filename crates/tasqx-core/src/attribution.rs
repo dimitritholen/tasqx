@@ -1600,36 +1600,36 @@ mod tests {
         s.parse().expect("valid RFC3339 test timestamp")
     }
 
-    /// Serialises every test that touches the DISCOVERY branch.
-    ///
-    /// Discovery scans process-global roots, and one of its tests
-    /// (`contested_discovery_samples_stay_terminal_rather_than_retrying`) plants
-    /// a transcript and points `$CLAUDE_CONFIG_DIR` at it with `set_var` — which
-    /// every other thread in this binary sees, because environment variables are
-    /// per-process and `cargo test` runs tests as threads.
-    ///
-    /// That was not a theoretical hazard. Its planted sample is stamped
-    /// `2020-01-01T10:10:00Z`, and the sibling
-    /// `discovery_finding_nothing_stays_terminal_rather_than_retrying` asserts
-    /// that a scan over `2020-01-01T10:00Z..11:00Z` finds NOTHING — the same
-    /// hour. When the two overlapped, the second test's scan saw the first
-    /// test's transcript through the override, `found` came back true, and it
-    /// failed at `assert!(!r.found)`. Measured on Linux: 1 failure in 15 runs of
-    /// the full lib binary, and 0 in 20 runs of either test on its own, which is
-    /// exactly the profile of a race and exactly the profile of a flake nobody
-    /// can reproduce from the failure message.
-    ///
-    /// The old code carried a `// SAFETY:` note claiming the concurrent readers
-    /// "tolerate an extra root". They do tolerate it; that was never the
-    /// problem. The problem is that the extra root CONTAINS an in-window sample
-    /// for the window another test is asserting is empty, so tolerating it is
-    /// precisely what makes the measurement wrong.
-    ///
-    /// Both tests take this lock, so the override is never live while another
-    /// discovery scan runs. Poisoning is deliberately ignored: a panic in one
-    /// test has already failed that test, and turning it into a cascade of
-    /// unrelated failures hides the original.
-    static DISCOVERY_ENV: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    // Serialises every test that touches the DISCOVERY branch.
+    //
+    // Discovery scans process-global roots, and one of its tests
+    // (`contested_discovery_samples_stay_terminal_rather_than_retrying`) plants
+    // a transcript and points `$CLAUDE_CONFIG_DIR` at it with `set_var` — which
+    // every other thread in this binary sees, because environment variables are
+    // per-process and `cargo test` runs tests as threads.
+    //
+    // That was not a theoretical hazard. Its planted sample is stamped
+    // `2020-01-01T10:10:00Z`, and the sibling
+    // `discovery_finding_nothing_stays_terminal_rather_than_retrying` asserts
+    // that a scan over `2020-01-01T10:00Z..11:00Z` finds NOTHING — the same
+    // hour. When the two overlapped, the second test's scan saw the first
+    // test's transcript through the override, `found` came back true, and it
+    // failed at `assert!(!r.found)`. Measured on Linux: 1 failure in 15 runs of
+    // the full lib binary, and 0 in 20 runs of either test on its own, which is
+    // exactly the profile of a race and exactly the profile of a flake nobody
+    // can reproduce from the failure message.
+    //
+    // The old code carried a `// SAFETY:` note claiming the concurrent readers
+    // "tolerate an extra root". They do tolerate it; that was never the
+    // problem. The problem is that the extra root CONTAINS an in-window sample
+    // for the window another test is asserting is empty, so tolerating it is
+    // precisely what makes the measurement wrong.
+    //
+    // Both tests take this lock, so the override is never live while another
+    // discovery scan runs. Poisoning is deliberately ignored: a panic in one
+    // test has already failed that test, and turning it into a cascade of
+    // unrelated failures hides the original.
+    use crate::tokens::DISCOVERY_ENV;
 
     /// Points every one of `default_roots`'s three candidate locations at
     /// `dir` for the duration of `f`, restoring every variable afterward. The

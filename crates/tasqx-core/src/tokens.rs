@@ -237,6 +237,14 @@ pub(crate) fn home_dir() -> Option<PathBuf> {
     env_path(if cfg!(windows) { "USERPROFILE" } else { "HOME" })
 }
 
+/// Serialises every test that overrides or reads the tool roots' environment
+/// (`HOME`, `USERPROFILE`, `CLAUDE_CONFIG_DIR`). Environment variables are
+/// per-process and `cargo test` runs tests as threads, so a reader racing an
+/// override sees the wrong roots; `attribution::tests` documents the flake
+/// that made this a lock rather than a note.
+#[cfg(test)]
+pub(crate) static DISCOVERY_ENV: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 #[cfg(test)]
 mod tests {
     use super::*;

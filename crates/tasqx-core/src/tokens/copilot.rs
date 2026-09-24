@@ -581,7 +581,11 @@ mod tests {
     #[test]
     fn default_roots_include_the_otel_dir() {
         // Exercised only when HOME is set (it is, in CI and locally); assert the
-        // canonical `.copilot/otel` root appears.
+        // canonical `.copilot/otel` root appears. Holds the lock the
+        // attribution tests take while they point HOME at a scratch dir.
+        let _guard = crate::tokens::DISCOVERY_ENV
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         if home_dir().is_some() {
             let roots = default_roots();
             assert!(
