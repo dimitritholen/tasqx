@@ -899,15 +899,19 @@ impl Engine {
     /// id, so it can never displace a banked claim.
     ///
     /// Scope, amended by D188 (#817, widened #819): a done task with NO
-    /// log-parse row of its own is *also* in scope, for exactly one action —
-    /// `"locate"` — which `classify_task`'s `stored`-keyed loop below never
-    /// reaches (it only iterates tasks it has a row for). Self-reported or
-    /// not: a task the daemon marked terminal with nothing above it (a
-    /// pre-D188 binary, or a tick that found nothing) is exactly as stranded
-    /// as a self-reported one, and #817's original scope only ever needed
-    /// `self_reported` as a cheap way to say "done". These candidates are
-    /// folded into the SAME bank-ordered pass so their identity claims
-    /// resolve the same way the daemon would.
+    /// measurement other than (at most) a self-report is *also* in scope, for
+    /// exactly one action — `"locate"` — which `classify_task`'s
+    /// `stored`-keyed loop below never reaches (it only iterates tasks it has
+    /// a LOG-PARSE row for). Self-reported or not: a task the daemon marked
+    /// terminal with nothing above it (a pre-D188 binary, or a tick that
+    /// found nothing) is exactly as stranded as a self-reported one, and
+    /// #817's original scope only ever needed `self_reported` as a cheap way
+    /// to say "done". NEVER a task already carrying an OTLP measurement,
+    /// though: `rollup_measurements` only ever supersedes a *self-report*, so
+    /// appending a fresh log-parse HIGH row beside a stored `otel` row would
+    /// double the roll-up forever, `--apply` being append-only (#819 review).
+    /// These candidates are folded into the SAME bank-ordered pass so their
+    /// identity claims resolve the same way the daemon would.
     ///
     /// Per task, one of five actions, reported as
     /// `{ "task": short_id, "action", "before": {four buckets},
@@ -945,12 +949,13 @@ impl Engine {
     ///   exactly as `locate` (or the live daemon) left it, rather than
     ///   downgraded or treated as a conflict with a self-report (D188
     ///   parity).
-    /// - `"locate"` (#817, D188) — no log-parse row existed at all: a
-    ///   transcript located by the task's own start/done call carried real,
-    ///   uncontested spend, banked as a fresh `source=log-parse`,
-    ///   `confidence=high` row (append-only — there is no prior row to
-    ///   replace). Nothing located, or nothing survived the D50 refusal, is
-    ///   `"skipped"` instead (below), not `"locate"` with an empty `after`.
+    /// - `"locate"` (#817, D188) — no measurement other than a self-report
+    ///   existed at all: a transcript located by the task's own start/done
+    ///   call carried real, uncontested spend, banked as a fresh
+    ///   `source=log-parse`, `confidence=high` row (append-only — there is no
+    ///   prior row to replace). Nothing located, or nothing survived the D50
+    ///   refusal, is `"skipped"` instead (below), not `"locate"` with an
+    ///   empty `after`.
     /// - `"skipped"` (#817) — a `locate` candidate with nothing to write:
     ///   `after` is `null` and `"reason"` names why (no correlated window, no
     ///   parser for the client, not Claude Code, no transcript located, or
@@ -1084,21 +1089,38 @@ impl Engine {
         let scan = WindowScan::build(self)?;
 
         // D188 backfill (#817, widened #819): done tasks that hold NO
-        // log-parse row of their own at all — `classify_task`'s
+        // measurement other than (at most) a self-report — `classify_task`'s
         // `stored`-keyed loop below never sees these, since it only iterates
-        // tasks it has a row for. `locate_backfill` tries the one thing
-        // D50/D188 never got to for them: locating a transcript by the
+        // tasks it has a LOG-PARSE row for. `locate_backfill` tries the one
+        // thing D50/D188 never got to for them: locating a transcript by the
         // task's own start/done call. NOT scoped to `self_reported` — a
         // task the daemon left stranded with nothing measured at all (a
         // pre-D188 binary's terminal marker, or a tick that found no
         // evidence) is exactly as much a `locate` candidate as one holding a
         // self-report, and #817's original self-report scoping never
-        // actually needed the self-report itself, only "done". Pre-filtered
+        // actually needed the self-report itself, only "done". A task
+        // already carrying an OTLP measurement is EXCLUDED even though
+        // `stored` (log-parse only) never sees it either: `rollup_measurements`
+        // only ever supersedes a self-report, never an `otel` row, so
+        // appending a fresh log-parse HIGH row beside one would double the
+        // roll-up on every later read — forever, since `--apply` never
+        // deletes (#819 review, CodeRabbit finding on PR #152). Pre-filtered
         // here to a task `locate_backfill` can actually act on — correlated
         // at all, and a client mapping to the Claude Code parser — so an
         // ordinary completion with no correlation info (a human's `tasqx
         // done`, or a client this build has no parser for) never appears in
         // the report as a permanently-unactionable `skipped` row.
+        let has_other_measurement: HashSet<String> = {
+            let mut stmt = self
+                .conn
+                .prepare("SELECT DISTINCT task_id FROM token_usage WHERE source != ?1")?;
+            let rows = stmt.query_map(params![SOURCE_SELF_REPORT], |r| r.get::<_, String>(0))?;
+            let mut ids = HashSet::new();
+            for r in rows {
+                ids.insert(r?);
+            }
+            ids
+        };
         let locate_candidates: HashSet<String> = {
             let mut stmt = self
                 .conn
@@ -1111,7 +1133,7 @@ impl Engine {
             ids
         }
         .into_iter()
-        .filter(|id| !stored.contains_key(id))
+        .filter(|id| !has_other_measurement.contains(id))
         .filter(|id| {
             scan.client_for(id).and_then(crate::attribution::parser_for)
                 == Some(crate::attribution::Parser::ClaudeCode)
