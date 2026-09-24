@@ -4,6 +4,58 @@ What changed in each tasqx release, newest first. Every release also lists its
 commits on the [releases page](https://github.com/dimitritholen/tasqx/releases),
 where the binaries, checksums and installers are.
 
+## 0.14.0
+
+Token spend is now measured, not guessed. A task done in Claude Code gets its
+token counts from the transcript that did the work, and `tasqx tokens recompute`
+backfills that measurement for tasks completed before this release (D188).
+
+### Changed
+
+- **Token spend comes from the Claude Code transcript.** tasqx finds the session
+  that did a task by the task's own start or completion call in the transcript
+  (the `tasqx_start_timer` / `tasqx_complete_task` MCP call, or a Bash
+  `tasqx start` / `tasqx done`, within ten minutes of the task's window), counts
+  that session's subagent logs once, and records the result at confidence `high`.
+  It supersedes a self-reported count for the same task; self-report remains the
+  fallback when no transcript is found. Tasks running in parallel in one session
+  contest the samples their windows share, and a contested sample is counted for
+  neither (D50, D188).
+- **The HTML report names its windows.** The token section reads "Token spend ·
+  all time", and throughput bars are labelled by their Monday–Sunday span
+  ("21–27 Sep", "28 Sep – 4 Oct"), with the current week's tooltip marked
+  partial (#818).
+- **`tasqx_complete_task` says the transcript wins.** Its description now tells
+  agents that a transcript measurement takes precedence and self-report is the
+  fallback.
+
+### Added
+
+- **`tasqx tokens recompute` backfills measurements.** For every done Claude Code
+  task with no measured (log-parse or OTLP) row, recompute locates its transcript
+  and appends a `high` measurement beside any self-report (`locate`); a task it
+  cannot measure — no transcript found, or every sample contested — is reported
+  as `skipped`. Dry-run by default, `--apply` writes, and a second run changes
+  nothing (#817, #819).
+- **tasqx-core: `compute_attribution_located`, `pending_attributions_located` and
+  `LocatedNeighbour`** carry the tasks located to the same session file, so their
+  overlapping windows contest each other (#816).
+
+### Fixed
+
+- **A replayed transcript message counts once.** Samples dedupe on message id
+  plus request id, with a timestamp fallback for subagent replays (#816).
+- **Recompute keeps a located measurement.** `tokens recompute --apply` no longer
+  downgrades a transcript-located `high` row, or deletes it beside a self-report
+  (#817).
+- **`tasqx tokens --help` describes recompute's real scope** (#820).
+
+### Deprecated
+
+- **tasqx-core: `attribution::compute_attribution` and `pending_attributions`**
+  are thin wrappers over the `_located` variants and will be removed in the next
+  minor release.
+
 ## 0.13.0
 
 This release is about moving a store between machines and keeping memory
