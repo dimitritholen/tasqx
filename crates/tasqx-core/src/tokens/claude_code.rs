@@ -15,14 +15,23 @@
 //! response is produced, re-emitting the cumulative usage each time. Verified
 //! on a real local transcript on 2026-07-24: a 9-assistant-line file held only
 //! 4 distinct message ids, and every duplicate carried identical usage. We
-//! dedupe by message id keeping the LAST occurrence so a streamed response
-//! counts once.
+//! dedupe on (message id, `requestId`) keeping the LAST occurrence so a
+//! streamed response counts once; a line without a `requestId` keys on the
+//! message id alone. ccusage additionally treats a sidechain replay — same
+//! message id, a NEW `requestId`, but the same timestamp — as the same
+//! duplicate, so that pairing is folded in as a fallback key.
+//!
+//! A session also spans more than one file: a subagent's own turns land in
+//! `<session>/subagents/*.jsonl` beside the main `<session>.jsonl`
+//! ([`session_files`]), and [`contains_task_call`] is how a session file is
+//! matched to the task whose start or done call it recorded (D188).
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use jiff::Timestamp;
 use serde::Deserialize;
+use serde_json::Value;
 
 use crate::error::ApiError;
 use crate::tokens::{env_path, home_dir, UsageSample};
@@ -82,6 +91,96 @@ pub fn default_roots() -> Vec<PathBuf> {
     )
 }
 
+/// A session's own file plus every subagent transcript it spawned:
+/// `<dir>/<session-id>/subagents/*.jsonl`, sorted for determinism. Each is
+/// counted once — the caller must not also add these files as separate
+/// top-level candidates from a directory walk (D188).
+pub fn session_files(main: &Path) -> Vec<PathBuf> {
+    let mut files = vec![main.to_path_buf()];
+    if let (Some(dir), Some(stem)) = (main.parent(), main.file_stem().and_then(|s| s.to_str())) {
+        let subagents_dir = dir.join(stem).join("subagents");
+        if let Ok(entries) = std::fs::read_dir(&subagents_dir) {
+            let mut subs: Vec<PathBuf> = entries
+                .flatten()
+                .map(|e| e.path())
+                .filter(|p| p.extension().is_some_and(|e| e == "jsonl"))
+                .collect();
+            subs.sort();
+            files.extend(subs);
+        }
+    }
+    files
+}
+
+/// Whether this transcript file's own records hold the tool call that started
+/// or completed `task_ref` — the evidence D188 uses to locate the session that
+/// measured a task, rather than guessing from time-window overlap alone. A
+/// match is either an MCP `tool_use` named `*tasqx_start_timer` /
+/// `*tasqx_complete_task` whose `input.ref` equals `short_id` or `uuid`, or a
+/// `Bash` `tool_use` running `tasqx start <id>` / `tasqx done <id>` against
+/// either spelling. Best-effort like every other read here: an unreadable file
+/// answers `false`, never an error.
+pub fn contains_task_call(path: &Path, short_id: &str, uuid: &str) -> bool {
+    let Ok(bytes) = std::fs::read(path) else {
+        return false;
+    };
+    let content = String::from_utf8_lossy(&bytes);
+    content
+        .lines()
+        .any(|line| line_targets_task(line, short_id, uuid))
+}
+
+fn line_targets_task(line: &str, short_id: &str, uuid: &str) -> bool {
+    let Ok(value) = serde_json::from_str::<Value>(line.trim()) else {
+        return false;
+    };
+    let Some(blocks) = value.pointer("/message/content").and_then(|c| c.as_array()) else {
+        return false;
+    };
+    blocks
+        .iter()
+        .any(|block| block_targets_task(block, short_id, uuid))
+}
+
+fn block_targets_task(block: &Value, short_id: &str, uuid: &str) -> bool {
+    if block.get("type").and_then(|t| t.as_str()) != Some("tool_use") {
+        return false;
+    }
+    let name = block.get("name").and_then(|n| n.as_str()).unwrap_or("");
+    let input = block.get("input");
+    if name.ends_with("tasqx_start_timer") || name.ends_with("tasqx_complete_task") {
+        let Some(r) = input.and_then(|i| i.get("ref")) else {
+            return false;
+        };
+        return r.as_str() == Some(short_id)
+            || r.as_str() == Some(uuid)
+            || r.as_i64().map(|n| n.to_string()).as_deref() == Some(short_id);
+    }
+    if name == "Bash" {
+        let command = input
+            .and_then(|i| i.get("command"))
+            .and_then(|c| c.as_str())
+            .unwrap_or("");
+        return bash_command_targets(command, short_id) || bash_command_targets(command, uuid);
+    }
+    false
+}
+
+/// Whether `command` runs `tasqx start <task_ref>` or `tasqx done <task_ref>`
+/// as whole words — a substring match alone would let ref `4` match a command
+/// naming task `42`.
+fn bash_command_targets(command: &str, task_ref: &str) -> bool {
+    if task_ref.is_empty() {
+        return false;
+    }
+    let words: Vec<&str> = command.split_whitespace().collect();
+    words.windows(3).any(|w| {
+        w[0].ends_with("tasqx")
+            && (w[1] == "start" || w[1] == "done")
+            && w[2].trim_matches(|c: char| !c.is_alphanumeric() && c != '-') == task_ref
+    })
+}
+
 /// A transcript line. Unknown fields are ignored on purpose (version
 /// tolerance), but a line is dropped when it is not valid JSON, when it carries
 /// no `message.usage` (where user and tool lines land), or when its timestamp is
@@ -93,6 +192,8 @@ struct Line {
     timestamp: Option<String>,
     #[serde(rename = "sessionId")]
     session_id: Option<String>,
+    #[serde(rename = "requestId")]
+    request_id: Option<String>,
     message: Option<Message>,
 }
 
@@ -119,9 +220,15 @@ struct Usage {
 
 fn parse_samples(content: &str) -> Vec<UsageSample> {
     let mut samples: Vec<UsageSample> = Vec::new();
-    // First-seen position per message id; the value at that slot is overwritten
-    // by later occurrences so the LAST wins while chronological order holds.
-    let mut slot_by_id: HashMap<String, usize> = HashMap::new();
+    // Primary dedupe key: (message id, requestId). A line with no requestId
+    // keys on the message id alone (both share the constant `None` second
+    // component), which is today's plain per-message dedupe. The value at a
+    // slot is overwritten by later occurrences so the LAST wins.
+    let mut slot_by_key: HashMap<(String, Option<String>), usize> = HashMap::new();
+    // ccusage's fallback: a sidechain replay reuses one message id under a NEW
+    // requestId but the SAME timestamp, and that pair is also one duplicate
+    // even when the primary key above misses.
+    let mut slot_by_id_ts: HashMap<(String, String), usize> = HashMap::new();
 
     for line in content.lines() {
         let line = line.trim();
@@ -153,7 +260,7 @@ fn parse_samples(content: &str) -> Vec<UsageSample> {
             // The message id doubles as the sample's cross-tick identity: the
             // stamp of a streamed message can move between reads, the id cannot.
             id: message.id.clone(),
-            ts,
+            ts: ts.clone(),
             model: message.model,
             input_tokens: usage.input_tokens,
             output_tokens: usage.output_tokens,
@@ -162,13 +269,29 @@ fn parse_samples(content: &str) -> Vec<UsageSample> {
         };
 
         match message.id {
-            Some(id) => match slot_by_id.get(&id) {
-                Some(&idx) => samples[idx] = sample,
-                None => {
-                    slot_by_id.insert(id, samples.len());
-                    samples.push(sample);
-                }
-            },
+            Some(id) => {
+                let primary = (id.clone(), parsed.request_id.clone());
+                let fallback = (id, ts);
+                let existing = slot_by_key
+                    .get(&primary)
+                    .or_else(|| slot_by_id_ts.get(&fallback))
+                    .copied();
+                let idx = match existing {
+                    Some(idx) => {
+                        samples[idx] = sample;
+                        idx
+                    }
+                    None => {
+                        let idx = samples.len();
+                        samples.push(sample);
+                        idx
+                    }
+                };
+                // Register the slot under both keys so a later line matching
+                // EITHER the requestId or the timestamp finds it.
+                slot_by_key.insert(primary, idx);
+                slot_by_id_ts.insert(fallback, idx);
+            }
             // No id to dedupe on: keep every such sample as its own reading.
             None => samples.push(sample),
         }
@@ -329,6 +452,106 @@ mod tests {
         assert_eq!(out[0].output_tokens, 120);
         assert_eq!(out[0].ts, "2026-07-24T10:00:02Z");
         assert_eq!(out[1].output_tokens, 2);
+    }
+
+    /// A synthetic assistant line carrying an explicit `requestId`, the field
+    /// [`assistant_line`] never sets.
+    fn assistant_line_with_request(
+        ts: &str,
+        id: &str,
+        request_id: &str,
+        input: u64,
+        output: u64,
+    ) -> String {
+        format!(
+            r#"{{"type":"assistant","timestamp":"{ts}","requestId":"{request_id}","message":{{"id":"{id}","usage":{{"input_tokens":{input},"output_tokens":{output},"cache_read_input_tokens":0,"cache_creation_input_tokens":0}}}}}}"#
+        )
+    }
+
+    #[test]
+    fn same_message_id_a_new_request_id_is_a_second_sample() {
+        // Two genuinely distinct responses can share one message id under a
+        // different requestId and timestamp — that must NOT collapse to one.
+        let content = [
+            assistant_line_with_request("2026-07-24T10:00:00Z", "m", "req-1", 1, 10),
+            assistant_line_with_request("2026-07-24T10:00:05Z", "m", "req-2", 1, 20),
+        ]
+        .join("\n");
+        let out = parse_samples(&content);
+        assert_eq!(out.len(), 2);
+        assert_eq!(out[0].output_tokens, 10);
+        assert_eq!(out[1].output_tokens, 20);
+    }
+
+    #[test]
+    fn a_replayed_message_same_id_new_request_id_same_timestamp_counts_once() {
+        // ccusage's sidechain-replay fallback: message id AND timestamp match
+        // even though requestId does not, so this is still one sample.
+        let content = [
+            assistant_line_with_request("2026-07-24T10:00:00Z", "m", "req-1", 1, 10),
+            assistant_line_with_request("2026-07-24T10:00:00Z", "m", "req-2", 1, 999),
+        ]
+        .join("\n");
+        let out = parse_samples(&content);
+        assert_eq!(out.len(), 1, "a replay must dedupe: {out:?}");
+        assert_eq!(out[0].output_tokens, 999, "last occurrence wins");
+    }
+
+    #[test]
+    fn contains_task_call_matches_mcp_start_and_complete_by_ref() {
+        let dir = std::env::temp_dir().join(format!("tasqx-cc-call-{}", crate::clock::uuid_v7()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("sess.jsonl");
+        std::fs::write(
+            &path,
+            r#"{"type":"assistant","timestamp":"2026-07-24T10:00:00Z","message":{"id":"m","content":[{"type":"tool_use","name":"mcp__tasqx__tasqx_start_timer","input":{"ref":42}}]}}"#,
+        )
+        .unwrap();
+
+        assert!(contains_task_call(&path, "42", "uuid-x"));
+        assert!(!contains_task_call(&path, "7", "uuid-x"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn contains_task_call_matches_bash_start_and_done_as_whole_words() {
+        let dir = std::env::temp_dir().join(format!("tasqx-cc-bash-{}", crate::clock::uuid_v7()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("sess.jsonl");
+        std::fs::write(
+            &path,
+            r#"{"type":"assistant","timestamp":"2026-07-24T10:00:00Z","message":{"id":"m","content":[{"type":"tool_use","name":"Bash","input":{"command":"tasqx done 42"}}]}}"#,
+        )
+        .unwrap();
+
+        assert!(contains_task_call(&path, "42", "uuid-x"));
+        // "4" must not match a command naming task 42.
+        assert!(!contains_task_call(&path, "4", "uuid-x"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn session_files_includes_subagent_transcripts_once_each() {
+        let dir = std::env::temp_dir().join(format!("tasqx-cc-sess-{}", crate::clock::uuid_v7()));
+        let subagents = dir.join("sess-1").join("subagents");
+        std::fs::create_dir_all(&subagents).unwrap();
+        let main = dir.join("sess-1.jsonl");
+        std::fs::write(&main, "").unwrap();
+        std::fs::write(subagents.join("agent-1.jsonl"), "").unwrap();
+        std::fs::write(subagents.join("agent-2.jsonl"), "").unwrap();
+        std::fs::write(subagents.join("not-jsonl.txt"), "").unwrap();
+
+        let mut files = session_files(&main);
+        files.sort();
+        let mut want = vec![
+            main.clone(),
+            subagents.join("agent-1.jsonl"),
+            subagents.join("agent-2.jsonl"),
+        ];
+        want.sort();
+        assert_eq!(files, want);
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
