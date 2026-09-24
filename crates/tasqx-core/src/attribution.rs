@@ -354,6 +354,59 @@ pub struct PendingAttribution {
     /// would silently dissolve. Identity contest is exact — message ids are
     /// unique per API response — so global is strictly safer.
     pub consumed_sample_ids: HashSet<String>,
+    /// Every OTHER correlated task whose window overlaps this one but which
+    /// shares no known source with it (so it is not in
+    /// [`foreign_windows`](Self::foreign_windows)). Filled only for a task
+    /// D188 location could reach (Claude Code, no explicit path): once this
+    /// task's transcript is located, a neighbour whose own call is recorded
+    /// in the same file — or whose explicit path IS that file — shares it,
+    /// and its window contests exactly like a D50 foreign window.
+    pub located_neighbours: Vec<LocatedNeighbour>,
+}
+
+/// One candidate for [`PendingAttribution::located_neighbours`]: enough to
+/// ask [`tokens::claude_code::contains_task_call`] whether its own call sits
+/// in a located file, and its window to contest with if so.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LocatedNeighbour {
+    /// The neighbour's `#n`, one of the two spellings a call can name.
+    pub short_id: i64,
+    /// The neighbour's store id, the other spelling.
+    pub task_id: String,
+    /// The neighbour's `(window_start, window_end)`.
+    pub window: (String, String),
+    /// The neighbour's explicit transcript path, canonicalized, when it had one.
+    pub canon_path: Option<PathBuf>,
+}
+
+/// The foreign windows for a task whose samples come from the `located`
+/// files: its own D50 foreign windows plus every located neighbour that
+/// shares one of those files — by explicit path, or by its own call recorded
+/// in it (D188 treats the located file as the task's sample source).
+fn foreign_windows_with_located(
+    pa: &PendingAttribution,
+    located: &[PathBuf],
+) -> Vec<(String, String)> {
+    let canon: HashSet<PathBuf> = located.iter().map(|f| canonical_path(f)).collect();
+    let mut out = pa.foreign_windows.clone();
+    out.extend(
+        pa.located_neighbours
+            .iter()
+            .filter(|n| {
+                n.canon_path.as_ref().is_some_and(|c| canon.contains(c))
+                    || located.iter().any(|f| {
+                        tokens::claude_code::contains_task_call(
+                            f,
+                            &n.short_id.to_string(),
+                            &n.task_id,
+                            &n.window.0,
+                            &n.window.1,
+                        )
+                    })
+            })
+            .map(|n| n.window.clone()),
+    );
+    out
 }
 
 /// The outcome of attributing one task: the four-way totals, how many samples
@@ -513,7 +566,7 @@ pub fn compute_attribution(
             &samples,
             &pa.window_start,
             &pa.window_end,
-            &pa.foreign_windows,
+            &foreign_windows_with_located(pa, &located_transcripts),
             &pa.consumed_sample_ids,
         );
         if n == 0 && contested > 0 && !transcript_gave_up(now, &pa.window_end) {
@@ -623,7 +676,10 @@ pub fn compute_attribution(
         return Ok(otel_result.unwrap_or_else(|| AttributionResult::empty(tool)));
     };
 
-    let (samples, transcript_parsed, session_correlated) = match pa.transcript_path.as_deref() {
+    let (samples, transcript_parsed, session_correlated, foreign_windows) = match pa
+        .transcript_path
+        .as_deref()
+    {
         Some(path) if !path.is_empty() => {
             let file = Path::new(path);
             if !file.exists() {
@@ -664,7 +720,7 @@ pub fn compute_attribution(
                 .as_deref()
                 .filter(|s| !s.is_empty())
                 .is_some_and(|sid| parser.session_matches(file, sid));
-            (samples, true, correlated)
+            (samples, true, correlated, pa.foreign_windows.clone())
         }
         // No explicit path: a session located by its own start/done call
         // (D188) is graded exactly like an explicit path whose session id
@@ -675,7 +731,12 @@ pub fn compute_attribution(
         _ => {
             let located = locate_by_call();
             if located.is_empty() {
-                (discover_samples(parser, pa), false, false)
+                (
+                    discover_samples(parser, pa),
+                    false,
+                    false,
+                    pa.foreign_windows.clone(),
+                )
             } else {
                 let mut samples = Vec::new();
                 for f in &located {
@@ -683,7 +744,8 @@ pub fn compute_attribution(
                         samples.append(&mut s);
                     }
                 }
-                (samples, true, true)
+                let foreign = foreign_windows_with_located(pa, &located);
+                (samples, true, true, foreign)
             }
         }
     };
@@ -692,7 +754,7 @@ pub fn compute_attribution(
         &samples,
         &pa.window_start,
         &pa.window_end,
-        &pa.foreign_windows,
+        &foreign_windows,
         &pa.consumed_sample_ids,
     );
     let found = totals.total() > 0;
@@ -1007,8 +1069,7 @@ fn shares_sample_source(a: &DoneInfo, b: &DoneInfo) -> bool {
 /// segments against the real filesystem), falling back to a purely lexical
 /// normalization when it does not — a transcript that has not been flushed yet
 /// must still contest its own other spellings.
-fn canonical_path(raw: &str) -> PathBuf {
-    let p = Path::new(raw);
+fn canonical_path(p: &Path) -> PathBuf {
     std::fs::canonicalize(p).unwrap_or_else(|_| lexical_normalize(p))
 }
 
@@ -1299,7 +1360,7 @@ impl WindowScan {
                 if let Some(tp) = &info.transcript_path {
                     let canon = canon_memo
                         .entry(tp.clone())
-                        .or_insert_with(|| canonical_path(tp));
+                        .or_insert_with(|| canonical_path(Path::new(tp)));
                     info.canon_path = Some(canon.clone());
                 }
             }
@@ -1400,6 +1461,42 @@ impl WindowScan {
                 other_id != task_id && shares_sample_source(info, &self.correlated[other_id])
             })
             .map(|(_, ws, we)| (ws.clone(), we.clone()))
+            .collect()
+    }
+}
+
+impl WindowScan {
+    /// [`PendingAttribution::located_neighbours`] for `task_id`: every other
+    /// correlated task whose window overlaps its own and that
+    /// [`foreign_windows_for`](Self::foreign_windows_for) did not already
+    /// return. An unparseable window overlaps nothing, as an unparseable
+    /// foreign window contests nothing.
+    fn located_neighbours_for(&self, task_id: &str) -> Vec<LocatedNeighbour> {
+        let Some(info) = self.correlated.get(task_id) else {
+            return Vec::new();
+        };
+        let Some((ws, we)) = self
+            .window_for(task_id)
+            .and_then(|(ws, we)| parse_window(ws, we))
+        else {
+            return Vec::new();
+        };
+        self.windows
+            .iter()
+            .filter(|(other_id, os, oe)| {
+                other_id != task_id
+                    && !shares_sample_source(info, &self.correlated[other_id])
+                    && parse_window(os, oe).is_some_and(|(os, oe)| os <= we && oe >= ws)
+            })
+            .filter_map(|(other_id, os, oe)| {
+                let (short_id, _) = self.meta.get(other_id)?;
+                Some(LocatedNeighbour {
+                    short_id: *short_id,
+                    task_id: other_id.clone(),
+                    window: (os.clone(), oe.clone()),
+                    canon_path: self.correlated[other_id].canon_path.clone(),
+                })
+            })
             .collect()
     }
 }
@@ -1571,6 +1668,15 @@ pub fn pending_attributions(engine: &Engine) -> Result<Vec<PendingAttribution>, 
             .filter(|(other_id, _)| *other_id != task_id)
             .flat_map(|(_, ids)| ids.iter().cloned())
             .collect();
+        // Only a task D188 location can reach needs its unsourced overlapping
+        // neighbours; everyone else skips the per-task window pass.
+        let locatable = info.transcript_path.is_none()
+            && info.client.as_deref().and_then(parser_for) == Some(Parser::ClaudeCode);
+        let located_neighbours = if locatable {
+            scan.located_neighbours_for(task_id)
+        } else {
+            Vec::new()
+        };
         out.push(PendingAttribution {
             task_id: task_id.clone(),
             short_id,
@@ -1584,6 +1690,7 @@ pub fn pending_attributions(engine: &Engine) -> Result<Vec<PendingAttribution>, 
             self_reported: info.self_reported,
             foreign_windows,
             consumed_sample_ids,
+            located_neighbours,
         });
     }
     // Deterministic order for tests and for stable log lines.
@@ -1872,6 +1979,7 @@ mod tests {
             self_reported: false,
             foreign_windows: vec![],
             consumed_sample_ids: HashSet::new(),
+            located_neighbours: Vec::new(),
         };
         let r = compute_attribution(&pa, ts("2026-07-24T11:05:00Z")).unwrap();
         assert!(!r.found);
@@ -1907,6 +2015,7 @@ mod tests {
             self_reported: false,
             foreign_windows: vec![],
             consumed_sample_ids: HashSet::new(),
+            located_neighbours: Vec::new(),
         };
         let r = compute_attribution(&pa, ts("2026-07-24T11:05:00Z")).unwrap();
         assert_eq!(
@@ -1930,6 +2039,7 @@ mod tests {
             self_reported: false,
             foreign_windows: vec![],
             consumed_sample_ids: HashSet::new(),
+            located_neighbours: Vec::new(),
         };
         // Minutes after completion: still transient (the file may yet be flushed).
         let err = compute_attribution(&pa, ts("2026-07-24T11:05:00Z")).unwrap_err();
@@ -1951,6 +2061,7 @@ mod tests {
             self_reported: false,
             foreign_windows: vec![],
             consumed_sample_ids: HashSet::new(),
+            located_neighbours: Vec::new(),
         };
         // Two days later the file is never coming: terminate with an empty marker
         // (found == false) rather than retrying — and forcing a rebuild — forever.
@@ -1991,6 +2102,7 @@ mod tests {
             self_reported: false,
             foreign_windows: vec![],
             consumed_sample_ids: HashSet::new(),
+            located_neighbours: Vec::new(),
         };
 
         // Minutes after completion: still transient. A file being written right
@@ -2045,6 +2157,7 @@ mod tests {
             self_reported: false,
             foreign_windows: vec![],
             consumed_sample_ids: HashSet::new(),
+            located_neighbours: Vec::new(),
         };
         let r = compute_attribution(&pa, ts("2026-07-24T11:05:00Z")).unwrap();
         assert!(r.found);
@@ -2107,6 +2220,7 @@ mod tests {
             self_reported: false,
             foreign_windows: vec![],
             consumed_sample_ids: HashSet::new(),
+            located_neighbours: Vec::new(),
         };
 
         // Minutes after completion: the turn may still be writing. Retry rather
@@ -2168,6 +2282,7 @@ mod tests {
                 "2026-07-24T11:30:00Z".to_string(),
             )],
             consumed_sample_ids: HashSet::new(),
+            located_neighbours: Vec::new(),
         };
 
         // Minutes after completion: transient — the contest may look different
@@ -2226,6 +2341,7 @@ mod tests {
                 "2026-07-24T10:15:00Z".to_string(),
             )],
             consumed_sample_ids: HashSet::new(),
+            located_neighbours: Vec::new(),
         };
         let r = compute_attribution(&pa, ts("2026-07-24T11:05:00Z")).unwrap();
         assert!(r.found, "the uncontested remainder still banks");
@@ -2265,6 +2381,7 @@ mod tests {
                 "2026-07-24T10:20:00Z".to_string(),
             )],
             consumed_sample_ids: HashSet::new(),
+            located_neighbours: Vec::new(),
         };
         let r = compute_attribution(&pa, ts("2026-07-24T11:05:00Z")).unwrap();
         assert_eq!(r.source, SOURCE_OTEL);
@@ -2300,6 +2417,7 @@ mod tests {
                 "2026-07-24T10:20:00Z".to_string(),
             )],
             consumed_sample_ids: HashSet::new(),
+            located_neighbours: Vec::new(),
         };
 
         // Minutes after completion: transient, with the distinct message.
@@ -2369,6 +2487,7 @@ mod tests {
             self_reported: false,
             foreign_windows: vec![],
             consumed_sample_ids: HashSet::new(),
+            located_neighbours: Vec::new(),
         };
         let r = compute_attribution(&pa, ts("2020-01-01T11:05:00Z"))
             .expect("discovery must terminate, not retry");
@@ -2421,6 +2540,7 @@ mod tests {
                 "2020-01-01T10:15:00Z".to_string(),
             )],
             consumed_sample_ids: HashSet::new(),
+            located_neighbours: Vec::new(),
         };
 
         // Held across the whole override, so no other discovery scan in this
@@ -2486,6 +2606,7 @@ mod tests {
             self_reported: true,
             foreign_windows: vec![],
             consumed_sample_ids: HashSet::new(),
+            located_neighbours: Vec::new(),
         };
 
         let _guard = DISCOVERY_ENV.lock().unwrap_or_else(|e| e.into_inner());
@@ -2547,6 +2668,7 @@ mod tests {
             self_reported: false,
             foreign_windows: vec![],
             consumed_sample_ids: HashSet::new(),
+            located_neighbours: Vec::new(),
         };
 
         let _guard = DISCOVERY_ENV.lock().unwrap_or_else(|e| e.into_inner());
@@ -2605,6 +2727,7 @@ mod tests {
             self_reported: false,
             foreign_windows: vec![],
             consumed_sample_ids: HashSet::new(),
+            located_neighbours: Vec::new(),
         };
 
         let _guard = DISCOVERY_ENV.lock().unwrap_or_else(|e| e.into_inner());
@@ -2771,6 +2894,7 @@ mod tests {
             self_reported: false,
             foreign_windows: vec![],
             consumed_sample_ids: HashSet::new(),
+            located_neighbours: Vec::new(),
         };
 
         let _guard = DISCOVERY_ENV.lock().unwrap_or_else(|e| e.into_inner());
@@ -2845,6 +2969,7 @@ mod tests {
             self_reported: false,
             foreign_windows: vec![],
             consumed_sample_ids: HashSet::new(),
+            located_neighbours: Vec::new(),
         };
 
         let _guard = DISCOVERY_ENV.lock().unwrap_or_else(|e| e.into_inner());
@@ -2887,6 +3012,7 @@ mod tests {
             self_reported: false,
             foreign_windows: vec![],
             consumed_sample_ids: HashSet::new(),
+            located_neighbours: Vec::new(),
         };
         let r = compute_attribution(&pa, ts("2026-07-24T11:05:00Z")).unwrap();
         assert!(r.found, "the transcript was parsed and had in-window spend");
@@ -2938,6 +3064,7 @@ mod tests {
             self_reported: false,
             foreign_windows: vec![],
             consumed_sample_ids: HashSet::new(),
+            located_neighbours: Vec::new(),
         };
         // Past TRANSCRIPT_GIVE_UP_SECS past window_end, so the empty log-parse
         // read terminates instead of retrying transiently.
@@ -2982,6 +3109,7 @@ mod tests {
             self_reported: false,
             foreign_windows: vec![],
             consumed_sample_ids: HashSet::new(),
+            located_neighbours: Vec::new(),
         };
         let err = compute_attribution(&pa, ts("2026-07-24T11:05:00Z")).unwrap_err();
         assert!(
@@ -3026,6 +3154,7 @@ mod tests {
             self_reported: false,
             foreign_windows: vec![],
             consumed_sample_ids: HashSet::new(),
+            located_neighbours: Vec::new(),
         };
         let r = compute_attribution(&pa, ts("2026-07-24T11:05:00Z")).unwrap();
         assert!(r.found);
@@ -3062,6 +3191,7 @@ mod tests {
             self_reported: false,
             foreign_windows: vec![],
             consumed_sample_ids: HashSet::new(),
+            located_neighbours: Vec::new(),
         };
         let err = compute_attribution(&pa, ts("2026-07-24T11:05:00Z")).unwrap_err();
         assert!(
@@ -3370,6 +3500,115 @@ mod tests {
                 "2026-07-25T10:01:44Z".to_string()
             )],
             "B carries A's window even though A already left the queue"
+        );
+    }
+
+    /// D50 for located transcripts (PR #149 review): two concurrently active
+    /// tasks in ONE Claude Code session carry no `transcript_path` or
+    /// `session_id`, so the done-payload join never saw them share a source.
+    /// Once each is located to the same file, that file IS their shared
+    /// source: samples inside both windows bank for neither, the rest bank
+    /// normally.
+    #[test]
+    fn two_tasks_located_to_one_session_contest_their_overlap() {
+        let engine = Engine::open_in_memory().unwrap();
+        let mut ids = Vec::new();
+        for title in ["a", "b"] {
+            let sid = engine.task_add(&json!({ "title": title })).unwrap()["short_id"]
+                .as_i64()
+                .unwrap();
+            engine.task_start(&json!({ "ref": sid })).unwrap();
+            engine
+                .task_done(&json!({ "ref": sid, "client": "claude-code" }))
+                .unwrap();
+            let id: String = engine
+                .conn()
+                .query_row("SELECT id FROM tasks WHERE short_id = ?1", [sid], |r| {
+                    r.get(0)
+                })
+                .unwrap();
+            ids.push((sid, id));
+        }
+        // A: 10:00-10:30, B: 10:20-10:50 — they overlap on 10:20-10:30.
+        for ((_, id), (started, completed)) in ids.iter().zip([
+            ("2026-07-24T10:00:00Z", "2026-07-24T10:30:00Z"),
+            ("2026-07-24T10:20:00Z", "2026-07-24T10:50:00Z"),
+        ]) {
+            engine
+                .conn()
+                .execute(
+                    "UPDATE events SET payload = ?1 WHERE entity_id = ?2 AND op = 'start'",
+                    (json!({ "interval_started": started }).to_string(), id),
+                )
+                .unwrap();
+            engine
+                .conn()
+                .execute(
+                    "UPDATE events SET payload = ?1 WHERE entity_id = ?2 AND op = 'done'",
+                    (
+                        json!({ "completed": completed, "client": "claude-code" }).to_string(),
+                        id,
+                    ),
+                )
+                .unwrap();
+        }
+        let (a, b) = (ids[0].0, ids[1].0);
+
+        let dir = std::env::temp_dir().join(format!(
+            "tasqx-attr-located-contest-{}",
+            crate::clock::uuid_v7()
+        ));
+        let proj = dir.join("projects").join("proj");
+        std::fs::create_dir_all(&proj).unwrap();
+        let usage = |ts: &str, id: &str, input: u64| {
+            json!({"type": "assistant", "timestamp": ts, "message": {"id": id, "usage": {
+                "input_tokens": input, "output_tokens": 0,
+                "cache_read_input_tokens": 0, "cache_creation_input_tokens": 0}}})
+            .to_string()
+        };
+        let complete = |ts: &str, id: &str, r: i64| {
+            json!({"type": "assistant", "timestamp": ts, "message": {"id": id, "content": [
+                {"type": "tool_use", "name": "mcp__tasqx__tasqx_complete_task",
+                 "input": {"ref": r}}]}})
+            .to_string()
+        };
+        std::fs::write(
+            proj.join("sess.jsonl"),
+            [
+                usage("2026-07-24T10:10:00Z", "m-a", 1),
+                usage("2026-07-24T10:25:00Z", "m-both", 100),
+                complete("2026-07-24T10:30:00Z", "c-a", a),
+                usage("2026-07-24T10:40:00Z", "m-b", 10),
+                complete("2026-07-24T10:50:00Z", "c-b", b),
+            ]
+            .join("\n"),
+        )
+        .unwrap();
+
+        let pending = pending_attributions(&engine).unwrap();
+        assert_eq!(pending.len(), 2);
+        let _guard = DISCOVERY_ENV.lock().unwrap_or_else(|e| e.into_inner());
+        let results: Vec<_> = with_isolated_roots(&dir, || {
+            pending
+                .iter()
+                .map(|pa| compute_attribution(pa, ts("2026-07-24T11:30:00Z")))
+                .collect()
+        });
+        let _ = std::fs::remove_dir_all(&dir);
+
+        let got: Vec<(u64, &str)> = results
+            .iter()
+            .map(|r| {
+                let r = r
+                    .as_ref()
+                    .expect("both tasks bank their uncontested samples");
+                (r.totals.input, r.confidence)
+            })
+            .collect();
+        assert_eq!(
+            got,
+            vec![(1, CONFIDENCE_HIGH), (10, CONFIDENCE_HIGH)],
+            "the 10:25 sample inside both windows banks for neither"
         );
     }
 
