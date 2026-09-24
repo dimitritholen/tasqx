@@ -342,8 +342,12 @@ fn dry_run_is_the_default_and_apply_is_the_only_way_to_write() {
         );
     }
 
-    // The repaired store reports no further changes.
-    let after = stdout_json(&run(&dir, &["--json", "tokens", "recompute"]));
+    // The repaired store reports no further changes to the totals. Y now has
+    // no log-parse row and its client maps to Claude Code, so it is a
+    // `locate` candidate too (#819) — isolated, like the `locate` tests
+    // above, because that candidacy means this call scans for a transcript
+    // and must never reach the real `~/.claude`.
+    let after = stdout_json(&run_isolated(&dir, &["--json", "tokens", "recompute"]));
     assert_eq!(after["totals"], json!({ "before": 1100, "after": 1100 }));
 
     let _ = std::fs::remove_dir_all(&dir);
