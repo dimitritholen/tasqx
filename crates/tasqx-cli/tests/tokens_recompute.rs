@@ -62,6 +62,29 @@ fn run(dir: &std::path::Path, args: &[&str]) -> std::process::Output {
     out
 }
 
+/// Like [`run`], but also isolates the child's view of Claude Code's default
+/// transcript roots at `dir` — needed only by the `locate` test below, which
+/// exercises `locate_transcripts_by_task_call`'s filesystem scan (D188, #817)
+/// and must never read a developer's real `~/.claude`. Safe as plain env vars
+/// on the CHILD process's own `Command`, unlike the in-process engine tests'
+/// mutex-guarded override: this binary's own `HOME`/`CLAUDE_CONFIG_DIR` never
+/// change.
+fn run_isolated(dir: &std::path::Path, args: &[&str]) -> std::process::Output {
+    let out = bin(dir)
+        .env("HOME", dir)
+        .env("USERPROFILE", dir)
+        .env("CLAUDE_CONFIG_DIR", dir)
+        .args(args)
+        .output()
+        .expect("run tasqx");
+    assert!(
+        out.status.success(),
+        "{args:?} failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    out
+}
+
 fn stdout_json(out: &std::process::Output) -> serde_json::Value {
     serde_json::from_slice(&out.stdout).unwrap_or_else(|e| {
         panic!(
@@ -149,6 +172,113 @@ fn seed_overlap(dir: &std::path::Path) {
         "samples": 1, "input_tokens": 1000, "output_tokens": 2000,
     }))
     .unwrap();
+}
+
+/// A self-reported, done task with no log-parse row and no explicit
+/// `transcript_path` — a D188 `locate` candidate (#817) — with a Claude Code
+/// session file under `dir` holding its own `tasqx_complete_task` call plus
+/// one usage line, both inside `[window_start, window_end]`
+/// (`2026-07-24T10:00:00Z..10:10:00Z`). Returns the task's `short_id`.
+fn seed_locate_candidate(dir: &std::path::Path) -> i64 {
+    let e = Engine::open(dir.join("store.db").to_str().unwrap()).expect("open the scratch store");
+    let sid = e.task_add(&json!({ "title": "t" })).unwrap()["short_id"]
+        .as_i64()
+        .unwrap();
+    e.task_done(&json!({
+        "ref": sid, "client": "claude-code", "input_tokens": 50, "output_tokens": 90,
+    }))
+    .unwrap();
+    let uuid = task_uuid(&e, &json!(sid));
+    e.conn()
+        .execute(
+            "UPDATE tasks SET created = '2026-07-24T10:00:00Z' WHERE id = ?1",
+            [&uuid],
+        )
+        .unwrap();
+    e.conn()
+        .execute(
+            "UPDATE events SET payload = ?1 WHERE entity_id = ?2 AND op = 'done'",
+            (
+                json!({ "completed": "2026-07-24T10:10:00Z", "client": "claude-code" }).to_string(),
+                &uuid,
+            ),
+        )
+        .unwrap();
+
+    let proj = dir.join("projects").join("proj");
+    std::fs::create_dir_all(&proj).unwrap();
+    std::fs::write(
+        proj.join("sess-1.jsonl"),
+        format!(
+            "{}\n{}\n",
+            json!({
+                "timestamp": "2026-07-24T10:05:00Z",
+                "message": {
+                    "id": "m1",
+                    "usage": { "input_tokens": 400, "output_tokens": 105_000 },
+                },
+            }),
+            json!({
+                "type": "assistant",
+                "timestamp": "2026-07-24T10:09:30Z",
+                "message": {
+                    "id": "m2",
+                    "content": [{
+                        "type": "tool_use",
+                        "name": "mcp__tasqx__tasqx_complete_task",
+                        "input": { "ref": sid },
+                    }],
+                },
+            }),
+        ),
+    )
+    .unwrap();
+
+    sid
+}
+
+/// D188 backfill (#817): a self-reported task with no log-parse row of its
+/// own reports as `locate` (not `recomputed`, `unchanged`, `downgraded` or
+/// `channel_conflict`) on both the human and `--json` surfaces, and `--apply`
+/// banks the located transcript's numbers at HIGH confidence.
+#[test]
+fn locate_action_appears_in_the_report_and_apply_writes_a_high_row() {
+    let dir = scratch("locate");
+    let sid = seed_locate_candidate(&dir);
+
+    let dry = stdout_json(&run_isolated(&dir, &["--json", "tokens", "recompute"]));
+    let entry = dry["tasks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|t| t["task"] == sid)
+        .unwrap_or_else(|| panic!("task #{sid} in report: {dry}"));
+    assert_eq!(entry["action"], "locate", "{dry}");
+
+    let text =
+        String::from_utf8_lossy(&run_isolated(&dir, &["tokens", "recompute"]).stdout).into_owned();
+    assert!(text.contains("locate"), "{text}");
+
+    let applied = stdout_json(&run_isolated(
+        &dir,
+        &["--json", "tokens", "recompute", "--apply"],
+    ));
+    assert_eq!(
+        applied["tasks"], dry["tasks"],
+        "apply must do what the dry-run said"
+    );
+
+    let e = Engine::open(dir.join("store.db").to_str().unwrap()).unwrap();
+    assert_eq!(
+        count(
+            &e,
+            "SELECT COUNT(*) FROM token_usage WHERE source='log-parse' AND confidence='high'"
+        ),
+        1,
+        "the located transcript must bank a fresh HIGH row"
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 /// The whole contract in one pass over one store: dry-run is the default and
