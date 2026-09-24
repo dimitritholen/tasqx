@@ -1112,8 +1112,9 @@ fn build_tool_specs() -> Vec<ToolSpec> {
             idempotent: false,
             description: "Mark a task done. Returns any tasks its completion newly unblocked. \
                 Report what this task cost via the *_tokens params, or `total_tokens` alone when \
-                you only know one number (D167): self-report is the primary channel, graded \
-                `medium` because nothing can check it (D50). `tool`/`model` are recorded on the \
+                you only know one number (D167): a transcript measurement wins when tasqx finds \
+                the session that ran this task, and self-report is the fallback, graded `medium` \
+                because nothing can check it (D50, D188). `tool`/`model` are recorded on the \
                 event even with no count. A task with open dependencies is a `conflict` naming the blockers; \
                 `force: true` completes it anyway, counted by `tasqx_outcomes` (D150). \
                 `view: \"card\"` leads with the task's box card (D153), for a person deciding on \

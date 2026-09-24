@@ -255,7 +255,7 @@ pub(super) fn buckets(input: i64, output: i64, cache_read: i64, cache_creation: 
 /// other roll-up here.
 pub(super) fn measurement_totals(measurements: &[Value]) -> crate::tokens::TokenTotals {
     let mut totals = crate::tokens::TokenTotals::default();
-    for m in measurements {
+    for m in best_confidence_measurements(measurements) {
         let get = |k: &str| m.get(k).and_then(Value::as_i64).unwrap_or(0) as u64;
         totals.input = totals.input.saturating_add(get("input_tokens"));
         totals.output = totals.output.saturating_add(get("output_tokens"));
@@ -266,6 +266,38 @@ pub(super) fn measurement_totals(measurements: &[Value]) -> crate::tokens::Token
         totals.unsplit = totals.unsplit.saturating_add(get("total_tokens"));
     }
     totals
+}
+
+/// D188: a task can carry more than one measurement now that a located or
+/// session-verified transcript supersedes a self-report rather than replacing
+/// it — rows are never rewritten, so the superseded one stays for audit
+/// (`task.get`'s `tokens` list, unfiltered, still shows both). Every ROLL-UP
+/// must not sum them together, or a task with both a self-report and its
+/// superseding transcript would count its own spend twice. This is the one
+/// place that rule lives: `measurement_totals` (the `task.list`/`-tokens` and
+/// `task.get` budget-hint totals), `report.summary`, `report.outcomes`
+/// (D139's gauge and its cost buckets) all filter through this before
+/// summing.
+///
+/// Ranks by [`crate::tokens::confidence_rank`], not by string equality, so an
+/// unrecognized confidence groups with `low` rather than becoming its own
+/// tier. Empty input answers empty.
+pub(super) fn best_confidence_measurements(measurements: &[Value]) -> Vec<&Value> {
+    // D32: a variable key, not a literal `.get("confidence")` chain — the
+    // engine-wide lint bans the literal shape because it cannot tell "absent"
+    // from "wrong type"; see `report_summary`'s `str_field` for the same
+    // pattern over the same field.
+    let field = "confidence";
+    let rank_of = |m: &Value| {
+        m.get(field)
+            .and_then(Value::as_str)
+            .map(crate::tokens::confidence_rank)
+            .unwrap_or(0)
+    };
+    let Some(best) = measurements.iter().map(rank_of).max() else {
+        return Vec::new();
+    };
+    measurements.iter().filter(|m| rank_of(m) == best).collect()
 }
 
 /// Render a rolled-up [`crate::tokens::TokenTotals`] as the same four-bucket
@@ -394,42 +426,55 @@ impl Engine {
             }
         }
 
-        // #208 / D50: "one task never mixes channels." The attribution engine
-        // already refuses to lay a SECOND automated measurement over an
-        // existing self-report (`token_attribute`'s `self_reported_meanwhile`
-        // TOCTOU guard below) — but that protects only that direction. A
-        // self-report arriving AFTER the daemon already banked this task's
-        // spend automatically hit no such check, and silently doubled the
-        // ledger under two `source`s. Gated on `has_attributed_event` (not
+        // #208 / D50, amended by D188: "one task never mixes channels" no
+        // longer means "never two rows" — it means every roll-up counts only
+        // the highest-confidence one (`measurement_totals`). A HIGH existing
+        // measurement (a located or session-verified transcript, or OTLP) is
+        // never outranked by a self-report, so the self-report landing beside
+        // it cannot double the ledger and is allowed through, kept for audit.
+        // A non-HIGH existing measurement — a low-confidence discovery guess —
+        // is still refused: THAT one really would have nothing above it and
+        // would be silently doubled. Gated on `has_attributed_event` (not
         // merely "does a non-self-report row exist"): an empty
         // `tokens.attributed` marker — unknown client, or a window that
         // turned out to hold nothing — records no row, so there is nothing
         // for a self-report to conflict with.
         if usage.source == SOURCE_SELF_REPORT && has_attributed_event(&tx, &task.id)? {
-            if let Some((existing_source, input, output, cache_read, cache_creation)) = tx
+            if let Some((
+                existing_source,
+                existing_confidence,
+                input,
+                output,
+                cache_read,
+                cache_creation,
+            )) = tx
                 .query_row(
-                    "SELECT source, input_tokens, output_tokens, cache_read_tokens, \
+                    "SELECT source, confidence, input_tokens, output_tokens, cache_read_tokens, \
                      cache_creation_tokens FROM token_usage \
                      WHERE task_id = ?1 AND source != ?2 ORDER BY id LIMIT 1",
                     params![task.id, SOURCE_SELF_REPORT],
                     |r| {
                         Ok((
                             r.get::<_, String>(0)?,
-                            r.get::<_, i64>(1)?,
+                            r.get::<_, String>(1)?,
                             r.get::<_, i64>(2)?,
                             r.get::<_, i64>(3)?,
                             r.get::<_, i64>(4)?,
+                            r.get::<_, i64>(5)?,
                         ))
                     },
                 )
                 .optional()?
             {
-                return Err(ApiError::conflict(format!(
-                    "task already carries a {existing_source} measurement from the automated \
-                     attribution pipeline ({input} in / {output} out / {cache_read} cacheR / \
-                     {cache_creation} cacheW tokens) — a self-report here would double the \
-                     ledger; use `tokens.recompute` or remove the existing measurement first"
-                )));
+                if existing_confidence != CONFIDENCE_HIGH {
+                    return Err(ApiError::conflict(format!(
+                        "task already carries a {existing_source} measurement from the \
+                         automated attribution pipeline ({input} in / {output} out / \
+                         {cache_read} cacheR / {cache_creation} cacheW tokens) — a self-report \
+                         here would double the ledger; use `tokens.recompute` or remove the \
+                         existing measurement first"
+                    )));
+                }
             }
         }
 
@@ -589,23 +634,27 @@ impl Engine {
             return Ok(false);
         }
 
-        // TOCTOU guard for "one task never mixes channels" (D50): the pending
-        // set captured `self_reported` under an earlier lock, and the tick then
-        // parsed the transcript UNLOCKED — a self-report landing via
-        // `token.add` in that gap would otherwise be joined by a log-parse row
-        // for the identical spend. Re-check inside THIS transaction, exactly
-        // like `has_attributed_event` above: the self-report is authoritative,
-        // so suppress the usage-row insert but still write the terminating
-        // marker — the task IS measured, by the caller.
-        let self_reported_meanwhile = source == SOURCE_LOG_PARSE && {
-            let n: i64 = tx.query_row(
-                "SELECT EXISTS(SELECT 1 FROM token_usage \
-                 WHERE task_id = ?1 AND source = ?2 LIMIT 1)",
-                params![task.id, SOURCE_SELF_REPORT],
-                |r| r.get(0),
-            )?;
-            n > 0
-        };
+        // TOCTOU guard for "one task never mixes channels" (D50), narrowed by
+        // D188: the pending set captured `self_reported` under an earlier
+        // lock, and the tick then parsed the transcript UNLOCKED — a
+        // self-report landing via `token.add` in that gap would otherwise be
+        // joined by a log-parse row for the identical spend. A HIGH-confidence
+        // measurement is exempt: it is a transcript located by, or verified
+        // against, this task's own call, so it supersedes the self-report
+        // rather than duplicating it, and every roll-up counts only the
+        // higher tier. Anything less than HIGH still suppresses the insert —
+        // the self-report stays authoritative, and the terminating marker is
+        // written either way: the task IS measured, by one of the two.
+        let self_reported_meanwhile =
+            source == SOURCE_LOG_PARSE && confidence != CONFIDENCE_HIGH && {
+                let n: i64 = tx.query_row(
+                    "SELECT EXISTS(SELECT 1 FROM token_usage \
+                     WHERE task_id = ?1 AND source = ?2 LIMIT 1)",
+                    params![task.id, SOURCE_SELF_REPORT],
+                    |r| r.get(0),
+                )?;
+                n > 0
+            };
 
         // A measurement row only when there is real spend to record; otherwise
         // just the marker. Either way, exactly one event.
