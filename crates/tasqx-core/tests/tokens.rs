@@ -3579,8 +3579,9 @@ fn locate_via_the_live_attribution_tick_survives_recompute_apply_with_no_self_re
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// Review finding on #817 (#816 review, `PendingAttribution::located_neighbours`):
-/// two self-reported tasks located to the SAME session file, with overlapping
+/// Review finding on #817 (#816 review, located neighbours — see
+/// `attribution::LocatedNeighbour`): two self-reported tasks located to the
+/// SAME session file, with overlapping
 /// windows, share no `transcript_path`/`session_id` in their done payloads —
 /// so without the located-neighbour contest, both would bank the overlap.
 /// `locate_backfill` must refuse it exactly like the live tick does, for
