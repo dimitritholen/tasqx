@@ -22,7 +22,7 @@ EXAMPLES
 
 NOTE  `add` records a self-report at confidence `medium` — what `done`'s token flags record, for a count that arrives later (D167). `--total` is one unsplit number, kept apart from the four buckets and counted in full by a budget; give it alone or give the split flags, never both.
       A bare `tasqx tokens recompute` prints the per-task delta and writes NOTHING; `--apply` is the explicit opt-in for the one verb in the API built to delete measurement rows.
-      The pass runs two phases: rewrite D50-refusal rows (`source=log-parse` only, self-report/OTLP never touched), then locate the transcript of every done Claude Code task with no measured (log-parse or OTLP) row and append a HIGH measurement if found; tasks without a transcript are reported as `skipped`.
+      The pass runs two phases: rewrite D50-refusal rows (`source=log-parse` only, self-report/OTLP never touched), and downgrade confidence to `low` for any task whose transcript is gone; then locate the transcript of every done Claude Code task with no measured (log-parse or OTLP) row and append a HIGH measurement if found. Tasks it cannot measure — no transcript found, or every sample contested — are reported as `skipped`.
       Stop any daemon on the store before `--apply`: the verb parses transcripts and runs in-process only (a daemon refuses it over the socket), and applying beside a live daemon is two writers — convergence on rerun is the safety net, not a license.
 
 See also: report · done · api        Full manual: tasqx manual
