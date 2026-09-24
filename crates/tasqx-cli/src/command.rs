@@ -1594,11 +1594,12 @@ pub(super) enum TokensAction {
         #[arg(long, value_name = "MODEL")]
         model: Option<String>,
     },
-    /// Re-run log-parse attribution over stored history under the D50 refusal
-    /// rule (maps to tokens.recompute): samples claimed by more than one task's
-    /// window drop out, and a task whose transcript is gone keeps its counts
-    /// with confidence downgraded to low. Dry-run by default: prints the
-    /// per-task delta and writes nothing.
+    /// Re-run log-parse attribution over stored history and locate transcripts for done tasks
+    /// (maps to tokens.recompute): samples claimed by more than one task's window drop out,
+    /// a task whose transcript is gone keeps its counts with confidence downgraded to low,
+    /// and a done Claude Code task with no measured (log-parse or OTLP) row gets a HIGH
+    /// measurement if its transcript is found. Dry-run by default: prints the per-task delta
+    /// and writes nothing.
     Recompute {
         /// Actually write the repair. The dry-run default is not a convenience
         /// but the safety: this is the one verb in the API built to delete
