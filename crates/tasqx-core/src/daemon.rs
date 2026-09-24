@@ -1593,7 +1593,7 @@ fn attribution_tick(
     // be large and must never be parsed while holding the engine mutex.
     let pending = {
         let g = lock_recover(&sh.engine);
-        attribution::pending_attributions(&g)?
+        attribution::pending_attributions_located(&g)?
     };
 
     let mut wrote_any = false;
@@ -1611,9 +1611,9 @@ fn attribution_tick(
     // short_id, so a throttle keyed on one global string would see two failing
     // tasks alternate and count every line as a transition.
     errors.begin_tick();
-    for pa in &pending {
+    for (pa, neighbours) in &pending {
         // Heavy transcript parse, OFF the lock.
-        let result = match attribution::compute_attribution(pa, now) {
+        let result = match attribution::compute_attribution_located(pa, neighbours, now) {
             Ok(r) => r,
             Err(e) => {
                 errors.report(
