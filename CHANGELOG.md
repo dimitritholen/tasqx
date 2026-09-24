@@ -6,81 +6,63 @@ where the binaries, checksums and installers are.
 
 ## 0.13.0
 
-This release extends the memory and desktop systems, strengthens the release
-process, and pares down the public API to what is actually used. The desktop
-app gains a searchable Memory Explorer and a knowledge graph view that traverses
-relationships between docs and tasks. The CLI and MCP grow rulings — a separate
-list under a task's memory hits, so a decision is retrievable alongside the
-evidence that supports it. A `behaviours` baseline in CI compares runs across
-terminals and output modes against a pinned snapshot, so subtle output drifts
-raise a check failure. Dependencies are checked for semver violations at release
-time, and the codebase is audited by `cargo machete` to prevent unused
-dependencies from accumulating.
+This release is about moving a store between machines and keeping memory
+honest about what it read. `store.import` can now merge two live stores
+instead of only restoring one, and preview that merge first. An imported doc
+remembers the file it came from, so a search or brief says when that file has
+moved on. The MCP server hands an agent the rulings that apply without an extra
+call, and the desktop preview gains a Memory Explorer and a knowledge graph.
+No existing answer changes, except that four unused public items leave
+`tasqx-core` (see Changed).
 
 ### Added
 
-- **Rulings on tasks via the API and MCP.** `tasqx list`, `task.get`, and
-  `task.brief` now include a `rulings` section — memory documents that the task
-  has cited (cross-references in its annotations). A ruling is not a task's own
-  note; it is a separate document the task says "we decided" or "this rule
-  applies". `tasqx_list_memory`, `tasqx_get_task` and `tasqx_brief_task` carry
-  them over MCP, and the desktop dashboard shows them on the detail screen.
-- **`tasqx_start_timer` over MCP returns the task's memory.** The tool now
-  answers the same memory context a `task.brief` call would, so an agent can
-  search and plan without a separate call.
-- **The desktop Memory Explorer — search, import, edit and navigate the memory
-  graph.** A fullscreen modal lets you search the imported decision log by
-  keyword, click into a document to edit it (with diff protection against
-  stale edits), browse linked tasks and follow cross-references, and use a
-  visual knowledge graph to see relationships at a glance. Import is available
-  from the explorer, and every memory context (search results, document
-  references, linked tasks) shows which project a doc was scoped to.
-- **A knowledge graph view of the memory network.** The desktop app's graph
-  screen renders the memory documents as nodes and draws edges for every task
-  that cites a document, every document that links to another, and rules
-  applied to inferred edges when a single task bridges two docs. Zoom,
-  pan, filter by document type (decision, guide, ADR, memory), and save views
-  as named tabs so you can return to the view that matters to your work.
-- **Output mode baseline testing in the CI gates.** A new behaviour-baseline
-  gate takes a snapshot of what `tasqx` prints for every verb and output mode
-  on the pinned store, and re-runs it on every PR — so changes to rendering,
-  terminology, numbers or white space show up as a diff. See
-  `docs/maintainers/behaviour-baseline.md` for what is captured and how to
-  recapture it after an intentional change.
-- **`cargo machete` checks that every declared dependency is used.** The gate
-  runs during the build and will catch unused imports before they land.
-- **`cargo semver-checks` at release time prevents API breaks.** A check passes
-  only when the version bump (major/minor/patch) matches the visibility of
-  changes to public types and functions, so removing a pub fn on a patch bump
-  is caught before the tag is pushed.
+- **`store.import` merges.** `merge: true` unions a task the store already
+  holds instead of replacing it: notes, checks, tags and edges are combined,
+  and scalar fields take the newer `modified` (D185). `dry_run: true` previews
+  an import without keeping it (D184).
+- **Memory knows where a doc came from.** An imported doc records its origin
+  file. `tasqx memory import --refresh` re-reads every doc whose file changed
+  and reports the ones that vanished, a search or brief hit says `stale` when
+  its file moved on since the import, and MCP `initialize` refreshes imported
+  docs from disk so a session opens on the working tree (D180, D182).
+- **`tasqx_start_timer` answers the task's memory.** Starting a task over MCP
+  returns the memory hits `tasqx_brief_task` would (three by default;
+  `include_memory: false` skips them), and `tasqx_list_tasks` with `@working`
+  and `tasqx_add_task` carry up to three ruling titles for the project (D186).
+- **Links travel in the archive.** `store.export` and `store.import` carry the
+  links table, and an import resolves link ends (D180, D181).
+- **ripwire hint.** `tasqx setup`, MCP `initialize` and both installers say
+  whether ripwire is on PATH and name its repository; tasqx never fetches it
+  (D178).
+- **Desktop preview.** A dashboard, task table and inspector, and projects
+  screen (#691); a Memory Explorer to search, browse, open, add and remove
+  memory docs and task notes (#692); and a knowledge graph of a task and
+  memory neighbourhood with filters, pins, saved views and inferred-edge
+  promotion (#693).
 
 ### Changed
 
-- **The core renderer is shared between CLI and docs.** A new `markdown`
-  submodule in `tasqx-core` holds the width calculation that all rendering
-  leans on, so the docs and the CLI measure exactly the same, and the markup
-  that tasqx generates is reusable across clients.
-- **Agent guidance recommends a task card only when a person is deciding on a
-  task** — one being proposed, or one asked about by name. Starting or
-  completing a task prints one line instead (with status, priority, estimate
-  and check count), built from information the agent already holds.
-- **The public core API is pared to what is actually used.** Removed unused
-  type exports (`types::Project` and `types::Tag`), and private helpers that
-  were only called from their own tests (`attribution::totals_in_window` and
-  `totals_in_window_excluding`). Consumers of tasqx-core should see no change
-  unless you were directly using these four items.
+- **`memory import`'s `source` is relative to the git top level**, so `docs/`,
+  `./docs/` and an absolute path name one doc (D178, D179).
+- **`tasqx-core` public API:** `attribution::totals_in_window`,
+  `attribution::totals_in_window_excluding`, `types::Project` and `types::Tag`
+  are removed; nothing used them. Nothing else in the API changed.
+- **Internal only:** the CLI renderer is split into modules and duplicated core
+  helpers are collapsed, checked against a 122-screen behaviour baseline CI now
+  compares on every PR (D187). CI also fails a PR on an unused dependency or a
+  semver break in `tasqx-core`.
 
 ### Fixed
 
-- **Windows desktop teardown waits for the daemon to exit before cleanup.**
-  The window close handler used to terminate the daemon and immediately delete
-  its database file, a race that could leave the process running. It now waits
-  for the process to exit before removing the store, and cleanup is protected
-  by a `rmSync` call that fails loudly if anything goes wrong.
-- **CI gate output is properly parsed and reported.** The gate runner used to
-  lose the names of failing checks when parsing `cargo` output, reporting only
-  that *a* check failed. Check names and failure reasons are now carried
-  through to the summary, so a PR with a failing build names what broke.
+- **Import:** the duplicate-source scan was quadratic and a dry run minted a
+  different `dropped_id` than the real run (D183); a doc two machines minted was
+  refused as a conflict nobody could resolve (D182); a short_id another task
+  holds, a payload id reaching another row, an unvalidated stamp, an annotation
+  after its tombstone and a self-link all slipped through (D177, D181, D185).
+- **Memory:** a literal backslash and a symlink alias collapsed onto the wrong
+  `source`, a symlink alias refused the whole batch, and a dead superseded scan
+  failed a committed import (D179).
 
 ## 0.12.0
 
