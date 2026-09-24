@@ -4,6 +4,84 @@ What changed in each tasqx release, newest first. Every release also lists its
 commits on the [releases page](https://github.com/dimitritholen/tasqx/releases),
 where the binaries, checksums and installers are.
 
+## 0.13.0
+
+This release extends the memory and desktop systems, strengthens the release
+process, and pares down the public API to what is actually used. The desktop
+app gains a searchable Memory Explorer and a knowledge graph view that traverses
+relationships between docs and tasks. The CLI and MCP grow rulings — a separate
+list under a task's memory hits, so a decision is retrievable alongside the
+evidence that supports it. A `behaviours` baseline in CI compares runs across
+terminals and output modes against a pinned snapshot, so subtle output drifts
+raise a check failure. Dependencies are checked for semver violations at release
+time, and the codebase is audited by `cargo machete` to prevent unused
+dependencies from accumulating.
+
+### Added
+
+- **Rulings on tasks via the API and MCP.** `tasqx list`, `task.get`, and
+  `task.brief` now include a `rulings` section — memory documents that the task
+  has cited (cross-references in its annotations). A ruling is not a task's own
+  note; it is a separate document the task says "we decided" or "this rule
+  applies". `tasqx_list_memory`, `tasqx_get_task` and `tasqx_brief_task` carry
+  them over MCP, and the desktop dashboard shows them on the detail screen.
+- **`tasqx_start_timer` over MCP returns the task's memory.** The tool now
+  answers the same memory context a `task.brief` call would, so an agent can
+  search and plan without a separate call.
+- **The desktop Memory Explorer — search, import, edit and navigate the memory
+  graph.** A fullscreen modal lets you search the imported decision log by
+  keyword, click into a document to edit it (with diff protection against
+  stale edits), browse linked tasks and follow cross-references, and use a
+  visual knowledge graph to see relationships at a glance. Import is available
+  from the explorer, and every memory context (search results, document
+  references, linked tasks) shows which project a doc was scoped to.
+- **A knowledge graph view of the memory network.** The desktop app's graph
+  screen renders the memory documents as nodes and draws edges for every task
+  that cites a document, every document that links to another, and rules
+  applied to inferred edges when a single task bridges two docs. Zoom,
+  pan, filter by document type (decision, guide, ADR, memory), and save views
+  as named tabs so you can return to the view that matters to your work.
+- **Output mode baseline testing in the CI gates.** A new behaviour-baseline
+  gate takes a snapshot of what `tasqx` prints for every verb and output mode
+  on the pinned store, and re-runs it on every PR — so changes to rendering,
+  terminology, numbers or white space show up as a diff. See
+  `docs/maintainers/behaviour-baseline.md` for what is captured and how to
+  recapture it after an intentional change.
+- **`cargo machete` checks that every declared dependency is used.** The gate
+  runs during the build and will catch unused imports before they land.
+- **`cargo semver-checks` at release time prevents API breaks.** A check passes
+  only when the version bump (major/minor/patch) matches the visibility of
+  changes to public types and functions, so removing a pub fn on a patch bump
+  is caught before the tag is pushed.
+
+### Changed
+
+- **The core renderer is shared between CLI and docs.** A new `markdown`
+  submodule in `tasqx-core` holds the width calculation that all rendering
+  leans on, so the docs and the CLI measure exactly the same, and the markup
+  that tasqx generates is reusable across clients.
+- **Agent guidance recommends a task card only when a person is deciding on a
+  task** — one being proposed, or one asked about by name. Starting or
+  completing a task prints one line instead (with status, priority, estimate
+  and check count), built from information the agent already holds.
+- **The public core API is pared to what is actually used.** Removed unused
+  type exports (`types::Project` and `types::Tag`), and private helpers that
+  were only called from their own tests (`attribution::totals_in_window` and
+  `totals_in_window_excluding`). Consumers of tasqx-core should see no change
+  unless you were directly using these four items.
+
+### Fixed
+
+- **Windows desktop teardown waits for the daemon to exit before cleanup.**
+  The window close handler used to terminate the daemon and immediately delete
+  its database file, a race that could leave the process running. It now waits
+  for the process to exit before removing the store, and cleanup is protected
+  by a `rmSync` call that fails loudly if anything goes wrong.
+- **CI gate output is properly parsed and reported.** The gate runner used to
+  lose the names of failing checks when parsing `cargo` output, reporting only
+  that *a* check failed. Check names and failure reasons are now carried
+  through to the summary, so a PR with a failing build names what broke.
+
 ## 0.12.0
 
 This release is mostly about what tasqx reports back, and about being able to
