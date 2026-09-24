@@ -404,6 +404,50 @@ fn an_empty_store_reports_nothing_to_recompute() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// Review finding on #817: the real store's own shape is ZERO log-parse rows
+/// and dozens of self-reports — exactly the case the "No log-parse
+/// measurements to recompute." message above answers for an EMPTY store. That
+/// message is gated on the JSON `tasks` array being empty, not on whether any
+/// log-parse row exists, so a store with no log-parse rows at all but a
+/// self-reported Claude Code completion (a `locate` candidate) must still run
+/// the backfill pass and never print it.
+#[test]
+fn a_store_with_zero_log_parse_rows_still_runs_the_locate_pass() {
+    let dir = scratch("locate-no-log-parse");
+    let sid = seed_locate_candidate(&dir);
+    {
+        let e = Engine::open(dir.join("store.db").to_str().unwrap()).unwrap();
+        assert_eq!(
+            count(
+                &e,
+                "SELECT COUNT(*) FROM token_usage WHERE source = 'log-parse'"
+            ),
+            0,
+            "the seeded store must start with no log-parse rows, the real store's shape"
+        );
+    }
+
+    let text =
+        String::from_utf8_lossy(&run_isolated(&dir, &["tokens", "recompute"]).stdout).into_owned();
+    assert!(
+        !text.to_lowercase().contains("no log-parse measurements"),
+        "a self-reported Claude Code task with a locatable transcript is in \
+         scope even with zero log-parse rows: {text}"
+    );
+    assert!(text.contains("locate"), "{text}");
+
+    let v = stdout_json(&run_isolated(&dir, &["--json", "tokens", "recompute"]));
+    let entry = v["tasks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|t| t["task"] == sid)
+        .unwrap_or_else(|| panic!("task #{sid} in report: {v}"));
+    assert_eq!(entry["action"], "locate", "{v}");
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// The help surfaces must sell the safety contract: the subcommand help names
 /// dry-run as the default and `--apply` as the opt-in.
 #[test]

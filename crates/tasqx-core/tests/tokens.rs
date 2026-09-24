@@ -3578,3 +3578,109 @@ fn locate_via_the_live_attribution_tick_survives_recompute_apply_with_no_self_re
 
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// Review finding on #817 (#816 review, `PendingAttribution::located_neighbours`):
+/// two self-reported tasks located to the SAME session file, with overlapping
+/// windows, share no `transcript_path`/`session_id` in their done payloads —
+/// so without the located-neighbour contest, both would bank the overlap.
+/// `locate_backfill` must refuse it exactly like the live tick does, for
+/// neither task.
+#[test]
+fn locate_backfill_refuses_an_overlap_two_tasks_share_via_one_located_file() {
+    let dir = scratch_dir("locate-overlap");
+    let _guard = LOCATE_ENV.lock().unwrap_or_else(|e| e.into_inner());
+
+    let e = engine();
+
+    // A: window 10:00..10:10.
+    let a = e.task_add(&json!({ "title": "A" })).unwrap()["short_id"]
+        .as_i64()
+        .unwrap();
+    e.task_done(
+        &json!({ "ref": a, "client": "claude-code", "input_tokens": 1, "output_tokens": 1 }),
+    )
+    .unwrap();
+    let a_uuid = task_uuid(&e, &json!(a));
+    pin_created(&e, &a_uuid, "2026-07-24T10:00:00Z");
+    pin_done_client_only(&e, &a_uuid, "2026-07-24T10:10:00Z", "claude-code");
+
+    // B: window 10:05..10:15 — overlaps A's by [10:05, 10:10].
+    let b = e.task_add(&json!({ "title": "B" })).unwrap()["short_id"]
+        .as_i64()
+        .unwrap();
+    e.task_done(
+        &json!({ "ref": b, "client": "claude-code", "input_tokens": 1, "output_tokens": 1 }),
+    )
+    .unwrap();
+    let b_uuid = task_uuid(&e, &json!(b));
+    pin_created(&e, &b_uuid, "2026-07-24T10:05:00Z");
+    pin_done_client_only(&e, &b_uuid, "2026-07-24T10:15:00Z", "claude-code");
+
+    // One session file: A's own call, B's own call, and three usage lines —
+    // one inside A only, one inside the overlap, one inside B only.
+    let proj = dir.join("projects").join("proj");
+    std::fs::create_dir_all(&proj).unwrap();
+    std::fs::write(
+        proj.join("sess-1.jsonl"),
+        format!(
+            "{}\n{}\n{}\n{}\n{}\n",
+            claude_line("2026-07-24T10:02:00Z", "m-line1", 111, 222, 0, 0),
+            claude_line("2026-07-24T10:08:00Z", "m-line2", 333, 444, 0, 0),
+            claude_line("2026-07-24T10:13:00Z", "m-line3", 555, 666, 0, 0),
+            complete_task_call("2026-07-24T10:09:30Z", "m-callA", a),
+            complete_task_call("2026-07-24T10:14:30Z", "m-callB", b),
+        ),
+    )
+    .unwrap();
+
+    let r = with_isolated_home(&dir, || {
+        dispatch(&e, "tokens.recompute", &json!({ "dry_run": false })).unwrap()
+    });
+
+    let tasks = r["tasks"].as_array().unwrap();
+    let entry_a = tasks
+        .iter()
+        .find(|t| t["task"] == a)
+        .unwrap_or_else(|| panic!("task #{a} in report: {r}"));
+    assert_eq!(entry_a["action"], "locate", "{r}");
+    assert_eq!(
+        entry_a["after"],
+        b4c(111, 222, 0, 0),
+        "A keeps only its own non-overlapping sample, not the contested overlap: {r}"
+    );
+
+    let entry_b = tasks
+        .iter()
+        .find(|t| t["task"] == b)
+        .unwrap_or_else(|| panic!("task #{b} in report: {r}"));
+    assert_eq!(entry_b["action"], "locate", "{r}");
+    assert_eq!(
+        entry_b["after"],
+        b4c(555, 666, 0, 0),
+        "B keeps only its own non-overlapping sample, not the contested overlap: {r}"
+    );
+
+    // The overlap line ("m-line2", 333/444) is banked for NEITHER task.
+    let (a_input, a_output): (i64, i64) = e
+        .conn()
+        .query_row(
+            "SELECT input_tokens, output_tokens FROM token_usage \
+             WHERE task_id = ?1 AND source = 'log-parse'",
+            [&a_uuid],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!((a_input, a_output), (111, 222));
+    let (b_input, b_output): (i64, i64) = e
+        .conn()
+        .query_row(
+            "SELECT input_tokens, output_tokens FROM token_usage \
+             WHERE task_id = ?1 AND source = 'log-parse'",
+            [&b_uuid],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!((b_input, b_output), (555, 666));
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
