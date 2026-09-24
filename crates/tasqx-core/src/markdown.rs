@@ -736,6 +736,32 @@ fn humanize_ago(then: Timestamp, now: Timestamp) -> String {
     }
 }
 
+/// The four buckets `humanize_secs` and `humanize_span` both walked as their
+/// own four-arm `match`: `(threshold, compact unit, prose word, divisor)`,
+/// ascending. The first row whose threshold `secs` is strictly under decides
+/// the bucket; the last row is the catch-all (its threshold is `i64::MAX`, so
+/// a `secs` of exactly `i64::MAX` falls through to [`time_bucket`]'s fallback
+/// rather than being compared against it — see there).
+const TIME_UNITS: [(i64, &str, &str, i64); 4] = [
+    (60, "s", "second", 1),
+    (3_600, "m", "minute", 60),
+    (86_400, "h", "hour", 3_600),
+    (i64::MAX, "d", "day", 86_400),
+];
+
+/// The bucket `secs` falls into: `(compact unit, prose word, divisor)`. Falls
+/// back to the last row rather than comparing `secs < i64::MAX` (which is
+/// false for `secs == i64::MAX` itself) — the fallback IS the last row's own
+/// payload, so every input still lands in the days bucket the original
+/// catch-all arm covered.
+fn time_bucket(secs: i64) -> (&'static str, &'static str, i64) {
+    let &(_, unit, word, divisor) = TIME_UNITS
+        .iter()
+        .find(|(threshold, ..)| secs < *threshold)
+        .unwrap_or_else(|| TIME_UNITS.last().expect("TIME_UNITS is non-empty"));
+    (unit, word, divisor)
+}
+
 /// A duration as one compact unit: `45s`, `12m`, `2h`, `3d`.
 ///
 /// Compact because durations are what a reader compares at a glance — an
@@ -748,23 +774,15 @@ fn humanize_ago(then: Timestamp, now: Timestamp) -> String {
 /// glancing at it, and calling it "1 hour" makes the view look stale rather
 /// than coarse.
 fn humanize_secs(secs: i64) -> String {
-    match secs {
-        s if s < 60 => format!("{s}s"),
-        s if s < 3600 => format!("{}m", round_div(s, 60)),
-        s if s < 86_400 => format!("{}h", round_div(s, 3600)),
-        s => format!("{}d", round_div(s, 86_400)),
-    }
+    let (unit, _, divisor) = time_bucket(secs);
+    format!("{}{unit}", round_div(secs, divisor))
 }
 
 /// The same span written as prose: `45 seconds`, `1 hour`, `3 days`. Feeds the
 /// `… ago` / `in …` sentence, where `3d ago` would read as a typo.
 fn humanize_span(secs: i64) -> String {
-    match secs {
-        s if s < 60 => plural(s, "second"),
-        s if s < 3600 => plural(round_div(s, 60), "minute"),
-        s if s < 86_400 => plural(round_div(s, 3600), "hour"),
-        s => plural(round_div(s, 86_400), "day"),
-    }
+    let (_, word, divisor) = time_bucket(secs);
+    plural(round_div(secs, divisor), word)
 }
 
 /// `1 hour` / `2 hours`. English only, and only for the four units above.
@@ -1738,4 +1756,60 @@ fn array_of<'a>(v: &'a Value, key: &str) -> &'a [Value] {
 /// The integer ids in an array field, ignoring anything that is not one.
 fn short_ids(v: &Value, key: &str) -> Vec<i64> {
     array_of(v, key).iter().filter_map(Value::as_i64).collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Every bucket boundary and rounding half-point `humanize_secs` (compact)
+    /// and `humanize_span` (prose) walk, watched to pass against the original
+    /// four-arm `match` in each before they collapsed onto one `(threshold,
+    /// unit, word, divisor)` table (#736 part B) — proof the table reproduces
+    /// the same output byte for byte, not just the same shape. `90`/`3599`/
+    /// `86399`/`129600` are the rounding-half and independent-bucket-overflow
+    /// cases (`3599s` rounds to `60m`, never crossing into the hour bucket).
+    #[test]
+    fn humanize_secs_and_span_agree_at_every_bucket_boundary_and_rounding_half_point() {
+        const CASES: &[(i64, &str, &str)] = &[
+            (0, "0s", "0 seconds"),
+            (1, "1s", "1 second"),
+            (59, "59s", "59 seconds"),
+            (60, "1m", "1 minute"),
+            (89, "1m", "1 minute"),
+            (90, "2m", "2 minutes"),
+            (3599, "60m", "60 minutes"),
+            (3600, "1h", "1 hour"),
+            (86399, "24h", "24 hours"),
+            (86400, "1d", "1 day"),
+            (129600, "2d", "2 days"),
+            (i64::MAX, "106751991167301d", "106751991167301 days"),
+        ];
+        for &(secs, compact, prose) in CASES {
+            assert_eq!(humanize_secs(secs), compact, "humanize_secs({secs})");
+            assert_eq!(humanize_span(secs), prose, "humanize_span({secs})");
+        }
+    }
+
+    /// `humanize_ago`'s own boundary: under a minute either way is "just now"
+    /// regardless of sign; at exactly a minute the real span takes over, and
+    /// the sign alone decides "ago" vs "in".
+    #[test]
+    fn humanize_ago_switches_from_just_now_at_the_minute_boundary() {
+        let base = Timestamp::from_second(2_000_000_000).unwrap();
+        let at = |delta: i64| Timestamp::from_second(2_000_000_000 + delta).unwrap();
+
+        // then == now
+        assert_eq!(humanize_ago(base, base), "just now");
+        // 59s in the past / future: still "just now"
+        assert_eq!(humanize_ago(at(-59), base), "just now");
+        assert_eq!(humanize_ago(at(59), base), "just now");
+        // exactly 60s: the span takes over, signed by direction. `then` in the
+        // PAST (before `base`) reads "ago"; `then` in the FUTURE reads "in".
+        assert_eq!(humanize_ago(at(-60), base), "1 minute ago");
+        assert_eq!(humanize_ago(at(60), base), "in 1 minute");
+        // a larger span, prose plural
+        assert_eq!(humanize_ago(at(-7200), base), "2 hours ago");
+        assert_eq!(humanize_ago(at(7200), base), "in 2 hours");
+    }
 }
