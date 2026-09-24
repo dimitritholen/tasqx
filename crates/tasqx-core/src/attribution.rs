@@ -479,7 +479,13 @@ pub fn compute_attribution(
             .then(|| pa.client.as_deref().and_then(parser_for))
             .flatten()
             .map(|parser| {
-                locate_transcripts_by_task_call(parser, &pa.short_id.to_string(), &pa.task_id)
+                locate_transcripts_by_task_call(
+                    parser,
+                    &pa.short_id.to_string(),
+                    &pa.task_id,
+                    &pa.window_start,
+                    &pa.window_end,
+                )
             })
             .unwrap_or_default()
     };
@@ -800,24 +806,41 @@ fn discover_samples(parser: Parser, pa: &PendingAttribution) -> Vec<UsageSample>
 /// started or completed this task, rather than guessing from time-window
 /// overlap. Only Claude Code carries the evidence this needs today
 /// (`tokens::claude_code::contains_task_call`); every other parser answers
-/// empty and the caller falls back to [`discover_samples`]. Bounded by the
-/// same walk [`discover_candidates`] already uses.
+/// empty and the caller falls back to [`discover_samples`].
+///
+/// Candidates come from [`locate_candidates`], NOT [`discover_candidates`]'s
+/// newest-256 cap: the #817 backfill re-attributes tasks completed days or
+/// weeks ago, and a recency cap sorted on today's mtimes would push last
+/// week's session out before `contains_task_call` ever got to read it. The
+/// bound here is `mtime >= window_start` instead — a file that recorded the
+/// call could not have been written before the task's own window began — and
+/// [`tokens::claude_code::contains_task_call`]'s own timestamp-vs-window slack
+/// check is what actually decides the match, not how new the file is.
 ///
 /// A session's samples are its main file plus every `subagents/*.jsonl`
 /// beside it ([`tokens::claude_code::session_files`]) — each counted once: a
-/// subagent file is skipped as its own top-level candidate here so the walk
-/// cannot also surface it independently, and is only ever read as part of the
-/// main file it belongs to. If the task's start and done calls landed in
-/// different session files (a `/clear` between them), both files' samples are
-/// used.
-fn locate_transcripts_by_task_call(parser: Parser, short_id: &str, uuid: &str) -> Vec<PathBuf> {
+/// subagent file is excluded from the candidate list itself (never treated as
+/// a session of its own), and is only ever read as part of the main file it
+/// belongs to. If the task's start and done calls landed in different session
+/// files (a `/clear` between them), both files' samples are used.
+fn locate_transcripts_by_task_call(
+    parser: Parser,
+    short_id: &str,
+    uuid: &str,
+    window_start: &str,
+    window_end: &str,
+) -> Vec<PathBuf> {
     if parser != Parser::ClaudeCode {
         return Vec::new();
     }
-    let mains: Vec<PathBuf> = discover_candidates(&parser.default_roots(), MAX_DISCOVERY_FILES)
+    let Ok(since) = window_start.parse::<Timestamp>() else {
+        return Vec::new();
+    };
+    let mains: Vec<PathBuf> = locate_candidates(&parser.default_roots(), since)
         .into_iter()
-        .filter(|p| !is_subagent_file(p))
-        .filter(|p| tokens::claude_code::contains_task_call(p, short_id, uuid))
+        .filter(|p| {
+            tokens::claude_code::contains_task_call(p, short_id, uuid, window_start, window_end)
+        })
         .collect();
 
     let mut files = Vec::new();
@@ -853,6 +876,25 @@ fn discover_candidates(roots: &[PathBuf], max: usize) -> Vec<PathBuf> {
     found.sort_by_key(|(mtime, _)| std::cmp::Reverse(*mtime));
     found.truncate(max);
     found.into_iter().map(|(_, p)| p).collect()
+}
+
+/// Every main `*.jsonl` under `roots` whose mtime is at or after `since` —
+/// [`locate_transcripts_by_task_call`]'s candidate set, deliberately NOT
+/// capped by recency the way [`discover_candidates`] is (see that function's
+/// doc). A subagent file is excluded here, at candidate-selection time,
+/// rather than filtered out after a recency cut that no longer applies —
+/// bounded only by [`walk`]'s own pathological-tree guard.
+fn locate_candidates(roots: &[PathBuf], since: Timestamp) -> Vec<PathBuf> {
+    let mut found: Vec<(std::time::SystemTime, PathBuf)> = Vec::new();
+    for root in roots {
+        walk(root, 0, &mut found);
+    }
+    found
+        .into_iter()
+        .filter(|(_, p)| !is_subagent_file(p))
+        .filter(|(mtime, _)| Timestamp::try_from(*mtime).is_ok_and(|t| t >= since))
+        .map(|(_, p)| p)
+        .collect()
 }
 
 /// Recursive directory walk collecting `*.jsonl` files with their mtime. Bounded
@@ -2293,18 +2335,12 @@ mod tests {
     /// [`DISCOVERY_ENV`], not avoided.
     #[test]
     fn discovery_finding_nothing_stays_terminal_rather_than_retrying() {
-        let dir = std::env::temp_dir().join(format!(
-            "tasqx-attr-empty-roots-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
         // Keeps the sibling's `$CLAUDE_CONFIG_DIR` override — whose planted
-        // transcript sits in this very window — out of this scan, and see
-        // [`with_isolated_roots`] for why `$HOME` must move too. See
-        // [`DISCOVERY_ENV`].
+        // transcript sits in this very window — out of this scan. See
+        // [`DISCOVERY_ENV`]. `with_isolated_roots` is not needed here: the
+        // 2020 window protects location too, since `contains_task_call` now
+        // requires the call's own line timestamp within `LOCATE_SLACK_SECS`
+        // of the window it names, and no real transcript carries one there.
         let _guard = DISCOVERY_ENV.lock().unwrap_or_else(|e| e.into_inner());
         let pa = PendingAttribution {
             task_id: "t".into(),
@@ -2321,10 +2357,8 @@ mod tests {
             foreign_windows: vec![],
             consumed_sample_ids: HashSet::new(),
         };
-        let r = with_isolated_roots(&dir, || {
-            compute_attribution(&pa, ts("2020-01-01T11:05:00Z"))
-        })
-        .expect("discovery must terminate, not retry");
+        let r = compute_attribution(&pa, ts("2020-01-01T11:05:00Z"))
+            .expect("discovery must terminate, not retry");
         assert!(!r.found);
         assert_eq!(r.samples, 0);
     }
@@ -2377,14 +2411,22 @@ mod tests {
         };
 
         // Held across the whole override, so no other discovery scan in this
-        // binary can see the planted root. See [`DISCOVERY_ENV`] and
-        // [`with_isolated_roots`] for why `$HOME` must move too, not only
-        // `$CLAUDE_CONFIG_DIR`.
+        // binary can see the planted root. See [`DISCOVERY_ENV`].
+        // `with_isolated_roots` (moving `$HOME` too) is not needed here: the
+        // 2020 window protects location the same way it protects blind
+        // discovery, since `contains_task_call` requires the call's own line
+        // timestamp within `LOCATE_SLACK_SECS` of the window it names.
         let _guard = DISCOVERY_ENV.lock().unwrap_or_else(|e| e.into_inner());
+        // SAFETY: restored below, and `DISCOVERY_ENV` keeps the only other
+        // discovery test out for the duration.
+        let prev = std::env::var_os("CLAUDE_CONFIG_DIR");
+        unsafe { std::env::set_var("CLAUDE_CONFIG_DIR", &dir) };
         // Minutes after completion — where the explicit path would retry.
-        let r = with_isolated_roots(&dir, || {
-            compute_attribution(&pa, ts("2020-01-01T11:05:00Z"))
-        });
+        let r = compute_attribution(&pa, ts("2020-01-01T11:05:00Z"));
+        match prev {
+            Some(v) => unsafe { std::env::set_var("CLAUDE_CONFIG_DIR", v) },
+            None => unsafe { std::env::remove_var("CLAUDE_CONFIG_DIR") },
+        }
         let _ = std::fs::remove_dir_all(&dir);
 
         let r = r.expect("contested discovery must terminate, not retry");
@@ -2422,7 +2464,7 @@ mod tests {
             task_id: "uuid-42".into(),
             short_id: 42,
             window_start: "2026-07-24T10:00:00Z".into(),
-            window_end: "2026-07-24T11:00:00Z".into(),
+            window_end: "2026-07-24T10:10:00Z".into(),
             client: Some("claude-code".into()),
             transcript_path: None,
             session_id: None,
@@ -2483,7 +2525,7 @@ mod tests {
             task_id: "uuid-42".into(),
             short_id: 42,
             window_start: "2026-07-24T10:00:00Z".into(),
-            window_end: "2026-07-24T11:00:00Z".into(),
+            window_end: "2026-07-24T10:10:00Z".into(),
             client: Some("claude-code".into()),
             transcript_path: None,
             session_id: None,
@@ -2541,7 +2583,7 @@ mod tests {
             task_id: "uuid-42".into(),
             short_id: 42,
             window_start: "2026-07-24T10:00:00Z".into(),
-            window_end: "2026-07-24T11:00:00Z".into(),
+            window_end: "2026-07-24T10:10:00Z".into(),
             client: Some("claude-code".into()),
             transcript_path: None,
             session_id: None,
@@ -2562,6 +2604,168 @@ mod tests {
         assert_eq!(r.confidence, CONFIDENCE_HIGH);
         assert_eq!(r.totals.input, 7);
         assert_eq!(r.totals.output, 9);
+    }
+
+    /// Review finding on task #816: a false match was reachable through
+    /// `locate_transcripts_by_task_call` itself, not only through
+    /// `contains_task_call`'s own unit tests — a real `tasqx_complete_task`
+    /// call for this ref, hours outside the task's actual window, must not
+    /// locate this file.
+    #[test]
+    fn locate_by_call_ignores_a_ref_match_outside_the_window() {
+        let dir = std::env::temp_dir().join(format!(
+            "tasqx-attr-locate-far-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let proj = dir.join("projects").join("proj");
+        std::fs::create_dir_all(&proj).unwrap();
+        std::fs::write(
+            proj.join("sess-1.jsonl"),
+            r#"{"type":"assistant","timestamp":"2026-07-24T10:00:00Z","message":{"id":"m","content":[{"type":"tool_use","name":"mcp__tasqx__tasqx_complete_task","input":{"ref":42}}]}}"#,
+        )
+        .unwrap();
+
+        let _guard = DISCOVERY_ENV.lock().unwrap_or_else(|e| e.into_inner());
+        let files = with_isolated_roots(&dir, || {
+            locate_transcripts_by_task_call(
+                Parser::ClaudeCode,
+                "42",
+                "uuid-x",
+                "2026-07-24T06:00:00Z",
+                "2026-07-24T06:05:00Z",
+            )
+        });
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(
+            files.is_empty(),
+            "a call hours outside the window must not locate: {files:?}"
+        );
+    }
+
+    /// Review finding on task #816: a Bash run against a scratch `TASQX_DB`
+    /// (the dev-build shape `CONTRIBUTING.md` requires) must not locate a
+    /// file as though it were the real daemon completing this task.
+    #[test]
+    fn locate_by_call_ignores_a_bash_run_against_a_scratch_db() {
+        let dir = std::env::temp_dir().join(format!(
+            "tasqx-attr-locate-scratch-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let proj = dir.join("projects").join("proj");
+        std::fs::create_dir_all(&proj).unwrap();
+        std::fs::write(
+            proj.join("sess-1.jsonl"),
+            r#"{"type":"assistant","timestamp":"2026-07-24T10:06:00Z","message":{"id":"m","content":[{"type":"tool_use","name":"Bash","input":{"command":"TASQX_DB=/tmp/x tasqx --no-daemon done 42"}}]}}"#,
+        )
+        .unwrap();
+
+        let _guard = DISCOVERY_ENV.lock().unwrap_or_else(|e| e.into_inner());
+        let files = with_isolated_roots(&dir, || {
+            locate_transcripts_by_task_call(
+                Parser::ClaudeCode,
+                "42",
+                "uuid-x",
+                "2026-07-24T10:00:00Z",
+                "2026-07-24T10:10:00Z",
+            )
+        });
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(
+            files.is_empty(),
+            "a scratch-store run must not locate: {files:?}"
+        );
+    }
+
+    /// Review finding on task #816: the old `discover_candidates`-based
+    /// selection kept only the newest [`MAX_DISCOVERY_FILES`] files by mtime
+    /// — and a subagent file counted against that cap before being filtered
+    /// out, so a few busy days of subagent files could push any older task's
+    /// session out before it was ever read. Location must reach an older
+    /// session regardless of how much newer noise (subagent files included)
+    /// exists, bounded by `mtime >= window_start` instead of by recency rank.
+    #[test]
+    fn an_older_session_survives_more_than_max_discovery_files_of_newer_subagent_noise() {
+        let dir = std::env::temp_dir().join(format!(
+            "tasqx-attr-locate-old-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let proj = dir.join("projects").join("proj");
+        std::fs::create_dir_all(&proj).unwrap();
+
+        // An older session, well before "now" — the task it completed is a
+        // backlog task the #817 backfill reaches long after the fact.
+        let now = crate::clock::now();
+        let old_start = now - jiff::SignedDuration::from_secs(7200); // 2h ago
+        let old_end = now - jiff::SignedDuration::from_secs(6900); // 1h55m ago
+        let old_call_ts = now - jiff::SignedDuration::from_secs(6960); // within slack of old_end
+        let old_usage_ts = now - jiff::SignedDuration::from_secs(7080); // inside [old_start, old_end]
+        let old_path = proj.join("old-sess.jsonl");
+        std::fs::write(
+            &old_path,
+            [
+                format!(
+                    r#"{{"type":"assistant","timestamp":"{old_usage_ts}","message":{{"id":"m1","usage":{{"input_tokens":55,"output_tokens":66,"cache_read_input_tokens":0,"cache_creation_input_tokens":0}}}}}}"#
+                ),
+                format!(
+                    r#"{{"type":"assistant","timestamp":"{old_call_ts}","message":{{"id":"m2","content":[{{"type":"tool_use","name":"mcp__tasqx__tasqx_complete_task","input":{{"ref":42}}}}]}}}}"#
+                ),
+            ]
+            .join("\n"),
+        )
+        .unwrap();
+        // Explicitly backdate the file's own mtime to match its content: the
+        // walk sees mtime, not the timestamps inside the file.
+        let old_mtime = std::time::SystemTime::now() - std::time::Duration::from_secs(6960);
+        std::fs::File::open(&old_path)
+            .unwrap()
+            .set_modified(old_mtime)
+            .unwrap();
+
+        // Over MAX_DISCOVERY_FILES freshly-written subagent files: noise that
+        // ranked ahead of the old session under the removed newest-N cap, and
+        // must not even be a candidate now (excluded at selection).
+        let subagents = proj.join("noise-sess").join("subagents");
+        std::fs::create_dir_all(&subagents).unwrap();
+        for i in 0..(MAX_DISCOVERY_FILES + 50) {
+            std::fs::write(subagents.join(format!("agent-{i}.jsonl")), "").unwrap();
+        }
+
+        let pa = PendingAttribution {
+            task_id: "uuid-42".into(),
+            short_id: 42,
+            window_start: old_start.to_string(),
+            window_end: old_end.to_string(),
+            client: Some("claude-code".into()),
+            transcript_path: None,
+            session_id: None,
+            otel_samples: Vec::new(),
+            otel_tool: None,
+            self_reported: false,
+            foreign_windows: vec![],
+            consumed_sample_ids: HashSet::new(),
+        };
+
+        let _guard = DISCOVERY_ENV.lock().unwrap_or_else(|e| e.into_inner());
+        let r = with_isolated_roots(&dir, || compute_attribution(&pa, crate::clock::now()));
+        let _ = std::fs::remove_dir_all(&dir);
+
+        let r = r.expect("the older session must still be located and banked");
+        assert_eq!(r.confidence, CONFIDENCE_HIGH);
+        assert!(r.found, "the old session's usage must be banked");
+        assert_eq!(r.totals.input, 55);
+        assert_eq!(r.totals.output, 66);
     }
 
     #[test]
@@ -2884,10 +3088,18 @@ mod tests {
             "the pending-set build flags the self-reported completion"
         );
 
-        // Isolated from the real `~/.claude` (see `with_isolated_roots`): with
-        // no explicit path, D188 tries to LOCATE a transcript by this task's
-        // own call before falling back to the self-report, and the
-        // developer's own history is not this fixture's business.
+        // Isolated from the real `~/.claude` (see `with_isolated_roots`).
+        // Unlike the two discovery tests above, a stale window cannot protect
+        // this one: `pa.window_start`/`window_end` come from THIS task's real
+        // wall-clock `created`/completion instants, i.e. "now" — so a call
+        // this very session made moments ago against the REAL store (this
+        // Claude Code conversation, running real `tasqx_start_timer`/
+        // `tasqx_complete_task` calls for its own ref, is exactly such
+        // activity) would sit well inside `LOCATE_SLACK_SECS` of it. The
+        // timestamp bound in `contains_task_call` cannot tell that call apart
+        // from a real one for THIS in-memory test task, so the real `~/.claude`
+        // has to stay out of reach entirely rather than merely unlikely to
+        // match.
         let dir = std::env::temp_dir().join(format!(
             "tasqx-attr-selfreport-no-roots-{}-{}",
             std::process::id(),
@@ -2964,11 +3176,10 @@ mod tests {
             "a stored self-report row excludes log-parse like a done-time one"
         );
         // And compute honours the flag: marker only, no second measurement.
-        // Isolated from the real `~/.claude` (see `with_isolated_roots`): a
-        // self-reported task with no explicit path still tries to LOCATE a
-        // transcript by its own call (D188) before falling back to the
-        // self-report, and the developer's own history is not this fixture's
-        // business.
+        // Isolated from the real `~/.claude` (see `with_isolated_roots` and
+        // the sibling test above): this task's window is also real
+        // wall-clock "now", which a stale-date fixture cannot protect
+        // against the way the two discovery tests above do.
         let dir = std::env::temp_dir().join(format!(
             "tasqx-attr-selfreport-no-roots-{}-{}",
             std::process::id(),
