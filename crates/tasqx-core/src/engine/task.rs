@@ -2595,12 +2595,12 @@ impl Engine {
     /// a sum over arbitrarily many rows is not, and a clamped total is
     /// wrong-but-visible where a wrapped one is negative nonsense.
     ///
-    /// D188: reads through `tokens::best_confidence_measurements` rather than
+    /// D188: reads through `tokens::rollup_measurements` rather than
     /// a raw SQL `SUM`, so a task carrying both a self-report and the
     /// transcript that superseded it is not measured twice.
     fn fresh_tokens(&self, task_id: &str) -> Result<i64, ApiError> {
         let measurements = self.tokens_of(task_id)?;
-        let sum = tokens::best_confidence_measurements(&measurements)
+        let sum = tokens::rollup_measurements(&measurements)
             .into_iter()
             .fold(0i64, |sum, m| {
                 let bucket = |name: &str| m.get(name).and_then(Value::as_i64).unwrap_or(0);
