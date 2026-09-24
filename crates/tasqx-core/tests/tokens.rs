@@ -1953,8 +1953,9 @@ fn recompute_removes_the_double_counted_subset_window() {
     // fixture's transcript carries no `tasqx_complete_task` call for Y, so it
     // is `skipped`, not `locate`, and nothing is written or added to the
     // totals.
-    let after =
-        with_isolated_home(&dir, || dispatch(&e, "tokens.recompute", &json!({})).unwrap());
+    let after = with_isolated_home(&dir, || {
+        dispatch(&e, "tokens.recompute", &json!({})).unwrap()
+    });
     let tasks = after["tasks"].as_array().unwrap();
     assert_eq!(tasks.len(), 2, "{after}");
     let x_entry = tasks
