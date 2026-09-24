@@ -227,9 +227,6 @@ fn block_targets_task(
             .and_then(|i| i.get("command"))
             .and_then(|c| c.as_str())
             .unwrap_or("");
-        if bash_command_targets_a_scratch_store(command) {
-            return false;
-        }
         if bash_command_names("start", command, short_id)
             || bash_command_names("start", command, uuid)
         {
@@ -252,35 +249,45 @@ fn near(ts: Timestamp, anchor: Timestamp) -> bool {
     ts.duration_since(anchor).as_secs().abs() <= LOCATE_SLACK_SECS
 }
 
-/// Whether `command` runs `tasqx <verb> <task_ref>` as whole words — a
-/// substring match alone would let ref `4` match a command naming task `42`.
+/// Whether `command` runs `tasqx <verb> <task_ref>` as whole words, against
+/// the real store — a substring match alone would let ref `4` match a
+/// command naming task `42`. The command is split into simple commands on
+/// `&&`, `||`, `;`, `|`, `&` and newlines; in each, the program word is
+/// exactly `tasqx` or ends in `/tasqx` and carries no `=` (so
+/// `TASQX_DB=/tmp/tasqx` is an env assignment, not the program), and the
+/// scratch check reads only that same simple command's words before it.
+/// Best-effort: quoting is not parsed, so a separator inside a quoted
+/// argument splits it too.
 fn bash_command_names(verb: &str, command: &str, task_ref: &str) -> bool {
     if task_ref.is_empty() {
         return false;
     }
-    let words: Vec<&str> = command.split_whitespace().collect();
-    words.windows(3).any(|w| {
-        w[0].ends_with("tasqx")
-            && w[1] == verb
-            && w[2].trim_matches(|c: char| !c.is_alphanumeric() && c != '-') == task_ref
-    })
+    command
+        .split(|c| matches!(c, ';' | '|' | '&' | '\n'))
+        .any(|simple| {
+            let words: Vec<&str> = simple.split_whitespace().collect();
+            let Some(prog) = words
+                .iter()
+                .position(|w| !w.contains('=') && (*w == "tasqx" || w.ends_with("/tasqx")))
+            else {
+                return false;
+            };
+            !bash_command_targets_a_scratch_store(&words[..prog])
+                && words.get(prog + 1) == Some(&verb)
+                && words.get(prog + 2).is_some_and(|w| {
+                    w.trim_matches(|c: char| !c.is_alphanumeric() && c != '-') == task_ref
+                })
+        })
 }
 
-/// Whether `command` sets `TASQX_DB=` as a word anywhere before the `tasqx`
-/// word it invokes — the dev-build shape `CONTRIBUTING.md` requires
+/// Whether the words before a simple command's `tasqx` program word set
+/// `TASQX_DB=` — the dev-build shape `CONTRIBUTING.md` requires
 /// (`TASQX_DB=<scratch>/tasks.db tasqx --no-daemon done 42`). Such a run
 /// targets a scratch store, never the real one this task's own history
 /// lives in, so it must never be read as evidence of this task's real
-/// completion. No `tasqx` word at all answers `false`; the caller has
-/// already established the command names one before checking this.
-fn bash_command_targets_a_scratch_store(command: &str) -> bool {
-    let words: Vec<&str> = command.split_whitespace().collect();
-    let Some(tasqx_idx) = words.iter().position(|w| w.ends_with("tasqx")) else {
-        return false;
-    };
-    words[..tasqx_idx]
-        .iter()
-        .any(|w| w.starts_with("TASQX_DB="))
+/// completion.
+fn bash_command_targets_a_scratch_store(env_words: &[&str]) -> bool {
+    env_words.iter().any(|w| w.starts_with("TASQX_DB="))
 }
 
 /// A transcript line. Unknown fields are ignored on purpose (version
@@ -672,6 +679,44 @@ mod tests {
         )
         .unwrap();
 
+        let (start, end) = ("2026-07-24T09:00:00Z", "2026-07-24T10:00:05Z");
+        assert!(!contains_task_call(&path, "42", "uuid-x", start, end));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// One Bash `tool_use` line running `command`, stamped at 10:00:00 — the
+    /// shape the scratch-store tests below feed [`contains_task_call`].
+    fn bash_call_file(tag: &str, command: &str) -> (PathBuf, PathBuf) {
+        let dir = std::env::temp_dir().join(format!("tasqx-cc-{tag}-{}", crate::clock::uuid_v7()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("sess.jsonl");
+        let line = serde_json::json!({
+            "type": "assistant",
+            "timestamp": "2026-07-24T10:00:00Z",
+            "message": {"id": "m", "content": [
+                {"type": "tool_use", "name": "Bash", "input": {"command": command}}
+            ]},
+        });
+        std::fs::write(&path, line.to_string()).unwrap();
+        (dir, path)
+    }
+
+    #[test]
+    fn a_scratch_run_chained_after_a_real_one_does_not_count_as_real() {
+        // The scratch check belongs to each simple command: the real
+        // `tasqx done 41` still counts, the scratch `done 42` after `&&` does not.
+        let (dir, path) = bash_call_file("chain", "tasqx done 41 && TASQX_DB=/tmp/x tasqx done 42");
+        let (start, end) = ("2026-07-24T09:00:00Z", "2026-07-24T10:00:05Z");
+        assert!(contains_task_call(&path, "41", "uuid-x", start, end));
+        assert!(!contains_task_call(&path, "42", "uuid-x", start, end));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_scratch_path_ending_in_tasqx_is_not_the_program_word() {
+        // `TASQX_DB=/tmp/tasqx` ends in `tasqx` but is an env assignment, not
+        // the program — the run is still a scratch one.
+        let (dir, path) = bash_call_file("envword", "TASQX_DB=/tmp/tasqx tasqx done 42");
         let (start, end) = ("2026-07-24T09:00:00Z", "2026-07-24T10:00:05Z");
         assert!(!contains_task_call(&path, "42", "uuid-x", start, end));
         let _ = std::fs::remove_dir_all(&dir);
