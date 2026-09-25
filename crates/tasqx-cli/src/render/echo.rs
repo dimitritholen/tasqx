@@ -1798,6 +1798,50 @@ pub fn imported(ctx: &Ctx, result: &Value) -> String {
             ),
         ));
     }
+    // D191: one line per recurrence occurrence folded into an older copy of
+    // itself. The dropped number is gone afterwards, so it is named here, and
+    // so are the two things the fold decided that no count shows: a copy the
+    // other store had already moved on, and an edge dropped to avoid a cycle.
+    for fold in result
+        .get("deduplicated")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+    {
+        let num = |key: &str| fold.get(key).and_then(Value::as_i64).unwrap_or(0);
+        let (dropped, kept) = (num("dropped"), num("kept"));
+        let from = match fold.get("spawned_from").and_then(Value::as_i64) {
+            Some(n) => format!("#{n}"),
+            None => "the same task".to_string(),
+        };
+        let mut text = format!(
+            "occurrence #{dropped} duplicated #{kept} (both spawned from {from}); kept #{kept}"
+        );
+        let was = s(fold, "dropped_status");
+        if matches!(was.as_str(), "active" | "done" | "cancelled") {
+            text.push_str(&format!(
+                "; #{dropped} was {was}, #{kept} is now {}",
+                s(fold, "status")
+            ));
+        }
+        let edges: Vec<String> = fold
+            .get("dropped_dependencies")
+            .and_then(Value::as_array)
+            .map(|a| {
+                a.iter()
+                    .filter_map(Value::as_i64)
+                    .map(|n| format!("#{n}"))
+                    .collect()
+            })
+            .unwrap_or_default();
+        if !edges.is_empty() {
+            text.push_str(&format!(
+                "; dropped its dependency on {} (it would close a cycle)",
+                edges.join(", ")
+            ));
+        }
+        out.push_str(&note_line(ctx, &text));
+    }
     let minted: Vec<String> = result
         .get("projects_created")
         .and_then(Value::as_array)

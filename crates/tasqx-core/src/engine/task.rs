@@ -1132,6 +1132,19 @@ impl Engine {
         if new_due.is_none() && new_scheduled.is_none() {
             new_due = Some(next.to_string());
         }
+        // D191: `(spawned_from, due, scheduled)` is what one occurrence IS.
+        // A completion after a reopen lands on the slot the first completion
+        // already filled, and a second row there would be a duplicate the
+        // next import folds away; so the slot spawns once.
+        let slot_taken: bool = tx.query_row(
+            "SELECT EXISTS (SELECT 1 FROM tasks WHERE spawned_from = ?1 \
+             AND due IS ?2 AND scheduled IS ?3)",
+            params![template.id, new_due, new_scheduled],
+            |r| r.get(0),
+        )?;
+        if slot_taken {
+            return Ok(None);
+        }
 
         // Same rule as `task_add`, on the shifted timestamps, against this
         // completion's instant rather than a second reading of the clock.

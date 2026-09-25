@@ -1399,6 +1399,11 @@ const R_STORE_IMPORT: Shape = &[&[
     // `modified` stamp, so there is no later-wins call to make. Always
     // present, empty when nothing was dropped.
     req("project_description_conflicts", Ty::Array),
+    // D191: `{kept, dropped, spawned_from, kept_id, dropped_id, dropped_status,
+    // status, dropped_dependencies}`
+    // per recurrence occurrence folded into an older copy of itself. Always
+    // present, empty when nothing was folded — `renumbered`'s rule.
+    req("deduplicated", Ty::Array),
 ]];
 
 const R_EVENT_LIST: Shape = &[&[

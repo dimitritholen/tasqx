@@ -129,6 +129,21 @@ Either way, a note or a check id the document hands to one task while a
 *different* task here already holds it refuses the whole import, naming both
 tasks: one note, and one criterion, belongs to exactly one task.
 
+A recurring task completed on both machines spawned its next occurrence on
+each, under two different ids. When an import finds two tasks with the same
+predecessor and the same due and scheduled dates, with or without `--merge`,
+they fold into the older one: it takes the other's notes, checks, tags and
+dependency edges, the status of whichever copy was started, stopped or
+finished last, and the tracked time of both, and the other copy is deleted.
+Each fold prints one line, for example
+`note: occurrence #12 duplicated #9 (both spawned from #4); kept #9`, and is
+listed under `deduplicated`. Both machines keep the same copy with the same
+contents, so importing in the other direction, or the same file twice, ends
+in the same place. If the two copies were wired into opposite ends of one
+dependency chain, the survivor's edge that would close the loop is dropped and
+the note names it. Completing a task again after reopening it does not spawn a
+second next occurrence for the same date.
+
 ## Merging two machines
 
 Each machine exports, and each imports the other's document. Rehearse with

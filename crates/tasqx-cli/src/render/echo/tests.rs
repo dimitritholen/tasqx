@@ -532,6 +532,39 @@ fn a_merged_task_names_its_fields_and_the_tracked_time_it_gained() {
     );
 }
 
+/// D191: a recurrence occurrence folded into an older copy of itself is a
+/// deletion the caller did not ask for, so each fold is named, with both
+/// numbers; a dropped copy that had already moved on says where the survivor
+/// now stands, and an edge dropped to avoid a cycle is named.
+#[test]
+fn imported_names_every_folded_occurrence() {
+    let ctx = plain(200);
+    let out = imported(
+        &ctx,
+        &json!({
+            "imported": 2,
+            "deduplicated": [
+                { "kept": 7, "dropped": 9, "spawned_from": 3, "dropped_status": "pending",
+                  "status": "pending", "dropped_dependencies": [] },
+                { "kept": 8, "dropped": 10, "spawned_from": null, "dropped_status": "done",
+                  "status": "done", "dropped_dependencies": [4, 5] },
+            ],
+        }),
+    );
+    assert!(
+        out.contains("note: occurrence #9 duplicated #7 (both spawned from #3); kept #7\n"),
+        "{out}"
+    );
+    assert!(
+        out.contains(
+            "note: occurrence #10 duplicated #8 (both spawned from the same task); kept #8; \
+             #10 was done, #8 is now done; dropped its dependency on #4, #5 (it would close a \
+             cycle)\n"
+        ),
+        "{out}"
+    );
+}
+
 /// The terminal's sentence for core's `tokens_hint` keys on how core words
 /// the variant that needs nothing from the reader. If core rewords it, this
 /// goes red here rather than the terminal nagging a reader who already

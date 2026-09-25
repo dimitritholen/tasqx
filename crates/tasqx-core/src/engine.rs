@@ -25,6 +25,7 @@ pub use relationships::CHECK_STATES;
 /// vocabularies for the same reason: one list the engine validates against, and
 /// no second copy for a surface to render from.
 pub use graph::{NodeType, LINK_RELATIONS};
+mod recur_dedupe;
 mod reports;
 pub mod task;
 mod tokens;
@@ -1580,6 +1581,10 @@ macro_rules! engine_sources {
             (
                 "engine/relationships.rs",
                 include_str!("engine/relationships.rs"),
+            ),
+            (
+                "engine/recur_dedupe.rs",
+                include_str!("engine/recur_dedupe.rs"),
             ),
             ("engine/reports.rs", include_str!("engine/reports.rs")),
             ("engine/task.rs", include_str!("engine/task.rs")),
