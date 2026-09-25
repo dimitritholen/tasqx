@@ -1004,7 +1004,7 @@ const PARAM_DOCS: &[(&str, &str, &str, &str, &str)] = &[
         "merge",
         "boolean",
         "false",
-        "Merge a task this store ALREADY holds instead of replacing it (D185): its annotations, checks, token measurements, tags and dependency edges are unioned with what is here, its `_rev` guard is skipped, and its scalars are taken from the payload only when the payload's `modified` is later. Reported per task in `merged`. Default false keeps the wholesale replace a restore wants (D138).",
+        "Merge a task this store ALREADY holds instead of replacing it (D185): its annotations, checks, token measurements, tags and dependency edges are unioned with what is here, its `_rev` guard is skipped, each scalar field group is taken from the side whose latest event touched it (D189; the later `modified` decides a group neither log touched, or a copy that carries no log), and its tracked total is counted from the union of both event logs, plus the larger of the two sides' totals the logs do not explain, so both directions of a merge agree. Reported per task in `merged`. Default false keeps the wholesale replace a restore wants (D138).",
     ),
     (
         "event.list",

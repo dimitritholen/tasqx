@@ -655,7 +655,7 @@ fn start_and_done_events_carry_the_correlation_params() {
 }
 
 #[test]
-fn a_plain_start_and_done_write_the_same_payloads_as_before() {
+fn a_plain_start_and_done_carry_no_correlation_keys() {
     let e = engine();
     let sid = e.task_add(&json!({ "title": "t" })).unwrap()["short_id"].clone();
     e.task_start(&json!({ "ref": sid })).unwrap();
@@ -667,9 +667,11 @@ fn a_plain_start_and_done_write_the_same_payloads_as_before() {
     );
     e.task_done(&json!({ "ref": sid })).unwrap();
     let done = event_payload(&e, "done");
+    // `interval_started` is D189's, not a correlation key: completing a
+    // running task names the interval it closed.
     assert_eq!(
         done.as_object().unwrap().keys().collect::<Vec<_>>(),
-        ["completed"],
+        ["completed", "interval_started"],
         "no correlation given, no new keys: {done}"
     );
 }
