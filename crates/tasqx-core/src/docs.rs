@@ -588,7 +588,7 @@ pub const R_TASK_DONE: &[FieldDoc] = &[
     o(
         "spawned",
         "object",
-        "The next instance, present only when the completed task carried a recurrence rule (D2).",
+        "The next instance, present only when the completed task carried a recurrence rule (D2) and no task already holds that next slot, as after a reopen and a second completion (D191).",
     ),
     o(
         "tokens_hint",
@@ -1428,6 +1428,7 @@ pub const R_STORE_IMPORT: &[FieldDoc] = &[
     f("dry_run", "boolean", "Echoes the `dry_run` param (D184). True means every row above was written and then rolled back — the answer describes what WOULD have happened, not what is now on disk."),
     f("merged", "array", "Every task this store ALREADY held that `merge` unioned rather than replaced, as `{id, took, from_payload, from_store, tracked_delta_seconds}`. Each scalar field group follows the side whose latest event touched it (D189); `from_payload` and `from_store` name the fields that differed and the side each was taken from, and `took` is `payload` or `store` when one side supplied all of them, `mixed` when both did, and D185's later-`modified` side when none differed. `tracked_delta_seconds` is how far the tracked total moved: the total is counted from the union of both event logs, plus the larger of the two sides' totals the logs do not explain. Its annotations, checks, tokens, tags and edges are unioned either way. D185. Empty when `merge` was not asked for, or when the document carried nothing this store had seen."),
     f("project_description_conflicts", "array", "Every project this store already held whose OWN non-empty description was kept over the payload's, as `{name, dropped}` — a project carries no `modified` stamp, so there is no later-wins call to make and the destination's text always wins (D190). `archived` is still taken from the payload unconditionally. Empty when nothing was dropped."),
+    f("deduplicated", "array", "Every recurrence occurrence folded into an older copy of itself, as `{kept, dropped, spawned_from, kept_id, dropped_id, dropped_status, status, dropped_dependencies}` (short ids, then uuids). Every group in the store sharing `spawned_from`, `due` and `scheduled` keeps the lowest id and takes the other's notes, checks, tags, edges, links, tokens and events. `status` is the survivor's afterwards: the copy with the latest status event wins it (D189's rule), and tracked time is counted from both copies' event logs, each event once. `dropped_dependencies` names the survivor's edges dropped because the fold would have closed a cycle. D191. Empty when nothing was folded."),
 ];
 
 /// `event.list`'s result.

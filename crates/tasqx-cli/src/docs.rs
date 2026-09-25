@@ -594,7 +594,7 @@ const METHODS: [(&str, &str, &str); 49] = [
          <code>merge?</code>",
         "<code>{imported, projects_imported, projects_created, docs_imported, docs_declared, \
          events_imported, links_imported, default_project, renumbered, docs_merged, \
-         dry_run, merged, project_description_conflicts}</code>. \
+         dry_run, merged, project_description_conflicts, deduplicated}</code>. \
          A task already in \
          the store at a higher <code>_rev</code> than the payload's refuses the whole import \
          (conflict) rather than silently discarding the annotations, tags and edges added since. \
@@ -617,7 +617,11 @@ const METHODS: [(&str, &str, &str); 49] = [
          payload's — a project carries no <code>modified</code> stamp, so there is no \
          later-wins call to make — listed in <code>project_description_conflicts</code> as \
          <code>{name, dropped}</code> (D190); <code>archived</code> is still taken from the \
-         payload unconditionally.",
+         payload unconditionally. \
+         Two copies of one recurrence \
+         occurrence (same <code>spawned_from</code>, <code>due</code> and <code>scheduled</code>, \
+         anywhere in the store) fold into the lowest id, listed in \
+         <code>deduplicated</code> (D191).",
     ),
     (
         "event.list",

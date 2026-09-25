@@ -2419,6 +2419,9 @@ impl Engine {
             }
         }
         let default_project = standing.or_else(|| want_default.clone());
+        // D191: two stores that both completed one recurring occurrence each
+        // spawned its successor; fold every pair of copies into one.
+        let deduplicated = recur_dedupe::fold_duplicate_occurrences(&tx, &payload_task_events)?;
         // D184: the whole import above ran for real, inside this one
         // transaction; `dry_run` only decides whether it is kept. A rollback
         // undoes every row this call wrote AND every event it inserted, so
@@ -2479,6 +2482,9 @@ impl Engine {
             // D184: always present, false on a real run — the same rule every
             // other additive result field in this answer already follows.
             "dry_run": dry_run,
+            // D191: every recurrence occurrence folded into an older copy of
+            // itself. Always present, empty when nothing was folded.
+            "deduplicated": deduplicated,
         }))
     }
 }
