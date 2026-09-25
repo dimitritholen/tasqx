@@ -594,7 +594,7 @@ const METHODS: [(&str, &str, &str); 49] = [
          <code>merge?</code>",
         "<code>{imported, projects_imported, projects_created, docs_imported, docs_declared, \
          events_imported, links_imported, default_project, renumbered, docs_merged, \
-         dry_run, merged}</code>. \
+         dry_run, merged, project_description_conflicts}</code>. \
          A task already in \
          the store at a higher <code>_rev</code> than the payload's refuses the whole import \
          (conflict) rather than silently discarding the annotations, tags and edges added since. \
@@ -611,7 +611,11 @@ const METHODS: [(&str, &str, &str); 49] = [
          false) unions a KNOWN task's annotations, checks, tags and dependency edges with what \
          this store already holds instead of replacing them, skips its <code>_rev</code> guard \
          and takes its scalars from whichever side's <code>modified</code> is later — listed in \
-         <code>merged</code> as <code>{id, took}</code> (D185).",
+         <code>merged</code> as <code>{id, took}</code> (D185). A project this store already \
+         knows keeps its own non-empty description over the payload's — a project carries no \
+         <code>modified</code> stamp, so there is no later-wins call to make — listed in \
+         <code>project_description_conflicts</code> as <code>{name, dropped}</code> (D190); \
+         <code>archived</code> is still taken from the payload unconditionally.",
     ),
     (
         "event.list",

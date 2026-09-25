@@ -1781,6 +1781,28 @@ pub fn imported(ctx: &Ctx, result: &Value) -> String {
             ),
         ));
     }
+    // D190: one line per project this store already held whose own
+    // description won over the payload's — a payload description this store
+    // never gets to write silently is a write the caller did not ask for,
+    // named for the same reason `renumbered` and `merged` are. `s()` already
+    // runs both fields through `san` (a stray `\n`/`\t` becomes a space, a
+    // control byte is dropped), so a multi-line or control-byte-carrying
+    // description cannot tear this note across stray lines.
+    for conflict in result
+        .get("project_description_conflicts")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+    {
+        out.push_str(&note_line(
+            ctx,
+            &format!(
+                "project \"{}\" kept its description here; the import's was \"{}\"",
+                s(conflict, "name"),
+                s(conflict, "dropped"),
+            ),
+        ));
+    }
     let minted: Vec<String> = result
         .get("projects_created")
         .and_then(Value::as_array)

@@ -82,6 +82,17 @@ Import is also the one way to un-archive a project: the export document
 records each project's archived flag, and importing restores it. See
 [Projects](Projects.md#tasqx-archive).
 
+A project this store already knows keeps its own description when it has one:
+projects carry no `modified` stamp the way a task does, so there is no
+later-wins comparison to make, only a present-vs-absent one. A non-empty local
+description always wins over the payload's, which is dropped and reported
+under `project_description_conflicts`; a local description that is empty, or
+a project this store has never seen, takes the payload's.
+
+```console
+note: project "tasqx" kept its description here; the import's was "B's tasqx description"
+```
+
 `tasqx import backup.json --dry-run` runs the whole import against this store
 and rolls it back instead of keeping it: every renumbering, merge and refusal
 prints exactly as a real import would, and the run ends with `nothing was
