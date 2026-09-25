@@ -1394,6 +1394,11 @@ const R_STORE_IMPORT: Shape = &[&[
     // which side each differing field came from. Always present, empty
     // without the flag.
     req("merged", Ty::Array),
+    // D190: `{name, dropped}` per project this store already held whose own
+    // non-empty description won over the payload's — a project carries no
+    // `modified` stamp, so there is no later-wins call to make. Always
+    // present, empty when nothing was dropped.
+    req("project_description_conflicts", Ty::Array),
 ]];
 
 const R_EVENT_LIST: Shape = &[&[

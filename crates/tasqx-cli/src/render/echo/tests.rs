@@ -417,6 +417,85 @@ fn a_project_echo_draws_no_rail() {
     assert!(imported(&ctx, &json!({ "imported": 1 })).contains("1 task · no memory docs"));
 }
 
+/// D190/#767: a project description conflict gets its own note, naming both
+/// the project and the payload text that was dropped — the same way
+/// `renumbered` and `docs_merged` name what changed the caller did not ask
+/// for. Dry run prints the identical note; nothing about the wording depends
+/// on whether the write actually landed.
+#[test]
+fn imported_notes_a_dropped_project_description() {
+    let ctx = unicode(120);
+    for dry_run in [false, true] {
+        let out = imported(
+            &ctx,
+            &json!({
+                "imported": 0,
+                "projects_imported": 1,
+                "docs_imported": 0,
+                "dry_run": dry_run,
+                "project_description_conflicts": [
+                    { "name": "tasqx", "dropped": "B's tasqx description" },
+                ],
+            }),
+        );
+        assert!(
+            out.contains(
+                "project \"tasqx\" kept its description here; the import's was \"B's tasqx description\""
+            ),
+            "{out}"
+        );
+    }
+}
+
+/// Review finding: a multi-line or otherwise control-byte-carrying dropped
+/// description must not tear the note across stray blank lines, nor leak a
+/// raw escape byte to the terminal. `s()` (`render.rs`) already runs every
+/// echoed free-text field through `san` before this note ever sees it — the
+/// same guard a tag name or an annotation body gets — so the newline and tab
+/// become plain spaces and the escape byte is dropped outright, the same
+/// rule `san`'s own doc comment states.
+#[test]
+fn imported_flattens_a_multiline_dropped_description_in_its_note() {
+    let ctx = unicode(120);
+    let out = imported(
+        &ctx,
+        &json!({
+            "imported": 0,
+            "projects_imported": 1,
+            "docs_imported": 0,
+            "project_description_conflicts": [
+                { "name": "tasqx", "dropped": "line one\nline two\tline\x1bthree" },
+            ],
+        }),
+    );
+    assert!(
+        out.contains("line one line two linethree"),
+        "the newline and tab must become plain spaces, not vanish or split the note: {out}"
+    );
+    assert!(!out.contains("line one\nline two"), "{out:?}");
+    assert!(
+        !out.contains('\x1b'),
+        "a raw escape byte must not reach the terminal: {out:?}"
+    );
+}
+
+/// No conflicts, no note — the field is always present but empty, the same
+/// rule `renumbered` follows.
+#[test]
+fn imported_is_silent_with_no_project_description_conflicts() {
+    let ctx = unicode(120);
+    let out = imported(
+        &ctx,
+        &json!({
+            "imported": 0,
+            "projects_imported": 1,
+            "docs_imported": 0,
+            "project_description_conflicts": [],
+        }),
+    );
+    assert!(!out.contains("kept its description"), "{out}");
+}
+
 /// D189: a merged task's note names each field that differed and the side it
 /// came from, and how far tracked time moved — never "took the payload copy"
 /// for a merge that kept half the store's row.

@@ -1020,14 +1020,29 @@ fn import_link_field<T>(id: &str, field: &str, r: Result<T, ApiError>) -> Result
     r.map_err(|e| ApiError::bad_request(format!("store.import: link {id}, {field}: {}", e.message)))
 }
 
-/// Write a project row, keyed by NAME, and answer the row's id. D37.
+/// Write a project row, keyed by NAME, and answer the row's id and, on a
+/// dropped description, the text that lost. D37, D190.
 ///
 /// Name, not id, because `name` is what a task points at and what the UNIQUE
 /// constraint protects: a destination that already knows `work` keeps its own
-/// id and `created` (its history is real and the payload's is not more true),
-/// and only the fields the document is authoritative about — description and
-/// archived — are updated. The payload's id is honoured only when it is free,
-/// so restoring into a FRESH store round-trips identity exactly while a
+/// id and `created` (its history is real and the payload's is not more true).
+/// `archived` is still the document's to set, unconditionally — D37's own
+/// rule, and D22 already treats archiving as a normal, repeatable write.
+/// `description` is not: a project row carries no `modified` stamp (unlike a
+/// task's, D185), so there is no later-wins comparison to make, only a
+/// present-vs-absent one. When the destination already has a real (non-blank)
+/// description, it wins — the payload's is dropped and named in the second
+/// element of the answer, `None` when nothing was dropped — because an import
+/// silently replacing a hand-written description with a stale or blank one
+/// from the other side (#767) is worse than an import that leaves a
+/// description importing a bare `id` cannot express in place. A destination
+/// with no real description yet takes whatever real description the payload
+/// sent. "Real" trims: `opt_str_nonempty` only refuses `""`, so a
+/// whitespace-only string reaches this function as `Some("   ")` on either
+/// side — counted as blank here rather than as content, on both, so it
+/// neither blocks a real payload description from landing nor overwrites a
+/// real local one. The payload's id is honoured only when it is free, so
+/// restoring into a FRESH store round-trips identity exactly while a
 /// collision with an unrelated row yields a new id rather than the `internal`
 /// error a bare PRIMARY KEY violation would surface as.
 fn upsert_project(
@@ -1037,20 +1052,36 @@ fn upsert_project(
     archived: bool,
     created: &str,
     payload_id: Option<&str>,
-) -> Result<String, ApiError> {
-    if let Some(id) = tx
+) -> Result<(String, Option<String>), ApiError> {
+    let is_blank = |d: &str| d.trim().is_empty();
+    if let Some((id, local_description)) = tx
         .query_row(
-            "SELECT id FROM projects WHERE name = ?1",
+            "SELECT id, description FROM projects WHERE name = ?1",
             params![name],
-            |r| r.get::<_, String>(0),
+            |r| Ok((r.get::<_, String>(0)?, r.get::<_, Option<String>>(1)?)),
         )
         .optional()?
     {
+        let local_is_real = local_description.as_deref().is_some_and(|d| !is_blank(d));
+        let payload_is_real = description.is_some_and(|d| !is_blank(d));
+        let dropped = match (local_is_real, &local_description, description) {
+            (true, Some(local), Some(payload)) if payload_is_real && local != payload => {
+                Some(payload.to_string())
+            }
+            _ => None,
+        };
+        let write_description = if local_is_real {
+            local_description
+        } else if payload_is_real {
+            description.map(str::to_string)
+        } else {
+            local_description
+        };
         tx.execute(
             "UPDATE projects SET description = ?2, archived = ?3 WHERE id = ?1",
-            params![id, description, archived as i64],
+            params![id, write_description, archived as i64],
         )?;
-        return Ok(id);
+        return Ok((id, dropped));
     }
     let taken = |id: &str| -> Result<bool, ApiError> {
         Ok(tx.query_row(
@@ -1067,7 +1098,7 @@ fn upsert_project(
         "INSERT INTO projects (id, name, description, archived, created) VALUES (?1,?2,?3,?4,?5)",
         params![id, name, description, archived as i64, created],
     )?;
-    Ok(id)
+    Ok((id, None))
 }
 
 /// Require an object and refuse any key outside `accepted`. D34.

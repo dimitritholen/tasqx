@@ -959,6 +959,12 @@ impl Engine {
         // Always reported (as `{id, took}`), empty when `merge` is false or
         // the document held nothing this store had seen — `renumbered`'s rule.
         let mut merged: Vec<MergedTask> = Vec::new();
+        // D190: `{name, dropped}` per project this store already held whose
+        // own non-empty description the import kept — a project carries no
+        // `modified` stamp (unlike a task, D185), so there is no later-wins
+        // call to make and the destination's own text always wins over the
+        // payload's. Always present, empty when nothing was dropped.
+        let mut project_description_conflicts: Vec<Value> = Vec::new();
         // D181: payload id -> the id that row actually landed under, per node
         // kind, filled by the passes that write those rows and read by the
         // links pass. It holds the kinds whose stored id CAN differ from the
@@ -1005,7 +1011,7 @@ impl Engine {
                     import_project_field(&name, "created", opt_str_nonempty(pv, "created"))?
                         .unwrap_or_else(now);
                 let payload_id = import_project_field(&name, "id", opt_str_nonempty(pv, "id"))?;
-                let row_id = upsert_project(
+                let (row_id, dropped_description) = upsert_project(
                     &tx,
                     &name,
                     description.as_deref(),
@@ -1013,6 +1019,16 @@ impl Engine {
                     &created,
                     payload_id.as_deref(),
                 )?;
+                // D190: the destination's own description, not the payload's,
+                // stood — named here rather than left for the caller to notice
+                // only by diffing, the same reason `renumbered` and `merged`
+                // are always reported.
+                if let Some(dropped) = dropped_description {
+                    project_description_conflicts.push(json!({
+                        "name": name,
+                        "dropped": dropped,
+                    }));
+                }
                 // D181: the one remap entry that is routinely NOT the identity
                 // — a destination that already knows this name kept its own row
                 // and its own id, so a link naming the payload's project id has
@@ -1580,7 +1596,7 @@ impl Engine {
                              add it to `projects`, or create it first with `tasqx init {name}`"
                         )));
                     }
-                    let row_id = upsert_project(&tx, name, None, false, &now(), None)?;
+                    let (row_id, _) = upsert_project(&tx, name, None, false, &now(), None)?;
                     insert_event(
                         &tx,
                         Entity::Project,
@@ -2438,6 +2454,10 @@ impl Engine {
             "links_imported": links_imported,
             "default_project": default_project,
             "renumbered": renumbered,
+            // D190: every project this store already held that kept its own
+            // description over the payload's. Always present, empty when
+            // nothing was dropped — `renumbered`'s rule.
+            "project_description_conflicts": project_description_conflicts,
             // D183: every doc that merged onto a row this store already held
             // under the same `source`, and which copy's text won.
             "docs_merged": docs_merged,
@@ -6083,6 +6103,234 @@ mod tests {
             r["docs_declared"],
             json!(true),
             "an explicit empty `docs` array must be reported as declared: {r}"
+        );
+    }
+
+    /// D190/#767: a destination that already carries a non-empty description
+    /// for a project keeps it — an import used to overwrite it unconditionally,
+    /// which is how two machines merging their stores silently lost whichever
+    /// side wrote its description second. The dropped text is reported.
+    #[test]
+    fn store_import_keeps_a_local_project_description_and_reports_the_conflict() {
+        let e = Engine::open_in_memory().expect("open");
+        e.project_create(&json!({ "name": "tasqx", "description": "the local one" }))
+            .expect("seed a local project with a description");
+
+        let r = e
+            .store_import(&json!({
+                "tasks": [],
+                "projects": [{ "name": "tasqx", "description": "B's tasqx description" }],
+            }))
+            .expect("import");
+
+        assert_eq!(
+            r["project_description_conflicts"],
+            json!([{ "name": "tasqx", "dropped": "B's tasqx description" }]),
+            "{r}"
+        );
+        let projects = e.store_export(&json!({})).expect("export")["projects"]
+            .as_array()
+            .expect("projects array")
+            .clone();
+        assert_eq!(
+            projects[0]["description"],
+            json!("the local one"),
+            "the local description must survive the import: {projects:?}"
+        );
+    }
+
+    /// The other half of D190: a destination that has no description yet, or
+    /// an explicitly empty one, has nothing to lose — the payload's text is
+    /// taken, and nothing is reported, because nothing was dropped.
+    #[test]
+    fn store_import_takes_the_payload_description_when_local_is_empty() {
+        let e = Engine::open_in_memory().expect("open");
+        e.project_create(&json!({ "name": "tasqx" }))
+            .expect("seed a local project with no description");
+
+        let r = e
+            .store_import(&json!({
+                "tasks": [],
+                "projects": [{ "name": "tasqx", "description": "from the payload" }],
+            }))
+            .expect("import");
+
+        assert_eq!(r["project_description_conflicts"], json!([]), "{r}");
+        let projects = e.store_export(&json!({})).expect("export")["projects"]
+            .as_array()
+            .expect("projects array")
+            .clone();
+        assert_eq!(
+            projects[0]["description"],
+            json!("from the payload"),
+            "{projects:?}"
+        );
+    }
+
+    /// A payload whose description happens to match the local one word for
+    /// word is not a conflict — nothing was actually dropped.
+    #[test]
+    fn store_import_reports_no_conflict_for_an_identical_description() {
+        let e = Engine::open_in_memory().expect("open");
+        e.project_create(&json!({ "name": "tasqx", "description": "same everywhere" }))
+            .expect("seed");
+
+        let r = e
+            .store_import(&json!({
+                "tasks": [],
+                "projects": [{ "name": "tasqx", "description": "same everywhere" }],
+            }))
+            .expect("import");
+
+        assert_eq!(r["project_description_conflicts"], json!([]), "{r}");
+    }
+
+    /// Review finding: a whitespace-only local description used to count as
+    /// "real" (`!d.is_empty()`), so it blocked a genuine payload description
+    /// from ever landing. `opt_str_nonempty` only refuses the exact empty
+    /// string, so `"   "` reaches the destination as ordinary content — this
+    /// proves it is treated as blank here instead.
+    #[test]
+    fn store_import_takes_the_payload_description_over_a_whitespace_only_local_one() {
+        let e = Engine::open_in_memory().expect("open");
+        e.project_create(&json!({ "name": "tasqx", "description": "   " }))
+            .expect("seed a local project with a whitespace-only description");
+
+        let r = e
+            .store_import(&json!({
+                "tasks": [],
+                "projects": [{ "name": "tasqx", "description": "a real description" }],
+            }))
+            .expect("import");
+
+        assert_eq!(
+            r["project_description_conflicts"],
+            json!([]),
+            "a whitespace-only local description is not real content to protect: {r}"
+        );
+        let projects = e.store_export(&json!({})).expect("export")["projects"]
+            .as_array()
+            .expect("projects array")
+            .clone();
+        assert_eq!(
+            projects[0]["description"],
+            json!("a real description"),
+            "{projects:?}"
+        );
+    }
+
+    /// The other half of the same finding: a whitespace-only PAYLOAD
+    /// description must not overwrite a real local one, and must not be
+    /// reported as a conflict either — there is no real text on the payload's
+    /// side to have lost.
+    #[test]
+    fn store_import_keeps_a_real_local_description_over_a_whitespace_only_payload_one() {
+        let e = Engine::open_in_memory().expect("open");
+        e.project_create(&json!({ "name": "tasqx", "description": "the real one" }))
+            .expect("seed");
+
+        let r = e
+            .store_import(&json!({
+                "tasks": [],
+                "projects": [{ "name": "tasqx", "description": "   " }],
+            }))
+            .expect("import");
+
+        assert_eq!(
+            r["project_description_conflicts"],
+            json!([]),
+            "a whitespace-only payload description carries nothing to drop: {r}"
+        );
+        let projects = e.store_export(&json!({})).expect("export")["projects"]
+            .as_array()
+            .expect("projects array")
+            .clone();
+        assert_eq!(
+            projects[0]["description"],
+            json!("the real one"),
+            "{projects:?}"
+        );
+    }
+
+    /// A payload project that names no `description` at all carries nothing to
+    /// take — the local description, whatever it is, is left exactly as it
+    /// was, and nothing is reported because nothing was dropped.
+    #[test]
+    fn store_import_keeps_local_description_when_the_payload_sends_none() {
+        let e = Engine::open_in_memory().expect("open");
+        e.project_create(&json!({ "name": "tasqx", "description": "kept" }))
+            .expect("seed");
+
+        let r = e
+            .store_import(&json!({
+                "tasks": [],
+                "projects": [{ "name": "tasqx" }],
+            }))
+            .expect("import");
+
+        assert_eq!(r["project_description_conflicts"], json!([]), "{r}");
+        let projects = e.store_export(&json!({})).expect("export")["projects"]
+            .as_array()
+            .expect("projects array")
+            .clone();
+        assert_eq!(projects[0]["description"], json!("kept"), "{projects:?}");
+    }
+
+    /// A project the destination has never heard of is a plain creation, not a
+    /// conflict — there is no local text for the payload's to lose against.
+    #[test]
+    fn store_import_creates_a_new_project_with_the_payload_description() {
+        let e = Engine::open_in_memory().expect("open");
+
+        let r = e
+            .store_import(&json!({
+                "tasks": [],
+                "projects": [{ "name": "brand-new", "description": "minted here" }],
+            }))
+            .expect("import");
+
+        assert_eq!(r["project_description_conflicts"], json!([]), "{r}");
+        let projects = e.store_export(&json!({})).expect("export")["projects"]
+            .as_array()
+            .expect("projects array")
+            .clone();
+        assert_eq!(
+            projects[0]["description"],
+            json!("minted here"),
+            "{projects:?}"
+        );
+    }
+
+    /// D184: a dry run reports the conflict exactly as a real import would,
+    /// then rolls back — the caller must see it in `--dry-run` before it
+    /// happens for real, the same rule `renumbered` and `docs_merged` follow.
+    #[test]
+    fn store_import_dry_run_reports_a_project_description_conflict_and_writes_nothing() {
+        let e = Engine::open_in_memory().expect("open");
+        e.project_create(&json!({ "name": "tasqx", "description": "the local one" }))
+            .expect("seed");
+
+        let r = e
+            .store_import(&json!({
+                "tasks": [],
+                "projects": [{ "name": "tasqx", "description": "the payload one" }],
+                "dry_run": true,
+            }))
+            .expect("dry run");
+
+        assert_eq!(
+            r["project_description_conflicts"],
+            json!([{ "name": "tasqx", "dropped": "the payload one" }]),
+            "{r}"
+        );
+        let projects = e.store_export(&json!({})).expect("export")["projects"]
+            .as_array()
+            .expect("projects array")
+            .clone();
+        assert_eq!(
+            projects[0]["description"],
+            json!("the local one"),
+            "a dry run must not write anything: {projects:?}"
         );
     }
 
