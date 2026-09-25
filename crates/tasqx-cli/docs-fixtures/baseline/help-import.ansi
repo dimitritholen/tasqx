@@ -26,5 +26,6 @@ NOTE  A task whose number a DIFFERENT task here already holds keeps its id and t
       Links are restored after everything they point at, counted in `links_imported`; a link naming an end neither the document nor this store holds refuses the whole import by name (D181).
       `--dry-run` runs the whole import against this store and rolls it back: every renumbering, merge and refusal prints exactly as a real import would, and the run ends with `nothing was written` (D184).
       `--merge` folds a second live store in rather than restoring over this one: a task this store already holds keeps its own annotations, checks, tags and edges and takes the payload's beside them, its `_rev` guard is skipped, and its title, status and the rest follow whichever side's `modified` is later — one line per task, reported as `merged` (D185). Without it the payload replaces a known task's child rows wholesale, which is what a restore wants.
+      A project this store already knows keeps its own non-empty description over the payload's — a project carries no `modified` stamp, so there is no later-wins call to make — reported as `project_description_conflicts` (D190). `archived` is still taken from the payload either way.
 
 See also: export · api        Full manual: tasqx manual
