@@ -958,7 +958,7 @@ impl Engine {
         // but an edge cannot know it changed anything until after that pass.
         // Always reported (as `{id, took}`), empty when `merge` is false or
         // the document held nothing this store had seen — `renumbered`'s rule.
-        let mut merged: Vec<(String, &'static str, i64, bool)> = Vec::new();
+        let mut merged: Vec<MergedTask> = Vec::new();
         // D190: `{name, dropped}` per project this store already held whose
         // own non-empty description the import kept — a project carries no
         // `modified` stamp (unlike a task, D185), so there is no later-wins
@@ -1328,6 +1328,15 @@ impl Engine {
         // payload, ts, actor)`, the row's own columns minus the entity.
         type StagedEvent = (String, String, String, String, String, Option<String>);
         let mut link_events: Vec<StagedEvent> = Vec::new();
+        // D189: the payload's own task events, per task, and the ids of those
+        // this store did not already hold — decided HERE, by the insert that
+        // adds them, because once the union has run the store's log can no
+        // longer tell its own history from what this document just brought.
+        // A merge compares the payload's log against the store's own, which is
+        // the store's log minus the second set.
+        let mut payload_task_events: HashMap<String, Vec<field_merge::LoggedEvent>> =
+            HashMap::new();
+        let mut fresh_events: HashSet<String> = HashSet::new();
         if let Some(rows) = opt_array(p, "events")?.cloned() {
             for ev in &rows {
                 let ev = import_shape("", "event", ev)?;
@@ -1391,6 +1400,24 @@ impl Engine {
                     ],
                 )?;
                 events_imported += n as i64;
+                if entity == Entity::Task {
+                    if n > 0 {
+                        fresh_events.insert(eid.clone());
+                    }
+                    // D189: an `import` is bookkeeping `store.export` never
+                    // carries, so a merge reads neither side's.
+                    if op == "import" {
+                        continue;
+                    }
+                    payload_task_events.entry(entity_id).or_default().push(
+                        field_merge::LoggedEvent {
+                            id: eid,
+                            op,
+                            payload,
+                            ts,
+                        },
+                    );
+                }
             }
         }
 
@@ -1788,10 +1815,12 @@ impl Engine {
                 )
                 .optional()?;
             let merging = merge && stored.is_some();
-            // D3's per-field last-writer-wins at the import door: `modified` is
-            // the one stamp both machines mean the same thing by. A tie keeps
-            // the store's copy, which is what makes importing one document
-            // twice leave the scalars alone.
+            // D185's task-level comparison: `modified` is the one stamp both
+            // machines mean the same thing by. A tie keeps the store's copy.
+            // D189 narrowed it to a fallback — the scalars follow each field
+            // group's own latest event below, and this decides only a group
+            // neither log touched, a copy with no log at all, and (D185) a
+            // note both stores hold under one id.
             let take_payload = match &stored {
                 Some((_, held)) => parse_ts(&modified) > parse_ts(held),
                 None => true,
@@ -1849,7 +1878,161 @@ impl Engine {
             } else {
                 0
             };
-            if !merging || take_payload {
+            // D189: what the upsert below writes. Outside a merge, and for a
+            // task new to this store, that is the payload's row, as it always
+            // was. On a merge each field group is taken from the side whose
+            // latest event touched it, and the tracked pair is counted from
+            // the union of both logs plus the larger unexplained residual.
+            let mut w = field_merge::Scalars(HashMap::from([
+                ("title", json!(title)),
+                ("status", json!(status)),
+                ("priority", json!(priority)),
+                ("project", json!(project)),
+                ("due", json!(due)),
+                ("scheduled", json!(scheduled)),
+                ("wait", json!(wait)),
+                ("estimate", json!(estimate)),
+                ("recurrence", json!(recurrence)),
+                ("remind", json!(remind)),
+                ("completed", json!(completed)),
+                (
+                    "active_since",
+                    json!(active_since.as_ref().filter(|_| status == "active")),
+                ),
+                ("budget_tokens", json!(budget_tokens)),
+                ("delivered_annotation_id", json!(delivered_annotation_id)),
+                ("spawned_from", json!(spawned_from)),
+            ]));
+            let (mut w_tracked, mut w_adjustment) = (tracked_seconds, tracked_adjustment_seconds);
+            let (mut w_created, mut w_modified, mut w_urgency) =
+                (created.clone(), modified.clone(), urgency);
+            let mut write = !merging || take_payload;
+            let mut outcome = None;
+            if merging {
+                let held = Self::stored_scalars(&tx, id)?;
+                let store_events = Self::stored_task_events(&tx, id, &fresh_events)?;
+                let payload_events: &[field_merge::LoggedEvent] = payload_task_events
+                    .get(id)
+                    .map(Vec::as_slice)
+                    .unwrap_or_default();
+                // Only two logs that both hold the task's `add` are its
+                // history. A legacy export, a hand-written document, or a
+                // store the task reached through one (whose log is a lone
+                // `import`) has nothing to read a field's last writer from,
+                // so D185's whole-row rule stands.
+                let per_field = field_merge::both_hold_the_add(&store_events, payload_events);
+                let fallback = if take_payload {
+                    field_merge::Side::Payload
+                } else {
+                    field_merge::Side::Store
+                };
+                let mut chosen = held.scalars.clone();
+                let (mut from_payload, mut from_store) = (Vec::new(), Vec::new());
+                for (group, fields) in field_merge::GROUPS {
+                    let side = if per_field {
+                        let tie = field_merge::tie_side(
+                            &held.modified,
+                            &modified,
+                            &fields
+                                .iter()
+                                .map(|f| held.scalars.get(f))
+                                .collect::<Vec<_>>(),
+                            &fields.iter().map(|f| w.get(f)).collect::<Vec<_>>(),
+                        );
+                        field_merge::group_winner(&store_events, payload_events, group, tie)
+                    } else {
+                        fallback
+                    };
+                    for f in *fields {
+                        if held.scalars.get(f) != w.get(f) {
+                            match side {
+                                field_merge::Side::Payload => from_payload.push(*f),
+                                field_merge::Side::Store => from_store.push(*f),
+                            }
+                        }
+                        if side == field_merge::Side::Payload {
+                            chosen.0.insert(f, w.get(f).clone());
+                        }
+                    }
+                }
+                let payload_pair = (
+                    tracked_seconds.unwrap_or(0),
+                    tracked_adjustment_seconds.unwrap_or(0),
+                );
+                let (tracked_to, adjustment_to) = if per_field {
+                    // The timer each copy, and the merged row, keeps running:
+                    // an interval nobody closed is not banked when it is
+                    // that timer.
+                    let running = |row: &field_merge::Scalars| {
+                        (row.get("status") == "active")
+                            .then(|| row.text("active_since"))
+                            .flatten()
+                            .and_then(|s| parse_ts(&s))
+                    };
+                    field_merge::merged_tracked(
+                        (held.tracked, held.adjustment),
+                        payload_pair,
+                        &store_events,
+                        payload_events,
+                        &field_merge::Running {
+                            stored: running(&held.scalars),
+                            payload: running(&w),
+                            merged: running(&chosen),
+                        },
+                    )
+                } else if take_payload {
+                    // The upsert's own COALESCE rule, spelled out so the
+                    // report can say what moved.
+                    (
+                        tracked_seconds.unwrap_or(held.tracked),
+                        tracked_adjustment_seconds.unwrap_or(if tracked_seconds.is_none() {
+                            held.adjustment
+                        } else {
+                            0
+                        }),
+                    )
+                } else {
+                    (held.tracked, held.adjustment)
+                };
+                if per_field {
+                    // `modified` is merged too — the later of the two — so
+                    // both directions leave the same stamp; a copy already
+                    // holding it and every merged value writes nothing.
+                    let later_stamp = parse_ts(&modified) > parse_ts(&held.modified);
+                    write = chosen != held.scalars
+                        || tracked_to != held.tracked
+                        || adjustment_to != held.adjustment
+                        || later_stamp;
+                    w_urgency = urgency::score_at(
+                        chosen.text("priority").as_deref().and_then(Priority::parse),
+                        chosen.text("due").as_deref(),
+                        &held.created,
+                        now_ts,
+                    );
+                    w = chosen;
+                    (w_tracked, w_adjustment) = (Some(tracked_to), Some(adjustment_to));
+                    w_created = held.created;
+                    if !later_stamp {
+                        w_modified = held.modified;
+                    }
+                }
+                // Which copy supplied the fields that differed: both is
+                // `mixed`, and nothing differing names D185's side.
+                let took = match (from_payload.is_empty(), from_store.is_empty()) {
+                    (false, true) => "payload",
+                    (true, false) => "store",
+                    (false, false) => "mixed",
+                    (true, true) if take_payload => "payload",
+                    (true, true) => "store",
+                };
+                outcome = Some((
+                    took,
+                    from_payload,
+                    from_store,
+                    tracked_to.saturating_sub(held.tracked),
+                ));
+            }
+            if write {
                 tx.execute(
                     "INSERT INTO tasks (id, short_id, title, status, priority, project, due, \
                  scheduled, wait, estimate, recurrence, urgency, active_since, tracked_seconds, \
@@ -1872,28 +2055,28 @@ impl Engine {
                     params![
                         id,
                         short_id,
-                        title,
-                        status,
-                        priority,
-                        project,
-                        due,
-                        scheduled,
-                        wait,
-                        estimate,
-                        recurrence,
-                        urgency,
+                        w.text("title"),
+                        w.text("status"),
+                        w.text("priority"),
+                        w.text("project"),
+                        w.text("due"),
+                        w.text("scheduled"),
+                        w.text("wait"),
+                        w.text("estimate"),
+                        w.text("recurrence"),
+                        w_urgency,
                         rev_target,
-                        created,
-                        modified,
-                        completed,
-                        remind,
-                        active_since,
+                        w_created,
+                        w_modified,
+                        w.text("completed"),
+                        w.text("remind"),
+                        w.text("active_since"),
                         now(),
-                        tracked_seconds,
-                        budget_tokens,
-                        delivered_annotation_id,
-                        tracked_adjustment_seconds,
-                        spawned_from
+                        w_tracked,
+                        w.int("budget_tokens"),
+                        w.text("delivered_annotation_id"),
+                        w_adjustment,
+                        w.text("spawned_from")
                     ],
                 )?;
             }
@@ -1928,22 +2111,25 @@ impl Engine {
                 id.to_string(),
                 import_field(id, "depends_on", opt_str_array(tv, "depends_on"))?,
             ));
-            if merging {
+            if let Some((took, from_payload, from_store, tracked_delta)) = outcome {
                 // An upsert reports a row affected even when it rewrote the
                 // same bytes, so "did this merge add anything" is counted from
                 // the child rows themselves — plus the one change a count
                 // cannot see, a check both stores held taking the payload's
                 // state on its own `modified`. Pass 2 finishes the answer with
                 // the edges it inserts.
-                let changed = take_payload
-                    || checks_updated
-                    || Self::child_row_count(&tx, id)? != children_before;
-                merged.push((
-                    id.to_string(),
-                    if take_payload { "payload" } else { "store" },
+                let changed =
+                    write || checks_updated || Self::child_row_count(&tx, id)? != children_before;
+                merged.push(MergedTask {
+                    id: id.to_string(),
+                    took,
+                    from_payload,
+                    from_store,
+                    tracked_delta,
                     rev_target,
+                    written: write,
                     changed,
-                ));
+                });
             }
 
             insert_event(
@@ -2006,23 +2192,23 @@ impl Engine {
                 // a merge can make after the task loop already asked itself
                 // whether anything changed.
                 if inserted > 0 {
-                    if let Some(e) = merged.iter_mut().find(|(m, ..)| m == id) {
-                        e.3 = true;
+                    if let Some(e) = merged.iter_mut().find(|m| &m.id == id) {
+                        e.changed = true;
                     }
                 }
             }
         }
-        // D185: the deferred half of the `rev` bump. A merge whose SCALARS came
-        // from the payload already wrote `max(stored, payload) + 1` in the
-        // upsert above; one that kept the store's row did not write to `tasks`
-        // at all, so the counter moves here — and only when the union actually
-        // brought something in, which is what keeps merging one document twice
-        // a no-op rather than a walk up the counter.
-        for (id, took, rev_target, changed) in &merged {
-            if *took == "store" && *changed {
+        // D185: the deferred half of the `rev` bump. A merge that moved a
+        // scalar already wrote `max(stored, payload) + 1` in the upsert above;
+        // one that moved none did not write to `tasks` at all, so the counter
+        // moves here — and only when the union actually brought something in,
+        // which is what keeps merging one document twice a no-op rather than
+        // a walk up the counter.
+        for m in &merged {
+            if !m.written && m.changed {
                 tx.execute(
                     "UPDATE tasks SET rev = ?2 WHERE id = ?1",
-                    params![id, rev_target],
+                    params![m.id, m.rev_target],
                 )?;
             }
         }
@@ -2276,17 +2462,134 @@ impl Engine {
             // under the same `source`, and which copy's text won.
             "docs_merged": docs_merged,
             // D185: every task this store already held that `merge` unioned
-            // rather than replaced, and which side's scalars stand. Always
-            // present, empty when `merge` was not asked for or the document
-            // carried nothing this store had seen.
+            // rather than replaced. Always present, empty when `merge` was not
+            // asked for or the document carried nothing this store had seen.
+            // D189: which side each differing field came from, and how far
+            // the tracked total moved.
             "merged": merged
                 .iter()
-                .map(|(id, took, ..)| json!({ "id": id, "took": took }))
+                .map(|m| json!({
+                    "id": m.id,
+                    "took": m.took,
+                    "from_payload": m.from_payload,
+                    "from_store": m.from_store,
+                    "tracked_delta_seconds": m.tracked_delta,
+                }))
                 .collect::<Vec<Value>>(),
             // D184: always present, false on a real run — the same rule every
             // other additive result field in this answer already follows.
             "dry_run": dry_run,
         }))
+    }
+}
+
+/// D185/D189: one task this store already held that `merge` folded in.
+struct MergedTask {
+    id: String,
+    /// `payload`, `store` or `mixed`: which copy supplied the fields that
+    /// differed. With none differing, the side D185's `modified` favoured.
+    took: &'static str,
+    /// The scalar columns that differed and were taken from each side.
+    from_payload: Vec<&'static str>,
+    from_store: Vec<&'static str>,
+    /// Merged tracked total minus the stored one, in seconds.
+    tracked_delta: i64,
+    /// `max(stored, payload) + 1`, written when anything changed.
+    rev_target: i64,
+    /// The upsert ran, so `rev_target` is already on the row.
+    written: bool,
+    changed: bool,
+}
+
+/// D189: the stored copy of a known task, in the shape [`field_merge`]
+/// compares against the payload's.
+struct HeldRow {
+    scalars: field_merge::Scalars,
+    tracked: i64,
+    adjustment: i64,
+    created: String,
+    modified: String,
+}
+
+impl Engine {
+    /// The row `store.import` is about to merge onto, read inside its own
+    /// transaction.
+    fn stored_scalars(tx: &rusqlite::Transaction, id: &str) -> Result<HeldRow, ApiError> {
+        const COLS: [&str; 15] = [
+            "title",
+            "status",
+            "priority",
+            "project",
+            "due",
+            "scheduled",
+            "wait",
+            "estimate",
+            "recurrence",
+            "remind",
+            "completed",
+            "active_since",
+            "budget_tokens",
+            "delivered_annotation_id",
+            "spawned_from",
+        ];
+        let sql = format!(
+            "SELECT {}, tracked_seconds, tracked_adjustment_seconds, created, modified \
+             FROM tasks WHERE id = ?1",
+            COLS.join(", ")
+        );
+        Ok(tx.query_row(&sql, params![id], |r| {
+            let mut scalars = HashMap::new();
+            for (i, col) in COLS.iter().enumerate() {
+                let v = match r.get::<_, SqlValue>(i)? {
+                    SqlValue::Integer(n) => json!(n),
+                    SqlValue::Text(s) => json!(s),
+                    _ => Value::Null,
+                };
+                scalars.insert(*col, v);
+            }
+            Ok(HeldRow {
+                scalars: field_merge::Scalars(scalars),
+                tracked: r.get(COLS.len())?,
+                adjustment: r.get(COLS.len() + 1)?,
+                created: r.get(COLS.len() + 2)?,
+                modified: r.get(COLS.len() + 3)?,
+            })
+        })?)
+    }
+
+    /// This store's own log for task `id`: every task event except the ones
+    /// this import just added (`fresh`), which belong to the payload's side,
+    /// and its `import` events, which `store.export` never carries — so the
+    /// store's log reads exactly as the other machine will read it, and the
+    /// two directions of a merge see the same two logs.
+    fn stored_task_events(
+        tx: &rusqlite::Transaction,
+        id: &str,
+        fresh: &HashSet<String>,
+    ) -> Result<Vec<field_merge::LoggedEvent>, ApiError> {
+        let mut stmt = tx.prepare(
+            "SELECT id, op, payload, ts FROM events \
+             WHERE entity = 'task' AND entity_id = ?1 AND op <> 'import'",
+        )?;
+        let rows = stmt.query_map(params![id], |r| {
+            Ok(field_merge::LoggedEvent {
+                id: r.get(0)?,
+                op: r.get(1)?,
+                payload: r
+                    .get::<_, Option<String>>(2)?
+                    .and_then(|p| serde_json::from_str(&p).ok())
+                    .unwrap_or(Value::Null),
+                ts: r.get(3)?,
+            })
+        })?;
+        let mut out = Vec::new();
+        for ev in rows {
+            let ev = ev?;
+            if !fresh.contains(&ev.id) {
+                out.push(ev);
+            }
+        }
+        Ok(out)
     }
 }
 
@@ -3188,6 +3491,10 @@ mod tests {
         payload["tasks"][0]["modified"] = json!("2099-01-01T00:00:00Z");
         payload["tasks"][0]["checks"][0]["evidence"] = json!("nothing was proven here");
         payload["tasks"][0]["checks"][0]["modified"] = json!("2000-01-01T00:00:00Z");
+        // The title above is hand-written, with no `modify` event behind it;
+        // a payload with no log falls back to D185's task-level `modified`
+        // (D189), which is what makes the payload the task-level winner here.
+        payload["events"] = json!([]);
         payload["merge"] = json!(true);
         b.store_import(&payload).expect("a merge must not refuse");
 
@@ -3681,7 +3988,13 @@ mod tests {
             .expect("merge");
         assert_eq!(
             r["merged"],
-            json!([{ "id": id, "took": "payload" }]),
+            json!([{
+                "id": id,
+                "took": "payload",
+                "from_payload": ["title"],
+                "from_store": [],
+                "tracked_delta_seconds": 0,
+            }]),
             "a later payload wins the scalars, and says so: {r}"
         );
         let after = newer.task_get(&json!({ "ref": &id })).expect("get");
@@ -3707,11 +4020,1149 @@ mod tests {
             .expect("merge");
         assert_eq!(
             r["merged"],
-            json!([{ "id": id, "took": "store" }]),
+            json!([{
+                "id": id,
+                "took": "store",
+                "from_payload": [],
+                "from_store": ["title"],
+                "tracked_delta_seconds": 0,
+            }]),
             "an older payload leaves the scalars alone, and says so: {r}"
         );
         let after = older.task_get(&json!({ "ref": &id })).expect("get");
         assert_eq!(after["title"], json!("the stored title"), "{after}");
+    }
+
+    /// Two stores holding one task, B seeded from A's export so both carry
+    /// the same `add` event. Returns `(a, b, id, short_id)`.
+    fn one_task_on_two_machines() -> (Engine, Engine, String, i64) {
+        let a = Engine::open_in_memory().expect("open a");
+        let added = a.task_add(&json!({ "title": "shared work" })).expect("add");
+        let id = added["id"].as_str().expect("id").to_string();
+        let sid = added["short_id"].as_i64().expect("short_id");
+        let b = Engine::open_in_memory().expect("open b");
+        b.store_import(&a.store_export(&json!({})).expect("export the seed"))
+            .expect("seed b");
+        (a, b, id, sid)
+    }
+
+    /// Wait until the clock reads past every event `stores` hold, so the
+    /// next write is later in the log and not only in the source. A fixed
+    /// pause is not enough: the wall clock can step backwards (a VM's time
+    /// sync does), and a merge test that orders two machines' edits by their
+    /// stamps then reads them the other way round.
+    fn tick(stores: &[&Engine]) {
+        let latest = stores
+            .iter()
+            .flat_map(|e| {
+                let doc = e.store_export(&json!({})).expect("export");
+                doc["events"]
+                    .as_array()
+                    .expect("events")
+                    .iter()
+                    .filter_map(|ev| ev["ts"].as_str().and_then(parse_ts))
+                    .collect::<Vec<_>>()
+            })
+            .max();
+        loop {
+            std::thread::sleep(std::time::Duration::from_millis(2));
+            if latest.is_none_or(|l| crate::clock::now() > l) {
+                break;
+            }
+        }
+    }
+
+    /// The exported row of task `id` in `e`.
+    fn exported_row(e: &Engine, id: &str) -> Value {
+        e.store_export(&json!({})).expect("export")["tasks"]
+            .as_array()
+            .expect("tasks")
+            .iter()
+            .find(|t| t["id"] == json!(id))
+            .cloned()
+            .unwrap_or_else(|| panic!("task {id} exported"))
+    }
+
+    /// `import --merge` of `from`'s export into `into`.
+    fn merge_into(into: &Engine, from: &Engine) -> Value {
+        let mut payload = from.store_export(&json!({})).expect("export");
+        payload["merge"] = json!(true);
+        into.store_import(&payload).expect("merge")
+    }
+
+    /// #766, D189: A completes the task and adjusts +10m; B, later, adjusts
+    /// +20m. Folding B into A used to take B's whole row because B's
+    /// `modified` was later — `pending` with 20m, A's completion and A's ten
+    /// minutes both gone. The status follows the side whose event last
+    /// touched it, and tracked time is A's total plus the deltas B's log
+    /// carries that A had not seen.
+    #[test]
+    fn store_import_merge_keeps_a_status_change_and_sums_both_sides_tracked_time() {
+        let (a, b, id, sid) = one_task_on_two_machines();
+        tick(&[&a, &b]);
+        a.task_done(&json!({ "ref": sid })).expect("done on a");
+        a.task_adjust_tracked(&json!({ "ref": sid, "delta": "10m", "reason": "on a" }))
+            .expect("adjust on a");
+        tick(&[&a, &b]);
+        b.task_adjust_tracked(&json!({ "ref": sid, "delta": "20m", "reason": "on b" }))
+            .expect("adjust on b");
+
+        let r = merge_into(&a, &b);
+        let row = exported_row(&a, &id);
+        assert_eq!(row["status"], json!("done"), "A's completion stands: {row}");
+        assert!(row["completed"].is_string(), "{row}");
+        assert_eq!(
+            row["tracked_seconds"],
+            json!(1800),
+            "baseline + 10m + 20m: {row}"
+        );
+        assert_eq!(row["tracked_adjustment_seconds"], json!(1800), "{row}");
+        assert_eq!(r["merged"][0]["tracked_delta_seconds"], json!(1200), "{r}");
+    }
+
+    /// D189: edits to different fields on the two machines both survive,
+    /// whichever side's `modified` is later.
+    #[test]
+    fn store_import_merge_keeps_field_disjoint_edits_from_both_sides() {
+        let (a, b, id, sid) = one_task_on_two_machines();
+        tick(&[&a, &b]);
+        a.task_modify(&json!({ "ref": sid, "set": { "title": "renamed on a" } }))
+            .expect("title on a");
+        tick(&[&a, &b]);
+        b.task_modify(&json!({ "ref": sid, "set": { "due": "2031-05-01T00:00:00Z" } }))
+            .expect("due on b");
+
+        let r = merge_into(&a, &b);
+        let row = exported_row(&a, &id);
+        assert_eq!(row["title"], json!("renamed on a"), "{row}");
+        assert_eq!(row["due"], json!("2031-05-01T00:00:00Z"), "{row}");
+        let entry = &r["merged"][0];
+        assert_eq!(entry["took"], json!("mixed"), "{r}");
+        assert_eq!(entry["from_store"], json!(["title"]), "{r}");
+        assert_eq!(entry["from_payload"], json!(["due"]), "{r}");
+    }
+
+    /// D189: one field edited on both machines goes to the later event, in
+    /// either direction of the merge.
+    #[test]
+    fn store_import_merge_takes_the_later_event_when_both_sides_edit_one_field() {
+        let (a, b, id, sid) = one_task_on_two_machines();
+        tick(&[&a, &b]);
+        a.task_modify(&json!({ "ref": sid, "set": { "title": "earlier, on a" } }))
+            .expect("title on a");
+        tick(&[&a, &b]);
+        b.task_modify(&json!({ "ref": sid, "set": { "title": "later, on b" } }))
+            .expect("title on b");
+        tick(&[&a, &b]);
+        // A's `modified` is now the later one, which is what the old rule
+        // read; the title's own events say B wrote it last.
+        a.annotation_add(&json!({ "ref": sid, "body": "a note" }))
+            .expect("note on a");
+
+        merge_into(&a, &b);
+        assert_eq!(exported_row(&a, &id)["title"], json!("later, on b"));
+        merge_into(&b, &a);
+        assert_eq!(exported_row(&b, &id)["title"], json!("later, on b"));
+    }
+
+    /// D189: importing one document twice changes nothing the second time —
+    /// every tracked delta in it is already in this store's log.
+    #[test]
+    fn store_import_merge_twice_does_not_double_tracked_time() {
+        let (a, b, id, sid) = one_task_on_two_machines();
+        tick(&[&a, &b]);
+        b.task_adjust_tracked(&json!({ "ref": sid, "delta": "20m", "reason": "on b" }))
+            .expect("adjust on b");
+        let mut payload = b.store_export(&json!({})).expect("export");
+        payload["merge"] = json!(true);
+        a.store_import(&payload).expect("first merge");
+        let once = exported_row(&a, &id);
+        assert_eq!(once["tracked_seconds"], json!(1200), "{once}");
+        let r = a.store_import(&payload).expect("second merge");
+        let twice = exported_row(&a, &id);
+        assert_eq!(twice, once, "a second merge of one document is a no-op");
+        assert_eq!(r["merged"][0]["tracked_delta_seconds"], json!(0), "{r}");
+        assert_eq!(r["merged"][0]["took"], json!("store"), "{r}");
+    }
+
+    /// D189 changes nothing for a task the store does not hold: the payload's
+    /// row lands whole, its tracked total included, never summed.
+    #[test]
+    fn store_import_merge_writes_a_new_task_whole() {
+        let b = Engine::open_in_memory().expect("open b");
+        let added = b.task_add(&json!({ "title": "only on b" })).expect("add");
+        let id = added["id"].as_str().expect("id").to_string();
+        let sid = added["short_id"].as_i64().expect("short_id");
+        b.task_adjust_tracked(&json!({ "ref": sid, "delta": "20m", "reason": "on b" }))
+            .expect("adjust");
+        b.task_done(&json!({ "ref": sid })).expect("done");
+        let a = Engine::open_in_memory().expect("open a");
+        let r = merge_into(&a, &b);
+        assert_eq!(r["merged"], json!([]), "{r}");
+        let mut want = exported_row(&b, &id);
+        let mut got = exported_row(&a, &id);
+        // `_rev` and the event log differ by the import itself; the row does not.
+        for row in [&mut want, &mut got] {
+            row.as_object_mut().expect("row").remove("_rev");
+        }
+        assert_eq!(got, want);
+    }
+
+    /// D189: A→B then B→A leaves both machines holding the same task.
+    #[test]
+    fn store_import_merge_round_trip_converges() {
+        let (a, b, id, sid) = one_task_on_two_machines();
+        tick(&[&a, &b]);
+        a.task_done(&json!({ "ref": sid })).expect("done on a");
+        a.task_adjust_tracked(&json!({ "ref": sid, "delta": "10m", "reason": "on a" }))
+            .expect("adjust on a");
+        tick(&[&a, &b]);
+        b.task_modify(&json!({ "ref": sid, "set": { "title": "retitled on b", "priority": "H" } }))
+            .expect("modify on b");
+        b.task_adjust_tracked(&json!({ "ref": sid, "delta": "20m", "reason": "on b" }))
+            .expect("adjust on b");
+
+        merge_into(&a, &b);
+        merge_into(&b, &a);
+        let (ra, rb) = (exported_row(&a, &id), exported_row(&b, &id));
+        for key in [
+            "title",
+            "status",
+            "completed",
+            "priority",
+            "due",
+            "tracked_seconds",
+            "tracked_adjustment_seconds",
+            "delivered_annotation_id",
+        ] {
+            assert_eq!(ra[key], rb[key], "{key} diverged: a {ra} / b {rb}");
+        }
+        assert_eq!(ra["status"], json!("done"), "{ra}");
+        assert_eq!(ra["title"], json!("retitled on b"), "{ra}");
+        assert_eq!(ra["tracked_seconds"], json!(1800), "{ra}");
+    }
+
+    /// D189: a cancel (or a done) of a RUNNING task folds the open interval
+    /// into tracked time without writing it on its event. The merge reads it
+    /// back as the cancel's instant minus the start that opened the interval.
+    #[test]
+    fn store_import_merge_counts_the_interval_a_cancel_closed() {
+        let (a, b, id, _) = one_task_on_two_machines();
+        let mut payload = b.store_export(&json!({})).expect("export");
+        let t = payload["tasks"]
+            .as_array_mut()
+            .expect("tasks")
+            .iter_mut()
+            .find(|t| t["id"] == json!(id))
+            .expect("task");
+        t["status"] = json!("cancelled");
+        t["tracked_seconds"] = json!(3600);
+        t["modified"] = json!("2099-01-01T01:00:00Z");
+        let events = payload["events"].as_array_mut().expect("events");
+        for (eid, op, ev, ts) in [
+            (
+                "0193aaaa-0000-7000-8000-00000000a001",
+                "start",
+                json!({ "interval_started": "2099-01-01T00:00:00Z" }),
+                "2099-01-01T00:00:00Z",
+            ),
+            (
+                "0193aaaa-0000-7000-8000-00000000a002",
+                "cancel",
+                json!({ "from": "active" }),
+                "2099-01-01T01:00:00Z",
+            ),
+        ] {
+            events.push(json!({
+                "id": eid, "entity": "task", "entity_id": id, "op": op,
+                "payload": ev, "ts": ts, "actor": "user",
+            }));
+        }
+        payload["merge"] = json!(true);
+        a.store_import(&payload).expect("merge");
+        let row = exported_row(&a, &id);
+        assert_eq!(row["status"], json!("cancelled"), "{row}");
+        assert_eq!(row["tracked_seconds"], json!(3600), "{row}");
+    }
+
+    // Crafted two-machine histories, so the intervals below are hours long
+    // and every stamp is chosen rather than read off the clock.
+    const TID: &str = "0193bbbb-0000-7000-8000-00000000f001";
+
+    /// One machine's copy of the task and its log.
+    type Machine = (Value, Vec<Value>);
+
+    fn at(hm: &str) -> String {
+        format!("2099-01-01T{hm}:00Z")
+    }
+
+    /// Task event number `n` (its id sorts by `n`), at `hm`.
+    fn logged(n: u32, op: &str, payload: Value, hm: &str) -> Value {
+        json!({
+            "id": format!("0193bbbb-0000-7000-8000-{n:012}"),
+            "entity": "task", "entity_id": TID, "op": op,
+            "payload": payload, "ts": at(hm), "actor": "user",
+        })
+    }
+
+    /// The `add` both machines share.
+    fn added() -> Value {
+        logged(1, "add", json!({ "title": "shared" }), "08:00")
+    }
+
+    fn started(n: u32, hm: &str) -> Value {
+        logged(n, "start", json!({ "interval_started": at(hm) }), hm)
+    }
+
+    /// One copy of the task row, `fields` laid over a pending default.
+    fn crafted_row(fields: Value) -> Value {
+        let mut row = json!({
+            "id": TID, "short_id": 1, "title": "shared", "status": "pending",
+            "created": at("08:00"), "modified": at("08:00"),
+        });
+        for (k, v) in fields.as_object().expect("fields") {
+            row[k] = v.clone();
+        }
+        row
+    }
+
+    /// A store holding exactly this copy and this log.
+    fn machine(row: &Value, events: &[Value]) -> Engine {
+        let e = Engine::open_in_memory().expect("open");
+        e.store_import(&json!({ "tasks": [row], "events": events }))
+            .expect("seed the machine");
+        e
+    }
+
+    /// Merge the other machine's copy and log into `e`, then read the row.
+    fn merged_with(e: &Engine, row: &Value, events: &[Value]) -> Value {
+        e.store_import(&json!({ "merge": true, "tasks": [row], "events": events }))
+            .expect("merge");
+        exported_row(e, TID)
+    }
+
+    /// Both directions of one merge: A absorbing B, and B absorbing A.
+    fn both_ways(a: (&Value, &[Value]), b: (&Value, &[Value])) -> (Value, Value) {
+        let into_a = merged_with(&machine(a.0, a.1), b.0, b.1);
+        let into_b = merged_with(&machine(b.0, b.1), a.0, a.1);
+        (into_a, into_b)
+    }
+
+    /// D189: one interval, closed on both machines — B stopped it at
+    /// 10:00, A at 11:00 — is one interval. It counts once, at the longer
+    /// of its two closes, in both directions: 2h, not the 3h of both.
+    #[test]
+    fn store_import_merge_counts_an_interval_closed_on_both_sides_once() {
+        let a_log = [
+            added(),
+            started(2, "09:00"),
+            logged(3, "stop", json!({ "tracked": "PT2H" }), "11:00"),
+        ];
+        let a_row = crafted_row(json!({ "tracked_seconds": 7200, "modified": at("11:00") }));
+        let b_log = [
+            added(),
+            started(2, "09:00"),
+            logged(4, "stop", json!({ "tracked": "PT1H" }), "10:00"),
+        ];
+        let b_row = crafted_row(json!({ "tracked_seconds": 3600, "modified": at("10:00") }));
+        let (x, y) = both_ways((&a_row, &a_log), (&b_row, &b_log));
+        assert_eq!(x["tracked_seconds"], json!(7200), "into a: {x}");
+        assert_eq!(y["tracked_seconds"], json!(7200), "into b: {y}");
+
+        // A `done` that closed the same interval on B is the same case.
+        let b_log = [
+            added(),
+            started(2, "09:00"),
+            logged(4, "done", json!({ "completed": at("10:00") }), "10:00"),
+        ];
+        let b_row = crafted_row(json!({
+            "status": "done", "completed": at("10:00"),
+            "tracked_seconds": 3600, "modified": at("10:00"),
+        }));
+        let (x, y) = both_ways((&a_row, &a_log), (&b_row, &b_log));
+        assert_eq!(x["tracked_seconds"], json!(7200), "into a: {x}");
+        assert_eq!(y["tracked_seconds"], json!(7200), "into b: {y}");
+        assert_eq!(x["status"], y["status"], "{x} / {y}");
+    }
+
+    /// D189: A's timer is still running when B, which never saw it
+    /// start, completes the task at 10:00. The completion wins the status,
+    /// and A's open hour is folded in up to it rather than dropped with the
+    /// anchor — in both directions.
+    #[test]
+    fn store_import_merge_folds_an_open_interval_the_other_side_closed_the_task_over() {
+        let a_log = [added(), started(2, "09:00")];
+        let a_row = crafted_row(json!({
+            "status": "active", "active_since": at("09:00"), "modified": at("09:00"),
+        }));
+        let b_log = [
+            added(),
+            logged(5, "done", json!({ "completed": at("10:00") }), "10:00"),
+        ];
+        let b_row = crafted_row(json!({
+            "status": "done", "completed": at("10:00"), "modified": at("10:00"),
+        }));
+        let (x, y) = both_ways((&a_row, &a_log), (&b_row, &b_log));
+        for row in [&x, &y] {
+            assert_eq!(row["status"], json!("done"), "{row}");
+            assert_eq!(row["active_since"], Value::Null, "{row}");
+            assert_eq!(row["tracked_seconds"], json!(3600), "{row}");
+        }
+    }
+
+    /// Both timers running at merge time. Two independent starts: the later
+    /// one is the timer that keeps running, and the gap between the two
+    /// starts is not banked — it was measured across two machines' clocks,
+    /// which is how skew would become time. One shared start: still one
+    /// running timer and nothing banked.
+    #[test]
+    fn store_import_merge_with_both_timers_running_converges() {
+        let a_log = [added(), started(2, "09:00")];
+        let a_row = crafted_row(json!({
+            "status": "active", "active_since": at("09:00"), "modified": at("09:00"),
+        }));
+        let b_log = [added(), started(6, "09:30")];
+        let b_row = crafted_row(json!({
+            "status": "active", "active_since": at("09:30"), "modified": at("09:30"),
+        }));
+        let (x, y) = both_ways((&a_row, &a_log), (&b_row, &b_log));
+        for row in [&x, &y] {
+            assert_eq!(row["status"], json!("active"), "{row}");
+            assert_eq!(row["active_since"], json!(at("09:30")), "{row}");
+            assert_eq!(row["tracked_seconds"], Value::Null, "{row}");
+        }
+
+        let (x, y) = both_ways((&a_row, &a_log), (&a_row, &a_log));
+        for row in [&x, &y] {
+            assert_eq!(row["active_since"], json!(at("09:00")), "{row}");
+            assert_eq!(row["tracked_seconds"], Value::Null, "nothing banked: {row}");
+        }
+    }
+
+    /// D189: a task that reached this store through a plain import of a
+    /// document with no events has only that import in its log — nothing to
+    /// read a field's last writer from. The whole-row `modified` rule stands,
+    /// so an OLDER payload that does carry a log does not take every field.
+    #[test]
+    fn store_import_merge_without_a_shared_add_falls_back_to_modified() {
+        let stored = crafted_row(json!({ "title": "the stored title", "modified": at("12:00") }));
+        let e = machine(&stored, &[]);
+        let payload = crafted_row(json!({ "title": "the payload title" }));
+        let row = merged_with(&e, &payload, &[added()]);
+        assert_eq!(row["title"], json!("the stored title"), "{row}");
+    }
+
+    /// D189: time the merge banks is time the union history explains, so it
+    /// survives the trip back. A's timer runs from 09:00; B, which never saw
+    /// it start, completes the task at 10:00. A absorbs B and banks the hour
+    /// up to the completion, then B absorbs A and ends at the same hour.
+    #[test]
+    fn store_import_merge_banked_time_survives_the_way_back() {
+        let a = machine(
+            &crafted_row(json!({
+                "status": "active", "active_since": at("09:00"), "modified": at("09:00"),
+            })),
+            &[added(), started(2, "09:00")],
+        );
+        let b_row = crafted_row(json!({
+            "status": "done", "completed": at("10:00"), "modified": at("10:00"),
+        }));
+        let b_log = [
+            added(),
+            logged(5, "done", json!({ "completed": at("10:00") }), "10:00"),
+        ];
+        let b = machine(&b_row, &b_log);
+        let a_after = merged_with(&a, &b_row, &b_log);
+        assert_eq!(a_after["tracked_seconds"], json!(3600), "{a_after}");
+        let mut doc = a.store_export(&json!({})).expect("export a");
+        doc["merge"] = json!(true);
+        b.store_import(&doc).expect("b absorbs a");
+        let b_after = exported_row(&b, TID);
+        assert_eq!(b_after["tracked_seconds"], json!(3600), "{b_after}");
+        assert_eq!(b_after["status"], json!("done"), "{b_after}");
+    }
+
+    /// D189: banking an interval nobody closed never reaches past the next
+    /// event its own machine wrote after the start, so the other machine's
+    /// clock cannot stretch it. A's timer runs from 09:00 and A retitles the
+    /// task at 09:10; B, which never saw the start, completes it at 10:00.
+    #[test]
+    fn store_import_merge_caps_banked_time_at_the_same_side_next_event() {
+        let a_row = crafted_row(json!({
+            "title": "retitled", "status": "active", "active_since": at("09:00"),
+            "modified": at("09:10"),
+        }));
+        let a_log = [
+            added(),
+            started(2, "09:00"),
+            logged(7, "modify", json!({ "title": "retitled" }), "09:10"),
+        ];
+        let b_row = crafted_row(json!({
+            "status": "done", "completed": at("10:00"), "modified": at("10:00"),
+        }));
+        let b_log = [
+            added(),
+            logged(5, "done", json!({ "completed": at("10:00") }), "10:00"),
+        ];
+        let (x, y) = both_ways((&a_row, &a_log), (&b_row, &b_log));
+        for row in [&x, &y] {
+            assert_eq!(row["tracked_seconds"], json!(600), "{row}");
+            assert_eq!(row["status"], json!("done"), "{row}");
+        }
+    }
+
+    /// D189: the span banked for a timer nobody closed is read from the union
+    /// alone, and clipped at the latest reset, so three stores folded into one
+    /// in every order end on the same total. A runs a timer; B cancels and
+    /// reopens without seeing it; C resets the total to 5m and cancels.
+    #[test]
+    fn store_import_merge_banks_the_same_span_in_every_merge_order() {
+        let stores: [Machine; 3] = [
+            (
+                crafted_row(json!({
+                    "status": "active", "active_since": at_s("09:08:12"),
+                    "tracked_seconds": 600, "tracked_adjustment_seconds": 600,
+                    "modified": at_s("09:08:12"),
+                })),
+                vec![
+                    added(),
+                    logged_s(
+                        41,
+                        "adjust_tracked",
+                        json!({ "delta_seconds": 600 }),
+                        "09:04:20",
+                    ),
+                    logged_s(
+                        42,
+                        "start",
+                        json!({ "interval_started": at_s("09:08:12") }),
+                        "09:08:12",
+                    ),
+                ],
+            ),
+            (
+                crafted_row(json!({ "modified": at_s("09:24:00") })),
+                vec![
+                    added(),
+                    logged_s(43, "cancel", json!({ "from": "pending" }), "09:08:31"),
+                    logged_s(44, "reopen", json!({ "from": "cancelled" }), "09:24:00"),
+                ],
+            ),
+            (
+                crafted_row(json!({
+                    "status": "cancelled", "tracked_seconds": 300,
+                    "modified": at_s("09:16:12"),
+                })),
+                vec![
+                    added(),
+                    logged_s(45, "modify", json!({ "tracked": "5m" }), "09:13:06"),
+                    logged_s(46, "cancel", json!({ "from": "pending" }), "09:16:12"),
+                ],
+            ),
+        ];
+        let mut totals = Vec::new();
+        for [x, y, z] in [
+            [0, 1, 2],
+            [0, 2, 1],
+            [1, 0, 2],
+            [1, 2, 0],
+            [2, 0, 1],
+            [2, 1, 0],
+        ] {
+            let e = machine(&stores[x].0, &stores[x].1);
+            merged_with(&e, &stores[y].0, &stores[y].1);
+            let row = merged_with(&e, &stores[z].0, &stores[z].1);
+            totals.push(((x, y, z), row["tracked_seconds"].clone()));
+        }
+        for (order, total) in &totals {
+            assert_eq!(total, &json!(300), "{order:?}: {totals:?}");
+        }
+    }
+
+    /// D189: an `import` event is bookkeeping, not an event on the task's
+    /// timeline — `store.export` never carries one, so the store's side of a
+    /// merge would hold it and the payload's side would not. It bounds
+    /// nothing: A's timer, running from 09:00, is banked up to B's 10:00
+    /// completion in both directions, not cut off at an import A logged.
+    #[test]
+    fn store_import_merge_reads_no_import_event_as_part_of_the_timeline() {
+        let a_row = crafted_row(json!({
+            "status": "active", "active_since": at("09:00"), "modified": at("09:00"),
+        }));
+        let a_log = [
+            added(),
+            started(2, "09:00"),
+            logged(40, "import", json!({ "short_id": 1 }), "09:10"),
+        ];
+        let b_row = crafted_row(json!({
+            "status": "done", "completed": at("10:00"), "modified": at("10:00"),
+        }));
+        let b_log = [
+            added(),
+            logged(5, "done", json!({ "completed": at("10:00") }), "10:00"),
+        ];
+        let (x, y) = both_ways((&a_row, &a_log), (&b_row, &b_log));
+        for row in [&x, &y] {
+            assert_eq!(row["tracked_seconds"], json!(3600), "{row}");
+        }
+    }
+
+    /// D189: A holds 5400s — a total it once took whole — and a log that
+    /// explains an hour of it, ending in a stop at 10:30. B absorbing A ends
+    /// where A is: the part A's log does not explain is carried, not lost.
+    #[test]
+    fn store_import_merge_after_a_banked_stop_converges() {
+        let a_row = crafted_row(json!({ "tracked_seconds": 5400, "modified": at("10:30") }));
+        let a_log = [
+            added(),
+            started(2, "09:00"),
+            started(6, "09:30"),
+            logged(9, "stop", json!({ "tracked": "PT1H" }), "10:30"),
+        ];
+        let b_row = crafted_row(json!({
+            "status": "active", "active_since": at("09:30"), "modified": at("09:30"),
+        }));
+        let b_log = [added(), started(6, "09:30")];
+        let (x, y) = both_ways((&a_row, &a_log), (&b_row, &b_log));
+        for row in [&x, &y] {
+            assert_eq!(row["tracked_seconds"], json!(5400), "{row}");
+            assert_eq!(row["status"], json!("pending"), "{row}");
+        }
+    }
+
+    /// D189: three stores, each starting its own timer, merged in different
+    /// orders until each has seen the others, all end on the same row: the
+    /// last start keeps running, and no gap between two machines' starts is
+    /// banked.
+    #[test]
+    fn store_import_merge_of_three_stores_is_order_independent() {
+        let copy = |since: &str| {
+            crafted_row(json!({
+                "status": "active", "active_since": at(since), "modified": at(since),
+            }))
+        };
+        let seeds = [
+            (copy("09:00"), vec![added(), started(2, "09:00")]),
+            (copy("09:30"), vec![added(), started(6, "09:30")]),
+            (copy("10:00"), vec![added(), started(10, "10:00")]),
+        ];
+        let absorb = |into: &Engine, from: &Engine| {
+            let mut doc = from.store_export(&json!({})).expect("export");
+            doc["merge"] = json!(true);
+            into.store_import(&doc).expect("merge");
+        };
+        let mut finals = Vec::new();
+        for order in [[0, 1, 2], [2, 1, 0], [1, 2, 0]] {
+            let stores: Vec<Engine> = seeds.iter().map(|(r, l)| machine(r, l)).collect();
+            let [x, y, z] = order;
+            absorb(&stores[x], &stores[y]);
+            absorb(&stores[x], &stores[z]);
+            absorb(&stores[y], &stores[x]);
+            absorb(&stores[z], &stores[x]);
+            for s in &stores {
+                finals.push(exported_row(s, TID));
+            }
+        }
+        for row in &finals {
+            assert_eq!(row["tracked_seconds"], Value::Null, "{row}");
+            assert_eq!(row["active_since"], json!(at("10:00")), "{row}");
+        }
+    }
+
+    /// D189: a total the history does not explain — a legacy row, or one that
+    /// arrived by a plain import — keeps its unexplained part on both sides.
+    /// It is carried once, as the larger of the two sides' residuals, so a
+    /// store that already received it through an earlier import does not
+    /// count it twice.
+    #[test]
+    fn store_import_merge_keeps_an_unexplained_total_once() {
+        let a_row = crafted_row(json!({ "tracked_seconds": 5000 }));
+        let a_log = [added()];
+        let b_log = [
+            added(),
+            logged(
+                11,
+                "adjust_tracked",
+                json!({ "delta_seconds": 1200 }),
+                "09:00",
+            ),
+        ];
+        let b_row = crafted_row(json!({
+            "tracked_seconds": 1200, "tracked_adjustment_seconds": 1200,
+            "modified": at("09:00"),
+        }));
+        let (x, y) = both_ways((&a_row, &a_log), (&b_row, &b_log));
+        for row in [&x, &y] {
+            assert_eq!(row["tracked_seconds"], json!(6200), "{row}");
+            assert_eq!(row["tracked_adjustment_seconds"], json!(1200), "{row}");
+        }
+
+        // B already holding A's 5000 through an earlier import: still 6200.
+        let b_row = crafted_row(json!({
+            "tracked_seconds": 6200, "tracked_adjustment_seconds": 1200,
+            "modified": at("09:00"),
+        }));
+        let (x, y) = both_ways((&a_row, &a_log), (&b_row, &b_log));
+        for row in [&x, &y] {
+            assert_eq!(row["tracked_seconds"], json!(6200), "{row}");
+        }
+    }
+
+    /// D189: the adjustment is part of the total, so it is clamped with it.
+    /// A corrected a finished hour away; B reset the total to zero before A's
+    /// correction landed. The union applies the reset and then the -1h,
+    /// which would take the total below zero: the total stops at zero and
+    /// the correction by as much, on both machines.
+    #[test]
+    fn store_import_merge_clamps_the_adjustment_with_the_total() {
+        let shared = [
+            added(),
+            started(2, "09:00"),
+            logged(3, "stop", json!({ "tracked": "PT1H" }), "10:00"),
+        ];
+        let mut a_log = shared.to_vec();
+        a_log.push(logged(
+            12,
+            "adjust_tracked",
+            json!({ "delta_seconds": -3600 }),
+            "11:00",
+        ));
+        let a_row = crafted_row(json!({
+            "tracked_adjustment_seconds": -3600, "modified": at("11:00"),
+        }));
+        let mut b_log = shared.to_vec();
+        b_log.push(logged(13, "modify", json!({ "tracked": "0m" }), "10:30"));
+        let b_row = crafted_row(json!({ "modified": at("10:30") }));
+        let (x, y) = both_ways((&a_row, &a_log), (&b_row, &b_log));
+        for row in [&x, &y] {
+            assert_eq!(row["tracked_seconds"], Value::Null, "zero: {row}");
+            assert_eq!(
+                row["tracked_adjustment_seconds"],
+                Value::Null,
+                "zero: {row}"
+            );
+        }
+    }
+
+    /// D189's convergence, as a property over crafted history pairs: A
+    /// absorbing B and B absorbing A leave the same row, every scalar and
+    /// both tracked columns included.
+    #[test]
+    fn store_import_merge_is_symmetric_over_crafted_histories() {
+        let active = |since: &str| {
+            crafted_row(json!({
+                "status": "active", "active_since": at(since), "modified": at(since),
+            }))
+        };
+        let pending = |fields: Value| crafted_row(fields);
+        let pairs: Vec<(Machine, Machine)> = vec![
+            // Two independent starts.
+            (
+                (active("09:00"), vec![added(), started(2, "09:00")]),
+                (active("09:30"), vec![added(), started(6, "09:30")]),
+            ),
+            // Running here, completed there without ever seeing the start.
+            (
+                (active("09:00"), vec![added(), started(2, "09:00")]),
+                (
+                    pending(json!({
+                        "status": "done", "completed": at("10:00"), "modified": at("10:00"),
+                    })),
+                    vec![
+                        added(),
+                        logged(5, "done", json!({ "completed": at("10:00") }), "10:00"),
+                    ],
+                ),
+            ),
+            // One interval stopped on both sides.
+            (
+                (
+                    pending(json!({ "tracked_seconds": 7200, "modified": at("11:00") })),
+                    vec![
+                        added(),
+                        started(2, "09:00"),
+                        logged(3, "stop", json!({ "tracked": "PT2H" }), "11:00"),
+                    ],
+                ),
+                (
+                    pending(json!({ "tracked_seconds": 3600, "modified": at("10:00") })),
+                    vec![
+                        added(),
+                        started(2, "09:00"),
+                        logged(4, "stop", json!({ "tracked": "PT1H" }), "10:00"),
+                    ],
+                ),
+            ),
+            // Disjoint field edits, a legacy residual and an adjustment.
+            (
+                (
+                    pending(json!({
+                        "title": "retitled", "tracked_seconds": 5000, "modified": at("09:00"),
+                    })),
+                    vec![
+                        added(),
+                        logged(7, "modify", json!({ "title": "retitled" }), "09:00"),
+                    ],
+                ),
+                (
+                    pending(json!({
+                        "priority": "H", "due": at("12:00"), "tracked_seconds": 1200,
+                        "tracked_adjustment_seconds": 1200, "modified": at("09:30"),
+                    })),
+                    vec![
+                        added(),
+                        logged(
+                            8,
+                            "modify",
+                            json!({ "priority": "H", "due": at("12:00") }),
+                            "09:15",
+                        ),
+                        logged(
+                            11,
+                            "adjust_tracked",
+                            json!({ "delta_seconds": 1200 }),
+                            "09:30",
+                        ),
+                    ],
+                ),
+            ),
+            // A reset on one side, a stop and a cancel on the other.
+            (
+                (
+                    pending(json!({ "tracked_seconds": 600, "modified": at("10:40") })),
+                    vec![
+                        added(),
+                        logged(13, "modify", json!({ "tracked": "10m" }), "10:40"),
+                    ],
+                ),
+                (
+                    pending(json!({
+                        "status": "cancelled", "tracked_seconds": 3600, "modified": at("11:00"),
+                    })),
+                    vec![
+                        added(),
+                        started(2, "09:00"),
+                        logged(3, "stop", json!({ "tracked": "PT1H" }), "10:00"),
+                        logged(14, "cancel", json!({ "from": "pending" }), "11:00"),
+                    ],
+                ),
+            ),
+        ];
+        let fields = [
+            "title",
+            "status",
+            "priority",
+            "project",
+            "due",
+            "scheduled",
+            "wait",
+            "estimate",
+            "recurrence",
+            "remind",
+            "completed",
+            "active_since",
+            "budget_tokens",
+            "delivered_annotation_id",
+            "spawned_from",
+            "modified",
+            "tracked_seconds",
+            "tracked_adjustment_seconds",
+        ];
+        let absorb = |into: &Engine, from: &Engine| {
+            let mut doc = from.store_export(&json!({})).expect("export");
+            doc["merge"] = json!(true);
+            into.store_import(&doc).expect("merge");
+        };
+        for ((ar, al), (br, bl)) in pairs.iter().chain(&skewed_pairs()) {
+            let (a, b) = (machine(ar, al), machine(br, bl));
+            let x = merged_with(&a, br, bl);
+            let y = merged_with(&b, ar, al);
+            for f in fields {
+                assert_eq!(x[f], y[f], "{f} diverged: a<-b {x} / b<-a {y}");
+            }
+            // Both now hold the union: a merge that brings nothing new is a
+            // no-op, whichever way it runs.
+            let (a0, b0) = (exported_row(&a, TID), exported_row(&b, TID));
+            absorb(&a, &b);
+            absorb(&b, &a);
+            assert_eq!(exported_row(&a, TID), a0, "a changed on a no-op merge");
+            assert_eq!(exported_row(&b, TID), b0, "b changed on a no-op merge");
+        }
+    }
+
+    /// An instant to the second, for the skewed histories below.
+    fn at_s(hms: &str) -> String {
+        format!("2099-01-01T{hms}Z")
+    }
+
+    /// Task event number `n` at the exact instant `hms`.
+    fn logged_s(n: u32, op: &str, payload: Value, hms: &str) -> Value {
+        json!({
+            "id": format!("0193bbbb-0000-7000-8000-{n:012}"),
+            "entity": "task", "entity_id": TID, "op": op,
+            "payload": payload, "ts": at_s(hms), "actor": "user",
+        })
+    }
+
+    /// A starts at 10:00:00. B takes that start in a merge and stops the
+    /// task with a clock 50s slow, so its `stop` is stamped BEFORE the start
+    /// it closes. Returns `(a, b)` as `(row, log)` pairs.
+    fn a_start_and_a_slow_stop() -> (Machine, Machine) {
+        let start = logged_s(
+            2,
+            "start",
+            json!({ "interval_started": at_s("10:00:00") }),
+            "10:00:00",
+        );
+        let a = (
+            crafted_row(json!({
+                "status": "active", "active_since": at_s("10:00:00"),
+                "modified": at_s("10:00:00"),
+            })),
+            vec![added(), start.clone()],
+        );
+        let slow_stop = logged_s(
+            20,
+            "stop",
+            json!({ "tracked": "PT0S", "interval_started": at_s("10:00:00") }),
+            "09:59:10",
+        );
+        let b = (
+            crafted_row(json!({ "modified": at_s("09:59:10") })),
+            vec![added(), start, slow_stop],
+        );
+        (a, b)
+    }
+
+    /// Crafted pairs whose stamps are skewed or equal, which a real clock in
+    /// a test never produces.
+    fn skewed_pairs() -> Vec<(Machine, Machine)> {
+        let (a, b) = a_start_and_a_slow_stop();
+        let (_, mut later) = a_start_and_a_slow_stop();
+        later.1.push(logged_s(
+            21,
+            "start",
+            json!({ "interval_started": at_s("10:33:20") }),
+            "10:33:20",
+        ));
+        later.1.push(logged_s(
+            22,
+            "stop",
+            json!({ "tracked": "PT1M40S", "interval_started": at_s("10:33:20") }),
+            "10:35:00",
+        ));
+        later.0 = crafted_row(json!({ "tracked_seconds": 100, "modified": at_s("10:35:00") }));
+        // One log, two rows: the same latest event on both sides, but the
+        // copies disagree (one took the other's row whole under D185).
+        let shared = vec![
+            added(),
+            logged(7, "modify", json!({ "title": "from x" }), "09:00"),
+            logged(8, "modify", json!({ "priority": "H" }), "09:10"),
+        ];
+        let equal = (
+            (
+                crafted_row(json!({ "priority": "H", "modified": at("09:10") })),
+                shared.clone(),
+            ),
+            (
+                crafted_row(json!({ "title": "from x", "modified": at("09:10") })),
+                shared,
+            ),
+        );
+        vec![(a.clone(), b), (a, later), equal]
+    }
+
+    /// D189: every event that closes a running interval names the instant it
+    /// opened, so a merge can place the close after its start even when the
+    /// closing machine's clock was slow.
+    #[test]
+    fn a_closing_event_names_the_interval_it_closed() {
+        let e = Engine::open_in_memory().expect("open");
+        type Close = fn(&Engine, &Value) -> Result<Value, ApiError>;
+        let closers: [(&str, Close); 3] = [
+            ("stop", Engine::task_stop),
+            ("done", Engine::task_done),
+            ("cancel", Engine::task_cancel),
+        ];
+        for (op, close) in closers {
+            let sid = e.task_add(&json!({ "title": op })).expect("add")["short_id"].clone();
+            let started = e.task_start(&json!({ "ref": sid })).expect("start");
+            close(&e, &json!({ "ref": sid })).expect("close");
+            let events = e.store_export(&json!({})).expect("export")["events"].clone();
+            let closing = events
+                .as_array()
+                .expect("events")
+                .iter()
+                .rfind(|ev| ev["op"] == json!(op))
+                .cloned()
+                .unwrap_or_else(|| panic!("a {op} event"));
+            assert_eq!(
+                closing["payload"]["interval_started"], started["interval_started"],
+                "{op}: {closing}"
+            );
+        }
+        // An auto-stop names the interval it closed, too.
+        let first = e.task_add(&json!({ "title": "first" })).expect("add")["short_id"].clone();
+        let second = e.task_add(&json!({ "title": "second" })).expect("add")["short_id"].clone();
+        let started = e.task_start(&json!({ "ref": first })).expect("start");
+        e.task_start(&json!({ "ref": second }))
+            .expect("start second");
+        let events = e.store_export(&json!({})).expect("export")["events"].clone();
+        let auto = events
+            .as_array()
+            .expect("events")
+            .iter()
+            .rfind(|ev| ev["op"] == json!("stop"))
+            .cloned()
+            .expect("the auto-stop");
+        assert_eq!(auto["payload"]["reason"], json!("auto_stop"), "{auto}");
+        assert_eq!(
+            auto["payload"]["interval_started"], started["interval_started"],
+            "{auto}"
+        );
+    }
+
+    /// A's clock runs an hour ahead of B's. A starts the task; B takes it in
+    /// a plain import, stops it, runs the timer for 2s, and starts it again.
+    /// Neither machine ever closed more than 2s, and neither direction of the
+    /// merge may book the hour between A's start and B's own starts.
+    #[test]
+    fn store_import_merge_books_no_clock_skew_as_time() {
+        for (a_starts, stopped) in [("12:07:00", "PT0S"), ("10:07:00", "PT1H")] {
+            let a_start = logged_s(
+                2,
+                "start",
+                json!({ "interval_started": at_s(a_starts) }),
+                a_starts,
+            );
+            let a = (
+                crafted_row(json!({
+                    "status": "active", "active_since": at_s(a_starts),
+                    "modified": at_s(a_starts),
+                })),
+                vec![added(), a_start.clone()],
+            );
+            let b_log = vec![
+                added(),
+                a_start,
+                logged_s(
+                    30,
+                    "stop",
+                    json!({ "tracked": stopped, "interval_started": at_s(a_starts) }),
+                    "11:07:00",
+                ),
+                logged_s(
+                    31,
+                    "start",
+                    json!({ "interval_started": at_s("11:07:01") }),
+                    "11:07:01",
+                ),
+                logged_s(
+                    32,
+                    "stop",
+                    json!({ "tracked": "PT2S", "interval_started": at_s("11:07:01") }),
+                    "11:07:03",
+                ),
+                logged_s(
+                    33,
+                    "start",
+                    json!({ "interval_started": at_s("11:07:03") }),
+                    "11:07:03",
+                ),
+            ];
+            // B's own total: what its stop of A's interval recorded, plus 2s.
+            let b_total = datetime_secs(stopped) + 2;
+            let b = (
+                crafted_row(json!({
+                    "status": "active", "active_since": at_s("11:07:03"),
+                    "tracked_seconds": b_total, "modified": at_s("11:07:03"),
+                })),
+                b_log,
+            );
+            let (x, y) = both_ways((&a.0, &a.1), (&b.0, &b.1));
+            for row in [&x, &y] {
+                assert_eq!(row["tracked_seconds"], json!(b_total), "{a_starts}: {row}");
+            }
+            // Everything but `_rev`, which counts each store's own writes.
+            let (mut x, mut y) = (x, y);
+            for row in [&mut x, &mut y] {
+                row.as_object_mut().expect("row").remove("_rev");
+            }
+            assert_eq!(x, y, "{a_starts}: both directions");
+        }
+    }
+
+    fn datetime_secs(iso: &str) -> i64 {
+        crate::util::duration_secs(iso).expect("an ISO duration")
+    }
+
+    /// A stop stamped before the start it closes (a slow clock) still closes
+    /// it: the task ends pending on both machines, and the interval is zero.
+    #[test]
+    fn store_import_merge_orders_a_slow_clock_stop_after_its_start() {
+        let (a, b) = a_start_and_a_slow_stop();
+        let (x, y) = both_ways((&a.0, &a.1), (&b.0, &b.1));
+        for row in [&x, &y] {
+            assert_eq!(row["status"], json!("pending"), "{row}");
+            assert_eq!(row["active_since"], Value::Null, "{row}");
+            assert_eq!(row["tracked_seconds"], Value::Null, "{row}");
+        }
+    }
+
+    /// After a slow-clock stop, B runs the timer 100s more. Merging A, which
+    /// brings no event B lacks, leaves B exactly as it was — no phantom time
+    /// from reading the slow stop before its start.
+    #[test]
+    fn store_import_merge_brings_no_phantom_time_from_a_slow_clock_stop() {
+        let (a, mut b) = a_start_and_a_slow_stop();
+        b.1.push(logged_s(
+            21,
+            "start",
+            json!({ "interval_started": at_s("10:33:20") }),
+            "10:33:20",
+        ));
+        b.1.push(logged_s(
+            22,
+            "stop",
+            json!({ "tracked": "PT1M40S", "interval_started": at_s("10:33:20") }),
+            "10:35:00",
+        ));
+        b.0 = crafted_row(json!({ "tracked_seconds": 100, "modified": at_s("10:35:00") }));
+        let (x, y) = both_ways((&a.0, &a.1), (&b.0, &b.1));
+        for row in [&x, &y] {
+            assert_eq!(row["tracked_seconds"], json!(100), "{row}");
+            assert_eq!(row["status"], json!("pending"), "{row}");
+        }
+    }
+
+    /// The same latest event on both sides with different values — one copy
+    /// took the other's row whole — is broken by a rule both sides compute
+    /// alike, so the two converge on every later merge.
+    #[test]
+    fn store_import_merge_breaks_a_same_event_disagreement_alike_on_both_sides() {
+        let ((ar, al), (br, bl)) = skewed_pairs().pop().expect("the equal pair");
+        let (x, y) = both_ways((&ar, &al), (&br, &bl));
+        assert_eq!(x["title"], y["title"], "{x} / {y}");
+        assert_eq!(x["priority"], y["priority"], "{x} / {y}");
+    }
+
+    /// Two events at one instant: the tie breaks on the event id, the same
+    /// way on both machines, so they converge instead of each keeping its own.
+    #[test]
+    fn store_import_merge_breaks_a_same_instant_tie_on_the_event_id() {
+        let a_log = [
+            added(),
+            logged(7, "modify", json!({ "title": "a" }), "09:00"),
+        ];
+        let a_row = crafted_row(json!({ "title": "a", "modified": at("09:00") }));
+        let b_log = [
+            added(),
+            logged(8, "modify", json!({ "title": "b" }), "09:00"),
+        ];
+        let b_row = crafted_row(json!({ "title": "b", "modified": at("09:00") }));
+        let (x, y) = both_ways((&a_row, &a_log), (&b_row, &b_log));
+        assert_eq!(x["title"], json!("b"), "{x}");
+        assert_eq!(y["title"], json!("b"), "{y}");
     }
 
     /// D185: the #177 `_rev` guard is skipped for a merged task. The two
@@ -3754,7 +5205,17 @@ mod tests {
         let mut merged = payload.clone();
         merged["merge"] = json!(true);
         let r = e.store_import(&merged).expect("a merge must not refuse");
-        assert_eq!(r["merged"], json!([{ "id": id, "took": "payload" }]), "{r}");
+        assert_eq!(
+            r["merged"],
+            json!([{
+                "id": id,
+                "took": "payload",
+                "from_payload": ["title"],
+                "from_store": [],
+                "tracked_delta_seconds": 0,
+            }]),
+            "{r}"
+        );
 
         let after = e.store_export(&json!({})).expect("export");
         assert_eq!(
@@ -3859,7 +5320,17 @@ mod tests {
             }))
             .expect("a dry merge");
         assert_eq!(r["dry_run"], json!(true), "{r}");
-        assert_eq!(r["merged"], json!([{ "id": id, "took": "payload" }]), "{r}");
+        assert_eq!(
+            r["merged"],
+            json!([{
+                "id": id,
+                "took": "payload",
+                "from_payload": ["title"],
+                "from_store": [],
+                "tracked_delta_seconds": 0,
+            }]),
+            "{r}"
+        );
 
         let after = e.store_export(&json!({})).expect("export");
         assert_eq!(after, before, "a dry run must write nothing");

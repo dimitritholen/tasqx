@@ -1765,21 +1765,16 @@ pub fn imported(ctx: &Ctx, result: &Value) -> String {
     }
     // D185: one line per task this store already held and `--merge` unioned.
     // Named for the doc merge's reason — the counts above cannot say which
-    // side's title, status and dates the task now carries.
+    // side's title, status and dates the task now carries. D189: a merge
+    // decides each field on its own, so the line names the fields that
+    // differed and the side each came from, and how far tracked time moved.
     for task in result
         .get("merged")
         .and_then(Value::as_array)
         .into_iter()
         .flatten()
     {
-        out.push_str(&note_line(
-            ctx,
-            &format!(
-                "merged: task {} took the {} copy",
-                s(task, "id"),
-                s(task, "took"),
-            ),
-        ));
+        out.push_str(&note_line(ctx, &merged_task_line(task)));
     }
     // D190: one line per project this store already held whose own
     // description won over the payload's — a payload description this store
@@ -1826,6 +1821,47 @@ pub fn imported(ctx: &Ctx, result: &Value) -> String {
         out.push_str(&note_line(ctx, "nothing was written"));
     }
     out
+}
+
+/// One `store.import` `merged` entry in words (D189): `merged: task <id> took
+/// status from the store and title from the payload; tracked +20m from the
+/// payload`. Only the fields that differed are named; with none differing and
+/// no tracked time moved, the line names the copy D185's `took` answered.
+fn merged_task_line(task: &Value) -> String {
+    let fields = |key: &str| -> Vec<String> {
+        task.get(key)
+            .and_then(Value::as_array)
+            .map(|a| a.iter().filter_map(Value::as_str).map(san).collect())
+            .unwrap_or_default()
+    };
+    let mut clauses = Vec::new();
+    for (key, side) in [("from_store", "store"), ("from_payload", "payload")] {
+        let named = fields(key);
+        if !named.is_empty() {
+            clauses.push(format!("{} from the {side}", named.join(", ")));
+        }
+    }
+    let delta = task
+        .get("tracked_delta_seconds")
+        .and_then(Value::as_i64)
+        .unwrap_or(0);
+    let mut line = format!("merged: task {}", s(task, "id"));
+    if clauses.is_empty() && delta == 0 {
+        line.push_str(&format!(" took the {} copy", s(task, "took")));
+        return line;
+    }
+    if !clauses.is_empty() {
+        line.push_str(&format!(" took {}", clauses.join(" and ")));
+    }
+    if delta != 0 {
+        let sign = if delta < 0 { '-' } else { '+' };
+        let sep = if clauses.is_empty() { ":" } else { ";" };
+        line.push_str(&format!(
+            "{sep} tracked {sign}{} from the payload",
+            dur_compact(delta.abs())
+        ));
+    }
+    line
 }
 
 /// `tasqx export`'s note, on stderr because stdout IS the document.

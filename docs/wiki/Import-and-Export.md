@@ -105,12 +105,17 @@ tasqx import backup.json --dry-run
 `tasqx import other.json --merge` folds a second live store into this one
 instead of restoring over it. For a task this store *already* holds, the
 annotations, checks, tags and dependency edges written on either side are
-unioned — nothing here is thrown away, and nothing in the document is — while
-the fields that can only have one value (title, status, priority, project, the
-dates) are taken from whichever side was modified later. The `_rev` check is
-skipped for those tasks, because two stores count their own revisions and
-neither number means anything to the other. One line per task says which copy
-won. A note or a check both sides hold under the same id stays one row: a check
+unioned — nothing here is thrown away, and nothing in the document is. A
+field that can only have one value (title, status, priority, project, the
+dates) is taken from whichever side changed *that field* last, going by each
+side's history, so a task completed here and retitled there comes back
+completed and retitled. Status travels with its completion time, and the four
+dates travel together. Tracked time adds up: the time the other store logged
+since the two last met joins the total here instead of replacing it, and
+importing the same document again adds nothing. The `_rev` check is skipped
+for those tasks, because two stores count their own revisions and neither
+number means anything to the other. One line per task names each field that
+differed and the side it came from, and how much tracked time arrived. A note or a check both sides hold under the same id stays one row: a check
 follows its own last edit, so a `passed` recorded here is not rolled back by a
 copy that never saw it pass, and a note follows the task's. A task the document
 carries and this store has never seen is imported exactly as it would be

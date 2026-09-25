@@ -9,6 +9,7 @@
 //! no event. State and history therefore move together, always.
 
 mod commands;
+mod field_merge;
 mod graph;
 mod memory;
 mod projects;
@@ -1569,6 +1570,10 @@ macro_rules! engine_sources {
         [
             ("engine.rs", include_str!("engine.rs")),
             ("engine/commands.rs", include_str!("engine/commands.rs")),
+            (
+                "engine/field_merge.rs",
+                include_str!("engine/field_merge.rs"),
+            ),
             ("engine/graph.rs", include_str!("engine/graph.rs")),
             ("engine/memory.rs", include_str!("engine/memory.rs")),
             ("engine/projects.rs", include_str!("engine/projects.rs")),
