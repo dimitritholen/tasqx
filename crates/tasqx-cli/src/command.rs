@@ -951,8 +951,9 @@ pub(super) enum Command {
         #[arg(long)]
         dry_run: bool,
         /// Merge a task this store already holds instead of replacing it
-        /// (D185): union its notes, checks, tags and edges, and take its
-        /// scalars from whichever side was modified later.
+        /// (D185): union its notes, checks, tags and edges, take each field
+        /// from the side whose event last wrote it, and count tracked time
+        /// from both stores' histories together (D189).
         #[arg(long)]
         merge: bool,
     },

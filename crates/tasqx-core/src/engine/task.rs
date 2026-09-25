@@ -612,7 +612,13 @@ impl Engine {
                     Entity::Task,
                     &aid,
                     "stop",
-                    &json!({ "reason": "auto_stop", "tracked": elapsed_iso }),
+                    // D189: the interval this closes, so a merge can place
+                    // the close after its start whatever the clocks said.
+                    &json!({
+                        "reason": "auto_stop",
+                        "tracked": elapsed_iso,
+                        "interval_started": active_since,
+                    }),
                 )?;
                 // #75: report what the stop loop already knows instead of
                 // throwing it away — `task.start`'s own response used to say
@@ -690,7 +696,9 @@ impl Engine {
             Entity::Task,
             &task.id,
             "stop",
-            &json!({ "tracked": iso_duration(elapsed) }),
+            // D189: the interval this closes, so a merge can place the close
+            // after its start whatever the two machines' clocks said.
+            &json!({ "tracked": iso_duration(elapsed), "interval_started": task.active_since }),
         )?;
         tx.commit()?;
 
@@ -891,6 +899,10 @@ impl Engine {
         // completion — see `commands::Correlation` for why it lives in the
         // event payload rather than on the task row.
         let mut done_payload = json!({ "completed": ts });
+        // D189: completing a running task closes its interval, and names it.
+        if task.status == Status::Active {
+            done_payload["interval_started"] = json!(task.active_since);
+        }
         correlation.apply(&mut done_payload);
         // D150: the durable half of the override. Reaching here with blockers
         // in hand means `force` was passed, so this is the record of a
@@ -3086,19 +3098,18 @@ impl Engine {
             0
         };
         let total = task.tracked_seconds + elapsed;
+        let mut cancel_payload = json!({ "from": task.status.as_str() });
+        // D189: cancelling a running task closes its interval, and names it.
+        if task.status == Status::Active {
+            cancel_payload["interval_started"] = json!(task.active_since);
+        }
 
         tx.execute(
             "UPDATE tasks SET status='cancelled', active_since=NULL, \
              tracked_seconds=?1, rev=?2, modified=?3 WHERE id=?4",
             params![total, task.rev + 1, ts, task.id],
         )?;
-        insert_event(
-            &tx,
-            Entity::Task,
-            &task.id,
-            "cancel",
-            &json!({ "from": task.status.as_str() }),
-        )?;
+        insert_event(&tx, Entity::Task, &task.id, "cancel", &cancel_payload)?;
         // Cancelling a blocker resolves it (D11), so dependents may become
         // actionable — surface the same unblock cascade task.done reports.
         let unblocked = Self::compute_unblocked(&tx, &task.id)?;

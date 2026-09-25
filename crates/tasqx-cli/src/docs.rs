@@ -610,8 +610,9 @@ const METHODS: [(&str, &str, &str); 49] = [
          same answer previews what a real import would do (D184). <code>merge</code> (default \
          false) unions a KNOWN task's annotations, checks, tags and dependency edges with what \
          this store already holds instead of replacing them, skips its <code>_rev</code> guard \
-         and takes its scalars from whichever side's <code>modified</code> is later — listed in \
-         <code>merged</code> as <code>{id, took}</code> (D185).",
+         (D185), takes each field from the side whose event last wrote it and counts tracked \
+         time from the union of both event logs — listed in <code>merged</code> as \
+         <code>{id, took, from_payload, from_store, tracked_delta_seconds}</code> (D189).",
     ),
     (
         "event.list",

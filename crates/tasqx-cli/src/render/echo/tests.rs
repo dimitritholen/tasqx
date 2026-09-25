@@ -417,6 +417,42 @@ fn a_project_echo_draws_no_rail() {
     assert!(imported(&ctx, &json!({ "imported": 1 })).contains("1 task · no memory docs"));
 }
 
+/// D189: a merged task's note names each field that differed and the side it
+/// came from, and how far tracked time moved — never "took the payload copy"
+/// for a merge that kept half the store's row.
+#[test]
+fn a_merged_task_names_its_fields_and_the_tracked_time_it_gained() {
+    let ctx = unicode(200);
+    let line = |entry: Value| imported(&ctx, &json!({ "imported": 1, "merged": [entry] }));
+    let mixed = line(json!({
+        "id": "T", "took": "mixed", "from_store": ["status", "completed"],
+        "from_payload": ["title"], "tracked_delta_seconds": 1200,
+    }));
+    assert!(
+        mixed.contains(
+            "merged: task T took status, completed from the store and title from the \
+             payload; tracked +20m from the payload"
+        ),
+        "{mixed}"
+    );
+    let only_time = line(json!({
+        "id": "T", "took": "store", "from_store": [], "from_payload": [],
+        "tracked_delta_seconds": 600,
+    }));
+    assert!(
+        only_time.contains("merged: task T: tracked +10m from the payload"),
+        "{only_time}"
+    );
+    let nothing = line(json!({
+        "id": "T", "took": "store", "from_store": [], "from_payload": [],
+        "tracked_delta_seconds": 0,
+    }));
+    assert!(
+        nothing.contains("merged: task T took the store copy"),
+        "{nothing}"
+    );
+}
+
 /// The terminal's sentence for core's `tokens_hint` keys on how core words
 /// the variant that needs nothing from the reader. If core rewords it, this
 /// goes red here rather than the terminal nagging a reader who already
