@@ -29,7 +29,8 @@
 //! - Neighbouring blocks under the same heading path merge while either is
 //!   under [`MIN_WORDS`] and the two together are at most [`MAX_WORDS`].
 //! - Every chunk of a doc starts with the doc's title and its heading path,
-//!   one per line, then a blank line, then its text.
+//!   one per line, then a blank line, then its text. Text that is nothing
+//!   but headings is one chunk: the title, then every heading, one per line.
 //!
 //! Front matter needs no rule here: what is chunked is a doc's
 //! `search_body`, where a front matter block has already been flattened
@@ -49,7 +50,7 @@ use super::tokenizer::in_class;
 
 /// Bump when any text would be cut differently; it is part of
 /// [`super::MODEL_ID`].
-pub const VERSION: u32 = 2;
+pub const VERSION: u32 = 3;
 
 /// A block this short merges with its neighbour when the two fit.
 pub const MIN_WORDS: usize = 40;
@@ -66,6 +67,9 @@ struct Piece {
     path: Vec<String>,
     text: String,
     units: usize,
+    /// A fenced code block, known from how it was read, never re-guessed
+    /// from its text: an indented ```` ``` ```` line is prose.
+    code: bool,
 }
 
 /// The byte ranges of `text`'s units (see the module docs).
@@ -99,18 +103,27 @@ fn unit_count(s: &str) -> usize {
 }
 
 /// The chunks of a doc titled `title` whose text is `text` (its
-/// `search_body`). A doc with no text is one chunk, its title; a doc with
-/// neither has none.
+/// `search_body`). A doc with no text but its title and headings is one
+/// chunk of those; a doc with neither title nor text has none.
 pub fn chunk_doc(title: &str, text: &str) -> Vec<String> {
     let title = title.trim();
-    let chunks: Vec<String> = sections(text, title)
+    let (pieces, headings) = sections(text, title);
+    if pieces.is_empty() {
+        let mut lines: Vec<&str> = Vec::new();
+        if !title.is_empty() {
+            lines.push(title);
+        }
+        lines.extend(headings.iter().map(String::as_str));
+        return if lines.is_empty() {
+            Vec::new()
+        } else {
+            vec![lines.join("\n")]
+        };
+    }
+    pieces
         .into_iter()
         .map(|p| with_prefix(title, &p.path, &p.text))
-        .collect();
-    if chunks.is_empty() && !title.is_empty() {
-        return vec![title.to_string()];
-    }
-    chunks
+        .collect()
 }
 
 /// The chunks of an annotation. It is read as a doc with no title is, so
@@ -121,19 +134,27 @@ pub fn chunk_annotation(body: &str) -> Vec<String> {
     let text = body.replace("\r\n", "\n");
     if unit_count(&text) > MAX_WORDS {
         return sections(&text, "")
+            .0
             .into_iter()
             .map(|p| with_prefix("", &p.path, &p.text))
             .collect();
     }
     let mut groups: Vec<(Vec<String>, Vec<String>)> = Vec::new();
-    for b in blocks(&text, "") {
+    let (blocks, headings) = blocks(&text, "");
+    for b in blocks {
         match groups.last_mut() {
             Some((path, texts)) if *path == b.path => texts.push(b.text),
             _ => groups.push((b.path, vec![b.text])),
         }
     }
     if groups.is_empty() {
-        return Vec::new();
+        // Headings and nothing under them ("# Blocked on vendor") are still
+        // what the note says.
+        return if headings.is_empty() {
+            Vec::new()
+        } else {
+            vec![headings.join("\n")]
+        };
     }
     let one: Vec<String> = groups
         .iter()
@@ -142,11 +163,13 @@ pub fn chunk_annotation(body: &str) -> Vec<String> {
     vec![one.join("\n\n")]
 }
 
-/// Blocks, split to fit, then merged: the pieces that become chunks.
-fn sections(text: &str, title: &str) -> Vec<Piece> {
+/// Blocks, split to fit, then merged: the pieces that become chunks, and
+/// every heading's text, for text that has nothing but headings.
+fn sections(text: &str, title: &str) -> (Vec<Piece>, Vec<String>) {
     let text = text.replace("\r\n", "\n");
     let mut merged: Vec<Piece> = Vec::new();
-    for piece in blocks(&text, title).into_iter().flat_map(split_long) {
+    let (blocks, headings) = blocks(&text, title);
+    for piece in blocks.into_iter().flat_map(split_long) {
         match merged.last_mut() {
             Some(last)
                 if last.path == piece.path
@@ -160,7 +183,7 @@ fn sections(text: &str, title: &str) -> Vec<Piece> {
             _ => merged.push(piece),
         }
     }
-    merged
+    (merged, headings)
 }
 
 fn with_prefix(title: &str, path: &[String], text: &str) -> String {
@@ -222,7 +245,7 @@ fn heading(line: &str) -> Option<(usize, &str)> {
 }
 
 /// Push the block `lines` make, under `path`, when it has any text.
-fn emit(out: &mut Vec<Piece>, path: &[(usize, String)], lines: &mut Vec<&str>) {
+fn emit(out: &mut Vec<Piece>, path: &[(usize, String)], lines: &mut Vec<&str>, code: bool) {
     if lines.is_empty() {
         return;
     }
@@ -231,12 +254,18 @@ fn emit(out: &mut Vec<Piece>, path: &[(usize, String)], lines: &mut Vec<&str>) {
     let units = unit_count(&text);
     if units > 0 {
         let path = path.iter().map(|(_, h)| h.clone()).collect();
-        out.push(Piece { path, text, units });
+        out.push(Piece {
+            path,
+            text,
+            units,
+            code,
+        });
     }
 }
 
-fn blocks(text: &str, title: &str) -> Vec<Piece> {
+fn blocks(text: &str, title: &str) -> (Vec<Piece>, Vec<String>) {
     let mut out = Vec::new();
+    let mut headings = Vec::new();
     let mut path: Vec<(usize, String)> = Vec::new();
     let mut para: Vec<&str> = Vec::new();
     let mut fence: Option<((char, usize), Vec<&str>)> = None;
@@ -246,15 +275,15 @@ fn blocks(text: &str, title: &str) -> Vec<Piece> {
             code.push(line);
             if fence_closes(line, *open) {
                 let (_, mut code) = fence.take().expect("inside a fence");
-                emit(&mut out, &path, &mut code);
+                emit(&mut out, &path, &mut code, true);
             }
             continue;
         }
         if let Some(open) = fence_open(line) {
-            emit(&mut out, &path, &mut para);
+            emit(&mut out, &path, &mut para, false);
             fence = Some((open, vec![line]));
         } else if let Some((level, h)) = heading(line) {
-            emit(&mut out, &path, &mut para);
+            emit(&mut out, &path, &mut para, false);
             let is_title = first_heading && !title.is_empty() && h.eq_ignore_ascii_case(title);
             first_heading = false;
             while path.last().is_some_and(|(l, _)| *l >= level) {
@@ -262,22 +291,19 @@ fn blocks(text: &str, title: &str) -> Vec<Piece> {
             }
             if !h.is_empty() && !is_title {
                 path.push((level, h.to_string()));
+                headings.push(h.to_string());
             }
         } else if line.trim().is_empty() {
-            emit(&mut out, &path, &mut para);
+            emit(&mut out, &path, &mut para, false);
         } else {
             para.push(line);
         }
     }
-    emit(&mut out, &path, &mut para);
+    emit(&mut out, &path, &mut para, false);
     if let Some((_, mut code)) = fence {
-        emit(&mut out, &path, &mut code);
+        emit(&mut out, &path, &mut code, true);
     }
-    out
-}
-
-fn is_code(text: &str) -> bool {
-    fence_open(text.lines().next().unwrap_or("")).is_some()
+    (out, headings)
 }
 
 /// One sentence of a long block, or one part of a sentence too long to fit.
@@ -327,7 +353,7 @@ fn sentences(text: &str) -> Vec<Sentence> {
 /// opening with the sentence that closed the one before. Code and blocks
 /// that fit pass through.
 fn split_long(piece: Piece) -> Vec<Piece> {
-    if piece.units <= MAX_WORDS || is_code(&piece.text) {
+    if piece.units <= MAX_WORDS || piece.code {
         return vec![piece];
     }
     let mut out = Vec::new();
@@ -342,6 +368,7 @@ fn split_long(piece: Piece) -> Vec<Piece> {
             path: piece.path.clone(),
             text,
             units,
+            code: false,
         });
     };
     let mut cur: Vec<Sentence> = Vec::new();
@@ -394,7 +421,7 @@ mod tests {
     fn a_doc_with_only_a_title_is_its_title() {
         assert_eq!(chunk_doc(" Release process ", ""), ["Release process"]);
         assert_eq!(
-            chunk_doc("Release process", "# Only\n\n## Headings"),
+            chunk_doc("Release process", "# Release process"),
             ["Release process"]
         );
     }
@@ -536,6 +563,37 @@ mod tests {
         assert_eq!(unit_count("中文 and 日本"), 5);
         assert_eq!(unit_count(&"a".repeat(MAX_UNIT_CHARS * 2 + 1)), 3);
         assert_eq!(unit_count(" \n\t"), 0);
+    }
+
+    #[test]
+    fn text_that_is_only_headings_is_its_headings() {
+        assert_eq!(
+            chunk_annotation("# Blocked on vendor"),
+            ["Blocked on vendor"]
+        );
+        assert_eq!(
+            chunk_annotation("## TODO: rotate keys\r\n"),
+            ["TODO: rotate keys"]
+        );
+        assert_eq!(chunk_annotation("# A\n\n## B\n## C"), ["A\nB\nC"]);
+        assert_eq!(
+            chunk_doc("Release process", "# Only\n\n## Headings"),
+            ["Release process\nOnly\nHeadings"]
+        );
+        assert_eq!(
+            chunk_doc("Release process", "# Release process\n\n## Steps"),
+            ["Release process\nSteps"]
+        );
+    }
+
+    #[test]
+    fn an_indented_backtick_line_is_prose_and_still_split() {
+        let text = format!("    ```x {}", words(400, "w"));
+        let c = chunk_annotation(&text);
+        assert!(c.len() >= 3, "{} chunks", c.len());
+        assert!(c.iter().all(|ch| unit_count(ch) <= MAX_WORDS));
+        let c = chunk_doc("T", &text);
+        assert!(c.len() >= 3, "{} chunks", c.len());
     }
 
     #[test]

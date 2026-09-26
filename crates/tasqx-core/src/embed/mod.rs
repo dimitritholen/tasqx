@@ -55,7 +55,7 @@ pub const CHUNKER_VERSION: u32 = chunk::VERSION;
 /// What every stored vector records as its model. Two vectors are
 /// comparable only when their ids are equal.
 pub const MODEL_ID: &str =
-    "potion-base-8M@bf8b056651a2c21b8d2565580b8569da283cab23/int8/tok2/chunk2";
+    "potion-base-8M@bf8b056651a2c21b8d2565580b8569da283cab23/int8/tok2/chunk3";
 
 /// The unit vector of `text`: the mean of its tokens' rows, L2-normalised.
 ///
