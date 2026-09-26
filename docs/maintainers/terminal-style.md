@@ -379,11 +379,12 @@ retaken, not cut into shape. Re-record after a change to #50 or #51 in
 `scripts/demo-store.py`, to the MCP tool surface, or to what `task.get` and
 `task.brief` return, and watch the whole take before committing it.
 
-`docs/img/memory-recall.gif`, the first picture in the README's reference
-section, is a second take in the same room under the same rules (D194). Its tape
-is `hero-receipt.tape` with the prompt changed to "Cut the SDK 3.0 release.",
-and `HERO=memory` tells `hero-assemble.sh` which GIF to write, when the prompt
-is typed, and what the end card says (the default, `HERO=receipt`, is the hero):
+`docs/img/memory-recall.gif`, the README's second picture, directly under the
+hero (D195), is a second take in the same room under the same rules (D194).
+Its tape is `hero-receipt.tape` with the prompt changed to "Cut the SDK 3.0
+release.", and `HERO=memory` tells `hero-assemble.sh` which GIF to write, when
+the prompt is typed, and what the end card says (the default, `HERO=receipt`,
+is the hero):
 
 ```console
 $ scripts/hero-stage.sh && vhs scripts/memory-recall.tape && HERO=memory scripts/hero-assemble.sh
