@@ -2,6 +2,14 @@
 
 <img src="docs/brand/tasqx-wordmark-outlined.svg" alt="tasqx" width="440">
 
+<!-- docs/img/hero-receipt.gif is a real, unedited Claude Code session, not a
+     scripted demo: a clean config with tasqx as its only MCP server, over the
+     invented demo store. scripts/hero-stage.sh builds the room,
+     scripts/hero-receipt.tape records one take and scripts/hero-assemble.sh
+     cuts it. Only the waiting is sped up, and the frame says so; the agent's
+     text is never edited (DESIGN.md D192). -->
+![A real Claude Code session: asked to close a task, the agent reads it through tasqx, finds an open blocker and two unmet acceptance checks, and asks before closing instead of claiming done](docs/img/hero-receipt.gif)
+
 **The organiser for your AI.**
 
 A backlog, a memory and a brief for your coding agent.
@@ -12,13 +20,6 @@ One binary. One SQLite file on your disk. No account, no cloud.
 [![License: FSL-1.1-MIT](https://img.shields.io/badge/license-FSL--1.1--MIT-blue)](LICENSE.md)
 
 [Quick start](#quick-start) · [Documentation](https://dimitritholen.github.io/tasqx/) · [Guides](#learn-more) · [Wiki](docs/wiki/Home.md)
-
-<!-- docs/img/hero.svg is drawn by hand: a map of what the organiser holds,
-     one node per feature, with its own dark background so it reads the same
-     on GitHub's light and dark themes. The captures further down come from an
-     invented demo store, never a real one: scripts/demo-store.py builds it,
-     and its docstring has the render lines. -->
-![A map of tasqx: you at the shell and your agent over MCP both use one local file; around it, the list, the order, the briefing, the expense sheet, the checklist, the reference section and the review, connected and each explained in a line](docs/img/hero.svg)
 
 </div>
 
@@ -91,6 +92,13 @@ full guide in your terminal, and every verb answers `-h` with examples you can
 paste.
 
 ## What the organiser holds
+
+<!-- docs/img/hero.svg is drawn by hand: a map of what the organiser holds,
+     one node per feature, with its own dark background so it reads the same
+     on GitHub's light and dark themes. The captures further down come from an
+     invented demo store, never a real one: scripts/demo-store.py builds it,
+     and its docstring has the render lines. -->
+![A map of tasqx: you at the shell and your agent over MCP both use one local file; around it, the list, the order, the briefing, the expense sheet, the checklist, the reference section and the review, connected and each explained in a line](docs/img/hero.svg)
 
 <table>
 <tr>
