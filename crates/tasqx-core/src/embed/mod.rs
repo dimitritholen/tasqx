@@ -120,20 +120,29 @@ pub fn embed_query(text: &str) -> Option<[f32; DIMS]> {
     pool(model, ids.into_iter())
 }
 
-/// Whether the model knows `word` WHOLE: it normalises to one word the
-/// tokenizer does not split further, and that word is one vocabulary token,
-/// not `##` pieces and not `[UNK]` (#838). A word the model only spells out
-/// in pieces, or does not have, embeds to a direction that says little.
+/// Whether the model knows `word` WHOLE: each piece the tokenizer splits
+/// it into — punctuation pieces left out, so `rate-limiting` is `rate` and
+/// `limiting` — is one vocabulary token, not `##` pieces and not `[UNK]`
+/// (#838). A word the model only spells out in pieces, or does not have,
+/// embeds to a direction that says little.
 pub fn is_known_word(word: &str) -> bool {
     let model = model::model();
     let normal = tokenizer::normalize(word);
-    let words = tokenizer::words(&normal);
-    let [only] = words.as_slice() else {
-        return false;
-    };
     let mut ids = Vec::new();
-    tokenizer::wordpiece(model, only, &mut String::new(), &mut ids);
-    matches!(ids.as_slice(), [id] if *id >= tokenizer::FIRST_ORDINARY)
+    let mut buf = String::new();
+    let mut pieces = 0;
+    for piece in tokenizer::words(&normal) {
+        if is_punctuation(piece) {
+            continue;
+        }
+        pieces += 1;
+        ids.clear();
+        tokenizer::wordpiece(model, piece, &mut buf, &mut ids);
+        if !matches!(ids.as_slice(), [id] if *id >= tokenizer::FIRST_ORDINARY) {
+            return false;
+        }
+    }
+    pieces > 0
 }
 
 fn is_punctuation(word: &str) -> bool {
