@@ -327,6 +327,7 @@ their requirements:
 |---|---|---|
 | `docs/img/hero.gif` | `scripts/hero.tape` | `add`, `dep`, `pick` (search and card), short-id allocation |
 | `docs/img/hero-receipt.gif` | `scripts/hero-receipt.tape` | #50/#51 in `scripts/demo-store.py`, the MCP tool surface, `task.get` and `task.brief` output (not deterministic: see below) |
+| `docs/img/memory-recall.gif` | `scripts/memory-recall.tape` | #50/#51 and their notes and `MEMORY` in `scripts/demo-store.py`, `memory.search`, the MCP tool surface (not deterministic: see below) |
 | `docs/img/deps.gif` | `scripts/deps.tape` | `init`, `add`, `dep`, `list`, `done`, `next`, short-id allocation |
 | `docs/img/memory.gif` | `scripts/memory.tape` | `memory import`, `memory search`, `scripts/demo-decisions/` |
 | `docs/img/brief.gif` | `scripts/brief.tape` | `annotate`, `done`, `brief --card`, #50/#51 in `scripts/demo-store.py` |
@@ -352,8 +353,8 @@ less and `hero.gif` at about 25, each around 2 MB at most, and look at its last
 frame before committing — a GIF loops, and the last frame is the one a reader
 sits on.
 
-`docs/img/hero-receipt.gif`, the README's first picture, is the one GIF that is
-not deterministic (D192). Its tape types a single prompt into a real Claude Code
+`docs/img/hero-receipt.gif`, the README's first picture, is not deterministic
+(D192), and neither is `memory-recall.gif` below. Its tape types a single prompt into a real Claude Code
 session, and the agent's answer is the model's, so two takes differ. What is
 scripted is the room: `scripts/hero-stage.sh` rebuilds the demo store as a
 scratch copy, an invented repository holding the guide task #51 is about, a
@@ -377,6 +378,23 @@ edited, and a take whose answer does not show what the README says it shows is
 retaken, not cut into shape. Re-record after a change to #50 or #51 in
 `scripts/demo-store.py`, to the MCP tool surface, or to what `task.get` and
 `task.brief` return, and watch the whole take before committing it.
+
+`docs/img/memory-recall.gif`, the first picture in the README's reference
+section, is a second take in the same room under the same rules (D194). Its tape
+is `hero-receipt.tape` with the prompt changed to "Cut the SDK 3.0 release.",
+and `HERO=memory` tells `hero-assemble.sh` which GIF to write, when the prompt
+is typed, and what the end card says (the default, `HERO=receipt`, is the hero):
+
+```console
+$ scripts/hero-stage.sh && vhs scripts/memory-recall.tape && HERO=memory scripts/hero-assemble.sh
+```
+
+A take is only worth keeping if the agent searches memory, finds both the
+`release-process` doc and the ruling annotated on #51, and holds the release.
+Re-record after a change to #50 or #51 or their notes in
+`scripts/demo-store.py`, to its `MEMORY` docs, to what `memory.search` returns
+for the agent's query (the take depends on D193's any-word fallback), or to the
+MCP tool surface.
 
 ## 15. The fixtures the documentation ships
 

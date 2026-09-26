@@ -138,9 +138,22 @@ and no board has cards to drag.
 </td>
 </tr>
 <tr>
-<td valign="top">
+<td colspan="2">
 
 ### The reference section
+
+<!-- docs/img/memory-recall.gif is a second real, unedited Claude Code session
+     in the same room as the hero: scripts/hero-stage.sh builds it,
+     scripts/memory-recall.tape records one take and
+     HERO=memory scripts/hero-assemble.sh cuts it. The prompt asks for a
+     release, not for memory. Only the waiting is sped up, and the frame says
+     so; the agent's text is never edited (DESIGN.md D192, D194). -->
+![A real Claude Code session: asked to cut the SDK 3.0 release, the agent searches tasqx memory, finds the release process and a recorded ruling that the migration guide ships with the release, and holds the release instead of cutting it](docs/img/memory-recall.gif)
+
+</td>
+</tr>
+<tr>
+<td valign="top">
 
 `tasqx memory import` reads a folder of markdown (ADRs, notes, guides) into a
 local full-text index, and `tasqx memory search` finds a ruling by two words

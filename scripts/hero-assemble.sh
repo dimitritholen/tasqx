@@ -1,8 +1,12 @@
 #!/usr/bin/env bash
-# Cut a raw take (scripts/hero-receipt.tape → target/hero/take.mp4) into the
-# README hero, docs/img/hero-receipt.gif.
+# Cut a raw take (scripts/hero-receipt.tape or scripts/memory-recall.tape →
+# target/hero/take.mp4) into one of the README's real-session GIFs.
 #
-#   scripts/hero-assemble.sh [take.mp4]
+#   scripts/hero-assemble.sh [take.mp4]             # → docs/img/hero-receipt.gif
+#   HERO=memory scripts/hero-assemble.sh [take.mp4] # → docs/img/memory-recall.gif
+#
+# HERO names the cut: which GIF it writes, when its tape sends the prompt, and
+# the two headline lines on its card. Everything else is shared.
 #
 # The cut changes time, never content: the typing plays at real speed, the
 # stretch where the agent works plays faster under a label that says so, the
@@ -17,13 +21,19 @@ set -euo pipefail
 root=$(cd "$(dirname "$0")/.." && pwd)
 take=${1:-$root/target/hero/take.mp4}
 work=$root/target/hero/cut
-out=$root/docs/img/hero-receipt.gif
+case ${HERO:-receipt} in
+  receipt) out=$root/docs/img/hero-receipt.gif; typed_at=4.0
+           head1="Your agent checks the receipt"; head2="before it says done." ;;
+  memory)  out=$root/docs/img/memory-recall.gif; typed_at=2.6
+           head1="Your agent looks up what you decided"; head2="before it acts." ;;
+  *) echo "hero-assemble: HERO is receipt or memory, not $HERO" >&2; exit 1 ;;
+esac
 font=${HERO_FONT:-$(fc-match -f '%{file}' 'DejaVu Sans Mono')}
 speed=8
 fps=12
 bg=0x1e1e2e   # Catppuccin Mocha base, the tape's theme
 
-enter_at=${ENTER_AT:-4.0}
+enter_at=${ENTER_AT:-$typed_at}
 answer_at=${ANSWER_AT:-$(ffmpeg -hide_banner -i "$take" -vf freezedetect=n=0.001:d=0.5 \
   -map 0:v -f null - 2>&1 | sed -n 's/.*freeze_start: //p' | tail -1)}
 [ -n "$answer_at" ] || { echo "hero-assemble: no settled answer in $take" >&2; exit 1; }
@@ -42,10 +52,11 @@ enc=(-an -r "$fps" -pix_fmt yuv444p -c:v libx264 -crf 12 -preset veryfast)
 # The label and the card are drawn with Pillow: a stock ffmpeg often lacks
 # drawtext (it needs libfreetype), and Pillow is already what the demo tooling
 # leans on.
-python3 - "$work" "$w" "$h" "$font" "$speed" <<'EOF'
+python3 - "$work" "$w" "$h" "$font" "$speed" "$head1" "$head2" <<'EOF'
 import sys
 from PIL import Image, ImageDraw, ImageFont
-work, w, h, font, speed = sys.argv[1], int(sys.argv[2]), int(sys.argv[3]), sys.argv[4], sys.argv[5]
+work, w, h, font, speed, head1, head2 = (sys.argv[1], int(sys.argv[2]), int(sys.argv[3]),
+                                         sys.argv[4], sys.argv[5], sys.argv[6], sys.argv[7])
 BASE, TEXT, SUB, GREEN, DIM, YELLOW = "#1e1e2e", "#cdd6f4", "#a6adc8", "#a6e3a1", "#7f849c", "#f9e2af"
 f = lambda size: ImageFont.truetype(font, size)
 
@@ -62,8 +73,8 @@ d = ImageDraw.Draw(card)
 def centred(y, text, size, fill):
     ft = f(size)
     d.text(((w - d.textlength(text, font=ft)) / 2, y), text, font=ft, fill=fill)
-centred(h / 2 - 90, "Your agent checks the receipt", 34, TEXT)
-centred(h / 2 - 45, "before it says done.", 34, TEXT)
+centred(h / 2 - 90, head1, 34, TEXT)
+centred(h / 2 - 45, head2, 34, TEXT)
 centred(h / 2 + 20, "tasqx: a backlog, a memory and a brief for your coding agent", 20, SUB)
 centred(h / 2 + 80, "brew install dimitritholen/tasqx/tasqx", 28, GREEN)
 centred(h - 60, "Unedited Claude Code session on invented demo data.", 16, DIM)
