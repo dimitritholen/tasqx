@@ -3226,26 +3226,6 @@ fn payload_field(payload: &Value, key: &str) -> Option<String> {
     payload.get(key).and_then(Value::as_str).map(str::to_string)
 }
 
-/// English function words dropped from a derived query (D136).
-///
-/// **This list cannot hide a document, and that is what makes it safe to be a
-/// list.** The derived expression is a disjunction, so a term dropped here
-/// still leaves every other term matching — the only documents it removes are
-/// ones whose sole connection to the task is a function word, which were never
-/// relevant. It is English-only, and the cost of that on a title in another
-/// language is noise in the ranking, never a missed hit: the same cost as
-/// having no list at all.
-///
-/// Kept deliberately short. A long stopword list starts making judgements
-/// about which content words matter, and bm25 already does that better — a
-/// term present in most documents contributes almost nothing to the score.
-/// This list exists only so that a title made entirely of them produces no
-/// query rather than one matching the whole store.
-const QUERY_STOPWORDS: [&str; 24] = [
-    "a", "an", "and", "are", "as", "at", "be", "but", "by", "for", "from", "in", "is", "it", "of",
-    "on", "or", "that", "the", "this", "to", "with", "we", "our",
-];
-
 /// The FTS5 MATCH expression for one task's brief, or `None` when the task
 /// carries no searchable word at all.
 ///
@@ -3274,7 +3254,7 @@ pub(super) fn derive_match_expr(
         // One character is never a useful disjunct and is often punctuation
         // that survived the trim; a stopword is dropped for the reason the
         // list above gives.
-        if w.chars().count() < 2 || QUERY_STOPWORDS.contains(&w.as_str()) {
+        if w.chars().count() < 2 || super::memory::QUERY_STOPWORDS.contains(&w.as_str()) {
             return;
         }
         if seen.insert(w.clone()) {

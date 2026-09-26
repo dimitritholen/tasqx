@@ -169,7 +169,17 @@ pub fn memory_table(ctx: &Ctx, result: &Value, now: Timestamp) -> String {
 /// snippet, and `id <uuid>` on a line of its own), every one at the same
 /// weight, and closed on `N hit(s)`. #346's first cut made it a table, and at
 /// 60 and 80 columns the 36-cell id left room for the title alone.
-pub fn memory_hits(ctx: &Ctx, result: &Value, query: &str, raw: bool) -> String {
+///
+/// `scope` is the `--scope` the search ran under (`None` is the default,
+/// `all`): the engine's result does not echo it, and a miss has to say what
+/// it looked through.
+pub fn memory_hits(
+    ctx: &Ctx,
+    result: &Value,
+    query: &str,
+    raw: bool,
+    scope: Option<&str>,
+) -> String {
     let empty = Vec::new();
     let hits = result
         .get("hits")
@@ -325,14 +335,17 @@ pub fn memory_hits(ctx: &Ctx, result: &Value, query: &str, raw: bool) -> String 
     // On a miss, name the expression that ran and why it came back empty
     // (D69). The summary's label is cut to half the width, so a twelve-term
     // question showed only its first terms there; this note carries the
-    // expression WHOLE, wrapped by `prose` rather than cut, because "use
-    // fewer" cannot be acted on by a reader who cannot see which terms there
-    // were. That is why it is not a repeat of the summary (rule 11): it is
-    // the only complete copy. At the terminal's own weight, because it is the
-    // only line that says what to do next. The advice fits the search that
-    // ran: every word of a plain query is a required phrase, so dropping
-    // terms widens it, while a raw expression is already the caller's own and
-    // is widened with OR.
+    // expression WHOLE, wrapped by `prose` rather than cut, because advice
+    // about the words cannot be acted on by a reader who cannot see which
+    // words ran. That is why it is not a repeat of the summary (rule 11): it
+    // is the only complete copy. At the terminal's own weight, because it is
+    // the only line that says what to do next. The advice fits the search
+    // that ran. A raw expression is the caller's own and is widened with OR.
+    // A plain miss that relaxed (D193) already tried any word, so only other
+    // words can help, and it says where it looked. A plain miss that did not
+    // relax had one content word, or nothing the any-word search could add,
+    // so dropping words or ORing them is no help either: other words or a
+    // prefix are.
     if count == 0 {
         if let Some(matched) = result.get("matched").and_then(Value::as_str) {
             let expr = san(matched);
@@ -343,11 +356,14 @@ pub fn memory_hits(ctx: &Ctx, result: &Value, query: &str, raw: bool) -> String 
                     // plain query's terms for us, a raw expression it does not.
                     format!("nothing matched \"{expr}\" — OR widens it")
                 } else if relaxed {
-                    // D193: the any-word search missed too, so fewer words
-                    // cannot help; only other words can.
-                    format!("no entry has any of these words: {expr}")
+                    let place = match scope {
+                        Some("docs") => "no doc has",
+                        Some("annotations") => "no annotation has",
+                        _ => "nothing in docs or annotations has",
+                    };
+                    format!("{place} any of these words: {expr}")
                 } else {
-                    format!("every term was required: {expr} — use fewer, or --raw with OR")
+                    format!("nothing matched {expr} — try other words, or --raw with word* for a prefix")
                 },
             ));
         }

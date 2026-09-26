@@ -38,24 +38,87 @@ pub const MEMORY_SCOPES: [&str; 3] = ["all", "docs", "annotations"];
 /// implicit AND. Callers who *want* the operator grammar pass `raw:true` and
 /// own the syntax errors.
 fn phrase_escape(query: &str) -> Result<String, ApiError> {
-    Ok(phrase_terms(query)?.join(" "))
-}
-
-/// The quoted phrase terms [`phrase_escape`] joins — kept apart so D193's
-/// any-word fallback joins the SAME terms with `OR` rather than re-deriving
-/// them, and a change to the escaping cannot leave the two disagreeing.
-fn phrase_terms(query: &str) -> Result<Vec<String>, ApiError> {
-    let terms: Vec<String> = query
-        .split_whitespace()
-        .map(|word| format!("\"{}\"", word.replace('"', "\"\"")))
-        .collect();
+    let terms: Vec<String> = query.split_whitespace().map(phrase).collect();
     if terms.is_empty() {
         return Err(ApiError::bad_request(
             "`query` must contain at least one word",
         ));
     }
-    Ok(terms)
+    Ok(terms.join(" "))
 }
+
+/// One word as an FTS5 phrase — the single escaping rule [`phrase_escape`]
+/// and [`any_word_expr`] share, so the AND and its fallback cannot quote a
+/// word two ways.
+fn phrase(word: &str) -> String {
+    format!("\"{}\"", word.replace('"', "\"\""))
+}
+
+/// D193's any-word expression for a plain query, or `None` when there is no
+/// fallback worth running.
+///
+/// The words are the query's own, as typed, minus [`QUERY_STOPWORDS`] (a
+/// filler word is in nearly every entry, so an OR that kept it would answer a
+/// genuine miss with noise) and minus a word already taken in another case
+/// (FTS5 folds case, so `SDK OR sdk` is one term said twice). A word with no
+/// letter or digit is dropped too: it tokenizes to nothing.
+///
+/// `None` when nothing is left, or when what is left is one word and the AND
+/// was that same word alone: an OR over it is the search that already ran.
+fn any_word_expr(query: &str) -> Option<String> {
+    let and_terms: std::collections::HashSet<String> =
+        query.split_whitespace().map(str::to_lowercase).collect();
+    let mut seen = std::collections::HashSet::new();
+    let mut terms = Vec::new();
+    for word in query.split_whitespace() {
+        let key = word.to_lowercase();
+        let bare = key.trim_matches(|c: char| !c.is_alphanumeric());
+        if bare.is_empty() || QUERY_STOPWORDS.contains(&bare) {
+            continue;
+        }
+        if seen.insert(key) {
+            terms.push(phrase(word));
+        }
+    }
+    if terms.is_empty() || (terms.len() == 1 && seen == and_terms) {
+        return None;
+    }
+    Some(terms.join(" OR "))
+}
+
+/// How `memory.search`'s MATCH expression is made from `query`.
+enum MatchMode {
+    /// Every word a required phrase ([`phrase_escape`]).
+    Plain,
+    /// D193's fallback: the expression [`any_word_expr`] built. tasqx wrote
+    /// it, so a failure is tasqx's (`internal`), never the caller's.
+    AnyWord(String),
+    /// The caller's own FTS5 expression; its errors are theirs.
+    Raw,
+}
+
+/// English function words dropped from a derived query (D136), and from the
+/// any-word fallback of a plain search (D193).
+///
+/// **This list cannot hide a document, and that is what makes it safe to be a
+/// list.** The derived expression is a disjunction, so a term dropped here
+/// still leaves every other term matching — the only documents it removes are
+/// ones whose sole connection to the task is a function word, which were never
+/// relevant. It is English-only, and the cost of that on a title in another
+/// language is noise in the ranking, never a missed hit: the same cost as
+/// having no list at all.
+///
+/// Kept deliberately short. A long stopword list starts making judgements
+/// about which content words matter, and bm25 already does that better — a
+/// term present in most documents contributes almost nothing to the score.
+/// This list exists only so that a title made entirely of them produces no
+/// query rather than one matching the whole store — and so that D193's OR,
+/// which runs only after the all-words search found nothing, does not turn
+/// a miss into every entry that says "the".
+pub(super) const QUERY_STOPWORDS: [&str; 24] = [
+    "a", "an", "and", "are", "as", "at", "be", "but", "by", "for", "from", "in", "is", "it", "of",
+    "on", "or", "that", "the", "this", "to", "with", "we", "our",
+];
 
 /// The FTS5 columns `--raw` can name a `column:query` against, for the given
 /// `scope`. Kept beside [`MEMORY_SCOPES`]'s table rather than derived from
@@ -676,9 +739,10 @@ impl Engine {
     /// same WHERE clauses as the page itself, so the two numbers can never
     /// name a different match set than the hits do.
     ///
-    /// D193: a plain query of more than one word that finds nothing with
-    /// every word runs once more with the same phrase terms joined by `OR`,
-    /// in the same scope, with the same limit. The result then echoes the OR
+    /// D193: a plain query that finds nothing with every word runs once more
+    /// with its content words joined by `OR` (`any_word_expr`: stopwords
+    /// and case-repeats dropped, and skipped when that is the search that
+    /// already ran), in the same scope, with the same limit. The result echoes the OR
     /// in `matched` and says `relaxed: true`, so a hit that holds only some of
     /// the words is never passed off as one that holds them all. When the OR
     /// misses too, that is still the answer reported — the widest expression
@@ -686,23 +750,17 @@ impl Engine {
     /// `raw` never falls back: the caller wrote the grammar, and tasqx does
     /// not rewrite it.
     pub fn memory_search(&self, p: &Value) -> Result<Value, ApiError> {
-        let strict = self.memory_search_excluding(p, None)?;
-        if opt_i64(&strict, "total")?.unwrap_or(0) > 0 || opt_bool(p, "raw")?.unwrap_or(false) {
+        if opt_bool(p, "raw")?.unwrap_or(false) {
+            return self.memory_search_as(p, None, MatchMode::Raw);
+        }
+        let strict = self.memory_search_as(p, None, MatchMode::Plain)?;
+        if opt_i64(&strict, "total")?.unwrap_or(0) > 0 {
             return Ok(strict);
         }
-        let terms = phrase_terms(&req_str(p, "query")?)?;
-        if terms.len() < 2 {
-            return Ok(strict);
+        match any_word_expr(&req_str(p, "query")?) {
+            Some(expr) => self.memory_search_as(p, None, MatchMode::AnyWord(expr)),
+            None => Ok(strict),
         }
-        // Run as `raw` because the expression is already escaped: every term
-        // is a quoted phrase `phrase_terms` built, so FTS5 cannot refuse it,
-        // and re-escaping would quote the `OR`s into words.
-        let mut wide = p.clone();
-        wide["query"] = json!(terms.join(" OR "));
-        wide["raw"] = json!(true);
-        let mut relaxed = self.memory_search_excluding(&wide, None)?;
-        relaxed["relaxed"] = json!(true);
-        Ok(relaxed)
     }
 
     /// The engine's own path into `memory.search`, widened with ONE thing no
@@ -724,8 +782,26 @@ impl Engine {
         p: &Value,
         exclude_task_id: Option<&str>,
     ) -> Result<Value, ApiError> {
+        let mode = if opt_bool(p, "raw")?.unwrap_or(false) {
+            MatchMode::Raw
+        } else {
+            MatchMode::Plain
+        };
+        self.memory_search_as(p, exclude_task_id, mode)
+    }
+
+    /// One search, with the MATCH expression made the way `mode` says. Every
+    /// public door reads `raw` and picks `Plain` or `Raw`; only
+    /// [`Self::memory_search`] asks for `AnyWord`, after `Plain` found nothing.
+    fn memory_search_as(
+        &self,
+        p: &Value,
+        exclude_task_id: Option<&str>,
+        mode: MatchMode,
+    ) -> Result<Value, ApiError> {
         let query = req_str(p, "query")?;
-        let raw = opt_bool(p, "raw")?.unwrap_or(false);
+        let raw = matches!(mode, MatchMode::Raw);
+        let relaxed = matches!(mode, MatchMode::AnyWord(_));
         // Checked, not `as i64`: a value above i64::MAX wrapped negative, and
         // SQLite reads a negative LIMIT as UNLIMITED — the exact opposite of
         // the bound the caller asked for (review finding).
@@ -766,7 +842,11 @@ impl Engine {
         // terms and comes back `count: 0` — byte-identical to the answer for a
         // subject nobody ever wrote down. The caller could not tell those two
         // apart, and only one of them is worth retrying.
-        let match_expr = if raw { query } else { phrase_escape(&query)? };
+        let match_expr = match mode {
+            MatchMode::Plain => phrase_escape(&query)?,
+            MatchMode::AnyWord(expr) => expr,
+            MatchMode::Raw => query,
+        };
 
         // `bm25()` is aliased `score`, not `rank`: `rank` is a live column on
         // every FTS5 table and shadowing it inside a compound SELECT is asking
@@ -939,10 +1019,9 @@ impl Engine {
             "has_more": (hits.len() as i64) < total,
             "hits": hits,
             "matched": match_expr,
-            // D193: only `memory_search`'s any-word fallback sets this true;
-            // every expression run here is the one the caller's words asked
-            // for.
-            "relaxed": false,
+            // D193: true only for the any-word fallback `memory_search` runs
+            // after the all-words search found nothing.
+            "relaxed": relaxed,
         }))
     }
 

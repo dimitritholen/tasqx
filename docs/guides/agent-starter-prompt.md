@@ -52,8 +52,8 @@ a hit, say which one and why.
 
 Query with two or three keywords, not a sentence: every word of a plain query is
 required first, so `retry idempotency` and `tokens.css` work as typed. When no entry has
-every word, entries with any of them come back instead, marked `relaxed: true` — a
-sentence mostly returns noise that way. The result's `matched` field shows the expression
+every word, entries with any of them (filler words like "the" aside) come back instead,
+marked `relaxed: true` — a sentence mostly returns noise that way. The result's `matched` field shows the expression
 that actually ran.
 Run two searches with different wording before concluding nothing is there; no tool
 lists the store, so searching is the only way in. A hit is a snippet, not the document:

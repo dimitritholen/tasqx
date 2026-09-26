@@ -3200,12 +3200,12 @@ fn memory_search_off_a_terminal_is_a_record_per_hit() {
     let out = run(&["memory", "search", "zebra"]);
     let text = String::from_utf8(out.stdout).expect("UTF-8");
     assert!(
-        text.contains("0 hits") && text.contains("every term was required"),
+        text.contains("0 hits") && text.contains("nothing matched"),
         "{text}"
     );
     let note = text
         .lines()
-        .find(|l| l.contains("every term was required"))
+        .find(|l| l.contains("nothing matched"))
         .unwrap_or_else(|| panic!("no miss note: {text}"));
     assert!(
         note.contains("\"zebra\""),

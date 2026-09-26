@@ -49,6 +49,7 @@ fn a_memory_title_gives_way_only_after_the_columns_beside_it() {
             ] }),
         "release",
         false,
+        None,
     );
     assert!(
         out.contains("Cut build time under five minutes"),
@@ -99,6 +100,7 @@ fn a_memory_title_keeps_twelve_cells_on_a_narrow_terminal() {
                   "snippet": "How an SDK release is cut" } ] }),
         "release",
         false,
+        None,
     );
     assert!(hits.contains("release-p"), "{hits}");
     // And the handle, the one thing a search record never gives up
@@ -121,6 +123,7 @@ fn a_search_summary_sets_the_expression_off() {
         &json!({ "count": 0, "total": 0, "hits": [], "matched": "\"the\"" }),
         "the",
         false,
+        None,
     );
     assert!(out.starts_with("\"the\"   0 hits"), "{out}");
 }
@@ -142,10 +145,11 @@ fn a_search_miss_does_not_dim_its_hint() {
         &json!({ "count": 0, "total": 0, "hits": [], "matched": "\"zebra\"" }),
         "zebra",
         false,
+        None,
     );
     let hint = out
         .lines()
-        .find(|l| l.contains("every term was required"))
+        .find(|l| l.contains("nothing matched"))
         .unwrap_or_else(|| panic!("no hint: {out:?}"));
     let muted = ctx.paint("muted", "\u{0}");
     let muted = muted.split('\u{0}').next().expect("an SGR prefix");
@@ -160,6 +164,7 @@ fn a_search_miss_does_not_dim_its_hint() {
         &json!({ "count": 1, "total": 5, "hits": [hit], "matched": "\"cut\"" }),
         "cut",
         false,
+        None,
     );
     let note = out
         .lines()
@@ -182,6 +187,7 @@ fn a_search_miss_names_the_whole_expression() {
         &json!({ "count": 0, "total": 0, "hits": [], "matched": expr }),
         "how do i cut a release for the sdk",
         false,
+        None,
     );
     let flat = out.split_whitespace().collect::<Vec<_>>().join(" ");
     assert!(
@@ -203,6 +209,7 @@ fn a_search_summary_keeps_its_label_cut() {
         &json!({ "count": 0, "total": 0, "hits": [], "matched": expr }),
         "how do i cut a release for the sdk",
         false,
+        None,
     );
     let summary = out.lines().next().expect("a summary line");
     assert!(
@@ -238,6 +245,7 @@ fn a_raw_search_miss_advises_something_the_reader_can_do() {
                      "matched": "title:release OR body:ship" }),
         "title:release OR body:ship",
         true,
+        None,
     );
     assert!(
         !out.contains("--raw"),
@@ -279,6 +287,7 @@ fn a_search_record_ranks_its_lines_by_indent() {
                   "snippet": "The release of v2 waits for legal" } ] }),
         "release",
         false,
+        None,
     );
     let lines: Vec<&str> = out.lines().collect();
     let handle = lines
@@ -319,7 +328,7 @@ fn a_search_record_fits_its_head_line_to_its_own_handle() {
         ] });
     let at = |cols: usize| {
         let ctx = Ctx::new(theme::default_theme(), Caps::PLAIN).with_cols(cols);
-        memory_hits(&ctx, &hits, "release", false)
+        memory_hits(&ctx, &hits, "release", false, None)
     };
     let out = at(60);
     assert!(
@@ -362,6 +371,7 @@ fn a_relaxed_search_says_no_hit_had_every_word() {
                  "matched": "\"SDK\" OR \"3.0\" OR \"release\"" }),
         "SDK 3.0 release",
         false,
+        None,
     );
     let notes: Vec<&str> = out.lines().filter(|l| l.contains("every word")).collect();
     assert_eq!(
@@ -380,6 +390,7 @@ fn a_relaxed_search_says_no_hit_had_every_word() {
                  "matched": "\"SDK\" \"release\"" }),
         "SDK release",
         false,
+        None,
     );
     assert!(!out.contains("every word"), "{out}");
 }
@@ -395,10 +406,59 @@ fn a_relaxed_miss_does_not_advise_fewer_words() {
                  "matched": "\"zeppelin\" OR \"canary\"" }),
         "zeppelin canary",
         false,
+        None,
     );
     assert!(!out.contains("every term was required"), "{out}");
     assert!(
-        out.contains("no entry has any of these words: \"zeppelin\" OR \"canary\""),
+        out.contains(
+            "nothing in docs or annotations has any of these words: \"zeppelin\" OR \"canary\""
+        ),
         "{out}"
     );
+}
+
+/// D193 review: the relaxed miss names what was searched, not the whole
+/// store — `--scope docs` looked at no annotation.
+#[test]
+fn a_relaxed_miss_names_the_scope_it_searched() {
+    let ctx = Ctx::new(theme::default_theme(), Caps::PLAIN);
+    let result = json!({ "count": 0, "total": 0, "hits": [], "relaxed": true,
+                         "matched": "\"zeppelin\" OR \"canary\"" });
+    for (scope, said) in [
+        (
+            None,
+            "nothing in docs or annotations has any of these words",
+        ),
+        (
+            Some("all"),
+            "nothing in docs or annotations has any of these words",
+        ),
+        (Some("docs"), "no doc has any of these words"),
+        (Some("annotations"), "no annotation has any of these words"),
+    ] {
+        let out = memory_hits(&ctx, &result, "zeppelin canary", false, scope);
+        assert!(out.contains(said), "{scope:?}: {out}");
+    }
+}
+
+/// D193 review: a plain miss that did not relax is one word, or words the
+/// fallback had nothing to add to, so "use fewer, or OR" cannot help. It
+/// says what can: other words, or a prefix under --raw.
+#[test]
+fn an_unrelaxed_plain_miss_suggests_what_can_help() {
+    let ctx = Ctx::new(theme::default_theme(), Caps::PLAIN);
+    let out = memory_hits(
+        &ctx,
+        &json!({ "count": 0, "total": 0, "hits": [], "relaxed": false, "matched": "\"zebra\"" }),
+        "zebra",
+        false,
+        None,
+    );
+    assert!(
+        out.contains(
+            "nothing matched \"zebra\" — try other words, or --raw with word* for a prefix"
+        ),
+        "{out}"
+    );
+    assert!(!out.contains("use fewer"), "{out}");
 }
