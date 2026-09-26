@@ -888,5 +888,7 @@ fn a_memory_hit_found_by_meaning_or_by_some_words_says_so() {
         "{tail}"
     );
     assert!(tail.contains("- **words ruling**\n"), "{tail}");
-    assert!(tail.contains("- **some ruling** · some words\n"), "{tail}");
+    // The brief's words side is D136's derived OR, which never claims every
+    // word, so it has no partial hits to mark (#838 review).
+    assert!(tail.contains("- **some ruling**\n"), "{tail}");
 }

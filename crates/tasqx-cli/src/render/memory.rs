@@ -215,6 +215,14 @@ pub fn memory_hits(
     let mut out = summary_line(ctx, Some(&asked), parts);
     out.push('\n');
 
+    // #838: hybrid fuses D193's any-word list beside every-word hits. A page
+    // of nothing but partial hits keeps D193's one note; a page that mixes
+    // them tags the partial ones, so the tag goes only where it tells hits
+    // apart.
+    let is_partial = |h: &Value| h.get("partial").and_then(Value::as_bool) == Some(true);
+    let all_partial = !hits.is_empty() && hits.iter().all(is_partial);
+    let mixed = hits.iter().any(is_partial) && !all_partial;
+
     if !hits.is_empty() {
         struct Hit {
             title: String,
@@ -229,10 +237,6 @@ pub fn memory_hits(
             /// others hold them all.
             some_words: bool,
         }
-        // A page of nothing but partial hits keeps D193's one note below,
-        // so the tag goes only where it tells hits apart.
-        let partial = |h: &Value| h.get("partial").and_then(Value::as_bool) == Some(true);
-        let mixed = hits.iter().any(partial) && !hits.iter().all(partial);
         let rows: Vec<Hit> = hits
             .iter()
             .map(|h| {
@@ -269,7 +273,7 @@ pub fn memory_hits(
                     meaning: (h.get("via").and_then(Value::as_str) == Some("semantic"))
                         .then(|| h.get("similarity").and_then(Value::as_f64))
                         .flatten(),
-                    some_words: mixed && partial(h),
+                    some_words: mixed && is_partial(h),
                 }
             })
             .collect();
@@ -338,26 +342,28 @@ pub fn memory_hits(
     // Prose after the records stands off them by a blank line (rule 7), and
     // wraps rather than running past the terminal.
     let mut notes: Vec<(Option<&str>, String)> = Vec::new();
-    // D193: the engine fell back to any word because nothing held them all.
-    // The summary names the OR that ran; this says why it is not the words
-    // as typed, so a partial match is never read as a full one.
+    // D193: no entry held every word, so the any-word list answered — a
+    // fact about the store (`relaxed`), said so a partial match is never
+    // read as a full one. When meaning filled the page beside it, only the
+    // first half is true of every hit.
     let relaxed = result
         .get("relaxed")
         .and_then(Value::as_bool)
         .unwrap_or(false);
-    let partial = |h: &Value| h.get("partial").and_then(Value::as_bool) == Some(true);
-    let mixed = hits.iter().any(partial) && !hits.iter().all(partial);
+    if relaxed && count > 0 {
+        notes.push((
+            None,
+            if all_partial || !hits.iter().any(|h| h.get("partial").is_some()) {
+                "no hit had every word — these match any word".to_string()
+            } else {
+                "no entry has every word".to_string()
+            },
+        ));
+    }
     if mixed {
-        // #838: hybrid fuses D193's any-word list beside every-word hits,
-        // so the partial ones carry the tag and this says what it means.
         notes.push((
             None,
             format!("{SOME_WORDS} marks a hit that has only some of the words"),
-        ));
-    } else if relaxed && count > 0 {
-        notes.push((
-            None,
-            "no hit had every word — these match any word".to_string(),
         ));
     }
     // D196: the mark on a snippet line is new to every reader, so it says
@@ -418,7 +424,12 @@ pub fn memory_hits(
     }
     if count == 0 {
         if let Some(matched) = result.get("matched").and_then(Value::as_str) {
-            let expr = san(matched);
+            // A relaxed miss names the any-word expression that last ran
+            // (#838: in hybrid mode `matched` stays the all-words one).
+            let expr = match result.get("matched_any").and_then(Value::as_str) {
+                Some(any) if relaxed => san(any),
+                _ => san(matched),
+            };
             notes.push((
                 None,
                 if raw {
@@ -431,8 +442,8 @@ pub fn memory_hits(
                         Some("annotations") => "no annotation",
                         _ => "nothing in docs or annotations",
                     };
-                    // D196: in hybrid mode the OR runs only after meaning
-                    // found nothing too, so the miss is both.
+                    // D196: in hybrid mode meaning ran beside the OR and
+                    // found nothing either, so the miss is both.
                     let meaning = if semantic_floor.is_some() {
                         " is close in meaning or"
                     } else {

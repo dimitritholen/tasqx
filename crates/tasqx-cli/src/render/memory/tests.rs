@@ -518,7 +518,8 @@ fn a_hybrid_relaxed_miss_says_meaning_found_nothing_either() {
     let out = memory_hits(
         &ctx,
         &json!({ "count": 0, "total": 0, "hits": [], "relaxed": true,
-                 "matched": "\"zeppelin\" OR \"hangar\"",
+                 "matched": "\"zeppelin\" \"hangar\"",
+                 "matched_any": "\"zeppelin\" OR \"hangar\"",
                  "semantic": { "model": "m", "min_similarity": 0.3 } }),
         "zeppelin hangar",
         false,
@@ -581,7 +582,7 @@ fn a_hit_with_only_some_of_the_words_is_marked_among_ones_with_all() {
                 "via": "lexical", "similarity": null, "partial": partial })
     };
     let ctx = Ctx::new(theme::default_theme(), Caps::PLAIN).with_cols(200);
-    let mixed = json!({ "count": 2, "total": 2, "relaxed": true,
+    let mixed = json!({ "count": 2, "total": 1, "relaxed": false,
         "hits": [hit("every word", false), hit("one word", true)],
         "matched": "\"sdk\" \"release\"", "matched_any": "\"sdk\" OR \"release\"" });
     let out = memory_hits(&ctx, &mixed, "sdk release", false, None);
@@ -602,4 +603,23 @@ fn a_hit_with_only_some_of_the_words_is_marked_among_ones_with_all() {
         "{out}"
     );
     assert!(!out.contains("some words"), "{out}");
+}
+
+/// Review of 3da3f52: D193's note is about the store — no entry held every
+/// word — not about the page. When meaning filled the page beside the
+/// partial hits, the note says only that, and the tag marks the partial ones.
+#[test]
+fn no_entry_with_every_word_is_said_beside_hits_found_by_meaning() {
+    let ctx = Ctx::new(theme::default_theme(), Caps::PLAIN).with_cols(200);
+    let result = json!({ "count": 2, "total": 1, "relaxed": true, "hits": [
+            { "id": "i1", "kind": "doc", "title": "by meaning", "source": "",
+              "snippet": "close", "via": "semantic", "similarity": 0.41, "partial": false },
+            { "id": "i2", "kind": "doc", "title": "one word", "source": "",
+              "snippet": "one word passage", "via": "lexical", "similarity": null, "partial": true }
+        ], "matched": "\"sdk\" \"quagga\"", "matched_any": "\"sdk\" OR \"quagga\"",
+        "semantic": { "model": "m", "min_similarity": 0.3 } });
+    let out = memory_hits(&ctx, &result, "sdk quagga", false, None);
+    assert!(out.contains("no entry has every word"), "{out}");
+    assert!(!out.contains("these match any word"), "{out}");
+    assert!(out.contains("    some words  one word passage"), "{out}");
 }

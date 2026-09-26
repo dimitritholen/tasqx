@@ -720,17 +720,24 @@ impl Engine {
     /// the copy, below the floor or not: what a hit the words found says
     /// about its meaning. Reads the copy as the last pass left it, without
     /// reconciling again.
-    pub(crate) fn semantic_similarities(
+    pub(crate) fn semantic_similarities<'k>(
         &self,
         q: &QueryVector,
-        keys: &[(Kind, &str)],
-    ) -> HashMap<(Kind, String), f64> {
+        keys: &HashSet<(Kind, &'k str)>,
+    ) -> HashMap<(Kind, &'k str), f64> {
         let cache = self.vectors.borrow();
+        // Keyed by position so a lookup with the copy's own `&str` finds a
+        // caller's key without cloning either.
+        let wanted: Vec<(Kind, &'k str)> = keys.iter().copied().collect();
+        let index: HashMap<(Kind, &str), usize> =
+            wanted.iter().enumerate().map(|(i, k)| (*k, i)).collect();
         cache
             .entries
             .iter()
-            .filter(|e| keys.contains(&(e.kind, e.owner_id.as_str())))
-            .map(|e| ((e.kind, e.owner_id.clone()), best(e, q).1))
+            .filter_map(|e| {
+                let i = *index.get(&(e.kind, e.owner_id.as_str()))?;
+                Some((wanted[i], best(e, q).1))
+            })
             .collect()
     }
 
