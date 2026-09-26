@@ -31,6 +31,7 @@ pub mod task;
 mod tokens;
 mod transfer;
 mod undo;
+mod vectors;
 
 pub use memory::{SessionDoc, SessionRulings, MEMORY_SCOPES};
 pub use undo::{NOT_UNDOABLE, UNDOABLE_OPS};
@@ -262,6 +263,8 @@ pub static TASK_FIELDS: LazyLock<Vec<String>> = LazyLock::new(|| {
 /// The core engine. Cheap to construct; holds one open store connection.
 pub struct Engine {
     conn: Connection,
+    /// D196: this process's copy of the semantic index (`engine/vectors.rs`).
+    vectors: vectors::VectorCell,
 }
 
 /// Owns one serialized mutation from `BEGIN IMMEDIATE` through commit. The
@@ -339,6 +342,7 @@ impl Engine {
     pub fn open(path: &str) -> Result<Engine, ApiError> {
         Ok(Engine {
             conn: storage::open(path)?,
+            vectors: Default::default(),
         })
     }
 
@@ -354,6 +358,7 @@ impl Engine {
     pub fn open_read_only(path: &str) -> Result<Engine, ApiError> {
         Ok(Engine {
             conn: storage::open_read_only(path)?,
+            vectors: Default::default(),
         })
     }
 
@@ -361,6 +366,7 @@ impl Engine {
     pub fn open_in_memory() -> Result<Engine, ApiError> {
         Ok(Engine {
             conn: storage::open_in_memory()?,
+            vectors: Default::default(),
         })
     }
 
@@ -1591,6 +1597,7 @@ macro_rules! engine_sources {
             ("engine/tokens.rs", include_str!("engine/tokens.rs")),
             ("engine/transfer.rs", include_str!("engine/transfer.rs")),
             ("engine/undo.rs", include_str!("engine/undo.rs")),
+            ("engine/vectors.rs", include_str!("engine/vectors.rs")),
         ]
     };
 }
