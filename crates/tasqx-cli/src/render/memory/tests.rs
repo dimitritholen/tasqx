@@ -462,3 +462,110 @@ fn an_unrelaxed_plain_miss_suggests_what_can_help() {
     );
     assert!(!out.contains("use fewer"), "{out}");
 }
+
+/// D196: a hit found by meaning alone is marked on its snippet line with
+/// its similarity, because its snippet is not the words that matched; a hit
+/// the words found carries no mark. One legend line says what the mark is.
+#[test]
+fn a_hit_found_by_meaning_alone_is_marked_with_its_similarity() {
+    let hit = |title: &str, via: &str, sim: Value| {
+        json!({ "id": "01a0903c-bff0-76a2-9bcb-5428786a56c4", "kind": "doc",
+                "title": title, "source": "", "snippet": format!("{title} passage"),
+                "via": via, "similarity": sim })
+    };
+    let result = json!({ "count": 3, "total": 3, "hits": [
+            hit("both sides", "both", json!(0.61)),
+            hit("words only", "lexical", json!(0.12)),
+            hit("meaning only", "semantic", json!(0.41)),
+        ], "relaxed": false, "matched": "\"login\"",
+        "semantic": { "model": "m", "min_similarity": 0.3 } });
+
+    let ctx = Ctx::new(
+        theme::default_theme(),
+        Caps {
+            unicode: true,
+            ..Caps::PLAIN
+        },
+    );
+    let out = memory_hits(&ctx, &result, "login", false, None);
+    let marked: Vec<&str> = out.lines().filter(|l| l.contains("≈")).collect();
+    assert_eq!(
+        marked,
+        [
+            "    ≈ 0.41  meaning only passage",
+            "≈ marks a hit found by meaning alone, not by its words, with its similarity"
+        ],
+        "{out}"
+    );
+
+    // Without Unicode the mark is a tilde, never a glyph that cannot draw.
+    let ctx = Ctx::new(theme::default_theme(), Caps::PLAIN);
+    let out = memory_hits(&ctx, &result, "login", false, None);
+    assert!(out.contains("    ~ 0.41  meaning only passage"), "{out}");
+    assert!(!out.contains('≈'), "{out}");
+
+    // No semantic-only hit, no legend.
+    let result = json!({ "count": 1, "total": 1, "hits": [hit("words only", "lexical", json!(0.12))],
+                         "relaxed": false, "matched": "\"login\"" });
+    let out = memory_hits(&ctx, &result, "login", false, None);
+    assert!(!out.contains("meaning"), "{out}");
+}
+
+/// D196: a relaxed miss in hybrid mode tried meaning too, and says so.
+#[test]
+fn a_hybrid_relaxed_miss_says_meaning_found_nothing_either() {
+    let ctx = Ctx::new(theme::default_theme(), Caps::PLAIN);
+    let out = memory_hits(
+        &ctx,
+        &json!({ "count": 0, "total": 0, "hits": [], "relaxed": true,
+                 "matched": "\"zeppelin\" OR \"hangar\"",
+                 "semantic": { "model": "m", "min_similarity": 0.3 } }),
+        "zeppelin hangar",
+        false,
+        None,
+    );
+    assert!(
+        out.contains(
+            "nothing in docs or annotations is close in meaning or has any of these words: \
+             \"zeppelin\" OR \"hangar\""
+        ),
+        "{out}"
+    );
+}
+
+/// D196: `--mode semantic` runs no expression, so its miss names the query
+/// and the floor; when the query had nothing to embed, it says the words
+/// side is where an identifier is found.
+#[test]
+fn a_semantic_mode_miss_names_what_ran() {
+    let ctx = Ctx::new(theme::default_theme(), Caps::PLAIN).with_cols(200);
+    let out = memory_hits(
+        &ctx,
+        &json!({ "count": 0, "total": 0, "hits": [], "relaxed": false, "matched": null,
+                 "semantic": { "model": "m", "min_similarity": 0.3 } }),
+        "zeppelin hangar",
+        false,
+        None,
+    );
+    assert!(
+        out.contains(
+            "nothing is close in meaning to zeppelin hangar at 0.30 — --min-similarity lower \
+             widens it, --mode hybrid adds its words"
+        ),
+        "{out}"
+    );
+    let out = memory_hits(
+        &ctx,
+        &json!({ "count": 0, "total": 0, "hits": [], "relaxed": false, "matched": null,
+                 "semantic": null }),
+        "D41",
+        false,
+        None,
+    );
+    assert!(
+        out.contains(
+            "D41 has no word to match by meaning — --mode lexical finds it by its characters"
+        ),
+        "{out}"
+    );
+}

@@ -1037,3 +1037,73 @@ fn a_derived_doc_hit_carries_stale_after_an_on_disk_edit() {
 
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// D196: the brief adds a meaning query from the task's title, tags and
+/// project to its lexical expression, and the task's own notes are kept off
+/// the semantic list as they are off the lexical one (#607) — before the
+/// limit and the half-for-docs split, so the counters still add up.
+#[test]
+fn the_brief_finds_by_meaning_and_still_excludes_the_tasks_own_notes() {
+    let e = engine();
+    let sibling = add(&e, "the earlier incident", json!({}));
+    call(
+        &e,
+        "annotation.add",
+        json!({ "ref": sibling, "body": "sign-in breaks for users when the SSO certificate rotates" }),
+    )
+    .expect("sibling's note");
+    call(
+        &e,
+        "memory.add",
+        json!({ "title": "identity provider", "body": "sign-in breaks when the SSO certificate rotates" }),
+    )
+    .expect("doc");
+    let t = add(&e, "authentication problems", json!({}));
+    call(
+        &e,
+        "annotation.add",
+        json!({ "ref": t, "body": "sign-in breaks after the SSO change, again" }),
+    )
+    .expect("own note");
+
+    let out = brief(&e, t);
+    let m = &out["memory"];
+    let hits = m["hits"].as_array().expect("hits");
+    let sources: Vec<&str> = hits
+        .iter()
+        .map(|h| h["source"].as_str().unwrap_or_default())
+        .collect();
+    assert!(
+        sources.contains(&format!("task:#{sibling}").as_str()),
+        "a sibling's note found by meaning: {m}"
+    );
+    assert!(
+        !sources.contains(&format!("task:#{t}").as_str()),
+        "the task's own note is not knowledge found for it: {m}"
+    );
+    assert!(
+        hits.iter().all(|h| h["via"] == json!("semantic")),
+        "the title shares no word with any entry: {m}"
+    );
+    assert!(
+        hits.iter().all(|h| h["similarity"].as_f64() >= Some(0.3)),
+        "{m}"
+    );
+    assert_eq!(
+        hit_titles(&out)[0],
+        "identity provider",
+        "docs first (D147): {m}"
+    );
+    assert_eq!(m["docs_total"], json!(1), "{m}");
+    assert_eq!(
+        m["annotations_total"],
+        json!(1),
+        "own note not counted: {m}"
+    );
+    assert_eq!(m["total"], json!(2), "{m}");
+    assert_eq!(
+        m["matched"],
+        json!("\"authentication\" OR \"problems\""),
+        "the lexical expression is still the derived OR: {m}"
+    );
+}

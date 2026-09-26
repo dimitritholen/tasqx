@@ -2912,7 +2912,8 @@ impl Engine {
     }
 
     /// The memory half: `memory.search` run under an expression derived from
-    /// the task, scoped to the task's project.
+    /// the task, scoped to the task's project, beside a meaning query made
+    /// of the same words (D196).
     ///
     /// **Why this goes through `memory.search` in raw mode rather than beside
     /// it.** There is one FTS path and one ranking in this store, and D136 says
@@ -3036,10 +3037,16 @@ impl Engine {
         // to fill the slots a sibling's ruling needed, exactly the D69
         // problem D147 itself exists to prevent. It is a no-op for
         // `scope: "docs"`, where no annotation arm runs at all.
+        //
+        // D196: beside the lexical expression, a meaning query from the same
+        // title, tags and project, through the engine's own path — the task's
+        // own notes are kept off the semantic list inside that same call, so
+        // both lists are cut and counted without them.
+        let meaning = meaning_query(&task.title, tags, project.as_deref());
         let scoped = |scope: &str| -> Result<(Vec<Value>, i64), ApiError> {
             let mut p = params.clone();
             p["scope"] = json!(scope);
-            let out = self.memory_search_excluding(&p, Some(&task.id))?;
+            let out = self.memory_search_excluding(&p, Some(&task.id), Some(&meaning))?;
             // Through util's typed layer, like every other JSON read in the
             // engine: a raw accessor here would read a `hits` that came back
             // the wrong shape as an empty page, which is the silent-drop this
@@ -3224,6 +3231,18 @@ impl Engine {
 /// it cannot tell an absent value from a wrong-typed one.
 fn payload_field(payload: &Value, key: &str) -> Option<String> {
     payload.get(key).and_then(Value::as_str).map(str::to_string)
+}
+
+/// The text the brief's semantic side embeds (D196): the task's title, its
+/// tags and its project's leaf — the words [`derive_match_expr`] takes, as
+/// prose rather than an expression, so the model reads the title whole.
+fn meaning_query(title: &str, tags: &[String], project: Option<&str>) -> String {
+    let mut parts: Vec<&str> = vec![title];
+    parts.extend(tags.iter().map(String::as_str));
+    if let Some(p) = project {
+        parts.push(p.rsplit('.').next().unwrap_or(p));
+    }
+    parts.join(" ")
 }
 
 /// The FTS5 MATCH expression for one task's brief, or `None` when the task

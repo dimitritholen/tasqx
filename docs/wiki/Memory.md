@@ -41,17 +41,30 @@ tasqx memory list
 
 ## tasqx memory search
 
-Full-text search over your documents *and* your task annotations, ranked by
-relevance (bm25).
+Search over your documents *and* your task annotations, by meaning as well as
+by words: a note that says "login errors" is found by `sign-in failures`. An
+embedding model built into the binary ranks entries by meaning beside full-text
+search (bm25), the two lists are fused, and each hit says which found it.
 
 ```console
 tasqx memory search blue-green
 ```
 
 - Plain words are matched as phrases, so hyphens and dots are safe to type.
-- Every word is required first. When no entry has them all, entries with any of
-  them (filler words like "the" aside) are shown instead, under a note saying so.
-- Power users can pass `--raw` for FTS5 operator syntax.
+- Every word is required first. When no entry has them all and nothing is close
+  in meaning, entries with any of them (filler words like "the" aside) are shown
+  instead, under a note saying so.
+- A hit found by meaning alone is marked `≈` with its similarity on the line
+  under it; its passage is the one closest to your words.
+- An identifier such as `D41` or `#607` has no word to match by meaning, so it
+  is looked up by its characters alone. `--mode lexical` does that for any
+  query: exact words only, the way search worked before meaning was added.
+  `--mode semantic` is meaning only.
+- `--min-similarity` (0 to 1, default 0.30) is how close in meaning a hit must
+  be. Lower finds more distant paraphrases, and more noise.
+- The model reads English; text in another language is found mostly where the
+  query shares its words.
+- Power users can pass `--raw` for FTS5 operator syntax (words only).
 - The answer includes the query that actually ran, so "no hits" is
   distinguishable from "nothing stored about this".
 - A doc hit whose origin file has changed since it was imported (or last

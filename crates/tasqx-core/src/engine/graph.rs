@@ -1223,6 +1223,9 @@ impl Engine {
         let answer = self.memory_search_excluding(
             &json!({ "query": query, "limit": GRAPH_SEARCH_HITS }),
             None,
+            // Words alone (D196): an edge claims the entry holds them, which
+            // a hit found by meaning does not back.
+            None,
         )?;
 
         let mut ranks: HashMap<Node, f64> = HashMap::new();
@@ -1256,8 +1259,9 @@ impl Engine {
             .filter(|n| filters.keeps(n))
             .collect();
 
-        // bm25 is a score where LOWER is better and the scale depends on the
-        // corpus, so it is not a confidence. Normalised across the hits this
+        // A hit's `rank` is LOWER-is-better and its scale depends on the
+        // search (D154; the negated fused score since D196, over the words
+        // list alone here), so it is not a confidence. Normalised across the hits this
         // call is emitting — best 1.0, worst 0.0 — which makes the number a
         // ranking within one answer and says so in `source`.
         let scores: Vec<f64> = nodes

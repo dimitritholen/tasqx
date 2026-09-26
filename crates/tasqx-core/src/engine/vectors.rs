@@ -19,14 +19,6 @@
 //! older binary) is keyed on `PRAGMA data_version` instead; that connection
 //! cannot write, so another connection's commit is the only change there is.
 
-// `memory.search` is this module's caller, and it arrives with #838; until
-// then only the tests below reach the primitive. `expect`, so the attribute
-// goes the moment it is no longer true.
-#![cfg_attr(
-    not(test),
-    expect(dead_code, reason = "memory.search calls it from #838 (D196)")
-)]
-
 use std::cell::{Cell, RefCell};
 use std::collections::HashSet;
 use std::time::Duration;

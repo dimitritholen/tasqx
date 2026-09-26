@@ -432,7 +432,7 @@ pub const R_TASK_BRIEF: &[FieldDoc] = &[
     f(
         "memory",
         "object",
-        "A `memory.search` result under an expression derived from the task's own words.",
+        "A `memory.search` result under an expression derived from the task's own words, fused with a meaning query made of the same words (D196).",
     ),
     o(
         "last_time",
@@ -485,9 +485,9 @@ pub const BRIEF_DEPENDENT: &[FieldDoc] = &[
 /// The brief's memory half: a search result plus what D147's reservation did.
 pub const BRIEF_MEMORY: &[FieldDoc] = &[
     f("count", "integer", "How many hits came back."),
-    f("total", "integer", "How many rows matched before the page was cut."),
+    f("total", "integer", "How many entries matched, by words or by meaning, before the page was cut."),
     f("has_more", "boolean", "Whether anything was left behind."),
-    f("hits", "array", "The hits themselves — the same rows `memory.search` returns."),
+    f("hits", "array", "The hits themselves — the same rows `memory.search` returns, each with its `via`."),
     n("matched", "string", "The FTS expression tasqx derived from the task; null when the task had no searchable word."),
     n("project", "string", "The project the search was scoped to, or null."),
     f("reserved_docs", "integer", "How many of the page's slots were held for knowledge docs (D147)."),
@@ -988,11 +988,18 @@ pub const R_MEMORY_ADD: &[FieldDoc] = &[
 /// `memory.search`'s result.
 pub const R_MEMORY_SEARCH: &[FieldDoc] = &[
     f("count", "integer", "How many hits came back."),
-    f("total", "integer", "How many rows matched before `limit` truncated (#132)."),
+    f("total", "integer", "How many entries matched before `limit` truncated: every lexical match and every semantic one at or above the floor, counted once (#132, D196)."),
     f("has_more", "boolean", "Whether anything was left behind."),
-    f("hits", "array", "The hits, bm25-ranked, docs and annotations together."),
-    f("matched", "string", "The FTS5 expression actually run — how `count: 0` is told apart from a store holding nothing on the subject."),
-    f("relaxed", "boolean", "Whether no hit had every word of a plain query, so the words were joined with OR instead and `matched` is that OR (D193). Always false for `raw`."),
+    f("hits", "array", "The hits, best first: the lexical (bm25) and semantic lists fused by reciprocal rank, docs and annotations together (D196)."),
+    n("matched", "string", "The FTS5 expression actually run — how `count: 0` is told apart from a store holding nothing on the subject. Null under `mode: semantic`, which runs none."),
+    f("relaxed", "boolean", "Whether no hit had every word of a plain query, so the words were joined with OR instead and `matched` is that OR (D193). In hybrid mode only when meaning found nothing either; always false for `raw` and `mode: semantic`."),
+    n("semantic", "object", "The meaning side's `{model, min_similarity}`, or null when it did not run: `mode: lexical` or `raw`, or a query with no word of three letters or more that is not a stopword (an id such as `D41`), or no word the model knows (D196)."),
+];
+
+/// `memory.search`'s `semantic` object.
+pub const R_MEMORY_SEARCH_SEMANTIC: &[FieldDoc] = &[
+    f("model", "string", "The embedding model's id: the table, its revision, the quantisation, and the tokenizer and chunker versions."),
+    f("min_similarity", "number", "The floor a semantic hit's best chunk reached, rounded to three decimals (default 0.30)."),
 ];
 
 /// One search hit — a doc or an annotation, with its snippet and rank.
@@ -1001,11 +1008,14 @@ pub const MEMORY_HIT_ROW: &[FieldDoc] = &[
     f("kind", "string", "`doc` or `annotation` — which store the hit came from."),
     f("title", "string", "The doc's title; for an annotation, the task it is written on."),
     n("source", "string", "Where the doc came from (a file path, `task:#51`), or null."),
-    f("snippet", "string", "The matching passage, with the hit in context. Never the whole body."),
-    f("rank", "number", "The bm25 score. Lower is a better match; the number itself is not comparable between searches."),
+    f("snippet", "string", "The matching passage, with the hit in context — for a hit found by meaning alone, the start of its best chunk. Never the whole body."),
+    f("rank", "number", "The negated fused `score` (D196). Lower is a better match and the hits arrive in ascending `rank`; the number is not comparable between searches and is not a threshold (D154)."),
     n("standing", "boolean", "For a doc hit, whether it is a standing ruling (D156); null on an annotation hit, which has no such flag."),
     n("project", "string", "Which project this hit is scoped to — a doc's own column, or the annotation's task's — or null for global knowledge (#657)."),
     n("stale", "boolean", "true when the doc's origin file no longer matches what was imported; null for annotations and docs with no origin (D180)."),
+    f("via", "string", "Which list found it: `lexical` (the words; `matched` explains it), `semantic` (meaning; `similarity` explains it) or `both` (D196)."),
+    n("similarity", "number", "Its best chunk's cosine to the query, to three decimals — also on a hit the words found, when the entry has a vector; null when it has none or the semantic side did not run."),
+    f("score", "number", "The fused score: Σ 1/(60 + rank) over the lists it is on. Higher is better."),
 ];
 
 /// One knowledge doc, whole. The same row `memory.get` and `store.export` both answer with.
@@ -1649,6 +1659,7 @@ pub fn result_shape(method: &str) -> &'static [(&'static str, &'static [FieldDoc
         "memory.search" => &[
             ("result", R_MEMORY_SEARCH),
             ("result.hits[]", MEMORY_HIT_ROW),
+            ("result.semantic", R_MEMORY_SEARCH_SEMANTIC),
         ],
         "memory.get" => &[("result", DOC_EXPORT_ROW)],
         "memory.remove" => &[("result", R_MEMORY_REMOVE)],

@@ -6,7 +6,7 @@ Commands:
   add     Store a knowledge doc (maps to memory.add). Body is stored verbatim
   list    Browse docs without a query (maps to memory.list). Newest first
   update  Correct a doc in place (maps to memory.update)
-  search  Search docs + annotations, bm25-ranked (maps to memory.search)
+  search  Search docs + annotations by meaning and words (maps to memory.search)
   show    Show one doc whole, by id (maps to memory.get)
   rm      Remove a doc by id (maps to memory.remove)
   import  Import markdown files as docs: one doc per file (maps to memory.add)
@@ -22,6 +22,7 @@ Options:
 EXAMPLES
   tasqx memory add "Deploy runbook" "deploys go through the blue-green pipeline"
   tasqx memory search blue-green
+  tasqx memory search D41 --mode lexical    # exact words only; an id with no word of three letters is always matched this way
   tasqx memory search 'pipel*' --raw    # FTS5 operator syntax: prefix search, AND/OR, column filters
   tasqx memory list    # browse without a query, newest first
   tasqx memory import docs/adr    # one doc per .md file; title from the first # heading
@@ -30,8 +31,8 @@ EXAMPLES
   tasqx memory update 019f8422-7b3e-7c41-a2d9-6f1b0e5c8a12 --body "corrected text"    # in-place correction; add/remove leave the stale doc searchable or lose it for good
   tasqx memory rm 019f8422-7b3e-7c41-a2d9-6f1b0e5c8a12    # by the id search printed
 
-NOTE  A hit is two lines: the title, where it came from and the handle that opens it, then the words that matched. The handle is a doc's id, which `tasqx memory show <id>` reads, or `annotation on #N`, which `tasqx show N` opens — `memory show` refuses an annotation's id and names the task instead (exit 4).
-      Search covers your imported docs AND task annotations, bm25-ranked, with stemming ("reviewing" matches "review"). Plain words are matched as phrases (hyphens and dots are safe); pass --raw for FTS5 operator syntax. The response's total/has_more say what --limit left out.
+NOTE  A hit is two lines: the title, where it came from and the handle that opens it, then the words that matched — or, for a hit found by meaning alone, `≈` and its similarity before its closest passage. The handle is a doc's id, which `tasqx memory show <id>` reads, or `annotation on #N`, which `tasqx show N` opens — `memory show` refuses an annotation's id and names the task instead (exit 4).
+      Search covers your imported docs AND task annotations, by meaning and by words (D196): an embedding model built into the binary finds a note that says the same thing in other words, and full-text search (bm25, with stemming: "reviewing" matches "review") finds the words themselves. --mode lexical is words only, --mode semantic meaning only; --min-similarity (0 to 1, default 0.30) is how close a match by meaning must be. Plain words are matched as phrases (hyphens and dots are safe); pass --raw for FTS5 operator syntax, which is words only. The response's total/has_more say what --limit left out.
       list browses every doc without a query — the enumeration search can't do without one — newest-modified first, paged the same way as `tasqx list`.
       update replaces title/body/source/project in place, guarded by the same optimistic-concurrency rev `tasqx modify` uses. rm is permanent; update is the correction path that keeps the id and doesn't pollute search with a stale duplicate.
       Import is one transaction: a bad file imports nothing, and re-importing a directory replaces docs from the same source instead of duplicating them. --project scopes the whole batch; omitted, an existing doc keeps whatever scope it already had (like --standing), a new one stays global, and naming a different project on a re-import moves the doc's scope there.

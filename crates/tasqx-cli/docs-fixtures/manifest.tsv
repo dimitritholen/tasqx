@@ -36,11 +36,14 @@
 #                          nothing fixes the rest. The CLI's `add` echo
 #                          (add-echo) shows the write instead, and prints a
 #                          short id, which is stable.
-#   any api response        carrying an FTS `rank` (`task.brief`, `memory.search`):
-#                          bm25 is computed with the platform's `log()`, so the
-#                          last digits differ between macOS and Linux. Captured
-#                          on one, the drift job fails on the other — which is
-#                          how this rule was found, on CI, with `api-task-brief`.
+#   any api response        carrying search hits (`task.brief`, `memory.search`):
+#                          until D196 a hit's `rank` was bm25, computed with the
+#                          platform's `log()`, so the last digits differed
+#                          between macOS and Linux — which is how this rule was
+#                          found, on CI, with `api-task-brief`. `rank` is now a
+#                          fused reciprocal rank, but the words list it fuses
+#                          is still in bm25 order, so two near-equal hits can
+#                          trade places on another platform and move it.
 #                          The SCREENS over the same search are fine and stay
 #                          (`brief`, `memory-search`, `memory-browser`): they
 #                          print snippets, never the number. `api-memory-list`
@@ -105,7 +108,7 @@ memory-browser	tui	120	40	memory list	-	-
 # IS the envelope the reference prints above the response
 # (crates/tasqx-cli/src/docs/api_ref.rs, `EXAMPLES`, and a test holds the two
 # equal). A method missing here is named with its reason in that
-# same table — a fresh v7 id, an FTS bm25 rank, a payload that is the whole
+# same table — a fresh v7 id, a search hit's rank, a payload that is the whole
 # store, or this machine's own paths — and the page marks those examples
 # illustrative rather than passing off a paste as a capture.
 #

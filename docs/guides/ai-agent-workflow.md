@@ -125,7 +125,8 @@ during one task resurface during the next:
 
 1. `tasqx_brief_task` before touching payment code — the query is derived from the
    task, so nothing is guessed.
-2. Hits come back bm25-ranked with snippets — docs and past annotations alike.
+2. Hits come back ranked by words and by meaning, with snippets — docs and past
+   annotations alike, each saying which of the two found it.
    Half the slots are held for docs, so an imported ruling still reaches the page
    when a project's own task notes share its words; annotations take the rest.
    The brief's page defaults to five hits; a caller-named `memory_limit` widens it.

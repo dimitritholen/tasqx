@@ -1,8 +1,9 @@
-//! The D41 memory subsystem: lexical retrieval over docs and annotations.
+//! The D41 memory subsystem: retrieval over docs and annotations.
 //!
-//! `memory.search` promises ranked hits, not a ranking algorithm — the FTS5
-//! backend is an implementation detail behind a retrieval-agnostic wire shape,
-//! so a semantic backend can slot in later without an API change.
+//! `memory.search` promises ranked hits, not a ranking algorithm: FTS5's bm25
+//! (D41) and the static embedding model's meaning (D196, `vectors.rs`) are
+//! two lists behind one wire shape, fused by reciprocal rank, and every hit
+//! says which of them found it.
 
 use super::*;
 
@@ -86,17 +87,6 @@ fn any_word_expr(query: &str) -> Option<String> {
     Some(terms.join(" OR "))
 }
 
-/// How `memory.search`'s MATCH expression is made from `query`.
-enum MatchMode {
-    /// Every word a required phrase ([`phrase_escape`]).
-    Plain,
-    /// D193's fallback: the expression [`any_word_expr`] built. tasqx wrote
-    /// it, so a failure is tasqx's (`internal`), never the caller's.
-    AnyWord(String),
-    /// The caller's own FTS5 expression; its errors are theirs.
-    Raw,
-}
-
 /// English function words dropped from a derived query (D136), and from the
 /// any-word fallback of a plain search (D193).
 ///
@@ -156,6 +146,301 @@ fn raw_fts5_error(e: &rusqlite::Error, scope: &str) -> String {
         );
     }
     format!("invalid FTS5 query: {msg}")
+}
+
+/// How `memory.search`'s lexical MATCH expression is made from `query`.
+/// D193's any-word fallback is not a mode of its own: tasqx builds that
+/// expression ([`any_word_expr`]) and runs it as a plain one.
+enum MatchMode {
+    /// Every word a required phrase ([`phrase_escape`]).
+    Plain,
+    /// The caller's own FTS5 expression; its errors are theirs.
+    Raw,
+}
+
+/// The closed `mode` vocabulary for `memory.search` (D196). **First entry is
+/// the default.** The engine validates against it and builds its refusal
+/// from it, and the MCP tool schema renders its JSON-Schema `enum` from it.
+pub const MEMORY_SEARCH_MODES: [&str; 3] = ["hybrid", "lexical", "semantic"];
+
+/// `min_similarity`'s default: the floor a semantic hit's best chunk must
+/// reach (D196). Static embeddings separate related from unrelated text
+/// weakly, so the floor trades some paraphrase recall for silence on a
+/// query about nothing the store holds.
+pub const MEMORY_MIN_SIMILARITY: f64 = 0.30;
+
+/// Reciprocal-rank fusion's constant: a hit at rank `r` of a list scores
+/// `1 / (FUSION_K + r)` (D196).
+const FUSION_K: f64 = 60.0;
+
+/// How deep each list is taken before fusion, at the least: max(this,
+/// `limit`) (D196).
+const FUSION_DEPTH: usize = 50;
+
+/// How many words a snippet carries — FTS5's `snippet()` token count, and
+/// the cut a semantic hit's best chunk gets, so both read alike.
+const SNIPPET_TOKENS: usize = 12;
+
+/// The three `mode`s of [`MEMORY_SEARCH_MODES`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SearchMode {
+    Hybrid,
+    Lexical,
+    Semantic,
+}
+
+impl SearchMode {
+    fn parse(s: &str) -> Result<SearchMode, ApiError> {
+        match s {
+            "hybrid" => Ok(SearchMode::Hybrid),
+            "lexical" => Ok(SearchMode::Lexical),
+            "semantic" => Ok(SearchMode::Semantic),
+            _ => Err(ApiError::bad_request(format!(
+                "unknown mode `{s}` — accepted: {}",
+                MEMORY_SEARCH_MODES.join(", ")
+            ))),
+        }
+    }
+
+    fn as_str(self) -> &'static str {
+        match self {
+            SearchMode::Hybrid => "hybrid",
+            SearchMode::Lexical => "lexical",
+            SearchMode::Semantic => "semantic",
+        }
+    }
+}
+
+/// `min_similarity` when the caller named one: a number from 0 to 1.
+fn min_similarity(p: &Value) -> Result<Option<f64>, ApiError> {
+    match p.get("min_similarity") {
+        None | Some(Value::Null) => Ok(None),
+        Some(v) => match v.as_f64() {
+            Some(x) if (0.0..=1.0).contains(&x) => Ok(Some(x)),
+            _ => Err(ApiError::bad_request(format!(
+                "`min_similarity` must be a number from 0 to 1 (default \
+                 {MEMORY_MIN_SIMILARITY:.2}), not {v}"
+            ))),
+        },
+    }
+}
+
+/// Whether `query` has a word the semantic side is worth running for: three
+/// letters or more, and not one of [`QUERY_STOPWORDS`]. `D41` and `#607`
+/// have none, so an identifier is looked up by its characters alone (D196).
+fn has_content_word(query: &str) -> bool {
+    query.split_whitespace().any(|word| {
+        let bare = word
+            .trim_matches(|c: char| !c.is_alphanumeric())
+            .to_lowercase();
+        bare.chars().filter(|c| c.is_alphabetic()).count() >= 3
+            && !QUERY_STOPWORDS.contains(&bare.as_str())
+    })
+}
+
+/// A hit's identity across the two lists. Ordered `(kind, id)`, the tie
+/// order D196 ends on.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+struct HitKey {
+    /// `annotation` or `doc`, as the hit's `kind` spells it.
+    kind: String,
+    id: String,
+}
+
+/// Which list a fused hit came from. Declared in D196's tie order.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+enum Via {
+    Both,
+    Lexical,
+    Semantic,
+}
+
+impl Via {
+    fn as_str(self) -> &'static str {
+        match self {
+            Via::Both => "both",
+            Via::Lexical => "lexical",
+            Via::Semantic => "semantic",
+        }
+    }
+}
+
+/// One hit of the fused list.
+#[derive(Debug)]
+struct Fused {
+    key: HitKey,
+    via: Via,
+    score: f64,
+}
+
+/// Reciprocal-rank fusion of two best-first lists (D196): a hit scores
+/// Σ 1/(60 + rank) over the lists it is in, ranks counted from 1. Best
+/// first; a tie goes to `both` before `lexical` before `semantic`, then to
+/// `(kind, id)`. A list of one side alone keeps that side's order.
+fn fuse(lexical: &[HitKey], semantic: &[HitKey]) -> Vec<Fused> {
+    let mut ranks: HashMap<&HitKey, (Option<usize>, Option<usize>)> = HashMap::new();
+    for (i, k) in lexical.iter().enumerate() {
+        ranks.entry(k).or_default().0 = Some(i + 1);
+    }
+    for (i, k) in semantic.iter().enumerate() {
+        ranks.entry(k).or_default().1 = Some(i + 1);
+    }
+    let rrf = |r: Option<usize>| r.map_or(0.0, |r| 1.0 / (FUSION_K + r as f64));
+    let mut out: Vec<Fused> = ranks
+        .into_iter()
+        .map(|(key, (l, s))| Fused {
+            key: key.clone(),
+            via: match (l, s) {
+                (Some(_), Some(_)) => Via::Both,
+                (Some(_), None) => Via::Lexical,
+                _ => Via::Semantic,
+            },
+            score: rrf(l) + rrf(s),
+        })
+        .collect();
+    out.sort_by(|a, b| {
+        b.score
+            .total_cmp(&a.score)
+            .then(a.via.cmp(&b.via))
+            .then_with(|| a.key.cmp(&b.key))
+    });
+    out
+}
+
+/// What one `memory.search` looks through and how much it hands back: the
+/// params every side reads, validated once.
+struct SearchWindow<'a> {
+    limit: usize,
+    scope: String,
+    project: Option<String>,
+    include_unscoped: bool,
+    exclude_task: Option<&'a str>,
+}
+
+impl<'a> SearchWindow<'a> {
+    fn parse(p: &Value, exclude_task: Option<&'a str>) -> Result<SearchWindow<'a>, ApiError> {
+        // Checked: a value above i64::MAX once wrapped negative, and SQLite
+        // reads a negative LIMIT as UNLIMITED — the exact opposite of the
+        // bound the caller asked for (review finding).
+        let limit = opt_u64(p, "limit")?.unwrap_or(crate::engine::MEMORY_SEARCH_LIMIT);
+        if i64::try_from(limit).is_err() {
+            return Err(ApiError::bad_request(format!(
+                "`limit` must be at most {}, or omitted for the default",
+                i64::MAX
+            )));
+        }
+        let limit = usize::try_from(limit).unwrap_or(usize::MAX);
+        let scope = opt_str(p, "scope")?.unwrap_or_else(|| MEMORY_SCOPES[0].to_string());
+        if !MEMORY_SCOPES.contains(&scope.as_str()) {
+            return Err(ApiError::bad_request(format!(
+                "unknown scope `{scope}` — accepted: {}",
+                MEMORY_SCOPES.join(", ")
+            )));
+        }
+        let project = opt_str_nonempty(p, "project")?;
+        // D136: a document with no project is GLOBAL knowledge — `tasqx memory
+        // import docs/` sets no project on anything it imports, so a strict
+        // project scope hides every ADR a reader fed the store. Opt-in and
+        // additive, because D115's strict scope stays the right answer when a
+        // caller is asking about one project's own notes.
+        let include_unscoped = opt_bool(p, "include_unscoped")?.unwrap_or(false);
+        if include_unscoped && project.is_none() {
+            // D33: a value that changes nothing is refused rather than
+            // accepted and ignored.
+            return Err(ApiError::bad_request(
+                "`include_unscoped` widens a `project` scope to documents that have no \
+                 project, so it needs a `project` to widen from",
+            ));
+        }
+        Ok(SearchWindow {
+            limit,
+            scope,
+            project,
+            include_unscoped,
+            exclude_task,
+        })
+    }
+}
+
+/// How one search runs its two sides.
+struct Fusion<'a> {
+    /// How the lexical expression is made; `None` runs no lexical side.
+    lexical: Option<MatchMode>,
+    /// Whether D193's any-word OR may run when the all-words search and the
+    /// semantic side both found nothing.
+    relax: bool,
+    /// The text the semantic side embeds; `None` runs no semantic side.
+    meaning: Option<&'a str>,
+    floor: f64,
+    exclude_task: Option<&'a str>,
+}
+
+/// The lexical side: the expression that ran, its first rows best-first,
+/// and every row it matched.
+struct LexicalRun {
+    expr: String,
+    rows: Vec<(HitKey, Value)>,
+    keys: HashSet<HitKey>,
+}
+
+/// The semantic side: every entry in the filter that has a vector, best
+/// first, and how many of them reach the floor — a prefix of the list.
+struct SemanticSide {
+    ranked: Vec<HitKey>,
+    matched: usize,
+    similarity: HashMap<HitKey, f64>,
+    chunk: HashMap<HitKey, i64>,
+}
+
+impl SemanticSide {
+    fn new(hits: Vec<vectors::SemanticHit>, floor: f64) -> SemanticSide {
+        let matched = hits.iter().take_while(|h| h.similarity >= floor).count();
+        let mut side = SemanticSide {
+            ranked: Vec::with_capacity(hits.len()),
+            matched,
+            similarity: HashMap::with_capacity(hits.len()),
+            chunk: HashMap::with_capacity(hits.len()),
+        };
+        for h in hits {
+            let key = HitKey {
+                kind: h.kind.as_str().to_string(),
+                id: h.owner_id,
+            };
+            side.similarity.insert(key.clone(), h.similarity);
+            side.chunk.insert(key.clone(), h.chunk);
+            side.ranked.push(key);
+        }
+        side
+    }
+
+    /// The semantic list: the entries at or above the floor, to `depth`.
+    fn listed(&self, depth: usize) -> impl Iterator<Item = &HitKey> {
+        self.ranked.iter().take(self.matched.min(depth))
+    }
+}
+
+/// A semantic-only hit's snippet: its best chunk, cut the way FTS5's
+/// `snippet()` cuts a lexical one — [`SNIPPET_TOKENS`] words, `…` where text
+/// was left out — without the doc's title, which the hit already carries.
+fn chunk_snippet(kind: vectors::Kind, title: &str, ix: i64, chunk: &str) -> String {
+    let body = match kind {
+        vectors::Kind::Doc => chunk
+            .strip_prefix(title.trim())
+            .map(str::trim_start)
+            .filter(|b| !b.is_empty())
+            .unwrap_or(chunk),
+        vectors::Kind::Annotation => chunk,
+    };
+    let words: Vec<&str> = body.split_whitespace().collect();
+    let mut out = String::new();
+    if ix > 0 {
+        out.push('…');
+    }
+    out.push_str(&words[..words.len().min(SNIPPET_TOKENS)].join(" "));
+    if words.len() > SNIPPET_TOKENS {
+        out.push('…');
+    }
+    out
 }
 
 /// What [`Engine::session_rulings`] reads for an MCP session's `initialize`
@@ -721,308 +1006,449 @@ impl Engine {
 
     // ---- memory.search -------------------------------------------------------
 
-    /// `memory.search` — ranked lexical retrieval over docs and annotations.
-    /// Params: `query`, `limit` (default 10), `scope` (one of [`MEMORY_SCOPES`],
-    /// default `all`), `raw`, optional `project` (#134).
+    /// `memory.search` — ranked retrieval over docs and annotations, by words
+    /// and by meaning (D196). Params: `query`, `limit` (default 10), `scope`
+    /// (one of [`MEMORY_SCOPES`], default `all`), `raw`, optional `project`
+    /// (#134) and `include_unscoped` (D136), `mode` (one of
+    /// [`MEMORY_SEARCH_MODES`], default `hybrid`) and `min_similarity` (0 to
+    /// 1, default [`MEMORY_MIN_SIMILARITY`]).
     ///
-    /// `raw:false` (the default) escapes the query into FTS5 phrases, so
-    /// ordinary text containing `-` or `:` is a search rather than a syntax
-    /// error. `raw:true` hands the FTS5 operator grammar to the caller, who then
-    /// owns its errors — which is why a refused raw query is `bad_request` and
-    /// not `internal`.
-    ///
-    /// #132: `limit` truncates silently no longer. `total` is the count of
-    /// every row the MATCH (+ `project`, if given) found, before the window —
-    /// the same relation `task.list`'s `count`/`total` hold — and `has_more`
-    /// is that comparison already done for a caller that only wants a
-    /// boolean. Both cost one extra `COUNT(*)` query, run against the exact
-    /// same WHERE clauses as the page itself, so the two numbers can never
-    /// name a different match set than the hits do.
+    /// The lexical side is D41's: `raw:false` (the default) escapes the query
+    /// into FTS5 phrases, so ordinary text containing `-` or `:` is a search
+    /// rather than a syntax error, and `raw:true` hands the FTS5 operator
+    /// grammar to the caller, who then owns its errors — which is why a
+    /// refused raw query is `bad_request` and not `internal`. `raw` is
+    /// lexical by definition, so beside `mode: hybrid` or `semantic` it is
+    /// refused rather than half-honoured.
     ///
     /// D193: a plain query that finds nothing with every word runs once more
     /// with its content words joined by `OR` (`any_word_expr`: stopwords
     /// and case-repeats dropped, and skipped when that is the search that
-    /// already ran), in the same scope, with the same limit. The result echoes the OR
-    /// in `matched` and says `relaxed: true`, so a hit that holds only some of
-    /// the words is never passed off as one that holds them all. When the OR
-    /// misses too, that is still the answer reported — the widest expression
-    /// that ran is the one that tells the caller dropping words cannot help.
-    /// `raw` never falls back: the caller wrote the grammar, and tasqx does
-    /// not rewrite it.
+    /// already ran). The result echoes the OR in `matched` and says
+    /// `relaxed: true`, so a hit that holds only some of the words is never
+    /// passed off as one that holds them all. In hybrid mode the OR runs only
+    /// when meaning found nothing at or above the floor: otherwise meaning
+    /// already answered, and the OR would only add noise. `raw` never falls
+    /// back: the caller wrote the grammar, and tasqx does not rewrite it.
+    ///
+    /// The semantic side (`Engine::semantic_candidates`) runs only when the
+    /// query has a content word — three letters or more, not a stopword — so
+    /// an identifier such as `D41` or `#607` is looked up by its characters
+    /// alone. The two lists, each taken to depth max(50, `limit`), are fused
+    /// by reciprocal rank (`fuse`).
+    ///
+    /// #132: `limit` truncates silently no longer. `total` is the size of the
+    /// union of every lexical match and every semantic match at or above the
+    /// floor, before the window, and `has_more` is `total` against what came
+    /// back, so the two numbers name the same match set the hits are drawn
+    /// from.
     pub fn memory_search(&self, p: &Value) -> Result<Value, ApiError> {
-        if opt_bool(p, "raw")?.unwrap_or(false) {
-            return self.memory_search_as(p, None, MatchMode::Raw);
+        let raw = opt_bool(p, "raw")?.unwrap_or(false);
+        let mode = match opt_str(p, "mode")? {
+            None if raw => SearchMode::Lexical,
+            None => SearchMode::Hybrid,
+            Some(m) => SearchMode::parse(&m)?,
+        };
+        if raw && mode != SearchMode::Lexical {
+            return Err(ApiError::bad_request(format!(
+                "`raw` is an FTS5 expression, which only the words side runs: it takes \
+                 `mode: lexical` (or no `mode`), not `mode: {}` (D196)",
+                mode.as_str()
+            )));
         }
-        let strict = self.memory_search_as(p, None, MatchMode::Plain)?;
-        if opt_i64(&strict, "total")?.unwrap_or(0) > 0 {
-            return Ok(strict);
+        let floor = min_similarity(p)?;
+        if floor.is_some() && mode == SearchMode::Lexical {
+            // D33: a value that changes nothing is refused, not ignored.
+            return Err(ApiError::bad_request(
+                "`min_similarity` is the floor of the meaning side, which `mode: lexical` \
+                 (and `raw`) does not run — use `mode: hybrid` or `semantic`, or drop it",
+            ));
         }
-        match any_word_expr(&req_str(p, "query")?) {
-            Some(expr) => self.memory_search_as(p, None, MatchMode::AnyWord(expr)),
-            None => Ok(strict),
-        }
+        let query = req_str(p, "query")?;
+        let meaning = (mode != SearchMode::Lexical).then_some(query.as_str());
+        self.search_fused(
+            p,
+            &Fusion {
+                lexical: match mode {
+                    SearchMode::Semantic => None,
+                    _ if raw => Some(MatchMode::Raw),
+                    _ => Some(MatchMode::Plain),
+                },
+                relax: !raw && mode != SearchMode::Semantic,
+                meaning,
+                floor: floor.unwrap_or(MEMORY_MIN_SIMILARITY),
+                exclude_task: None,
+            },
+        )
     }
 
-    /// The engine's own path into `memory.search`, widened with ONE thing no
-    /// public param exposes: a task whose own annotations are excluded from
-    /// the annotation arm before the limit and the count run, not after.
+    /// The engine's own path into `memory.search`, widened with two things
+    /// no public param exposes: a task whose own annotations are excluded
+    /// from both lists before the limit and the count run, not after, and a
+    /// meaning query separate from the lexical expression.
     ///
-    /// `task.brief`'s `derived_memory` is the only caller — the task's own
-    /// notes are not knowledge FOUND for it (#607), and a caller-visible
-    /// `exclude_task` parameter would be one more thing `memory.search`
-    /// documents for a filter nobody outside this one caller has a reason to
-    /// ask for. Filtering the ALREADY-LIMITED page instead (the first cut of
-    /// this fix) undercounted both the page and `total` whenever the task's
-    /// own notes were dense enough to fill the slots a sibling's ruling
-    /// needed — the exact D69 problem D147 itself was ruled against — so the
-    /// exclusion has to run inside the query the limit and the count both
-    /// read.
+    /// `task.brief`'s `derived_memory` passes its raw OR expression as
+    /// `query` and the task's title, tags and project as `meaning` — the
+    /// refusal of `raw` beside hybrid is for callers, and here the engine
+    /// wrote both halves (D196). The task's own notes are not knowledge FOUND
+    /// for it (#607), and a caller-visible `exclude_task` parameter would be
+    /// one more thing `memory.search` documents for a filter nobody outside
+    /// this one caller has a reason to ask for. Filtering the ALREADY-LIMITED
+    /// page instead (the first cut of this fix) undercounted both the page
+    /// and `total` whenever the task's own notes were dense enough to fill
+    /// the slots a sibling's ruling needed — the exact D69 problem D147
+    /// itself was ruled against — so the exclusion has to run inside the
+    /// queries the limit and the count both read.
+    ///
+    /// `graph.query` passes no `meaning`: its edges claim the title's words,
+    /// so it searches by words alone, all of them, with no fallback.
     pub(crate) fn memory_search_excluding(
         &self,
         p: &Value,
         exclude_task_id: Option<&str>,
+        meaning: Option<&str>,
     ) -> Result<Value, ApiError> {
-        let mode = if opt_bool(p, "raw")?.unwrap_or(false) {
-            MatchMode::Raw
-        } else {
-            MatchMode::Plain
-        };
-        self.memory_search_as(p, exclude_task_id, mode)
+        let raw = opt_bool(p, "raw")?.unwrap_or(false);
+        self.search_fused(
+            p,
+            &Fusion {
+                lexical: Some(if raw {
+                    MatchMode::Raw
+                } else {
+                    MatchMode::Plain
+                }),
+                relax: false,
+                meaning,
+                floor: MEMORY_MIN_SIMILARITY,
+                exclude_task: exclude_task_id,
+            },
+        )
     }
 
-    /// One search, with the MATCH expression made the way `mode` says. Every
-    /// public door reads `raw` and picks `Plain` or `Raw`; only
-    /// [`Self::memory_search`] asks for `AnyWord`, after `Plain` found nothing.
-    fn memory_search_as(
-        &self,
-        p: &Value,
-        exclude_task_id: Option<&str>,
-        mode: MatchMode,
-    ) -> Result<Value, ApiError> {
-        let query = req_str(p, "query")?;
-        let raw = matches!(mode, MatchMode::Raw);
-        let relaxed = matches!(mode, MatchMode::AnyWord(_));
-        // Checked, not `as i64`: a value above i64::MAX wrapped negative, and
-        // SQLite reads a negative LIMIT as UNLIMITED — the exact opposite of
-        // the bound the caller asked for (review finding).
-        let limit =
-            i64::try_from(opt_u64(p, "limit")?.unwrap_or(crate::engine::MEMORY_SEARCH_LIMIT))
-                .map_err(|_| {
-                    ApiError::bad_request(format!(
-                        "`limit` must be at most {}, or omitted for the default",
-                        i64::MAX
-                    ))
-                })?;
-        let scope = opt_str(p, "scope")?.unwrap_or_else(|| MEMORY_SCOPES[0].to_string());
-        if !MEMORY_SCOPES.contains(&scope.as_str()) {
-            return Err(ApiError::bad_request(format!(
-                "unknown scope `{scope}` — accepted: {}",
-                MEMORY_SCOPES.join(", ")
-            )));
-        }
-        let project = opt_str_nonempty(p, "project")?;
-        // D136: a document with no project is GLOBAL knowledge — `tasqx memory
-        // import docs/` sets no project on anything it imports, so a strict
-        // project scope hides every ADR a reader fed the store. Opt-in and
-        // additive, because D115's strict scope stays the right answer when a
-        // caller is asking about one project's own notes.
-        let include_unscoped = opt_bool(p, "include_unscoped")?.unwrap_or(false);
-        if include_unscoped && project.is_none() {
-            // D33: a value that changes nothing is refused rather than
-            // accepted and ignored. With no project there is nothing to widen
-            // FROM — an unscoped search already returns every document — and a
-            // caller who sent this believes a scope is being applied.
-            return Err(ApiError::bad_request(
-                "`include_unscoped` widens a `project` scope to documents that have no \
-                 project, so it needs a `project` to widen from",
-            ));
-        }
-        // Echoed on the result (D69). Every word of a plain query becomes a
-        // required quoted phrase, so a thirteen-word question is thirteen AND
-        // terms and comes back `count: 0` — byte-identical to the answer for a
-        // subject nobody ever wrote down. The caller could not tell those two
-        // apart, and only one of them is worth retrying.
-        let match_expr = match mode {
-            MatchMode::Plain => phrase_escape(&query)?,
-            MatchMode::AnyWord(expr) => expr,
-            MatchMode::Raw => query,
+    /// One search as `f` describes it: the lexical list, the semantic list,
+    /// fused, and the page cut from the fusion.
+    fn search_fused(&self, p: &Value, f: &Fusion<'_>) -> Result<Value, ApiError> {
+        let window = SearchWindow::parse(p, f.exclude_task)?;
+        let depth = window.limit.max(FUSION_DEPTH);
+
+        // The semantic side first: whether it found anything decides whether
+        // D193's OR may run.
+        let semantic = f
+            .meaning
+            .filter(|m| has_content_word(m) && crate::embed::embed(m).is_some())
+            .map(|m| {
+                let all = self.semantic_candidates(
+                    m,
+                    &vectors::SemanticFilter {
+                        scope: &window.scope,
+                        project: window.project.as_deref(),
+                        include_unscoped: window.include_unscoped,
+                        exclude_task: f.exclude_task,
+                        // Every entry, so a lexical hit below the floor can
+                        // still say how close it is (D196).
+                        min_similarity: f64::NEG_INFINITY,
+                        depth: usize::MAX,
+                    },
+                );
+                SemanticSide::new(all.hits, f.floor)
+            });
+
+        let mut relaxed = false;
+        let lexical = match &f.lexical {
+            None => None,
+            Some(mode) => {
+                let query = req_str(p, "query")?;
+                let expr = match mode {
+                    MatchMode::Raw => query.clone(),
+                    _ => phrase_escape(&query)?,
+                };
+                let is_raw = matches!(mode, MatchMode::Raw);
+                let mut run = self.lexical_run(&window, expr, is_raw, depth)?;
+                let meaning_answered = semantic.as_ref().is_some_and(|s| s.matched > 0);
+                if f.relax && run.keys.is_empty() && !meaning_answered {
+                    if let Some(expr) = any_word_expr(&query) {
+                        run = self.lexical_run(&window, expr, false, depth)?;
+                        relaxed = true;
+                    }
+                }
+                Some(run)
+            }
         };
 
+        let lex_keys: Vec<HitKey> = lexical
+            .as_ref()
+            .map(|l| l.rows.iter().map(|(k, _)| k.clone()).collect())
+            .unwrap_or_default();
+        let sem_keys: Vec<HitKey> = semantic
+            .as_ref()
+            .map(|s| s.listed(depth).cloned().collect())
+            .unwrap_or_default();
+
+        let mut union: HashSet<&HitKey> = HashSet::new();
+        if let Some(l) = &lexical {
+            union.extend(l.keys.iter());
+        }
+        if let Some(s) = &semantic {
+            union.extend(s.listed(usize::MAX));
+        }
+        let total = union.len();
+
+        let mut lex_rows: HashMap<HitKey, Value> = lexical
+            .as_ref()
+            .map(|l| l.rows.iter().cloned().collect())
+            .unwrap_or_default();
+        let mut hits = Vec::new();
+        for fused in fuse(&lex_keys, &sem_keys).into_iter().take(window.limit) {
+            let row = match lex_rows.remove(&fused.key) {
+                Some(row) => Some(row),
+                None => self.semantic_only_row(&fused.key, semantic.as_ref())?,
+            };
+            // An entry deleted between the list and the row has no row;
+            // this connection cannot race itself, but a row is not assumed.
+            let Some(mut row) = row else { continue };
+            let similarity = semantic
+                .as_ref()
+                .and_then(|s| s.similarity.get(&fused.key).copied());
+            row["via"] = json!(fused.via.as_str());
+            row["similarity"] = json!(similarity);
+            row["score"] = json!(fused.score);
+            // D154's contract: a number, lower is better, not a threshold.
+            // Negated, so a client sorting ascending gets the result's order.
+            row["rank"] = json!(-fused.score);
+            hits.push(row);
+        }
+
+        Ok(json!({
+            "count": hits.len(),
+            "total": total,
+            "has_more": hits.len() < total,
+            "hits": hits,
+            // D69: the lexical expression that ran; null when none did
+            // (`mode: semantic`).
+            "matched": lexical.map(|l| l.expr),
+            // D193: true only for the any-word fallback.
+            "relaxed": relaxed,
+            // D196: the meaning side's model and floor, or null when it did
+            // not run (no content word, no known token, `mode: lexical`).
+            "semantic": semantic.as_ref().map(|_| json!({
+                "model": crate::embed::MODEL_ID,
+                "min_similarity": f.floor,
+            })),
+        }))
+    }
+
+    /// The lexical list: the first `depth` rows the MATCH finds, best bm25
+    /// first, and the key of every row it finds.
+    fn lexical_run(
+        &self,
+        w: &SearchWindow,
+        expr: String,
+        raw: bool,
+        depth: usize,
+    ) -> Result<LexicalRun, ApiError> {
         // `bm25()` is aliased `score`, not `rank`: `rank` is a live column on
         // every FTS5 table and shadowing it inside a compound SELECT is asking
         // for a quiet resolution surprise. Lower bm25 = better, so ORDER BY ASC.
         // Named params (`:match`/`:project`/`:limit`/`:exclude_task`), not
-        // positional: the count query below reuses these same two arms
+        // positional: the key query below reuses these same two arms
         // without `:limit`, and named binding is what lets the arm text stay
         // identical between the two statements instead of hand-renumbering
         // `?1`/`?2` per query.
         // #657: `project` rides beside `standing` for the same reason — a doc
         // carries its own column, an annotation inherits its task's, and the
-        // UNION needs the column on both arms either way. Additive on the
-        // frozen `MEMORY_HIT_ROW` (D56): a store-wide search mixes projects and
-        // a reader could not previously tell which one a hit came from without
-        // opening it, which is how #607's cross-project noise went unnoticed.
+        // UNION needs the column on both arms either way.
         //
         // #790: the four origin columns ride the same way, doc-only, so
-        // `stale` (below) can be computed off the hit this query already read
-        // rather than a second per-id lookup or a store-wide scan.
-        const DOCS_ARM: &str = "SELECT d.id AS id, 'doc' AS kind, d.title AS title, \
-             d.source AS source, snippet(docs_fts, 1, '', '', '…', 12) AS snip, \
+        // `stale` can be computed off the hit this query already read rather
+        // than a second per-id lookup or a store-wide scan.
+        let docs_arm = format!(
+            "SELECT d.id AS id, 'doc' AS kind, d.title AS title, \
+             d.source AS source, snippet(docs_fts, 1, '', '', '…', {SNIPPET_TOKENS}) AS snip, \
              bm25(docs_fts) AS score, d.standing AS standing, d.project AS project, \
              d.origin_path AS origin_path, d.origin_mtime AS origin_mtime, \
              d.origin_size AS origin_size, d.body AS body \
              FROM docs_fts JOIN docs d ON d.rowid = docs_fts.rowid \
-             WHERE docs_fts MATCH :match";
-        const ANN_ARM: &str = "SELECT a.id AS id, 'annotation' AS kind, t.title AS title, \
+             WHERE docs_fts MATCH :match"
+        );
+        let ann_arm = format!(
+            "SELECT a.id AS id, 'annotation' AS kind, t.title AS title, \
              'task:#' || t.short_id AS source, \
-             snippet(annotations_fts, 0, '', '', '…', 12) AS snip, \
+             snippet(annotations_fts, 0, '', '', '…', {SNIPPET_TOKENS}) AS snip, \
              bm25(annotations_fts) AS score, NULL AS standing, t.project AS project, \
              NULL AS origin_path, NULL AS origin_mtime, NULL AS origin_size, NULL AS body \
              FROM annotations_fts \
              JOIN annotations a ON a.rowid = annotations_fts.rowid \
              JOIN tasks t ON t.id = a.task_id \
+             WHERE annotations_fts MATCH :match"
+        );
+        // The key query reads the same joins and the same WHERE, and none of
+        // the columns that cost anything to compute.
+        const DOCS_KEYS: &str = "SELECT d.id AS id, 'doc' AS kind \
+             FROM docs_fts JOIN docs d ON d.rowid = docs_fts.rowid \
+             WHERE docs_fts MATCH :match";
+        const ANN_KEYS: &str = "SELECT a.id AS id, 'annotation' AS kind \
+             FROM annotations_fts \
+             JOIN annotations a ON a.rowid = annotations_fts.rowid \
+             JOIN tasks t ON t.id = a.task_id \
              WHERE annotations_fts MATCH :match";
         // #134: a doc's own `project` column vs. its task's `project` for an
-        // annotation — the same "docs carry it directly, annotations inherit
-        // it from their task" split `memory_add`'s doc column and the
-        // pre-existing `task:#` source already draw.
-        let (docs_arm, ann_arm) = if project.is_some() {
-            // `IS NULL`, not `IS NOT :project`: the widening admits documents
-            // belonging to NO project, never documents belonging to another
-            // one. An annotation inherits its task's project — the same split
-            // `memory_add`'s doc column and the `task:#` source already draw.
-            let (d, a) = if include_unscoped {
-                (
-                    "AND (d.project = :project OR d.project IS NULL)",
-                    "AND (t.project = :project OR t.project IS NULL)",
-                )
-            } else {
-                ("AND d.project = :project", "AND t.project = :project")
-            };
-            (format!("{DOCS_ARM} {d}"), format!("{ANN_ARM} {a}"))
-        } else {
-            (DOCS_ARM.to_string(), ANN_ARM.to_string())
+        // annotation. `IS NULL`, not `IS NOT :project`: the widening admits
+        // documents belonging to NO project, never documents belonging to
+        // another one.
+        let (d_where, a_where) = match (&w.project, w.include_unscoped) {
+            (None, _) => (String::new(), String::new()),
+            (Some(_), true) => (
+                " AND (d.project = :project OR d.project IS NULL)".to_string(),
+                " AND (t.project = :project OR t.project IS NULL)".to_string(),
+            ),
+            (Some(_), false) => (
+                " AND d.project = :project".to_string(),
+                " AND t.project = :project".to_string(),
+            ),
         };
         // The exclusion runs INSIDE the annotation arm, ahead of `LIMIT` and
-        // the `COUNT(*)` both — never as a filter over the page `run()`
-        // already cut. A caller's own task is not part of the MATCH at all,
-        // the same way a project it does not belong to is not: `total` and
-        // `has_more` have to agree with the hits for the same D69 reason the
-        // project scope already does.
-        let ann_arm = match exclude_task_id {
-            Some(_) => format!("{ann_arm} AND a.task_id <> :exclude_task"),
-            None => ann_arm,
+        // the key query both — never as a filter over the page already cut.
+        let a_where = match w.exclude_task {
+            Some(_) => format!("{a_where} AND a.task_id <> :exclude_task"),
+            None => a_where,
         };
-        let matched_sql = match scope.as_str() {
-            "docs" => docs_arm.clone(),
-            "annotations" => ann_arm.clone(),
-            _ => format!("{docs_arm} UNION ALL {ann_arm}"),
+        let compose = |docs: &str, ann: &str| match w.scope.as_str() {
+            "docs" => format!("{docs}{d_where}"),
+            "annotations" => format!("{ann}{a_where}"),
+            _ => format!("{docs}{d_where} UNION ALL {ann}{a_where}"),
         };
-        let sql = format!("{matched_sql} ORDER BY score LIMIT :limit");
-        let count_sql = format!("SELECT COUNT(*) FROM ({matched_sql})");
+        let sql = format!(
+            "{} ORDER BY score LIMIT :limit",
+            compose(&docs_arm, &ann_arm)
+        );
+        let keys_sql = compose(DOCS_KEYS, ANN_KEYS);
 
-        // Owned, so `:exclude_task` can be bound like `:project` is — a
-        // reference into a value this function still holds when `run()` and
-        // the count query read it.
-        let exclude_task_owned = exclude_task_id.map(str::to_string);
-        let mut named: Vec<(&str, &dyn rusqlite::ToSql)> = vec![(":match", &match_expr)];
-        if let Some(proj) = &project {
+        let mut named: Vec<(&str, &dyn rusqlite::ToSql)> = vec![(":match", &expr)];
+        if let Some(proj) = &w.project {
             named.push((":project", proj));
         }
-        // Bound only when the arm that reads it is actually part of
-        // `matched_sql` — a `scope: "docs"` call never puts `:exclude_task`
-        // in the SQL text at all, and binding a name the statement does not
-        // have is its own error, the same discipline `:project` already
-        // follows for a scope that dropped its own arm.
-        if scope.as_str() != "docs" {
-            if let Some(ex) = &exclude_task_owned {
+        // Bound only when the arm that reads it is part of the SQL: binding a
+        // name the statement does not have is its own error.
+        if w.scope != "docs" {
+            if let Some(ex) = &w.exclude_task {
                 named.push((":exclude_task", ex));
             }
         }
+        let limit = i64::try_from(depth).unwrap_or(i64::MAX);
 
-        let run = || -> Result<Vec<Value>, rusqlite::Error> {
+        let run = || -> Result<Vec<(HitKey, Value)>, rusqlite::Error> {
             let mut stmt = self.conn.prepare(&sql)?;
             let mut all_params = named.clone();
             all_params.push((":limit", &limit));
-            let rows = stmt.query_map(all_params.as_slice(), |r| {
-                let kind: String = r.get(1)?;
-                let title: String = r.get(2)?;
-                let origin_path: Option<String> = r.get(8)?;
-                let origin_mtime: Option<i64> = r.get(9)?;
-                let origin_size: Option<i64> = r.get(10)?;
-                let body: Option<String> = r.get(11)?;
-                // #790: a doc hit says whether the file it was imported from
-                // has moved on since — computed here, on the page this
-                // query already read, never a second scan. `null` for an
-                // annotation (no such file) and for a doc `memory.add` wrote
-                // (no `origin_path` to compare against).
-                let stale = if kind == "doc" {
-                    origin_path.as_deref().and_then(|path| {
-                        self.origin_changed(
-                            path,
-                            origin_mtime,
-                            origin_size,
-                            &title,
-                            body.as_deref().unwrap_or(""),
-                        )
-                    })
-                } else {
-                    None
-                };
-                Ok(json!({
-                    "id": r.get::<_, String>(0)?,
-                    "kind": kind,
-                    "title": title,
-                    "source": r.get::<_, Option<String>>(3)?,
-                    "snippet": r.get::<_, String>(4)?,
-                    "rank": r.get::<_, f64>(5)?,
-                    // #101: a doc hit says whether it is standing; an
-                    // annotation hit is `null`, because the flag is a
-                    // property of a doc and the UNION needs the column on
-                    // both arms either way.
-                    "standing": r.get::<_, Option<i64>>(6)?.map(|n| n != 0),
-                    // #657: which project this hit belongs to — `null` for
-                    // global knowledge, same as `memory.get`/`memory.list`
-                    // already answer for a doc's own `project` column.
-                    "project": r.get::<_, Option<String>>(7)?,
-                    "stale": stale,
-                }))
-            })?;
+            let rows = stmt.query_map(all_params.as_slice(), |r| self.hit_row(r))?;
             rows.collect()
         };
-        let hits = match run() {
-            Ok(hits) => hits,
+        let rows = match run() {
+            Ok(rows) => rows,
             // In raw mode the MATCH expression is caller input, so a query
             // SQLite refuses is the caller's error — surfaced with SQLite's
             // own message, never as ok-empty and never as `internal`. #228.5:
-            // `--raw`'s own help advertises "columns", so a `col:query` typo
-            // that names a column this scope does not have must say which
-            // ones exist, the same way every other tasqx error names the
-            // valid set (`unknown scope`, three lines up, does this already)
-            // rather than stopping at SQLite's bare `no such column: X`.
+            // a `col:query` typo names the columns this scope does have.
             Err(e) if raw => {
-                return Err(ApiError::bad_request(raw_fts5_error(&e, &scope)));
+                return Err(ApiError::bad_request(raw_fts5_error(&e, &w.scope)));
             }
             Err(e) => return Err(e.into()),
         };
-        // Only counted once the page query above has already proved the MATCH
-        // expression itself is valid — a raw syntax error is reported once,
-        // by `run()`, not doubled by this second statement failing the same
-        // way.
-        let total: i64 = self
-            .conn
-            .query_row(&count_sql, named.as_slice(), |r| r.get(0))?;
+        // Only read once the page query above has proved the MATCH
+        // expression valid — a raw syntax error is reported once, not twice.
+        let mut stmt = self.conn.prepare(&keys_sql)?;
+        let keys = stmt
+            .query_map(named.as_slice(), |r| {
+                Ok(HitKey {
+                    kind: r.get(1)?,
+                    id: r.get(0)?,
+                })
+            })?
+            .collect::<Result<HashSet<_>, _>>()?;
+        Ok(LexicalRun { expr, rows, keys })
+    }
 
-        Ok(json!({
-            "count": hits.len(),
-            "total": total,
-            "has_more": (hits.len() as i64) < total,
-            "hits": hits,
-            "matched": match_expr,
-            // D193: true only for the any-word fallback `memory_search` runs
-            // after the all-words search found nothing.
-            "relaxed": relaxed,
-        }))
+    /// One hit as the lexical arms select it (the column order of
+    /// `lexical_run`'s arms), keyed. `rank` here is the arm's raw score; the
+    /// fusion replaces it.
+    fn hit_row(&self, r: &rusqlite::Row<'_>) -> rusqlite::Result<(HitKey, Value)> {
+        let id: String = r.get(0)?;
+        let kind: String = r.get(1)?;
+        let title: String = r.get(2)?;
+        let origin_path: Option<String> = r.get(8)?;
+        let origin_mtime: Option<i64> = r.get(9)?;
+        let origin_size: Option<i64> = r.get(10)?;
+        let body: Option<String> = r.get(11)?;
+        // #790: a doc hit says whether the file it was imported from has
+        // moved on since — computed here, on the page this query already
+        // read, never a second scan. `null` for an annotation (no such file)
+        // and for a doc `memory.add` wrote (no `origin_path` to compare).
+        let stale = if kind == "doc" {
+            origin_path.as_deref().and_then(|path| {
+                self.origin_changed(
+                    path,
+                    origin_mtime,
+                    origin_size,
+                    &title,
+                    body.as_deref().unwrap_or(""),
+                )
+            })
+        } else {
+            None
+        };
+        let row = json!({
+            "id": id,
+            "kind": kind,
+            "title": title,
+            "source": r.get::<_, Option<String>>(3)?,
+            "snippet": r.get::<_, String>(4)?,
+            "rank": r.get::<_, f64>(5)?,
+            // #101: a doc hit says whether it is standing; an annotation hit
+            // is `null`, because the flag is a property of a doc.
+            "standing": r.get::<_, Option<i64>>(6)?.map(|n| n != 0),
+            // #657: which project this hit belongs to — `null` for global
+            // knowledge.
+            "project": r.get::<_, Option<String>>(7)?,
+            "stale": stale,
+        });
+        Ok((HitKey { kind, id }, row))
+    }
+
+    /// A hit only the semantic side found: the same row a lexical hit has,
+    /// read by id, with its best chunk as the snippet (D196).
+    fn semantic_only_row(
+        &self,
+        key: &HitKey,
+        semantic: Option<&SemanticSide>,
+    ) -> Result<Option<Value>, ApiError> {
+        let sql = if key.kind == "doc" {
+            "SELECT d.id, 'doc', d.title, d.source, '', 0.0, d.standing, d.project, \
+             d.origin_path, d.origin_mtime, d.origin_size, d.body FROM docs d WHERE d.id = ?1"
+        } else {
+            "SELECT a.id, 'annotation', t.title, 'task:#' || t.short_id, '', 0.0, NULL, \
+             t.project, NULL, NULL, NULL, NULL FROM annotations a \
+             JOIN tasks t ON t.id = a.task_id WHERE a.id = ?1 AND a.removed IS NULL"
+        };
+        let Some((_, mut row)) = self
+            .conn
+            .query_row(sql, params![key.id], |r| self.hit_row(r))
+            .optional()?
+        else {
+            return Ok(None);
+        };
+        let chunk = semantic.and_then(|s| s.chunk.get(key).copied());
+        let kind = if key.kind == "doc" {
+            vectors::Kind::Doc
+        } else {
+            vectors::Kind::Annotation
+        };
+        if let Some(ix) = chunk {
+            if let Some(text) = self.semantic_snippet(kind, &key.id, ix) {
+                let title = row["title"].as_str().unwrap_or_default().to_string();
+                row["snippet"] = json!(chunk_snippet(kind, &title, ix, &text));
+            }
+        }
+        Ok(Some(row))
     }
 
     // ---- memory.get ----------------------------------------------------------
@@ -1516,6 +1942,7 @@ impl Engine {
 
 #[cfg(test)]
 mod tests {
+    use super::{chunk_snippet, fuse, has_content_word, vectors, HitKey, Via};
     use rusqlite::params;
     use serde_json::json;
 
@@ -1713,5 +2140,95 @@ mod tests {
         let r = e.session_rulings(None).unwrap();
         assert!(r.project.is_none(), "stale default must not be trusted");
         assert!(r.standing.is_empty());
+    }
+
+    fn key(kind: &str, id: &str) -> HitKey {
+        HitKey {
+            kind: kind.to_string(),
+            id: id.to_string(),
+        }
+    }
+
+    /// D196's tie order: equal fused scores go to `both`, then `lexical`,
+    /// then `semantic`, then `(kind, id)` — never to whichever the map
+    /// happened to yield first.
+    #[test]
+    fn fusion_ties_go_to_both_then_lexical_then_semantic_then_kind_and_id() {
+        // `a` is first on the lexical list, `s` first on the semantic one:
+        // 1/61 each.
+        let fused = fuse(&[key("doc", "z-lex")], &[key("annotation", "a-sem")]);
+        let order: Vec<(&str, Via)> = fused.iter().map(|f| (f.key.id.as_str(), f.via)).collect();
+        assert_eq!(
+            order,
+            [("z-lex", Via::Lexical), ("a-sem", Via::Semantic)],
+            "lexical wins a tie with semantic, whatever the ids"
+        );
+        assert_eq!(fused[0].score, fused[1].score);
+
+        // Two lists over the same two keys in crossed order: every score
+        // is 1/61 + 1/62, so the tie falls to (kind, id).
+        let fused = fuse(
+            &[key("doc", "b"), key("annotation", "c")],
+            &[key("annotation", "c"), key("doc", "b")],
+        );
+        let order: Vec<&str> = fused.iter().map(|f| f.key.id.as_str()).collect();
+        assert_eq!(order, ["c", "b"], "annotation sorts before doc");
+        assert!(fused.iter().all(|f| f.via == Via::Both));
+
+        // `both` beats a single list whose score it merely equals: rank 1
+        // alone is 1/61; ranks (x, y) with 1/(60+x) + 1/(60+y) = 1/61 has
+        // no integer solution, so compare against the nearest real case.
+        let fused = fuse(
+            &[key("doc", "l1"), key("doc", "b")],
+            &[key("doc", "s1"), key("doc", "b")],
+        );
+        assert_eq!(fused[0].key.id, "b", "on both lists beats first on one");
+        assert_eq!(fused[0].score, 2.0 / 62.0);
+    }
+
+    /// A list of one side alone keeps its own order, so `mode: lexical`
+    /// returns bm25's.
+    #[test]
+    fn fusion_of_one_list_keeps_its_order() {
+        let keys: Vec<HitKey> = ["q", "a", "m", "b"].iter().map(|i| key("doc", i)).collect();
+        let fused = fuse(&keys, &[]);
+        let order: Vec<&str> = fused.iter().map(|f| f.key.id.as_str()).collect();
+        assert_eq!(order, ["q", "a", "m", "b"]);
+    }
+
+    #[test]
+    fn a_content_word_has_three_letters_and_is_not_a_stopword() {
+        for q in [
+            "D41", "#607", "v2.3.1", "the and", "a to", "D41 #607", "SQ1",
+        ] {
+            assert!(!has_content_word(q), "{q}");
+        }
+        for q in ["SSO", "sign-in", "the release", "D41 rules", "\"ledger\""] {
+            assert!(has_content_word(q), "{q}");
+        }
+    }
+
+    #[test]
+    fn a_chunk_snippet_is_cut_like_an_fts5_one() {
+        let long = "one two three four five six seven eight nine ten eleven twelve thirteen";
+        assert_eq!(
+            chunk_snippet(vectors::Kind::Annotation, "", 0, long),
+            "one two three four five six seven eight nine ten eleven twelve…"
+        );
+        assert_eq!(
+            chunk_snippet(vectors::Kind::Annotation, "", 2, "short\n\ntext"),
+            "…short text",
+            "a later chunk is text left out before it"
+        );
+        assert_eq!(
+            chunk_snippet(vectors::Kind::Doc, "Title", 0, "Title\n\nthe body"),
+            "the body",
+            "the title the hit already carries is not repeated"
+        );
+        assert_eq!(
+            chunk_snippet(vectors::Kind::Doc, "Title", 0, "Title"),
+            "Title",
+            "a doc with no body is its title"
+        );
     }
 }

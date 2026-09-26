@@ -420,11 +420,13 @@ if [ -n "$leaks" ]; then
     exit 1
 fi
 
-# The same rule, one step subtler: an FTS `rank` is bm25, computed through the
+# The same rule, one step subtler: an FTS `rank` was bm25, computed through the
 # platform's `log()`, and its last digits differ between macOS and Linux. A
 # fixture carrying one is reproducible on the machine that captured it and
 # nowhere else — which is how `api-task-brief` was found, by the drift job, on a
-# runner. The SEARCH SCREENS are fine and stay: they print snippets, not the
+# runner. Since D196 `rank` is a fused reciprocal rank, but the words list it
+# fuses is still in bm25 order, so two near-equal hits can swap on another
+# platform and move it; the rule stands. The SEARCH SCREENS are fine and stay: they print snippets, not the
 # number. It is the JSON responses that quote it.
 ranked=$(grep -l -F '"rank":' "$out"/*.ansi 2>/dev/null || true)
 if [ -n "$ranked" ]; then

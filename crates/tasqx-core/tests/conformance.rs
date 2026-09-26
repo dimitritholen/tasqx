@@ -570,6 +570,12 @@ const MEMORY_HIT_ROW: &[Field] = &[
     // imported — null on an annotation hit and on a doc `memory.add` wrote,
     // which has no origin file to compare against.
     nul("stale", Ty::Bool),
+    // D196: which list found the hit (`lexical`, `semantic`, `both`), its
+    // best chunk's cosine (null with no vector or no semantic side), and the
+    // fused score `rank` is the negation of.
+    req("via", Ty::Str),
+    nul("similarity", Ty::Num),
+    req("score", Ty::Num),
 ];
 
 const TOKEN_BUCKETS_ROW: &[Field] = &[
@@ -1002,12 +1008,18 @@ const R_MEMORY_SEARCH: Shape = &[&[
     req("has_more", Ty::Bool),
     req_of("hits", Ty::Array, &[MEMORY_HIT_ROW]),
     // The FTS5 expression this search actually ran (D69), so `count: 0` can be
-    // told apart from a store that holds nothing on the subject.
-    req("matched", Ty::Str),
+    // told apart from a store that holds nothing on the subject. Null only
+    // under `mode: semantic`, which runs no expression (D196) — a mode no v1
+    // client sends.
+    nul("matched", Ty::Str),
     // D193: whether `matched` is the any-word fallback rather than the
     // all-words expression the caller's words first asked for.
     req("relaxed", Ty::Bool),
+    // D196: the meaning side's model and floor, or null when it did not run.
+    nul_of("semantic", Ty::Object, SEARCH_SEMANTIC),
 ]];
+
+const SEARCH_SEMANTIC: Shape = &[&[req("model", Ty::Str), req("min_similarity", Ty::Num)]];
 
 const R_MEMORY_REMOVE: Shape = &[&[req("id", Ty::Str), req("removed", Ty::Bool)]];
 
@@ -2152,6 +2164,19 @@ fn cases() -> Vec<Case> {
                 }))
                 .expect("doc");
                 json!({ "query": "conformance", "limit": 10, "scope": "all", "raw": false })
+            },
+            R_MEMORY_SEARCH,
+        ),
+        case(
+            "memory.search",
+            "the meaning list alone, which runs no expression (D196)",
+            |e| {
+                e.memory_add(&json!({
+                    "title": "incident log",
+                    "body": "login errors after the SSO change",
+                }))
+                .expect("doc");
+                json!({ "query": "authentication problems", "mode": "semantic", "min_similarity": 0.3 })
             },
             R_MEMORY_SEARCH,
         ),

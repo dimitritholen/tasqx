@@ -90,7 +90,7 @@ What makes this more than remote CRUD:
   even a read-only session can ask what its rework rate on this project is
   before deciding how carefully to work.
 - **Agents get long-term memory.** `search_memory` gives even a read-only
-  agent bm25-ranked retrieval over your imported docs *and* every task
+  agent retrieval by meaning and by words over your imported docs *and* every task
   annotation — feed it your ADRs with `tasqx memory import docs/`, and past
   decisions surface while it works. Annotations feed the same index, so an
   agent that documents its work is building the knowledge base as a side

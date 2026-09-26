@@ -221,6 +221,10 @@ pub fn memory_hits(
             source: String,
             handle: String,
             snippet: String,
+            /// D196: the similarity of a hit found by meaning alone, whose
+            /// snippet is its closest passage rather than the words that
+            /// matched. `None` for a hit the words found.
+            meaning: Option<f64>,
         }
         let rows: Vec<Hit> = hits
             .iter()
@@ -255,6 +259,9 @@ pub fn memory_hits(
                         .split_whitespace()
                         .collect::<Vec<_>>()
                         .join(" "),
+                    meaning: (h.get("via").and_then(Value::as_str) == Some("semantic"))
+                        .then(|| h.get("similarity").and_then(Value::as_f64))
+                        .flatten(),
                 }
             })
             .collect();
@@ -300,11 +307,19 @@ pub fn memory_hits(
             if !r.snippet.is_empty() {
                 // Four cells, under the handle's two: `muted` draws nothing
                 // under NO_COLOR, so indent is what ranks these lines there.
+                // D196: a hit found by meaning alone leads its passage with
+                // the mark and its similarity — the modifier in the cell it
+                // modifies (rule 5), and at the start, where the cut to the
+                // width cannot reach it.
+                let line = match r.meaning {
+                    Some(sim) => format!("{} {sim:.2}  {}", meaning_mark(ctx), r.snippet),
+                    None => r.snippet.clone(),
+                };
                 out.push_str(&format!(
                     "    {}\n",
                     ctx.paint(
                         "muted",
-                        &truncate(&r.snippet, ctx.cols.saturating_sub(4), ctx.caps.unicode)
+                        &truncate(&line, ctx.cols.saturating_sub(4), ctx.caps.unicode)
                     )
                 ));
             }
@@ -327,6 +342,25 @@ pub fn memory_hits(
             "no hit had every word — these match any word".to_string(),
         ));
     }
+    // D196: the mark on a snippet line is new to every reader, so it says
+    // once what it means — only when a hit on screen carries it.
+    let by_meaning = hits.iter().any(|h| {
+        h.get("via").and_then(Value::as_str) == Some("semantic")
+            && h.get("similarity").is_some_and(Value::is_number)
+    });
+    if by_meaning {
+        notes.push((
+            None,
+            format!(
+                "{} marks a hit found by meaning alone, not by its words, with its similarity",
+                meaning_mark(ctx)
+            ),
+        ));
+    }
+    let semantic_floor = result
+        .get("semantic")
+        .and_then(|s| s.get("min_similarity"))
+        .and_then(Value::as_f64);
     if count < total {
         // At the terminal's own weight, like the miss hint below: both name
         // the command that shows what this screen could not.
@@ -346,6 +380,24 @@ pub fn memory_hits(
     // relax had one content word, or nothing the any-word search could add,
     // so dropping words or ORing them is no help either: other words or a
     // prefix are.
+    if count == 0 && result.get("matched").is_some_and(Value::is_null) {
+        // D196: `--mode semantic` ran no expression. Either meaning ran and
+        // found nothing at the floor, or the query had nothing to embed.
+        let asked = san(query);
+        notes.push((
+            None,
+            match semantic_floor {
+                Some(floor) => format!(
+                    "nothing is close in meaning to {asked} at {floor:.2} — --min-similarity \
+                     lower widens it, --mode hybrid adds its words"
+                ),
+                None => format!(
+                    "{asked} has no word to match by meaning — --mode lexical finds it by its \
+                     characters"
+                ),
+            },
+        ));
+    }
     if count == 0 {
         if let Some(matched) = result.get("matched").and_then(Value::as_str) {
             let expr = san(matched);
@@ -357,11 +409,18 @@ pub fn memory_hits(
                     format!("nothing matched \"{expr}\" — OR widens it")
                 } else if relaxed {
                     let place = match scope {
-                        Some("docs") => "no doc has",
-                        Some("annotations") => "no annotation has",
-                        _ => "nothing in docs or annotations has",
+                        Some("docs") => "no doc",
+                        Some("annotations") => "no annotation",
+                        _ => "nothing in docs or annotations",
                     };
-                    format!("{place} any of these words: {expr}")
+                    // D196: in hybrid mode the OR runs only after meaning
+                    // found nothing too, so the miss is both.
+                    let meaning = if semantic_floor.is_some() {
+                        " is close in meaning or"
+                    } else {
+                        ""
+                    };
+                    format!("{place}{meaning} has any of these words: {expr}")
                 } else {
                     format!("nothing matched {expr} — try other words, or --raw with word* for a prefix")
                 },
@@ -375,6 +434,16 @@ pub fn memory_hits(
         }
     }
     out
+}
+
+/// D196's mark for a hit found by meaning alone: `≈`, or `~` where the
+/// terminal draws no Unicode.
+fn meaning_mark(ctx: &Ctx) -> &'static str {
+    if ctx.caps.unicode {
+        "≈"
+    } else {
+        "~"
+    }
 }
 
 #[cfg(test)]

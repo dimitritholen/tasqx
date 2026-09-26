@@ -3595,6 +3595,11 @@ fn the_read_only_refusal_names_the_flag_that_fixes_it() {
 /// tool above: 32 tools, 34,946 bytes, so the cap moved from 34,816 to
 /// 35,072.
 ///
+/// D196 added `mode` and `min_similarity` to `tasqx_search_memory`, and the
+/// meaning half of search to its description and the server instructions.
+/// Measured beside every tool above: 32 tools, 35,434 bytes, so the cap moved
+/// from 35,072 to 35,584.
+///
 /// The floor is not zero. With every `description` key removed from the roster
 /// the same serialization is 11,597 bytes of schema skeleton — property names,
 /// `type`, the closed `enum` lists D30 renders from the engine's own consts,
@@ -3605,7 +3610,7 @@ fn the_read_only_refusal_names_the_flag_that_fixes_it() {
 fn the_whole_tool_roster_stays_inside_its_per_prompt_budget() {
     const MAX_DESCRIPTION: usize = 800;
     const MAX_ENTRY: usize = 3_072;
-    const MAX_ROSTER: usize = 35_072;
+    const MAX_ROSTER: usize = 35_584;
 
     let engine = engine();
     let server = McpServer::new(&engine, Scope::Write);

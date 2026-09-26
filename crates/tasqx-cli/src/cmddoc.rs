@@ -833,10 +833,14 @@ pub const COMMAND_REF: &[CmdDoc] = &[
         // slash-joined token unbreakable past a 40-column manual page.
         method: "memory.search + get/add/remove/list/update + memory.import + memory.refresh",
         summary: "Store and search knowledge: docs, patterns, and your task annotations (D41).",
-        usage: "tasqx memory <add <title> <body> [--source s] [--project p] [--standing]|search <words…> [--limit n] [--scope s] [--raw]|list [--limit n] [--offset n] [--project p] [--standing]|show <id>|update <id> [--title t] [--body b] [--source s] [--project p] [--standing true|false] [--expected-rev n]|rm <id>|import <path> [--project p]|import --refresh>",
+        usage: "tasqx memory <add <title> <body> [--source s] [--project p] [--standing]|search <words…> [--limit n] [--scope s] [--mode m] [--min-similarity n] [--raw]|list [--limit n] [--offset n] [--project p] [--standing]|show <id>|update <id> [--title t] [--body b] [--source s] [--project p] [--standing true|false] [--expected-rev n]|rm <id>|import <path> [--project p]|import --refresh>",
         examples: &[
             ex("tasqx memory add \"Deploy runbook\" \"deploys go through the blue-green pipeline\""),
             ex("tasqx memory search blue-green"),
+            ex_norun(
+                "tasqx memory search D41 --mode lexical",
+                "exact words only; an id with no word of three letters is always matched this way",
+            ),
             ex_norun(
                 "tasqx memory search 'pipel*' --raw",
                 "FTS5 operator syntax: prefix search, AND/OR, column filters",
@@ -864,8 +868,8 @@ pub const COMMAND_REF: &[CmdDoc] = &[
             ),
         ],
         notes: &[
-            "A hit is two lines: the title, where it came from and the handle that opens it, then the words that matched. The handle is a doc's id, which `tasqx memory show <id>` reads, or `annotation on #N`, which `tasqx show N` opens — `memory show` refuses an annotation's id and names the task instead (exit 4).",
-            "Search covers your imported docs AND task annotations, bm25-ranked, with stemming (\"reviewing\" matches \"review\"). Plain words are matched as phrases (hyphens and dots are safe); pass --raw for FTS5 operator syntax. The response's total/has_more say what --limit left out.",
+            "A hit is two lines: the title, where it came from and the handle that opens it, then the words that matched — or, for a hit found by meaning alone, `≈` and its similarity before its closest passage. The handle is a doc's id, which `tasqx memory show <id>` reads, or `annotation on #N`, which `tasqx show N` opens — `memory show` refuses an annotation's id and names the task instead (exit 4).",
+            "Search covers your imported docs AND task annotations, by meaning and by words (D196): an embedding model built into the binary finds a note that says the same thing in other words, and full-text search (bm25, with stemming: \"reviewing\" matches \"review\") finds the words themselves. --mode lexical is words only, --mode semantic meaning only; --min-similarity (0 to 1, default 0.30) is how close a match by meaning must be. Plain words are matched as phrases (hyphens and dots are safe); pass --raw for FTS5 operator syntax, which is words only. The response's total/has_more say what --limit left out.",
             "list browses every doc without a query — the enumeration search can't do without one — newest-modified first, paged the same way as `tasqx list`.",
             "update replaces title/body/source/project in place, guarded by the same optimistic-concurrency rev `tasqx modify` uses. rm is permanent; update is the correction path that keeps the id and doesn't pollute search with a stale duplicate.",
             "Import is one transaction: a bad file imports nothing, and re-importing a directory replaces docs from the same source instead of duplicating them. --project scopes the whole batch; omitted, an existing doc keeps whatever scope it already had (like --standing), a new one stays global, and naming a different project on a re-import moves the doc's scope there.",

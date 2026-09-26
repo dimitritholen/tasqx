@@ -6,7 +6,7 @@
 use clap::builder::{PossibleValue, PossibleValuesParser};
 use clap::{Args, Parser, Subcommand, ValueHint};
 
-use tasqx_core::engine::MEMORY_SCOPES;
+use tasqx_core::engine::{MEMORY_SCOPES, MEMORY_SEARCH_MODES};
 use tasqx_core::Priority;
 
 use super::{AGENDA_MAX_DAYS, CLEARABLE, VERSION};
@@ -101,6 +101,20 @@ impl clap::builder::TypedValueParser for Trimmed {
 /// duplicated *check* cannot become a duplicated *vocabulary*.
 fn scope_parser() -> PossibleValuesParser {
     PossibleValuesParser::new(MEMORY_SCOPES)
+}
+
+/// `memory search --mode`, rendered from the engine's own vocabulary (D196).
+fn mode_parser() -> PossibleValuesParser {
+    PossibleValuesParser::new(MEMORY_SEARCH_MODES)
+}
+
+/// `memory search --min-similarity`: a number from 0 to 1, refused here with
+/// the range rather than sent to the engine to be refused there.
+fn similarity_parser(s: &str) -> Result<f64, String> {
+    match s.parse::<f64>() {
+        Ok(x) if (0.0..=1.0).contains(&x) => Ok(x),
+        _ => Err(format!("`{s}` is not a number from 0 to 1")),
+    }
 }
 
 /// The correlation facts `task.start` / `task.done` accept (#12), declared once
@@ -1494,7 +1508,7 @@ pub(super) enum MemoryAction {
         #[arg(long, value_name = "REV")]
         expected_rev: Option<i64>,
     },
-    /// Search docs + annotations, bm25-ranked (maps to memory.search).
+    /// Search docs + annotations by meaning and words (maps to memory.search).
     Search {
         /// Search words. Matched as phrases, so hyphens and dots are safe.
         ///
@@ -1517,8 +1531,16 @@ pub(super) enum MemoryAction {
         #[arg(long, value_parser = scope_parser())]
         scope: Option<String>,
         /// Treat the query as raw FTS5 syntax (prefix*, AND/OR, columns).
-        #[arg(long)]
+        /// Words only, so it searches as `--mode lexical`.
+        #[arg(long, conflicts_with = "mode")]
         raw: bool,
+        /// How to match (default: hybrid, meaning and words fused; lexical
+        /// forces exact words).
+        #[arg(long, value_parser = mode_parser())]
+        mode: Option<String>,
+        /// The floor a match by meaning must reach, 0 to 1 (default 0.30).
+        #[arg(long, value_name = "N", value_parser = similarity_parser)]
+        min_similarity: Option<f64>,
     },
     /// Show one doc whole, by id (maps to memory.get).
     // #229 item 7: `get` is the name a reader already knows — it is

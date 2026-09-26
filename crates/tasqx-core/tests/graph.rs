@@ -1279,3 +1279,31 @@ fn a_twelve_hundred_task_store_clamps_to_the_default_cap_quickly() {
          per-node query"
     );
 }
+
+/// D196: a `search_match` edge claims the entry holds the title's words, so
+/// the graph searches by words alone — a note close in meaning, with none of
+/// them, is not an edge.
+#[test]
+fn a_search_match_edge_is_never_drawn_by_meaning() {
+    let e = engine();
+    ok(
+        &e,
+        "task.add",
+        json!({ "title": "authentication problems" }),
+    );
+    ok(
+        &e,
+        "memory.add",
+        json!({ "title": "incident log", "body": "login errors after the SSO change" }),
+    );
+    let on = ok(
+        &e,
+        "graph.query",
+        json!({ "root": 1, "depth": 1, "include_inferred": true }),
+    );
+    assert!(
+        !labels(&on).contains(&"incident log".to_string()),
+        "a meaning-only neighbour became a search_match edge: {:?}",
+        labels(&on)
+    );
+}
