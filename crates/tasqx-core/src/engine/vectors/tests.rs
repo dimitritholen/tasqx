@@ -134,6 +134,16 @@ fn a_search_embeds_what_has_no_row_and_a_second_search_writes_nothing() {
     assert!(rows(&e.conn, &doc) >= 1, "the doc's chunks are stored");
     assert_eq!(rows(&e.conn, &note), 1, "a short note is one chunk");
 
+    let used: i64 = e
+        .conn
+        .query_row(
+            "SELECT last_used FROM memory_vector_models WHERE model = ?1",
+            params![MODEL_ID],
+            |r| r.get(0),
+        )
+        .expect("the search recorded its model");
+    assert!(crate::clock::now().as_second() - used < 60);
+
     let before = e.conn.total_changes();
     assert_eq!(finds(&e, VOLCANO), [(Kind::Annotation, note)]);
     assert_eq!(
@@ -168,7 +178,7 @@ fn text_with_no_known_token_is_stored_once_as_a_sentinel() {
     let before = e.conn.total_changes();
     // A different engine on the same store would also skip them: the scan
     // itself no longer lists them.
-    assert!(scan_missing(&e.conn).unwrap().is_empty());
+    assert!(scan_missing(&e.conn, true).unwrap().is_empty());
     finds(&e, VOLCANO);
     assert_eq!(e.conn.total_changes(), before, "never re-embedded");
 }
@@ -184,18 +194,30 @@ fn a_removed_or_empty_note_is_not_embedded() {
     assert_eq!(rows(&e.conn, &note), 0, "no row, not even a sentinel");
 }
 
+/// Another model's rows are never read, and never deleted by a search or
+/// by an open while that model is in use: a CLI and an MCP server built
+/// with different models share a store without deleting each other's work.
+/// Once the other model has not searched for over seven days, open sweeps
+/// it.
 #[test]
-fn another_model_s_rows_are_ignored_by_search_and_swept_on_open() {
+fn another_model_s_rows_are_ignored_and_swept_only_once_unused() {
     let s = Scratch::new("model");
     let e = Engine::open(&s.db()).unwrap();
     let doc = add_doc(&e, "Geology", VOLCANO);
     // A row under another model that would match GIRAFFE exactly.
     let giraffe = embed::quantize(&embed::embed(GIRAFFE).unwrap());
+    let now = crate::clock::now().as_second();
     e.conn
         .execute(
             "INSERT INTO memory_vectors (kind, owner_id, model, chunk, vec) \
              VALUES ('doc', ?1, 'another-model', 0, ?2)",
             params![doc, &giraffe[..]],
+        )
+        .unwrap();
+    e.conn
+        .execute(
+            "INSERT INTO memory_vector_models (model, last_used) VALUES ('another-model', ?1)",
+            params![now],
         )
         .unwrap();
     assert!(finds(&e, GIRAFFE).is_empty(), "another model is never read");
@@ -213,9 +235,25 @@ fn another_model_s_rows_are_ignored_by_search_and_swept_on_open() {
     };
     assert_eq!(others(&e.conn), 1, "a search deletes nobody's rows");
     drop(e);
+    for _ in 0..2 {
+        let reopened = Engine::open(&s.db()).unwrap();
+        assert_eq!(
+            others(&reopened.conn),
+            1,
+            "nor does an open, while it is in use"
+        );
+    }
+    let e = Engine::open(&s.db()).unwrap();
+    e.conn
+        .execute(
+            "UPDATE memory_vector_models SET last_used = ?1 WHERE model = 'another-model'",
+            params![now - 8 * 24 * 3600],
+        )
+        .unwrap();
+    drop(e);
     let reopened = Engine::open(&s.db()).unwrap();
-    assert_eq!(others(&reopened.conn), 0, "open sweeps them");
-    assert!(rows(&reopened.conn, &doc) >= 1, "and keeps ours");
+    assert_eq!(others(&reopened.conn), 0, "unused for eight days: swept");
+    assert!(rows(&reopened.conn, &doc) >= 1, "and ours kept");
 }
 
 // ---- the guard, the lock, a read-only file ----------------------------------------
@@ -233,7 +271,7 @@ fn a_write_that_lost_a_race_with_an_edit_stores_nothing() {
     let task = add_task(&a, "t");
     let note = add_note(&a, &task, GIRAFFE);
 
-    let pending = scan_missing(&a.conn).unwrap();
+    let pending = scan_missing(&a.conn, true).unwrap();
     assert_eq!(pending.len(), 2, "both read at v1");
     b.memory_update(&json!({ "id": doc, "body": VOLCANO }))
         .unwrap();
@@ -241,7 +279,7 @@ fn a_write_that_lost_a_race_with_an_edit_stores_nothing() {
         .unwrap();
 
     assert_eq!(
-        persist(&a.conn, &pending).unwrap(),
+        persist(&a.conn, &pending, None).unwrap(),
         0,
         "the guard refused both"
     );
@@ -265,10 +303,10 @@ fn a_note_removed_between_read_and_write_stores_nothing() {
     let b = Engine::open(&s.db()).unwrap();
     let task = add_task(&a, "t");
     let note = add_note(&a, &task, GIRAFFE);
-    let pending = scan_missing(&a.conn).unwrap();
+    let pending = scan_missing(&a.conn, true).unwrap();
     b.annotation_remove(&json!({ "ref": task, "annotation_id": note }))
         .unwrap();
-    assert_eq!(persist(&a.conn, &pending).unwrap(), 0);
+    assert_eq!(persist(&a.conn, &pending, None).unwrap(), 0);
     assert_eq!(rows(&a.conn, &note), 0);
     assert!(!found(&a, GIRAFFE, Kind::Annotation, &note));
 }
@@ -298,9 +336,18 @@ fn a_held_write_lock_neither_blocks_nor_breaks_a_search() {
     assert_eq!(timeout, 3000, "the busy timeout is restored");
     assert_eq!(rows(&holder, &doc), 0, "nothing stored under the lock");
 
+    let embedded = a.vectors.borrow().embedded;
+    assert!(found(&a, GIRAFFE, Kind::Doc, &doc), "still answered");
+    assert_eq!(
+        a.vectors.borrow().embedded,
+        embedded,
+        "a second search under the lock embeds nothing again"
+    );
+
     holder.execute_batch("ROLLBACK").unwrap();
     assert!(found(&a, GIRAFFE, Kind::Doc, &doc));
     assert!(rows(&a.conn, &doc) >= 1, "stored once the lock is free");
+    assert_eq!(a.vectors.borrow().embedded, embedded, "from what it kept");
 }
 
 #[test]
@@ -396,19 +443,81 @@ fn kinds_order_as_their_names() {
     assert!(Kind::Annotation.as_str() < Kind::Doc.as_str());
 }
 
-/// The cache's similarity is the engine's own `cosine_quantized`, bit for
-/// bit, so the rounding sees the same number either way.
+/// The copy is keyed on memory's generation, so writes a semantic list
+/// cannot see — a timer, a tag, a task's title, a token count — leave it
+/// warm, and a task's project, which scopes its notes, does not.
 #[test]
-fn the_cached_similarity_is_cosine_quantized_exactly() {
-    let q = embed::embed(GIRAFFE).unwrap();
-    for text in [GIRAFFE, VOLCANO, ORCHARD] {
-        let blob = embed::quantize(&embed::embed(text).unwrap());
-        let s = Stored::from_blob(&blob).unwrap();
-        assert_eq!(
-            s.similarity(&q).to_bits(),
-            embed::cosine_quantized(&q, &blob).to_bits(),
-            "{text}"
-        );
+fn the_cache_survives_writes_memory_cannot_see() {
+    let e = Engine::open_in_memory().unwrap();
+    e.project_create(&json!({ "name": "zoo" })).unwrap();
+    e.project_create(&json!({ "name": "farm" })).unwrap();
+    let task = id(&e
+        .task_add(&json!({ "title": "t", "project": "zoo" }))
+        .unwrap());
+    let note = add_note(&e, &task, GIRAFFE);
+    let zoo = SemanticFilter {
+        project: Some("zoo"),
+        ..everything()
+    };
+    let in_zoo = |e: &Engine| {
+        e.semantic_candidates(GIRAFFE, &zoo)
+            .hits
+            .iter()
+            .any(|h| h.owner_id == note)
+    };
+    assert!(in_zoo(&e));
+    let loads = e.vectors.borrow().loads;
+
+    e.task_add(&json!({ "title": "another" })).unwrap();
+    e.task_start(&json!({ "ref": task })).unwrap();
+    e.task_stop(&json!({ "ref": task })).unwrap();
+    e.tag_add(&json!({ "ref": task, "tags": ["x"] })).unwrap();
+    e.task_modify(&json!({ "ref": task, "set": { "title": "renamed" } }))
+        .unwrap();
+    e.token_add(&json!({
+        "ref": task, "tool": "claude_code", "source": "self-report", "input_tokens": 5,
+        "confidence": "medium"
+    }))
+    .unwrap();
+    assert!(in_zoo(&e));
+    assert_eq!(e.vectors.borrow().loads, loads, "no reload");
+
+    e.task_modify(&json!({ "ref": task, "set": { "project": "farm" } }))
+        .unwrap();
+    assert!(!in_zoo(&e), "the note follows its task's project");
+    assert_eq!(e.vectors.borrow().loads, loads + 1);
+}
+
+/// Opening one store from many processes at once: the vector migration
+/// takes the write lock for its checks and its DDL together, so no open
+/// fails on another's half-done work.
+#[test]
+fn concurrent_opens_of_one_store_all_succeed() {
+    for round in 0..3 {
+        let s = Scratch::new(&format!("open-{round}"));
+        if round > 0 {
+            // A store that predates the index, upgraded by every opener.
+            let e = Engine::open(&s.db()).unwrap();
+            e.conn
+                .execute_batch(
+                    "DROP TRIGGER memory_vectors_docs_au; DROP TABLE memory_vectors; \
+                     DROP TABLE memory_vector_models;",
+                )
+                .unwrap();
+        }
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(8));
+        let handles: Vec<_> = (0..8)
+            .map(|_| {
+                let (db, barrier) = (s.db(), barrier.clone());
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    Engine::open(&db).map(|_| ())
+                })
+            })
+            .collect();
+        for h in handles {
+            h.join().unwrap().expect("every concurrent open succeeds");
+        }
     }
 }
 
@@ -895,13 +1004,13 @@ fn store_export_carries_no_vectors() {
 // ---- cost ------------------------------------------------------------------------
 
 /// D196's budget: warm under 50 ms and cold under 1 s at 50,000 entries, in
-/// a release build. Ignored by default (it embeds 50,000 texts); run with
+/// a release build, measured twice: 50,000 single-chunk entries (half docs,
+/// half notes), and 50,000 docs of three sections each. Ignored by default
+/// (it embeds every text); run with
 /// `cargo test --release -p tasqx-core --lib vectors::tests::cost -- --ignored --nocapture`.
 #[test]
 #[ignore]
 fn cost_at_fifty_thousand_entries() {
-    let s = Scratch::new("cost");
-    let e = Engine::open(&s.db()).unwrap();
     let words = [
         "release",
         "deploy",
@@ -920,6 +1029,33 @@ fn cost_at_fifty_thousand_entries() {
         "socket",
         "timer",
     ];
+    let prose = |i: usize, n: usize| -> String {
+        let text: Vec<&str> = (0..n)
+            .map(|k| words[(i * 7 + k * 13) % words.len()])
+            .collect();
+        format!("Entry {i}: {}.", text.join(" "))
+    };
+    let single = |i: usize| (i % 2 == 1, prose(i, 40));
+    let sections = |i: usize| {
+        (
+            false,
+            format!(
+                "# One\n\n{}\n\n# Two\n\n{}\n\n# Three\n\n{}",
+                prose(i, 80),
+                prose(i + 1, 80),
+                prose(i + 2, 80)
+            ),
+        )
+    };
+    measure("50,000 single-chunk entries", &single);
+    measure("50,000 docs of three sections", &sections);
+}
+
+/// Builds 50,000 entries from `make` (`(is_note, text)`) and prints the
+/// search timings.
+fn measure(label: &str, make: &dyn Fn(usize) -> (bool, String)) {
+    let s = Scratch::new("cost");
+    let e = Engine::open(&s.db()).unwrap();
     let tx = e.conn.unchecked_transaction().unwrap();
     tx.execute(
         "INSERT INTO tasks (id, short_id, title, status, created, modified) \
@@ -928,54 +1064,64 @@ fn cost_at_fifty_thousand_entries() {
     )
     .unwrap();
     for i in 0..50_000usize {
-        let text: Vec<&str> = (0..40)
-            .map(|k| words[(i * 7 + k * 13) % words.len()])
-            .collect();
-        let text = format!("Entry {i}: {}.", text.join(" "));
-        if i % 2 == 0 {
+        let (note, text) = make(i);
+        if note {
+            tx.execute(
+                "INSERT INTO annotations (id, task_id, body, created) VALUES (?1, 't', ?2, 't')",
+                params![format!("a{i}"), text],
+            )
+            .unwrap();
+        } else {
             tx.execute(
                 "INSERT INTO docs (id, title, body, search_body, created, modified) \
                  VALUES (?1, ?2, ?3, ?3, 't', 't')",
                 params![format!("d{i}"), format!("Doc {i}"), text],
             )
             .unwrap();
-        } else {
-            tx.execute(
-                "INSERT INTO annotations (id, task_id, body, created) VALUES (?1, 't', ?2, 't')",
-                params![format!("a{i}"), text],
-            )
-            .unwrap();
         }
     }
     tx.commit().unwrap();
+    let chunks: i64 = {
+        let q = "release deploy review budget";
+        let f = SemanticFilter {
+            min_similarity: 0.3,
+            depth: 50,
+            ..everything()
+        };
+        let t = Instant::now();
+        let first = e.semantic_candidates(q, &f);
+        println!(
+            "{label}: first search, embedding everything: {:?}",
+            t.elapsed()
+        );
+        assert!(first.total > 0);
+        let warm: Vec<Duration> = (0..5)
+            .map(|_| {
+                let t = Instant::now();
+                e.semantic_candidates(q, &f);
+                t.elapsed()
+            })
+            .collect();
+        println!("{label}: warm, five runs: {warm:?}");
+        let t = Instant::now();
+        e.task_add(&json!({ "title": "x" })).unwrap();
+        e.semantic_candidates(q, &f);
+        println!("{label}: after a task.add (no reload): {:?}", t.elapsed());
+        e.conn
+            .query_row("SELECT COUNT(*) FROM memory_vectors", [], |r| r.get(0))
+            .unwrap()
+    };
+    drop(e);
+    let e = Engine::open(&s.db()).unwrap();
     let f = SemanticFilter {
         min_similarity: 0.3,
         depth: 50,
         ..everything()
     };
     let t = Instant::now();
-    let first = e.semantic_candidates("release deploy review budget", &f);
-    println!("first search, embedding all 50,000: {:?}", t.elapsed());
-    assert!(first.total > 0);
-
-    let warm: Vec<Duration> = (0..5)
-        .map(|_| {
-            let t = Instant::now();
-            e.semantic_candidates("release deploy review budget", &f);
-            t.elapsed()
-        })
-        .collect();
-    println!("warm, five runs: {warm:?}");
-
-    drop(e);
-    let e = Engine::open(&s.db()).unwrap();
-    let t = Instant::now();
     e.semantic_candidates("release deploy review budget", &f);
-    let cold = t.elapsed();
-    println!("cold (new process, vectors stored): {cold:?}");
-
-    let t = Instant::now();
-    e.task_add(&json!({ "title": "x" })).unwrap();
-    e.semantic_candidates("release deploy review budget", &f);
-    println!("after an own write (reload): {:?}", t.elapsed());
+    println!(
+        "{label}: cold (new engine, {chunks} vectors stored): {:?}",
+        t.elapsed()
+    );
 }
