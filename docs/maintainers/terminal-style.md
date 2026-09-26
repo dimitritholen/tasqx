@@ -316,14 +316,17 @@ full-page one (capped at four viewport heights) per page/width/theme, plus one
 `report.json` listing, per page and width, any element overflowing the
 viewport and any console error the page threw.
 
-The README's GIFs are the pictures that do not come through this loop, because
-they move: a fixture is one screen, and a GIF is a few commands in sequence.
-Each is scripted by a tape for [VHS](https://github.com/charmbracelet/vhs),
-which types into a real terminal and encodes what it draws (D163):
+The GIFs are the pictures that do not come through this loop, because they
+move: a fixture is one screen, and a GIF is a few commands in sequence. Each is
+scripted by a tape for [VHS](https://github.com/charmbracelet/vhs), which types
+into a real terminal and encodes what it draws (D163). `hero.gif` is no longer
+linked from the README (D176), but its tape is kept, and the others name it for
+their requirements:
 
 | GIF | Tape | Re-record after a change to |
 |---|---|---|
 | `docs/img/hero.gif` | `scripts/hero.tape` | `add`, `dep`, `pick` (search and card), short-id allocation |
+| `docs/img/hero-receipt.gif` | `scripts/hero-receipt.tape` | #50/#51 in `scripts/demo-store.py`, the MCP tool surface, `task.get` and `task.brief` output (not deterministic: see below) |
 | `docs/img/deps.gif` | `scripts/deps.tape` | `init`, `add`, `dep`, `list`, `done`, `next`, short-id allocation |
 | `docs/img/memory.gif` | `scripts/memory.tape` | `memory import`, `memory search`, `scripts/demo-decisions/` |
 | `docs/img/brief.gif` | `scripts/brief.tape` | `annotate`, `done`, `brief --card`, #50/#51 in `scripts/demo-store.py` |
@@ -345,9 +348,33 @@ $ vhs scripts/hero.tape                                   # → docs/img/hero.gi
 
 Use vhs 0.11.0: 0.12.0 prints "Creating docs/img/hero.gif...", exits 0 and
 writes nothing (charmbracelet/vhs#787). Keep a feature-row GIF at 15 seconds or
-less and the hero at about 25, each around 2 MB at most, and look at its last
-frame before committing — a GIF loops,
-and the last frame is the one a reader sits on.
+less and `hero.gif` at about 25, each around 2 MB at most, and look at its last
+frame before committing — a GIF loops, and the last frame is the one a reader
+sits on.
+
+`docs/img/hero-receipt.gif`, the README's first picture, is the one GIF that is
+not deterministic (D192). Its tape types a single prompt into a real Claude Code
+session, and the agent's answer is the model's, so two takes differ. What is
+scripted is the room: `scripts/hero-stage.sh` rebuilds the demo store as a
+scratch copy, an invented repository holding the guide task #51 is about, a
+Claude Code config directory with nothing but a login in it, and an MCP config
+naming tasqx alone with `--no-daemon`. Recording needs vhs 0.11.0, a Claude
+Code login (the stage script copies `~/.claude/.credentials.json`, or
+`$CLAUDE_CREDENTIALS`, into `target/hero/cc`, which is gitignored), `ttyd`,
+`ffmpeg`, Python with Pillow, and `gifsicle`:
+
+```console
+$ cargo install --path crates/tasqx-cli --force
+$ scripts/hero-stage.sh && vhs scripts/hero-receipt.tape && scripts/hero-assemble.sh
+```
+
+The tape leaves the raw take in `target/hero/take.mp4`; `hero-assemble.sh`
+speeds up only the stretch where the agent works, labels it as sped up, holds
+the answer and adds the end card. A retake is fine. The agent's text is never
+edited, and a take whose answer does not show what the README says it shows is
+retaken, not cut into shape. Re-record after a change to #50 or #51 in
+`scripts/demo-store.py`, to the MCP tool surface, or to what `task.get` and
+`task.brief` return, and watch the whole take before committing it.
 
 ## 15. The fixtures the documentation ships
 
