@@ -3150,19 +3150,15 @@ fn the_any_word_list_is_capped() {
         e.memory_add(&json!({ "title": format!("z{i}"), "body": format!("zebra sighting {i}") }))
             .expect("doc");
     }
-    let out = search(&e, json!({ "query": "zebra quagga", "limit": 500 }));
-    // What only the capped any-word list brought to the page is at most its
-    // cap; `partial` is read from every match, so every hit says it.
-    let words_only = hits(&out)
-        .iter()
-        .filter(|h| h["via"] == json!("lexical"))
-        .count();
-    assert!(words_only <= 200, "{words_only}");
-    assert!(
-        hits(&out).iter().all(|h| h["partial"] == json!(true)),
-        "{}",
-        out["total"]
+    // No entry holds both words, and a floor nothing reaches keeps meaning
+    // out: the any-word list alone reaches the page, at exactly its cap.
+    let out = search(
+        &e,
+        json!({ "query": "zebra quagga", "limit": 500, "min_similarity": 1 }),
     );
+    assert_eq!(out["count"], json!(200), "{}", out["total"]);
+    assert_eq!(out["total"], json!(210), "every match is counted");
+    assert!(hits(&out).iter().all(|h| h["partial"] == json!(true)));
 }
 
 /// Review #838: `via`, `partial` and `score` are read from every match, not
@@ -3628,4 +3624,23 @@ fn a_skipped_meaning_side_names_a_stable_code() {
         json!("no_vectors"),
         "{out}"
     );
+}
+
+/// #838 review: the gate's content words are `memory.search`'s own —
+/// whitespace words of three letters or more — so `content_words` always
+/// agrees with whether meaning was worth running, and `unknown_words` never
+/// comes with zero content words.
+#[test]
+fn the_gate_counts_the_same_content_words_the_search_does() {
+    let e = meaning_store();
+    for (query, code, content) in [
+        ("认证问题", "unknown_words", 1),
+        ("U.S.A.", "unknown_words", 1),
+        ("인증", "no_content_word", 0),
+    ] {
+        let out = search(&e, json!({ "query": query }));
+        let skipped = &out["semantic_skipped"];
+        assert_eq!(skipped["code"], json!(code), "{query}: {out}");
+        assert_eq!(skipped["content_words"], json!(content), "{query}: {out}");
+    }
 }

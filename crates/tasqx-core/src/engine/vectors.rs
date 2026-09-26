@@ -89,6 +89,9 @@ pub(crate) struct SemanticHits {
 pub(crate) struct SemanticPass {
     pub hits: Vec<SemanticHit>,
     pub compared: usize,
+    /// The reconcile failed, so nothing could be compared this time — not
+    /// the same answer as an index with nothing in scope.
+    pub failed: bool,
     /// The entries a pass inside a caller's transaction computed for itself,
     /// which [`Engine::semantic_similarities`] reads in place of the copy.
     this_call: Option<Vec<Entry>>,
@@ -135,7 +138,7 @@ pub(super) struct VectorCache {
     unpersisted: Vec<Pending>,
     /// When this process last saw the model's `last_used` recorded, in unix
     /// seconds; it is written at most once a day.
-    touched: Option<i64>,
+    touched: Option<Touch>,
     /// A busy timeout [`NoWait`] could not put back. The next reconcile puts
     /// it back before anything else, and writes nothing until it has.
     lost_timeout: Cell<Option<Duration>>,
@@ -155,6 +158,7 @@ pub(super) type VectorCell = RefCell<VectorCache>;
 
 /// An entry with no row under the current model, as it was read: the text
 /// the guard compares against, and what embedding it gave.
+#[derive(Clone)]
 pub(super) struct Pending {
     kind: Kind,
     owner_id: String,
@@ -429,7 +433,7 @@ impl Drop for NoWait<'_> {
 pub(super) fn persist(
     conn: &Connection,
     pending: &[Pending],
-    touch: Option<i64>,
+    touch: Option<Touch>,
     lost: &Cell<Option<Duration>>,
 ) -> Result<usize, NotPersisted> {
     if !conn.is_autocommit() || conn.is_readonly("main").unwrap_or(true) || lost.get().is_some() {
@@ -442,7 +446,7 @@ pub(super) fn persist(
 fn write_guarded(
     conn: &Connection,
     pending: &[Pending],
-    touch: Option<i64>,
+    touch: Option<Touch>,
 ) -> rusqlite::Result<usize> {
     let tx = rusqlite::Transaction::new_unchecked(conn, rusqlite::TransactionBehavior::Immediate)?;
     let mut doc = tx.prepare(
@@ -478,11 +482,12 @@ fn write_guarded(
         }
     }
     drop((doc, annotation));
-    if let Some(now) = touch {
+    if let Some(t) = touch {
         tx.execute(
-            "INSERT INTO memory_vector_models (model, last_used) VALUES (?1, ?2) \
-             ON CONFLICT (model) DO UPDATE SET last_used = MAX(last_used, excluded.last_used)",
-            params![MODEL_ID, now],
+            "INSERT INTO memory_vector_models (model, last_used, last_used_generation) \
+             VALUES (?1, ?2, ?3) ON CONFLICT (model) DO UPDATE SET \
+             last_used = excluded.last_used, last_used_generation = excluded.last_used_generation",
+            params![MODEL_ID, t.at, t.generation],
         )?;
     }
     tx.commit()?;
@@ -519,31 +524,61 @@ fn best(e: &Entry, query: &QueryVector) -> (i64, f64) {
     top
 }
 
-/// Whether the current model's `last_used` is due to be written: `(Some(now),
-/// _)` when neither this process (`touched`) nor the store has it within a
-/// day; otherwise `(None, Some(when the store has it))` when the store had
-/// to be asked.
+/// When a model was last recorded as searching a store: by the wall clock
+/// and by memory's own clock, the generation (#838).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct Touch {
+    at: i64,
+    generation: i64,
+}
+
+impl Touch {
+    /// Recent enough by both clocks: the same day (either way, so a wrong
+    /// clock cannot freeze it) and fewer than [`TOUCH_EVERY_GENERATIONS`]
+    /// changes ago.
+    fn fresh(self, now: Touch) -> bool {
+        now.at.abs_diff(self.at) < TOUCH_EVERY_SECS.unsigned_abs()
+            && now.generation - self.generation < TOUCH_EVERY_GENERATIONS
+    }
+}
+
+/// Whether the current model's record is due to be written: `(Some(now),
+/// _)` when neither this process (`touched`) nor the store has it fresh;
+/// otherwise `(None, Some(the store's))` when the store had to be asked.
 fn due_touch(
     conn: &Connection,
-    touched: Option<i64>,
-) -> rusqlite::Result<(Option<i64>, Option<i64>)> {
-    let now = crate::clock::now().as_second();
-    let fresh = |t: i64| now.saturating_sub(t) < TOUCH_EVERY_SECS;
-    if touched.is_some_and(fresh) {
+    touched: Option<Touch>,
+) -> rusqlite::Result<(Option<Touch>, Option<Touch>)> {
+    let now = Touch {
+        at: crate::clock::now().as_second(),
+        generation: conn.query_row("SELECT gen FROM memory_generation WHERE id = 1", [], |r| {
+            r.get(0)
+        })?,
+    };
+    if touched.is_some_and(|t| t.fresh(now)) {
         return Ok((None, None));
     }
-    let recorded: Option<i64> = conn
+    let recorded: Option<Touch> = conn
         .query_row(
-            "SELECT last_used FROM memory_vector_models WHERE model = ?1",
+            "SELECT last_used, last_used_generation FROM memory_vector_models WHERE model = ?1",
             params![MODEL_ID],
-            |r| r.get(0),
+            |r| {
+                Ok(Touch {
+                    at: r.get(0)?,
+                    generation: r.get(1)?,
+                })
+            },
         )
         .optional()?;
     Ok(match recorded {
-        Some(t) if fresh(t) => (None, Some(t)),
+        Some(t) if t.fresh(now) => (None, Some(t)),
         _ => (Some(now), None),
     })
 }
+
+/// How many memory changes may pass before a process records again that
+/// its model searched a store (#838).
+const TOUCH_EVERY_GENERATIONS: i64 = 500;
 
 /// How often a process records that its model searched a store.
 const TOUCH_EVERY_SECS: i64 = 24 * 3600;
@@ -624,7 +659,16 @@ impl Engine {
                 return Ok(Reconciled::Copy);
             }
             let mut entries = load(conn, indexed)?;
-            let (pending, _) = scan_missing(conn, indexed, &mut HashMap::new())?;
+            let mut reuse: HashMap<(Kind, String), Pending> = cache
+                .unpersisted
+                .iter()
+                .map(|p| ((p.kind, p.owner_id.clone()), p.clone()))
+                .collect();
+            let (pending, _embedded) = scan_missing(conn, indexed, &mut reuse)?;
+            #[cfg(test)]
+            {
+                cache.embedded += _embedded;
+            }
             absorb_into(&mut entries, &pending);
             return Ok(Reconciled::ThisCall(entries));
         }
@@ -771,6 +815,7 @@ impl Engine {
         SemanticPass {
             hits,
             compared,
+            failed: matches!(reconciled, Reconciled::Failed),
             this_call: match reconciled {
                 Reconciled::ThisCall(e) => Some(e),
                 _ => None,

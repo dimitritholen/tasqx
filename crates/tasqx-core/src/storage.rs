@@ -505,7 +505,8 @@ fn migrate_vectors(conn: &Connection) -> Result<(), ApiError> {
         ) WITHOUT ROWID;
         CREATE TABLE IF NOT EXISTS memory_vector_models (
             model     TEXT PRIMARY KEY,
-            last_used INTEGER NOT NULL
+            last_used INTEGER NOT NULL,
+            last_used_generation INTEGER NOT NULL DEFAULT 0
         ) WITHOUT ROWID;
         CREATE TABLE IF NOT EXISTS memory_generation (
             id  INTEGER PRIMARY KEY CHECK (id = 1),
@@ -600,21 +601,61 @@ fn migrate_vectors(conn: &Connection) -> Result<(), ApiError> {
         [],
         |r| r.get(0),
     )?;
+    // #838: a store from before `last_used_generation` gains it at the
+    // current generation, so the upgrade itself sweeps no model.
+    let generation: i64 =
+        tx.query_row("SELECT gen FROM memory_generation WHERE id = 1", [], |r| {
+            r.get(0)
+        })?;
+    let has_generation: bool = tx.query_row(
+        "SELECT EXISTS (SELECT 1 FROM pragma_table_info('memory_vector_models') \
+         WHERE name = 'last_used_generation')",
+        [],
+        |r| r.get(0),
+    )?;
+    if !has_generation {
+        tx.execute_batch(
+            "ALTER TABLE memory_vector_models \
+             ADD COLUMN last_used_generation INTEGER NOT NULL DEFAULT 0;",
+        )?;
+        tx.execute(
+            "UPDATE memory_vector_models SET last_used_generation = ?1",
+            params![generation],
+        )?;
+    }
     if obsolete_index {
         tx.execute(
-            "INSERT OR IGNORE INTO memory_vector_models (model, last_used) \
-             SELECT DISTINCT model, ?1 FROM memory_vectors",
-            params![now],
+            "INSERT OR IGNORE INTO memory_vector_models (model, last_used, last_used_generation) \
+             SELECT DISTINCT model, ?1, ?2 FROM memory_vectors",
+            params![now, generation],
         )?;
         tx.execute_batch("DROP INDEX memory_vectors_foreign_model;")?;
     }
     // The sweep reads the model table, a handful of rows, and touches
     // `memory_vectors` only for a model that is actually stale: that table
     // has no index on `model`, and this runs on every open.
-    let cutoff = now - STALE_MODEL_SECS;
+    //
+    // Stale needs BOTH clocks to agree (#838): the wall clock — last used a
+    // week ago, or impossibly more than a day from now — AND memory's own
+    // clock, a thousand changes since the model last searched. Either alone
+    // is wrong under a skewed clock: a host running ahead would sweep a model
+    // in daily use, one running behind would never sweep a retired one.
     let stale: Vec<String> = tx
-        .prepare("SELECT model FROM memory_vector_models WHERE model <> ?1 AND last_used < ?2")?
-        .query_map(params![crate::embed::MODEL_ID, cutoff], |r| r.get(0))?
+        .prepare(
+            "SELECT model FROM memory_vector_models WHERE model <> ?1 \
+             AND ?2 - last_used_generation >= ?3 \
+             AND (last_used <= ?4 OR last_used > ?5)",
+        )?
+        .query_map(
+            params![
+                crate::embed::MODEL_ID,
+                generation,
+                STALE_MODEL_GENERATIONS,
+                now - STALE_MODEL_SECS,
+                now + SKEW_SECS
+            ],
+            |r| r.get(0),
+        )?
         .collect::<Result<_, _>>()?;
     for model in &stale {
         tx.execute(
@@ -639,6 +680,14 @@ fn migrate_vectors(conn: &Connection) -> Result<(), ApiError> {
 /// How long a model may go without searching a store before
 /// [`migrate_vectors`] deletes its vectors there: seven days.
 pub(crate) const STALE_MODEL_SECS: i64 = 7 * 24 * 3600;
+
+/// How many memory changes a model must have missed, as well as the week,
+/// before it is swept (#838).
+pub(crate) const STALE_MODEL_GENERATIONS: i64 = 1000;
+
+/// How far ahead of this clock a `last_used` may be before it reads as a
+/// clock that was wrong rather than one that is (#838).
+const SKEW_SECS: i64 = 24 * 3600;
 
 /// D41 memory subsystem: the `docs` table plus FTS5 indexes over `docs` and
 /// `annotations`, kept in sync by triggers so no writer can forget the index.
@@ -2677,31 +2726,103 @@ mod tests {
         }
     }
 
-    /// #838 review: a model recorded as used "in the future" is one whose
-    /// clock is right while this process's is behind (a pin, a skewed host).
-    /// Open treats it as fresh and never rewrites another model's row, so no
-    /// later open with a sane clock sweeps it early.
+    fn set_generation(conn: &Connection, gen: i64) {
+        conn.execute("UPDATE memory_generation SET gen = ?1", params![gen])
+            .unwrap();
+    }
+
+    fn record_model_at(conn: &Connection, model: &str, last_used: i64, gen: i64) {
+        conn.execute(
+            "INSERT OR REPLACE INTO memory_vector_models (model, last_used, last_used_generation) \
+             VALUES (?1, ?2, ?3)",
+            params![model, last_used, gen],
+        )
+        .unwrap();
+    }
+
+    /// #838 review: a model's staleness needs BOTH a clock that says it is
+    /// old (or impossibly new) AND a thousand memory changes since it last
+    /// searched. A retired model stamped in the future by a clock that ran
+    /// ahead is still swept, once memory has moved on without it.
     #[test]
-    fn a_last_used_in_the_future_is_fresh_and_left_alone() {
+    fn a_future_dated_retired_model_is_swept_by_generation_distance() {
         let conn = fresh();
         let now = crate::clock::now().as_second();
-        let day = 24 * 3600;
-        let ahead = now + 365 * day;
-        put_vector(&conn, "doc", "d1", "ahead", 0);
-        put_vector(&conn, "doc", "d1", "old", 0);
-        record_model(&conn, "ahead", ahead);
-        record_model(&conn, "old", now - 8 * day);
+        put_vector(&conn, "doc", "d1", "retired", 0);
+        record_model_at(&conn, "retired", now + 365 * 24 * 3600, 0);
+        set_generation(&conn, 999);
         migrate(&conn).unwrap();
-        let last: i64 = conn
+        assert_eq!(model_rows(&conn, "retired"), 1, "999 changes: not yet");
+        set_generation(&conn, 1000);
+        migrate(&conn).unwrap();
+        assert_eq!(model_rows(&conn, "retired"), 0, "a thousand: swept");
+    }
+
+    /// A clock thirty days ahead of the one that recorded a model does not
+    /// sweep it while it is in use: memory has hardly moved since.
+    #[test]
+    fn a_clock_ahead_does_not_sweep_a_model_in_active_use() {
+        let conn = fresh();
+        let now = crate::clock::now().as_second();
+        put_vector(&conn, "doc", "d1", "busy", 0);
+        set_generation(&conn, 5000);
+        record_model_at(&conn, "busy", now - 30 * 24 * 3600, 4990);
+        migrate(&conn).unwrap();
+        assert_eq!(model_rows(&conn, "busy"), 1);
+    }
+
+    /// A clock pinned in the past (this process's now well before the
+    /// model's last use) sweeps nothing in use, and open never rewrites
+    /// another model's row.
+    #[test]
+    fn a_past_clock_does_not_sweep_and_rewrites_nothing() {
+        let conn = fresh();
+        let now = crate::clock::now().as_second();
+        let ahead = now + 10 * 24 * 3600;
+        put_vector(&conn, "doc", "d1", "ahead", 0);
+        set_generation(&conn, 3000);
+        record_model_at(&conn, "ahead", ahead, 2900);
+        migrate(&conn).unwrap();
+        assert_eq!(model_rows(&conn, "ahead"), 1);
+        let (last, gen): (i64, i64) = conn
             .query_row(
-                "SELECT last_used FROM memory_vector_models WHERE model = 'ahead'",
+                "SELECT last_used, last_used_generation FROM memory_vector_models \
+                 WHERE model = 'ahead'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!((last, gen), (ahead, 2900), "never rewritten");
+    }
+
+    /// A store from before `last_used_generation` gains the column with the
+    /// current generation, so no model is swept by the upgrade itself.
+    #[test]
+    fn the_generation_column_is_added_at_the_current_generation() {
+        let conn = fresh();
+        let now = crate::clock::now().as_second();
+        conn.execute_batch(
+            "DROP TABLE memory_vector_models;
+             CREATE TABLE memory_vector_models (model TEXT PRIMARY KEY, last_used INTEGER NOT NULL) WITHOUT ROWID;",
+        )
+        .unwrap();
+        put_vector(&conn, "doc", "d1", "old", 0);
+        conn.execute(
+            "INSERT INTO memory_vector_models (model, last_used) VALUES ('old', ?1)",
+            params![now - 30 * 24 * 3600],
+        )
+        .unwrap();
+        set_generation(&conn, 7000);
+        migrate(&conn).unwrap();
+        assert_eq!(model_rows(&conn, "old"), 1, "not swept by the upgrade");
+        let gen: i64 = conn
+            .query_row(
+                "SELECT last_used_generation FROM memory_vector_models WHERE model = 'old'",
                 [],
                 |r| r.get(0),
             )
             .unwrap();
-        assert_eq!(last, ahead, "another model's row is never rewritten");
-        assert_eq!(model_rows(&conn, "ahead"), 1, "fresh, not swept");
-        assert_eq!(model_rows(&conn, "old"), 0, "a stale one still is");
+        assert_eq!(gen, 7000);
     }
 
     /// Two binaries with different models on one store, opening in turn:
@@ -2722,6 +2843,8 @@ mod tests {
         ] {
             put_vector(&conn, "doc", "d1", model, 0);
         }
+        // Far enough from generation 0 that only the clock decides here.
+        set_generation(&conn, 2000);
         record_model(&conn, "in-use", now);
         record_model(&conn, "six-days", now - 6 * day);
         record_model(&conn, "eight-days", now - 8 * day);
@@ -2742,7 +2865,11 @@ mod tests {
             )
             .unwrap();
         assert_eq!(records, 0, "with its record");
-        assert_eq!(generation(&conn), 1, "a sweep is a change a cache must see");
+        assert_eq!(
+            generation(&conn),
+            2001,
+            "a sweep is a change a cache must see"
+        );
     }
 
     /// The sweep runs on every open, so with nothing stale it must read the
@@ -2761,6 +2888,7 @@ mod tests {
         )
         .unwrap();
         migrate_vectors(&conn).expect("nothing stale: memory_vectors is not written");
+        set_generation(&conn, 2000);
         record_model(&conn, "stale", now - 8 * 24 * 3600);
         assert!(
             migrate_vectors(&conn).is_err(),

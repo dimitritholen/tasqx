@@ -424,6 +424,9 @@ pub fn memory_hits(
                         "the model knows too few of the words in {asked} to match by meaning \
                          — --mode lexical finds them by their characters"
                     ),
+                    Some("unavailable") => "the meaning index could not be read this time — \
+                         try again, or --mode lexical"
+                        .to_string(),
                     Some("no_vectors") => format!(
                         "nothing indexed to compare by meaning with {asked} here — --mode \
                          lexical searches the words"
