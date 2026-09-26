@@ -28,8 +28,8 @@ fn reference(b64: &str) -> [f32; DIMS] {
     let bytes = base64(b64);
     assert_eq!(bytes.len(), DIMS * 2);
     let mut v = [0.0; DIMS];
-    for (o, b) in v.iter_mut().zip(bytes.chunks_exact(2)) {
-        *o = f32::from(i16::from_le_bytes([b[0], b[1]])) / 32767.0;
+    for (o, &b) in v.iter_mut().zip(bytes.as_chunks::<2>().0) {
+        *o = f32::from(i16::from_le_bytes(b)) / 32767.0;
     }
     v
 }
