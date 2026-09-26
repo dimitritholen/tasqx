@@ -67,6 +67,7 @@ pub mod daemon;
 pub mod datetime;
 pub mod dispatch;
 pub mod docs;
+pub mod embed;
 pub mod engine;
 pub mod error;
 pub mod filter;
