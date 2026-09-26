@@ -576,6 +576,9 @@ const MEMORY_HIT_ROW: &[Field] = &[
     req("via", Ty::Str),
     nul("similarity", Ty::Num),
     req("score", Ty::Num),
+    // #838: the hit's only word evidence is D193's any-word list — it lacks
+    // some of the query's words.
+    req("partial", Ty::Bool),
 ];
 
 const TOKEN_BUCKETS_ROW: &[Field] = &[
@@ -1015,6 +1018,8 @@ const R_MEMORY_SEARCH: Shape = &[&[
     // D193: whether `matched` is the any-word fallback rather than the
     // all-words expression the caller's words first asked for.
     req("relaxed", Ty::Bool),
+    // #838: the any-word expression, when it ran.
+    nul("matched_any", Ty::Str),
     // D196: the meaning side's model and floor, or null when it did not run.
     nul_of("semantic", Ty::Object, SEARCH_SEMANTIC),
 ]];
@@ -1183,7 +1188,16 @@ const BRIEF_MEMORY: &[Field] = &[
     req("reserved_docs", Ty::Int),
     req("docs_total", Ty::Int),
     req("annotations_total", Ty::Int),
+    // D196 (#838): what the meaning side ran — model, floor and the query
+    // text the brief derived — or null when it compared nothing.
+    nul_of("semantic", Ty::Object, BRIEF_SEMANTIC),
 ];
+
+const BRIEF_SEMANTIC: Shape = &[&[
+    req("model", Ty::Str),
+    req("min_similarity", Ty::Num),
+    req("query", Ty::Str),
+]];
 
 /// The brief's task half: `task.get`'s result, less `urgency_breakdown`.
 ///

@@ -1531,8 +1531,9 @@ pub(super) enum MemoryAction {
         #[arg(long, value_parser = scope_parser())]
         scope: Option<String>,
         /// Treat the query as raw FTS5 syntax (prefix*, AND/OR, columns).
-        /// Words only, so it searches as `--mode lexical`.
-        #[arg(long, conflicts_with = "mode")]
+        /// Words only: it searches as `--mode lexical`, and the engine
+        /// refuses it beside a mode that runs meaning.
+        #[arg(long)]
         raw: bool,
         /// How to match (default: hybrid, meaning and words fused; lexical
         /// forces exact words).

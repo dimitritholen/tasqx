@@ -902,9 +902,9 @@ fn build_tool_specs() -> Vec<ToolSpec> {
             destructive: false,
             idempotent: true,
             description: "Search memory — imported docs and task annotations — by meaning and \
-                words, fused (D196); each hit's `via` says which matched. Words match by STEM, \
-                all required; if none has them all and nothing is close in meaning, any-word \
-                matches return `relaxed: true` (D193). `matched` is the words expression run. \
+                words, fused (D196); each hit's `via` says which matched. Words match by STEM; \
+                a hit with only some of them says `partial: true` and makes `relaxed: true` \
+                (D193). `matched` is the all-words expression, `matched_any` the any-word one. \
                 `mode: lexical` forces exact words; an id like `D41` is matched by words alone. \
                 A hit is an excerpt: `tasqx_get_memory` reads a doc whole, `tasqx_get_task` an \
                 annotation. `hits` is sorted best-first (LOWER `rank` is better); `total` and \

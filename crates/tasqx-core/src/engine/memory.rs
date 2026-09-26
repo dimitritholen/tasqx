@@ -71,13 +71,8 @@ fn any_word_expr(query: &str) -> Option<String> {
         query.split_whitespace().map(str::to_lowercase).collect();
     let mut seen = std::collections::HashSet::new();
     let mut terms = Vec::new();
-    for word in query.split_whitespace() {
-        let key = word.to_lowercase();
-        let bare = key.trim_matches(|c: char| !c.is_alphanumeric());
-        if bare.is_empty() || QUERY_STOPWORDS.contains(&bare) {
-            continue;
-        }
-        if seen.insert(key) {
+    for (word, _) in content_words(query) {
+        if seen.insert(word.to_lowercase()) {
             terms.push(phrase(word));
         }
     }
@@ -85,6 +80,21 @@ fn any_word_expr(query: &str) -> Option<String> {
         return None;
     }
     Some(terms.join(" OR "))
+}
+
+/// The words of `query` a search can do something with: each
+/// whitespace-separated word as typed, beside its bare form (surrounding
+/// punctuation trimmed, lowercased), for every word whose bare form is not
+/// empty and not one of [`QUERY_STOPWORDS`]. The one normalisation D193's
+/// any-word OR, D136's derived brief expression and D196's content-word gate
+/// share, so the three cannot disagree about what a word is.
+pub(super) fn content_words(query: &str) -> impl Iterator<Item = (&str, String)> {
+    query.split_whitespace().filter_map(|word| {
+        let bare = word
+            .trim_matches(|c: char| !c.is_alphanumeric())
+            .to_lowercase();
+        (!bare.is_empty() && !QUERY_STOPWORDS.contains(&bare.as_str())).then_some((word, bare))
+    })
 }
 
 /// English function words dropped from a derived query (D136), and from the
@@ -149,13 +159,25 @@ fn raw_fts5_error(e: &rusqlite::Error, scope: &str) -> String {
 }
 
 /// How `memory.search`'s lexical MATCH expression is made from `query`.
-/// D193's any-word fallback is not a mode of its own: tasqx builds that
-/// expression ([`any_word_expr`]) and runs it as a plain one.
+/// D193's any-word expression is not a mode of its own: tasqx builds it
+/// ([`any_word_expr`]) and runs it as a plain one.
 enum MatchMode {
     /// Every word a required phrase ([`phrase_escape`]).
     Plain,
     /// The caller's own FTS5 expression; its errors are theirs.
     Raw,
+}
+
+/// When D193's any-word list runs beside a plain query's all-words one.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum AnyWord {
+    /// Never: `raw`, the brief's derived expression, the graph's edges.
+    Never,
+    /// Only when the all-words search found nothing, and then in its place:
+    /// D193 as it was, under `mode: lexical`.
+    Fallback,
+    /// Always, as a third list fused beside the other two (D196, #838).
+    Fused,
 }
 
 /// The closed `mode` vocabulary for `memory.search` (D196). **First entry is
@@ -170,12 +192,14 @@ pub const MEMORY_SEARCH_MODES: [&str; 3] = ["hybrid", "lexical", "semantic"];
 pub const MEMORY_MIN_SIMILARITY: f64 = 0.30;
 
 /// Reciprocal-rank fusion's constant: a hit at rank `r` of a list scores
-/// `1 / (FUSION_K + r)` (D196).
-const FUSION_K: f64 = 60.0;
+/// `weight / (FUSION_K + r)` (D196, tuned in #838).
+const FUSION_K: f64 = 20.0;
 
-/// How deep each list is taken before fusion, at the least: max(this,
-/// `limit`) (D196).
-const FUSION_DEPTH: usize = 50;
+/// Each list's weight in the fusion (D196, tuned in #838): the all-words
+/// list, D193's any-word list, and the semantic list.
+const WEIGHT_ALL_WORDS: f64 = 1.0;
+const WEIGHT_ANY_WORD: f64 = 0.35;
+const WEIGHT_SEMANTIC: f64 = 1.3;
 
 /// How many words a snippet carries — FTS5's `snippet()` token count, and
 /// the cut a semantic hit's best chunk gets, so both read alike.
@@ -229,25 +253,31 @@ fn min_similarity(p: &Value) -> Result<Option<f64>, ApiError> {
 /// letters or more, and not one of [`QUERY_STOPWORDS`]. `D41` and `#607`
 /// have none, so an identifier is looked up by its characters alone (D196).
 fn has_content_word(query: &str) -> bool {
-    query.split_whitespace().any(|word| {
-        let bare = word
-            .trim_matches(|c: char| !c.is_alphanumeric())
-            .to_lowercase();
-        bare.chars().filter(|c| c.is_alphabetic()).count() >= 3
-            && !QUERY_STOPWORDS.contains(&bare.as_str())
-    })
+    content_words(query).any(|(_, bare)| bare.chars().filter(|c| c.is_alphabetic()).count() >= 3)
 }
 
-/// A hit's identity across the two lists. Ordered `(kind, id)`, the tie
-/// order D196 ends on.
+/// A hit's identity across the lists. Ordered `(kind, id)`, the tie order
+/// D196 ends on.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 struct HitKey {
-    /// `annotation` or `doc`, as the hit's `kind` spells it.
-    kind: String,
+    kind: vectors::Kind,
     id: String,
 }
 
-/// Which list a fused hit came from. Declared in D196's tie order.
+impl HitKey {
+    fn parse(kind: &str, id: String) -> HitKey {
+        HitKey {
+            kind: if kind == "doc" {
+                vectors::Kind::Doc
+            } else {
+                vectors::Kind::Annotation
+            },
+            id,
+        }
+    }
+}
+
+/// Which side found a fused hit. Declared in D196's tie order.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 enum Via {
     Both,
@@ -265,6 +295,14 @@ impl Via {
     }
 }
 
+/// One ranked list going into the fusion, and its weight.
+struct Ranked<'a> {
+    keys: &'a [HitKey],
+    weight: f64,
+    /// Whether a hit on this list was found by its words.
+    lexical: bool,
+}
+
 /// One hit of the fused list.
 #[derive(Debug)]
 struct Fused {
@@ -273,29 +311,34 @@ struct Fused {
     score: f64,
 }
 
-/// Reciprocal-rank fusion of two best-first lists (D196): a hit scores
-/// Σ 1/(60 + rank) over the lists it is in, ranks counted from 1. Best
-/// first; a tie goes to `both` before `lexical` before `semantic`, then to
-/// `(kind, id)`. A list of one side alone keeps that side's order.
-fn fuse(lexical: &[HitKey], semantic: &[HitKey]) -> Vec<Fused> {
-    let mut ranks: HashMap<&HitKey, (Option<usize>, Option<usize>)> = HashMap::new();
-    for (i, k) in lexical.iter().enumerate() {
-        ranks.entry(k).or_default().0 = Some(i + 1);
+/// Weighted reciprocal-rank fusion (D196): a hit scores Σ weight/(k + rank)
+/// over the lists it is on, ranks counted from 1 over each WHOLE list — so a
+/// hit's score, and which side found it, never depend on how many hits the
+/// caller asked for. Best first; a tie goes to `both` before `lexical`
+/// before `semantic`, then to `(kind, id)`. One list alone keeps its order.
+fn fuse(lists: &[Ranked<'_>]) -> Vec<Fused> {
+    let mut acc: HashMap<&HitKey, (f64, bool, bool)> = HashMap::new();
+    for list in lists {
+        for (i, k) in list.keys.iter().enumerate() {
+            let e = acc.entry(k).or_insert((0.0, false, false));
+            e.0 += list.weight / (FUSION_K + (i + 1) as f64);
+            if list.lexical {
+                e.1 = true;
+            } else {
+                e.2 = true;
+            }
+        }
     }
-    for (i, k) in semantic.iter().enumerate() {
-        ranks.entry(k).or_default().1 = Some(i + 1);
-    }
-    let rrf = |r: Option<usize>| r.map_or(0.0, |r| 1.0 / (FUSION_K + r as f64));
-    let mut out: Vec<Fused> = ranks
+    let mut out: Vec<Fused> = acc
         .into_iter()
-        .map(|(key, (l, s))| Fused {
+        .map(|(key, (score, lexical, semantic))| Fused {
             key: key.clone(),
-            via: match (l, s) {
-                (Some(_), Some(_)) => Via::Both,
-                (Some(_), None) => Via::Lexical,
+            via: match (lexical, semantic) {
+                (true, true) => Via::Both,
+                (true, false) => Via::Lexical,
                 _ => Via::Semantic,
             },
-            score: rrf(l) + rrf(s),
+            score,
         })
         .collect();
     out.sort_by(|a, b| {
@@ -362,60 +405,49 @@ impl<'a> SearchWindow<'a> {
     }
 }
 
-/// How one search runs its two sides.
+/// How one search runs its sides.
 struct Fusion<'a> {
     /// How the lexical expression is made; `None` runs no lexical side.
     lexical: Option<MatchMode>,
-    /// Whether D193's any-word OR may run when the all-words search and the
-    /// semantic side both found nothing.
-    relax: bool,
+    any_word: AnyWord,
     /// The text the semantic side embeds; `None` runs no semantic side.
     meaning: Option<&'a str>,
     floor: f64,
     exclude_task: Option<&'a str>,
 }
 
-/// The lexical side: the expression that ran, its first rows best-first,
-/// and every row it matched.
-struct LexicalRun {
+/// One lexical list: the expression that ran, and every entry it matched,
+/// best bm25 first.
+struct LexicalList {
     expr: String,
-    rows: Vec<(HitKey, Value)>,
-    keys: HashSet<HitKey>,
+    keys: Vec<HitKey>,
 }
 
-/// The semantic side: every entry in the filter that has a vector, best
-/// first, and how many of them reach the floor — a prefix of the list.
+/// The semantic side of one search, when it compared anything.
 struct SemanticSide {
-    ranked: Vec<HitKey>,
-    matched: usize,
+    /// Every entry at or above the floor, best first.
+    keys: Vec<HitKey>,
     similarity: HashMap<HitKey, f64>,
     chunk: HashMap<HitKey, i64>,
 }
 
 impl SemanticSide {
-    fn new(hits: Vec<vectors::SemanticHit>, floor: f64) -> SemanticSide {
-        let matched = hits.iter().take_while(|h| h.similarity >= floor).count();
+    fn new(hits: Vec<vectors::SemanticHit>) -> SemanticSide {
         let mut side = SemanticSide {
-            ranked: Vec::with_capacity(hits.len()),
-            matched,
+            keys: Vec::with_capacity(hits.len()),
             similarity: HashMap::with_capacity(hits.len()),
             chunk: HashMap::with_capacity(hits.len()),
         };
         for h in hits {
             let key = HitKey {
-                kind: h.kind.as_str().to_string(),
+                kind: h.kind,
                 id: h.owner_id,
             };
             side.similarity.insert(key.clone(), h.similarity);
             side.chunk.insert(key.clone(), h.chunk);
-            side.ranked.push(key);
+            side.keys.push(key);
         }
         side
-    }
-
-    /// The semantic list: the entries at or above the floor, to `depth`.
-    fn listed(&self, depth: usize) -> impl Iterator<Item = &HitKey> {
-        self.ranked.iter().take(self.matched.min(depth))
     }
 }
 
@@ -1013,7 +1045,7 @@ impl Engine {
     /// [`MEMORY_SEARCH_MODES`], default `hybrid`) and `min_similarity` (0 to
     /// 1, default [`MEMORY_MIN_SIMILARITY`]).
     ///
-    /// The lexical side is D41's: `raw:false` (the default) escapes the query
+    /// The words side is D41's: `raw:false` (the default) escapes the query
     /// into FTS5 phrases, so ordinary text containing `-` or `:` is a search
     /// rather than a syntax error, and `raw:true` hands the FTS5 operator
     /// grammar to the caller, who then owns its errors — which is why a
@@ -1021,27 +1053,21 @@ impl Engine {
     /// lexical by definition, so beside `mode: hybrid` or `semantic` it is
     /// refused rather than half-honoured.
     ///
-    /// D193: a plain query that finds nothing with every word runs once more
-    /// with its content words joined by `OR` (`any_word_expr`: stopwords
-    /// and case-repeats dropped, and skipped when that is the search that
-    /// already ran). The result echoes the OR in `matched` and says
-    /// `relaxed: true`, so a hit that holds only some of the words is never
-    /// passed off as one that holds them all. In hybrid mode the OR runs only
-    /// when meaning found nothing at or above the floor: otherwise meaning
-    /// already answered, and the OR would only add noise. `raw` never falls
-    /// back: the caller wrote the grammar, and tasqx does not rewrite it.
+    /// In hybrid mode three lists are fused (`fuse`): every word required,
+    /// D193's any word, and meaning. A hit only the any-word list found says
+    /// `partial: true`, and `relaxed` is true when one is on the page, so a
+    /// hit holding some of the words is never passed off as one holding them
+    /// all. Under `mode: lexical` D193 is as it was: the any-word OR runs only
+    /// when no entry holds every word, in its place, and says `relaxed`.
+    /// `raw` never widens: the caller wrote the grammar.
     ///
-    /// The semantic side (`Engine::semantic_candidates`) runs only when the
-    /// query has a content word — three letters or more, not a stopword — so
-    /// an identifier such as `D41` or `#607` is looked up by its characters
-    /// alone. The two lists, each taken to depth max(50, `limit`), are fused
-    /// by reciprocal rank (`fuse`).
+    /// The semantic side (`Engine::semantic_pass`) runs only when the query
+    /// has a content word — three letters or more, not a stopword — so an
+    /// identifier such as `D41` or `#607` is looked up by its characters
+    /// alone.
     ///
-    /// #132: `limit` truncates silently no longer. `total` is the size of the
-    /// union of every lexical match and every semantic match at or above the
-    /// floor, before the window, and `has_more` is `total` against what came
-    /// back, so the two numbers name the same match set the hits are drawn
-    /// from.
+    /// #132: `total` is the size of the union of every list's matches before
+    /// the window, and `has_more` is `total` against what came back.
     pub fn memory_search(&self, p: &Value) -> Result<Value, ApiError> {
         let raw = opt_bool(p, "raw")?.unwrap_or(false);
         let mode = match opt_str(p, "mode")? {
@@ -1065,7 +1091,6 @@ impl Engine {
             ));
         }
         let query = req_str(p, "query")?;
-        let meaning = (mode != SearchMode::Lexical).then_some(query.as_str());
         self.search_fused(
             p,
             &Fusion {
@@ -1074,8 +1099,13 @@ impl Engine {
                     _ if raw => Some(MatchMode::Raw),
                     _ => Some(MatchMode::Plain),
                 },
-                relax: !raw && mode != SearchMode::Semantic,
-                meaning,
+                any_word: match mode {
+                    _ if raw => AnyWord::Never,
+                    SearchMode::Hybrid => AnyWord::Fused,
+                    SearchMode::Lexical => AnyWord::Fallback,
+                    SearchMode::Semantic => AnyWord::Never,
+                },
+                meaning: (mode != SearchMode::Lexical).then_some(query.as_str()),
                 floor: floor.unwrap_or(MEMORY_MIN_SIMILARITY),
                 exclude_task: None,
             },
@@ -1084,7 +1114,7 @@ impl Engine {
 
     /// The engine's own path into `memory.search`, widened with two things
     /// no public param exposes: a task whose own annotations are excluded
-    /// from both lists before the limit and the count run, not after, and a
+    /// from every list before the limit and the count run, not after, and a
     /// meaning query separate from the lexical expression.
     ///
     /// `task.brief`'s `derived_memory` passes its raw OR expression as
@@ -1101,7 +1131,7 @@ impl Engine {
     /// queries the limit and the count both read.
     ///
     /// `graph.query` passes no `meaning`: its edges claim the title's words,
-    /// so it searches by words alone, all of them, with no fallback.
+    /// so it searches by words alone, all of them, with no any-word list.
     pub(crate) fn memory_search_excluding(
         &self,
         p: &Value,
@@ -1117,7 +1147,7 @@ impl Engine {
                 } else {
                     MatchMode::Plain
                 }),
-                relax: false,
+                any_word: AnyWord::Never,
                 meaning,
                 floor: MEMORY_MIN_SIMILARITY,
                 exclude_task: exclude_task_id,
@@ -1125,81 +1155,134 @@ impl Engine {
         )
     }
 
-    /// One search as `f` describes it: the lexical list, the semantic list,
-    /// fused, and the page cut from the fusion.
+    /// One search as `f` describes it: its lists, fused, and the page cut
+    /// from the fusion. Only the page's rows are read whole.
     fn search_fused(&self, p: &Value, f: &Fusion<'_>) -> Result<Value, ApiError> {
         let window = SearchWindow::parse(p, f.exclude_task)?;
-        let depth = window.limit.max(FUSION_DEPTH);
 
-        // The semantic side first: whether it found anything decides whether
-        // D193's OR may run.
-        let semantic = f
+        // Embedded once. The side counts as having run only when it compared
+        // something: an empty copy (nothing indexed, or a reconcile that
+        // could not settle) is no answer, and saying it ran would be false.
+        let query_vector = f
             .meaning
-            .filter(|m| has_content_word(m) && crate::embed::embed(m).is_some())
-            .map(|m| {
-                let all = self.semantic_candidates(
-                    m,
-                    &vectors::SemanticFilter {
-                        scope: &window.scope,
-                        project: window.project.as_deref(),
-                        include_unscoped: window.include_unscoped,
-                        exclude_task: f.exclude_task,
-                        // Every entry, so a lexical hit below the floor can
-                        // still say how close it is (D196).
-                        min_similarity: f64::NEG_INFINITY,
-                        depth: usize::MAX,
-                    },
-                );
-                SemanticSide::new(all.hits, f.floor)
-            });
+            .filter(|m| has_content_word(m))
+            .and_then(crate::embed::embed)
+            .map(|v| crate::embed::QueryVector::new(&v));
+        let semantic = query_vector.as_ref().and_then(|q| {
+            let pass = self.semantic_pass(
+                q,
+                &vectors::SemanticFilter {
+                    scope: &window.scope,
+                    project: window.project.as_deref(),
+                    include_unscoped: window.include_unscoped,
+                    exclude_task: f.exclude_task,
+                    min_similarity: f.floor,
+                    depth: usize::MAX,
+                },
+            );
+            (pass.compared > 0).then(|| SemanticSide::new(pass.hits))
+        });
 
-        let mut relaxed = false;
-        let lexical = match &f.lexical {
-            None => None,
+        let mut fell_back = false;
+        let (all_words, any_word) = match &f.lexical {
+            None => (None, None),
             Some(mode) => {
                 let query = req_str(p, "query")?;
-                let expr = match mode {
-                    MatchMode::Raw => query.clone(),
-                    _ => phrase_escape(&query)?,
+                let raw = matches!(mode, MatchMode::Raw);
+                let expr = if raw {
+                    query.clone()
+                } else {
+                    phrase_escape(&query)?
                 };
-                let is_raw = matches!(mode, MatchMode::Raw);
-                let mut run = self.lexical_run(&window, expr, is_raw, depth)?;
-                let meaning_answered = semantic.as_ref().is_some_and(|s| s.matched > 0);
-                if f.relax && run.keys.is_empty() && !meaning_answered {
-                    if let Some(expr) = any_word_expr(&query) {
-                        run = self.lexical_run(&window, expr, false, depth)?;
-                        relaxed = true;
-                    }
-                }
-                Some(run)
+                let all = self.lexical_list(&window, expr, raw)?;
+                let any_expr = match f.any_word {
+                    AnyWord::Never => None,
+                    AnyWord::Fallback if !all.keys.is_empty() => None,
+                    AnyWord::Fallback | AnyWord::Fused => any_word_expr(&query),
+                };
+                let any = any_expr
+                    .map(|e| self.lexical_list(&window, e, false))
+                    .transpose()?;
+                fell_back = f.any_word == AnyWord::Fallback && any.is_some();
+                (Some(all), any)
             }
         };
 
-        let lex_keys: Vec<HitKey> = lexical
-            .as_ref()
-            .map(|l| l.rows.iter().map(|(k, _)| k.clone()).collect())
-            .unwrap_or_default();
-        let sem_keys: Vec<HitKey> = semantic
-            .as_ref()
-            .map(|s| s.listed(depth).cloned().collect())
-            .unwrap_or_default();
+        let all_set: HashSet<&HitKey> = all_words.iter().flat_map(|l| &l.keys).collect();
+        let any_set: HashSet<&HitKey> = any_word.iter().flat_map(|l| &l.keys).collect();
+        let sem_set: HashSet<&HitKey> = semantic.iter().flat_map(|s| &s.keys).collect();
+        let total = all_set
+            .iter()
+            .chain(&any_set)
+            .chain(&sem_set)
+            .collect::<HashSet<_>>()
+            .len();
 
-        let mut union: HashSet<&HitKey> = HashSet::new();
-        if let Some(l) = &lexical {
-            union.extend(l.keys.iter());
+        let mut lists = Vec::new();
+        if let Some(l) = &all_words {
+            lists.push(Ranked {
+                keys: &l.keys,
+                weight: WEIGHT_ALL_WORDS,
+                lexical: true,
+            });
+        }
+        if let Some(l) = &any_word {
+            lists.push(Ranked {
+                keys: &l.keys,
+                // In D193's fallback the any-word list is the only one, and
+                // its weight moves nothing.
+                weight: WEIGHT_ANY_WORD,
+                lexical: true,
+            });
         }
         if let Some(s) = &semantic {
-            union.extend(s.listed(usize::MAX));
+            lists.push(Ranked {
+                keys: &s.keys,
+                weight: WEIGHT_SEMANTIC,
+                lexical: false,
+            });
         }
-        let total = union.len();
+        let page: Vec<Fused> = fuse(&lists).into_iter().take(window.limit).collect();
 
-        let mut lex_rows: HashMap<HitKey, Value> = lexical
-            .as_ref()
-            .map(|l| l.rows.iter().cloned().collect())
-            .unwrap_or_default();
-        let mut hits = Vec::new();
-        for fused in fuse(&lex_keys, &sem_keys).into_iter().take(window.limit) {
-            let row = match lex_rows.remove(&fused.key) {
+        // Whole rows for the page alone, each snippet cut by the expression
+        // that found it: all the words when it holds them, any word when not.
+        let partial = |k: &HitKey| !all_set.contains(k) && any_set.contains(k);
+        let ids_by = |pick: &dyn Fn(&HitKey) -> bool| -> Vec<&HitKey> {
+            page.iter().map(|h| &h.key).filter(|k| pick(k)).collect()
+        };
+        let mut rows: HashMap<HitKey, Value> = HashMap::new();
+        if let Some(l) = &all_words {
+            let raw = matches!(f.lexical, Some(MatchMode::Raw));
+            rows.extend(self.lexical_rows(
+                &window,
+                &l.expr,
+                raw,
+                &ids_by(&|k| all_set.contains(k)),
+            )?);
+        }
+        if let Some(l) = &any_word {
+            rows.extend(self.lexical_rows(&window, &l.expr, false, &ids_by(&partial))?);
+        }
+        let below_floor: HashMap<(vectors::Kind, String), f64> = match &query_vector {
+            Some(q) if semantic.is_some() => {
+                let keys: Vec<(vectors::Kind, &str)> = page
+                    .iter()
+                    .filter(|h| !sem_set.contains(&h.key))
+                    .map(|h| (h.key.kind, h.key.id.as_str()))
+                    .collect();
+                if keys.is_empty() {
+                    HashMap::new()
+                } else {
+                    self.semantic_similarities(q, &keys)
+                }
+            }
+            _ => HashMap::new(),
+        };
+
+        let mut hits = Vec::with_capacity(page.len());
+        let mut any_partial = false;
+        for fused in &page {
+            let row = match rows.remove(&fused.key) {
                 Some(row) => Some(row),
                 None => self.semantic_only_row(&fused.key, semantic.as_ref())?,
             };
@@ -1208,8 +1291,16 @@ impl Engine {
             let Some(mut row) = row else { continue };
             let similarity = semantic
                 .as_ref()
-                .and_then(|s| s.similarity.get(&fused.key).copied());
+                .and_then(|s| s.similarity.get(&fused.key).copied())
+                .or_else(|| {
+                    below_floor
+                        .get(&(fused.key.kind, fused.key.id.clone()))
+                        .copied()
+                });
+            let is_partial = partial(&fused.key);
+            any_partial |= is_partial;
             row["via"] = json!(fused.via.as_str());
+            row["partial"] = json!(is_partial);
             row["similarity"] = json!(similarity);
             row["score"] = json!(fused.score);
             // D154's contract: a number, lower is better, not a threshold.
@@ -1218,18 +1309,26 @@ impl Engine {
             hits.push(row);
         }
 
+        // D69: `matched` is the words expression that decided the words
+        // side — D193's OR when it stood in for the all-words search, as it
+        // always has; null when no words expression ran (`mode: semantic`).
+        let matched = if fell_back {
+            any_word.as_ref().map(|l| l.expr.clone())
+        } else {
+            all_words.as_ref().map(|l| l.expr.clone())
+        };
         Ok(json!({
             "count": hits.len(),
             "total": total,
             "has_more": hits.len() < total,
             "hits": hits,
-            // D69: the lexical expression that ran; null when none did
-            // (`mode: semantic`).
-            "matched": lexical.map(|l| l.expr),
-            // D193: true only for the any-word fallback.
-            "relaxed": relaxed,
+            "matched": matched,
+            // The any-word expression, when it ran (#838).
+            "matched_any": any_word.map(|l| l.expr),
+            // D193: a hit on the page holds only some of the words.
+            "relaxed": fell_back || any_partial,
             // D196: the meaning side's model and floor, or null when it did
-            // not run (no content word, no known token, `mode: lexical`).
+            // not run or compared nothing.
             "semantic": semantic.as_ref().map(|_| json!({
                 "model": crate::embed::MODEL_ID,
                 "min_similarity": f.floor,
@@ -1237,93 +1336,59 @@ impl Engine {
         }))
     }
 
-    /// The lexical list: the first `depth` rows the MATCH finds, best bm25
-    /// first, and the key of every row it finds.
-    fn lexical_run(
-        &self,
+    /// The FTS5 arms of a lexical query over `w`, joined for its scope, with
+    /// `docs_cols`/`ann_cols` selected and `extra` appended to each arm's
+    /// WHERE. Named params: `:match`, and `:project`/`:exclude_task` when
+    /// [`Self::lexical_params`] binds them.
+    fn lexical_sql(
         w: &SearchWindow,
-        expr: String,
-        raw: bool,
-        depth: usize,
-    ) -> Result<LexicalRun, ApiError> {
-        // `bm25()` is aliased `score`, not `rank`: `rank` is a live column on
-        // every FTS5 table and shadowing it inside a compound SELECT is asking
-        // for a quiet resolution surprise. Lower bm25 = better, so ORDER BY ASC.
-        // Named params (`:match`/`:project`/`:limit`/`:exclude_task`), not
-        // positional: the key query below reuses these same two arms
-        // without `:limit`, and named binding is what lets the arm text stay
-        // identical between the two statements instead of hand-renumbering
-        // `?1`/`?2` per query.
-        // #657: `project` rides beside `standing` for the same reason — a doc
-        // carries its own column, an annotation inherits its task's, and the
-        // UNION needs the column on both arms either way.
-        //
-        // #790: the four origin columns ride the same way, doc-only, so
-        // `stale` can be computed off the hit this query already read rather
-        // than a second per-id lookup or a store-wide scan.
-        let docs_arm = format!(
-            "SELECT d.id AS id, 'doc' AS kind, d.title AS title, \
-             d.source AS source, snippet(docs_fts, 1, '', '', '…', {SNIPPET_TOKENS}) AS snip, \
-             bm25(docs_fts) AS score, d.standing AS standing, d.project AS project, \
-             d.origin_path AS origin_path, d.origin_mtime AS origin_mtime, \
-             d.origin_size AS origin_size, d.body AS body \
-             FROM docs_fts JOIN docs d ON d.rowid = docs_fts.rowid \
-             WHERE docs_fts MATCH :match"
-        );
-        let ann_arm = format!(
-            "SELECT a.id AS id, 'annotation' AS kind, t.title AS title, \
-             'task:#' || t.short_id AS source, \
-             snippet(annotations_fts, 0, '', '', '…', {SNIPPET_TOKENS}) AS snip, \
-             bm25(annotations_fts) AS score, NULL AS standing, t.project AS project, \
-             NULL AS origin_path, NULL AS origin_mtime, NULL AS origin_size, NULL AS body \
-             FROM annotations_fts \
-             JOIN annotations a ON a.rowid = annotations_fts.rowid \
-             JOIN tasks t ON t.id = a.task_id \
-             WHERE annotations_fts MATCH :match"
-        );
-        // The key query reads the same joins and the same WHERE, and none of
-        // the columns that cost anything to compute.
-        const DOCS_KEYS: &str = "SELECT d.id AS id, 'doc' AS kind \
-             FROM docs_fts JOIN docs d ON d.rowid = docs_fts.rowid \
-             WHERE docs_fts MATCH :match";
-        const ANN_KEYS: &str = "SELECT a.id AS id, 'annotation' AS kind \
-             FROM annotations_fts \
-             JOIN annotations a ON a.rowid = annotations_fts.rowid \
-             JOIN tasks t ON t.id = a.task_id \
-             WHERE annotations_fts MATCH :match";
+        docs_cols: &str,
+        ann_cols: &str,
+        extra: (&str, &str),
+    ) -> String {
         // #134: a doc's own `project` column vs. its task's `project` for an
         // annotation. `IS NULL`, not `IS NOT :project`: the widening admits
-        // documents belonging to NO project, never documents belonging to
-        // another one.
+        // documents belonging to NO project, never another project's.
         let (d_where, a_where) = match (&w.project, w.include_unscoped) {
-            (None, _) => (String::new(), String::new()),
+            (None, _) => ("", ""),
             (Some(_), true) => (
-                " AND (d.project = :project OR d.project IS NULL)".to_string(),
-                " AND (t.project = :project OR t.project IS NULL)".to_string(),
+                " AND (d.project = :project OR d.project IS NULL)",
+                " AND (t.project = :project OR t.project IS NULL)",
             ),
-            (Some(_), false) => (
-                " AND d.project = :project".to_string(),
-                " AND t.project = :project".to_string(),
-            ),
+            (Some(_), false) => (" AND d.project = :project", " AND t.project = :project"),
         };
-        // The exclusion runs INSIDE the annotation arm, ahead of `LIMIT` and
-        // the key query both — never as a filter over the page already cut.
-        let a_where = match w.exclude_task {
-            Some(_) => format!("{a_where} AND a.task_id <> :exclude_task"),
-            None => a_where,
+        // The exclusion runs INSIDE the annotation arm, ahead of the page and
+        // the count both — never as a filter over a page already cut.
+        let exclude = if w.exclude_task.is_some() {
+            " AND a.task_id <> :exclude_task"
+        } else {
+            ""
         };
-        let compose = |docs: &str, ann: &str| match w.scope.as_str() {
-            "docs" => format!("{docs}{d_where}"),
-            "annotations" => format!("{ann}{a_where}"),
-            _ => format!("{docs}{d_where} UNION ALL {ann}{a_where}"),
-        };
-        let sql = format!(
-            "{} ORDER BY score LIMIT :limit",
-            compose(&docs_arm, &ann_arm)
+        let docs = format!(
+            "SELECT {docs_cols} FROM docs_fts JOIN docs d ON d.rowid = docs_fts.rowid \
+             WHERE docs_fts MATCH :match{d_where}{}",
+            extra.0
         );
-        let keys_sql = compose(DOCS_KEYS, ANN_KEYS);
+        let ann = format!(
+            "SELECT {ann_cols} FROM annotations_fts \
+             JOIN annotations a ON a.rowid = annotations_fts.rowid \
+             JOIN tasks t ON t.id = a.task_id \
+             WHERE annotations_fts MATCH :match{a_where}{exclude}{}",
+            extra.1
+        );
+        match w.scope.as_str() {
+            "docs" => docs,
+            "annotations" => ann,
+            _ => format!("{docs} UNION ALL {ann}"),
+        }
+    }
 
-        let mut named: Vec<(&str, &dyn rusqlite::ToSql)> = vec![(":match", &expr)];
+    /// The params [`Self::lexical_sql`]'s text reads, beside `:match`.
+    fn lexical_params<'p>(
+        w: &'p SearchWindow,
+        expr: &'p dyn rusqlite::ToSql,
+    ) -> Vec<(&'static str, &'p dyn rusqlite::ToSql)> {
+        let mut named: Vec<(&str, &dyn rusqlite::ToSql)> = vec![(":match", expr)];
         if let Some(proj) = &w.project {
             named.push((":project", proj));
         }
@@ -1334,43 +1399,102 @@ impl Engine {
                 named.push((":exclude_task", ex));
             }
         }
-        let limit = i64::try_from(depth).unwrap_or(i64::MAX);
+        named
+    }
 
-        let run = || -> Result<Vec<(HitKey, Value)>, rusqlite::Error> {
+    /// A lexical list: every entry `expr` matches in `w`, best bm25 first.
+    /// Keys only — the rows a page shows are read by [`Self::lexical_rows`].
+    fn lexical_list(
+        &self,
+        w: &SearchWindow,
+        expr: String,
+        raw: bool,
+    ) -> Result<LexicalList, ApiError> {
+        // `bm25()` is aliased `score`, not `rank`: `rank` is a live column on
+        // every FTS5 table and shadowing it inside a compound SELECT is asking
+        // for a quiet resolution surprise. Lower bm25 = better, so ORDER BY ASC.
+        let sql = format!(
+            "{} ORDER BY score",
+            Self::lexical_sql(
+                w,
+                "d.id AS id, 'doc' AS kind, bm25(docs_fts) AS score",
+                "a.id AS id, 'annotation' AS kind, bm25(annotations_fts) AS score",
+                ("", ""),
+            )
+        );
+        let named = Self::lexical_params(w, &expr);
+        let run = || -> rusqlite::Result<Vec<HitKey>> {
             let mut stmt = self.conn.prepare(&sql)?;
-            let mut all_params = named.clone();
-            all_params.push((":limit", &limit));
-            let rows = stmt.query_map(all_params.as_slice(), |r| self.hit_row(r))?;
+            let rows = stmt.query_map(named.as_slice(), |r| {
+                Ok(HitKey::parse(&r.get::<_, String>(1)?, r.get(0)?))
+            })?;
             rows.collect()
         };
-        let rows = match run() {
-            Ok(rows) => rows,
+        let keys = match run() {
+            Ok(keys) => keys,
             // In raw mode the MATCH expression is caller input, so a query
             // SQLite refuses is the caller's error — surfaced with SQLite's
             // own message, never as ok-empty and never as `internal`. #228.5:
             // a `col:query` typo names the columns this scope does have.
-            Err(e) if raw => {
-                return Err(ApiError::bad_request(raw_fts5_error(&e, &w.scope)));
-            }
+            Err(e) if raw => return Err(ApiError::bad_request(raw_fts5_error(&e, &w.scope))),
             Err(e) => return Err(e.into()),
         };
-        // Only read once the page query above has proved the MATCH
-        // expression valid — a raw syntax error is reported once, not twice.
-        let mut stmt = self.conn.prepare(&keys_sql)?;
-        let keys = stmt
-            .query_map(named.as_slice(), |r| {
-                Ok(HitKey {
-                    kind: r.get(1)?,
-                    id: r.get(0)?,
-                })
-            })?
-            .collect::<Result<HashSet<_>, _>>()?;
-        Ok(LexicalRun { expr, rows, keys })
+        drop(named);
+        Ok(LexicalList { expr, keys })
+    }
+
+    /// The whole rows of `keys`, as `expr` matches them: the snippet cut
+    /// around what matched, `stale` read off the doc's origin (#790).
+    fn lexical_rows(
+        &self,
+        w: &SearchWindow,
+        expr: &str,
+        raw: bool,
+        keys: &[&HitKey],
+    ) -> Result<HashMap<HitKey, Value>, ApiError> {
+        if keys.is_empty() {
+            return Ok(HashMap::new());
+        }
+        let ids = json!(keys.iter().map(|k| k.id.as_str()).collect::<Vec<_>>()).to_string();
+        let sql = Self::lexical_sql(
+            w,
+            &format!(
+                "d.id AS id, 'doc' AS kind, d.title AS title, d.source AS source, \
+                 snippet(docs_fts, 1, '', '', '…', {SNIPPET_TOKENS}) AS snip, \
+                 0.0 AS score, d.standing AS standing, d.project AS project, \
+                 d.origin_path AS origin_path, d.origin_mtime AS origin_mtime, \
+                 d.origin_size AS origin_size, d.body AS body"
+            ),
+            &format!(
+                "a.id AS id, 'annotation' AS kind, t.title AS title, \
+                 'task:#' || t.short_id AS source, \
+                 snippet(annotations_fts, 0, '', '', '…', {SNIPPET_TOKENS}) AS snip, \
+                 0.0 AS score, NULL AS standing, t.project AS project, \
+                 NULL AS origin_path, NULL AS origin_mtime, NULL AS origin_size, NULL AS body"
+            ),
+            (
+                " AND d.id IN (SELECT value FROM json_each(:ids))",
+                " AND a.id IN (SELECT value FROM json_each(:ids))",
+            ),
+        );
+        let expr = expr.to_string();
+        let mut named = Self::lexical_params(w, &expr);
+        named.push((":ids", &ids));
+        let run = || -> rusqlite::Result<HashMap<HitKey, Value>> {
+            let mut stmt = self.conn.prepare(&sql)?;
+            let rows = stmt.query_map(named.as_slice(), |r| self.hit_row(r))?;
+            rows.collect()
+        };
+        match run() {
+            Ok(rows) => Ok(rows),
+            Err(e) if raw => Err(ApiError::bad_request(raw_fts5_error(&e, &w.scope))),
+            Err(e) => Err(e.into()),
+        }
     }
 
     /// One hit as the lexical arms select it (the column order of
-    /// `lexical_run`'s arms), keyed. `rank` here is the arm's raw score; the
-    /// fusion replaces it.
+    /// `lexical_rows`), keyed. `rank` here is a placeholder; the fusion
+    /// sets it.
     fn hit_row(&self, r: &rusqlite::Row<'_>) -> rusqlite::Result<(HitKey, Value)> {
         let id: String = r.get(0)?;
         let kind: String = r.get(1)?;
@@ -1380,9 +1504,9 @@ impl Engine {
         let origin_size: Option<i64> = r.get(10)?;
         let body: Option<String> = r.get(11)?;
         // #790: a doc hit says whether the file it was imported from has
-        // moved on since — computed here, on the page this query already
-        // read, never a second scan. `null` for an annotation (no such file)
-        // and for a doc `memory.add` wrote (no `origin_path` to compare).
+        // moved on since — computed for the page alone, never a store-wide
+        // scan. `null` for an annotation (no such file) and for a doc
+        // `memory.add` wrote (no `origin_path` to compare).
         let stale = if kind == "doc" {
             origin_path.as_deref().and_then(|path| {
                 self.origin_changed(
@@ -1411,7 +1535,7 @@ impl Engine {
             "project": r.get::<_, Option<String>>(7)?,
             "stale": stale,
         });
-        Ok((HitKey { kind, id }, row))
+        Ok((HitKey::parse(&kind, id), row))
     }
 
     /// A hit only the semantic side found: the same row a lexical hit has,
@@ -1421,13 +1545,16 @@ impl Engine {
         key: &HitKey,
         semantic: Option<&SemanticSide>,
     ) -> Result<Option<Value>, ApiError> {
-        let sql = if key.kind == "doc" {
-            "SELECT d.id, 'doc', d.title, d.source, '', 0.0, d.standing, d.project, \
-             d.origin_path, d.origin_mtime, d.origin_size, d.body FROM docs d WHERE d.id = ?1"
-        } else {
-            "SELECT a.id, 'annotation', t.title, 'task:#' || t.short_id, '', 0.0, NULL, \
-             t.project, NULL, NULL, NULL, NULL FROM annotations a \
-             JOIN tasks t ON t.id = a.task_id WHERE a.id = ?1 AND a.removed IS NULL"
+        let sql = match key.kind {
+            vectors::Kind::Doc => {
+                "SELECT d.id, 'doc', d.title, d.source, '', 0.0, d.standing, d.project, \
+                 d.origin_path, d.origin_mtime, d.origin_size, d.body FROM docs d WHERE d.id = ?1"
+            }
+            vectors::Kind::Annotation => {
+                "SELECT a.id, 'annotation', t.title, 'task:#' || t.short_id, '', 0.0, NULL, \
+                 t.project, NULL, NULL, NULL, NULL FROM annotations a \
+                 JOIN tasks t ON t.id = a.task_id WHERE a.id = ?1 AND a.removed IS NULL"
+            }
         };
         let Some((_, mut row)) = self
             .conn
@@ -1437,15 +1564,10 @@ impl Engine {
             return Ok(None);
         };
         let chunk = semantic.and_then(|s| s.chunk.get(key).copied());
-        let kind = if key.kind == "doc" {
-            vectors::Kind::Doc
-        } else {
-            vectors::Kind::Annotation
-        };
         if let Some(ix) = chunk {
-            if let Some(text) = self.semantic_snippet(kind, &key.id, ix) {
+            if let Some(text) = self.semantic_snippet(key.kind, &key.id, ix) {
                 let title = row["title"].as_str().unwrap_or_default().to_string();
-                row["snippet"] = json!(chunk_snippet(kind, &title, ix, &text));
+                row["snippet"] = json!(chunk_snippet(key.kind, &title, ix, &text));
             }
         }
         Ok(Some(row))
@@ -1942,7 +2064,10 @@ impl Engine {
 
 #[cfg(test)]
 mod tests {
-    use super::{chunk_snippet, fuse, has_content_word, vectors, HitKey, Via};
+    use super::{
+        chunk_snippet, fuse, has_content_word, vectors, HitKey, Ranked, Via, FUSION_K,
+        WEIGHT_ALL_WORDS, WEIGHT_ANY_WORD, WEIGHT_SEMANTIC,
+    };
     use rusqlite::params;
     use serde_json::json;
 
@@ -2143,9 +2268,30 @@ mod tests {
     }
 
     fn key(kind: &str, id: &str) -> HitKey {
-        HitKey {
-            kind: kind.to_string(),
-            id: id.to_string(),
+        HitKey::parse(kind, id.to_string())
+    }
+
+    fn words(keys: &[HitKey]) -> Ranked<'_> {
+        Ranked {
+            keys,
+            weight: WEIGHT_ALL_WORDS,
+            lexical: true,
+        }
+    }
+
+    fn any(keys: &[HitKey]) -> Ranked<'_> {
+        Ranked {
+            keys,
+            weight: WEIGHT_ANY_WORD,
+            lexical: true,
+        }
+    }
+
+    fn meaning(keys: &[HitKey]) -> Ranked<'_> {
+        Ranked {
+            keys,
+            weight: WEIGHT_SEMANTIC,
+            lexical: false,
         }
     }
 
@@ -2154,9 +2300,18 @@ mod tests {
     /// happened to yield first.
     #[test]
     fn fusion_ties_go_to_both_then_lexical_then_semantic_then_kind_and_id() {
-        // `a` is first on the lexical list, `s` first on the semantic one:
-        // 1/61 each.
-        let fused = fuse(&[key("doc", "z-lex")], &[key("annotation", "a-sem")]);
+        // Equal weights make a tie: first on the words list and first on an
+        // equally weighted meaning list.
+        let l = [key("doc", "z-lex")];
+        let m = [key("annotation", "a-sem")];
+        let fused = fuse(&[
+            words(&l),
+            Ranked {
+                keys: &m,
+                weight: WEIGHT_ALL_WORDS,
+                lexical: false,
+            },
+        ]);
         let order: Vec<(&str, Via)> = fused.iter().map(|f| (f.key.id.as_str(), f.via)).collect();
         assert_eq!(
             order,
@@ -2165,25 +2320,45 @@ mod tests {
         );
         assert_eq!(fused[0].score, fused[1].score);
 
-        // Two lists over the same two keys in crossed order: every score
-        // is 1/61 + 1/62, so the tie falls to (kind, id).
-        let fused = fuse(
-            &[key("doc", "b"), key("annotation", "c")],
-            &[key("annotation", "c"), key("doc", "b")],
-        );
+        // Two lists over the same two keys in crossed order and equal
+        // weight: every score ties, so the tie falls to (kind, id).
+        let l = [key("doc", "b"), key("annotation", "c")];
+        let m = [key("annotation", "c"), key("doc", "b")];
+        let fused = fuse(&[
+            words(&l),
+            Ranked {
+                keys: &m,
+                weight: WEIGHT_ALL_WORDS,
+                lexical: false,
+            },
+        ]);
         let order: Vec<&str> = fused.iter().map(|f| f.key.id.as_str()).collect();
         assert_eq!(order, ["c", "b"], "annotation sorts before doc");
         assert!(fused.iter().all(|f| f.via == Via::Both));
+    }
 
-        // `both` beats a single list whose score it merely equals: rank 1
-        // alone is 1/61; ranks (x, y) with 1/(60+x) + 1/(60+y) = 1/61 has
-        // no integer solution, so compare against the nearest real case.
-        let fused = fuse(
-            &[key("doc", "l1"), key("doc", "b")],
-            &[key("doc", "s1"), key("doc", "b")],
+    /// #838's tuned weights: meaning outweighs words at the same rank, and
+    /// the any-word list is a tiebreaker, never a rival — its first hit
+    /// scores below the all-words list's tenth.
+    #[test]
+    fn the_tuned_weights_rank_meaning_then_every_word_then_any_word() {
+        let l: Vec<HitKey> = (0..10).map(|i| key("doc", &format!("w{i}"))).collect();
+        let a = [key("doc", "a0")];
+        let m = [key("doc", "m0")];
+        let fused = fuse(&[words(&l), any(&a), meaning(&m)]);
+        let order: Vec<&str> = fused.iter().map(|f| f.key.id.as_str()).collect();
+        assert_eq!(order.first(), Some(&"m0"));
+        assert_eq!(order.last(), Some(&"a0"));
+        assert_eq!(fused[0].score, WEIGHT_SEMANTIC / (FUSION_K + 1.0));
+        // An entry on both lexical lists and the meaning list is `both`.
+        let fused = fuse(&[words(&l[..1]), any(&l[..1]), meaning(&l[..1])]);
+        assert_eq!(fused[0].via, Via::Both);
+        assert_eq!(
+            fused[0].score,
+            WEIGHT_ALL_WORDS / (FUSION_K + 1.0)
+                + WEIGHT_ANY_WORD / (FUSION_K + 1.0)
+                + WEIGHT_SEMANTIC / (FUSION_K + 1.0)
         );
-        assert_eq!(fused[0].key.id, "b", "on both lists beats first on one");
-        assert_eq!(fused[0].score, 2.0 / 62.0);
     }
 
     /// A list of one side alone keeps its own order, so `mode: lexical`
@@ -2191,7 +2366,7 @@ mod tests {
     #[test]
     fn fusion_of_one_list_keeps_its_order() {
         let keys: Vec<HitKey> = ["q", "a", "m", "b"].iter().map(|i| key("doc", i)).collect();
-        let fused = fuse(&keys, &[]);
+        let fused = fuse(&[words(&keys)]);
         let order: Vec<&str> = fused.iter().map(|f| f.key.id.as_str()).collect();
         assert_eq!(order, ["q", "a", "m", "b"]);
     }

@@ -2963,7 +2963,7 @@ fn an_identifier_query_stays_lexical() {
 }
 
 /// A query about nothing in the store: meaning finds nothing above the
-/// floor, so D193's any-word OR runs (and here finds nothing either).
+/// floor, and the any-word list finds nothing either.
 #[test]
 fn an_unrelated_query_finds_nothing_by_meaning() {
     let e = meaning_store();
@@ -2975,16 +2975,23 @@ fn an_unrelated_query_finds_nothing_by_meaning() {
     );
     assert_eq!(out["count"], json!(0), "{out}");
     assert_eq!(
+        out["matched_any"],
+        json!("\"zeppelin\" OR \"hangar\" OR \"maintenance\""),
+        "the any-word list ran: {out}"
+    );
+    assert_eq!(
         out["relaxed"],
-        json!(true),
-        "meaning found nothing, so the OR ran: {out}"
+        json!(false),
+        "no partial hit came back: {out}"
     );
 }
 
-/// D196: in hybrid mode the any-word OR runs only when meaning found nothing
-/// at or above the floor. `mode: lexical` keeps D193 as it was.
+/// D196 (#838 tuning): in hybrid mode the any-word OR always runs, as a third
+/// list, and a hit it alone found says `partial: true` — D193's promise that a
+/// hit holding some of the words is never passed off as one holding them all.
+/// `mode: lexical` keeps D193 as it was: the OR is a fallback.
 #[test]
-fn hybrid_relaxes_only_when_meaning_found_nothing() {
+fn hybrid_runs_the_any_word_list_and_marks_what_it_alone_found() {
     let e = meaning_store();
     e.memory_add(&json!({ "title": "printer", "body": "paper jam problems in tray two" }))
         .expect("doc");
@@ -2994,19 +3001,116 @@ fn hybrid_relaxes_only_when_meaning_found_nothing() {
         json!({ "query": "authentication problems", "mode": "lexical" }),
     );
     assert_eq!(lexical["relaxed"], json!(true), "{lexical}");
+    assert_eq!(
+        lexical["matched"],
+        json!("\"authentication\" OR \"problems\"")
+    );
     assert_eq!(hit_titles(&lexical), vec!["printer".to_string()]);
+    assert_eq!(hits(&lexical)[0]["partial"], json!(true), "{lexical}");
 
     let hybrid = search(&e, json!({ "query": "authentication problems" }));
-    assert_eq!(hybrid["relaxed"], json!(false), "{hybrid}");
     assert_eq!(
         hybrid["matched"],
         json!("\"authentication\" \"problems\""),
-        "the all-words expression is the one that ran: {hybrid}"
+        "the all-words expression: {hybrid}"
     );
-    assert!(
-        !hit_titles(&hybrid).contains(&"printer".to_string()),
-        "the OR did not run, so its one-word hit is not here: {hybrid}"
+    assert_eq!(
+        hybrid["matched_any"],
+        json!("\"authentication\" OR \"problems\""),
+        "the any-word expression beside it: {hybrid}"
     );
+    let by_title = |t: &str| {
+        hits(&hybrid)
+            .iter()
+            .find(|h| h["title"] == json!(t))
+            .unwrap_or_else(|| panic!("{t} missing: {hybrid}"))
+            .clone()
+    };
+    let printer = by_title("printer");
+    assert_eq!(printer["partial"], json!(true), "{printer}");
+    assert_ne!(printer["via"], json!("semantic"), "{printer}");
+    let incident = by_title("incident log");
+    assert_eq!(incident["via"], json!("semantic"), "{incident}");
+    assert_eq!(incident["partial"], json!(false), "{incident}");
+    assert_eq!(
+        hybrid["relaxed"],
+        json!(true),
+        "a partial hit came back: {hybrid}"
+    );
+}
+
+/// Review #838: meaning answering used to suppress the OR, and with it an
+/// exact id the query carried beside words nothing held.
+#[test]
+fn an_exact_id_beside_unmatched_words_is_still_found() {
+    let e = meaning_store();
+    let out = search(&e, json!({ "query": "D41 vector index" }));
+    let hit = hits(&out)
+        .iter()
+        .find(|h| h["title"] == json!("rulings"))
+        .unwrap_or_else(|| panic!("the D41 ruling is gone: {out}"));
+    assert_eq!(hit["partial"], json!(true), "{hit}");
+    assert_eq!(out["relaxed"], json!(true), "{out}");
+}
+
+/// A hit that holds every word is not partial, and no partial hit on the
+/// page means `relaxed: false` even though the any-word list ran.
+#[test]
+fn an_all_words_hit_is_not_partial() {
+    let e = meaning_store();
+    let out = search(&e, json!({ "query": "login errors" }));
+    assert_eq!(
+        out["matched_any"],
+        json!("\"login\" OR \"errors\""),
+        "{out}"
+    );
+    let first = &hits(&out)[0];
+    assert_eq!(first["title"], json!("incident log"));
+    assert_eq!(first["via"], json!("both"), "{first}");
+    assert_eq!(first["partial"], json!(false), "{first}");
+    assert_eq!(out["relaxed"], json!(false), "{out}");
+    // One word has no any-word list to run.
+    let one = search(&e, json!({ "query": "login" }));
+    assert_eq!(one["matched_any"], Value::Null, "{one}");
+}
+
+/// Review #838: `via`, `partial` and `score` are read from every match, not
+/// from the rows a page's depth fetched, so they do not move with `limit`.
+#[test]
+fn via_and_score_do_not_depend_on_limit() {
+    let e = engine();
+    for i in 0..70 {
+        e.memory_add(&json!({
+            "title": format!("ledger note {i}"),
+            "body": format!("the ledger reconciliation for account {i} {}", "and more words ".repeat(i % 7)),
+        }))
+        .expect("doc");
+    }
+    let small = search(&e, json!({ "query": "ledger accounts", "limit": 5 }));
+    let large = search(&e, json!({ "query": "ledger accounts", "limit": 100 }));
+    for h in hits(&small) {
+        let same = hits(&large)
+            .iter()
+            .find(|l| l["id"] == h["id"])
+            .unwrap_or_else(|| panic!("{h} is not on the larger page"));
+        for key in ["via", "partial", "score", "similarity"] {
+            assert_eq!(h[key], same[key], "{key} moved with limit: {h} vs {same}");
+        }
+    }
+    assert_eq!(
+        &hits(&large)[..5],
+        &hits(&small)[..],
+        "the pages agree on order"
+    );
+}
+
+/// Review #838: `semantic` says the meaning side ran only when it compared
+/// something; a store with no vectors to compare echoes null.
+#[test]
+fn semantic_is_null_when_nothing_was_compared() {
+    let e = engine();
+    let out = search(&e, json!({ "query": "authentication problems" }));
+    assert_eq!(out["semantic"], Value::Null, "{out}");
 }
 
 /// `total` is the union of both sides' matches, so `has_more` keeps #132's
@@ -3258,6 +3362,12 @@ fn lexical_mode_reproduces_the_bm25_answer() {
         assert_eq!(out["total"], json!(want.len()), "{query}");
         assert_eq!(out["matched"], json!(expr), "{query}");
         assert_eq!(out["relaxed"], json!(relaxed), "{query}");
+        assert!(
+            hits(&out).iter().all(|h| h["partial"] == json!(relaxed)),
+            "a fallback page is partial throughout, an all-words page nowhere: {out}"
+        );
+        let any = if relaxed { json!(expr) } else { Value::Null };
+        assert_eq!(out["matched_any"], any, "{query}");
         assert!(hits(&out).iter().all(|h| h["via"] == json!("lexical")));
         assert!(hits(&out).iter().all(|h| h["similarity"].is_null()));
     }

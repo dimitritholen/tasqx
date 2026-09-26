@@ -1,4 +1,10 @@
-[2;38;2;76;86;106m"release" "canary"[0m   [1m1 hit[0m
+[2;38;2;76;86;106m"release" "canary"[0m   [1m3 hits[0m
 
 release-process  [2;38;2;76;86;106mdocs/release.md[0m  [2;38;2;76;86;106meb864f1e-e68a-4d96-af89-597bd0d2d52e[0m
     [2;38;2;76;86;106m…Cut the release branch on Monday, tag after the canary has run…[0m
+Write the migration guide for SDK 3.0  [2;38;2;76;86;106mannotation on #51[0m
+    [2;38;2;76;86;106msome words  …the guide ships WITH the 3.0 release, not after it. A…[0m
+pricing-page-decisions  [2;38;2;76;86;106mnotes/pricing.md[0m  [2;38;2;76;86;106m0787b26d-9e2e-4be5-ab66-ec953102fad3[0m
+    [2;38;2;76;86;106msome words  …The release of v2 waits for legal to sign off the new…[0m
+
+some words marks a hit that has only some of the words

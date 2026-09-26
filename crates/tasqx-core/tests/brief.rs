@@ -1106,4 +1106,12 @@ fn the_brief_finds_by_meaning_and_still_excludes_the_tasks_own_notes() {
         json!("\"authentication\" OR \"problems\""),
         "the lexical expression is still the derived OR: {m}"
     );
+    // Review #838: the brief says what its meaning side ran, with what.
+    assert_eq!(
+        m["semantic"]["query"],
+        json!("authentication problems"),
+        "{m}"
+    );
+    assert_eq!(m["semantic"]["min_similarity"], json!(0.3), "{m}");
+    assert!(m["semantic"]["model"].is_string(), "{m}");
 }

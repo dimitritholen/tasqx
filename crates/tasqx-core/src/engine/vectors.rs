@@ -20,7 +20,7 @@
 //! cannot write, so another connection's commit is the only change there is.
 
 use std::cell::{Cell, RefCell};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::time::Duration;
 
 use rusqlite::{params, Connection, ErrorCode, OptionalExtension};
@@ -37,6 +37,7 @@ pub(crate) enum Kind {
 }
 
 impl Kind {
+    #[cfg(test)]
     pub(crate) fn as_str(self) -> &'static str {
         match self {
             Kind::Annotation => "annotation",
@@ -76,10 +77,20 @@ pub(crate) struct SemanticHit {
 
 /// The semantic list: the first `depth` hits, and how many entries in the
 /// filter were at or above the floor.
+#[cfg(test)]
 #[derive(Clone, Debug, Default, PartialEq)]
 pub(crate) struct SemanticHits {
     pub hits: Vec<SemanticHit>,
     pub total: usize,
+}
+
+/// One semantic pass: the hits at or above the floor (the first `depth`),
+/// how many there were, and how many entries were compared at all.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub(crate) struct SemanticPass {
+    pub hits: Vec<SemanticHit>,
+    pub total: usize,
+    pub compared: usize,
 }
 
 /// An entry and every chunk vector it has, with what the filter needs.
@@ -646,6 +657,7 @@ impl Engine {
     /// `filter.min_similarity`, best first, then by `(kind, id)`; the first
     /// `filter.depth` of them, and how many there were. Reconciles the
     /// index first. Empty when the query has no known token.
+    #[cfg(test)]
     pub(crate) fn semantic_candidates(
         &self,
         query: &str,
@@ -654,15 +666,33 @@ impl Engine {
         let Some(q) = embed::embed(query) else {
             return SemanticHits::default();
         };
-        let q = QueryVector::new(&q);
+        let pass = self.semantic_pass(&QueryVector::new(&q), filter);
+        SemanticHits {
+            hits: pass.hits,
+            total: pass.total,
+        }
+    }
+
+    /// [`Self::semantic_candidates`] for a query already embedded, which
+    /// also says how many entries in the filter had a vector to compare:
+    /// none means the semantic side had nothing to answer from (nothing
+    /// indexed, or a reconcile that could not settle), which is not the
+    /// same as comparing and finding nothing close.
+    pub(crate) fn semantic_pass(
+        &self,
+        q: &QueryVector,
+        filter: &SemanticFilter<'_>,
+    ) -> SemanticPass {
         self.reconcile_vectors();
         let cache = self.vectors.borrow();
+        let mut compared = 0;
         let mut hits: Vec<SemanticHit> = cache
             .entries
             .iter()
             .filter(|e| in_filter(e, filter))
             .filter_map(|e| {
-                let (chunk, similarity) = best(e, &q);
+                compared += 1;
+                let (chunk, similarity) = best(e, q);
                 (similarity >= filter.min_similarity).then(|| SemanticHit {
                     kind: e.kind,
                     owner_id: e.owner_id.clone(),
@@ -679,7 +709,29 @@ impl Engine {
         });
         let total = hits.len();
         hits.truncate(filter.depth);
-        SemanticHits { hits, total }
+        SemanticPass {
+            hits,
+            total,
+            compared,
+        }
+    }
+
+    /// The rounded similarity to `q` of each of `keys` that has a vector in
+    /// the copy, below the floor or not: what a hit the words found says
+    /// about its meaning. Reads the copy as the last pass left it, without
+    /// reconciling again.
+    pub(crate) fn semantic_similarities(
+        &self,
+        q: &QueryVector,
+        keys: &[(Kind, &str)],
+    ) -> HashMap<(Kind, String), f64> {
+        let cache = self.vectors.borrow();
+        cache
+            .entries
+            .iter()
+            .filter(|e| keys.contains(&(e.kind, e.owner_id.as_str())))
+            .map(|e| ((e.kind, e.owner_id.clone()), best(e, q).1))
+            .collect()
     }
 
     /// The text of chunk `chunk` of an entry, cut again from its source row

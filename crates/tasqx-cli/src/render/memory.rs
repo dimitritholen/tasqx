@@ -225,7 +225,14 @@ pub fn memory_hits(
             /// snippet is its closest passage rather than the words that
             /// matched. `None` for a hit the words found.
             meaning: Option<f64>,
+            /// #838: the hit holds only some of the words, on a page where
+            /// others hold them all.
+            some_words: bool,
         }
+        // A page of nothing but partial hits keeps D193's one note below,
+        // so the tag goes only where it tells hits apart.
+        let partial = |h: &Value| h.get("partial").and_then(Value::as_bool) == Some(true);
+        let mixed = hits.iter().any(partial) && !hits.iter().all(partial);
         let rows: Vec<Hit> = hits
             .iter()
             .map(|h| {
@@ -262,6 +269,7 @@ pub fn memory_hits(
                     meaning: (h.get("via").and_then(Value::as_str) == Some("semantic"))
                         .then(|| h.get("similarity").and_then(Value::as_f64))
                         .flatten(),
+                    some_words: mixed && partial(h),
                 }
             })
             .collect();
@@ -313,6 +321,7 @@ pub fn memory_hits(
                 // width cannot reach it.
                 let line = match r.meaning {
                     Some(sim) => format!("{} {sim:.2}  {}", meaning_mark(ctx), r.snippet),
+                    None if r.some_words => format!("{SOME_WORDS}  {}", r.snippet),
                     None => r.snippet.clone(),
                 };
                 out.push_str(&format!(
@@ -336,7 +345,16 @@ pub fn memory_hits(
         .get("relaxed")
         .and_then(Value::as_bool)
         .unwrap_or(false);
-    if relaxed && count > 0 {
+    let partial = |h: &Value| h.get("partial").and_then(Value::as_bool) == Some(true);
+    let mixed = hits.iter().any(partial) && !hits.iter().all(partial);
+    if mixed {
+        // #838: hybrid fuses D193's any-word list beside every-word hits,
+        // so the partial ones carry the tag and this says what it means.
+        notes.push((
+            None,
+            format!("{SOME_WORDS} marks a hit that has only some of the words"),
+        ));
+    } else if relaxed && count > 0 {
         notes.push((
             None,
             "no hit had every word — these match any word".to_string(),
@@ -435,6 +453,10 @@ pub fn memory_hits(
     }
     out
 }
+
+/// #838's tag for a hit that holds only some of the query's words, on a
+/// page where others hold them all.
+const SOME_WORDS: &str = "some words";
 
 /// D196's mark for a hit found by meaning alone: `≈`, or `~` where the
 /// terminal draws no Unicode.

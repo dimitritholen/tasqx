@@ -52,11 +52,11 @@ a hit, say which one and why.
 
 Query with two or three keywords, not a sentence. Search matches meaning as well as
 words, so `sign-in failures` finds a note about "login errors"; each hit's `via` says
-whether its words (`lexical`), its meaning (`semantic`) or `both` matched. Every word is
-still required on the words side, so `retry idempotency` and `tokens.css` work as typed;
-when no entry has every word and nothing is close in meaning, entries with any of them
-come back instead, marked `relaxed: true`. The result's `matched` field shows the
-expression that actually ran. For an exact name, id or error string, pass
+whether its words (`lexical`), its meaning (`semantic`) or `both` matched. An entry with
+every word ranks above one with only some, so `retry idempotency` and `tokens.css` work
+as typed; a hit with only some of the words says `partial: true`, and the result says
+`relaxed: true` when one is on the page. `matched` shows the all-words expression that
+ran, `matched_any` the any-word one. For an exact name, id or error string, pass
 `mode: lexical` to match its characters and nothing else.
 Run two searches with different wording before concluding nothing is there; no tool
 lists the store, so searching is the only way in. A hit is a snippet, not the document:

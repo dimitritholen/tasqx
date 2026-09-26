@@ -51,9 +51,9 @@ tasqx memory search blue-green
 ```
 
 - Plain words are matched as phrases, so hyphens and dots are safe to type.
-- Every word is required first. When no entry has them all and nothing is close
-  in meaning, entries with any of them (filler words like "the" aside) are shown
-  instead, under a note saying so.
+- An entry with every word ranks above one with only some of them (filler words
+  like "the" aside); a hit with only some is marked `some words`, so a partial
+  match is never read as a full one.
 - A hit found by meaning alone is marked `≈` with its similarity on the line
   under it; its passage is the one closest to your words.
 - An identifier such as `D41` or `#607` has no word to match by meaning, so it

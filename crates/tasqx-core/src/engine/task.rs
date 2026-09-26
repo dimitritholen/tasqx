@@ -3006,6 +3006,7 @@ impl Engine {
                 "reserved_docs": 0,
                 "docs_total": 0,
                 "annotations_total": 0,
+                "semantic": Value::Null,
             }));
         };
         let limit = usize::try_from(limit.unwrap_or(crate::engine::BRIEF_MEMORY_LIMIT))
@@ -3043,7 +3044,7 @@ impl Engine {
         // own notes are kept off the semantic list inside that same call, so
         // both lists are cut and counted without them.
         let meaning = meaning_query(&task.title, tags, project.as_deref());
-        let scoped = |scope: &str| -> Result<(Vec<Value>, i64), ApiError> {
+        let scoped = |scope: &str| -> Result<(Vec<Value>, i64, Value), ApiError> {
             let mut p = params.clone();
             p["scope"] = json!(scope);
             let out = self.memory_search_excluding(&p, Some(&task.id), Some(&meaning))?;
@@ -3053,10 +3054,23 @@ impl Engine {
             // whole method is about.
             let hits = opt_array(&out, "hits")?.cloned().unwrap_or_default();
             let total = opt_i64(&out, "total")?.unwrap_or(0);
-            Ok((hits, total))
+            Ok((hits, total, out["semantic"].clone()))
         };
-        let (docs, docs_total) = scoped("docs")?;
-        let (annotations, annotations_total) = scoped("annotations")?;
+        let (docs, docs_total, docs_semantic) = scoped("docs")?;
+        let (annotations, annotations_total, annotations_semantic) = scoped("annotations")?;
+        // D196 (#838 review): what the meaning side ran, with what — or null
+        // when neither search compared anything. The query is the brief's own
+        // text, which no caller typed and so none could otherwise see.
+        let semantic = match [docs_semantic, annotations_semantic]
+            .into_iter()
+            .find(Value::is_object)
+        {
+            Some(mut s) => {
+                s["query"] = json!(meaning);
+                s
+            }
+            None => Value::Null,
+        };
 
         // Saturating throughout: `limit` is caller input and may be zero or
         // enormous, and a page that underflowed to `usize::MAX` would hand back
@@ -3086,6 +3100,7 @@ impl Engine {
             "reserved_docs": reserved,
             "docs_total": docs_total,
             "annotations_total": annotations_total,
+            "semantic": semantic,
         }))
     }
 
@@ -3267,17 +3282,13 @@ pub(super) fn derive_match_expr(
     let mut terms: Vec<String> = Vec::new();
     let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
     let mut push = |word: &str| {
-        let w: String = word
-            .trim_matches(|c: char| !c.is_alphanumeric())
-            .to_lowercase();
-        // One character is never a useful disjunct and is often punctuation
-        // that survived the trim; a stopword is dropped for the reason the
-        // list above gives.
-        if w.chars().count() < 2 || super::memory::QUERY_STOPWORDS.contains(&w.as_str()) {
-            return;
-        }
-        if seen.insert(w.clone()) {
-            terms.push(w);
+        // `content_words` trims, lowercases and drops a stopword for the
+        // reason the list gives. One character is never a useful disjunct
+        // and is often punctuation that survived the trim.
+        for (_, w) in super::memory::content_words(word) {
+            if w.chars().count() >= 2 && seen.insert(w.clone()) {
+                terms.push(w);
+            }
         }
     };
     for word in title.split_whitespace() {
