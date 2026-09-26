@@ -23,3 +23,10 @@
 # one developer's local git config. `eol=lf` makes the blob, the working copy
 # and what the CDN hands out the same file.
 *.ps1 text eol=lf
+
+# The embedding model's table and vocabulary (DESIGN.md D196) are bytes the
+# build compiles in with `include_bytes!`/`include_str!`, not text for git to
+# convert: a CRLF checkout of vocab.txt would change the bytes every Windows
+# binary carries. `-text` keeps them exactly as scripts/embedding-model.py
+# wrote them.
+crates/tasqx-core/assets/embed/** -text
