@@ -248,6 +248,30 @@ fn the_expression_that_ran_is_named() {
     );
 }
 
+/// D193's any-word fallback belongs to a plain `memory.search`. The brief's
+/// derived expression is already a disjunction run raw, so there is nothing
+/// to relax and no `relaxed` to report: the brief's own shape is unchanged,
+/// on a hit and on a miss alike.
+#[test]
+fn the_derived_search_never_reports_relaxed() {
+    let e = engine();
+    call(
+        &e,
+        "memory.add",
+        json!({ "title": "Idempotency keys on payments", "body": "retries must not double-charge" }),
+    )
+    .expect("doc");
+    for title in ["Audit the payments retry path", "Paint the zeppelin hangar"] {
+        let t = add(&e, title, json!({}));
+        let out = brief(&e, t);
+        assert!(
+            out["memory"].get("relaxed").is_none(),
+            "the brief grew a `relaxed` it has no fallback to explain: {}",
+            out["memory"]
+        );
+    }
+}
+
 #[test]
 fn tags_and_the_project_join_the_title_in_the_query() {
     let e = engine();

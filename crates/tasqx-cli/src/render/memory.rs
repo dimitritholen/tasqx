@@ -304,6 +304,19 @@ pub fn memory_hits(ctx: &Ctx, result: &Value, query: &str, raw: bool) -> String 
     // Prose after the records stands off them by a blank line (rule 7), and
     // wraps rather than running past the terminal.
     let mut notes: Vec<(Option<&str>, String)> = Vec::new();
+    // D193: the engine fell back to any word because nothing held them all.
+    // The summary names the OR that ran; this says why it is not the words
+    // as typed, so a partial match is never read as a full one.
+    let relaxed = result
+        .get("relaxed")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    if relaxed && count > 0 {
+        notes.push((
+            None,
+            "no hit had every word — these match any word".to_string(),
+        ));
+    }
     if count < total {
         // At the terminal's own weight, like the miss hint below: both name
         // the command that shows what this screen could not.
@@ -329,6 +342,10 @@ pub fn memory_hits(ctx: &Ctx, result: &Value, query: &str, raw: bool) -> String 
                     // Quoted like the summary's label: the engine quotes a
                     // plain query's terms for us, a raw expression it does not.
                     format!("nothing matched \"{expr}\" — OR widens it")
+                } else if relaxed {
+                    // D193: the any-word search missed too, so fewer words
+                    // cannot help; only other words can.
+                    format!("no entry has any of these words: {expr}")
                 } else {
                     format!("every term was required: {expr} — use fewer, or --raw with OR")
                 },

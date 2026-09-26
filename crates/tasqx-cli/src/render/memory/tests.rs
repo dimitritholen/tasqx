@@ -347,3 +347,58 @@ fn a_search_record_fits_its_head_line_to_its_own_handle() {
         "{out}"
     );
 }
+
+/// D193: hits the any-word fallback found say so, once, after the records —
+/// the summary already names the OR that ran, and this line says why it was
+/// OR and not the words the reader typed.
+#[test]
+fn a_relaxed_search_says_no_hit_had_every_word() {
+    let ctx = Ctx::new(theme::default_theme(), Caps::PLAIN);
+    let hit = json!({ "id": "01a0903c-bff0-76a2-9bcb-5428786a56c4", "kind": "doc",
+                      "title": "sdk notes", "source": "", "snippet": "SDK release" });
+    let out = memory_hits(
+        &ctx,
+        &json!({ "count": 1, "total": 1, "hits": [hit], "relaxed": true,
+                 "matched": "\"SDK\" OR \"3.0\" OR \"release\"" }),
+        "SDK 3.0 release",
+        false,
+    );
+    let notes: Vec<&str> = out.lines().filter(|l| l.contains("every word")).collect();
+    assert_eq!(
+        notes,
+        ["no hit had every word — these match any word"],
+        "{out}"
+    );
+    assert!(!out.contains("every term was required"), "{out}");
+
+    // Not relaxed: no such note.
+    let hit = json!({ "id": "01a0903c-bff0-76a2-9bcb-5428786a56c4", "kind": "doc",
+                      "title": "sdk notes", "source": "", "snippet": "SDK release" });
+    let out = memory_hits(
+        &ctx,
+        &json!({ "count": 1, "total": 1, "hits": [hit], "relaxed": false,
+                 "matched": "\"SDK\" \"release\"" }),
+        "SDK release",
+        false,
+    );
+    assert!(!out.contains("every word"), "{out}");
+}
+
+/// D193: when even the any-word search misses, "every term was required —
+/// use fewer" would be false advice. The note names the OR that ran whole.
+#[test]
+fn a_relaxed_miss_does_not_advise_fewer_words() {
+    let ctx = Ctx::new(theme::default_theme(), Caps::PLAIN);
+    let out = memory_hits(
+        &ctx,
+        &json!({ "count": 0, "total": 0, "hits": [], "relaxed": true,
+                 "matched": "\"zeppelin\" OR \"canary\"" }),
+        "zeppelin canary",
+        false,
+    );
+    assert!(!out.contains("every term was required"), "{out}");
+    assert!(
+        out.contains("no entry has any of these words: \"zeppelin\" OR \"canary\""),
+        "{out}"
+    );
+}

@@ -1004,6 +1004,9 @@ const R_MEMORY_SEARCH: Shape = &[&[
     // The FTS5 expression this search actually ran (D69), so `count: 0` can be
     // told apart from a store that holds nothing on the subject.
     req("matched", Ty::Str),
+    // D193: whether `matched` is the any-word fallback rather than the
+    // all-words expression the caller's words first asked for.
+    req("relaxed", Ty::Bool),
 ]];
 
 const R_MEMORY_REMOVE: Shape = &[&[req("id", Ty::Str), req("removed", Ty::Bool)]];

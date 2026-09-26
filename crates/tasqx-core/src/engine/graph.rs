@@ -1217,7 +1217,13 @@ impl Engine {
             return Ok((Vec::new(), Vec::new()));
         }
         let query = words.join(" ");
-        let answer = self.memory_search(&json!({ "query": query, "limit": GRAPH_SEARCH_HITS }))?;
+        // The all-words search, without D193's any-word fallback: an edge
+        // here claims the title's words appear in that entry, and a hit that
+        // holds one word of a five-word title does not back that claim.
+        let answer = self.memory_search_excluding(
+            &json!({ "query": query, "limit": GRAPH_SEARCH_HITS }),
+            None,
+        )?;
 
         let mut ranks: HashMap<Node, f64> = HashMap::new();
         let mut wanted: Vec<Node> = Vec::new();

@@ -38,6 +38,13 @@ pub const MEMORY_SCOPES: [&str; 3] = ["all", "docs", "annotations"];
 /// implicit AND. Callers who *want* the operator grammar pass `raw:true` and
 /// own the syntax errors.
 fn phrase_escape(query: &str) -> Result<String, ApiError> {
+    Ok(phrase_terms(query)?.join(" "))
+}
+
+/// The quoted phrase terms [`phrase_escape`] joins — kept apart so D193's
+/// any-word fallback joins the SAME terms with `OR` rather than re-deriving
+/// them, and a change to the escaping cannot leave the two disagreeing.
+fn phrase_terms(query: &str) -> Result<Vec<String>, ApiError> {
     let terms: Vec<String> = query
         .split_whitespace()
         .map(|word| format!("\"{}\"", word.replace('"', "\"\"")))
@@ -47,7 +54,7 @@ fn phrase_escape(query: &str) -> Result<String, ApiError> {
             "`query` must contain at least one word",
         ));
     }
-    Ok(terms.join(" "))
+    Ok(terms)
 }
 
 /// The FTS5 columns `--raw` can name a `column:query` against, for the given
@@ -668,8 +675,34 @@ impl Engine {
     /// boolean. Both cost one extra `COUNT(*)` query, run against the exact
     /// same WHERE clauses as the page itself, so the two numbers can never
     /// name a different match set than the hits do.
+    ///
+    /// D193: a plain query of more than one word that finds nothing with
+    /// every word runs once more with the same phrase terms joined by `OR`,
+    /// in the same scope, with the same limit. The result then echoes the OR
+    /// in `matched` and says `relaxed: true`, so a hit that holds only some of
+    /// the words is never passed off as one that holds them all. When the OR
+    /// misses too, that is still the answer reported — the widest expression
+    /// that ran is the one that tells the caller dropping words cannot help.
+    /// `raw` never falls back: the caller wrote the grammar, and tasqx does
+    /// not rewrite it.
     pub fn memory_search(&self, p: &Value) -> Result<Value, ApiError> {
-        self.memory_search_excluding(p, None)
+        let strict = self.memory_search_excluding(p, None)?;
+        if opt_i64(&strict, "total")?.unwrap_or(0) > 0 || opt_bool(p, "raw")?.unwrap_or(false) {
+            return Ok(strict);
+        }
+        let terms = phrase_terms(&req_str(p, "query")?)?;
+        if terms.len() < 2 {
+            return Ok(strict);
+        }
+        // Run as `raw` because the expression is already escaped: every term
+        // is a quoted phrase `phrase_terms` built, so FTS5 cannot refuse it,
+        // and re-escaping would quote the `OR`s into words.
+        let mut wide = p.clone();
+        wide["query"] = json!(terms.join(" OR "));
+        wide["raw"] = json!(true);
+        let mut relaxed = self.memory_search_excluding(&wide, None)?;
+        relaxed["relaxed"] = json!(true);
+        Ok(relaxed)
     }
 
     /// The engine's own path into `memory.search`, widened with ONE thing no
@@ -906,6 +939,10 @@ impl Engine {
             "has_more": (hits.len() as i64) < total,
             "hits": hits,
             "matched": match_expr,
+            // D193: only `memory_search`'s any-word fallback sets this true;
+            // every expression run here is the one the caller's words asked
+            // for.
+            "relaxed": false,
         }))
     }
 

@@ -1475,7 +1475,7 @@ const EXAMPLES: &[Example] = &[
         method: "memory.search",
         request: r#"{"tasqx":"1","id":"ms1","method":"memory.search","params":{"query":"release canary","limit":2}}"#,
         fixture: "",
-        response: r#"{"id":"ms1","ok":true,"result":{"count":1,"has_more":false,"hits":[{"id":"eb864f1e-e68a-4d96-af89-597bd0d2d52e","kind":"doc","project":"api","rank":-1.2419537228757,"snippet":"Cut the release branch on Monday, tag after the canary has run for a day…","source":"docs/release.md","stale":false,"standing":false,"title":"release-process"}],"matched":"release AND canary","total":1},"tasqx":"1"}"#,
+        response: r#"{"id":"ms1","ok":true,"result":{"count":1,"has_more":false,"hits":[{"id":"eb864f1e-e68a-4d96-af89-597bd0d2d52e","kind":"doc","project":"api","rank":-1.2419537228757,"snippet":"Cut the release branch on Monday, tag after the canary has run for a day…","source":"docs/release.md","stale":false,"standing":false,"title":"release-process"}],"matched":"release AND canary","relaxed":false,"total":1},"tasqx":"1"}"#,
         why: "every hit carries an FTS bm25 `rank` whose last digits are the platform's `log()`, so a capture is reproducible only on the machine that took it. The `tasqx memory search` screen is captured instead — it prints the snippet, never the number.",
     },
     Example {

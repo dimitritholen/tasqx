@@ -902,9 +902,9 @@ fn build_tool_specs() -> Vec<ToolSpec> {
             destructive: false,
             idempotent: true,
             description: "Search the memory store — imported docs and task annotations — \
-                bm25-ranked with snippets. A plain query is matched as phrases by word STEM \
-                and every word is REQUIRED, so `matched` explains a zero-hit answer; \
-                `raw: true` takes FTS5 syntax instead. A hit is an excerpt: `tasqx_get_memory` \
+                bm25-ranked with snippets. A plain query matches phrases by word STEM, every \
+                word required; if nothing has them all, any-word matches return with `relaxed: \
+                true` (D193). `matched` is what ran; `raw: true` takes FTS5 syntax. A hit is an excerpt: `tasqx_get_memory` \
                 reads a doc whole, `tasqx_get_task` an annotation. `hits` is sorted best-first \
                 (LOWER bm25 `rank` is better); `total` and `has_more` say what `limit` cut. A \
                 doc hit adds `stale` (D180).",
@@ -1757,8 +1757,9 @@ pub fn instructions(scope: Scope) -> String {
 
     const SEARCH: &str = "Search first. Call tasqx_search_memory before resuming work, choosing \
         between designs, touching a convention-bearing file, or asserting how this project does \
-        something. Query with two or three keywords, never a sentence: every word is required, \
-        and `matched` shows what ran. Try a second wording before concluding nothing is there. A \
+        something. Query with two or three keywords, never a sentence: every word is required \
+        first, and if nothing has them all, any-word matches come back marked `relaxed`; \
+        `matched` shows what ran. Try a second wording before concluding nothing is there. A \
         hit is a snippet: read a doc whole with tasqx_get_memory, and an annotation (source \
         `task:#<id>`) with tasqx_get_task.";
 

@@ -3211,6 +3211,24 @@ fn memory_search_off_a_terminal_is_a_record_per_hit() {
         note.contains("\"zebra\""),
         "the note does not carry the expression: {note:?}"
     );
+
+    // D193: no entry holds both words, so the any-word fallback answers and
+    // the screen says so rather than passing a partial match off as a full one.
+    let out = run(&["memory", "search", "smoke", "friday"]);
+    let text = String::from_utf8(out.stdout).expect("UTF-8");
+    assert!(
+        text.lines()
+            .next()
+            .is_some_and(|l| l.contains("\"smoke\" OR \"friday\"") && l.contains("2 hits")),
+        "the summary names the OR that ran: {text}"
+    );
+    assert!(
+        text.contains("no hit had every word — these match any word"),
+        "{text}"
+    );
+    let out = run(&["--json", "memory", "search", "smoke", "friday"]);
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).expect("json");
+    assert_eq!(v["relaxed"], true, "{v}");
 }
 
 /// Task #12/D135: a doc whose body opens with `---\nkey: value\n---\n`
