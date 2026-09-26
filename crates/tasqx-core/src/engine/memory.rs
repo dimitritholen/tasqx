@@ -261,11 +261,12 @@ fn min_similarity(p: &Value) -> Result<Option<f64>, ApiError> {
     }
 }
 
-/// Whether `query` has a word the semantic side is worth running for: three
-/// letters or more, and not one of [`QUERY_STOPWORDS`]. `D41` and `#607`
-/// have none, so an identifier is looked up by its characters alone (D196).
-fn has_content_word(query: &str) -> bool {
-    content_words(query).any(|(_, bare)| bare.chars().filter(|c| c.is_alphabetic()).count() >= 3)
+/// A bare word (see [`content_words`]) of three letters or more: what the
+/// meaning side is worth running for, and what its vocabulary gate counts.
+/// `D41` and `#607` have none, so an identifier is looked up by its
+/// characters alone (D196).
+fn is_content(bare: &str) -> bool {
+    bare.chars().filter(|c| c.is_alphabetic()).count() >= 3
 }
 
 /// A hit's identity across the lists. Ordered `(kind, id)`, the tie order
@@ -311,8 +312,6 @@ impl Via {
 struct Ranked<'a> {
     keys: &'a [HitKey],
     weight: f64,
-    /// Whether a hit on this list was found by its words.
-    lexical: bool,
 }
 
 /// One hit of the fused list.
@@ -328,31 +327,18 @@ struct Fused {
 /// hit's score, and which side found it, never depend on how many hits the
 /// caller asked for. Best first; a tie goes to `both` before `lexical`
 /// before `semantic`, then to `(kind, id)`. One list alone keeps its order.
-fn fuse(lists: &[Ranked<'_>], via_of: Option<&dyn Fn(&HitKey) -> Via>) -> Vec<Fused> {
-    let mut acc: HashMap<&HitKey, (f64, bool, bool)> = HashMap::new();
+fn fuse(lists: &[Ranked<'_>], via_of: &dyn Fn(&HitKey) -> Via) -> Vec<Fused> {
+    let mut acc: HashMap<&HitKey, f64> = HashMap::new();
     for list in lists {
         for (i, k) in list.keys.iter().enumerate() {
-            let e = acc.entry(k).or_insert((0.0, false, false));
-            e.0 += list.weight / (FUSION_K + (i + 1) as f64);
-            if list.lexical {
-                e.1 = true;
-            } else {
-                e.2 = true;
-            }
+            *acc.entry(k).or_insert(0.0) += list.weight / (FUSION_K + (i + 1) as f64);
         }
     }
     let mut out: Vec<Fused> = acc
         .into_iter()
-        .map(|(key, (score, lexical, semantic))| Fused {
+        .map(|(key, score)| Fused {
             key: key.clone(),
-            via: match via_of {
-                Some(of) => of(key),
-                None => match (lexical, semantic) {
-                    (true, true) => Via::Both,
-                    (true, false) => Via::Lexical,
-                    _ => Via::Semantic,
-                },
-            },
+            via: via_of(key),
             score,
         })
         .collect();
@@ -438,10 +424,9 @@ struct LexicalList {
     /// The first entries by bm25, to the list's cap: what takes part in
     /// the fusion.
     keys: Vec<HitKey>,
-    /// Every entry the expression matched, past the cap too, when the list
-    /// was asked for them (what `total`, `via` and `partial` read); else the
-    /// same entries as `keys`.
-    members: HashSet<HitKey>,
+    /// Every other entry the expression matched, past the cap: with `keys`,
+    /// what `total`, `via` and `partial` read. Empty when nothing was cut.
+    rest: HashSet<HitKey>,
 }
 
 /// The semantic side of one search, when it compared anything.
@@ -1188,13 +1173,23 @@ impl Engine {
         // embeds to a direction near everything, and its "matches" are noise
         // above the floor. It counts as having run only when it compared
         // something; `semantic_skipped` says why when it did not.
-        let query = f
-            .meaning
-            .map(|m| crate::embed::embed_query(m, &QUERY_STOPWORDS));
+        //
+        // Content words are the search's own ([`content_words`], three
+        // letters or more), and each is asked of the model on its own, so the
+        // counts always agree with whether meaning was worth running.
+        let profile = f.meaning.map(|m| {
+            let words: Vec<String> = content_words(m)
+                .filter(|(_, bare)| is_content(bare))
+                .map(|(_, bare)| bare)
+                .collect();
+            let known = words
+                .iter()
+                .filter(|w| crate::embed::is_known_word(w))
+                .count();
+            (words.len(), known)
+        });
         let skipped = |code: &str, reason: &str| {
-            let (content, known) = query
-                .as_ref()
-                .map_or((0, 0), |q| (q.content_words, q.known_words));
+            let (content, known) = profile.unwrap_or((0, 0));
             json!({
                 "code": code,
                 "reason": reason,
@@ -1203,22 +1198,22 @@ impl Engine {
             })
         };
         let mut semantic_skipped = Value::Null;
-        let query_vector = match (f.meaning, &query) {
-            (Some(m), Some(q)) => {
-                if !has_content_word(m) {
-                    semantic_skipped =
-                        skipped("no_content_word", "no word of three letters or more");
-                    None
-                } else if q.content_words == 0 || q.known_words * 2 < q.content_words {
-                    semantic_skipped = skipped("unknown_words", "not enough words the model knows");
-                    None
-                } else if q.vector.is_none() {
+        let query_vector = match (f.meaning, profile) {
+            (Some(_), Some((0, _))) => {
+                semantic_skipped = skipped("no_content_word", "no word of three letters or more");
+                None
+            }
+            (Some(_), Some((content, known))) if known * 2 < content => {
+                semantic_skipped = skipped("unknown_words", "not enough words the model knows");
+                None
+            }
+            (Some(m), Some(_)) => match crate::embed::embed_query(m) {
+                Some(v) => Some(crate::embed::QueryVector::new(&v)),
+                None => {
                     semantic_skipped = skipped("unknown_words", "no word the model knows");
                     None
-                } else {
-                    q.vector.as_ref().map(crate::embed::QueryVector::new)
                 }
-            }
+            },
             _ => None,
         };
         // Caps are the hybrid fusion's alone: every other search ranks every
@@ -1241,8 +1236,15 @@ impl Engine {
             .as_mut()
             .filter(|pass| pass.compared > 0)
             .map(|pass| SemanticSide::new(std::mem::take(&mut pass.hits)));
-        if query_vector.is_some() && semantic.is_none() {
-            semantic_skipped = skipped("no_vectors", "nothing indexed to compare against");
+        if let (Some(pass), None) = (&semantic_pass, &semantic) {
+            semantic_skipped = if pass.failed {
+                skipped(
+                    "unavailable",
+                    "the meaning index could not be read this time",
+                )
+            } else {
+                skipped("no_vectors", "nothing indexed to compare against")
+            };
         }
         let cap = |n: usize| hybrid.then_some(n);
 
@@ -1291,8 +1293,14 @@ impl Engine {
             }
         };
 
-        let all_set: HashSet<&HitKey> = all_words.iter().flat_map(|l| &l.members).collect();
-        let any_set: HashSet<&HitKey> = any_word.iter().flat_map(|l| &l.members).collect();
+        let all_set: HashSet<&HitKey> = all_words
+            .iter()
+            .flat_map(|l| l.keys.iter().chain(&l.rest))
+            .collect();
+        let any_set: HashSet<&HitKey> = any_word
+            .iter()
+            .flat_map(|l| l.keys.iter().chain(&l.rest))
+            .collect();
         let sem_set: HashSet<&HitKey> = semantic.iter().flat_map(|s| &s.keys).collect();
         // `total` counts what every word and meaning matched. An entry that
         // holds only some of the words fills a page beyond them but is not
@@ -1310,7 +1318,6 @@ impl Engine {
             lists.push(Ranked {
                 keys: &l.keys,
                 weight: WEIGHT_ALL_WORDS,
-                lexical: true,
             });
         }
         if let Some(l) = &any_word {
@@ -1319,7 +1326,6 @@ impl Engine {
                 // In D193's fallback the any-word list is the only one, and
                 // its weight moves nothing.
                 weight: WEIGHT_ANY_WORD,
-                lexical: true,
             });
         }
         if let Some(s) = &semantic {
@@ -1328,7 +1334,6 @@ impl Engine {
                 // does bounded work, and `total` still counts every match.
                 keys: &s.keys[..s.keys.len().min(cap(ALL_WORDS_DEPTH).unwrap_or(usize::MAX))],
                 weight: WEIGHT_SEMANTIC,
-                lexical: false,
             });
         }
         // `via` is read from every match, not from the capped lists the
@@ -1342,7 +1347,7 @@ impl Engine {
                 _ => Via::Semantic,
             }
         };
-        let page: Vec<Fused> = fuse(&lists, Some(&via_of))
+        let page: Vec<Fused> = fuse(&lists, &via_of)
             .into_iter()
             .take(window.limit)
             .collect();
@@ -1531,8 +1536,9 @@ impl Engine {
         // for a quiet resolution surprise. Lower bm25 = better, so ORDER BY
         // ASC, then `(kind, id)`: equal scores must not fall to rowid order,
         // which an export and import renumbers (#838).
+        let limit = cap.map_or(String::new(), |n| format!(" LIMIT {n}"));
         let sql = format!(
-            "{} ORDER BY score, kind, id",
+            "{} ORDER BY score, kind, id{limit}",
             Self::lexical_sql(
                 w,
                 "d.id AS id, 'doc' AS kind, bm25(docs_fts) AS score",
@@ -1541,14 +1547,14 @@ impl Engine {
             )
         );
         let named = Self::lexical_params(w, &expr);
-        let run = || -> rusqlite::Result<Vec<HitKey>> {
-            let mut stmt = self.conn.prepare(&sql)?;
+        let run = |sql: &str| -> rusqlite::Result<Vec<HitKey>> {
+            let mut stmt = self.conn.prepare(sql)?;
             let rows = stmt.query_map(named.as_slice(), |r| {
                 Ok(HitKey::parse(&r.get::<_, String>(1)?, r.get(0)?))
             })?;
             rows.collect()
         };
-        let mut keys = match run() {
+        let keys = match run(&sql) {
             Ok(keys) => keys,
             // In raw mode the MATCH expression is caller input, so a query
             // SQLite refuses is the caller's error — surfaced with SQLite's
@@ -1557,18 +1563,24 @@ impl Engine {
             Err(e) if raw => return Err(ApiError::bad_request(raw_fts5_error(&e, &w.scope))),
             Err(e) => return Err(e.into()),
         };
+        // A list that filled its cap may have more: the rest of the match
+        // set, read without bm25 or an ORDER BY.
+        let rest: HashSet<HitKey> = if cap.is_some_and(|n| keys.len() == n) {
+            let ranked: HashSet<&HitKey> = keys.iter().collect();
+            run(&Self::lexical_sql(
+                w,
+                "d.id AS id, 'doc' AS kind",
+                "a.id AS id, 'annotation' AS kind",
+                ("", ""),
+            ))?
+            .into_iter()
+            .filter(|k| !ranked.contains(k))
+            .collect()
+        } else {
+            HashSet::new()
+        };
         drop(named);
-        // One ranked pass: FTS5 computes bm25 for every match whatever the
-        // `LIMIT`, so the cap only chooses which keys take part in fusion.
-        let members: HashSet<HitKey> = keys.iter().cloned().collect();
-        if let Some(n) = cap {
-            keys.truncate(n);
-        }
-        Ok(LexicalList {
-            expr,
-            keys,
-            members,
-        })
+        Ok(LexicalList { expr, keys, rest })
     }
 
     /// The whole rows of `keys`, as `expr` matches them: the snippet cut
@@ -2193,7 +2205,7 @@ impl Engine {
 #[cfg(test)]
 mod tests {
     use super::{
-        chunk_snippet, fuse, has_content_word, vectors, HitKey, Ranked, Via, FUSION_K,
+        chunk_snippet, content_words, fuse, is_content, vectors, HitKey, Ranked, Via, FUSION_K,
         WEIGHT_ALL_WORDS, WEIGHT_ANY_WORD, WEIGHT_SEMANTIC,
     };
     use rusqlite::params;
@@ -2395,37 +2407,67 @@ mod tests {
         assert!(r.standing.is_empty());
     }
 
-    /// [`fuse`] reading `via` from the lists themselves.
-    fn fuse_lists(lists: &[Ranked<'_>]) -> Vec<super::Fused> {
-        fuse(lists, None)
+    fn has_content_word(query: &str) -> bool {
+        content_words(query).any(|(_, bare)| is_content(&bare))
+    }
+
+    /// [`fuse`] with `via` read from which lists hold a key: `true` marks a
+    /// words list.
+    fn fuse_lists(lists: &[(Ranked<'_>, bool)]) -> Vec<super::Fused> {
+        let on = |lexical: bool| -> std::collections::HashSet<&HitKey> {
+            lists
+                .iter()
+                .filter(|(_, l)| *l == lexical)
+                .flat_map(|(r, _)| r.keys)
+                .collect()
+        };
+        let (lex, sem) = (on(true), on(false));
+        let ranked: Vec<Ranked<'_>> = lists
+            .iter()
+            .map(|(r, _)| Ranked {
+                keys: r.keys,
+                weight: r.weight,
+            })
+            .collect();
+        fuse(&ranked, &|k| match (lex.contains(k), sem.contains(k)) {
+            (true, true) => Via::Both,
+            (true, false) => Via::Lexical,
+            _ => Via::Semantic,
+        })
     }
 
     fn key(kind: &str, id: &str) -> HitKey {
         HitKey::parse(kind, id.to_string())
     }
 
-    fn words(keys: &[HitKey]) -> Ranked<'_> {
-        Ranked {
-            keys,
-            weight: WEIGHT_ALL_WORDS,
-            lexical: true,
-        }
+    fn words(keys: &[HitKey]) -> (Ranked<'_>, bool) {
+        (
+            Ranked {
+                keys,
+                weight: WEIGHT_ALL_WORDS,
+            },
+            true,
+        )
     }
 
-    fn any(keys: &[HitKey]) -> Ranked<'_> {
-        Ranked {
-            keys,
-            weight: WEIGHT_ANY_WORD,
-            lexical: true,
-        }
+    fn any(keys: &[HitKey]) -> (Ranked<'_>, bool) {
+        (
+            Ranked {
+                keys,
+                weight: WEIGHT_ANY_WORD,
+            },
+            true,
+        )
     }
 
-    fn meaning(keys: &[HitKey]) -> Ranked<'_> {
-        Ranked {
-            keys,
-            weight: WEIGHT_SEMANTIC,
-            lexical: false,
-        }
+    fn meaning(keys: &[HitKey]) -> (Ranked<'_>, bool) {
+        (
+            Ranked {
+                keys,
+                weight: WEIGHT_SEMANTIC,
+            },
+            false,
+        )
     }
 
     /// D196's tie order: equal fused scores go to `both`, then `lexical`,
@@ -2439,11 +2481,13 @@ mod tests {
         let m = [key("annotation", "a-sem")];
         let fused = fuse_lists(&[
             words(&l),
-            Ranked {
-                keys: &m,
-                weight: WEIGHT_ALL_WORDS,
-                lexical: false,
-            },
+            (
+                Ranked {
+                    keys: &m,
+                    weight: WEIGHT_ALL_WORDS,
+                },
+                false,
+            ),
         ]);
         let order: Vec<(&str, Via)> = fused.iter().map(|f| (f.key.id.as_str(), f.via)).collect();
         assert_eq!(
@@ -2459,11 +2503,13 @@ mod tests {
         let m = [key("annotation", "c"), key("doc", "b")];
         let fused = fuse_lists(&[
             words(&l),
-            Ranked {
-                keys: &m,
-                weight: WEIGHT_ALL_WORDS,
-                lexical: false,
-            },
+            (
+                Ranked {
+                    keys: &m,
+                    weight: WEIGHT_ALL_WORDS,
+                },
+                false,
+            ),
         ]);
         let order: Vec<&str> = fused.iter().map(|f| f.key.id.as_str()).collect();
         assert_eq!(order, ["c", "b"], "annotation sorts before doc");

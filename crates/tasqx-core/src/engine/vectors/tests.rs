@@ -153,6 +153,37 @@ fn a_search_embeds_what_has_no_row_and_a_second_search_writes_nothing() {
     );
 }
 
+/// #838 review: the model's record is refreshed when the day changes OR
+/// memory has moved 500 generations since, so a store busy within one day
+/// still shows the model as in use by memory's own clock.
+#[test]
+fn the_model_record_follows_the_generation_as_well_as_the_day() {
+    let s = Scratch::new("touch-gen");
+    let e = Engine::open(&s.db()).unwrap();
+    add_doc(&e, "Wildlife", GIRAFFE);
+    finds(&e, GIRAFFE);
+    let recorded = |c: &Connection| -> i64 {
+        c.query_row(
+            "SELECT last_used_generation FROM memory_vector_models WHERE model = ?1",
+            params![MODEL_ID],
+            |r| r.get(0),
+        )
+        .unwrap()
+    };
+    let first = recorded(&e.conn);
+    let other = Connection::open(s.db()).unwrap();
+    other
+        .execute("UPDATE memory_generation SET gen = gen + 499", [])
+        .unwrap();
+    finds(&e, GIRAFFE);
+    assert_eq!(recorded(&e.conn), first, "499 changes: not yet");
+    other
+        .execute("UPDATE memory_generation SET gen = gen + 1", [])
+        .unwrap();
+    finds(&e, GIRAFFE);
+    assert_eq!(recorded(&e.conn), first + 500, "500: recorded again");
+}
+
 #[test]
 fn text_with_no_known_token_is_stored_once_as_a_sentinel() {
     assert!(
@@ -252,6 +283,10 @@ fn another_model_s_rows_are_ignored_and_swept_only_once_unused() {
             "UPDATE memory_vector_models SET last_used = ?1 WHERE model = 'another-model'",
             params![now - 8 * 24 * 3600],
         )
+        .unwrap();
+    // And a thousand memory changes behind: both clocks agree (#838).
+    e.conn
+        .execute("UPDATE memory_generation SET gen = gen + 1000", [])
         .unwrap();
     drop(e);
     let reopened = Engine::open(&s.db()).unwrap();
@@ -558,6 +593,28 @@ fn unstored_embeddings_survive_a_moving_generation() {
         assert!(rows(&a.conn, d) >= 1, "{d} stored once the lock is free");
     }
     assert_eq!(a.vectors.borrow().embedded, 4);
+}
+
+/// #838 review: a search inside a caller's transaction reuses what was
+/// embedded and not yet stored, so it embeds only what changed.
+#[test]
+fn a_search_in_a_transaction_reuses_unstored_embeddings() {
+    let s = Scratch::new("tx-reuse");
+    let (a, holder, docs) = three_docs(&s);
+    holder.execute_batch("BEGIN IMMEDIATE").unwrap();
+    assert!(found(&a, GIRAFFE, Kind::Doc, &docs[1]));
+    assert_eq!(a.vectors.borrow().embedded, 3);
+    holder
+        .execute(
+            "UPDATE docs SET search_body = ?1 WHERE id = ?2",
+            params![VOLCANO, docs[0]],
+        )
+        .unwrap();
+    holder.execute_batch("COMMIT").unwrap();
+    a.conn.execute_batch("BEGIN").unwrap();
+    assert!(found(&a, GIRAFFE, Kind::Doc, &docs[1]));
+    a.conn.execute_batch("ROLLBACK").unwrap();
+    assert_eq!(a.vectors.borrow().embedded, 4, "only the changed entry");
 }
 
 #[test]

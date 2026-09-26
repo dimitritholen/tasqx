@@ -101,58 +101,39 @@ fn pool(model: &model::Model, ids: impl Iterator<Item = u32>) -> Option<[f32; DI
     Some(acc)
 }
 
-/// A search query as the meaning side reads it, from one tokenisation.
-#[derive(Clone, Debug)]
-pub struct QueryEmbedding {
-    /// [`embed`]'s mean, with every word that is punctuation alone left
-    /// out: a document's punctuation is a sliver of its tokens, a short
-    /// query's can be half of them, and a mean led by `.` and `,` is a
-    /// direction every note shares (#838). `None` when nothing but
-    /// punctuation, or nothing the model knows, is left.
-    pub vector: Option<[f32; DIMS]>,
-    /// The query's content words: three letters or more, not punctuation,
-    /// not in the caller's stopwords — the definition `memory.search` uses,
-    /// so an identifier such as `D41` is not one.
-    pub content_words: usize,
-    /// How many of them the model has as one WHOLE vocabulary token, not
-    /// `##` pieces and not `[UNK]` (#838): a word it only spells out in
-    /// pieces, or does not have, embeds to a direction that says little.
-    pub known_words: usize,
-}
-
-/// [`QueryEmbedding`] for `text`, `stopwords` lowercase.
-pub fn embed_query(text: &str, stopwords: &[&str]) -> QueryEmbedding {
+/// A search query's vector: [`embed`]'s mean, with every word that is
+/// punctuation alone left out. A document's punctuation is a sliver of its
+/// tokens, a short query's can be half of them, and a mean led by `.` and
+/// `,` is a direction every note shares (#838). `None` when nothing but
+/// punctuation, or nothing the model knows, is left.
+pub fn embed_query(text: &str) -> Option<[f32; DIMS]> {
     let model = model::model();
     let normal = tokenizer::normalize(text);
-    let (mut content_words, mut known_words) = (0, 0);
     let mut ids = Vec::new();
-    let mut word_ids = Vec::new();
     let mut buf = String::new();
     for word in tokenizer::words(&normal) {
-        if is_punctuation(word) {
-            continue;
+        if !is_punctuation(word) {
+            tokenizer::wordpiece(model, word, &mut buf, &mut ids);
         }
-        word_ids.clear();
-        tokenizer::wordpiece(model, word, &mut buf, &mut word_ids);
-        let letters = word.chars().filter(|c| c.is_alphabetic()).count();
-        if letters >= 3 && !stopwords.contains(&word) {
-            content_words += 1;
-            if word_ids.len() == 1 && word_ids[0] >= tokenizer::FIRST_ORDINARY {
-                known_words += 1;
-            }
-        }
-        ids.extend(
-            word_ids
-                .iter()
-                .copied()
-                .filter(|&id| id >= tokenizer::FIRST_ORDINARY),
-        );
     }
-    QueryEmbedding {
-        vector: pool(model, ids.into_iter()),
-        content_words,
-        known_words,
-    }
+    ids.retain(|&id| id >= tokenizer::FIRST_ORDINARY);
+    pool(model, ids.into_iter())
+}
+
+/// Whether the model knows `word` WHOLE: it normalises to one word the
+/// tokenizer does not split further, and that word is one vocabulary token,
+/// not `##` pieces and not `[UNK]` (#838). A word the model only spells out
+/// in pieces, or does not have, embeds to a direction that says little.
+pub fn is_known_word(word: &str) -> bool {
+    let model = model::model();
+    let normal = tokenizer::normalize(word);
+    let words = tokenizer::words(&normal);
+    let [only] = words.as_slice() else {
+        return false;
+    };
+    let mut ids = Vec::new();
+    tokenizer::wordpiece(model, only, &mut String::new(), &mut ids);
+    matches!(ids.as_slice(), [id] if *id >= tokenizer::FIRST_ORDINARY)
 }
 
 fn is_punctuation(word: &str) -> bool {

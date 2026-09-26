@@ -670,3 +670,27 @@ fn a_semantic_miss_over_nothing_indexed_says_so() {
     );
     assert!(!out.contains("has no word"), "{out}");
 }
+
+/// #838 review: a meaning index that could not be read this time is not an
+/// empty one, and says so.
+#[test]
+fn a_semantic_miss_when_the_index_was_unavailable_says_so() {
+    let ctx = Ctx::new(theme::default_theme(), Caps::PLAIN).with_cols(200);
+    let out = memory_hits(
+        &ctx,
+        &json!({ "count": 0, "total": 0, "hits": [], "relaxed": false, "matched": null,
+                 "semantic": null,
+                 "semantic_skipped": { "code": "unavailable",
+                                       "reason": "the meaning index could not be read this time",
+                                       "content_words": 2, "known_words": 2 } }),
+        "authentication problems",
+        false,
+        None,
+    );
+    assert!(
+        out.contains(
+            "the meaning index could not be read this time — try again, or --mode lexical"
+        ),
+        "{out}"
+    );
+}
