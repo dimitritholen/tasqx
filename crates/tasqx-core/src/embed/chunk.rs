@@ -50,7 +50,7 @@ use super::tokenizer::in_class;
 
 /// Bump when any text would be cut differently; it is part of
 /// [`super::MODEL_ID`].
-pub const VERSION: u32 = 3;
+pub const VERSION: u32 = 4;
 
 /// A block this short merges with its neighbour when the two fit.
 pub const MIN_WORDS: usize = 40;
@@ -133,8 +133,17 @@ pub fn chunk_doc(title: &str, text: &str) -> Vec<String> {
 pub fn chunk_annotation(body: &str) -> Vec<String> {
     let text = body.replace("\r\n", "\n");
     if unit_count(&text) > MAX_WORDS {
-        return sections(&text, "")
-            .0
+        let (pieces, headings) = sections(&text, "");
+        if pieces.is_empty() {
+            // Headings and nothing under them, however many: what the note
+            // says, as below and as `chunk_doc` has it.
+            return if headings.is_empty() {
+                Vec::new()
+            } else {
+                vec![headings.join("\n")]
+            };
+        }
+        return pieces
             .into_iter()
             .map(|p| with_prefix("", &p.path, &p.text))
             .collect();
@@ -583,6 +592,21 @@ mod tests {
         assert_eq!(
             chunk_doc("Release process", "# Release process\n\n## Steps"),
             ["Release process\nSteps"]
+        );
+    }
+
+    /// The same at any length: a note over [`MAX_WORDS`] that is only
+    /// headings is its headings, as a short one and a doc are.
+    #[test]
+    fn a_long_note_that_is_only_headings_is_its_headings() {
+        let long = format!("# {}", words(200, "w"));
+        assert_eq!(chunk_annotation(&long), [words(200, "w")]);
+        let many: String = (0..200).map(|i| format!("## h{i}\n")).collect();
+        let c = chunk_annotation(&many);
+        assert_eq!(c.len(), 1, "{c:?}");
+        assert!(
+            c[0].starts_with("h0\nh1\n") && c[0].ends_with("h199"),
+            "{c:?}"
         );
     }
 
