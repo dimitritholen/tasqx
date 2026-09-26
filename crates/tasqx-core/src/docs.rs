@@ -992,6 +992,7 @@ pub const R_MEMORY_SEARCH: &[FieldDoc] = &[
     f("has_more", "boolean", "Whether anything was left behind."),
     f("hits", "array", "The hits, bm25-ranked, docs and annotations together."),
     f("matched", "string", "The FTS5 expression actually run — how `count: 0` is told apart from a store holding nothing on the subject."),
+    f("relaxed", "boolean", "Whether no hit had every word of a plain query, so the words were joined with OR instead and `matched` is that OR (D193). Always false for `raw`."),
 ];
 
 /// One search hit — a doc or an annotation, with its snippet and rank.

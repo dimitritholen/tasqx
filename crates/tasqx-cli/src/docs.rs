@@ -453,10 +453,12 @@ const METHODS: [(&str, &str, &str); 49] = [
         "memory.search",
         "<code>query</code>, <code>limit?</code>, <code>scope?</code>, <code>raw?</code>, \
          <code>project?</code>, <code>include_unscoped?</code>",
-        "<code>{count, total, has_more, hits, matched}</code> — bm25-ranked over docs + \
+        "<code>{count, total, has_more, hits, matched, relaxed}</code> — bm25-ranked over docs + \
          annotations, stemmed (porter tokenizer, #128) so \"reviewing\" matches a doc that only \
          says \"review\". <code>matched</code> is the FTS5 expression actually run, which is how \
-         <code>count: 0</code> is told apart from a store holding nothing on the subject. \
+         <code>count: 0</code> is told apart from a store holding nothing on the subject. A plain \
+         query requires every word first; when nothing holds them all, the same words joined \
+         with OR answer instead, and <code>relaxed</code> is true (D193). \
          <code>total</code> is every row matched before <code>limit</code> truncates (#132), and \
          <code>project</code> scopes to one project's docs plus its tasks' annotations (#134). \
          Each hit carries its own <code>project</code> too (null for global knowledge, #657), so a \

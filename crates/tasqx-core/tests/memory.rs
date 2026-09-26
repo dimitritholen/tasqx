@@ -872,23 +872,198 @@ fn search_echoes_the_expression_that_produced_the_result() {
         .expect("search");
     assert_eq!(hit["count"], json!(1));
     assert_eq!(hit["matched"], json!("\"named\" \"pipe\""));
+    assert_eq!(hit["relaxed"], json!(false));
 
-    // The same store, the same subject, asked as a sentence.
-    let miss = e
+    // The same store, the same subject, asked as a sentence. Before D193 this
+    // was the zero the echo explained; now no entry holds every word, so the
+    // any-word fallback answers it, and the echo is the OR it ran.
+    let relaxed = e
         .memory_search(&json!({ "query": "why did we choose a named pipe instead of TCP" }))
         .expect("search");
-    assert_eq!(miss["count"], json!(0));
-    let matched = miss["matched"].as_str().expect("the expression");
+    assert_eq!(relaxed["count"], json!(1));
+    assert_eq!(relaxed["relaxed"], json!(true));
+    let matched = relaxed["matched"].as_str().expect("the expression");
     assert!(
-        matched.contains("\"why\"") && matched.contains("\"TCP\""),
-        "the required terms are what explain the zero: {matched}"
+        matched.contains("\"why\" OR ") && matched.contains(" OR \"TCP\""),
+        "the echo is the any-word expression that produced the hit: {matched}"
     );
+
+    // A single word has nothing to relax, so its miss is still the AND echo.
+    let miss = e
+        .memory_search(&json!({ "query": "zeppelin" }))
+        .expect("search");
+    assert_eq!(miss["count"], json!(0));
+    assert_eq!(miss["matched"], json!("\"zeppelin\""));
+    assert_eq!(miss["relaxed"], json!(false));
 
     // In raw mode the caller owns the syntax, so the echo is their expression.
     let raw = e
         .memory_search(&json!({ "query": "named OR nothingmatchesthis", "raw": true }))
         .expect("search");
     assert_eq!(raw["matched"], json!("named OR nothingmatchesthis"));
+}
+
+// ---- D193: a plain query with no all-words hit falls back to any word ------
+
+fn hit_sources(v: &Value) -> Vec<String> {
+    let mut s: Vec<String> = v["hits"]
+        .as_array()
+        .expect("hits")
+        .iter()
+        .map(|h| h["title"].as_str().expect("title").to_string())
+        .collect();
+    s.sort();
+    s
+}
+
+/// The field report: an agent asked `SDK 3.0 release` and got 0 hits, because
+/// the store held a doc saying "SDK release" and an annotation saying "3.0
+/// release" and neither holds all three words. It did not retry. The AND
+/// still runs first; when it finds nothing, the same phrase terms joined with
+/// OR answer instead, and the result says so.
+#[test]
+fn a_plain_query_with_no_all_words_hit_falls_back_to_any_word() {
+    let e = engine();
+    call(
+        &e,
+        "memory.add",
+        json!({ "title": "sdk notes", "body": "The SDK release is cut from the tag." }),
+    )
+    .unwrap();
+    let t = call(&e, "task.add", json!({ "title": "Version bump" })).unwrap();
+    call(
+        &e,
+        "annotation.add",
+        json!({ "ref": t["short_id"], "body": "the 3.0 release waits on the migration" }),
+    )
+    .unwrap();
+
+    let out = call(&e, "memory.search", json!({ "query": "SDK 3.0 release" })).unwrap();
+    assert_eq!(out["count"], 2, "{out}");
+    assert_eq!(out["total"], 2, "{out}");
+    assert_eq!(hit_sources(&out), ["Version bump", "sdk notes"]);
+    assert_eq!(out["relaxed"], true, "{out}");
+    assert_eq!(
+        out["matched"], "\"SDK\" OR \"3.0\" OR \"release\"",
+        "`matched` is the expression that produced the hits"
+    );
+}
+
+/// An all-words hit is the answer, even where OR would find more.
+#[test]
+fn an_all_words_hit_never_falls_back() {
+    let e = engine();
+    for (title, body) in [
+        ("both", "the SDK release is cut from the tag"),
+        ("one", "the release train leaves on Monday"),
+    ] {
+        call(&e, "memory.add", json!({ "title": title, "body": body })).unwrap();
+    }
+    let out = call(&e, "memory.search", json!({ "query": "SDK release" })).unwrap();
+    assert_eq!(hit_sources(&out), ["both"], "{out}");
+    assert_eq!(out["relaxed"], false);
+    assert_eq!(out["matched"], "\"SDK\" \"release\"");
+}
+
+/// `raw` hands the caller the grammar, so tasqx never rewrites it.
+#[test]
+fn a_raw_query_never_falls_back() {
+    let e = engine();
+    call(
+        &e,
+        "memory.add",
+        json!({ "title": "sdk notes", "body": "The SDK release is cut from the tag." }),
+    )
+    .unwrap();
+    let out = call(
+        &e,
+        "memory.search",
+        json!({ "query": "SDK AND canary", "raw": true }),
+    )
+    .unwrap();
+    assert_eq!(out["count"], 0, "{out}");
+    assert_eq!(out["relaxed"], false);
+    assert_eq!(out["matched"], "SDK AND canary");
+}
+
+/// One word has no weaker form: its miss is a miss.
+#[test]
+fn a_single_word_miss_does_not_fall_back() {
+    let e = engine();
+    call(
+        &e,
+        "memory.add",
+        json!({ "title": "sdk notes", "body": "The SDK release is cut from the tag." }),
+    )
+    .unwrap();
+    let out = call(&e, "memory.search", json!({ "query": "canary" })).unwrap();
+    assert_eq!(out["count"], 0);
+    assert_eq!(out["relaxed"], false);
+    assert_eq!(out["matched"], "\"canary\"");
+}
+
+/// When no entry holds even one of the words, the answer names the widest
+/// expression that ran — the OR — so the caller sees that dropping words
+/// cannot help, rather than being told every word was required.
+#[test]
+fn a_miss_on_every_word_reports_the_any_word_expression() {
+    let e = engine();
+    call(
+        &e,
+        "memory.add",
+        json!({ "title": "sdk notes", "body": "The SDK release is cut from the tag." }),
+    )
+    .unwrap();
+    let out = call(&e, "memory.search", json!({ "query": "zeppelin canary" })).unwrap();
+    assert_eq!(out["count"], 0);
+    assert_eq!(out["total"], 0);
+    assert_eq!(out["relaxed"], true, "{out}");
+    assert_eq!(out["matched"], "\"zeppelin\" OR \"canary\"");
+}
+
+/// The fallback widens the words, never the scope: a project scope and a
+/// `scope` both hold, and hits outside them stay out.
+#[test]
+fn the_fallback_keeps_the_scope_it_was_asked_for() {
+    let e = engine();
+    for (title, project) in [("alpha sdk", Some("alpha")), ("beta sdk", Some("beta"))] {
+        let mut params = json!({ "title": title, "body": "the SDK is versioned" });
+        if let Some(p) = project {
+            params["project"] = json!(p);
+        }
+        call(&e, "memory.add", params).unwrap();
+    }
+    call(
+        &e,
+        "memory.add",
+        json!({ "title": "global release", "body": "every release is tagged" }),
+    )
+    .unwrap();
+    let t = call(&e, "task.add", json!({ "title": "Carrier" })).unwrap();
+    call(
+        &e,
+        "annotation.add",
+        json!({ "ref": t["short_id"], "body": "SDK release notes pending" }),
+    )
+    .unwrap();
+
+    let out = call(
+        &e,
+        "memory.search",
+        json!({ "query": "SDK 3.0", "project": "alpha" }),
+    )
+    .unwrap();
+    assert_eq!(out["relaxed"], true, "{out}");
+    assert_eq!(hit_sources(&out), ["alpha sdk"], "{out}");
+
+    let out = call(
+        &e,
+        "memory.search",
+        json!({ "query": "SDK 3.0", "scope": "docs" }),
+    )
+    .unwrap();
+    assert_eq!(out["relaxed"], true, "{out}");
+    assert_eq!(hit_sources(&out), ["alpha sdk", "beta sdk"], "{out}");
 }
 
 // ---- D71: the document a search finds can be read ---------------------------

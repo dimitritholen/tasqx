@@ -1156,6 +1156,30 @@ fn inferred_edges_are_off_by_default_and_carry_a_confidence_when_on() {
     );
 }
 
+/// D193's any-word fallback is `memory.search`'s, not the graph's: a
+/// `search_match` edge says the root's title words are in that entry, and a
+/// doc holding one word of a three-word title does not back that claim.
+#[test]
+fn a_search_match_edge_still_needs_every_title_word() {
+    let e = engine();
+    ok(&e, "task.add", json!({ "title": "rate limit ceiling" }));
+    ok(
+        &e,
+        "memory.add",
+        json!({ "title": "limit notes", "body": "the upload size limit is 10 MB" }),
+    );
+    let on = ok(
+        &e,
+        "graph.query",
+        json!({ "root": 1, "depth": 1, "include_inferred": true }),
+    );
+    assert!(
+        !labels(&on).contains(&"limit notes".to_string()),
+        "a one-word overlap became a search_match edge: {:?}",
+        labels(&on)
+    );
+}
+
 // ---- graph.query: refusals --------------------------------------------------
 
 /// Every bound is refused BY NAME rather than clamped: a caller who asked for

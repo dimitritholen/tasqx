@@ -51,8 +51,10 @@ Search first, form the opinion second. Report what you found; if a decision cont
 a hit, say which one and why.
 
 Query with two or three keywords, not a sentence: every word of a plain query is
-required, so `retry idempotency` and `tokens.css` work as typed while a sentence usually
-returns nothing — the result's `matched` field shows the expression that actually ran.
+required first, so `retry idempotency` and `tokens.css` work as typed. When no entry has
+every word, entries with any of them come back instead, marked `relaxed: true` — a
+sentence mostly returns noise that way. The result's `matched` field shows the expression
+that actually ran.
 Run two searches with different wording before concluding nothing is there; no tool
 lists the store, so searching is the only way in. A hit is a snippet, not the document:
 read a doc whole with `tasqx_get_memory` on its `id`, and a hit whose `source` reads
