@@ -1,0 +1,1796 @@
+[
+  {
+    "q": "randomly kicked off, forced to sign back on",
+    "ranked": [
+      "a8",
+      "a111",
+      "a24",
+      "a108",
+      "a42",
+      "d24",
+      "d42",
+      "d17",
+      "d13",
+      "d26"
+    ]
+  },
+  {
+    "q": "customers getting money back twice",
+    "ranked": [
+      "d17",
+      "d8",
+      "d25",
+      "a115",
+      "d35",
+      "a24",
+      "a108",
+      "d12",
+      "d2",
+      "a42"
+    ]
+  },
+  {
+    "q": "throttling ceiling for outside collaborators",
+    "ranked": [
+      "d2"
+    ]
+  },
+  {
+    "q": "retiring the legacy lookup route",
+    "ranked": [
+      "a111",
+      "d23",
+      "a87",
+      "d6",
+      "d24"
+    ]
+  },
+  {
+    "q": "why purchase history takes ages",
+    "ranked": [
+      "d43",
+      "a76",
+      "d56",
+      "d29",
+      "d26",
+      "d41",
+      "d54",
+      "d24"
+    ]
+  },
+  {
+    "q": "giant javascript blob slowing the stats screen",
+    "ranked": [
+      "a34",
+      "d23",
+      "d13"
+    ]
+  },
+  {
+    "q": "grey captions unreadable on the black colour scheme",
+    "ranked": [
+      "d12"
+    ]
+  },
+  {
+    "q": "obsolete toggles left permanently enabled",
+    "ranked": [
+      "d32",
+      "a8"
+    ]
+  },
+  {
+    "q": "hiding if a person is registered",
+    "ranked": [
+      "a101",
+      "d19",
+      "a85",
+      "d42",
+      "d26",
+      "d52",
+      "d36",
+      "d45",
+      "d55",
+      "d25"
+    ]
+  },
+  {
+    "q": "application dies right at launch on handsets",
+    "ranked": [
+      "a76",
+      "d38",
+      "d54",
+      "d1"
+    ]
+  },
+  {
+    "q": "copies appearing after working without internet",
+    "ranked": [
+      "d40",
+      "d15",
+      "a83",
+      "d42",
+      "d5",
+      "d53",
+      "a64",
+      "a58",
+      "a62",
+      "a39"
+    ]
+  },
+  {
+    "q": "alerts on iPhones show up with lag",
+    "ranked": [
+      "a6",
+      "d10",
+      "d32",
+      "a69",
+      "a81",
+      "a72",
+      "d35",
+      "a73",
+      "a50",
+      "a70"
+    ]
+  },
+  {
+    "q": "switching to the standby database rehearsal",
+    "ranked": [
+      "a43",
+      "a67",
+      "a24",
+      "d59",
+      "a32",
+      "d54",
+      "d33",
+      "d10",
+      "d28",
+      "d24"
+    ]
+  },
+  {
+    "q": "too many wake-ups for the duty engineer",
+    "ranked": [
+      "d2",
+      "a88",
+      "a107",
+      "d41",
+      "d60",
+      "d21",
+      "d51",
+      "d25",
+      "d24"
+    ]
+  },
+  {
+    "q": "paying a lot to move bytes between server farms",
+    "ranked": [
+      "d8",
+      "a91",
+      "d20",
+      "d59",
+      "d3",
+      "a9",
+      "a33",
+      "a35",
+      "d16",
+      "a54"
+    ]
+  },
+  {
+    "q": "morning numbers not ready in time",
+    "ranked": [
+      "a105",
+      "d35",
+      "d36",
+      "a115",
+      "a90",
+      "d55",
+      "a92",
+      "d54",
+      "a74",
+      "a13"
+    ]
+  },
+  {
+    "q": "forgotten customers still visible in analytics",
+    "ranked": [
+      "a39",
+      "a115",
+      "a100",
+      "d39",
+      "d18",
+      "d13",
+      "a17",
+      "d12",
+      "d25",
+      "a2"
+    ]
+  },
+  {
+    "q": "recovery messages ending up in junk",
+    "ranked": [
+      "a6",
+      "d49",
+      "d29",
+      "a104",
+      "d35",
+      "a36",
+      "a35",
+      "a92",
+      "d4",
+      "d17"
+    ]
+  },
+  {
+    "q": "keeping customer identities out of diagnostic output",
+    "ranked": [
+      "d25",
+      "d30",
+      "a115",
+      "d12",
+      "d42",
+      "a107",
+      "a4",
+      "d20",
+      "d19",
+      "a1"
+    ]
+  },
+  {
+    "q": "build machines for automated checks",
+    "ranked": [
+      "d11",
+      "a59",
+      "a104",
+      "a24",
+      "a64",
+      "a27",
+      "d39",
+      "a56",
+      "a26",
+      "d12"
+    ]
+  },
+  {
+    "q": "outsiders who find a hole in our product",
+    "ranked": [
+      "a79",
+      "a70",
+      "a80",
+      "a99",
+      "d10",
+      "a32",
+      "a104",
+      "d29",
+      "d36",
+      "d54"
+    ]
+  },
+  {
+    "q": "backing out a faulty version quickly",
+    "ranked": [
+      "d5",
+      "a19",
+      "a24",
+      "a108",
+      "d22",
+      "d25",
+      "a42",
+      "a107",
+      "a4",
+      "d19"
+    ]
+  },
+  {
+    "q": "leaking payment details into user recordings",
+    "ranked": [
+      "d20",
+      "d28",
+      "d12",
+      "a101",
+      "a117",
+      "d6",
+      "a77",
+      "a91",
+      "a95",
+      "d37"
+    ]
+  },
+  {
+    "q": "small spelling mistakes giving empty lists",
+    "ranked": [
+      "a38",
+      "d35",
+      "a108",
+      "d20",
+      "a82",
+      "d51",
+      "d2",
+      "a15",
+      "d3",
+      "d46"
+    ]
+  },
+  {
+    "q": "jobs killed for eating too much RAM",
+    "ranked": [
+      "d35",
+      "a32",
+      "d31",
+      "d2",
+      "d54"
+    ]
+  },
+  {
+    "q": "which weekdays can we launch",
+    "ranked": [
+      "a76",
+      "a111",
+      "a17",
+      "a94",
+      "a120",
+      "d10",
+      "d19",
+      "d11",
+      "d24",
+      "d20"
+    ]
+  },
+  {
+    "q": "what to do during an outage",
+    "ranked": [
+      "a70",
+      "a118",
+      "d50",
+      "d51",
+      "d47",
+      "d43",
+      "d48",
+      "d24",
+      "d25",
+      "d13"
+    ]
+  },
+  {
+    "q": "who is responsible after hours",
+    "ranked": [
+      "d8",
+      "a63",
+      "d25",
+      "a102",
+      "a11",
+      "a5",
+      "a66",
+      "d28",
+      "d4",
+      "a39"
+    ]
+  },
+  {
+    "q": "how do I get the project going on my own computer",
+    "ranked": [
+      "a59",
+      "d10",
+      "d52",
+      "a107",
+      "d24",
+      "d20",
+      "d62",
+      "a46",
+      "a70",
+      "a88"
+    ]
+  },
+  {
+    "q": "evolving storage layout with zero outage",
+    "ranked": [
+      "d27",
+      "a70",
+      "a109",
+      "a87",
+      "d16",
+      "a86"
+    ]
+  },
+  {
+    "q": "where do we store confidential config like passwords",
+    "ranked": [
+      "a54",
+      "a9",
+      "d14",
+      "d58",
+      "a95",
+      "a40",
+      "d8",
+      "a36",
+      "a5",
+      "a74"
+    ]
+  },
+  {
+    "q": "what if everything gets wiped",
+    "ranked": [
+      "d48",
+      "d50",
+      "d24",
+      "a46",
+      "a70",
+      "a88",
+      "d43",
+      "a7",
+      "a78",
+      "d13"
+    ]
+  },
+  {
+    "q": "etiquette for critiquing colleagues' work",
+    "ranked": [
+      "d42",
+      "d25",
+      "d54",
+      "d24"
+    ]
+  },
+  {
+    "q": "how should behaviour signals be labelled",
+    "ranked": [
+      "a13",
+      "d13",
+      "d55",
+      "d7",
+      "d24",
+      "d20",
+      "d1",
+      "d54"
+    ]
+  },
+  {
+    "q": "what should a newcomer do initially",
+    "ranked": [
+      "a13",
+      "d50",
+      "d55",
+      "d51",
+      "d47",
+      "d7",
+      "d43",
+      "d48",
+      "d13",
+      "d24"
+    ]
+  },
+  {
+    "q": "how long is information held before it is removed",
+    "ranked": [
+      "a75",
+      "a57",
+      "a32",
+      "d14",
+      "a90",
+      "a8",
+      "a56",
+      "a91",
+      "a78",
+      "d20"
+    ]
+  },
+  {
+    "q": "how do we avoid charging twice",
+    "ranked": [
+      "d50",
+      "d35",
+      "d51",
+      "d47",
+      "a1",
+      "d54",
+      "d20",
+      "d1",
+      "d25",
+      "d24"
+    ]
+  },
+  {
+    "q": "how do we notify outside systems in real time",
+    "ranked": [
+      "d51",
+      "d19",
+      "d54",
+      "a63",
+      "d59",
+      "d49",
+      "a74",
+      "d20",
+      "a13",
+      "d47"
+    ]
+  },
+  {
+    "q": "oldest handsets we care about",
+    "ranked": [
+      "a91",
+      "d24"
+    ]
+  },
+  {
+    "q": "how do we evaluate job applicants",
+    "ranked": [
+      "d54",
+      "d35",
+      "d31",
+      "d38",
+      "d51",
+      "d47",
+      "d1",
+      "d20",
+      "d25",
+      "d24"
+    ]
+  },
+  {
+    "q": "rules for how we word git history",
+    "ranked": [
+      "d53",
+      "d30",
+      "d28",
+      "d38",
+      "d52",
+      "d25",
+      "d14",
+      "d2",
+      "d20",
+      "d36"
+    ]
+  },
+  {
+    "q": "speed goals for the purchase flow",
+    "ranked": [
+      "d13",
+      "d6"
+    ]
+  },
+  {
+    "q": "stop a lone caller flooding us",
+    "ranked": [
+      "a40",
+      "a5",
+      "a62",
+      "a14",
+      "a26",
+      "d7",
+      "a1",
+      "d41",
+      "d43",
+      "d58"
+    ]
+  },
+  {
+    "q": "source of truth for visual styling",
+    "ranked": [
+      "a27",
+      "a78",
+      "d43",
+      "d52",
+      "d35",
+      "a26",
+      "d11",
+      "d34"
+    ]
+  },
+  {
+    "q": "how many people touch the product daily",
+    "ranked": [
+      "d21",
+      "a61",
+      "d42",
+      "d2",
+      "a79",
+      "a70",
+      "a80",
+      "a99",
+      "d41",
+      "d10"
+    ]
+  },
+  {
+    "q": "big picture of how everything fits together",
+    "ranked": [
+      "a19",
+      "a106",
+      "d20",
+      "d25",
+      "d1",
+      "d54",
+      "d24"
+    ]
+  },
+  {
+    "q": "what do engineers get paid for standby duty",
+    "ranked": [
+      "d47",
+      "a88",
+      "d51",
+      "d48",
+      "d41",
+      "d50",
+      "d25",
+      "a107",
+      "d60",
+      "a46"
+    ]
+  },
+  {
+    "q": "certificate expiration alert",
+    "ranked": [
+      "d32",
+      "a69",
+      "a70",
+      "a72",
+      "a21",
+      "a73",
+      "d26",
+      "d28",
+      "d4",
+      "a71"
+    ]
+  },
+  {
+    "q": "bundle weight budget",
+    "ranked": [
+      "d11",
+      "a90",
+      "d24"
+    ]
+  },
+  {
+    "q": "outage runbook",
+    "ranked": [
+      "a100",
+      "a70",
+      "d41",
+      "d25"
+    ]
+  },
+  {
+    "q": "feature toggles cleanup",
+    "ranked": [
+      "d14",
+      "a33",
+      "d44",
+      "d25",
+      "d24"
+    ]
+  },
+  {
+    "q": "throttling policy",
+    "ranked": [
+      "d2"
+    ]
+  },
+  {
+    "q": "flaky end-to-end payment test",
+    "ranked": [
+      "d49",
+      "a91",
+      "d6",
+      "d29",
+      "a4",
+      "d34",
+      "a6",
+      "a108",
+      "d44",
+      "a83"
+    ]
+  },
+  {
+    "q": "mobile shipping train",
+    "ranked": [
+      "d18",
+      "d41"
+    ]
+  },
+  {
+    "q": "warehouse naming conventions",
+    "ranked": [
+      "d34",
+      "a100",
+      "d36",
+      "d3",
+      "d55",
+      "d14",
+      "d43",
+      "d54",
+      "d30",
+      "d44"
+    ]
+  },
+  {
+    "q": "deletion requests warehouse",
+    "ranked": [
+      "d36"
+    ]
+  },
+  {
+    "q": "night mode contrast",
+    "ranked": [
+      "d26",
+      "a94",
+      "d12",
+      "a27",
+      "a25",
+      "a73",
+      "d13",
+      "d29",
+      "a71",
+      "a72"
+    ]
+  },
+  {
+    "q": "Postgres switchover drill",
+    "ranked": [
+      "d29",
+      "d59",
+      "d49",
+      "d53",
+      "d54"
+    ]
+  },
+  {
+    "q": "cursor paging",
+    "ranked": [
+      "d3"
+    ]
+  },
+  {
+    "q": "pager exhaustion",
+    "ranked": []
+  },
+  {
+    "q": "secret rotation schedule",
+    "ranked": [
+      "d28",
+      "d26",
+      "d38",
+      "d1",
+      "d7",
+      "d44",
+      "d27",
+      "d24"
+    ]
+  },
+  {
+    "q": "search relevancy tuning",
+    "ranked": [
+      "d10"
+    ]
+  },
+  {
+    "q": "fingerprint login",
+    "ranked": [
+      "a55",
+      "a56",
+      "d19",
+      "d49",
+      "d1",
+      "d25"
+    ]
+  },
+  {
+    "q": "refresh token grace window",
+    "ranked": [
+      "d1",
+      "d46"
+    ]
+  },
+  {
+    "q": "bundle budget",
+    "ranked": [
+      "d11"
+    ]
+  },
+  {
+    "q": "phased rollout crash-free rate",
+    "ranked": [
+      "d18"
+    ]
+  },
+  {
+    "q": "cursor pagination",
+    "ranked": [
+      "d3",
+      "d46"
+    ]
+  },
+  {
+    "q": "webhook retries backoff",
+    "ranked": [
+      "d7"
+    ]
+  },
+  {
+    "q": "restore drill",
+    "ranked": [
+      "d29"
+    ]
+  },
+  {
+    "q": "December freeze",
+    "ranked": [
+      "a119",
+      "a118",
+      "d24"
+    ]
+  },
+  {
+    "q": "canary baseline",
+    "ranked": [
+      "a61",
+      "a60"
+    ]
+  },
+  {
+    "q": "outbox",
+    "ranked": [
+      "d20",
+      "d44",
+      "a44"
+    ]
+  },
+  {
+    "q": "quiet hours marketing pushes",
+    "ranked": [
+      "d19"
+    ]
+  },
+  {
+    "q": "expand contract migration",
+    "ranked": [
+      "d54",
+      "d24"
+    ]
+  },
+  {
+    "q": "composite index merchant_id",
+    "ranked": [
+      "a15"
+    ]
+  },
+  {
+    "q": "suppression list",
+    "ranked": [
+      "a82",
+      "d36"
+    ]
+  },
+  {
+    "q": "connection max lifetime",
+    "ranked": [
+      "a58"
+    ]
+  },
+  {
+    "q": "consent banner",
+    "ranked": [
+      "a39"
+    ]
+  },
+  {
+    "q": "statement caching pooler",
+    "ranked": [
+      "a95",
+      "a94"
+    ]
+  },
+  {
+    "q": "Vault agent sidecar",
+    "ranked": [
+      "d28",
+      "a63"
+    ]
+  },
+  {
+    "q": "exec dashboard",
+    "ranked": [
+      "d40",
+      "a79"
+    ]
+  },
+  {
+    "q": "onboarding buddy",
+    "ranked": [
+      "d41"
+    ]
+  },
+  {
+    "q": "retrospective",
+    "ranked": [
+      "d45"
+    ]
+  },
+  {
+    "q": "clock skew",
+    "ranked": [
+      "a22",
+      "a21"
+    ]
+  },
+  {
+    "q": "ERR_TOKEN_EXPIRED",
+    "ranked": [
+      "a21",
+      "d4",
+      "d1"
+    ]
+  },
+  {
+    "q": "D41",
+    "ranked": [
+      "a2",
+      "d46",
+      "d1"
+    ]
+  },
+  {
+    "q": "#607",
+    "ranked": [
+      "a3"
+    ]
+  },
+  {
+    "q": "payments.rs",
+    "ranked": [
+      "d6",
+      "a4"
+    ]
+  },
+  {
+    "q": "ERR_VALIDATION",
+    "ranked": [
+      "d4",
+      "a102"
+    ]
+  },
+  {
+    "q": "X-Signature",
+    "ranked": [
+      "d7"
+    ]
+  },
+  {
+    "q": "Api-Version",
+    "ranked": [
+      "d5",
+      "a19",
+      "d46"
+    ]
+  },
+  {
+    "q": "D33",
+    "ranked": [
+      "a46",
+      "d46"
+    ]
+  },
+  {
+    "q": "prod-eu-1",
+    "ranked": [
+      "d27"
+    ]
+  },
+  {
+    "q": "tracking/plan.yaml",
+    "ranked": [
+      "a84",
+      "d39"
+    ]
+  },
+  {
+    "q": "mart_active_users",
+    "ranked": [
+      "a80"
+    ]
+  },
+  {
+    "q": "release.sh",
+    "ranked": [
+      "a62",
+      "d24",
+      "a120"
+    ]
+  },
+  {
+    "q": "4f1c",
+    "ranked": [
+      "a41"
+    ]
+  },
+  {
+    "q": "harbor-errors",
+    "ranked": [
+      "a103"
+    ]
+  },
+  {
+    "q": "D44",
+    "ranked": [
+      "a113",
+      "d46"
+    ]
+  },
+  {
+    "q": "orders/db.go",
+    "ranked": [
+      "a59"
+    ]
+  },
+  {
+    "q": "ERR_TOKEN_REUSED",
+    "ranked": [
+      "d1"
+    ]
+  },
+  {
+    "q": "20260702",
+    "ranked": [
+      "a16"
+    ]
+  },
+  {
+    "q": "SDK 3.0 release",
+    "ranked": [
+      "d9",
+      "a19",
+      "d18",
+      "d24",
+      "a119",
+      "a62",
+      "d22",
+      "a43",
+      "d54",
+      "a50"
+    ]
+  },
+  {
+    "q": "Android 8 minSdk 28",
+    "ranked": [
+      "a51",
+      "d22",
+      "a49",
+      "a50",
+      "d7",
+      "a52",
+      "a53",
+      "a77",
+      "d23",
+      "d59"
+    ]
+  },
+  {
+    "q": "autocomplete focus LCP",
+    "ranked": [
+      "d16",
+      "a29",
+      "a30",
+      "a28",
+      "a35",
+      "d13"
+    ]
+  },
+  {
+    "q": "failover 41 seconds max lifetime",
+    "ranked": [
+      "a58",
+      "a57",
+      "a22",
+      "d1",
+      "a2",
+      "a1",
+      "d52",
+      "d56",
+      "d57",
+      "d10"
+    ]
+  },
+  {
+    "q": "partner tier contract sign-off",
+    "ranked": [
+      "a8"
+    ]
+  },
+  {
+    "q": "disk alert night pages 95%",
+    "ranked": [
+      "a72"
+    ]
+  },
+  {
+    "q": "suppression list start of DAG models built",
+    "ranked": [
+      "a82",
+      "a83",
+      "d35",
+      "d34",
+      "d36",
+      "d58",
+      "a77",
+      "a75",
+      "d38",
+      "a108"
+    ]
+  },
+  {
+    "q": "grace window auth.refresh.grace_hits",
+    "ranked": [
+      "a3"
+    ]
+  },
+  {
+    "q": "Sunset header 14 integrators",
+    "ranked": [
+      "a11",
+      "d5",
+      "a10",
+      "a12",
+      "d2",
+      "d63",
+      "d32",
+      "d59",
+      "a65",
+      "d49"
+    ]
+  },
+  {
+    "q": "biometric enrolment refresh token",
+    "ranked": [
+      "a54",
+      "d1",
+      "a56",
+      "d46",
+      "a1",
+      "a2",
+      "a21",
+      "a55",
+      "a3",
+      "d12"
+    ]
+  },
+  {
+    "q": "ProfileRepository 5.2.1 migration",
+    "ranked": [
+      "a42",
+      "d54",
+      "a41",
+      "a16",
+      "a12",
+      "a20",
+      "a43",
+      "d24"
+    ]
+  },
+  {
+    "q": "zeppelin hangar maintenance",
+    "ranked": [
+      "d54"
+    ]
+  },
+  {
+    "q": "sourdough starter feeding",
+    "ranked": [
+      "a89"
+    ]
+  },
+  {
+    "q": "knitting pattern for socks",
+    "ranked": [
+      "d55"
+    ]
+  },
+  {
+    "q": "tax return deadline",
+    "ranked": [
+      "a102",
+      "a109",
+      "a101",
+      "a2",
+      "d5",
+      "d6",
+      "d20",
+      "d1",
+      "d25"
+    ]
+  },
+  {
+    "q": "wedding seating plan",
+    "ranked": [
+      "d39",
+      "a84",
+      "d30",
+      "d45"
+    ]
+  },
+  {
+    "q": "guitar string gauge",
+    "ranked": [
+      "d17",
+      "a102",
+      "a13"
+    ]
+  },
+  {
+    "q": "chess opening repertoire",
+    "ranked": [
+      "a79",
+      "d48",
+      "d23",
+      "d37",
+      "d56",
+      "d14",
+      "d26",
+      "d25"
+    ]
+  },
+  {
+    "q": "hamster cage cleaning",
+    "ranked": [
+      "d34"
+    ]
+  },
+  {
+    "q": "volcano eruption forecast",
+    "ranked": []
+  },
+  {
+    "q": "marathon training schedule",
+    "ranked": [
+      "d44",
+      "d24",
+      "d38",
+      "a70",
+      "a62",
+      "d18",
+      "a120",
+      "d27",
+      "d49",
+      "d26"
+    ]
+  },
+  {
+    "q": "wine pairing for fish",
+    "ranked": [
+      "d51",
+      "a2",
+      "d1"
+    ]
+  },
+  {
+    "q": "parking permit renewal",
+    "ranked": [
+      "d32",
+      "a69",
+      "a63"
+    ]
+  },
+  {
+    "q": "mortgage interest rate",
+    "ranked": [
+      "d2",
+      "a52",
+      "d18",
+      "d24"
+    ]
+  },
+  {
+    "q": "uitgelogd na token vernieuwen",
+    "ranked": [
+      "d61",
+      "d1",
+      "d12",
+      "a1",
+      "d19",
+      "a54",
+      "a26",
+      "a63",
+      "a2",
+      "a21"
+    ]
+  },
+  {
+    "q": "wanneer releasen we",
+    "ranked": []
+  },
+  {
+    "q": "dubbele terugbetalingen",
+    "ranked": []
+  },
+  {
+    "q": "storing afhandelen",
+    "ranked": [
+      "a40",
+      "d8",
+      "a5",
+      "a54",
+      "a74",
+      "d18",
+      "d20"
+    ]
+  },
+  {
+    "q": "wachtwoord reset mail in spam",
+    "ranked": [
+      "d58",
+      "a106",
+      "a108",
+      "a107"
+    ]
+  },
+  {
+    "q": "donkere modus contrast",
+    "ranked": [
+      "a27",
+      "a25",
+      "d13"
+    ]
+  },
+  {
+    "q": "persoonsgegevens in logs",
+    "ranked": [
+      "d55",
+      "d38",
+      "a71",
+      "d46",
+      "d56",
+      "a1",
+      "d1",
+      "d24"
+    ]
+  },
+  {
+    "q": "ordernummer verplicht klantenservice",
+    "ranked": [
+      "d60",
+      "a98",
+      "a97"
+    ]
+  },
+  {
+    "q": "vergoeding bureaustoel thuiswerken",
+    "ranked": [
+      "d61"
+    ]
+  },
+  {
+    "q": "support tickets missing order number",
+    "ranked": [
+      "d17",
+      "a15",
+      "a59",
+      "a95",
+      "a115",
+      "a97",
+      "a76",
+      "d60",
+      "a72",
+      "a37"
+    ]
+  },
+  {
+    "q": "home office chair allowance",
+    "ranked": [
+      "a69",
+      "d23",
+      "a101",
+      "d26"
+    ]
+  },
+  {
+    "q": "nieuwe collega inwerken",
+    "ranked": []
+  },
+  {
+    "q": "refesh token grace windw",
+    "ranked": [
+      "a3",
+      "d1",
+      "d46",
+      "d12",
+      "d43",
+      "a1",
+      "d19",
+      "a54",
+      "a26",
+      "a63"
+    ]
+  },
+  {
+    "q": "idempotncy key refunds",
+    "ranked": [
+      "a4",
+      "a6",
+      "d6",
+      "a5",
+      "d49",
+      "a37",
+      "a9",
+      "a7",
+      "d8",
+      "d17"
+    ]
+  },
+  {
+    "q": "pagniation cursor",
+    "ranked": [
+      "d3",
+      "d46"
+    ]
+  },
+  {
+    "q": "kubernets memory limits",
+    "ranked": [
+      "d27",
+      "d46"
+    ]
+  },
+  {
+    "q": "incidnet severity levels",
+    "ranked": [
+      "d25",
+      "d55",
+      "d54"
+    ]
+  },
+  {
+    "q": "offline sycn conflicts",
+    "ranked": [
+      "d20",
+      "d46",
+      "d8",
+      "d4"
+    ]
+  },
+  {
+    "q": "webhok signature",
+    "ranked": [
+      "a13",
+      "d7",
+      "d1"
+    ]
+  },
+  {
+    "q": "accesibility checklist",
+    "ranked": [
+      "d13",
+      "d41"
+    ]
+  },
+  {
+    "q": "certifcate renewal",
+    "ranked": [
+      "d32",
+      "a69",
+      "a63"
+    ]
+  },
+  {
+    "q": "postmortum template",
+    "ranked": [
+      "d50",
+      "a33",
+      "a106",
+      "a107",
+      "d25"
+    ]
+  },
+  {
+    "q": "restor drill",
+    "ranked": [
+      "d29"
+    ]
+  },
+  {
+    "q": "rate limmit partners",
+    "ranked": [
+      "d2",
+      "a9",
+      "a52",
+      "d59",
+      "a8",
+      "a7",
+      "d18",
+      "d24"
+    ]
+  },
+  {
+    "q": "transalte german settings",
+    "ranked": [
+      "a38",
+      "d17",
+      "a37",
+      "d12",
+      "a114",
+      "a58",
+      "a59",
+      "d27",
+      "d14",
+      "d20"
+    ]
+  },
+  {
+    "q": "what did we decide about refresh token reuse when two mobile requests race each other",
+    "ranked": [
+      "a1",
+      "d1",
+      "d46",
+      "a2",
+      "d45",
+      "a21",
+      "d48",
+      "a3",
+      "d43",
+      "d27"
+    ]
+  },
+  {
+    "q": "how should I add a column to a big postgres table without locking it during a deploy",
+    "ranked": [
+      "d54",
+      "a118",
+      "d34",
+      "d29",
+      "d63",
+      "a13",
+      "a34",
+      "d40",
+      "d24",
+      "d55"
+    ]
+  },
+  {
+    "q": "is there a rule about which alerts are allowed to page someone at night",
+    "ranked": [
+      "d26",
+      "a73",
+      "a72",
+      "a69",
+      "a71",
+      "d10",
+      "a101",
+      "a85",
+      "a70",
+      "a91"
+    ]
+  },
+  {
+    "q": "what is the process if a secret like an api key accidentally leaks",
+    "ranked": [
+      "d28",
+      "d48",
+      "d24",
+      "a119",
+      "a18",
+      "d36",
+      "d50",
+      "d5",
+      "d2",
+      "a19"
+    ]
+  },
+  {
+    "q": "why did the nightly warehouse load stop finishing before the morning dashboards",
+    "ranked": [
+      "d35",
+      "a91",
+      "a79",
+      "d36",
+      "d40",
+      "a40",
+      "d43",
+      "d33",
+      "a77",
+      "a81"
+    ]
+  },
+  {
+    "q": "how long is a webhook retried before the endpoint gets disabled",
+    "ranked": [
+      "d7",
+      "d8",
+      "a78",
+      "a75",
+      "d5",
+      "d35",
+      "a14",
+      "a95",
+      "a109",
+      "d2"
+    ]
+  },
+  {
+    "q": "what are the conflict resolution rules when a user edits the same record offline on two devices",
+    "ranked": [
+      "d20",
+      "d50",
+      "a1",
+      "d8",
+      "d4",
+      "d48",
+      "d1",
+      "a95",
+      "a29",
+      "a46"
+    ]
+  },
+  {
+    "q": "which languages does the web app support and what happens when a translation is missing",
+    "ranked": [
+      "d17",
+      "a21",
+      "d50",
+      "d24",
+      "d11",
+      "d22",
+      "d23",
+      "d63",
+      "a38",
+      "a95"
+    ]
+  },
+  {
+    "q": "can biometrics be used instead of the password on the server side",
+    "ranked": [
+      "a54",
+      "a33",
+      "d20",
+      "d58",
+      "d1",
+      "a55",
+      "d46",
+      "a92",
+      "d8",
+      "a36"
+    ]
+  },
+  {
+    "q": "what should the canary compare against so thursday releases stop failing",
+    "ranked": [
+      "d24",
+      "a60",
+      "a13",
+      "d7",
+      "d54",
+      "d41",
+      "a40",
+      "d13",
+      "d35",
+      "d50"
+    ]
+  },
+  {
+    "q": "how do we handle a gdpr request to erase a customer from analytics",
+    "ranked": [
+      "d36",
+      "d27",
+      "d55",
+      "a39",
+      "a115",
+      "d25",
+      "d39",
+      "d12",
+      "a7",
+      "d51"
+    ]
+  },
+  {
+    "q": "what went wrong when the notifier lost its database credentials",
+    "ranked": [
+      "a63",
+      "a21",
+      "d50",
+      "d59",
+      "d28",
+      "a29",
+      "d55",
+      "d24",
+      "a34",
+      "d54"
+    ]
+  },
+  {
+    "q": "are we allowed to deploy during the christmas holidays",
+    "ranked": [
+      "a118",
+      "a69",
+      "a101",
+      "d26",
+      "d24",
+      "d44",
+      "d25",
+      "d54"
+    ]
+  },
+  {
+    "q": "asdfghjkl qwertyuiop",
+    "ranked": []
+  },
+  {
+    "q": "zxcvbnmasdf",
+    "ranked": []
+  },
+  {
+    "q": "qwpeoriu zmxncbv lkjhg",
+    "ranked": []
+  },
+  {
+    "q": "xyzzy plugh",
+    "ranked": []
+  },
+  {
+    "q": "kubernetesoperatorreconciler",
+    "ranked": []
+  },
+  {
+    "q": "microservicemeshsidecarinjector",
+    "ranked": []
+  },
+  {
+    "q": "onweersbui vanavond",
+    "ranked": []
+  },
+  {
+    "q": "fietsenstalling gemeente",
+    "ranked": []
+  },
+  {
+    "q": "boodschappenlijstje supermarkt",
+    "ranked": []
+  },
+  {
+    "q": "verjaardagscadeau voor oma",
+    "ranked": [
+      "d61"
+    ]
+  },
+  {
+    "q": "данных",
+    "ranked": []
+  },
+  {
+    "q": "погода на завтра",
+    "ranked": []
+  },
+  {
+    "q": "今天天气怎么样？",
+    "ranked": []
+  },
+  {
+    "q": "寿司の作り方。",
+    "ranked": []
+  },
+  {
+    "q": "「週末」の予定！",
+    "ranked": []
+  },
+  {
+    "q": "!!! ??? ...",
+    "ranked": []
+  },
+  {
+    "q": "ñandú ëxtrême çàfé",
+    "ranked": []
+  },
+  {
+    "q": "paginationcursor",
+    "ranked": []
+  },
+  {
+    "q": "webhooksignature",
+    "ranked": []
+  },
+  {
+    "q": "klantenservice ordernummer ontbreekt",
+    "ranked": [
+      "d60",
+      "a97",
+      "a98"
+    ]
+  }
+]
