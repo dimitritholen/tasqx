@@ -167,7 +167,12 @@ fn memory_remove_scrubs_the_doc_from_the_fts_index_so_a_reused_rowid_cannot_inhe
     )
     .unwrap();
 
-    let found = call(&e, "memory.search", json!({ "query": "secretword" })).unwrap();
+    let found = call(
+        &e,
+        "memory.search",
+        json!({ "query": "secretword", "mode": "lexical" }),
+    )
+    .unwrap();
     assert_eq!(
         found["count"], 0,
         "a hit here would be the innocent doc inheriting the removed text through a reused \
@@ -216,7 +221,12 @@ fn undo_of_an_annotation_removes_its_body_from_the_fts_index() {
     )
     .unwrap();
 
-    let old = call(&e, "memory.search", json!({ "query": "mistakenword" })).unwrap();
+    let old = call(
+        &e,
+        "memory.search",
+        json!({ "query": "mistakenword", "mode": "lexical" }),
+    )
+    .unwrap();
     assert_eq!(
         old["count"], 0,
         "the corrected note must not answer for the undone one: {old}"
@@ -868,7 +878,7 @@ fn search_echoes_the_expression_that_produced_the_result() {
     .expect("doc");
 
     let hit = e
-        .memory_search(&json!({ "query": "named pipe" }))
+        .memory_search(&json!({ "query": "named pipe", "mode": "lexical" }))
         .expect("search");
     assert_eq!(hit["count"], json!(1));
     assert_eq!(hit["matched"], json!("\"named\" \"pipe\""));
@@ -878,7 +888,9 @@ fn search_echoes_the_expression_that_produced_the_result() {
     // was the zero the echo explained; now no entry holds every word, so the
     // any-word fallback answers it, and the echo is the OR it ran.
     let relaxed = e
-        .memory_search(&json!({ "query": "why did we choose a named pipe instead of TCP" }))
+        .memory_search(
+            &json!({ "query": "why did we choose a named pipe instead of TCP", "mode": "lexical" }),
+        )
         .expect("search");
     assert_eq!(relaxed["count"], json!(1));
     assert_eq!(relaxed["relaxed"], json!(true));
@@ -890,7 +902,7 @@ fn search_echoes_the_expression_that_produced_the_result() {
 
     // A single word has nothing to relax, so its miss is still the AND echo.
     let miss = e
-        .memory_search(&json!({ "query": "zeppelin" }))
+        .memory_search(&json!({ "query": "zeppelin", "mode": "lexical" }))
         .expect("search");
     assert_eq!(miss["count"], json!(0));
     assert_eq!(miss["matched"], json!("\"zeppelin\""));
@@ -938,7 +950,12 @@ fn a_plain_query_with_no_all_words_hit_falls_back_to_any_word() {
     )
     .unwrap();
 
-    let out = call(&e, "memory.search", json!({ "query": "SDK 3.0 release" })).unwrap();
+    let out = call(
+        &e,
+        "memory.search",
+        json!({ "query": "SDK 3.0 release", "mode": "lexical" }),
+    )
+    .unwrap();
     assert_eq!(out["count"], 2, "{out}");
     assert_eq!(out["total"], 2, "{out}");
     assert_eq!(hit_titles(&out), ["Version bump", "sdk notes"]);
@@ -959,7 +976,12 @@ fn an_all_words_hit_never_falls_back() {
     ] {
         call(&e, "memory.add", json!({ "title": title, "body": body })).unwrap();
     }
-    let out = call(&e, "memory.search", json!({ "query": "SDK release" })).unwrap();
+    let out = call(
+        &e,
+        "memory.search",
+        json!({ "query": "SDK release", "mode": "lexical" }),
+    )
+    .unwrap();
     assert_eq!(hit_titles(&out), ["both"], "{out}");
     assert_eq!(out["relaxed"], false);
     assert_eq!(out["matched"], "\"SDK\" \"release\"");
@@ -996,7 +1018,12 @@ fn a_single_word_miss_does_not_fall_back() {
         json!({ "title": "sdk notes", "body": "The SDK release is cut from the tag." }),
     )
     .unwrap();
-    let out = call(&e, "memory.search", json!({ "query": "canary" })).unwrap();
+    let out = call(
+        &e,
+        "memory.search",
+        json!({ "query": "canary", "mode": "lexical" }),
+    )
+    .unwrap();
     assert_eq!(out["count"], 0);
     assert_eq!(out["relaxed"], false);
     assert_eq!(out["matched"], "\"canary\"");
@@ -1014,7 +1041,12 @@ fn a_miss_on_every_word_reports_the_any_word_expression() {
         json!({ "title": "sdk notes", "body": "The SDK release is cut from the tag." }),
     )
     .unwrap();
-    let out = call(&e, "memory.search", json!({ "query": "zeppelin canary" })).unwrap();
+    let out = call(
+        &e,
+        "memory.search",
+        json!({ "query": "zeppelin canary", "mode": "lexical" }),
+    )
+    .unwrap();
     assert_eq!(out["count"], 0);
     assert_eq!(out["total"], 0);
     assert_eq!(out["relaxed"], true, "{out}");
@@ -1037,7 +1069,7 @@ fn the_fallback_drops_filler_words_so_a_miss_stays_a_miss() {
     let out = call(
         &e,
         "memory.search",
-        json!({ "query": "the zeppelin hangar" }),
+        json!({ "query": "the zeppelin hangar", "mode": "lexical" }),
     )
     .unwrap();
     assert_eq!(out["count"], 0, "filler words became noise: {out}");
@@ -1046,7 +1078,12 @@ fn the_fallback_drops_filler_words_so_a_miss_stays_a_miss() {
 
     // One content word left is still a different search from the AND that
     // also required "the", so it runs, and `matched` is exactly that.
-    let out = call(&e, "memory.search", json!({ "query": "the zeppelin" })).unwrap();
+    let out = call(
+        &e,
+        "memory.search",
+        json!({ "query": "the zeppelin", "mode": "lexical" }),
+    )
+    .unwrap();
     assert_eq!(out["count"], 0, "{out}");
     assert_eq!(out["relaxed"], true, "{out}");
     assert_eq!(out["matched"], "\"zeppelin\"");
@@ -1067,7 +1104,12 @@ fn no_fallback_when_the_any_word_terms_are_the_and_terms_or_none() {
         ("release Release", "\"release\" \"Release\""),
         ("of the with", "\"of\" \"the\" \"with\""),
     ] {
-        let out = call(&e, "memory.search", json!({ "query": query })).unwrap();
+        let out = call(
+            &e,
+            "memory.search",
+            json!({ "query": query, "mode": "lexical" }),
+        )
+        .unwrap();
         assert_eq!(out["relaxed"], false, "{query}: {out}");
         assert_eq!(out["matched"], matched, "{query}");
         assert_eq!(out["count"], 0, "{query}: {out}");
@@ -1084,7 +1126,12 @@ fn the_fallback_dedupes_words_case_insensitively() {
         json!({ "title": "sdk notes", "body": "the SDK release is cut from the tag" }),
     )
     .unwrap();
-    let out = call(&e, "memory.search", json!({ "query": "SDK sdk canary" })).unwrap();
+    let out = call(
+        &e,
+        "memory.search",
+        json!({ "query": "SDK sdk canary", "mode": "lexical" }),
+    )
+    .unwrap();
     assert_eq!(out["relaxed"], true, "{out}");
     assert_eq!(out["matched"], "\"SDK\" OR \"canary\"");
     assert_eq!(hit_titles(&out), ["sdk notes"]);
@@ -1119,7 +1166,7 @@ fn the_fallback_keeps_the_scope_it_was_asked_for() {
     let out = call(
         &e,
         "memory.search",
-        json!({ "query": "SDK 3.0", "project": "alpha" }),
+        json!({ "query": "SDK 3.0", "project": "alpha", "mode": "lexical" }),
     )
     .unwrap();
     assert_eq!(out["relaxed"], true, "{out}");
@@ -1128,7 +1175,7 @@ fn the_fallback_keeps_the_scope_it_was_asked_for() {
     let out = call(
         &e,
         "memory.search",
-        json!({ "query": "SDK 3.0", "scope": "docs" }),
+        json!({ "query": "SDK 3.0", "scope": "docs", "mode": "lexical" }),
     )
     .unwrap();
     assert_eq!(out["relaxed"], true, "{out}");
@@ -2821,4 +2868,397 @@ fn an_annotation_hit_reports_stale_null() {
         .find(|h| h["kind"] == "annotation")
         .expect("an annotation hit");
     assert_eq!(hit["stale"], Value::Null, "{hit}");
+}
+
+// ---- D196: hybrid search ---------------------------------------------------
+
+/// A store whose entries share no word with the queries below, so a hit on
+/// them can only have come from meaning.
+fn meaning_store() -> Engine {
+    let e = engine();
+    for (title, body) in [
+        ("incident log", "login errors after the SSO change"),
+        (
+            "kitchen",
+            "coffee machine on the third floor is broken again",
+        ),
+        ("finance", "the quarterly budget review moved to thursday"),
+        ("rulings", "D41 rules out embeddings for memory search"),
+    ] {
+        e.memory_add(&json!({ "title": title, "body": body }))
+            .expect("doc");
+    }
+    e
+}
+
+fn search(e: &Engine, params: Value) -> Value {
+    call(e, "memory.search", params).expect("memory.search")
+}
+
+fn hits(v: &Value) -> &Vec<Value> {
+    v["hits"].as_array().expect("hits")
+}
+
+/// The case D196 exists for: the note says "login errors", the agent asks
+/// about "authentication problems", and bm25 has no word to hold on to.
+#[test]
+fn hybrid_finds_a_paraphrase_that_lexical_misses() {
+    let e = meaning_store();
+    let lexical = search(
+        &e,
+        json!({ "query": "authentication problems", "mode": "lexical" }),
+    );
+    assert_eq!(lexical["count"], json!(0), "{lexical}");
+    assert_eq!(lexical["semantic"], Value::Null, "{lexical}");
+
+    let hybrid = search(&e, json!({ "query": "authentication problems" }));
+    let first = &hits(&hybrid)[0];
+    assert_eq!(first["title"], json!("incident log"), "{hybrid}");
+    assert_eq!(first["via"], json!("semantic"), "{first}");
+    let sim = first["similarity"].as_f64().expect("similarity");
+    assert!(sim >= 0.30, "{first}");
+    assert!(
+        first["snippet"]
+            .as_str()
+            .expect("snippet")
+            .contains("login"),
+        "a semantic hit's snippet is its best chunk: {first}"
+    );
+    assert!(
+        hits(&hybrid).iter().all(|h| h["via"] == json!("semantic")),
+        "no word matched, so every hit came from meaning: {hybrid}"
+    );
+    assert_eq!(
+        hybrid["semantic"]["min_similarity"],
+        json!(0.3),
+        "the floor that applied is echoed: {hybrid}"
+    );
+    assert!(hybrid["semantic"]["model"].is_string(), "{hybrid}");
+}
+
+/// An identifier has no content word, so it is looked up by its characters
+/// alone: the semantic side does not run and the exact hit ranks first.
+#[test]
+fn an_identifier_query_stays_lexical() {
+    let e = meaning_store();
+    let t = call(&e, "task.add", json!({ "title": "brief exclusions" })).expect("task");
+    call(
+        &e,
+        "annotation.add",
+        json!({ "ref": t["short_id"], "body": "the brief for #607 excludes the task's own notes" }),
+    )
+    .expect("annotate");
+    for query in ["D41", "#607"] {
+        let out = search(&e, json!({ "query": query }));
+        assert_eq!(out["semantic"], Value::Null, "{query}: {out}");
+        assert_eq!(out["count"], json!(1), "{query}: {out}");
+        let hit = &hits(&out)[0];
+        assert_eq!(hit["via"], json!("lexical"), "{hit}");
+        assert_eq!(
+            hit["similarity"],
+            Value::Null,
+            "no semantic side ran, so there is no similarity: {hit}"
+        );
+    }
+}
+
+/// A query about nothing in the store: meaning finds nothing above the
+/// floor, so D193's any-word OR runs (and here finds nothing either).
+#[test]
+fn an_unrelated_query_finds_nothing_by_meaning() {
+    let e = meaning_store();
+    let out = search(&e, json!({ "query": "zeppelin hangar maintenance" }));
+    assert!(out["semantic"].is_object(), "the semantic side ran: {out}");
+    assert!(
+        hits(&out).iter().all(|h| h["via"] == json!("lexical")),
+        "no semantic hit on an unrelated query: {out}"
+    );
+    assert_eq!(out["count"], json!(0), "{out}");
+    assert_eq!(
+        out["relaxed"],
+        json!(true),
+        "meaning found nothing, so the OR ran: {out}"
+    );
+}
+
+/// D196: in hybrid mode the any-word OR runs only when meaning found nothing
+/// at or above the floor. `mode: lexical` keeps D193 as it was.
+#[test]
+fn hybrid_relaxes_only_when_meaning_found_nothing() {
+    let e = meaning_store();
+    e.memory_add(&json!({ "title": "printer", "body": "paper jam problems in tray two" }))
+        .expect("doc");
+
+    let lexical = search(
+        &e,
+        json!({ "query": "authentication problems", "mode": "lexical" }),
+    );
+    assert_eq!(lexical["relaxed"], json!(true), "{lexical}");
+    assert_eq!(hit_titles(&lexical), vec!["printer".to_string()]);
+
+    let hybrid = search(&e, json!({ "query": "authentication problems" }));
+    assert_eq!(hybrid["relaxed"], json!(false), "{hybrid}");
+    assert_eq!(
+        hybrid["matched"],
+        json!("\"authentication\" \"problems\""),
+        "the all-words expression is the one that ran: {hybrid}"
+    );
+    assert!(
+        !hit_titles(&hybrid).contains(&"printer".to_string()),
+        "the OR did not run, so its one-word hit is not here: {hybrid}"
+    );
+}
+
+/// `total` is the union of both sides' matches, so `has_more` keeps #132's
+/// meaning at every limit, below and above the fusion depth of 50.
+#[test]
+fn total_and_has_more_count_the_union() {
+    let e = engine();
+    for i in 0..60 {
+        e.memory_add(&json!({
+            "title": format!("ledger note {i}"),
+            "body": format!("the ledger reconciliation for account {i}"),
+        }))
+        .expect("doc");
+    }
+    for (limit, count, more) in [(5, 5, true), (55, 55, true), (70, 60, false)] {
+        let out = search(&e, json!({ "query": "ledger", "limit": limit }));
+        assert_eq!(out["total"], json!(60), "limit {limit}: {out}");
+        assert_eq!(out["count"], json!(count), "limit {limit}");
+        assert_eq!(out["has_more"], json!(more), "limit {limit}");
+    }
+}
+
+/// D154's contract survives: `rank` is a number, lower is better, and the
+/// hits are in ascending `rank` order — the negated fused `score`.
+#[test]
+fn rank_ascending_is_the_result_order() {
+    let e = meaning_store();
+    e.memory_add(&json!({ "title": "sso", "body": "the SSO login flow and its errors" }))
+        .expect("doc");
+    let out = search(&e, json!({ "query": "login errors" }));
+    let hs = hits(&out);
+    assert!(hs.len() >= 2, "{out}");
+    let ranks: Vec<f64> = hs.iter().map(|h| h["rank"].as_f64().unwrap()).collect();
+    let mut sorted = ranks.clone();
+    sorted.sort_by(f64::total_cmp);
+    assert_eq!(ranks, sorted, "{out}");
+    for h in hs {
+        assert_eq!(
+            h["rank"].as_f64().unwrap(),
+            -h["score"].as_f64().unwrap(),
+            "{h}"
+        );
+    }
+    assert!(
+        hs.iter().any(|h| h["via"] == json!("both")),
+        "an entry both sides found says so: {out}"
+    );
+}
+
+#[test]
+fn raw_is_refused_beside_hybrid_or_semantic() {
+    let e = meaning_store();
+    for mode in ["hybrid", "semantic"] {
+        let err = call(
+            &e,
+            "memory.search",
+            json!({ "query": "login", "raw": true, "mode": mode }),
+        )
+        .expect_err("raw with a meaning mode");
+        assert_eq!(err.code, ErrorCode::BadRequest, "{mode}");
+        assert!(err.message.contains("lexical"), "{}", err.message);
+    }
+    // `raw` alone is lexical.
+    let out = search(&e, json!({ "query": "login", "raw": true }));
+    assert_eq!(out["semantic"], Value::Null, "{out}");
+    assert_eq!(out["count"], json!(1), "{out}");
+}
+
+/// `mode: semantic` is the meaning list alone: no lexical expression runs,
+/// so `matched` is null and nothing is relaxed; scope and project still hold.
+#[test]
+fn semantic_mode_is_the_meaning_list_alone() {
+    let e = meaning_store();
+    call(&e, "project.create", json!({ "name": "auth" })).expect("project");
+    e.memory_add(&json!({
+        "title": "scoped", "body": "login errors for users after the identity provider change",
+        "project": "auth",
+    }))
+    .expect("doc");
+    let out = search(&e, json!({ "query": "login errors", "mode": "semantic" }));
+    assert_eq!(out["matched"], Value::Null, "{out}");
+    assert_eq!(out["relaxed"], json!(false), "{out}");
+    assert!(out["semantic"].is_object(), "{out}");
+    assert!(!hits(&out).is_empty(), "{out}");
+    assert!(
+        hits(&out).iter().all(|h| h["via"] == json!("semantic")),
+        "{out}"
+    );
+    let scoped = search(
+        &e,
+        json!({ "query": "login errors", "mode": "semantic", "project": "auth" }),
+    );
+    assert_eq!(hit_titles(&scoped), vec!["scoped".to_string()], "{scoped}");
+    let annotations = search(
+        &e,
+        json!({ "query": "login errors", "mode": "semantic", "scope": "annotations" }),
+    );
+    assert_eq!(annotations["count"], json!(0), "{annotations}");
+}
+
+#[test]
+fn min_similarity_and_mode_are_validated() {
+    let e = meaning_store();
+    for bad in [json!(-1), json!(2), json!("x"), json!(1.5)] {
+        let err = call(
+            &e,
+            "memory.search",
+            json!({ "query": "login", "min_similarity": bad }),
+        )
+        .expect_err("out of range");
+        assert_eq!(err.code, ErrorCode::BadRequest, "{bad}");
+        assert!(err.message.contains("0 to 1"), "{}", err.message);
+    }
+    let err = call(
+        &e,
+        "memory.search",
+        json!({ "query": "login", "mode": "fuzzy" }),
+    )
+    .expect_err("unknown mode");
+    assert_eq!(err.code, ErrorCode::BadRequest);
+    assert!(
+        err.message.contains("hybrid, lexical, semantic"),
+        "{}",
+        err.message
+    );
+    // D33: a floor on a search that has no semantic side changes nothing.
+    let err = call(
+        &e,
+        "memory.search",
+        json!({ "query": "login", "mode": "lexical", "min_similarity": 0.5 }),
+    )
+    .expect_err("a floor with no semantic side");
+    assert_eq!(err.code, ErrorCode::BadRequest);
+
+    // The bounds themselves are accepted, and a floor of 1 admits nothing
+    // but an exact match.
+    search(&e, json!({ "query": "login", "min_similarity": 0 }));
+    let strict = search(
+        &e,
+        json!({ "query": "authentication problems", "min_similarity": 1 }),
+    );
+    assert!(
+        hits(&strict).iter().all(|h| h["via"] != json!("semantic")),
+        "{strict}"
+    );
+    assert_eq!(strict["semantic"]["min_similarity"], json!(1.0));
+}
+
+/// A lexical-only hit still says how close it is in meaning when it has a
+/// vector and the semantic side ran; a semantic-only hit carries every
+/// field a lexical one does.
+#[test]
+fn every_hit_says_why_it_is_there() {
+    let e = meaning_store();
+    call(&e, "project.create", json!({ "name": "ops" })).expect("project");
+    e.memory_add(&json!({
+        "title": "sign-on runbook",
+        "body": "login errors: what to do when users cannot sign in",
+        "project": "ops",
+        "standing": true,
+    }))
+    .expect("doc");
+    let out = search(&e, json!({ "query": "authentication problems" }));
+    for h in hits(&out) {
+        for key in [
+            "via",
+            "similarity",
+            "score",
+            "rank",
+            "standing",
+            "project",
+            "stale",
+        ] {
+            assert!(h.get(key).is_some(), "{key} missing on {h}");
+        }
+    }
+    let runbook = hits(&out)
+        .iter()
+        .find(|h| h["title"] == json!("sign-on runbook"))
+        .expect("the runbook, by meaning");
+    assert_eq!(runbook["via"], json!("semantic"), "{runbook}");
+    assert_eq!(runbook["standing"], json!(true));
+    assert_eq!(runbook["project"], json!("ops"));
+    assert_eq!(runbook["stale"], Value::Null);
+    assert_eq!(runbook["source"], Value::Null);
+
+    // A floor nothing reaches: the words find the kitchen doc alone, and
+    // it still says how close it is in meaning, below the floor.
+    let out = search(
+        &e,
+        json!({ "query": "coffee machine", "min_similarity": 1 }),
+    );
+    let kitchen = &hits(&out)[0];
+    assert_eq!(kitchen["via"], json!("lexical"), "{out}");
+    let sim = kitchen["similarity"]
+        .as_f64()
+        .expect("a vector, and the side ran");
+    assert!(sim < 1.0, "{kitchen}");
+}
+
+/// The contract `mode: lexical` owes: exactly D41/D69/D193's answer — the
+/// same hits in bm25 order, the same total, `matched` and `relaxed` — read
+/// against the FTS index directly rather than through the code under test.
+#[test]
+fn lexical_mode_reproduces_the_bm25_answer() {
+    let e = meaning_store();
+    let t = call(&e, "task.add", json!({ "title": "incident" })).expect("task");
+    for body in [
+        "login errors again after the rollout",
+        "the SSO change broke the login page",
+        "budget for the login work",
+    ] {
+        call(
+            &e,
+            "annotation.add",
+            json!({ "ref": t["short_id"], "body": body }),
+        )
+        .expect("annotate");
+    }
+    let bm25 = |expr: &str| -> Vec<String> {
+        let mut stmt = e
+            .conn()
+            .prepare(
+                "SELECT id, s FROM (\
+                 SELECT d.id AS id, bm25(docs_fts) AS s FROM docs_fts \
+                 JOIN docs d ON d.rowid = docs_fts.rowid WHERE docs_fts MATCH ?1 \
+                 UNION ALL SELECT a.id, bm25(annotations_fts) FROM annotations_fts \
+                 JOIN annotations a ON a.rowid = annotations_fts.rowid \
+                 WHERE annotations_fts MATCH ?1) ORDER BY s",
+            )
+            .unwrap();
+        stmt.query_map([expr], |r| r.get::<_, String>(0))
+            .unwrap()
+            .map(Result::unwrap)
+            .collect()
+    };
+    for (query, expr, relaxed) in [
+        ("login", "\"login\"", false),
+        ("login errors", "\"login\" \"errors\"", false),
+        ("login zeppelin", "\"login\" OR \"zeppelin\"", true),
+    ] {
+        let out = search(&e, json!({ "query": query, "mode": "lexical", "limit": 2 }));
+        let want = bm25(expr);
+        let got: Vec<String> = hits(&out)
+            .iter()
+            .map(|h| h["id"].as_str().unwrap().to_string())
+            .collect();
+        assert_eq!(got, want[..want.len().min(2)].to_vec(), "{query}: {out}");
+        assert_eq!(out["total"], json!(want.len()), "{query}");
+        assert_eq!(out["matched"], json!(expr), "{query}");
+        assert_eq!(out["relaxed"], json!(relaxed), "{query}");
+        assert!(hits(&out).iter().all(|h| h["via"] == json!("lexical")));
+        assert!(hits(&out).iter().all(|h| h["similarity"].is_null()));
+    }
 }

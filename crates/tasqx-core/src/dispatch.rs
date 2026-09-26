@@ -247,6 +247,9 @@ pub const PARAMS: &[(&str, &[&str], bool)] = &[
             "raw",
             "project",
             "include_unscoped",
+            // D196: words, meaning or both, and the meaning side's floor.
+            "mode",
+            "min_similarity",
         ],
         false,
     ),

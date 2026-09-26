@@ -131,6 +131,26 @@ fn a_seeded_store_reads_back_through_the_read_only_engine() {
     assert_eq!(projects["projects"][0]["name"], "work");
 }
 
+/// D196: a search by meaning on a store this process cannot write embeds
+/// what is missing for the call alone, and still answers.
+#[test]
+fn a_read_only_store_still_searches_by_meaning() {
+    let store = Store::new("hybrid");
+    {
+        let e = Engine::open(store.as_str()).expect("seed the store read-write");
+        e.memory_add(
+            &json!({ "title": "incident log", "body": "login errors after the SSO change" }),
+        )
+        .expect("doc");
+    }
+    let ro = Engine::open_read_only(store.as_str()).expect("open read-only");
+    let out = ro
+        .memory_search(&json!({ "query": "authentication problems" }))
+        .expect("search");
+    assert_eq!(out["hits"][0]["title"], "incident log", "{out}");
+    assert_eq!(out["hits"][0]["via"], "semantic", "{out}");
+}
+
 /// Read-only must mean read-only at the SQLite level, not by convention. If the
 /// flag were ever dropped the two tests above would still pass, and a Tab press
 /// would quietly acquire a write lock on the user's live store.

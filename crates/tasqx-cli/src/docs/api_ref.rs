@@ -1234,8 +1234,9 @@ const PARAM_DOCS: &[(&str, &str, &str, &str, &str)] = &[
 /// The rest cannot be captured, each for a reason the manifest's own header
 /// argues: a freshly minted v7 id whose low bits are random (`task.add`,
 /// `annotation.add`, `check.add`, `memory.add`, `memory.import`, `token.add`,
-/// `project.create`), an FTS bm25 `rank` whose last digits are the platform's
-/// `log()` (`memory.search`, `task.brief`), a response that is the whole store
+/// `project.create`), a hit's `rank`, which moves with bm25's order and bm25
+/// is computed through the platform's `log()` (`memory.search`,
+/// `task.brief`), a response that is the whole store
 /// (`store.export`), this machine's own paths (`core.capabilities`), or an
 /// answer that depends on store state no fixture can pin (`event.revert`).
 /// Those carry `why`, which the page prints beside the example.
@@ -1293,8 +1294,8 @@ const EXAMPLES: &[Example] = &[
         method: "task.brief",
         request: r#"{"tasqx":"1","id":"b1","method":"task.brief","params":{"ref":"51","memory_limit":3}}"#,
         fixture: "",
-        response: r#"{"id":"b1","ok":true,"result":{"memory":{"annotations_total":3,"count":1,"docs_total":1,"has_more":true,"hits":[{"id":"eb864f1e-e68a-4d96-af89-597bd0d2d52e","kind":"doc","project":"api","rank":-0.9096037228757,"snippet":"Cut the release branch on Monday, tag after the canary has run…","source":"docs/release.md","stale":false,"standing":false,"title":"release-process"}],"matched":"guide OR migration OR sdk OR docs OR api","project":"api","reserved_docs":2,"total":4},"neighbourhood":{"blocks":[],"depends_on":[{"annotation":null,"short_id":50,"status":"pending","title":"Rate-limit the /search endpoint"}]},"task":{"…":"task.get's own result, verbatim"}},"tasqx":"1"}"#,
-        why: "every hit carries an FTS bm25 `rank`, computed through the platform's `log()` — captured on macOS the last digits differ on Linux, and the drift job goes red for everyone but whoever captured last. The `tasqx brief` SCREEN is captured instead; it prints snippets and never the number.",
+        response: r#"{"id":"b1","ok":true,"result":{"memory":{"annotations_total":3,"count":1,"docs_total":1,"has_more":true,"hits":[{"id":"eb864f1e-e68a-4d96-af89-597bd0d2d52e","kind":"doc","project":"api","rank":-0.03278688524590164,"score":0.03278688524590164,"similarity":0.412,"snippet":"Cut the release branch on Monday, tag after the canary has run…","source":"docs/release.md","stale":false,"standing":false,"title":"release-process","via":"both"}],"matched":"guide OR migration OR sdk OR docs OR api","project":"api","reserved_docs":2,"total":4},"neighbourhood":{"blocks":[],"depends_on":[{"annotation":null,"short_id":50,"status":"pending","title":"Rate-limit the /search endpoint"}]},"task":{"…":"task.get's own result, verbatim"}},"tasqx":"1"}"#,
+        why: "every hit carries a `rank`. Since D196 it is the negated fused reciprocal rank, not bm25, but the words list is still in bm25 order, computed through the platform's `log()`: two near-equal hits can trade places between macOS and Linux and move every number after them, and the drift job goes red for everyone but whoever captured last. The `tasqx brief` SCREEN is captured instead; it prints snippets and never the number.",
     },
     Example {
         method: "task.start",
@@ -1475,8 +1476,8 @@ const EXAMPLES: &[Example] = &[
         method: "memory.search",
         request: r#"{"tasqx":"1","id":"ms1","method":"memory.search","params":{"query":"release canary","limit":2}}"#,
         fixture: "",
-        response: r#"{"id":"ms1","ok":true,"result":{"count":1,"has_more":false,"hits":[{"id":"eb864f1e-e68a-4d96-af89-597bd0d2d52e","kind":"doc","project":"api","rank":-1.2419537228757,"snippet":"Cut the release branch on Monday, tag after the canary has run for a day…","source":"docs/release.md","stale":false,"standing":false,"title":"release-process"}],"matched":"release AND canary","relaxed":false,"total":1},"tasqx":"1"}"#,
-        why: "every hit carries an FTS bm25 `rank` whose last digits are the platform's `log()`, so a capture is reproducible only on the machine that took it. The `tasqx memory search` screen is captured instead — it prints the snippet, never the number.",
+        response: r#"{"id":"ms1","ok":true,"result":{"count":1,"has_more":false,"hits":[{"id":"eb864f1e-e68a-4d96-af89-597bd0d2d52e","kind":"doc","project":"api","rank":-0.03278688524590164,"score":0.03278688524590164,"similarity":0.538,"snippet":"…Cut the release branch on Monday, tag after the canary has run…","source":"docs/release.md","stale":null,"standing":false,"title":"release-process","via":"both"}],"matched":"\"release\" \"canary\"","relaxed":false,"semantic":{"min_similarity":0.3,"model":"potion-base-8M@bf8b056651a2c21b8d2565580b8569da283cab23/int8/tok2/chunk4"},"total":1},"tasqx":"1"}"#,
+        why: "every hit carries a `rank`. Since D196 it is the negated fused reciprocal rank, not bm25, but the words list is still in bm25 order, computed through the platform's `log()`, so two near-equal hits can trade places between machines and a capture is reproducible only on the one that took it. The `tasqx memory search` screen is captured instead — it prints the snippet, and a similarity only on a hit found by meaning alone.",
     },
     Example {
         method: "memory.get",

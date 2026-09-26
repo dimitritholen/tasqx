@@ -21,8 +21,8 @@ use serde_json::{json, Map, Value};
 
 use crate::dispatch::dispatch;
 use crate::engine::{
-    shell_quote, Engine, MEMORY_SCOPES, OUTCOME_METRICS, SORT_KEYS, SUMMARY_GROUP_BY,
-    SUMMARY_METRICS, TASK_FIELDS,
+    shell_quote, Engine, MEMORY_MIN_SIMILARITY, MEMORY_SCOPES, MEMORY_SEARCH_MODES,
+    OUTCOME_METRICS, SORT_KEYS, SUMMARY_GROUP_BY, SUMMARY_METRICS, TASK_FIELDS,
 };
 use crate::types::Priority;
 
@@ -578,12 +578,12 @@ const TRANSPORT_ONLY_ARGS: &[(&str, &str, &str)] = &[
     (
         "tasqx_search_memory",
         "include_rank",
-        "whether each hit carries the raw FTS5 bm25 `rank` the engine ranked it by (D154).      Default FALSE: `hits` arrives already sorted best-first, so the number answers a      question the order has already answered — and it is seventeen characters of      `-1.2345678901234567` on every hit of every search. The JSON API still freezes it      (D56) and `tasqx api memory.search` still returns it; this is one transport      declining to spend bytes on it. `memory.search` has no opinion on which of the keys      it returns a client chooses to forward.",
+        "whether each hit carries the `rank` the engine ranked it by and the fused `score` it      negates (D154, D196). Default FALSE: `hits` arrives already sorted best-first, so the      numbers answer a question the order has already answered — and they are twenty-odd      characters each on every hit of every search. The JSON API still freezes it      (D56) and `tasqx api memory.search` still returns it; this is one transport      declining to spend bytes on it. `memory.search` has no opinion on which of the keys      it returns a client chooses to forward.",
     ),
     (
         "tasqx_brief_task",
         "include_rank",
-        "whether the brief's memory hits carry the bm25 `rank`. Same argument, same reason      and same default as `tasqx_search_memory`'s — the brief runs that same search under      a query it derived, so its hits are the same rows and were sorted the same way. It      is read before the budget runs, so the JSON block `include_json: true` buys is the      stripped one and not a second, wider copy. `task.brief` has no opinion on which of      the keys it returns a client chooses to forward.",
+        "whether the brief's memory hits carry the fused `rank` and `score`. Same argument, same reason      and same default as `tasqx_search_memory`'s — the brief runs that same search under      a query it derived, so its hits are the same rows and were sorted the same way. It      is read before the budget runs, so the JSON block `include_json: true` buys is the      stripped one and not a second, wider copy. `task.brief` has no opinion on which of      the keys it returns a client chooses to forward.",
     ),
     (
         "tasqx_list_memory",
@@ -767,9 +767,9 @@ fn build_tool_specs() -> Vec<ToolSpec> {
                     },
                     "include_rank": {
                         "type": "boolean",
-                        "description": "Add the raw FTS5 bm25 `rank` to each memory hit; \
+                        "description": "Add the fused `rank` and `score` to each memory hit; \
                              default false, and visible only in the `include_json` block. \
-                             LOWER is the better match and hits arrive sorted best-first."
+                             LOWER `rank` is the better match and hits arrive sorted best-first."
                     },
                     "max_body_bytes": max_body_bytes_schema(),
                     "include_json": {
@@ -901,13 +901,14 @@ fn build_tool_specs() -> Vec<ToolSpec> {
             write: false,
             destructive: false,
             idempotent: true,
-            description: "Search the memory store — imported docs and task annotations — \
-                bm25-ranked with snippets. A plain query matches phrases by word STEM, every \
-                word required; if nothing has them all, any-word matches return with `relaxed: \
-                true` (D193). `matched` is what ran; `raw: true` takes FTS5 syntax. A hit is an excerpt: `tasqx_get_memory` \
-                reads a doc whole, `tasqx_get_task` an annotation. `hits` is sorted best-first \
-                (LOWER bm25 `rank` is better); `total` and `has_more` say what `limit` cut. A \
-                doc hit adds `stale` (D180).",
+            description: "Search memory — imported docs and task annotations — by meaning and \
+                words, fused (D196); each hit's `via` says which matched. Words match by STEM, \
+                all required; if none has them all and nothing is close in meaning, any-word \
+                matches return `relaxed: true` (D193). `matched` is the words expression run. \
+                `mode: lexical` forces exact words; an id like `D41` is matched by words alone. \
+                A hit is an excerpt: `tasqx_get_memory` reads a doc whole, `tasqx_get_task` an \
+                annotation. `hits` is sorted best-first (LOWER `rank` is better); `total` and \
+                `has_more` say what `limit` cut. A doc hit adds `stale` (D180).",
             schema: json!({
                 "type": "object",
                 "properties": {
@@ -925,7 +926,18 @@ fn build_tool_specs() -> Vec<ToolSpec> {
                     },
                     "raw": {
                         "type": "boolean",
-                        "description": "Pass the query through as FTS5 syntax. Invalid syntax is refused as bad_request."
+                        "description": "Pass the query through as FTS5 syntax (words only: needs mode lexical or none). Invalid syntax is bad_request."
+                    },
+                    "mode": {
+                        "type": "string",
+                        "enum": enum_of(MEMORY_SEARCH_MODES),
+                        "description": "Default hybrid: meaning and words. lexical: words only."
+                    },
+                    "min_similarity": {
+                        "type": "number",
+                        "minimum": 0,
+                        "maximum": 1,
+                        "description": format!("Meaning floor; default {MEMORY_MIN_SIMILARITY:.2}.")
                     },
                     "project": {
                         "type": "string",
@@ -939,9 +951,9 @@ fn build_tool_specs() -> Vec<ToolSpec> {
                     },
                     "include_rank": {
                         "type": "boolean",
-                        "description": "Add the raw FTS5 bm25 `rank` to each hit. Default \
-                             false. LOWER (more negative) is better and `hits` is already \
-                             sorted best-first, so never use it as a threshold (D154)."
+                        "description": "Add the fused `rank` and `score` to each hit. Default \
+                             false. LOWER `rank` is better and `hits` is already sorted \
+                             best-first, so never use it as a threshold (D154)."
                     }
                 },
                 "required": ["query"]
@@ -1757,11 +1769,11 @@ pub fn instructions(scope: Scope) -> String {
 
     const SEARCH: &str = "Search first. Call tasqx_search_memory before resuming work, choosing \
         between designs, touching a convention-bearing file, or asserting how this project does \
-        something. Query with two or three keywords, never a sentence: every word is required \
-        first, and if nothing has them all, any-word matches come back marked `relaxed`; \
-        `matched` shows what ran. Try a second wording before concluding nothing is there. A \
-        hit is a snippet: read a doc whole with tasqx_get_memory, and an annotation (source \
-        `task:#<id>`) with tasqx_get_task.";
+        something. Search matches meaning as well as words, so a few keywords find a note that \
+        says the same thing differently; each hit's `via` says which matched. For an exact \
+        name, id or error string pass `mode: lexical`. Try a second wording before concluding \
+        nothing is there. A hit is a snippet: read a doc whole with tasqx_get_memory, and an \
+        annotation (source `task:#<id>`) with tasqx_get_task.";
 
     const TRACK: &str = "Track multi-step work as tasks. Anything with more than one step, or \
         that could outlive this session, goes in the backlog: tasqx_list_projects before \
@@ -2529,7 +2541,9 @@ impl<'e> McpServer<'e> {
                     if let Some(hits) = hits.and_then(Value::as_array_mut) {
                         for hit in hits {
                             if let Some(obj) = hit.as_object_mut() {
+                                // D196: `score` is the same number, negated.
                                 obj.remove("rank");
+                                obj.remove("score");
                             }
                         }
                     }
@@ -2753,6 +2767,7 @@ impl<'e> McpServer<'e> {
                             for hit in hits {
                                 if let Some(obj) = hit.as_object_mut() {
                                     obj.remove("rank");
+                                    obj.remove("score");
                                 }
                             }
                         }
@@ -3806,6 +3821,9 @@ mod tests {
                     match *key {
                         "ref" => {
                             call.insert("ref".to_string(), json!(1));
+                        }
+                        "query" => {
+                            call.insert("query".to_string(), json!("probe"));
                         }
                         other => panic!(
                             "tool `{}` bounds `{name}` at {min} behind a required `{other}` this \

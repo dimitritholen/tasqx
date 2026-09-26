@@ -33,7 +33,9 @@ mod transfer;
 mod undo;
 mod vectors;
 
-pub use memory::{SessionDoc, SessionRulings, MEMORY_SCOPES};
+pub use memory::{
+    SessionDoc, SessionRulings, MEMORY_MIN_SIMILARITY, MEMORY_SCOPES, MEMORY_SEARCH_MODES,
+};
 pub use undo::{NOT_UNDOABLE, UNDOABLE_OPS};
 
 use std::collections::{HashMap, HashSet};

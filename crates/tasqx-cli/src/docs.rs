@@ -452,14 +452,25 @@ const METHODS: [(&str, &str, &str); 49] = [
     (
         "memory.search",
         "<code>query</code>, <code>limit?</code>, <code>scope?</code>, <code>raw?</code>, \
-         <code>project?</code>, <code>include_unscoped?</code>",
-        "<code>{count, total, has_more, hits, matched, relaxed}</code> — bm25-ranked over docs + \
-         annotations, stemmed (porter tokenizer, #128) so \"reviewing\" matches a doc that only \
-         says \"review\". <code>matched</code> is the FTS5 expression actually run, which is how \
-         <code>count: 0</code> is told apart from a store holding nothing on the subject. A plain \
-         query requires every word first; when nothing holds them all, the same words joined \
-         with OR answer instead, and <code>relaxed</code> is true (D193). \
-         <code>total</code> is every row matched before <code>limit</code> truncates (#132), and \
+         <code>project?</code>, <code>include_unscoped?</code>, <code>mode?</code>, \
+         <code>min_similarity?</code>",
+        "<code>{count, total, has_more, hits, matched, relaxed, semantic}</code> — docs + \
+         annotations ranked by meaning and by words (D196): an embedding model built into the \
+         binary lists entries whose best passage is at least <code>min_similarity</code> (0 to \
+         1, default 0.30) close to the query, FTS5 lists them by bm25, stemmed (porter \
+         tokenizer, #128) so \"reviewing\" matches a doc that only says \"review\", and the two \
+         are fused by reciprocal rank. Each hit says <code>via</code> (<code>lexical</code>, \
+         <code>semantic</code>, <code>both</code>), its <code>similarity</code> and fused \
+         <code>score</code>; <code>rank</code> is the negated score, lower is better. \
+         <code>mode</code> is <code>hybrid</code> (default), <code>lexical</code> (words only, \
+         as <code>raw</code> always is) or <code>semantic</code>; a query with no word of three \
+         letters (an id such as <code>D41</code>) is matched by words alone, and \
+         <code>semantic</code> is null. <code>matched</code> is the FTS5 expression actually \
+         run, which is how <code>count: 0</code> is told apart from a store holding nothing on \
+         the subject. A plain query requires every word first; when nothing holds them all \
+         and nothing is close in meaning, the same words joined with OR answer instead, and \
+         <code>relaxed</code> is true (D193). \
+         <code>total</code> is every entry either side matched before <code>limit</code> truncates (#132), and \
          <code>project</code> scopes to one project's docs plus its tasks' annotations (#134). \
          Each hit carries its own <code>project</code> too (null for global knowledge, #657), so a \
          store-wide search says which project it came from.",

@@ -1058,6 +1058,8 @@ pub(crate) fn run_memory(be: &mut Backend, ctx: &Ctx, action: &MemoryAction) -> 
             limit,
             scope,
             raw,
+            mode,
+            min_similarity,
         } => {
             let mut params = json!({ "query": query.join(" ") });
             if let Some(n) = limit {
@@ -1068,6 +1070,12 @@ pub(crate) fn run_memory(be: &mut Backend, ctx: &Ctx, action: &MemoryAction) -> 
             }
             if *raw {
                 params["raw"] = json!(true);
+            }
+            if let Some(m) = mode {
+                params["mode"] = json!(m);
+            }
+            if let Some(f) = min_similarity {
+                params["min_similarity"] = json!(f);
             }
             let result = be.call("memory.search", &params)?;
             let text = render::memory_hits(ctx, &result, &query.join(" "), *raw, scope.as_deref());
