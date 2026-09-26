@@ -27,6 +27,12 @@ enter_at=${ENTER_AT:-4.0}
 answer_at=${ANSWER_AT:-$(ffmpeg -hide_banner -i "$take" -vf freezedetect=n=0.001:d=0.5 \
   -map 0:v -f null - 2>&1 | sed -n 's/.*freeze_start: //p' | tail -1)}
 [ -n "$answer_at" ] || { echo "hero-assemble: no settled answer in $take" >&2; exit 1; }
+echo "hero-assemble: enter $enter_at, answer $answer_at" >&2
+awk -v a="$answer_at" -v e="$enter_at" 'BEGIN { exit !(a + 0 > e + 0) }' || {
+  echo "hero-assemble: the last settle ($answer_at s) is not after the prompt ($enter_at s);" \
+    "set ANSWER_AT, or retake" >&2
+  exit 1
+}
 read -r w h < <(ffprobe -v error -select_streams v:0 -show_entries stream=width,height \
   -of csv=s=x:p=0 "$take" | tr x ' ')
 

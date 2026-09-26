@@ -14,8 +14,8 @@
 # - `~/acme-sdk`, an invented repository holding the migration guide that task
 #   #51 is about, committed under a fixed date so its hash is the same on
 #   every take;
-# - a Claude Code config directory holding nothing but a login and the
-#   first-run answers, so no hook, plugin, memory or setting of the person
+# - a Claude Code config directory holding nothing but a login, the
+#   first-run answers and the permission mode the tape waits on, so no hook, plugin, memory or setting of the person
 #   recording reaches the session, and the header shows `~/acme-sdk` rather
 #   than a real path (HOME is target/hero/home inside the take);
 # - an MCP config naming tasqx alone, pointed at take.db with --no-daemon, so
@@ -80,6 +80,12 @@ cat >"$out/cc/.claude.json" <<EOF
                                      "hasCompletedProjectOnboarding": true}}}
 EOF
 
+# The tape waits for the footer auto mode prints, so the mode is pinned here
+# rather than left to whatever Claude Code defaults to.
+cat >"$out/cc/settings.json" <<'EOF'
+{"permissions": {"defaultMode": "auto"}}
+EOF
+
 cat >"$out/mcp.json" <<EOF
 {"mcpServers": {"tasqx": {"command": "tasqx",
   "args": ["--no-daemon", "mcp", "serve", "--scope", "write"],
@@ -89,6 +95,9 @@ EOF
 
 # The session gets a PATH of plain directories: a WSL PATH carries Windows
 # entries with spaces, and `env -i` keeps the recorder's variables out.
+for bin in claude tasqx; do
+  command -v "$bin" >/dev/null || { echo "hero-stage: $bin is not on PATH" >&2; exit 1; }
+done
 claude_dir=$(dirname "$(command -v claude)")
 tasqx_dir=$(dirname "$(command -v tasqx)")
 cat >"$out/launch.sh" <<EOF
