@@ -1,0 +1,2711 @@
+{
+ "projects": [
+  "api",
+  "data",
+  "infra",
+  "mobile",
+  "web"
+ ],
+ "tasks": [
+  {
+   "key": "t1",
+   "title": "Fix intermittent 401s after token refresh",
+   "project": "api",
+   "annotations": [
+    {
+     "key": "a1",
+     "body": "Finding: when two requests race, the mobile client presents the same refresh token twice. The second use trips reuse detection and revokes the whole token family, so the user is logged out with a 401."
+    },
+    {
+     "key": "a2",
+     "body": "Ruling (D41): accept reuse of the immediately previous refresh token for 10 seconds and return the same new pair. Anything later still revokes the family."
+    },
+    {
+     "key": "a3",
+     "body": "Delivered in #607: grace window in auth/refresh.rs plus the metric auth.refresh.grace_hits. Skipped: client-side request coalescing, filed separately."
+    }
+   ]
+  },
+  {
+   "key": "t2",
+   "title": "Add idempotency to refund endpoint",
+   "project": "api",
+   "annotations": [
+    {
+     "key": "a4",
+     "body": "Finding: duplicate refunds occurred when the gateway timed out and the client retried; payments.rs never checked the Idempotency-Key on /refunds."
+    },
+    {
+     "key": "a5",
+     "body": "Ruling: refunds use the same idempotency store as captures, keys kept 24 hours and scoped per merchant."
+    },
+    {
+     "key": "a6",
+     "body": "Delivered: refund() now looks up the key first; regression test covers the double submit."
+    }
+   ]
+  },
+  {
+   "key": "t3",
+   "title": "Raise rate limit for partner integrations",
+   "project": "api",
+   "annotations": [
+    {
+     "key": "a7",
+     "body": "Ruling: partners get 3000 requests per minute on a separate tier instead of a global bump for every key."
+    },
+    {
+     "key": "a8",
+     "body": "Blocked: the partner tier needs contract sign-off from the partnerships lead before we enable it."
+    },
+    {
+     "key": "a9",
+     "body": "Delivered: tier `partner` added to the ratelimit filter config; three partner keys moved over."
+    }
+   ]
+  },
+  {
+   "key": "t4",
+   "title": "Deprecate v1 search endpoint",
+   "project": "api",
+   "annotations": [
+    {
+     "key": "a10",
+     "body": "Finding: /v1/search is 2% of search traffic, from 14 integrators."
+    },
+    {
+     "key": "a11",
+     "body": "Ruling: /v1/search sunsets on 2027-03-01; responses carry Sunset and Deprecation headers from now."
+    },
+    {
+     "key": "a12",
+     "body": "Emailed the 14 integrators with the migration notes to /v2/search."
+    }
+   ]
+  },
+  {
+   "key": "t5",
+   "title": "Document webhook signature verification",
+   "project": "api",
+   "annotations": [
+    {
+     "key": "a13",
+     "body": "Finding: two merchants compared signatures with plain string equality; the guide should insist on a constant-time compare."
+    },
+    {
+     "key": "a14",
+     "body": "Delivered: verification snippets for Node, Python and PHP added to the webhook guide, each using a timing-safe comparison."
+    }
+   ]
+  },
+  {
+   "key": "t6",
+   "title": "Slow order listing query",
+   "project": "api",
+   "annotations": [
+    {
+     "key": "a15",
+     "body": "Finding: missing composite index on (merchant_id, created_at); p95 latency 1.8s on the order listing for large merchants."
+    },
+    {
+     "key": "a16",
+     "body": "Delivered: index created concurrently in migration 20260702; p95 now 120ms."
+    },
+    {
+     "key": "a17",
+     "body": "Note: the planner still picks a seq scan on the tiny staging dataset, which is expected."
+    }
+   ]
+  },
+  {
+   "key": "t7",
+   "title": "Prepare TypeScript SDK major version",
+   "project": "api",
+   "annotations": [
+    {
+     "key": "a18",
+     "body": "Breaking changes collected: drop Node 16, promise-only API, rename `listAll` to `iterate`."
+    },
+    {
+     "key": "a19",
+     "body": "Ruling: the new major is 3.0; it ships together with the 2026-10-01 API version so the types match."
+    },
+    {
+     "key": "a20",
+     "body": "Delivered: migration notes drafted; the beta tag is published on the package registry."
+    }
+   ]
+  },
+  {
+   "key": "t8",
+   "title": "Error message for expired sessions",
+   "project": "api",
+   "annotations": [
+    {
+     "key": "a21",
+     "body": "Finding: the web app showed 'Something went wrong' when it received ERR_TOKEN_EXPIRED because the refresh call itself failed on a clock-skewed laptop."
+    },
+    {
+     "key": "a22",
+     "body": "Ruling: tolerate 60 seconds of clock skew when validating exp and nbf."
+    }
+   ]
+  },
+  {
+   "key": "t9",
+   "title": "Bundle size regression on dashboard",
+   "project": "web",
+   "annotations": [
+    {
+     "key": "a23",
+     "body": "Finding: the charting library got pulled into the entry chunk by a static import in dashboard/Summary.tsx; entry went from 231 KB to 318 KB."
+    },
+    {
+     "key": "a24",
+     "body": "Delivered: switched to dynamic import; entry back at 236 KB and size-check passes."
+    }
+   ]
+  },
+  {
+   "key": "t10",
+   "title": "Dark mode contrast issues",
+   "project": "web",
+   "annotations": [
+    {
+     "key": "a25",
+     "body": "Finding: secondary text in dark theme was #7a7a7a on #1b1b1b, contrast 3.9:1, below AA."
+    },
+    {
+     "key": "a26",
+     "body": "Delivered: new token color.text.muted.dark at #a3a3a3 (6.8:1). Checked every page that uses the muted style."
+    },
+    {
+     "key": "a27",
+     "body": "Ruling: contrast checks are now part of the visual regression suite, not a manual step."
+    }
+   ]
+  },
+  {
+   "key": "t11",
+   "title": "Checkout address autocomplete",
+   "project": "web",
+   "annotations": [
+    {
+     "key": "a28",
+     "body": "Finding: the autocomplete script costs 180 KB and blocks the main thread for 300 ms on first load."
+    },
+    {
+     "key": "a29",
+     "body": "Ruling: load it only when the address field receives focus."
+    },
+    {
+     "key": "a30",
+     "body": "Delivered: LCP on checkout improved from 3.1s to 2.2s on the reference device."
+    }
+   ]
+  },
+  {
+   "key": "t12",
+   "title": "Remove stale feature flags",
+   "project": "web",
+   "annotations": [
+    {
+     "key": "a31",
+     "body": "Finding: 23 flags have been fully on for more than 90 days."
+    },
+    {
+     "key": "a32",
+     "body": "Delivered: 19 removed; 4 kept because product wants a kill switch for them, each now with a fresh expiry date."
+    },
+    {
+     "key": "a33",
+     "body": "Note: the cleanup bot missed flags defined in server-side templates; bug filed against Beacon."
+    }
+   ]
+  },
+  {
+   "key": "t13",
+   "title": "Login form error states",
+   "project": "web",
+   "annotations": [
+    {
+     "key": "a34",
+     "body": "Finding: wrong-password and locked-account both displayed the same red banner, and the screen reader did not announce it."
+    },
+    {
+     "key": "a35",
+     "body": "Delivered: distinct messages, announced through an aria-live region; focus moves to the first invalid field."
+    },
+    {
+     "key": "a36",
+     "body": "Ruling: we never reveal whether an email address exists; the wrong-password message is generic."
+    }
+   ]
+  },
+  {
+   "key": "t14",
+   "title": "Translate settings pages to German",
+   "project": "web",
+   "annotations": [
+    {
+     "key": "a37",
+     "body": "Finding: 212 keys were missing in locales/de.json, all under settings.*."
+    },
+    {
+     "key": "a38",
+     "body": "Delivered: translations from the agency merged; the fallback report for German is now empty."
+    }
+   ]
+  },
+  {
+   "key": "t15",
+   "title": "Cookie consent banner",
+   "project": "web",
+   "annotations": [
+    {
+     "key": "a39",
+     "body": "Ruling: analytics scripts load only after consent; the banner offers accept and reject with equal prominence."
+    },
+    {
+     "key": "a40",
+     "body": "Delivered: consent stored for 12 months; rejecting also stops the session replay tool."
+    }
+   ]
+  },
+  {
+   "key": "t16",
+   "title": "Android app crashes on startup for some users",
+   "project": "mobile",
+   "annotations": [
+    {
+     "key": "a41",
+     "body": "Finding: crash group 4f1c is a NullPointerException in ProfileRepository when the cached profile predates the 5.2 schema."
+    },
+    {
+     "key": "a42",
+     "body": "Delivered: 5.2.1 migrates the old cache instead of reading it blindly; crash-free sessions back to 99.8%."
+    },
+    {
+     "key": "a43",
+     "body": "Ruling: every local schema change ships with a migration test that starts from the previous release's database file."
+    }
+   ]
+  },
+  {
+   "key": "t17",
+   "title": "Duplicate items after offline editing",
+   "project": "mobile",
+   "annotations": [
+    {
+     "key": "a44",
+     "body": "Finding: the outbox resent an entry after a timeout, and the server did not dedupe because the change id was regenerated on retry."
+    },
+    {
+     "key": "a45",
+     "body": "Delivered: change id is generated once when the entry is queued and persisted with it."
+    },
+    {
+     "key": "a46",
+     "body": "Ruling (D33 reaffirmed): last-write-wins stays for scalar fields; users get the overwritten banner."
+    }
+   ]
+  },
+  {
+   "key": "t18",
+   "title": "Push notifications arrive late on iOS",
+   "project": "mobile",
+   "annotations": [
+    {
+     "key": "a47",
+     "body": "Finding: marketing pushes were queued behind a 40k batch with low priority; transactional ones shared that queue."
+    },
+    {
+     "key": "a48",
+     "body": "Delivered: separate high-priority queue for transactional pushes; median delay 2 s."
+    }
+   ]
+  },
+  {
+   "key": "t19",
+   "title": "Drop Android 8 support",
+   "project": "mobile",
+   "annotations": [
+    {
+     "key": "a49",
+     "body": "Finding: Android 8 is 1.4% of active devices."
+    },
+    {
+     "key": "a50",
+     "body": "Ruling: 6.0 is the last release that runs on Android 8; the in-app notice shows from 5.9."
+    },
+    {
+     "key": "a51",
+     "body": "Delivered: minSdk raised to 28 on the 6.1 branch."
+    }
+   ]
+  },
+  {
+   "key": "t20",
+   "title": "Phased rollout halted for 5.8",
+   "project": "mobile",
+   "annotations": [
+    {
+     "key": "a52",
+     "body": "Finding: crash-free rate dropped to 99.1% at the 10% stage, caused by a camera permission edge case on Android 14."
+    },
+    {
+     "key": "a53",
+     "body": "Delivered: 5.8.1 fixes it; rollout resumed and reached 100% three days later."
+    }
+   ]
+  },
+  {
+   "key": "t21",
+   "title": "Biometric unlock",
+   "project": "mobile",
+   "annotations": [
+    {
+     "key": "a54",
+     "body": "Ruling: biometrics only unlock the locally stored refresh token; they never replace the password on the server."
+    },
+    {
+     "key": "a55",
+     "body": "Delivered: Face ID and fingerprint unlock behind the flag biometric_unlock, 20% rollout."
+    },
+    {
+     "key": "a56",
+     "body": "Finding: some Samsung devices report fingerprint hardware but no enrolled prints; we now check enrolment before offering it."
+    }
+   ]
+  },
+  {
+   "key": "t22",
+   "title": "Postgres primary failover drill",
+   "project": "infra",
+   "annotations": [
+    {
+     "key": "a57",
+     "body": "Delivered: failover to the replica took 41 seconds; two services held stale connections and needed a restart."
+    },
+    {
+     "key": "a58",
+     "body": "Ruling: all services must set a connection max lifetime of 5 minutes so failovers heal without restarts."
+    },
+    {
+     "key": "a59",
+     "body": "Finding: the orders service ignored the pool setting because it builds its own pool in orders/db.go."
+    }
+   ]
+  },
+  {
+   "key": "t23",
+   "title": "Canary stage flaps on Thursday trains",
+   "project": "infra",
+   "annotations": [
+    {
+     "key": "a60",
+     "body": "Finding: the canary compared against a baseline that included the Wednesday batch import spike, so p99 looked worse than it was."
+    },
+    {
+     "key": "a61",
+     "body": "Ruling: the canary baseline is the same service's previous 20 minutes, not a daily average."
+    },
+    {
+     "key": "a62",
+     "body": "Delivered: release.sh uses the rolling baseline; three trains in a row passed without a manual override."
+    }
+   ]
+  },
+  {
+   "key": "t24",
+   "title": "Vault token expiry took down the notifier",
+   "project": "infra",
+   "annotations": [
+    {
+     "key": "a63",
+     "body": "Finding: the notifier's Vault agent sidecar was missing, so its token was never renewed and it lost DB credentials after 24 hours."
+    },
+    {
+     "key": "a64",
+     "body": "Delivered: sidecar added; a startup check now refuses to boot without the agent socket."
+    },
+    {
+     "key": "a65",
+     "body": "Postmortem written; action items tracked under the SEV2 incident from 2026-08-14."
+    }
+   ]
+  },
+  {
+   "key": "t25",
+   "title": "Reduce cross-region egress cost",
+   "project": "infra",
+   "annotations": [
+    {
+     "key": "a66",
+     "body": "Finding: the search indexer in eu-2 pulled full catalog snapshots from eu-1 every hour, 60% of egress spend."
+    },
+    {
+     "key": "a67",
+     "body": "Delivered: switched to change-data-capture; egress down 58% in the first week."
+    }
+   ]
+  },
+  {
+   "key": "t26",
+   "title": "Certificate expiry alert fired for staging",
+   "project": "infra",
+   "annotations": [
+    {
+     "key": "a68",
+     "body": "Finding: cert-manager could not solve the ACME challenge because the staging ingress blocked /.well-known."
+    },
+    {
+     "key": "a69",
+     "body": "Delivered: path allowed; certificate renewed; alert cleared."
+    },
+    {
+     "key": "a70",
+     "body": "Ruling: staging certificates get the same alerting as production, since staging outages block the train."
+    }
+   ]
+  },
+  {
+   "key": "t27",
+   "title": "On-call pager fatigue",
+   "project": "infra",
+   "annotations": [
+    {
+     "key": "a71",
+     "body": "Finding: 62% of night pages last month were the disk-usage alert on log volumes, all auto-resolving within 10 minutes."
+    },
+    {
+     "key": "a72",
+     "body": "Ruling: an alert that pages at night must be actionable; the disk alert becomes a daytime ticket unless usage passes 95%."
+    },
+    {
+     "key": "a73",
+     "body": "Delivered: alert rules updated; night pages down from 34 to 9 per month."
+    }
+   ]
+  },
+  {
+   "key": "t28",
+   "title": "Migrate CI caches to object storage",
+   "project": "infra",
+   "annotations": [
+    {
+     "key": "a74",
+     "body": "Delivered: runner caches moved to the object store; average pipeline time down from 14 to 9 minutes."
+    },
+    {
+     "key": "a75",
+     "body": "Note: cache eviction is 7 days; long-lived branches will see cold starts."
+    }
+   ]
+  },
+  {
+   "key": "t29",
+   "title": "Nightly load misses 06:00 deadline",
+   "project": "data",
+   "annotations": [
+    {
+     "key": "a76",
+     "body": "Finding: the orders extract grew 3x after the marketplace launch and now takes 2h40m single-threaded."
+    },
+    {
+     "key": "a77",
+     "body": "Delivered: extract split into 8 partitions by merchant id hash; DAG finishes by 04:50."
+    },
+    {
+     "key": "a78",
+     "body": "Ruling: any source that grows more than 2x in a quarter gets a capacity review before the next quarter."
+    }
+   ]
+  },
+  {
+   "key": "t30",
+   "title": "Active user count disagrees between dashboards",
+   "project": "data",
+   "annotations": [
+    {
+     "key": "a79",
+     "body": "Finding: the product dashboard counted app opens as activity, the exec dashboard did not."
+    },
+    {
+     "key": "a80",
+     "body": "Ruling: the metric definition doc is canonical; the product dashboard now reads mart_active_users."
+    },
+    {
+     "key": "a81",
+     "body": "Delivered: both dashboards show the same DAU; the old query is archived."
+    }
+   ]
+  },
+  {
+   "key": "t31",
+   "title": "Erasure requests not reaching the warehouse",
+   "project": "data",
+   "annotations": [
+    {
+     "key": "a82",
+     "body": "Finding: the suppression list was loaded after the models built, so deleted accounts survived one extra day."
+    },
+    {
+     "key": "a83",
+     "body": "Delivered: suppression load moved to the start of the DAG; test asserts no suppressed hash appears in mart_*."
+    }
+   ]
+  },
+  {
+   "key": "t32",
+   "title": "Track coupon usage events",
+   "project": "data",
+   "annotations": [
+    {
+     "key": "a84",
+     "body": "Delivered: coupon_applied and coupon_rejected added to tracking/plan.yaml with a reason field."
+    },
+    {
+     "key": "a85",
+     "body": "Ruling: rejected coupons are tracked with the reason code only, never the entered text, since users paste personal notes there."
+    }
+   ]
+  },
+  {
+   "key": "t33",
+   "title": "Warehouse storage cost review",
+   "project": "data",
+   "annotations": [
+    {
+     "key": "a86",
+     "body": "Finding: 70% of storage is raw clickstream older than 13 months that lifecycle rules missed because the bucket predates them."
+    },
+    {
+     "key": "a87",
+     "body": "Delivered: lifecycle policy applied to the legacy bucket; storage down 4.2 TB."
+    }
+   ]
+  },
+  {
+   "key": "t34",
+   "title": "Onboarding buddy programme",
+   "project": null,
+   "annotations": [
+    {
+     "key": "a88",
+     "body": "Ruling: every new engineer gets a buddy from another team for the first six weeks."
+    },
+    {
+     "key": "a89",
+     "body": "Finding: new starters took on average 9 days to ship their first change; target is 5."
+    },
+    {
+     "key": "a90",
+     "body": "Delivered: pre-provisioned access bundle so day-one accounts are ready before arrival."
+    }
+   ]
+  },
+  {
+   "key": "t35",
+   "title": "Flaky end-to-end checkout test",
+   "project": null,
+   "annotations": [
+    {
+     "key": "a91",
+     "body": "Finding: the test clicked 'Pay' before the payment iframe finished loading; it failed about one run in twelve."
+    },
+    {
+     "key": "a92",
+     "body": "Delivered: wait on the iframe's ready message instead of a fixed sleep; 200 consecutive green runs."
+    },
+    {
+     "key": "a93",
+     "body": "Quarantine lifted."
+    }
+   ]
+  },
+  {
+   "key": "t36",
+   "title": "Renovate major bump: Postgres driver",
+   "project": null,
+   "annotations": [
+    {
+     "key": "a94",
+     "body": "Finding: the new driver defaults to prepared statement caching, which breaks behind the transaction-mode connection pooler."
+    },
+    {
+     "key": "a95",
+     "body": "Ruling: disable statement caching globally until the pooler supports it; recorded in the driver config comment."
+    },
+    {
+     "key": "a96",
+     "body": "Delivered: bumped to the new major with statement_cache_capacity = 0."
+    }
+   ]
+  },
+  {
+   "key": "t37",
+   "title": "Support handover checklist",
+   "project": null,
+   "annotations": [
+    {
+     "key": "a97",
+     "body": "Besluit: tickets van de klantenservice zonder ordernummer worden niet opgepakt; ze gaan terug met een verzoek om aanvulling."
+    },
+    {
+     "key": "a98",
+     "body": "Afgerond: sjabloon in het supportportaal aangepast zodat ordernummer en tijdstip verplichte velden zijn."
+    }
+   ]
+  },
+  {
+   "key": "t38",
+   "title": "Quarterly restore drill Q3",
+   "project": "infra",
+   "annotations": [
+    {
+     "key": "a99",
+     "body": "Delivered: restore completed in 47 minutes; row counts matched production within the WAL replay point."
+    },
+    {
+     "key": "a100",
+     "body": "Finding: the runbook still referenced the old snapshot bucket name; fixed."
+    }
+   ]
+  },
+  {
+   "key": "t39",
+   "title": "Standardise error codes across services",
+   "project": null,
+   "annotations": [
+    {
+     "key": "a101",
+     "body": "Ruling: every service returns the shared error envelope; ERR_INTERNAL is the only code allowed to hide details."
+    },
+    {
+     "key": "a102",
+     "body": "Finding: the search service returned bare strings for 400 responses; now wrapped as ERR_VALIDATION."
+    },
+    {
+     "key": "a103",
+     "body": "Delivered: shared error crate `harbor-errors` adopted by all six core services."
+    }
+   ]
+  },
+  {
+   "key": "t40",
+   "title": "Office move to the new building",
+   "project": null,
+   "annotations": [
+    {
+     "key": "a104",
+     "body": "Note: the server room stays in the old building until the lease ends in March; nothing production runs there anyway."
+    },
+    {
+     "key": "a105",
+     "body": "Delivered: desks and badges ready; wifi SSID unchanged."
+    }
+   ]
+  },
+  {
+   "key": "t41",
+   "title": "Password reset emails landing in spam",
+   "project": null,
+   "annotations": [
+    {
+     "key": "a106",
+     "body": "Finding: after a template change, reset mails were sent from the marketing subdomain and mailbox providers filtered them together with promotions."
+    },
+    {
+     "key": "a107",
+     "body": "Ruling: password resets and receipts always go out from the transactional domain; the template engine now refuses marketing senders for them."
+    },
+    {
+     "key": "a108",
+     "body": "Delivered: sender fixed; inbox placement for resets back to 98% in the seed-list test."
+    }
+   ]
+  },
+  {
+   "key": "t42",
+   "title": "Search misses misspelled product names",
+   "project": "api",
+   "annotations": [
+    {
+     "key": "a109",
+     "body": "Finding: fuzzy matching was disabled in search/boosts.yaml, so a single typo returned zero results."
+    },
+    {
+     "key": "a110",
+     "body": "Delivered: fuzziness AUTO for terms longer than four characters; the relevance suite improved 6%."
+    },
+    {
+     "key": "a111",
+     "body": "Note: fuzziness stays off for SKU lookups, which must match exactly."
+    }
+   ]
+  },
+  {
+   "key": "t43",
+   "title": "Memory limits for Conveyor workers",
+   "project": "infra",
+   "annotations": [
+    {
+     "key": "a112",
+     "body": "Finding: Conveyor workers were OOMKilled on nodes shared with the search indexer because they had no memory limit."
+    },
+    {
+     "key": "a113",
+     "body": "Ruling (D44): memory limits are mandatory for every workload; CPU limits stay unset."
+    },
+    {
+     "key": "a114",
+     "body": "Delivered: limits set from the p99 of the last 30 days plus 30% headroom."
+    }
+   ]
+  },
+  {
+   "key": "t44",
+   "title": "Session replay privacy review",
+   "project": "web",
+   "annotations": [
+    {
+     "key": "a115",
+     "body": "Finding: session replay recorded typed card numbers in the custom gift-card input because it lacked the mask class."
+    },
+    {
+     "key": "a116",
+     "body": "Ruling: the replay tool masks every input by default; unmasking needs a privacy review."
+    },
+    {
+     "key": "a117",
+     "body": "Delivered: default masking on; recordings from the affected window deleted."
+    }
+   ]
+  },
+  {
+   "key": "t45",
+   "title": "Holiday freeze exceptions",
+   "project": "infra",
+   "annotations": [
+    {
+     "key": "a118",
+     "body": "Ruling: during the December freeze only SEV1 and SEV2 fixes may deploy, each approved by the incident commander."
+    },
+    {
+     "key": "a119",
+     "body": "Note: the freeze window runs 15 December to 5 January, same as the release process doc."
+    },
+    {
+     "key": "a120",
+     "body": "Delivered: freeze added to the shared team calendar and to release.sh, which now refuses a train inside the window without --hotfix."
+    }
+   ]
+  }
+ ],
+ "docs": [
+  {
+   "key": "d1",
+   "title": "Authentication token lifecycle",
+   "project": "api",
+   "body": "---\ndescription: How access and refresh tokens are issued, rotated and revoked.\n---\n\n\n# Authentication token lifecycle\n\n## Access tokens\n\nAccess tokens are signed JWTs with a lifetime of **15 minutes**. They carry the\naccount id, the scopes and a `jti`. The gateway validates the signature locally\nagainst the JWKS it caches for one hour; it never calls the auth service on the\nhot path.\n\nWhen an access token is past its `exp`, the gateway answers `401` with the error\ncode `ERR_TOKEN_EXPIRED`. Clients must then use their refresh token; they must\nnot prompt the user.\n\n## Refresh tokens\n\nRefresh tokens live **30 days** and rotate on every use. Each refresh returns a\nnew pair and invalidates the old refresh token. Tokens that descend from the\nsame login form a *family*.\n\n```http\nPOST /oauth/token\nContent-Type: application/x-www-form-urlencoded\n\ngrant_type=refresh_token&refresh_token=rt_9f2c...\n```\n\n## Reuse detection\n\nIf a refresh token that was already rotated is presented again, the whole family\nis revoked and the user must log in again. This protects against a stolen token\nbeing replayed. See D41 for the 10-second grace window that was added after\nmobile clients raced two refreshes.\n\n## Revocation\n\n- Logging out revokes the family.\n- Changing the password revokes every family for the account.\n- Support can revoke a family from the admin console (`auth:revoke` scope).\n\n## Error codes\n\n| Code | Meaning |\n|------|---------|\n| `ERR_TOKEN_EXPIRED` | access token past `exp` |\n| `ERR_TOKEN_REVOKED` | family was revoked |\n| `ERR_TOKEN_REUSED` | rotated refresh token presented again |\n"
+  },
+  {
+   "key": "d2",
+   "title": "Rate limiting policy",
+   "project": "api",
+   "body": "# Rate limiting policy\n\nEvery API key gets a token bucket of **600 requests per minute**, refilled\ncontinuously. When the bucket is empty the API answers `429 Too Many Requests`\nwith a `Retry-After` header in seconds.\n\n- Buckets are per key, not per IP.\n- Burst capacity is 100 requests on top of the steady rate.\n- Internal service accounts are exempt; they are throttled at the mesh instead.\n- Partner integrations sit on a separate tier (see the ruling on task\n  \"Raise rate limit for partner integrations\").\n\nLimits are enforced in the gateway by the `ratelimit` filter, backed by Redis.\n"
+  },
+  {
+   "key": "d3",
+   "title": "Pagination conventions",
+   "project": "api",
+   "body": "# Pagination conventions\n\nAll list endpoints use **cursor pagination**. Offsets are not supported because\nthey skip or repeat rows when data changes between pages.\n\n```json\n{\n  \"data\": [ ... ],\n  \"next_cursor\": \"eyJpZCI6MTIzNH0\",\n  \"has_more\": true\n}\n```\n\n- `limit` defaults to 50 and is capped at 200.\n- Cursors are opaque base64; clients must not parse them.\n- A cursor is valid for 24 hours.\n"
+  },
+  {
+   "key": "d4",
+   "title": "Error envelope format",
+   "project": "api",
+   "body": "# Error envelope format\n\nEvery non-2xx response has the same JSON body:\n\n```json\n{ \"error\": { \"code\": \"ERR_VALIDATION\", \"message\": \"email is required\", \"request_id\": \"req_81ab\" } }\n```\n\nCodes are stable and documented; messages are for humans and may change.\n\nCommon codes: `ERR_VALIDATION` (422), `ERR_NOT_FOUND` (404), `ERR_TOKEN_EXPIRED`\n(401), `ERR_FORBIDDEN` (403), `ERR_QUOTA_EXCEEDED` (429), `ERR_CONFLICT` (409),\n`ERR_INTERNAL` (500). Always include `request_id` when filing a bug.\n"
+  },
+  {
+   "key": "d5",
+   "title": "API versioning",
+   "project": "api",
+   "body": "# API versioning\n\nWe version by date. Clients send `Api-Version: 2026-03-01`; a request without\nthe header gets the version pinned to the key when it was created.\n\nBreaking changes only land in a new dated version. A version is supported for\n**12 months** after its successor ships. Deprecated endpoints return a\n`Deprecation` header and, once a date is fixed, a `Sunset` header.\n\nNon-breaking additions (new fields, new endpoints, new optional parameters) ship\ninto every supported version.\n"
+  },
+  {
+   "key": "d6",
+   "title": "payments.rs module overview",
+   "project": "api",
+   "body": "# payments.rs module overview\n\n`services/billing/src/payments.rs` owns card captures and refunds.\n\n## Flow\n\n1. `authorize()` places a hold through the gateway adapter.\n2. `capture()` settles the hold; it is idempotent on `Idempotency-Key`.\n3. `refund()` creates a refund against a captured payment, partial or full.\n\n```rust\npub async fn capture(&self, id: PaymentId, key: IdempotencyKey) -> Result<Capture, BillingError> {\n    if let Some(prior) = self.idem.lookup(&key).await? {\n        return Ok(prior);\n    }\n    // ...\n}\n```\n\n## Gotchas\n\n- Amounts are integers in minor units (cents). Never use floats.\n- The gateway adapter times out after 20 seconds; a timeout is *not* a failure,\n  the reconciler settles it later.\n- Currency comes from the merchant, never from the request.\n"
+  },
+  {
+   "key": "d7",
+   "title": "Webhook delivery",
+   "project": "api",
+   "body": "# Webhook delivery\n\nEvents are delivered by POST to the merchant's endpoint. A delivery succeeds on\nany 2xx within 10 seconds.\n\nFailed deliveries retry with exponential backoff: 8 attempts over roughly 36\nhours (1m, 5m, 30m, 2h, 5h, 10h, 12h, 6h). After the last attempt the endpoint\nis disabled and the merchant gets an email.\n\nEach request carries `X-Signature: t=<unix>,v1=<hex>`, an HMAC-SHA256 of\n`t + \".\" + body` with the endpoint secret. Receivers should reject timestamps\nolder than five minutes to stop replays.\n"
+  },
+  {
+   "key": "d8",
+   "title": "Idempotency keys",
+   "project": "api",
+   "body": "Clients send `Idempotency-Key` on every POST that moves money. The server stores\nthe first response for 24 hours and replays it for any retry with the same key.\nA retry with the same key but a different body gets `409 ERR_CONFLICT`.\n"
+  },
+  {
+   "key": "d9",
+   "title": "Client SDK support policy",
+   "project": "api",
+   "body": "# Client SDK support policy\n\nWe publish official SDKs for TypeScript, Python and Kotlin. Each major line gets\nsecurity fixes for 18 months after the next major ships. SDKs follow semver:\nbreaking changes only in a major. Generated code comes from the OpenAPI spec in\n`api/openapi.yaml`; hand edits to generated files are overwritten.\n"
+  },
+  {
+   "key": "d10",
+   "title": "Search service",
+   "project": "api",
+   "body": "# Search service\n\nProduct search runs on a dedicated OpenSearch cluster fed by change-data-capture\nfrom the catalog database. Indexing lag is normally under 5 seconds.\n\nQueries go through `GET /v2/search`. Relevance tuning lives in\n`search/boosts.yaml`; changes there need a before/after run of the relevance\nsuite (`make relevance`), which scores 400 judged queries.\n"
+  },
+  {
+   "key": "d11",
+   "title": "Frontend build pipeline",
+   "project": "web",
+   "body": "# Frontend build pipeline\n\nThe web app builds with Vite. `pnpm build` produces hashed assets in `dist/`\nwhich CI uploads to the CDN bucket.\n\n## Bundle budget\n\nThe main entry chunk must stay under **250 KB gzipped**. CI runs\n`pnpm size-check` and fails the build over budget. Large dependencies (charts,\nthe rich-text editor) are loaded with dynamic `import()`.\n\n## Source maps\n\nSource maps are uploaded to the crash service and *not* served publicly.\n"
+  },
+  {
+   "key": "d12",
+   "title": "Design tokens and theming",
+   "project": "web",
+   "body": "# Design tokens and theming\n\nColours, spacing and type scales are design tokens in `tokens/*.json`, compiled\ninto CSS custom properties. Components never hard-code a hex value.\n\nDark mode swaps the token set under `[data-theme=\"dark\"]` and follows the OS\nsetting unless the user picks one explicitly. New components must be checked in\nboth themes before review.\n"
+  },
+  {
+   "key": "d13",
+   "title": "Accessibility checklist",
+   "project": "web",
+   "body": "---\ndescription: What every web change is checked against before merge.\n---\n\n\n# Accessibility checklist\n\nWe target WCAG 2.2 AA.\n\n- Text contrast at least 4.5:1, large text 3:1.\n- Every interactive element reachable by keyboard, with a visible focus ring.\n- Images have `alt`; decorative ones have `alt=\"\"`.\n- Form fields have a programmatic label; errors are announced with `aria-live`.\n- No motion that cannot be turned off; respect `prefers-reduced-motion`.\n- Screen-reader smoke test with VoiceOver on the changed flow.\n"
+  },
+  {
+   "key": "d14",
+   "title": "Feature flags",
+   "project": "web",
+   "body": "# Feature flags\n\nFlags are served by the internal Beacon service and read through\n`useFlag(\"name\")` on the web and `Flags.isOn(\"name\")` on mobile.\n\nRules:\n- Every flag has an owner and an expiry date.\n- A flag that has been fully on for 90 days is removed; the cleanup bot opens a\n  ticket.\n- Flags gate code paths, not configuration values; config belongs in settings.\n"
+  },
+  {
+   "key": "d15",
+   "title": "Browser support matrix",
+   "project": "web",
+   "body": "We support the last two major versions of Chrome, Edge, Firefox and Safari, plus\nSafari on iOS 16 and newer. Internet Explorer is not supported. Polyfills are\nadded only through `browserslist`, never by hand.\n"
+  },
+  {
+   "key": "d16",
+   "title": "Checkout page performance",
+   "project": "web",
+   "body": "# Checkout page performance\n\nTargets on a mid-range Android phone over 4G:\n\n- Largest Contentful Paint under 2.5 s\n- Interaction to Next Paint under 200 ms\n- Cumulative Layout Shift under 0.1\n\nThe biggest win so far was server-rendering the order summary and deferring the\naddress autocomplete script until the field gets focus.\n"
+  },
+  {
+   "key": "d17",
+   "title": "Web internationalisation",
+   "project": "web",
+   "body": "# Web internationalisation\n\nStrings live in `locales/<lang>.json` and are looked up with `t(\"key\")`.\nSupported languages: English, Dutch, German, French. Missing keys fall back to\nEnglish and are reported to the translation dashboard. Dates and money are\nformatted with `Intl`, never by string concatenation.\n"
+  },
+  {
+   "key": "d18",
+   "title": "Mobile release train",
+   "project": "mobile",
+   "body": "# Mobile release train\n\niOS and Android ship every **two weeks** on Wednesday.\n\n1. Monday: branch cut, `release/x.y` created, QA regression starts.\n2. Tuesday: submit to App Store review and Play Console internal track.\n3. Wednesday: phased rollout starts at 1%, then 10% after 24 h, 50% after 48 h,\n   100% after 72 h if the crash-free rate stays above 99.5%.\n\nA hotfix skips the train but still goes through phased rollout.\n"
+  },
+  {
+   "key": "d19",
+   "title": "Push notifications",
+   "project": "mobile",
+   "body": "# Push notifications\n\nPushes go through our notifier service, which fans out to APNs and FCM. Device\ntokens are registered on login and deleted on logout.\n\n- Marketing pushes need explicit opt-in and respect quiet hours (22:00-08:00\n  local time).\n- Transactional pushes (payment received, order shipped) are always sent.\n- Invalid tokens reported by APNs/FCM are pruned nightly.\n"
+  },
+  {
+   "key": "d20",
+   "title": "Offline sync design",
+   "project": "mobile",
+   "body": "---\ndescription: How the mobile apps queue changes offline and reconcile them.\n---\n\n\n# Offline sync design\n\n## Local store\n\nThe apps keep a SQLite mirror of the user's records. Every write goes to a local\n*outbox* table first and is shown in the UI immediately.\n\n## Sending the outbox\n\nWhen connectivity returns, the outbox is flushed in order. Each entry carries a\nclient-generated UUID so the server can deduplicate a resend.\n\n```kotlin\noutbox.pending().forEach { change ->\n    api.push(change.id, change.payload)   // server dedupes on change.id\n    outbox.markSent(change.id)\n}\n```\n\n## Conflicts\n\nThe server keeps a `version` per record. If the client's base version is stale:\n\n- Scalar fields: **last write wins**, by server receive time.\n- List fields (tags, attachments): merged as a set union.\n- Deletes win over edits.\n\nThe user sees a small banner when one of their edits was overwritten.\n\n## Limits\n\nThe outbox holds at most 5,000 entries; beyond that the app asks the user to go\nonline before editing more.\n"
+  },
+  {
+   "key": "d21",
+   "title": "Crash reporting triage",
+   "project": "mobile",
+   "body": "Crashes are grouped by the crash service. The on-call mobile engineer triages\nnew groups daily: anything above 0.1% of sessions becomes a P1 ticket, a new\ncrash in the latest release blocks the rollout from widening.\n"
+  },
+  {
+   "key": "d22",
+   "title": "Minimum OS versions",
+   "project": "mobile",
+   "body": "The apps support iOS 16+ and Android 9 (API 28)+. We drop an OS version once it\nfalls below 2% of active devices, announced one release ahead in the app.\n"
+  },
+  {
+   "key": "d23",
+   "title": "Deep links",
+   "project": "mobile",
+   "body": "# Deep links\n\nUniversal links (iOS) and App Links (Android) use the `app.harbor.example`\ndomain. The route table lives in `mobile/shared/routes.json` so both apps and\nthe web fallback agree. Unknown paths open the home screen; they never crash.\n"
+  },
+  {
+   "key": "d24",
+   "title": "Release process",
+   "project": "infra",
+   "body": "---\ndescription: How backend and web changes get from main to production.\n---\n\n\n# Release process\n\n## Cadence\n\nBackend services and the web app deploy on a **train**: Tuesday and Thursday at\n10:00 CET. Anything merged to `main` by 09:00 is on the train.\n\nNo trains on Fridays, on public holidays, or during the December freeze\n(15 December to 5 January). Hotfixes are the exception and need the incident\ncommander's approval.\n\n## Steps\n\n1. The release captain tags `main` (`vYYYY.MM.DD-N`).\n2. CI builds images and runs the smoke suite against staging.\n3. Canary: 5% of traffic for 20 minutes, watching error rate and p99 latency.\n4. Full rollout if the canary stays inside its SLO budget.\n\n```bash\n./scripts/release.sh tag\n./scripts/release.sh promote --canary 5\n./scripts/release.sh promote --all\n```\n\n## Rollback\n\nRollback is one command and takes about three minutes:\n\n```bash\n./scripts/release.sh rollback --to previous\n```\n\nRoll back first, investigate second. A rollback never needs approval.\n\n## Release captain\n\nThe captain rotates weekly with on-call. They own the train, post the changelog\nin #releases and decide whether a flaky canary is a blocker.\n\n## Changelog\n\nEvery merged pull request carries a one-line changelog entry in its description\nunder `Changelog:`. The captain's script collects them per train and groups\nthem by service. Entries are written for support staff, not for engineers:\nsay what changed for a merchant, not which function moved.\n\n## What goes on a train\n\n- Anything merged to `main` that passed CI.\n- Database migrations, but only the *expand* half; the contract half waits for\n  a later train (see the migrations guide).\n- Feature work behind a flag that is off by default.\n\nWhat does not go on a train:\n\n- Changes to the gateway's routing table; those ship in a separate change\n  window on Wednesday afternoon with the infra team present.\n- Terraform changes; they are applied from CI on their own schedule.\n\n## Hotfixes\n\nA hotfix is a single commit cherry-picked onto the last released tag. It runs\nthe same canary as a train, only shorter (10 minutes). The incident commander\napproves it in the incident channel; the approval message is linked from the\ntag. After the hotfix, the same fix must land on `main` before the next train\nso it is not lost.\n\n## Metrics we watch\n\nThe canary gate compares the canary pods with the stable pods on:\n\n| Signal | Threshold |\n|--------|-----------|\n| 5xx rate | no more than 0.5 percentage points above stable |\n| p99 latency | no more than 20% above stable |\n| saturation | CPU and memory under 80% |\n\nIf any threshold is breached for three consecutive minutes the script stops and\npings the captain. The captain can override with `--force`, which is logged and\nreviewed at the weekly ops review.\n"
+  },
+  {
+   "key": "d25",
+   "title": "Incident response runbook",
+   "project": "infra",
+   "body": "---\ndescription: Severity levels, paging and the postmortem rule.\n---\n\n\n# Incident response runbook\n\n## Severity\n\n| Level | Definition | Response |\n|-------|------------|----------|\n| SEV1 | Checkout or login down for most users, or data loss | page immediately, all hands |\n| SEV2 | Major feature degraded, workaround exists | page on-call, 30 min |\n| SEV3 | Minor bug with customer impact | next business day |\n\n## First fifteen minutes\n\n1. Acknowledge the page in PagerTree.\n2. Open an incident channel: `/incident open sev2 \"short title\"`.\n3. Name an incident commander (IC). The IC coordinates; they do not debug.\n4. Post a status update every 30 minutes, even if nothing changed.\n5. If a deploy went out in the last two hours, roll it back before anything else.\n\n## Communication\n\nThe IC owns the status page. Customer-facing wording is reviewed by support\nbefore it goes out for SEV1.\n\n## After the incident\n\nA blameless postmortem is written within **five business days** for every SEV1\nand SEV2, using the postmortem template. Action items become tickets with an\nowner and a due date; they are reviewed at the weekly ops review.\n\n## Roles\n\n- **Incident commander**: owns the timeline, decides on rollbacks, assigns work.\n- **Scribe**: keeps the timeline in the channel with UTC timestamps.\n- **Subject expert**: whoever knows the failing system best; may change during\n  the incident.\n- **Communications lead** (SEV1 only): writes status page updates and talks to\n  support and account managers.\n\n## Useful commands\n\n```bash\n/incident open sev1 \"checkout returns 500\"\n/incident role ic @name\n/incident status \"mitigated: rolled back train 2026.08.14-2\"\n/incident close\n```\n\n## Escalation\n\nIf the on-call primary cannot make progress within 30 minutes on a SEV1, page\nthe engineering manager on duty. For anything involving personal data, also\npage the security lead: a possible data breach has a 72-hour notification\nclock, and the legal team needs to know early.\n\n## Closing\n\nAn incident is closed when customer impact has ended and the IC has confirmed\nthat no mitigation is holding things together temporarily. Temporary\nmitigations (a disabled feature, a manual scaling change) are listed in the\nclosing message with a ticket each.\n"
+  },
+  {
+   "key": "d26",
+   "title": "On-call rotation",
+   "project": "infra",
+   "body": "# On-call rotation\n\nOne primary and one secondary per week. Handover is Monday 10:00 in the ops\nchannel, with a written summary of open alerts and ongoing incidents.\n\n- Primary acknowledges pages within 5 minutes, day or night.\n- Secondary takes over if the primary does not acknowledge within 10 minutes.\n- On-call is compensated with a fixed weekly allowance plus time off in lieu for\n  night pages.\n- Swaps are fine; update the schedule yourself and tell the other person.\n"
+  },
+  {
+   "key": "d27",
+   "title": "Kubernetes cluster layout",
+   "project": "infra",
+   "body": "# Kubernetes cluster layout\n\nTwo clusters per region: `prod-eu-1` and `staging-eu-1`. Namespaces map to\nteams (`api`, `web`, `data`). Each service gets requests and limits; limits on\nmemory are mandatory, limits on CPU are not set (we rely on requests for\nscheduling). Ingress is handled by the shared gateway, never per service.\n"
+  },
+  {
+   "key": "d28",
+   "title": "Secrets management",
+   "project": "infra",
+   "body": "# Secrets management\n\nSecrets live in Vault under `secret/<env>/<service>`. Services read them at\nstart-up through the Vault agent sidecar; nothing is baked into images or\ncommitted to git.\n\nDatabase credentials are dynamic and expire after 24 hours. Static API keys for\nthird parties are rotated every 90 days; the rotation calendar is in the infra\nwiki. A leaked secret is a SEV2: rotate first, then investigate.\n"
+  },
+  {
+   "key": "d29",
+   "title": "Backup and restore",
+   "project": "infra",
+   "body": "# Backup and restore\n\nPostgres takes continuous WAL archiving plus a nightly base snapshot. Snapshots\nare kept for **35 days** in a separate account with object lock.\n\nWe run a restore drill every quarter: restore last night's snapshot into a\nscratch cluster, replay WAL to a chosen point, and verify row counts against\nproduction. The last drill took 47 minutes end to end.\n"
+  },
+  {
+   "key": "d30",
+   "title": "Terraform conventions",
+   "project": "infra",
+   "body": "Infrastructure is in `infra/terraform`, one state per environment. Modules are\npinned by git tag. `terraform plan` output is posted on the pull request by CI\nand a human must approve before `apply`. Never run `apply` from a laptop.\n"
+  },
+  {
+   "key": "d31",
+   "title": "CI runners",
+   "project": "infra",
+   "body": "CI runs on self-hosted runners in the staging cluster, autoscaled from 2 to 40.\nJobs are capped at 30 minutes. Cache keys include the lockfile hash, so a\ndependency bump always starts cold.\n"
+  },
+  {
+   "key": "d32",
+   "title": "TLS certificate renewal",
+   "project": "infra",
+   "body": "Public certificates come from the ACME issuer in cert-manager and renew 30 days\nbefore expiry. An alert fires at 14 days left. Internal mTLS certificates are\nissued by the mesh and last 24 hours.\n"
+  },
+  {
+   "key": "d33",
+   "title": "Cloud cost dashboard",
+   "project": "infra",
+   "body": "The monthly spend dashboard breaks cost down per team namespace and per\nmanaged service. Any week-on-week jump above 15% posts to the ops channel. The\nbiggest line items are the database instances and cross-region egress.\n"
+  },
+  {
+   "key": "d34",
+   "title": "Warehouse schema conventions",
+   "project": "data",
+   "body": "# Warehouse schema conventions\n\n- Raw tables land in `raw_<source>` unchanged.\n- Cleaned models live in `staging_*`, business models in `mart_*`.\n- Snake_case columns; timestamps in UTC and suffixed `_at`; booleans prefixed\n  `is_` or `has_`.\n- Every model has a primary key test and a not-null test on it.\n"
+  },
+  {
+   "key": "d35",
+   "title": "Nightly ETL jobs",
+   "project": "data",
+   "body": "# Nightly ETL jobs\n\nBatch loads are orchestrated by Conveyor. The nightly DAG starts at 02:00 UTC\nand must finish by 06:00 UTC so the morning dashboards are fresh.\n\nIf a job fails, Conveyor retries twice, then pages the data on-call. Late data\nfrom a source is not a failure: the job waits up to 90 minutes for the source's\ncompletion marker before it gives up.\n"
+  },
+  {
+   "key": "d36",
+   "title": "PII handling policy",
+   "project": "data",
+   "body": "---\ndescription: Rules for personal data in the warehouse and in analytics events.\n---\n\n\n# PII handling policy\n\nPersonal data (names, email addresses, phone numbers, street addresses, IPs)\nnever enters the `mart_*` layer in clear text.\n\n- Emails are hashed with a keyed SHA-256 before load.\n- Free-text fields are excluded unless a scrubber has run over them.\n- Access to `raw_*` requires the `pii-reader` role, granted for 30 days at a time.\n\nErasure requests (GDPR article 17) are processed within 30 days: the account is\ndeleted in production and its hash is added to the suppression list so the\nwarehouse drops it on the next load.\n"
+  },
+  {
+   "key": "d37",
+   "title": "Metric definition: active user",
+   "project": "data",
+   "body": "An **active user** is an account that performed at least one authenticated\naction (not just an app open) in the period. DAU, WAU and MAU use calendar days\nin UTC. Internal and test accounts are excluded via `is_internal`.\n"
+  },
+  {
+   "key": "d38",
+   "title": "Data retention schedule",
+   "project": "data",
+   "body": "Raw event data is kept 13 months, aggregated models indefinitely. Application\nlogs are kept 30 days, audit logs 7 years. Retention is enforced by lifecycle\nrules on the buckets, not by scheduled deletes.\n"
+  },
+  {
+   "key": "d39",
+   "title": "Event tracking plan",
+   "project": "data",
+   "body": "# Event tracking plan\n\nAnalytics events are named `object_action` in past tense: `order_placed`,\n`coupon_applied`, `signup_completed`. Every event carries `user_id`,\n`session_id`, `platform` and `app_version`. New events are added to\n`tracking/plan.yaml` first; the schema check in CI rejects unknown events.\n"
+  },
+  {
+   "key": "d40",
+   "title": "Dashboard ownership",
+   "project": "data",
+   "body": "Every dashboard in the BI tool has one owning team in its description. Unowned\ndashboards are archived after 60 days without views. Metrics shown on the exec\ndashboard must come from a `mart_*` model with tests.\n"
+  },
+  {
+   "key": "d41",
+   "title": "Onboarding for new engineers",
+   "project": null,
+   "body": "---\ndescription: First-week checklist for people joining engineering.\n---\n\n\n# Onboarding for new engineers\n\n## Day one\n\n- Get your laptop from IT and enrol it in device management.\n- Ask your buddy for access to the code host, the chat workspace and Vault.\n- Read the glossary and the architecture overview.\n\n## First week\n\n- Run the stack locally (see *Local development setup*).\n- Ship a small change through the whole release train by Thursday.\n- Shadow the on-call engineer for one day.\n- Book 30-minute intros with the leads of api, web, mobile, infra and data.\n\n## First month\n\n- Take your first on-call shift as secondary.\n- Pick one runbook and improve it.\n\nYour buddy is your first stop for any question. There are no stupid questions in\nthe first month, or after it.\n"
+  },
+  {
+   "key": "d42",
+   "title": "Code review guidelines",
+   "project": null,
+   "body": "# Code review guidelines\n\n- Reviews within one working day. If you cannot, say so and hand it off.\n- Keep pull requests under ~400 changed lines; split otherwise.\n- Comment on the code, not the person. Prefix optional remarks with `nit:`.\n- The author merges after approval, not the reviewer.\n- Two approvals for anything touching auth, payments or data deletion.\n"
+  },
+  {
+   "key": "d43",
+   "title": "Commit message style",
+   "project": null,
+   "body": "Commits use Conventional Commits: `type(scope): summary` in the imperative,\nunder 72 characters, e.g. `fix(auth): refresh grace window`. The body explains\nwhy, not what. Reference the ticket as `#123` in the footer.\n"
+  },
+  {
+   "key": "d44",
+   "title": "Glossary",
+   "project": null,
+   "body": "# Glossary\n\n- **Merchant** - a business that sells through our platform.\n- **Capture** - settling a previously authorised card payment.\n- **Train** - a scheduled deploy slot.\n- **IC** - incident commander.\n- **Beacon** - the feature-flag service.\n- **Conveyor** - the batch orchestrator for the warehouse.\n- **Outbox** - the mobile app's queue of unsent local changes.\n"
+  },
+  {
+   "key": "d45",
+   "title": "Team rituals",
+   "project": null,
+   "body": "Standup is 09:30, fifteen minutes, async in the channel on Fridays. Planning is\nevery other Monday. The retrospective is every other Friday at 15:00 and is\nfacilitated by a different person each time. Demo day is the last Thursday of\nthe month.\n"
+  },
+  {
+   "key": "d46",
+   "title": "Decision log index",
+   "project": null,
+   "body": "# Decision log index\n\n| ID | Decision |\n|----|----------|\n| D12 | Cursor pagination on every list endpoint |\n| D27 | Date-based API versions instead of /v2 paths |\n| D33 | Last-write-wins for scalar fields in offline sync |\n| D41 | 10-second grace window for refresh-token reuse |\n| D44 | Memory limits mandatory, CPU limits unset on Kubernetes |\n| D52 | Keyed SHA-256 for emails in the warehouse |\n"
+  },
+  {
+   "key": "d47",
+   "title": "Security vulnerability disclosure",
+   "project": null,
+   "body": "External researchers report issues to security@harbor.example. We acknowledge\nwithin two business days and aim to fix critical issues within 7 days, high\nwithin 30. Researchers are credited in the changelog unless they ask otherwise.\nWe do not run a paid bounty programme.\n"
+  },
+  {
+   "key": "d48",
+   "title": "Dependency upgrade policy",
+   "project": null,
+   "body": "Renovate opens dependency pull requests every Monday. Patch and minor bumps\nauto-merge if CI is green. Major bumps get a human review and a note on what\nchanged. Nothing stays more than two majors behind upstream.\n"
+  },
+  {
+   "key": "d49",
+   "title": "Testing strategy",
+   "project": null,
+   "body": "# Testing strategy\n\n- Unit tests next to the code; fast, no network.\n- Integration tests run against real Postgres and Redis in containers.\n- End-to-end tests cover the five money paths only (signup, login, checkout,\n  refund, payout); they run on every train, not every commit.\n- A flaky test is quarantined within a day and fixed or deleted within a week.\n"
+  },
+  {
+   "key": "d50",
+   "title": "Postmortem template",
+   "project": null,
+   "body": "---\ndescription: Template for blameless postmortems after SEV1/SEV2 incidents.\n---\n\n\n# Postmortem: <title>\n\n## Summary\nOne paragraph: what happened, impact, duration.\n\n## Timeline (UTC)\n- hh:mm - detection\n- hh:mm - mitigation\n- hh:mm - resolution\n\n## Root cause\nExplain the chain of causes; avoid naming individuals.\n\n## What went well / what went badly\n\n## Action items\n| Action | Owner | Due |\n|--------|-------|-----|\n"
+  },
+  {
+   "key": "d51",
+   "title": "Hiring interview loop",
+   "project": null,
+   "body": "The engineering loop is four conversations: a pairing exercise on a small real\nbug, a system design talk, a values interview, and a chat with the hiring\nmanager. Interviewers submit written feedback before the debrief and do not\ndiscuss the candidate beforehand.\n"
+  },
+  {
+   "key": "d52",
+   "title": "Writing style for docs",
+   "project": null,
+   "body": "Docs are written in plain English, second person, present tense. Lead with the\nrule, then the reason. One idea per paragraph. Code, paths and flags go in\nbackticks. Screenshots go stale; prefer text.\n"
+  },
+  {
+   "key": "d53",
+   "title": "Local development setup",
+   "project": null,
+   "body": "# Local development setup\n\n```bash\ngit clone git@code.harbor.example:platform/monorepo.git\ncd monorepo\nmake bootstrap     # installs toolchains via mise\nmake dev           # docker compose up: postgres, redis, opensearch, mailhog\n```\n\nSeed data: `make seed` creates a demo merchant with 200 orders. The web app runs\non http://localhost:5173 and the API on http://localhost:8080. If ports clash,\ncopy `.env.example` to `.env` and change them there.\n"
+  },
+  {
+   "key": "d54",
+   "title": "Database migrations guide",
+   "project": null,
+   "body": "---\ndescription: How to change the Postgres schema without downtime.\n---\n\n\n# Database migrations guide\n\nWe deploy several times a week with no maintenance window, so every schema\nchange must work with both the old and the new application code running at the\nsame time.\n\n## Expand, migrate, contract\n\n1. **Expand**: add the new column or table, nullable or with a default.\n2. **Migrate**: ship code that writes both, then backfill in batches.\n3. **Contract**: in a *later* release, remove the old column.\n\nNever rename or drop a column in the same release that stops using it.\n\n## Writing a migration\n\nMigrations are plain SQL files in `db/migrations/`, numbered by timestamp.\n\n```sql\n-- 20260812_add_orders_channel.sql\nALTER TABLE orders ADD COLUMN channel text;\nCREATE INDEX CONCURRENTLY idx_orders_channel ON orders (channel);\n```\n\n## Rules\n\n- Indexes on large tables are created `CONCURRENTLY`.\n- Backfills run in batches of 10,000 rows with a pause, from a job, not the\n  migration file.\n- A migration must finish in under 5 seconds of lock time on production-sized\n  data; test it against the anonymised snapshot.\n- `NOT NULL` on an existing column: add a `CHECK ... NOT VALID` constraint\n  first, validate it, then set `NOT NULL`.\n\n## Reviewing\n\nMigrations need a review from someone on the api team, and the pull request must\nsay which release will carry the contract step.\n\n## Common recipes\n\n### Renaming a column\n\n```sql\n-- release N: expand\nALTER TABLE merchants ADD COLUMN display_name text;\n-- release N: code writes both name and display_name, reads name\n-- job: backfill display_name from name in batches\n-- release N+1: code reads display_name\n-- release N+2: contract\nALTER TABLE merchants DROP COLUMN name;\n```\n\n### Changing a column type\n\nAdd a new column with the new type, dual-write, backfill, switch reads, then\ndrop the old one. Never `ALTER COLUMN ... TYPE` on a table with more than a\nmillion rows: it rewrites the table under an exclusive lock.\n\n### Adding a foreign key\n\nAdd it `NOT VALID`, then `VALIDATE CONSTRAINT` in a separate migration. The\nvalidation takes only a share lock and does not block writes.\n\n## When a migration goes wrong\n\nIf a migration fails halfway on production, do not re-run it by hand. Roll the\napplication back if needed, then write a new forward migration that repairs the\nstate. We do not write down-migrations: they are never tested and usually lose\ndata.\n"
+  },
+  {
+   "key": "d55",
+   "title": "Logging conventions",
+   "project": null,
+   "body": "# Logging conventions\n\nLogs are structured JSON with `level`, `msg`, `service`, `request_id` and\n`trace_id`. Use `info` for state changes, `warn` for handled problems, `error`\nonly when a human should look.\n\nNever log personal data or credentials: no email addresses, tokens, card numbers\nor request bodies. The log shipper redacts known patterns, but that is a safety\nnet, not permission.\n"
+  },
+  {
+   "key": "d56",
+   "title": "Distributed tracing",
+   "project": null,
+   "body": "All services emit OpenTelemetry spans to the collector. Sampling is 10% of\nnormal requests and 100% of requests that error or take over 2 seconds. Use the\n`trace_id` from a log line to open the whole request in the tracing UI.\n"
+  },
+  {
+   "key": "d57",
+   "title": "Caching strategy",
+   "project": null,
+   "body": "# Caching strategy\n\nRead-heavy endpoints cache in Redis with a TTL, never indefinitely. Default TTL\nis 5 minutes; catalog data 1 hour. Writes invalidate by key, not by flushing.\nThe CDN caches static assets for a year (they are content-hashed) and HTML for\n0 seconds.\n"
+  },
+  {
+   "key": "d58",
+   "title": "Email deliverability",
+   "project": null,
+   "body": "Transactional email goes through our mail relay with SPF, DKIM and DMARC\n(`p=quarantine`) on `harbor.example`. Marketing email uses a separate\nsubdomain so a complaint spike cannot hurt receipts and password resets. Hard\nbounces are suppressed immediately.\n"
+  },
+  {
+   "key": "d59",
+   "title": "Architecture overview",
+   "project": null,
+   "body": "# Architecture overview\n\nClients (web, iOS, Android, partner integrations) talk to one gateway. Behind it\nsit the core services: accounts, catalog, orders, billing, notifier and search.\nServices own their Postgres databases and publish events to the message bus;\nthe warehouse consumes those events. There is no shared database between\nservices.\n"
+  },
+  {
+   "key": "d60",
+   "title": "Afspraken overdracht klantenservice",
+   "project": null,
+   "body": "# Afspraken overdracht klantenservice\n\nTickets die de klantenservice doorzet naar engineering krijgen altijd een\nvoorbeeld-ordernummer en een tijdstip mee. Zonder die twee gegevens gaat het\nticket terug. Engineering reageert binnen één werkdag met een eerste inschatting,\nook als de oplossing langer duurt. Terugbellen naar de klant doet altijd de\nklantenservice, nooit een ontwikkelaar.\n"
+  },
+  {
+   "key": "d61",
+   "title": "Werkplekvergoeding",
+   "project": null,
+   "body": "Wie thuiswerkt krijgt eenmalig een vergoeding voor een bureaustoel en een\ntweede scherm, tot een maximum van 600 euro. Declareren gaat via het\nonkostenportaal met de bon erbij, binnen drie maanden na aankoop.\n"
+  },
+  {
+   "key": "d62",
+   "title": "Status page",
+   "project": "infra",
+   "body": "The public status page is status.harbor.example, owned by infra.\n"
+  },
+  {
+   "key": "d63",
+   "title": "Design review slot",
+   "project": null,
+   "body": "Design reviews happen Wednesdays at 14:00; add your doc to the agenda by Tuesday.\n"
+  }
+ ],
+ "queries": [
+  {
+   "q": "randomly kicked off, forced to sign back on",
+   "relevant": [
+    "a1",
+    "a2"
+   ],
+   "category": "paraphrase",
+   "note": "refresh-token race logs users out; ruling D41 fixes it"
+  },
+  {
+   "q": "customers getting money back twice",
+   "relevant": [
+    "a4"
+   ],
+   "category": "paraphrase",
+   "note": "duplicate refunds after gateway timeout"
+  },
+  {
+   "q": "throttling ceiling for outside collaborators",
+   "relevant": [
+    "a7"
+   ],
+   "category": "paraphrase",
+   "note": "partner tier 3000 req/min"
+  },
+  {
+   "q": "retiring the legacy lookup route",
+   "relevant": [
+    "a10",
+    "a11",
+    "a12"
+   ],
+   "category": "paraphrase",
+   "note": "deprecating /v1/search"
+  },
+  {
+   "q": "why purchase history takes ages",
+   "relevant": [
+    "a15",
+    "a16"
+   ],
+   "category": "paraphrase",
+   "note": "slow order listing, missing index"
+  },
+  {
+   "q": "giant javascript blob slowing the stats screen",
+   "relevant": [
+    "a23",
+    "a24"
+   ],
+   "category": "paraphrase",
+   "note": "charting lib in entry chunk"
+  },
+  {
+   "q": "grey captions unreadable on the black colour scheme",
+   "relevant": [
+    "a25",
+    "a26"
+   ],
+   "category": "paraphrase",
+   "note": "dark-theme muted text contrast"
+  },
+  {
+   "q": "obsolete toggles left permanently enabled",
+   "relevant": [
+    "a31",
+    "a32",
+    "d14"
+   ],
+   "category": "paraphrase",
+   "note": "stale feature flags, 90-day rule"
+  },
+  {
+   "q": "hiding if a person is registered",
+   "relevant": [
+    "a36"
+   ],
+   "category": "paraphrase",
+   "note": "never reveal whether an email address exists"
+  },
+  {
+   "q": "application dies right at launch on handsets",
+   "relevant": [
+    "a41",
+    "a42"
+   ],
+   "category": "paraphrase",
+   "note": "Android startup crash 4f1c"
+  },
+  {
+   "q": "copies appearing after working without internet",
+   "relevant": [
+    "a44",
+    "a45"
+   ],
+   "category": "paraphrase",
+   "note": "duplicate items from outbox resend"
+  },
+  {
+   "q": "alerts on iPhones show up with lag",
+   "relevant": [
+    "a47",
+    "a48"
+   ],
+   "category": "paraphrase",
+   "note": "late iOS push notifications"
+  },
+  {
+   "q": "switching to the standby database rehearsal",
+   "relevant": [
+    "a57"
+   ],
+   "category": "paraphrase",
+   "note": "failover drill result"
+  },
+  {
+   "q": "too many wake-ups for the duty engineer",
+   "relevant": [
+    "a71",
+    "a72"
+   ],
+   "category": "paraphrase",
+   "note": "pager fatigue, night pages"
+  },
+  {
+   "q": "paying a lot to move bytes between server farms",
+   "relevant": [
+    "a66",
+    "a67"
+   ],
+   "category": "paraphrase",
+   "note": "cross-region egress cost"
+  },
+  {
+   "q": "morning numbers not ready in time",
+   "relevant": [
+    "a76",
+    "a77"
+   ],
+   "category": "paraphrase",
+   "note": "nightly ETL misses deadline"
+  },
+  {
+   "q": "forgotten customers still visible in analytics",
+   "relevant": [
+    "a82"
+   ],
+   "category": "paraphrase",
+   "note": "erasure requests surviving a day"
+  },
+  {
+   "q": "recovery messages ending up in junk",
+   "relevant": [
+    "a106",
+    "a107"
+   ],
+   "category": "paraphrase",
+   "note": "password reset mails in spam"
+  },
+  {
+   "q": "keeping customer identities out of diagnostic output",
+   "relevant": [
+    "d55"
+   ],
+   "category": "paraphrase",
+   "note": "logging conventions: never log personal data"
+  },
+  {
+   "q": "build machines for automated checks",
+   "relevant": [
+    "d31"
+   ],
+   "category": "paraphrase",
+   "note": "CI runners"
+  },
+  {
+   "q": "outsiders who find a hole in our product",
+   "relevant": [
+    "d47"
+   ],
+   "category": "paraphrase",
+   "note": "vulnerability disclosure by external researchers"
+  },
+  {
+   "q": "backing out a faulty version quickly",
+   "relevant": [
+    "d24"
+   ],
+   "category": "paraphrase",
+   "note": "rollback section of release process"
+  },
+  {
+   "q": "leaking payment details into user recordings",
+   "relevant": [
+    "a115",
+    "a116"
+   ],
+   "category": "paraphrase",
+   "note": "session replay captured card numbers"
+  },
+  {
+   "q": "small spelling mistakes giving empty lists",
+   "relevant": [
+    "a109",
+    "a110"
+   ],
+   "category": "paraphrase",
+   "note": "fuzzy matching disabled in search"
+  },
+  {
+   "q": "jobs killed for eating too much RAM",
+   "relevant": [
+    "a112",
+    "a113"
+   ],
+   "category": "paraphrase",
+   "note": "OOMKilled Conveyor workers, memory limits"
+  },
+  {
+   "q": "which weekdays can we launch",
+   "relevant": [
+    "d24"
+   ],
+   "category": "concept",
+   "note": "release process: trains Tue/Thu"
+  },
+  {
+   "q": "what to do during an outage",
+   "relevant": [
+    "d25"
+   ],
+   "category": "concept",
+   "note": "incident response runbook"
+  },
+  {
+   "q": "who is responsible after hours",
+   "relevant": [
+    "d26"
+   ],
+   "category": "concept",
+   "note": "on-call rotation"
+  },
+  {
+   "q": "how do I get the project going on my own computer",
+   "relevant": [
+    "d53"
+   ],
+   "category": "concept",
+   "note": "local development setup"
+  },
+  {
+   "q": "evolving storage layout with zero outage",
+   "relevant": [
+    "d54"
+   ],
+   "category": "concept",
+   "note": "expand/contract migrations"
+  },
+  {
+   "q": "where do we store confidential config like passwords",
+   "relevant": [
+    "d28"
+   ],
+   "category": "concept",
+   "note": "secrets management in Vault"
+  },
+  {
+   "q": "what if everything gets wiped",
+   "relevant": [
+    "d29"
+   ],
+   "category": "concept",
+   "note": "backup and restore"
+  },
+  {
+   "q": "etiquette for critiquing colleagues' work",
+   "relevant": [
+    "d42"
+   ],
+   "category": "concept",
+   "note": "code review guidelines"
+  },
+  {
+   "q": "how should behaviour signals be labelled",
+   "relevant": [
+    "d39"
+   ],
+   "category": "concept",
+   "note": "event tracking plan naming"
+  },
+  {
+   "q": "what should a newcomer do initially",
+   "relevant": [
+    "d41"
+   ],
+   "category": "concept",
+   "note": "onboarding checklist"
+  },
+  {
+   "q": "how long is information held before it is removed",
+   "relevant": [
+    "d38"
+   ],
+   "category": "concept",
+   "note": "data retention schedule"
+  },
+  {
+   "q": "how do we avoid charging twice",
+   "relevant": [
+    "d8",
+    "d6"
+   ],
+   "category": "concept",
+   "note": "idempotency keys"
+  },
+  {
+   "q": "how do we notify outside systems in real time",
+   "relevant": [
+    "d7"
+   ],
+   "category": "concept",
+   "note": "webhook delivery"
+  },
+  {
+   "q": "oldest handsets we care about",
+   "relevant": [
+    "d22",
+    "a50"
+   ],
+   "category": "concept",
+   "note": "minimum OS versions"
+  },
+  {
+   "q": "how do we evaluate job applicants",
+   "relevant": [
+    "d51"
+   ],
+   "category": "concept",
+   "note": "interview loop"
+  },
+  {
+   "q": "rules for how we word git history",
+   "relevant": [
+    "d43"
+   ],
+   "category": "concept",
+   "note": "commit message style"
+  },
+  {
+   "q": "speed goals for the purchase flow",
+   "relevant": [
+    "d16"
+   ],
+   "category": "concept",
+   "note": "checkout performance targets"
+  },
+  {
+   "q": "stop a lone caller flooding us",
+   "relevant": [
+    "d2"
+   ],
+   "category": "concept",
+   "note": "rate limiting"
+  },
+  {
+   "q": "source of truth for visual styling",
+   "relevant": [
+    "d12"
+   ],
+   "category": "concept",
+   "note": "design tokens"
+  },
+  {
+   "q": "how many people touch the product daily",
+   "relevant": [
+    "d37"
+   ],
+   "category": "concept",
+   "note": "active user / DAU definition"
+  },
+  {
+   "q": "big picture of how everything fits together",
+   "relevant": [
+    "d59"
+   ],
+   "category": "concept",
+   "note": "architecture overview"
+  },
+  {
+   "q": "what do engineers get paid for standby duty",
+   "relevant": [
+    "d26"
+   ],
+   "category": "concept",
+   "note": "on-call allowance"
+  },
+  {
+   "q": "certificate expiration alert",
+   "relevant": [
+    "d32",
+    "a68",
+    "a69"
+   ],
+   "category": "synonym",
+   "note": "expiry -> expiration"
+  },
+  {
+   "q": "bundle weight budget",
+   "relevant": [
+    "d11"
+   ],
+   "category": "synonym",
+   "note": "size -> weight"
+  },
+  {
+   "q": "outage runbook",
+   "relevant": [
+    "d25"
+   ],
+   "category": "synonym",
+   "note": "incident -> outage"
+  },
+  {
+   "q": "feature toggles cleanup",
+   "relevant": [
+    "d14",
+    "a31",
+    "a32"
+   ],
+   "category": "synonym",
+   "note": "flags -> toggles"
+  },
+  {
+   "q": "throttling policy",
+   "relevant": [
+    "d2"
+   ],
+   "category": "synonym",
+   "note": "rate limiting -> throttling"
+  },
+  {
+   "q": "flaky end-to-end payment test",
+   "relevant": [
+    "a91",
+    "a92"
+   ],
+   "category": "synonym",
+   "note": "checkout -> payment"
+  },
+  {
+   "q": "mobile shipping train",
+   "relevant": [
+    "d18"
+   ],
+   "category": "synonym",
+   "note": "release -> shipping"
+  },
+  {
+   "q": "warehouse naming conventions",
+   "relevant": [
+    "d34"
+   ],
+   "category": "synonym",
+   "note": "schema -> naming"
+  },
+  {
+   "q": "deletion requests warehouse",
+   "relevant": [
+    "a82",
+    "a83",
+    "d36"
+   ],
+   "category": "synonym",
+   "note": "erasure -> deletion"
+  },
+  {
+   "q": "night mode contrast",
+   "relevant": [
+    "a25",
+    "a26",
+    "a27"
+   ],
+   "category": "synonym",
+   "note": "dark -> night"
+  },
+  {
+   "q": "Postgres switchover drill",
+   "relevant": [
+    "a57",
+    "a58"
+   ],
+   "category": "synonym",
+   "note": "failover -> switchover"
+  },
+  {
+   "q": "cursor paging",
+   "relevant": [
+    "d3",
+    "d46"
+   ],
+   "category": "synonym",
+   "note": "pagination -> paging"
+  },
+  {
+   "q": "pager exhaustion",
+   "relevant": [
+    "a71",
+    "a72",
+    "a73"
+   ],
+   "category": "synonym",
+   "note": "fatigue -> exhaustion"
+  },
+  {
+   "q": "secret rotation schedule",
+   "relevant": [
+    "d28"
+   ],
+   "category": "synonym",
+   "note": "calendar -> schedule"
+  },
+  {
+   "q": "search relevancy tuning",
+   "relevant": [
+    "d10"
+   ],
+   "category": "synonym",
+   "note": "relevance -> relevancy"
+  },
+  {
+   "q": "fingerprint login",
+   "relevant": [
+    "a54",
+    "a55",
+    "a56"
+   ],
+   "category": "synonym",
+   "note": "unlock -> login"
+  },
+  {
+   "q": "refresh token grace window",
+   "relevant": [
+    "a2",
+    "a3",
+    "d1",
+    "d46"
+   ],
+   "category": "keyword",
+   "note": ""
+  },
+  {
+   "q": "bundle budget",
+   "relevant": [
+    "d11"
+   ],
+   "category": "keyword",
+   "note": ""
+  },
+  {
+   "q": "phased rollout crash-free rate",
+   "relevant": [
+    "d18",
+    "a52"
+   ],
+   "category": "keyword",
+   "note": ""
+  },
+  {
+   "q": "cursor pagination",
+   "relevant": [
+    "d3",
+    "d46"
+   ],
+   "category": "keyword",
+   "note": ""
+  },
+  {
+   "q": "webhook retries backoff",
+   "relevant": [
+    "d7"
+   ],
+   "category": "keyword",
+   "note": ""
+  },
+  {
+   "q": "restore drill",
+   "relevant": [
+    "d29",
+    "a99"
+   ],
+   "category": "keyword",
+   "note": ""
+  },
+  {
+   "q": "December freeze",
+   "relevant": [
+    "d24",
+    "a118",
+    "a119"
+   ],
+   "category": "keyword",
+   "note": ""
+  },
+  {
+   "q": "canary baseline",
+   "relevant": [
+    "a60",
+    "a61"
+   ],
+   "category": "keyword",
+   "note": ""
+  },
+  {
+   "q": "outbox",
+   "relevant": [
+    "d20",
+    "a44",
+    "d44"
+   ],
+   "category": "keyword",
+   "note": ""
+  },
+  {
+   "q": "quiet hours marketing pushes",
+   "relevant": [
+    "d19"
+   ],
+   "category": "keyword",
+   "note": ""
+  },
+  {
+   "q": "expand contract migration",
+   "relevant": [
+    "d54"
+   ],
+   "category": "keyword",
+   "note": "d24 mentions the expand half in passing; deliberately not labelled"
+  },
+  {
+   "q": "composite index merchant_id",
+   "relevant": [
+    "a15"
+   ],
+   "category": "keyword",
+   "note": ""
+  },
+  {
+   "q": "suppression list",
+   "relevant": [
+    "d36",
+    "a82",
+    "a83"
+   ],
+   "category": "keyword",
+   "note": ""
+  },
+  {
+   "q": "connection max lifetime",
+   "relevant": [
+    "a58"
+   ],
+   "category": "keyword",
+   "note": ""
+  },
+  {
+   "q": "consent banner",
+   "relevant": [
+    "a39",
+    "a40"
+   ],
+   "category": "keyword",
+   "note": ""
+  },
+  {
+   "q": "statement caching pooler",
+   "relevant": [
+    "a94",
+    "a95"
+   ],
+   "category": "keyword",
+   "note": ""
+  },
+  {
+   "q": "Vault agent sidecar",
+   "relevant": [
+    "d28",
+    "a63",
+    "a64"
+   ],
+   "category": "keyword",
+   "note": ""
+  },
+  {
+   "q": "exec dashboard",
+   "relevant": [
+    "d40",
+    "a79"
+   ],
+   "category": "keyword",
+   "note": ""
+  },
+  {
+   "q": "onboarding buddy",
+   "relevant": [
+    "d41",
+    "a88"
+   ],
+   "category": "keyword",
+   "note": ""
+  },
+  {
+   "q": "retrospective",
+   "relevant": [
+    "d45"
+   ],
+   "category": "keyword",
+   "note": ""
+  },
+  {
+   "q": "clock skew",
+   "relevant": [
+    "a22"
+   ],
+   "category": "keyword",
+   "note": ""
+  },
+  {
+   "q": "ERR_TOKEN_EXPIRED",
+   "relevant": [
+    "d1",
+    "d4",
+    "a21"
+   ],
+   "category": "identifier",
+   "note": ""
+  },
+  {
+   "q": "D41",
+   "relevant": [
+    "d46",
+    "a2",
+    "d1"
+   ],
+   "category": "identifier",
+   "note": ""
+  },
+  {
+   "q": "#607",
+   "relevant": [
+    "a3"
+   ],
+   "category": "identifier",
+   "note": ""
+  },
+  {
+   "q": "payments.rs",
+   "relevant": [
+    "d6",
+    "a4"
+   ],
+   "category": "identifier",
+   "note": ""
+  },
+  {
+   "q": "ERR_VALIDATION",
+   "relevant": [
+    "d4",
+    "a102"
+   ],
+   "category": "identifier",
+   "note": ""
+  },
+  {
+   "q": "X-Signature",
+   "relevant": [
+    "d7"
+   ],
+   "category": "identifier",
+   "note": "exact header only in d7; t5 notes talk about signatures without the header name"
+  },
+  {
+   "q": "Api-Version",
+   "relevant": [
+    "d5"
+   ],
+   "category": "identifier",
+   "note": ""
+  },
+  {
+   "q": "D33",
+   "relevant": [
+    "d46",
+    "a46"
+   ],
+   "category": "identifier",
+   "note": ""
+  },
+  {
+   "q": "prod-eu-1",
+   "relevant": [
+    "d27"
+   ],
+   "category": "identifier",
+   "note": ""
+  },
+  {
+   "q": "tracking/plan.yaml",
+   "relevant": [
+    "d39",
+    "a84"
+   ],
+   "category": "identifier",
+   "note": ""
+  },
+  {
+   "q": "mart_active_users",
+   "relevant": [
+    "a80"
+   ],
+   "category": "identifier",
+   "note": ""
+  },
+  {
+   "q": "release.sh",
+   "relevant": [
+    "d24",
+    "a62",
+    "a120"
+   ],
+   "category": "identifier",
+   "note": ""
+  },
+  {
+   "q": "4f1c",
+   "relevant": [
+    "a41"
+   ],
+   "category": "identifier",
+   "note": "crash group id"
+  },
+  {
+   "q": "harbor-errors",
+   "relevant": [
+    "a103"
+   ],
+   "category": "identifier",
+   "note": ""
+  },
+  {
+   "q": "D44",
+   "relevant": [
+    "d46",
+    "a113"
+   ],
+   "category": "identifier",
+   "note": ""
+  },
+  {
+   "q": "orders/db.go",
+   "relevant": [
+    "a59"
+   ],
+   "category": "identifier",
+   "note": ""
+  },
+  {
+   "q": "ERR_TOKEN_REUSED",
+   "relevant": [
+    "d1"
+   ],
+   "category": "identifier",
+   "note": ""
+  },
+  {
+   "q": "20260702",
+   "relevant": [
+    "a16"
+   ],
+   "category": "identifier",
+   "note": "migration number"
+  },
+  {
+   "q": "SDK 3.0 release",
+   "relevant": [
+    "a19",
+    "a20"
+   ],
+   "category": "span",
+   "note": "'SDK' only in the task title and d9; '3.0' in t7#2; beta publication in t7#3"
+  },
+  {
+   "q": "Android 8 minSdk 28",
+   "relevant": [
+    "a50",
+    "a51"
+   ],
+   "category": "span",
+   "note": "Android 8 in #2, minSdk 28 in #3"
+  },
+  {
+   "q": "autocomplete focus LCP",
+   "relevant": [
+    "a29",
+    "a30",
+    "d16"
+   ],
+   "category": "span",
+   "note": "focus ruling in #2, LCP result in #3"
+  },
+  {
+   "q": "failover 41 seconds max lifetime",
+   "relevant": [
+    "a57",
+    "a58"
+   ],
+   "category": "span",
+   "note": ""
+  },
+  {
+   "q": "partner tier contract sign-off",
+   "relevant": [
+    "a7",
+    "a8",
+    "a9"
+   ],
+   "category": "span",
+   "note": ""
+  },
+  {
+   "q": "disk alert night pages 95%",
+   "relevant": [
+    "a71",
+    "a72"
+   ],
+   "category": "span",
+   "note": ""
+  },
+  {
+   "q": "suppression list start of DAG models built",
+   "relevant": [
+    "a82",
+    "a83"
+   ],
+   "category": "span",
+   "note": ""
+  },
+  {
+   "q": "grace window auth.refresh.grace_hits",
+   "relevant": [
+    "a2",
+    "a3"
+   ],
+   "category": "span",
+   "note": ""
+  },
+  {
+   "q": "Sunset header 14 integrators",
+   "relevant": [
+    "a10",
+    "a11",
+    "a12"
+   ],
+   "category": "span",
+   "note": ""
+  },
+  {
+   "q": "biometric enrolment refresh token",
+   "relevant": [
+    "a54",
+    "a56"
+   ],
+   "category": "span",
+   "note": ""
+  },
+  {
+   "q": "ProfileRepository 5.2.1 migration",
+   "relevant": [
+    "a41",
+    "a42"
+   ],
+   "category": "span",
+   "note": ""
+  },
+  {
+   "q": "zeppelin hangar maintenance",
+   "relevant": [],
+   "category": "unrelated",
+   "note": "nothing stored on this topic"
+  },
+  {
+   "q": "sourdough starter feeding",
+   "relevant": [],
+   "category": "unrelated",
+   "note": "nothing stored on this topic"
+  },
+  {
+   "q": "knitting pattern for socks",
+   "relevant": [],
+   "category": "unrelated",
+   "note": "nothing stored on this topic"
+  },
+  {
+   "q": "tax return deadline",
+   "relevant": [],
+   "category": "unrelated",
+   "note": "'deadline' appears in t29 title only"
+  },
+  {
+   "q": "wedding seating plan",
+   "relevant": [],
+   "category": "unrelated",
+   "note": "'plan' appears in d39"
+  },
+  {
+   "q": "guitar string gauge",
+   "relevant": [],
+   "category": "unrelated",
+   "note": "nothing stored on this topic"
+  },
+  {
+   "q": "chess opening repertoire",
+   "relevant": [],
+   "category": "unrelated",
+   "note": "nothing stored on this topic"
+  },
+  {
+   "q": "hamster cage cleaning",
+   "relevant": [],
+   "category": "unrelated",
+   "note": "nothing stored on this topic"
+  },
+  {
+   "q": "volcano eruption forecast",
+   "relevant": [],
+   "category": "unrelated",
+   "note": "nothing stored on this topic"
+  },
+  {
+   "q": "marathon training schedule",
+   "relevant": [],
+   "category": "unrelated",
+   "note": "'schedule' appears in d38"
+  },
+  {
+   "q": "wine pairing for fish",
+   "relevant": [],
+   "category": "unrelated",
+   "note": "nothing stored on this topic"
+  },
+  {
+   "q": "parking permit renewal",
+   "relevant": [],
+   "category": "unrelated",
+   "note": "adversarial: 'renewal' matches certificate docs"
+  },
+  {
+   "q": "mortgage interest rate",
+   "relevant": [],
+   "category": "unrelated",
+   "note": "adversarial: 'rate' matches rate limiting"
+  },
+  {
+   "q": "uitgelogd na token vernieuwen",
+   "relevant": [
+    "a1",
+    "a2"
+   ],
+   "category": "dutch",
+   "note": "NL query, EN note; only 'token' shared. Hard for an English model."
+  },
+  {
+   "q": "wanneer releasen we",
+   "relevant": [
+    "d24"
+   ],
+   "category": "dutch",
+   "note": "NL query, EN doc. Hard."
+  },
+  {
+   "q": "dubbele terugbetalingen",
+   "relevant": [
+    "a4"
+   ],
+   "category": "dutch",
+   "note": "NL query, EN note. Very hard: no shared token."
+  },
+  {
+   "q": "storing afhandelen",
+   "relevant": [
+    "d25"
+   ],
+   "category": "dutch",
+   "note": "NL 'storing' = outage. Very hard."
+  },
+  {
+   "q": "wachtwoord reset mail in spam",
+   "relevant": [
+    "a106",
+    "a107"
+   ],
+   "category": "dutch",
+   "note": "NL query, shares 'reset', 'spam' (title only), 'mail'"
+  },
+  {
+   "q": "donkere modus contrast",
+   "relevant": [
+    "a25",
+    "a26"
+   ],
+   "category": "dutch",
+   "note": "shares 'contrast'"
+  },
+  {
+   "q": "persoonsgegevens in logs",
+   "relevant": [
+    "d55"
+   ],
+   "category": "dutch",
+   "note": "shares 'logs'"
+  },
+  {
+   "q": "ordernummer verplicht klantenservice",
+   "relevant": [
+    "d60",
+    "a97",
+    "a98"
+   ],
+   "category": "dutch",
+   "note": "NL query, NL notes: easy"
+  },
+  {
+   "q": "vergoeding bureaustoel thuiswerken",
+   "relevant": [
+    "d61"
+   ],
+   "category": "dutch",
+   "note": "NL query, NL doc (inflected: thuiswerkt)"
+  },
+  {
+   "q": "support tickets missing order number",
+   "relevant": [
+    "d60",
+    "a97"
+   ],
+   "category": "dutch",
+   "note": "EN query for NL notes. Hard."
+  },
+  {
+   "q": "home office chair allowance",
+   "relevant": [
+    "d61"
+   ],
+   "category": "dutch",
+   "note": "EN query for NL doc. Very hard."
+  },
+  {
+   "q": "nieuwe collega inwerken",
+   "relevant": [
+    "d41",
+    "a88"
+   ],
+   "category": "dutch",
+   "note": "NL query, EN onboarding. Very hard."
+  },
+  {
+   "q": "refesh token grace windw",
+   "relevant": [
+    "a2",
+    "a3",
+    "d1",
+    "d46"
+   ],
+   "category": "typo",
+   "note": ""
+  },
+  {
+   "q": "idempotncy key refunds",
+   "relevant": [
+    "a4",
+    "a5",
+    "d8"
+   ],
+   "category": "typo",
+   "note": ""
+  },
+  {
+   "q": "pagniation cursor",
+   "relevant": [
+    "d3",
+    "d46"
+   ],
+   "category": "typo",
+   "note": ""
+  },
+  {
+   "q": "kubernets memory limits",
+   "relevant": [
+    "d27",
+    "a113"
+   ],
+   "category": "typo",
+   "note": ""
+  },
+  {
+   "q": "incidnet severity levels",
+   "relevant": [
+    "d25"
+   ],
+   "category": "typo",
+   "note": ""
+  },
+  {
+   "q": "offline sycn conflicts",
+   "relevant": [
+    "d20"
+   ],
+   "category": "typo",
+   "note": ""
+  },
+  {
+   "q": "webhok signature",
+   "relevant": [
+    "d7",
+    "a13",
+    "a14"
+   ],
+   "category": "typo",
+   "note": ""
+  },
+  {
+   "q": "accesibility checklist",
+   "relevant": [
+    "d13"
+   ],
+   "category": "typo",
+   "note": ""
+  },
+  {
+   "q": "certifcate renewal",
+   "relevant": [
+    "d32"
+   ],
+   "category": "typo",
+   "note": ""
+  },
+  {
+   "q": "postmortum template",
+   "relevant": [
+    "d50"
+   ],
+   "category": "typo",
+   "note": ""
+  },
+  {
+   "q": "restor drill",
+   "relevant": [
+    "d29",
+    "a99"
+   ],
+   "category": "typo",
+   "note": ""
+  },
+  {
+   "q": "rate limmit partners",
+   "relevant": [
+    "a7",
+    "d2"
+   ],
+   "category": "typo",
+   "note": ""
+  },
+  {
+   "q": "transalte german settings",
+   "relevant": [
+    "a37",
+    "a38"
+   ],
+   "category": "typo",
+   "note": ""
+  },
+  {
+   "q": "what did we decide about refresh token reuse when two mobile requests race each other",
+   "relevant": [
+    "a1",
+    "a2",
+    "d1",
+    "d46"
+   ],
+   "category": "long",
+   "note": "d1 and d46 both state the D41 grace window"
+  },
+  {
+   "q": "how should I add a column to a big postgres table without locking it during a deploy",
+   "relevant": [
+    "d54"
+   ],
+   "category": "long",
+   "note": ""
+  },
+  {
+   "q": "is there a rule about which alerts are allowed to page someone at night",
+   "relevant": [
+    "a72"
+   ],
+   "category": "long",
+   "note": ""
+  },
+  {
+   "q": "what is the process if a secret like an api key accidentally leaks",
+   "relevant": [
+    "d28"
+   ],
+   "category": "long",
+   "note": ""
+  },
+  {
+   "q": "why did the nightly warehouse load stop finishing before the morning dashboards",
+   "relevant": [
+    "a76",
+    "a77"
+   ],
+   "category": "long",
+   "note": ""
+  },
+  {
+   "q": "how long is a webhook retried before the endpoint gets disabled",
+   "relevant": [
+    "d7"
+   ],
+   "category": "long",
+   "note": ""
+  },
+  {
+   "q": "what are the conflict resolution rules when a user edits the same record offline on two devices",
+   "relevant": [
+    "d20",
+    "a46"
+   ],
+   "category": "long",
+   "note": ""
+  },
+  {
+   "q": "which languages does the web app support and what happens when a translation is missing",
+   "relevant": [
+    "d17"
+   ],
+   "category": "long",
+   "note": ""
+  },
+  {
+   "q": "can biometrics be used instead of the password on the server side",
+   "relevant": [
+    "a54"
+   ],
+   "category": "long",
+   "note": ""
+  },
+  {
+   "q": "what should the canary compare against so thursday releases stop failing",
+   "relevant": [
+    "a60",
+    "a61"
+   ],
+   "category": "long",
+   "note": ""
+  },
+  {
+   "q": "how do we handle a gdpr request to erase a customer from analytics",
+   "relevant": [
+    "d36",
+    "a82",
+    "a83"
+   ],
+   "category": "long",
+   "note": ""
+  },
+  {
+   "q": "what went wrong when the notifier lost its database credentials",
+   "relevant": [
+    "a63"
+   ],
+   "category": "long",
+   "note": ""
+  },
+  {
+   "q": "are we allowed to deploy during the christmas holidays",
+   "relevant": [
+    "d24",
+    "a118"
+   ],
+   "category": "long",
+   "note": ""
+  },
+  {
+   "q": "asdfghjkl qwertyuiop",
+   "relevant": [],
+   "category": "oov",
+   "note": "keyboard mash"
+  },
+  {
+   "q": "zxcvbnmasdf",
+   "relevant": [],
+   "category": "oov",
+   "note": "keyboard mash, one word"
+  },
+  {
+   "q": "qwpeoriu zmxncbv lkjhg",
+   "relevant": [],
+   "category": "oov",
+   "note": "keyboard mash, three words"
+  },
+  {
+   "q": "xyzzy plugh",
+   "relevant": [],
+   "category": "oov",
+   "note": "adventure-game magic words"
+  },
+  {
+   "q": "kubernetesoperatorreconciler",
+   "relevant": [],
+   "category": "oov",
+   "note": "run-together compound; nothing about operators is stored"
+  },
+  {
+   "q": "microservicemeshsidecarinjector",
+   "relevant": [],
+   "category": "oov",
+   "note": "run-together compound; nothing stored"
+  },
+  {
+   "q": "onweersbui vanavond",
+   "relevant": [],
+   "category": "oov",
+   "note": "Dutch: thunderstorm tonight"
+  },
+  {
+   "q": "fietsenstalling gemeente",
+   "relevant": [],
+   "category": "oov",
+   "note": "Dutch: municipal bike shed"
+  },
+  {
+   "q": "boodschappenlijstje supermarkt",
+   "relevant": [],
+   "category": "oov",
+   "note": "Dutch: grocery list"
+  },
+  {
+   "q": "verjaardagscadeau voor oma",
+   "relevant": [],
+   "category": "oov",
+   "note": "Dutch: birthday present for grandma"
+  },
+  {
+   "q": "данных",
+   "relevant": [],
+   "category": "oov",
+   "note": "Russian: 'of data'"
+  },
+  {
+   "q": "погода на завтра",
+   "relevant": [],
+   "category": "oov",
+   "note": "Russian: weather for tomorrow"
+  },
+  {
+   "q": "今天天气怎么样？",
+   "relevant": [],
+   "category": "oov",
+   "note": "Chinese with punctuation: how is the weather today?"
+  },
+  {
+   "q": "寿司の作り方。",
+   "relevant": [],
+   "category": "oov",
+   "note": "Japanese with punctuation: how to make sushi"
+  },
+  {
+   "q": "「週末」の予定！",
+   "relevant": [],
+   "category": "oov",
+   "note": "Japanese with brackets and punctuation: weekend plans"
+  },
+  {
+   "q": "!!! ??? ...",
+   "relevant": [],
+   "category": "oov",
+   "note": "punctuation only"
+  },
+  {
+   "q": "ñandú ëxtrême çàfé",
+   "relevant": [],
+   "category": "oov",
+   "note": "accented gibberish"
+  },
+  {
+   "q": "paginationcursor",
+   "relevant": [
+    "d3",
+    "d46"
+   ],
+   "category": "oov",
+   "note": "run-together compound of a real topic (typo twin: 'pagniation cursor'); a hit is fair"
+  },
+  {
+   "q": "webhooksignature",
+   "relevant": [
+    "d7",
+    "a13",
+    "a14"
+   ],
+   "category": "oov",
+   "note": "run-together compound of a real topic; a hit is fair"
+  },
+  {
+   "q": "klantenservice ordernummer ontbreekt",
+   "relevant": [
+    "d60",
+    "a97"
+   ],
+   "category": "oov",
+   "note": "Dutch query for the Dutch notes; bm25 carries two words"
+  }
+ ]
+}
