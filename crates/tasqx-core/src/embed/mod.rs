@@ -16,8 +16,14 @@
 //! The table is stored as int8 with one f32 scale per row (see `model.rs` for
 //! the file format), which moves a vector by well under 1% of cosine; the
 //! golden test holds every sample to within 0.995 of the f32 model's own
-//! output. Every sum runs in one fixed scalar order, so a text embeds to the
-//! same bits on every run of the same build.
+//! output.
+//!
+//! Every sum here — the rows into a mean, a norm, a dot product — runs as
+//! plain f32 additions in index order, with no parallel or SIMD reduction to
+//! regroup them, so a text embeds to the same bits and two vectors score the
+//! same similarity on every run of the same build. [`round_similarity`] does
+//! not provide that and is not needed for it; it only keeps the noise of the
+//! last digits out of what a caller compares and shows.
 //!
 //! [`MODEL_ID`] names everything a stored vector depends on: the table, its
 //! revision, the quantisation, and the tokenizer's and chunker's versions.
@@ -41,7 +47,7 @@ pub const BLOB_LEN: usize = DIMS + 4;
 pub const REVISION: &str = "bf8b056651a2c21b8d2565580b8569da283cab23";
 
 /// Bump when the tokenizer (`tokenizer.rs`) would give any text different ids.
-pub const TOKENIZER_VERSION: u32 = 1;
+pub const TOKENIZER_VERSION: u32 = 2;
 
 /// Bump when [`chunk`] would cut any text differently.
 pub const CHUNKER_VERSION: u32 = chunk::VERSION;
@@ -49,7 +55,7 @@ pub const CHUNKER_VERSION: u32 = chunk::VERSION;
 /// What every stored vector records as its model. Two vectors are
 /// comparable only when their ids are equal.
 pub const MODEL_ID: &str =
-    "potion-base-8M@bf8b056651a2c21b8d2565580b8569da283cab23/int8/tok1/chunk1";
+    "potion-base-8M@bf8b056651a2c21b8d2565580b8569da283cab23/int8/tok2/chunk2";
 
 /// The unit vector of `text`: the mean of its tokens' rows, L2-normalised.
 ///
@@ -151,12 +157,19 @@ pub fn cosine_quantized(query: &[f32; DIMS], stored: &[u8; BLOB_LEN]) -> f32 {
     }
 }
 
-/// A similarity as search compares and reports it: rounded to three
-/// decimals, so that last-digit differences between CPU architectures can
-/// neither move a hit across the floor nor reorder two hits (D196).
+/// A similarity as search compares and reports it: three decimals, and
+/// never `-0.0`. Determinism does not rest on this (see the module docs);
+/// what it removes is display noise, and any last-digit difference a
+/// different CPU's float arithmetic could still introduce (D196).
 pub fn round_similarity(s: f32) -> f64 {
-    (f64::from(s) * 1000.0).round() / 1000.0
+    // `+ 0.0` turns a rounded `-0.0` into `0.0` and leaves everything else.
+    (f64::from(s) * 1000.0).round() / 1000.0 + 0.0
 }
+
+/// The attribution and licence texts of the model and vocabulary compiled
+/// into this crate: the repository's `NOTICE`, carried in the binary so a
+/// build installed without its archive still has it (`tasqx about --notices`).
+pub const NOTICE: &str = include_str!("../../../../NOTICE");
 
 #[cfg(test)]
 mod tests;

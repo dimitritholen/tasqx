@@ -17,12 +17,15 @@
 //!    continuations prefixed `##`; a word with no complete cover, or longer
 //!    than 100 characters, is one `[UNK]`.
 //!
-//! The character classes in steps 2 and 3 are not Rust's or Python's Unicode
-//! tables but the upstream tokenizer's own, measured code point by code point
-//! into `tables.rs` by `scripts/embedding-model.py`. The golden test in
-//! `super::tests` holds the whole pipeline to the upstream ids.
-
-use unicode_normalization::UnicodeNormalization;
+//! Steps 2 and 3 consult no Unicode data of Rust's, Python's or any crate's.
+//! Upstream normalises one character at a time with its own, older Unicode
+//! tables, so `scripts/embedding-model.py` asks it what it makes of every code
+//! point and writes the answers into `tables.rs`: which are dropped, spaced,
+//! split on or split off, and what each changed one becomes (lowercased,
+//! accent removed). Precomposed Hangul is the one class computed rather than
+//! listed. A test checks both steps against upstream checksums over all
+//! 1,112,064 code points, and the golden test holds the whole pipeline to the
+//! upstream ids.
 
 use super::model::Model;
 use super::tables;
@@ -40,7 +43,7 @@ const SPECIALS: [(&str, u32); 5] = [
 ];
 const MAX_WORD_CHARS: usize = 100;
 
-fn in_class(class: &[(u32, u32)], c: char) -> bool {
+pub(super) fn in_class(class: &[(u32, u32)], c: char) -> bool {
     let c = c as u32;
     class
         .binary_search_by(|&(lo, hi)| {
@@ -55,25 +58,42 @@ fn in_class(class: &[(u32, u32)], c: char) -> bool {
         .is_ok()
 }
 
-/// Step 2: the normalised text of one segment.
-pub(super) fn normalize(text: &str) -> String {
-    let mut spaced = String::with_capacity(text.len());
-    for c in text.chars() {
-        if in_class(tables::SPACE, c) {
-            spaced.push(' ');
-        } else if in_class(tables::CJK, c) {
-            spaced.push(' ');
-            spaced.push(c);
-            spaced.push(' ');
-        } else {
-            spaced.push(c);
+/// Step 2 for one character, appended to `out`. Only the measured tables
+/// decide it; no Unicode data of this build's own is consulted.
+fn normalize_char(c: char, out: &mut String) {
+    let cp = c as u32;
+    if in_class(tables::SPACE, c) {
+        out.push(' ');
+    } else if in_class(tables::CJK, c) {
+        out.push(' ');
+        out.push(c);
+        out.push(' ');
+    } else if in_class(tables::DROP, c) {
+    } else if let Ok(i) = tables::MAP.binary_search_by_key(&cp, |&(k, _)| k) {
+        out.push_str(tables::MAP[i].1);
+    } else if (0xAC00..=0xD7A3).contains(&cp) {
+        // A precomposed Hangul syllable: its canonical decomposition, by the
+        // Unicode formula the build script checked against every syllable.
+        let s = cp - 0xAC00;
+        let jamo = [0x1100 + s / 588, 0x1161 + (s % 588) / 28, 0x11A7 + s % 28];
+        for (i, j) in jamo.into_iter().enumerate() {
+            if i < 2 || j != 0x11A7 {
+                out.push(char::from_u32(j).expect("a jamo"));
+            }
         }
+    } else {
+        out.push(c);
     }
-    spaced
-        .nfd()
-        .filter(|&c| !in_class(tables::DROP, c))
-        .flat_map(char::to_lowercase)
-        .collect()
+}
+
+/// Step 2: the normalised text of one segment. Upstream normalises one
+/// character at a time, so the text's normal form is its characters'.
+pub(super) fn normalize(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    for c in text.chars() {
+        normalize_char(c, &mut out);
+    }
+    out
 }
 
 /// Step 3: the words of normalised text.
@@ -82,7 +102,7 @@ pub(super) fn words(text: &str) -> Vec<&str> {
     let mut start = None;
     for (i, c) in text.char_indices() {
         let punct = in_class(tables::PUNCT, c);
-        if c.is_whitespace() || punct {
+        if punct || in_class(tables::WHITE, c) {
             if let Some(s) = start.take() {
                 out.push(&text[s..i]);
             }
@@ -185,6 +205,37 @@ mod tests {
             assert!(class.iter().all(|&(lo, hi)| lo <= hi));
             assert!(class.windows(2).all(|w| w[0].1 < w[1].0));
         }
+    }
+
+    fn fnv(mut h: u64, bytes: &[u8]) -> u64 {
+        for &b in bytes {
+            h = (h ^ u64::from(b)).wrapping_mul(0x100_0000_01B3);
+        }
+        h
+    }
+
+    /// Not a sample: every code point, against checksums the build script
+    /// took from the upstream normalizer and pre-tokenizer.
+    #[test]
+    fn every_code_point_normalises_and_splits_as_upstream() {
+        let (mut norm, mut pre) = (0xCBF2_9CE4_8422_2325, 0xCBF2_9CE4_8422_2325);
+        let mut raw = String::new();
+        for c in (0..0x11_0000).filter_map(char::from_u32) {
+            norm = fnv(norm, normalize(c.encode_utf8(&mut [0; 4])).as_bytes());
+            norm = fnv(norm, &[0xFF]);
+            raw.clear();
+            raw.push('a');
+            raw.push(c);
+            raw.push('a');
+            let class = match words(&raw).len() {
+                2 => 1,
+                3 => 2,
+                _ => 0,
+            };
+            pre = fnv(pre, &[class]);
+        }
+        assert_eq!(norm, tables::NORMALIZE_FNV, "normalizer");
+        assert_eq!(pre, tables::PRETOKENIZE_FNV, "pre-tokenizer");
     }
 
     #[test]

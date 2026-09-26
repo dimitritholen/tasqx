@@ -155,6 +155,9 @@ The build line is the same string `tasqx --version` prints: the crate version
 plus the commit it was built from, or `unknown` for a build from a source
 tarball, which has no git to ask. Quote it when you report a bug.
 
+`tasqx about --notices` prints the third-party notices: the attribution and
+licence texts of the embedding model built into the binary for memory search.
+
 ### Per-command help
 
 Every command answers `-h` with usage, flags and copy-pasteable examples:

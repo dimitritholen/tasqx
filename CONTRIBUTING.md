@@ -103,7 +103,9 @@ These checks are advisory, not blocking:
   goes red.
 - **Some tests `include_str!` files outside `src/`.** These are `ci.yml`,
   `docs/maintainers/mutation-testing.md`, `.cargo/mutants.toml`,
-  `docs/maintainers/terminal-style.md` and `DESIGN.md`. Editing them can redden a
+  `docs/maintainers/terminal-style.md`, `DESIGN.md`, `NOTICE` (compiled into the
+  binary for `tasqx about --notices`) and `scripts/embedding-model.py` (whose
+  pinned revision a test checks against the model id). Editing them can redden a
   unit test, and moving one is a compile error on purpose.
 - **The README, wiki and guides are guarded.** Tests check relative links, the
   MCP tool roster, exit codes and command samples against the binary.
