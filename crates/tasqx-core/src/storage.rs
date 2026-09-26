@@ -563,17 +563,44 @@ fn migrate_vectors(conn: &Connection) -> Result<(), ApiError> {
             UPDATE memory_generation SET gen = gen + 1 WHERE id = 1;
         END;",
     )?;
-    let cutoff = crate::clock::now().as_second() - STALE_MODEL_SECS;
-    let swept = tx.execute(
-        "DELETE FROM memory_vectors WHERE model IN (SELECT model FROM memory_vector_models \
-         WHERE model <> ?1 AND last_used < ?2)",
-        params![crate::embed::MODEL_ID, cutoff],
+    let now = crate::clock::now().as_second();
+    // An earlier build of #837 left this partial index and wrote vectors
+    // without recording their model. Its presence marks such a store: the
+    // one scan of `memory_vectors` records every model found there as used
+    // now, so the seven-day rule sweeps it later rather than never.
+    let obsolete_index: bool = tx.query_row(
+        "SELECT EXISTS (SELECT 1 FROM sqlite_master \
+         WHERE type = 'index' AND name = 'memory_vectors_foreign_model')",
+        [],
+        |r| r.get(0),
     )?;
-    tx.execute(
-        "DELETE FROM memory_vector_models WHERE model <> ?1 AND last_used < ?2",
-        params![crate::embed::MODEL_ID, cutoff],
-    )?;
-    if swept > 0 {
+    if obsolete_index {
+        tx.execute(
+            "INSERT OR IGNORE INTO memory_vector_models (model, last_used) \
+             SELECT DISTINCT model, ?1 FROM memory_vectors",
+            params![now],
+        )?;
+        tx.execute_batch("DROP INDEX memory_vectors_foreign_model;")?;
+    }
+    // The sweep reads the model table, a handful of rows, and touches
+    // `memory_vectors` only for a model that is actually stale: that table
+    // has no index on `model`, and this runs on every open.
+    let cutoff = now - STALE_MODEL_SECS;
+    let stale: Vec<String> = tx
+        .prepare("SELECT model FROM memory_vector_models WHERE model <> ?1 AND last_used < ?2")?
+        .query_map(params![crate::embed::MODEL_ID, cutoff], |r| r.get(0))?
+        .collect::<Result<_, _>>()?;
+    for model in &stale {
+        tx.execute(
+            "DELETE FROM memory_vectors WHERE model = ?1",
+            params![model],
+        )?;
+        tx.execute(
+            "DELETE FROM memory_vector_models WHERE model = ?1",
+            params![model],
+        )?;
+    }
+    if !stale.is_empty() {
         tx.execute(
             "UPDATE memory_generation SET gen = gen + 1 WHERE id = 1",
             [],
@@ -2596,7 +2623,7 @@ mod tests {
     /// Two binaries with different models on one store, opening in turn:
     /// neither deletes the other's vectors while both are in use. Only a
     /// model that has not searched for more than seven days is swept, and
-    /// the current model, and a model with no record, never are.
+    /// the current model never is.
     #[test]
     fn open_sweeps_only_a_model_unused_for_seven_days() {
         let conn = fresh();
@@ -2632,6 +2659,66 @@ mod tests {
             .unwrap();
         assert_eq!(records, 0, "with its record");
         assert_eq!(generation(&conn), 1, "a sweep is a change a cache must see");
+    }
+
+    /// The sweep runs on every open, so with nothing stale it must read the
+    /// small model table alone and never `memory_vectors`. Proved by putting
+    /// a view where the table was: any statement against it that writes
+    /// would fail the open.
+    #[test]
+    fn an_open_with_nothing_stale_never_touches_the_vector_table() {
+        let conn = fresh();
+        let now = crate::clock::now().as_second();
+        record_model(&conn, "in-use", now);
+        conn.execute_batch(
+            "DROP TABLE memory_vectors; \
+             CREATE VIEW memory_vectors AS SELECT 'doc' AS kind, 'x' AS owner_id, \
+             'm' AS model, 0 AS chunk, NULL AS vec;",
+        )
+        .unwrap();
+        migrate_vectors(&conn).expect("nothing stale: memory_vectors is not written");
+        record_model(&conn, "stale", now - 8 * 24 * 3600);
+        assert!(
+            migrate_vectors(&conn).is_err(),
+            "the guard bites: a stale model does reach the table"
+        );
+    }
+
+    /// A store an earlier build of #837 wrote carries the obsolete partial
+    /// index and rows of models with no record. The upgrade drops the index
+    /// and records each such model as used now, so the seven-day rule
+    /// sweeps it later, never at once.
+    #[test]
+    fn an_unrecorded_model_is_recorded_not_deleted() {
+        let conn = fresh();
+        conn.execute_batch(
+            "CREATE INDEX memory_vectors_foreign_model ON memory_vectors(model) \
+             WHERE model <> 'x';",
+        )
+        .unwrap();
+        put_vector(&conn, "doc", "d1", "unrecorded", 0);
+        put_vector(&conn, "doc", "d1", crate::embed::MODEL_ID, 0);
+        migrate(&conn).unwrap();
+        let present: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE name = 'memory_vectors_foreign_model'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(present, 0, "the obsolete index is gone");
+        assert_eq!(model_rows(&conn, "unrecorded"), 1, "kept");
+        let used: i64 = conn
+            .query_row(
+                "SELECT last_used FROM memory_vector_models WHERE model = 'unrecorded'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(
+            crate::clock::now().as_second() - used < 60,
+            "recorded as now"
+        );
     }
 
     /// The generation moves on what a semantic list can see and on nothing
