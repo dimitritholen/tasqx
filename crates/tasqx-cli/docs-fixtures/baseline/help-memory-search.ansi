@@ -24,7 +24,7 @@ Options:
           Theme name (built-in nord|gruvbox|dracula|solarized|mono, or a user file). Overrides $TASQX_THEME and the config file (DESIGN.md §8)
 
       --raw
-          Treat the query as raw FTS5 syntax (prefix*, AND/OR, columns). Words only, so it searches as `--mode lexical`
+          Treat the query as raw FTS5 syntax (prefix*, AND/OR, columns). Words only: it searches as `--mode lexical`, and the engine refuses it beside a mode that runs meaning
 
       --socket <SOCKET>
           Local socket / named-pipe address of a tasqx daemon. Overrides $TASQX_SOCK. When a daemon is reachable, one-shot commands route through it (single writer); otherwise they run in-process. Also selects the address for `daemon` and `watch`

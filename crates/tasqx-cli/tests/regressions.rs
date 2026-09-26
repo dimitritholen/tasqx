@@ -6346,3 +6346,36 @@ fn a_docs_page_that_cannot_be_written_is_a_json_envelope_not_a_bare_exit() {
     }
     let _ = std::fs::remove_file(&blocker);
 }
+
+/// #838 review: `--raw` is words only, so it takes `--mode lexical` — which
+/// the API accepts — and is refused beside a mode that runs meaning, with
+/// the engine's own reason, not clap's.
+#[test]
+fn raw_takes_mode_lexical_and_refuses_a_mode_with_meaning() {
+    let dir = fresh_config_dir("raw-mode");
+    let run = |args: &[&str]| {
+        bin("raw-mode", &dir)
+            .args(args)
+            .output()
+            .expect("run tasqx")
+    };
+    let out = run(&["memory", "add", "--", "Deploy", "run the smoke tests"]);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let out = run(&["memory", "search", "--raw", "--mode", "lexical", "smok*"]);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(String::from_utf8_lossy(&out.stdout).contains("Deploy"));
+    for mode in ["hybrid", "semantic"] {
+        let out = run(&["memory", "search", "--raw", "--mode", mode, "smok*"]);
+        assert_eq!(out.status.code(), Some(2), "{mode}");
+        let err = String::from_utf8_lossy(&out.stderr);
+        assert!(err.contains("mode: lexical"), "{mode}: {err}");
+    }
+}

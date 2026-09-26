@@ -493,6 +493,22 @@ pub const BRIEF_MEMORY: &[FieldDoc] = &[
     f("reserved_docs", "integer", "How many of the page's slots were held for knowledge docs (D147)."),
     f("docs_total", "integer", "How many docs matched."),
     f("annotations_total", "integer", "How many annotations matched."),
+    n("semantic", "object", "What the meaning side ran: `{model, min_similarity, query}`, `query` being the text the brief derived from the task's title, tags and project; null when it compared nothing (D196)."),
+];
+
+/// The brief's `memory.semantic` object.
+pub const BRIEF_MEMORY_SEMANTIC: &[FieldDoc] = &[
+    f("model", "string", "The embedding model's id."),
+    f(
+        "min_similarity",
+        "number",
+        "The floor a match by meaning had to reach.",
+    ),
+    f(
+        "query",
+        "string",
+        "The text embedded: the task's title, tags and project leaf.",
+    ),
 ];
 
 /// `task.start`'s result.
@@ -992,8 +1008,9 @@ pub const R_MEMORY_SEARCH: &[FieldDoc] = &[
     f("has_more", "boolean", "Whether anything was left behind."),
     f("hits", "array", "The hits, best first: the lexical (bm25) and semantic lists fused by reciprocal rank, docs and annotations together (D196)."),
     n("matched", "string", "The FTS5 expression actually run — how `count: 0` is told apart from a store holding nothing on the subject. Null under `mode: semantic`, which runs none."),
-    f("relaxed", "boolean", "Whether no hit had every word of a plain query, so the words were joined with OR instead and `matched` is that OR (D193). In hybrid mode only when meaning found nothing either; always false for `raw` and `mode: semantic`."),
-    n("semantic", "object", "The meaning side's `{model, min_similarity}`, or null when it did not run: `mode: lexical` or `raw`, or a query with no word of three letters or more that is not a stopword (an id such as `D41`), or no word the model knows (D196)."),
+    f("relaxed", "boolean", "Whether a hit on the page holds only some of a plain query's words (D193). In hybrid mode the any-word list always runs beside the other two and its hits say `partial`; under `mode: lexical` it runs only when no entry has every word, and then `matched` is that OR. Always false for `raw` and `mode: semantic`."),
+    n("matched_any", "string", "The any-word OR expression, when it ran (#838): always in hybrid mode for a query of two content words or more, only as D193's fallback under `mode: lexical`."),
+    n("semantic", "object", "The meaning side's `{model, min_similarity}`, or null when it did not run: `mode: lexical` or `raw`, a query with no word of three letters or more that is not a stopword (an id such as `D41`), no word the model knows, or nothing to compare against (D196)."),
 ];
 
 /// `memory.search`'s `semantic` object.
@@ -1015,7 +1032,8 @@ pub const MEMORY_HIT_ROW: &[FieldDoc] = &[
     n("stale", "boolean", "true when the doc's origin file no longer matches what was imported; null for annotations and docs with no origin (D180)."),
     f("via", "string", "Which list found it: `lexical` (the words; `matched` explains it), `semantic` (meaning; `similarity` explains it) or `both` (D196)."),
     n("similarity", "number", "Its best chunk's cosine to the query, to three decimals — also on a hit the words found, when the entry has a vector; null when it has none or the semantic side did not run."),
-    f("score", "number", "The fused score: Σ 1/(60 + rank) over the lists it is on. Higher is better."),
+    f("score", "number", "The fused score: Σ weight/(20 + rank) over the lists it is on — every word 1.0, any word 0.35, meaning 1.3 (D196, #838). Higher is better."),
+    f("partial", "boolean", "true when the only words that found it are D193's any-word list: it lacks some of the query's words. `relaxed` is true when any hit on the page is."),
 ];
 
 /// One knowledge doc, whole. The same row `memory.get` and `store.export` both answer with.
@@ -1599,6 +1617,7 @@ pub fn result_shape(method: &str) -> &'static [(&'static str, &'static [FieldDoc
             ("result.memory", BRIEF_MEMORY),
             ("result.last_time", BRIEF_LAST_TIME),
             ("result.memory.hits[]", MEMORY_HIT_ROW),
+            ("result.memory.semantic", BRIEF_MEMORY_SEMANTIC),
         ],
         "task.start" => &[
             ("result", R_TASK_START),

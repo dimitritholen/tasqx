@@ -563,7 +563,23 @@ fn brief_tail(out: &mut String, result: &Value) {
                     .filter(|p| !p.is_empty())
                     .map(|p| format!(" [{p}]"))
                     .unwrap_or_default();
-                out.push_str(&format!("- **{}**{source}{project}\n", str_of(h, "title")));
+                // D196 (#838): why the hit is here, when it is not every
+                // word — found by meaning alone, with its similarity, or by
+                // only some of the words (D193's promise, one surface over).
+                let why = if h.get("via").and_then(Value::as_str) == Some("semantic") {
+                    h.get("similarity")
+                        .and_then(Value::as_f64)
+                        .map(|s| format!(" · by meaning {s:.2}"))
+                        .unwrap_or_default()
+                } else if h.get("partial").and_then(Value::as_bool) == Some(true) {
+                    " · some words".to_string()
+                } else {
+                    String::new()
+                };
+                out.push_str(&format!(
+                    "- **{}**{source}{project}{why}\n",
+                    str_of(h, "title")
+                ));
                 // The engine's snippet keeps the body's line breaks; one hit
                 // is one excerpt, so it reads on one line under its bullet.
                 let snippet = str_of(h, "snippet")

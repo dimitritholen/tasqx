@@ -861,3 +861,32 @@ fn a_spawn_names_its_predecessor_and_its_brief_quotes_last_times_delivery() {
         "the brief's tail quotes the predecessor's delivery paragraph"
     );
 }
+
+/// D196 (#838 review): a hit found by meaning alone says so with its
+/// similarity, and one that holds only some of the words says that — on
+/// its own bullet, so a reader of the rendered brief can weigh it without
+/// the JSON block.
+#[test]
+fn a_memory_hit_found_by_meaning_or_by_some_words_says_so() {
+    let b = json!({
+        "memory": {
+            "hits": [
+                { "kind": "doc", "title": "SSO ruling", "source": "DESIGN.md",
+                  "snippet": "login errors after the change", "via": "semantic",
+                  "similarity": 0.412, "partial": false },
+                { "kind": "doc", "title": "words ruling", "snippet": "every word",
+                  "via": "both", "similarity": 0.5, "partial": false },
+                { "kind": "doc", "title": "some ruling", "snippet": "one word",
+                  "via": "lexical", "similarity": null, "partial": true }
+            ],
+            "total": 3, "docs_total": 3, "annotations_total": 0
+        }
+    });
+    let tail = brief_tail_text(&b);
+    assert!(
+        tail.contains("- **SSO ruling** · `DESIGN.md` · by meaning 0.41\n"),
+        "{tail}"
+    );
+    assert!(tail.contains("- **words ruling**\n"), "{tail}");
+    assert!(tail.contains("- **some ruling** · some words\n"), "{tail}");
+}

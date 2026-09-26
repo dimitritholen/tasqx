@@ -924,3 +924,31 @@ fn the_summary_drops_facts_from_the_right() {
         format!("44 tasks {mid} 20 shown")
     );
 }
+
+/// D196 (#838 review): the brief's memory rows say why a hit is there when
+/// it is not every word — by meaning, with its similarity, or some words.
+#[test]
+fn a_brief_memory_hit_says_when_meaning_or_some_words_found_it() {
+    let ctx = Ctx::new(theme::default_theme(), Caps::PLAIN);
+    let result = json!({
+        "task": { "short_id": 2, "title": "Audit the retry path", "status": "pending" },
+        "memory": { "hits": [
+            { "title": "Idempotency", "source": "docs/adr/014.md", "snippet": "retries",
+              "via": "semantic", "similarity": 0.412, "partial": false },
+            { "title": "Retry budget", "snippet": "one word", "via": "lexical",
+              "similarity": null, "partial": true },
+            { "title": "Retry path", "snippet": "every word", "via": "both",
+              "similarity": 0.6, "partial": false }
+        ], "total": 3 },
+    });
+    let out = task_brief(&ctx, &result, crate::clock::now());
+    let line = |t: &str| {
+        out.lines()
+            .find(|l| l.contains(t))
+            .unwrap_or_else(|| panic!("{t}: {out}"))
+            .to_string()
+    };
+    assert!(line("Idempotency").ends_with("~ 0.41"), "{out}");
+    assert!(line("Retry budget").ends_with("some words"), "{out}");
+    assert_eq!(line("Retry path").trim(), "Retry path", "{out}");
+}

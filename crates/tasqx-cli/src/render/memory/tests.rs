@@ -569,3 +569,37 @@ fn a_semantic_mode_miss_names_what_ran() {
         "{out}"
     );
 }
+
+/// #838: in hybrid mode a hit holding only some of the words sits among
+/// hits that hold them all, so it is marked on its own line; a page of
+/// nothing but such hits keeps D193's one note instead.
+#[test]
+fn a_hit_with_only_some_of_the_words_is_marked_among_ones_with_all() {
+    let hit = |title: &str, partial: bool| {
+        json!({ "id": "01a0903c-bff0-76a2-9bcb-5428786a56c4", "kind": "doc",
+                "title": title, "source": "", "snippet": format!("{title} passage"),
+                "via": "lexical", "similarity": null, "partial": partial })
+    };
+    let ctx = Ctx::new(theme::default_theme(), Caps::PLAIN).with_cols(200);
+    let mixed = json!({ "count": 2, "total": 2, "relaxed": true,
+        "hits": [hit("every word", false), hit("one word", true)],
+        "matched": "\"sdk\" \"release\"", "matched_any": "\"sdk\" OR \"release\"" });
+    let out = memory_hits(&ctx, &mixed, "sdk release", false, None);
+    assert!(out.contains("    some words  one word passage"), "{out}");
+    assert!(out.contains("    every word passage"), "{out}");
+    assert!(
+        out.contains("some words marks a hit that has only some of the words"),
+        "{out}"
+    );
+    assert!(!out.contains("no hit had every word"), "{out}");
+
+    let all = json!({ "count": 1, "total": 1, "relaxed": true,
+        "hits": [hit("one word", true)],
+        "matched": "\"sdk\" OR \"release\"" });
+    let out = memory_hits(&ctx, &all, "sdk release", false, None);
+    assert!(
+        out.contains("no hit had every word — these match any word"),
+        "{out}"
+    );
+    assert!(!out.contains("some words"), "{out}");
+}
