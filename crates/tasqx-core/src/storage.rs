@@ -585,12 +585,11 @@ fn migrate_vectors(conn: &Connection) -> Result<(), ApiError> {
         )?;
     }
     let now = crate::clock::now().as_second();
-    // A model recorded as used in the future (a clock that was wrong) would
-    // never be older than the cutoff: bring it back to now, so it ages.
-    tx.execute(
-        "UPDATE memory_vector_models SET last_used = ?1 WHERE last_used > ?1",
-        params![now],
-    )?;
+    // Another model's row is never rewritten here: a `last_used` ahead of
+    // this clock may be the other process's correct clock against a wrong
+    // one here, and rewriting it would let the next open with a sane clock
+    // sweep a model still in use. Ahead of now counts as fresh — only a
+    // `last_used` older than the cutoff is stale (#838).
     // An earlier build of #837 left this partial index and wrote vectors
     // without recording their model. Its presence marks such a store: the
     // one scan of `memory_vectors` records every model found there as used
@@ -2678,23 +2677,31 @@ mod tests {
         }
     }
 
-    /// #838 review: a model recorded as used in the future (a skewed clock)
-    /// is brought back to now on open, so it ages and is swept like any
-    /// other instead of never.
+    /// #838 review: a model recorded as used "in the future" is one whose
+    /// clock is right while this process's is behind (a pin, a skewed host).
+    /// Open treats it as fresh and never rewrites another model's row, so no
+    /// later open with a sane clock sweeps it early.
     #[test]
-    fn a_last_used_in_the_future_is_clamped_to_now() {
+    fn a_last_used_in_the_future_is_fresh_and_left_alone() {
         let conn = fresh();
         let now = crate::clock::now().as_second();
-        record_model(&conn, "skewed", now + 365 * 24 * 3600);
+        let day = 24 * 3600;
+        let ahead = now + 365 * day;
+        put_vector(&conn, "doc", "d1", "ahead", 0);
+        put_vector(&conn, "doc", "d1", "old", 0);
+        record_model(&conn, "ahead", ahead);
+        record_model(&conn, "old", now - 8 * day);
         migrate(&conn).unwrap();
         let last: i64 = conn
             .query_row(
-                "SELECT last_used FROM memory_vector_models WHERE model = 'skewed'",
+                "SELECT last_used FROM memory_vector_models WHERE model = 'ahead'",
                 [],
                 |r| r.get(0),
             )
             .unwrap();
-        assert!(last <= crate::clock::now().as_second(), "{last}");
+        assert_eq!(last, ahead, "another model's row is never rewritten");
+        assert_eq!(model_rows(&conn, "ahead"), 1, "fresh, not swept");
+        assert_eq!(model_rows(&conn, "old"), 0, "a stale one still is");
     }
 
     /// Two binaries with different models on one store, opening in turn:

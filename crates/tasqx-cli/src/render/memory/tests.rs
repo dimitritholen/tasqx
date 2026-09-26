@@ -633,7 +633,8 @@ fn a_semantic_miss_the_model_could_not_read_says_so() {
         &ctx,
         &json!({ "count": 0, "total": 0, "hits": [], "relaxed": false, "matched": null,
                  "semantic": null,
-                 "semantic_skipped": { "reason": "not enough words the model knows",
+                 "semantic_skipped": { "code": "unknown_words",
+                                       "reason": "not enough words the model knows",
                                        "content_words": 2, "known_words": 0 } }),
         "onweersbui vanavond",
         false,
@@ -646,4 +647,26 @@ fn a_semantic_miss_the_model_could_not_read_says_so() {
         ),
         "{out}"
     );
+}
+
+/// #838 review: a `--mode semantic` miss over an empty index says there
+/// was nothing to compare, not that the query had no word.
+#[test]
+fn a_semantic_miss_over_nothing_indexed_says_so() {
+    let ctx = Ctx::new(theme::default_theme(), Caps::PLAIN).with_cols(200);
+    let out = memory_hits(
+        &ctx,
+        &json!({ "count": 0, "total": 0, "hits": [], "relaxed": false, "matched": null,
+                 "semantic": null,
+                 "semantic_skipped": { "code": "no_vectors", "reason": "nothing to compare against",
+                                       "content_words": 2, "known_words": 2 } }),
+        "authentication problems",
+        false,
+        None,
+    );
+    assert!(
+        out.contains("nothing indexed to compare by meaning"),
+        "{out}"
+    );
+    assert!(!out.contains("has no word"), "{out}");
 }

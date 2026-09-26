@@ -85,16 +85,27 @@ pub(crate) struct SemanticHits {
 }
 
 /// One semantic pass: the hits at or above the floor (the first `depth`),
-/// how many there were, and how many entries were compared at all.
-#[derive(Clone, Debug, Default, PartialEq)]
+/// and how many entries were compared at all.
 pub(crate) struct SemanticPass {
     pub hits: Vec<SemanticHit>,
-    pub total: usize,
     pub compared: usize,
+    /// The entries a pass inside a caller's transaction computed for itself,
+    /// which [`Engine::semantic_similarities`] reads in place of the copy.
+    this_call: Option<Vec<Entry>>,
+}
+
+/// Which entries one call answers from.
+pub(super) enum Reconciled {
+    /// The kept copy.
+    Copy,
+    /// Entries computed for this call alone, inside a caller's transaction.
+    ThisCall(Vec<Entry>),
+    /// None: the reconcile failed (see [`absorb`]).
+    Failed,
 }
 
 /// An entry and every chunk vector it has, with what the filter needs.
-struct Entry {
+pub(super) struct Entry {
     kind: Kind,
     owner_id: String,
     project: Option<String>,
@@ -134,9 +145,6 @@ pub(super) struct VectorCache {
     /// Times the copy was read from the store.
     #[cfg(test)]
     loads: usize,
-    /// This call's entries, computed inside a caller's transaction that the
-    /// kept copy did not match; cleared by the next reconcile.
-    ephemeral: Option<Vec<Entry>>,
     /// Runs between a reconcile's scan and the end of its snapshot, so a
     /// test can land another writer's change exactly there.
     #[cfg(test)]
@@ -276,7 +284,20 @@ fn embed_chunks(chunks: &[String]) -> Vec<(i64, [u8; BLOB_LEN])> {
 /// Every entry that has no row under the current model, read and embedded.
 /// Docs: all of them. Annotations: live and non-empty. Without the index's
 /// tables, every entry.
-pub(super) fn scan_missing(conn: &Connection, indexed: bool) -> rusqlite::Result<Vec<Pending>> {
+pub(super) fn scan_missing(
+    conn: &Connection,
+    indexed: bool,
+    reuse: &mut HashMap<(Kind, String), Pending>,
+) -> rusqlite::Result<(Vec<Pending>, usize)> {
+    let mut embedded = 0;
+    // An entry embedded earlier and not yet stored is taken as it is while
+    // its text is unchanged (#838): a writer holding the lock across a
+    // moving generation costs the changed entries alone.
+    let mut take = |kind: Kind, id: &str, a: &str, b: &str| {
+        reuse
+            .remove(&(kind, id.to_string()))
+            .filter(|p| p.text_a == a && p.text_b == b)
+    };
     let missing = |kind: &str, alias: &str| {
         if indexed {
             format!(
@@ -304,6 +325,12 @@ pub(super) fn scan_missing(conn: &Connection, indexed: bool) -> rusqlite::Result
     })?;
     for row in rows {
         let (id, title, search_body, project) = row?;
+        if let Some(mut p) = take(Kind::Doc, &id, &title, &search_body) {
+            p.project = project;
+            out.push(p);
+            continue;
+        }
+        embedded += 1;
         let vectors = embed_chunks(&embed::chunk::chunk_doc(&title, &search_body));
         out.push(Pending {
             kind: Kind::Doc,
@@ -332,6 +359,13 @@ pub(super) fn scan_missing(conn: &Connection, indexed: bool) -> rusqlite::Result
     })?;
     for row in rows {
         let (id, body, task_id, project) = row?;
+        if let Some(mut p) = take(Kind::Annotation, &id, &body, "") {
+            p.project = project;
+            p.task_id = Some(task_id);
+            out.push(p);
+            continue;
+        }
+        embedded += 1;
         let vectors = embed_chunks(&embed::chunk::chunk_annotation(&body));
         out.push(Pending {
             kind: Kind::Annotation,
@@ -343,7 +377,7 @@ pub(super) fn scan_missing(conn: &Connection, indexed: bool) -> rusqlite::Result
             vectors,
         });
     }
-    Ok(out)
+    Ok((out, embedded))
 }
 
 /// Why nothing was written.
@@ -516,10 +550,15 @@ const TOUCH_EVERY_SECS: i64 = 24 * 3600;
 
 impl VectorCache {
     fn reset(&mut self) {
+        self.reset_copy();
+        self.unpersisted.clear();
+    }
+
+    /// Forget the copy, keeping what was embedded and not yet stored.
+    fn reset_copy(&mut self) {
         self.key = None;
         self.complete = false;
         self.entries.clear();
-        self.unpersisted.clear();
     }
 
     /// Put `pending`'s vectors in the copy, replacing anything it held for
@@ -540,20 +579,30 @@ fn absorb_into(entries: &mut Vec<Entry>, pending: &[Pending]) {
 }
 
 impl Engine {
-    /// Bring the copy (and, when it can, the stored index) up to date.
-    /// Never fails: on an error the copy is emptied, so the search answers
-    /// with no semantic hits rather than with stale ones; see [`absorb`].
-    pub(super) fn reconcile_vectors(&self) {
-        if let Err(e) = self.try_reconcile() {
-            absorb(&e);
-            self.vectors.borrow_mut().reset();
+    /// Bring the copy (and, when it can, the stored index) up to date, and
+    /// say which entries this call answers from. Never fails: on an error
+    /// the call answers with none, and outside a caller's transaction the
+    /// copy is emptied too, so no later search answers from it; see
+    /// [`absorb`].
+    pub(super) fn reconcile_vectors(&self) -> Reconciled {
+        let in_transaction = !self.conn.is_autocommit();
+        match self.try_reconcile() {
+            Ok(r) => r,
+            Err(e) => {
+                absorb(&e);
+                // A caller's transaction may fail for reasons of its own;
+                // the warm copy was read committed, and stays.
+                if !in_transaction {
+                    self.vectors.borrow_mut().reset();
+                }
+                Reconciled::Failed
+            }
         }
     }
 
-    fn try_reconcile(&self) -> rusqlite::Result<()> {
+    fn try_reconcile(&self) -> rusqlite::Result<Reconciled> {
         let conn = &self.conn;
         let mut cache = self.vectors.borrow_mut();
-        cache.ephemeral = None;
         if let Some(previous) = cache.lost_timeout.get() {
             if conn.busy_timeout(previous).is_ok() {
                 cache.lost_timeout.set(None);
@@ -566,19 +615,18 @@ impl Engine {
             // committed, and a transaction that changed memory sees a
             // generation no committed read has reached yet, so an equal key
             // means this snapshot's memory is the copy's. Otherwise the
-            // vectors are computed for this call alone and nothing is kept
-            // under a key — the transaction may roll back, and another commit
-            // then reach the same generation with other memory (ABA) — and
-            // the warm copy is left as it was for the next search.
+            // vectors are computed for this call and handed back, never kept
+            // — the transaction may roll back, and another commit then reach
+            // the same generation with other memory (ABA) — and the warm copy
+            // is left as it was for the next search.
             let key = read_key(conn, indexed)?;
             if cache.key == Some(key) && cache.complete {
-                return Ok(());
+                return Ok(Reconciled::Copy);
             }
             let mut entries = load(conn, indexed)?;
-            let pending = scan_missing(conn, indexed)?;
+            let (pending, _) = scan_missing(conn, indexed, &mut HashMap::new())?;
             absorb_into(&mut entries, &pending);
-            cache.ephemeral = Some(entries);
-            return Ok(());
+            return Ok(Reconciled::ThisCall(entries));
         }
         // Read-only, or a store without the index: vectors are kept in the
         // copy only, with no texts waiting for a write that cannot happen
@@ -596,7 +644,9 @@ impl Engine {
             )?;
             let key = read_key(&snapshot, indexed)?;
             if cache.key != Some(key) {
-                cache.reset();
+                // What was embedded and not yet stored is kept: the scan
+                // below reuses each one whose text is unchanged.
+                cache.reset_copy();
                 cache.entries = load(&snapshot, indexed)?;
                 #[cfg(test)]
                 {
@@ -605,10 +655,15 @@ impl Engine {
                 cache.key = Some(key);
             }
             if !cache.complete {
-                let pending = scan_missing(&snapshot, indexed)?;
+                let mut reuse: HashMap<(Kind, String), Pending> =
+                    std::mem::take(&mut cache.unpersisted)
+                        .into_iter()
+                        .map(|p| ((p.kind, p.owner_id.clone()), p))
+                        .collect();
+                let (pending, _embedded) = scan_missing(&snapshot, indexed, &mut reuse)?;
                 #[cfg(test)]
                 {
-                    cache.embedded += pending.len();
+                    cache.embedded += _embedded;
                     if let Some(hook) = cache.after_scan.as_mut() {
                         hook();
                     }
@@ -622,14 +677,14 @@ impl Engine {
             snapshot.commit()?;
         }
         if !writable {
-            return Ok(());
+            return Ok(Reconciled::Copy);
         }
         let (touch, seen) = due_touch(conn, cache.touched)?;
         if seen.is_some() {
             cache.touched = seen;
         }
         if cache.unpersisted.is_empty() && touch.is_none() {
-            return Ok(());
+            return Ok(Reconciled::Copy);
         }
         // Written after the snapshot, each entry only while its row still
         // holds the text that was embedded. One the guard refuses changed
@@ -642,18 +697,11 @@ impl Engine {
                     cache.touched = touch;
                 }
             }
-            // Kept at this key: the next search retries the write.
+            // Kept: the next search retries the write.
             Err(NotPersisted::Skipped) => {}
             Err(NotPersisted::Failed(e)) => absorb(&e),
         }
-        Ok(())
-    }
-
-    /// The entries a semantic pass reads: this call's own, computed inside a
-    /// caller's transaction, or the kept copy.
-    fn with_entries<T>(&self, f: impl FnOnce(&[Entry]) -> T) -> T {
-        let cache = self.vectors.borrow();
-        f(cache.ephemeral.as_deref().unwrap_or(&cache.entries))
+        Ok(Reconciled::Copy)
     }
 
     /// D196's semantic list: every entry in `filter` whose best chunk's
@@ -670,53 +718,63 @@ impl Engine {
         let Some(q) = embed::embed(query) else {
             return SemanticHits::default();
         };
-        let pass = self.semantic_pass(&QueryVector::new(&q), filter);
-        SemanticHits {
-            hits: pass.hits,
-            total: pass.total,
-        }
+        let all = SemanticFilter {
+            depth: usize::MAX,
+            ..filter.clone()
+        };
+        let mut hits = self.semantic_pass(&QueryVector::new(&q), &all).hits;
+        let total = hits.len();
+        hits.truncate(filter.depth);
+        SemanticHits { hits, total }
     }
 
     /// [`Self::semantic_candidates`] for a query already embedded, which
     /// also says how many entries in the filter had a vector to compare:
     /// none means the semantic side had nothing to answer from (nothing
-    /// indexed, or a reconcile that could not settle), which is not the
+    /// indexed, or a reconcile that failed), which is not the
     /// same as comparing and finding nothing close.
     pub(crate) fn semantic_pass(
         &self,
         q: &QueryVector,
         filter: &SemanticFilter<'_>,
     ) -> SemanticPass {
-        self.reconcile_vectors();
+        let reconciled = self.reconcile_vectors();
+        let cache = self.vectors.borrow();
+        let entries: &[Entry] = match &reconciled {
+            Reconciled::Copy => &cache.entries,
+            Reconciled::ThisCall(e) => e,
+            Reconciled::Failed => &[],
+        };
         let mut compared = 0;
-        let mut hits: Vec<SemanticHit> = self.with_entries(|entries| {
-            entries
-                .iter()
-                .filter(|e| in_filter(e, filter))
-                .filter_map(|e| {
-                    compared += 1;
-                    let (chunk, similarity) = best(e, q);
-                    (similarity >= filter.min_similarity).then(|| SemanticHit {
-                        kind: e.kind,
-                        owner_id: e.owner_id.clone(),
-                        chunk,
-                        similarity,
-                    })
+        let mut hits: Vec<SemanticHit> = entries
+            .iter()
+            .filter(|e| in_filter(e, filter))
+            .filter_map(|e| {
+                compared += 1;
+                let (chunk, similarity) = best(e, q);
+                (similarity >= filter.min_similarity).then(|| SemanticHit {
+                    kind: e.kind,
+                    owner_id: e.owner_id.clone(),
+                    chunk,
+                    similarity,
                 })
-                .collect()
-        });
+            })
+            .collect();
+        drop(cache);
         hits.sort_by(|a, b| {
             b.similarity
                 .total_cmp(&a.similarity)
                 .then(a.kind.cmp(&b.kind))
                 .then_with(|| a.owner_id.cmp(&b.owner_id))
         });
-        let total = hits.len();
         hits.truncate(filter.depth);
         SemanticPass {
             hits,
-            total,
             compared,
+            this_call: match reconciled {
+                Reconciled::ThisCall(e) => Some(e),
+                _ => None,
+            },
         }
     }
 
@@ -728,21 +786,22 @@ impl Engine {
         &self,
         q: &QueryVector,
         keys: &HashSet<(Kind, &'k str)>,
+        pass: &SemanticPass,
     ) -> HashMap<(Kind, &'k str), f64> {
         // Keyed by position so a lookup with the copy's own `&str` finds a
         // caller's key without cloning either.
         let wanted: Vec<(Kind, &'k str)> = keys.iter().copied().collect();
         let index: HashMap<(Kind, &str), usize> =
             wanted.iter().enumerate().map(|(i, k)| (*k, i)).collect();
-        self.with_entries(|entries| {
-            entries
-                .iter()
-                .filter_map(|e| {
-                    let i = *index.get(&(e.kind, e.owner_id.as_str()))?;
-                    Some((wanted[i], best(e, q).1))
-                })
-                .collect()
-        })
+        let cache = self.vectors.borrow();
+        let entries: &[Entry] = pass.this_call.as_deref().unwrap_or(&cache.entries);
+        entries
+            .iter()
+            .filter_map(|e| {
+                let i = *index.get(&(e.kind, e.owner_id.as_str()))?;
+                Some((wanted[i], best(e, q).1))
+            })
+            .collect()
     }
 
     /// The text of chunk `chunk` of an entry, cut again from its source row

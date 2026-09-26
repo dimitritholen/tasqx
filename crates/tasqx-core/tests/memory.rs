@@ -3151,11 +3151,18 @@ fn the_any_word_list_is_capped() {
             .expect("doc");
     }
     let out = search(&e, json!({ "query": "zebra quagga", "limit": 500 }));
-    let partial = hits(&out)
+    // What only the capped any-word list brought to the page is at most its
+    // cap; `partial` is read from every match, so every hit says it.
+    let words_only = hits(&out)
         .iter()
-        .filter(|h| h["partial"] == json!(true))
+        .filter(|h| h["via"] == json!("lexical"))
         .count();
-    assert_eq!(partial, 200, "{}", out["total"]);
+    assert!(words_only <= 200, "{words_only}");
+    assert!(
+        hits(&out).iter().all(|h| h["partial"] == json!(true)),
+        "{}",
+        out["total"]
+    );
 }
 
 /// Review #838: `via`, `partial` and `score` are read from every match, not
@@ -3547,20 +3554,78 @@ fn a_negative_zero_floor_is_zero() {
     );
 }
 
-/// The all-words list takes part in fusion to a constant depth by bm25;
-/// `total` still counts every entry that holds every word.
+/// The caps are the hybrid fusion's alone: `mode: lexical` is D41 as it
+/// was, every match rankable, so `limit` 3000 returns 3000.
 #[test]
-fn the_all_words_list_is_capped_but_counted_whole() {
+fn lexical_mode_has_no_cap() {
     let e = engine();
-    for i in 0..1005 {
+    for i in 0..3005 {
         e.memory_add(&json!({ "title": format!("l{i}"), "body": format!("ledger line {i}") }))
             .expect("doc");
     }
     let out = search(
         &e,
-        json!({ "query": "ledger", "mode": "lexical", "limit": 2000 }),
+        json!({ "query": "ledger", "mode": "lexical", "limit": 3000 }),
     );
-    assert_eq!(out["total"], json!(1005), "{}", out["count"]);
-    assert_eq!(out["count"], json!(1000));
+    assert_eq!(out["count"], json!(3000), "{}", out["total"]);
+    assert_eq!(out["total"], json!(3005));
     assert_eq!(out["has_more"], json!(true));
+}
+
+/// `via` is read from every match, not from the capped lists the fusion
+/// ranks: an entry past the all-words cap that meaning found is still
+/// `both`, and so is one past the semantic cap that the words found.
+#[test]
+fn via_reads_every_match_past_either_cap() {
+    let e = engine();
+    for i in 0..1100 {
+        e.memory_add(&json!({ "title": format!("l{i}"), "body": format!("ledger line {i}") }))
+            .expect("doc");
+    }
+    let out = search(&e, json!({ "query": "ledger", "limit": 2000 }));
+    assert!(out["count"].as_u64().unwrap() > 1000, "{}", out["count"]);
+    for h in hits(&out) {
+        assert_ne!(
+            h["via"],
+            json!("semantic"),
+            "every entry holds the word: {h}"
+        );
+        if h["similarity"].as_f64().is_some_and(|s| s >= 0.3) {
+            assert_eq!(h["via"], json!("both"), "meaning found it too: {h}");
+        }
+    }
+}
+
+/// An identifier beside a word the model knows: the identifiers are not
+/// content words, so they do not count against the vocabulary gate.
+#[test]
+fn identifiers_do_not_count_against_the_vocabulary_gate() {
+    let e = meaning_store();
+    let out = search(&e, json!({ "query": "D196 D41 vector" }));
+    assert!(out["semantic"].is_object(), "{out}");
+}
+
+/// `semantic_skipped` carries a stable `code` beside its reason, and says
+/// truthfully when there was nothing to compare against.
+#[test]
+fn a_skipped_meaning_side_names_a_stable_code() {
+    let e = meaning_store();
+    for (query, code) in [
+        ("onweersbui vanavond", "unknown_words"),
+        ("D41", "no_content_word"),
+    ] {
+        let out = search(&e, json!({ "query": query }));
+        assert_eq!(
+            out["semantic_skipped"]["code"],
+            json!(code),
+            "{query}: {out}"
+        );
+    }
+    let empty = engine();
+    let out = search(&empty, json!({ "query": "authentication problems" }));
+    assert_eq!(
+        out["semantic_skipped"]["code"],
+        json!("no_vectors"),
+        "{out}"
+    );
 }
