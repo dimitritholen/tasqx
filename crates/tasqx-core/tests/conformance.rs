@@ -1023,6 +1023,14 @@ const R_MEMORY_SEARCH: Shape = &[&[
     nul("matched_any", Ty::Str),
     // D196: the meaning side's model and floor, or null when it did not run.
     nul_of("semantic", Ty::Object, SEARCH_SEMANTIC),
+    // #838: why meaning did not run when it was asked for.
+    nul_of("semantic_skipped", Ty::Object, SEARCH_SEMANTIC_SKIPPED),
+]];
+
+const SEARCH_SEMANTIC_SKIPPED: Shape = &[&[
+    req("reason", Ty::Str),
+    req("content_words", Ty::Int),
+    req("known_words", Ty::Int),
 ]];
 
 const SEARCH_SEMANTIC: Shape = &[&[req("model", Ty::Str), req("min_similarity", Ty::Num)]];

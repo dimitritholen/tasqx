@@ -2699,6 +2699,12 @@ impl Engine {
         // answer is assembled from more separate reads than that one, and a
         // write landing between any two of them ships a brief that never
         // existed. DEFERRED and bound to a name, exactly as there.
+        //
+        // D196 (#838): the vector index is brought up to date BEFORE the
+        // snapshot opens — inside it nothing could be stored, and the copy
+        // would be recomputed for every brief. The memory half then answers
+        // from the warm copy when its generation is the one the snapshot sees.
+        self.reconcile_vectors();
         let _snapshot = self.conn.unchecked_transaction()?;
         let task = self.resolve_ref(p)?;
         let tags = task_tags(&self.conn, &task.id)?;

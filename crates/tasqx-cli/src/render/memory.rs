@@ -415,6 +415,16 @@ pub fn memory_hits(
                     "nothing is close in meaning to {asked} at {floor:.2} — --min-similarity \
                      lower widens it, --mode hybrid adds its words"
                 ),
+                None if result
+                    .pointer("/semantic_skipped/reason")
+                    .and_then(Value::as_str)
+                    == Some("not enough words the model knows") =>
+                {
+                    format!(
+                        "the model knows too few of the words in {asked} to match by meaning \
+                         — --mode lexical finds them by their characters"
+                    )
+                }
                 None => format!(
                     "{asked} has no word to match by meaning — --mode lexical finds it by its \
                      characters"

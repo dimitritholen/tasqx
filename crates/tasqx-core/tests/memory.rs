@@ -3456,3 +3456,111 @@ fn lexical_mode_reproduces_the_bm25_answer() {
         assert!(hits(&out).iter().all(|h| h["similarity"].is_null()));
     }
 }
+
+// ---- #838 final round: the vocabulary gate, ties, caps -------------------
+
+/// The meaning side runs only when the model knows at least half of the
+/// query's content words whole: text it has no words for embeds to noise
+/// that lands above the floor on anything.
+#[test]
+fn the_meaning_side_skips_a_query_the_model_does_not_know() {
+    let e = meaning_store();
+    for query in [
+        "asdfghjkl qwertyuiop",
+        "kubernetesoperatorreconciler",
+        "onweersbui vanavond",
+        "данных",
+        "数据库迁移失败，需要回滚。",
+        "寿司の作り方。",
+    ] {
+        let out = search(&e, json!({ "query": query }));
+        assert_eq!(out["semantic"], Value::Null, "{query}: {out}");
+        assert!(
+            hits(&out).iter().all(|h| h["via"] != json!("semantic")),
+            "{query}: {out}"
+        );
+        let skipped = &out["semantic_skipped"];
+        assert!(skipped["reason"].is_string(), "{query}: {out}");
+        assert!(
+            skipped["known_words"].as_u64().unwrap() * 2
+                < skipped["content_words"].as_u64().unwrap()
+                || skipped["content_words"] == json!(0),
+            "{query}: {out}"
+        );
+    }
+    for query in ["sign-in failures", "when do we ship releases"] {
+        let out = search(&e, json!({ "query": query }));
+        assert!(out["semantic"].is_object(), "{query}: {out}");
+        assert_eq!(out["semantic_skipped"], Value::Null, "{query}: {out}");
+    }
+    // An identifier says why too, and `mode: lexical` asked for no meaning.
+    let id = search(&e, json!({ "query": "D41" }));
+    assert!(id["semantic_skipped"]["reason"].is_string(), "{id}");
+    let lexical = search(&e, json!({ "query": "login", "mode": "lexical" }));
+    assert_eq!(lexical["semantic_skipped"], Value::Null, "{lexical}");
+}
+
+/// Equal bm25 scores fall to `(kind, id)`, so two identical notes keep their
+/// order through an export and import that renumbers their rowids.
+#[test]
+fn equal_scores_break_ties_by_kind_then_id() {
+    let e = engine();
+    // Rowids ascending, ids descending: the order an import can leave.
+    for id in [
+        "0199aaaa-0000-7000-8000-000000000004",
+        "0199aaaa-0000-7000-8000-000000000003",
+        "0199aaaa-0000-7000-8000-000000000002",
+        "0199aaaa-0000-7000-8000-000000000001",
+    ] {
+        e.conn()
+            .execute(
+                "INSERT INTO docs (id, title, body, search_body, created, modified) \
+                 VALUES (?1, 'twin', 'identical ledger text', 'identical ledger text', 't', 't')",
+                [id],
+            )
+            .expect("doc");
+    }
+    for mode in ["lexical", "hybrid"] {
+        let out = search(&e, json!({ "query": "ledger", "mode": mode }));
+        let ids: Vec<&str> = hits(&out)
+            .iter()
+            .map(|h| h["id"].as_str().unwrap())
+            .collect();
+        let mut sorted = ids.clone();
+        sorted.sort();
+        assert_eq!(ids, sorted, "{mode}: {out}");
+    }
+}
+
+/// `-0.0` is a floor of zero, and says so.
+#[test]
+fn a_negative_zero_floor_is_zero() {
+    let e = meaning_store();
+    let out = search(
+        &e,
+        json!({ "query": "login errors", "min_similarity": -0.0 }),
+    );
+    assert_eq!(
+        serde_json::to_string(&out["semantic"]["min_similarity"]).unwrap(),
+        "0.0",
+        "{out}"
+    );
+}
+
+/// The all-words list takes part in fusion to a constant depth by bm25;
+/// `total` still counts every entry that holds every word.
+#[test]
+fn the_all_words_list_is_capped_but_counted_whole() {
+    let e = engine();
+    for i in 0..1005 {
+        e.memory_add(&json!({ "title": format!("l{i}"), "body": format!("ledger line {i}") }))
+            .expect("doc");
+    }
+    let out = search(
+        &e,
+        json!({ "query": "ledger", "mode": "lexical", "limit": 2000 }),
+    );
+    assert_eq!(out["total"], json!(1005), "{}", out["count"]);
+    assert_eq!(out["count"], json!(1000));
+    assert_eq!(out["has_more"], json!(true));
+}

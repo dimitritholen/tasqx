@@ -92,6 +92,79 @@ pub fn embed(text: &str) -> Option<[f32; DIMS]> {
     Some(acc)
 }
 
+/// A search query's vector: [`embed`]'s mean, with every word that is
+/// punctuation alone left out. A document's punctuation is a sliver of its
+/// tokens; a short query's can be half of them, and a mean led by `.` and `,`
+/// is a direction every note shares (#838). `None` when nothing but
+/// punctuation, or nothing the model knows, is left.
+pub fn embed_query(text: &str) -> Option<[f32; DIMS]> {
+    let model = model::model();
+    let normal = tokenizer::normalize(text);
+    let mut acc = [0.0f32; DIMS];
+    let mut n = 0u32;
+    let mut buf = String::new();
+    let mut ids = Vec::new();
+    for word in tokenizer::words(&normal) {
+        if is_punctuation(word) {
+            continue;
+        }
+        ids.clear();
+        tokenizer::wordpiece(model, word, &mut buf, &mut ids);
+        for &id in &ids {
+            if id >= tokenizer::FIRST_ORDINARY {
+                model.add_row(id, &mut acc);
+                n += 1;
+            }
+        }
+    }
+    if n == 0 {
+        return None;
+    }
+    let n = n as f32;
+    for a in &mut acc {
+        *a /= n;
+    }
+    let norm = dot(&acc, &acc).sqrt();
+    if norm == 0.0 || !norm.is_finite() {
+        return None;
+    }
+    for a in &mut acc {
+        *a /= norm;
+    }
+    Some(acc)
+}
+
+/// How much of `text` the model knows: `(content, known)`, the number of
+/// its content words — words that are not punctuation, not in `stopwords`,
+/// and not an ASCII word under three characters — and how many of those are
+/// one WHOLE vocabulary token of two characters or more, not `##` pieces
+/// and not `[UNK]` (#838). A word the model only spells out in pieces, or
+/// does not have at all, embeds to a direction that says little about it.
+pub fn vocabulary_profile(text: &str, stopwords: &[&str]) -> (usize, usize) {
+    let model = model::model();
+    let normal = tokenizer::normalize(text);
+    let (mut content, mut known) = (0, 0);
+    let mut buf = String::new();
+    let mut ids = Vec::new();
+    for word in tokenizer::words(&normal) {
+        let chars = word.chars().count();
+        if is_punctuation(word) || stopwords.contains(&word) || (chars < 3 && word.is_ascii()) {
+            continue;
+        }
+        content += 1;
+        ids.clear();
+        tokenizer::wordpiece(model, word, &mut buf, &mut ids);
+        if chars >= 2 && ids.len() == 1 && ids[0] >= tokenizer::FIRST_ORDINARY {
+            known += 1;
+        }
+    }
+    (content, known)
+}
+
+fn is_punctuation(word: &str) -> bool {
+    word.chars().all(|c| tokenizer::in_class(tables::PUNCT, c))
+}
+
 fn dot(a: &[f32; DIMS], b: &[f32; DIMS]) -> f32 {
     let mut s = 0.0f32;
     for i in 0..DIMS {
