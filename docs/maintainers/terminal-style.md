@@ -361,7 +361,9 @@ Claude Code config directory with nothing but a login in it, and an MCP config
 naming tasqx alone with `--no-daemon`. Recording needs vhs 0.11.0, a Claude
 Code login (the stage script copies `~/.claude/.credentials.json`, or
 `$CLAUDE_CREDENTIALS`, into `target/hero/cc`, which is gitignored), `ttyd`,
-`ffmpeg`, Python with Pillow, and `gifsicle`:
+`ffmpeg`, Python with Pillow, and `gifsicle`. The copy is the same OAuth
+login, so if Claude Code rotates its refresh token during a take, the original
+in `~/.claude` may need a fresh `/login` afterwards:
 
 ```console
 $ cargo install --path crates/tasqx-cli --force
