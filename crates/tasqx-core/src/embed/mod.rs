@@ -65,13 +65,22 @@ pub const MODEL_ID: &str =
 /// cosine would score 0.
 pub fn embed(text: &str) -> Option<[f32; DIMS]> {
     let model = model::model();
+    pool(
+        model,
+        tokenizer::token_ids(model, text)
+            .into_iter()
+            .filter(|&id| id >= tokenizer::FIRST_ORDINARY),
+    )
+}
+
+/// The mean of `ids`' rows, L2-normalised: the one pooling [`embed`] and
+/// [`embed_query`] share. `None` for no ids, or a mean of zero length.
+fn pool(model: &model::Model, ids: impl Iterator<Item = u32>) -> Option<[f32; DIMS]> {
     let mut acc = [0.0f32; DIMS];
     let mut n = 0u32;
-    for id in tokenizer::token_ids(model, text) {
-        if id >= tokenizer::FIRST_ORDINARY {
-            model.add_row(id, &mut acc);
-            n += 1;
-        }
+    for id in ids {
+        model.add_row(id, &mut acc);
+        n += 1;
     }
     if n == 0 {
         return None;
@@ -92,73 +101,58 @@ pub fn embed(text: &str) -> Option<[f32; DIMS]> {
     Some(acc)
 }
 
-/// A search query's vector: [`embed`]'s mean, with every word that is
-/// punctuation alone left out. A document's punctuation is a sliver of its
-/// tokens; a short query's can be half of them, and a mean led by `.` and `,`
-/// is a direction every note shares (#838). `None` when nothing but
-/// punctuation, or nothing the model knows, is left.
-pub fn embed_query(text: &str) -> Option<[f32; DIMS]> {
+/// A search query as the meaning side reads it, from one tokenisation.
+#[derive(Clone, Debug)]
+pub struct QueryEmbedding {
+    /// [`embed`]'s mean, with every word that is punctuation alone left
+    /// out: a document's punctuation is a sliver of its tokens, a short
+    /// query's can be half of them, and a mean led by `.` and `,` is a
+    /// direction every note shares (#838). `None` when nothing but
+    /// punctuation, or nothing the model knows, is left.
+    pub vector: Option<[f32; DIMS]>,
+    /// The query's content words: three letters or more, not punctuation,
+    /// not in the caller's stopwords — the definition `memory.search` uses,
+    /// so an identifier such as `D41` is not one.
+    pub content_words: usize,
+    /// How many of them the model has as one WHOLE vocabulary token, not
+    /// `##` pieces and not `[UNK]` (#838): a word it only spells out in
+    /// pieces, or does not have, embeds to a direction that says little.
+    pub known_words: usize,
+}
+
+/// [`QueryEmbedding`] for `text`, `stopwords` lowercase.
+pub fn embed_query(text: &str, stopwords: &[&str]) -> QueryEmbedding {
     let model = model::model();
     let normal = tokenizer::normalize(text);
-    let mut acc = [0.0f32; DIMS];
-    let mut n = 0u32;
-    let mut buf = String::new();
+    let (mut content_words, mut known_words) = (0, 0);
     let mut ids = Vec::new();
+    let mut word_ids = Vec::new();
+    let mut buf = String::new();
     for word in tokenizer::words(&normal) {
         if is_punctuation(word) {
             continue;
         }
-        ids.clear();
-        tokenizer::wordpiece(model, word, &mut buf, &mut ids);
-        for &id in &ids {
-            if id >= tokenizer::FIRST_ORDINARY {
-                model.add_row(id, &mut acc);
-                n += 1;
+        word_ids.clear();
+        tokenizer::wordpiece(model, word, &mut buf, &mut word_ids);
+        let letters = word.chars().filter(|c| c.is_alphabetic()).count();
+        if letters >= 3 && !stopwords.contains(&word) {
+            content_words += 1;
+            if word_ids.len() == 1 && word_ids[0] >= tokenizer::FIRST_ORDINARY {
+                known_words += 1;
             }
         }
+        ids.extend(
+            word_ids
+                .iter()
+                .copied()
+                .filter(|&id| id >= tokenizer::FIRST_ORDINARY),
+        );
     }
-    if n == 0 {
-        return None;
+    QueryEmbedding {
+        vector: pool(model, ids.into_iter()),
+        content_words,
+        known_words,
     }
-    let n = n as f32;
-    for a in &mut acc {
-        *a /= n;
-    }
-    let norm = dot(&acc, &acc).sqrt();
-    if norm == 0.0 || !norm.is_finite() {
-        return None;
-    }
-    for a in &mut acc {
-        *a /= norm;
-    }
-    Some(acc)
-}
-
-/// How much of `text` the model knows: `(content, known)`, the number of
-/// its content words — words that are not punctuation, not in `stopwords`,
-/// and not an ASCII word under three characters — and how many of those are
-/// one WHOLE vocabulary token of two characters or more, not `##` pieces
-/// and not `[UNK]` (#838). A word the model only spells out in pieces, or
-/// does not have at all, embeds to a direction that says little about it.
-pub fn vocabulary_profile(text: &str, stopwords: &[&str]) -> (usize, usize) {
-    let model = model::model();
-    let normal = tokenizer::normalize(text);
-    let (mut content, mut known) = (0, 0);
-    let mut buf = String::new();
-    let mut ids = Vec::new();
-    for word in tokenizer::words(&normal) {
-        let chars = word.chars().count();
-        if is_punctuation(word) || stopwords.contains(&word) || (chars < 3 && word.is_ascii()) {
-            continue;
-        }
-        content += 1;
-        ids.clear();
-        tokenizer::wordpiece(model, word, &mut buf, &mut ids);
-        if chars >= 2 && ids.len() == 1 && ids[0] >= tokenizer::FIRST_ORDINARY {
-            known += 1;
-        }
-    }
-    (content, known)
 }
 
 fn is_punctuation(word: &str) -> bool {

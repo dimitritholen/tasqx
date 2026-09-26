@@ -1028,6 +1028,7 @@ const R_MEMORY_SEARCH: Shape = &[&[
 ]];
 
 const SEARCH_SEMANTIC_SKIPPED: Shape = &[&[
+    req("code", Ty::Str),
     req("reason", Ty::Str),
     req("content_words", Ty::Int),
     req("known_words", Ty::Int),

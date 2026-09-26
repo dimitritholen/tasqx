@@ -178,7 +178,10 @@ fn text_with_no_known_token_is_stored_once_as_a_sentinel() {
     let before = e.conn.total_changes();
     // A different engine on the same store would also skip them: the scan
     // itself no longer lists them.
-    assert!(scan_missing(&e.conn, true).unwrap().is_empty());
+    assert!(scan_missing(&e.conn, true, &mut HashMap::new())
+        .unwrap()
+        .0
+        .is_empty());
     finds(&e, VOLCANO);
     assert_eq!(e.conn.total_changes(), before, "never re-embedded");
 }
@@ -271,7 +274,7 @@ fn a_write_that_lost_a_race_with_an_edit_stores_nothing() {
     let task = add_task(&a, "t");
     let note = add_note(&a, &task, GIRAFFE);
 
-    let pending = scan_missing(&a.conn, true).unwrap();
+    let pending = scan_missing(&a.conn, true, &mut HashMap::new()).unwrap().0;
     assert_eq!(pending.len(), 2, "both read at v1");
     b.memory_update(&json!({ "id": doc, "body": VOLCANO }))
         .unwrap();
@@ -303,7 +306,7 @@ fn a_note_removed_between_read_and_write_stores_nothing() {
     let b = Engine::open(&s.db()).unwrap();
     let task = add_task(&a, "t");
     let note = add_note(&a, &task, GIRAFFE);
-    let pending = scan_missing(&a.conn, true).unwrap();
+    let pending = scan_missing(&a.conn, true, &mut HashMap::new()).unwrap().0;
     b.annotation_remove(&json!({ "ref": task, "annotation_id": note }))
         .unwrap();
     assert_eq!(
@@ -524,6 +527,37 @@ fn a_held_write_lock_neither_blocks_nor_breaks_a_search() {
     assert!(found(&a, GIRAFFE, Kind::Doc, &doc));
     assert!(rows(&a.conn, &doc) >= 1, "stored once the lock is free");
     assert_eq!(a.vectors.borrow().embedded, embedded, "from what it kept");
+}
+
+/// #838 review: what a reconcile embedded but could not store survives a
+/// generation that moves under a held lock, so a busy writer costs the
+/// changed entry alone, not everything again.
+#[test]
+fn unstored_embeddings_survive_a_moving_generation() {
+    let s = Scratch::new("busy-moving");
+    let (a, holder, docs) = three_docs(&s);
+    holder.execute_batch("BEGIN IMMEDIATE").unwrap();
+    assert!(found(&a, GIRAFFE, Kind::Doc, &docs[1]));
+    assert_eq!(a.vectors.borrow().embedded, 3);
+    holder
+        .execute(
+            "UPDATE docs SET search_body = ?1 WHERE id = ?2",
+            params![VOLCANO, docs[0]],
+        )
+        .unwrap();
+    holder.execute_batch("COMMIT; BEGIN IMMEDIATE").unwrap();
+    assert!(found(&a, GIRAFFE, Kind::Doc, &docs[1]));
+    assert_eq!(
+        a.vectors.borrow().embedded,
+        4,
+        "only the changed entry was embedded again"
+    );
+    holder.execute_batch("ROLLBACK").unwrap();
+    assert!(found(&a, GIRAFFE, Kind::Doc, &docs[1]));
+    for d in &docs {
+        assert!(rows(&a.conn, d) >= 1, "{d} stored once the lock is free");
+    }
+    assert_eq!(a.vectors.borrow().embedded, 4);
 }
 
 #[test]

@@ -1011,13 +1011,14 @@ pub const R_MEMORY_SEARCH: &[FieldDoc] = &[
     f("relaxed", "boolean", "Whether no entry held every word of a plain query and the any-word list ran (D193). In hybrid mode that list always runs for two content words or more and its hits say `partial`; under `mode: lexical` it runs only when no entry has every word, and then `matched` is that OR. Always false for `raw` and `mode: semantic`."),
     n("matched_any", "string", "The any-word OR expression, when it ran (#838): always in hybrid mode for a query of two content words or more, only as D193's fallback under `mode: lexical`."),
     n("semantic", "object", "The meaning side's `{model, min_similarity}`, or null when it did not run: `mode: lexical` or `raw`, a query with no word of three letters or more that is not a stopword (an id such as `D41`), fewer than half its content words known to the model whole, or nothing to compare against — `semantic_skipped` says which (D196)."),
-    n("semantic_skipped", "object", "Why the meaning side did not run when the mode asked for it: `{reason, content_words, known_words}`; null when it ran, and under `mode: lexical` or `raw` (#838)."),
+    n("semantic_skipped", "object", "Why the meaning side did not run when the mode asked for it: `{code, reason, content_words, known_words}`; null when it ran, and under `mode: lexical` or `raw` (#838)."),
 ];
 
 /// `memory.search`'s `semantic_skipped` object.
 pub const R_MEMORY_SEARCH_SEMANTIC_SKIPPED: &[FieldDoc] = &[
-    f("reason", "string", "Why: `no word of three letters or more` (an id such as `D41`), `not enough words the model knows` (fewer than half the content words are one whole vocabulary token), `no word the model knows`, or `nothing to compare against` (no vectors in scope)."),
-    f("content_words", "integer", "The query's content words: not punctuation, not a stopword, not an ASCII word under three characters."),
+    f("code", "string", "Why, as a stable code to branch on: `no_content_word` (no word of three letters or more — an id such as `D41`), `unknown_words` (fewer than half the content words are one whole vocabulary token, or none is known), `no_vectors` (nothing indexed in scope to compare against)."),
+    f("reason", "string", "The same, in words for a person; its text may change."),
+    f("content_words", "integer", "The query's content words: three letters or more, not a stopword — an identifier such as `D41` is not one."),
     f("known_words", "integer", "How many of them the model has as one whole token of two characters or more."),
 ];
 
