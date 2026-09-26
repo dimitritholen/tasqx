@@ -1022,12 +1022,16 @@ pub const COMMAND_REF: &[CmdDoc] = &[
         aliases: &[],
         method: "— (no store)",
         summary: "Who made tasqx, where to find it, and what build this is.",
-        usage: "tasqx about",
-        examples: &[ex("tasqx about")],
+        usage: "tasqx about [--notices]",
+        examples: &[
+            ex("tasqx about"),
+            exn("tasqx about --notices", "the third-party licence texts"),
+        ],
         notes: &[
             "Six lines: the author, two links, the build this binary was made from, the store it would open, and `times UTC` — every clock tasqx reads and prints is UTC, including one typed without an offset (D132). The build is the string `tasqx --version` prints — the crate version plus the commit — and reads `unknown` on a build from a source tarball, which has no git to ask.",
             "It opens no store and no network. The store line is the path a command WOULD open, resolved without creating anything, so asking where things live never authors a data directory.",
             "A credits screen is not data, so there is no API method and `--json` is declined with a note (D31's carve-out list, D127).",
+            "`--notices` prints the third-party notices instead: the attribution and licence texts of the embedding model memory search uses, which is compiled into the binary (D196). It is the `NOTICE` file the release archives carry, so an install that kept only the binary still has it.",
         ],
         see_also: &["manual", "docs"],
         topic: Topic::GettingStarted,

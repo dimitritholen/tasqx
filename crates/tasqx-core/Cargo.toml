@@ -35,9 +35,6 @@ serde_json = { workspace = true }
 # the dependency graph — `crates/tasqx-cli` already builds this exact version
 # for the same reason — so the lockfile gains nothing by naming it here too.
 unicode-width = "0.2.2"
-# D196: the embedding tokenizer strips accents the way the model's own
-# tokenizer does, by NFD decomposition. The one crate semantic search adds.
-unicode-normalization = "0.1.25"
 uuid = { version = "1.23.5", features = ["v7", "v5"] }
 
 [target.'cfg(windows)'.dependencies]

@@ -1118,7 +1118,12 @@ pub(super) enum Command {
     /// Prints the author, two links, this build's version and commit, and the
     /// store it would open. Needs no store and no network.
     #[command(after_help = crate::cmddoc::after_help("about"))]
-    About,
+    About {
+        /// Print the third-party notices instead: the attribution and licence
+        /// texts of the embedding model compiled into this binary (D196).
+        #[arg(long)]
+        notices: bool,
+    },
 
     /// Browse the complete manual in your terminal: a themed, navigable guide.
     /// `tasqx manual` prints the table of contents; `tasqx manual <command|topic>`

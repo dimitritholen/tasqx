@@ -5,56 +5,97 @@
 //! is therefore embedded a paragraph or a section at a time, and an entry
 //! scores as its best chunk.
 //!
-//! [`chunk_doc`] reads a doc's text as markdown, just enough to find its
-//! blocks:
+//! Text is read as markdown, just enough to find its blocks:
 //!
-//! - A blank line ends a paragraph. A list or a table without blank lines
-//!   inside is one paragraph.
+//! - `\r\n` reads as `\n`. A blank line ends a paragraph; a list or a table
+//!   without blank lines inside is one paragraph.
 //! - An ATX heading (`#` to `######`, up to three spaces of indent) ends a
 //!   paragraph and sets the heading path for what follows; a heading is
 //!   never a chunk on its own. Setext headings (a line of `===` or `---`
-//!   under text) are read as text.
+//!   under text) are read as text. In a doc, the FIRST heading is the doc
+//!   itself when it repeats the title (as a `# Title` line usually does): it
+//!   joins no path, so text above and below it is one section. Any later
+//!   heading is a section, whatever it says.
 //! - A fenced code block (three or more backticks or tildes) is one block
-//!   and is never split, however long, and a `#` line inside it is code,
-//!   not a heading. A fence left open runs to the end of the text.
-//! - A paragraph over [`MAX_WORDS`] is cut at sentence ends (`.`, `!`, `?`,
-//!   `…` and their CJK forms, followed by whitespace) into pieces of at most
-//!   [`MAX_WORDS`], each after the first starting with the sentence that
-//!   ended the one before. A single sentence over [`MAX_WORDS`] (a pasted
-//!   log line, text without punctuation) is cut every [`MAX_WORDS`] words.
+//!   and is never split, however long; a `#` line inside it is code, not a
+//!   heading. A fence left open runs to the end of the text.
+//! - A block over [`MAX_WORDS`] is cut at sentence ends (`.`, `!`, `?`, `…`
+//!   followed by whitespace or the end, and `。`, `！`, `？` anywhere) into
+//!   pieces that fit. Each piece after the first starts with the sentence
+//!   that ended the one before, always: a piece may exceed [`MAX_WORDS`] by
+//!   that one sentence. A single sentence over [`MAX_WORDS`] (a pasted log,
+//!   text without punctuation) is cut into the fewest near-equal parts that
+//!   fit, which carry no overlap.
 //! - Neighbouring blocks under the same heading path merge while either is
 //!   under [`MIN_WORDS`] and the two together are at most [`MAX_WORDS`].
-//! - Every chunk starts with the doc's title and its heading path, one per
-//!   line, then a blank line, then its text. A first heading that repeats
-//!   the title (as a doc's `# Title` line usually does) is the doc itself:
-//!   it is not repeated, and text above and below it is one section.
+//! - Every chunk of a doc starts with the doc's title and its heading path,
+//!   one per line, then a blank line, then its text.
 //!
 //! Front matter needs no rule here: what is chunked is a doc's
 //! `search_body`, where a front matter block has already been flattened
 //! into plain `key  value` lines (D135), which read as a paragraph and merge
-//! with their neighbours like any other. `\r\n` reads as `\n`.
+//! with their neighbours like any other.
 //!
-//! Word counts are whitespace-separated runs, the prefix not included.
+//! Sizes are counted in units, not bytes or whitespace words, so that text
+//! the tokenizer reads as many words is never one giant chunk: a unit is a
+//! run of characters between whitespace, except that a CJK ideograph is a
+//! unit of its own (the tokenizer reads each as a word) and a run longer
+//! than [`MAX_UNIT_CHARS`] counts once per [`MAX_UNIT_CHARS`] characters (a
+//! URL, a hash, base64). English text has as many units as words. The
+//! prefix is not counted.
+
+use super::tables;
+use super::tokenizer::in_class;
 
 /// Bump when any text would be cut differently; it is part of
 /// [`super::MODEL_ID`].
-pub const VERSION: u32 = 1;
+pub const VERSION: u32 = 2;
 
 /// A block this short merges with its neighbour when the two fit.
 pub const MIN_WORDS: usize = 40;
 
-/// No chunk is longer than this, except a fenced code block.
+/// No chunk is longer than this, except a fenced code block and a piece
+/// carrying its overlap sentence.
 pub const MAX_WORDS: usize = 150;
+
+/// Characters in one unit of an unbroken run.
+pub const MAX_UNIT_CHARS: usize = 25;
 
 #[derive(Debug)]
 struct Piece {
     path: Vec<String>,
     text: String,
-    words: usize,
+    units: usize,
 }
 
-fn word_count(s: &str) -> usize {
-    s.split_whitespace().count()
+/// The byte ranges of `text`'s units (see the module docs).
+fn units(text: &str) -> Vec<(usize, usize)> {
+    let mut out = Vec::new();
+    let mut run: Option<(usize, usize)> = None;
+    for (i, c) in text.char_indices() {
+        let end = i + c.len_utf8();
+        if c.is_whitespace() || in_class(tables::WHITE, c) {
+            out.extend(run.take().map(|(s, _)| (s, i)));
+        } else if in_class(tables::CJK, c) {
+            out.extend(run.take().map(|(s, _)| (s, i)));
+            out.push((i, end));
+        } else {
+            match &mut run {
+                Some((_, n)) if *n < MAX_UNIT_CHARS => *n += 1,
+                Some((s, _)) => {
+                    out.push((*s, i));
+                    run = Some((i, 1));
+                }
+                None => run = Some((i, 1)),
+            }
+        }
+    }
+    out.extend(run.map(|(s, _)| (s, text.len())));
+    out
+}
+
+fn unit_count(s: &str) -> usize {
+    units(s).len()
 }
 
 /// The chunks of a doc titled `title` whose text is `text` (its
@@ -62,55 +103,64 @@ fn word_count(s: &str) -> usize {
 /// neither has none.
 pub fn chunk_doc(title: &str, text: &str) -> Vec<String> {
     let title = title.trim();
-    let chunks = chunks(text, title);
+    let chunks: Vec<String> = sections(text, title)
+        .into_iter()
+        .map(|p| with_prefix(title, &p.path, &p.text))
+        .collect();
     if chunks.is_empty() && !title.is_empty() {
         return vec![title.to_string()];
     }
     chunks
 }
 
-/// The chunks of an annotation: the whole body as one chunk, unless it is
-/// over [`MAX_WORDS`], when it is cut as a doc with no title would be.
-/// Empty or whitespace-only text has none.
+/// The chunks of an annotation. It is read as a doc with no title is, so
+/// `\r\n` and headings are handled the same way at any length; but up to
+/// [`MAX_WORDS`] it is one chunk, its sections joined in order, and only a
+/// longer one is cut. Empty or whitespace-only text has none.
 pub fn chunk_annotation(body: &str) -> Vec<String> {
-    let body = body.trim();
-    match word_count(body) {
-        0 => Vec::new(),
-        n if n <= MAX_WORDS => vec![body.to_string()],
-        _ => chunks(body, ""),
+    let text = body.replace("\r\n", "\n");
+    if unit_count(&text) > MAX_WORDS {
+        return sections(&text, "")
+            .into_iter()
+            .map(|p| with_prefix("", &p.path, &p.text))
+            .collect();
     }
+    let mut groups: Vec<(Vec<String>, Vec<String>)> = Vec::new();
+    for b in blocks(&text, "") {
+        match groups.last_mut() {
+            Some((path, texts)) if *path == b.path => texts.push(b.text),
+            _ => groups.push((b.path, vec![b.text])),
+        }
+    }
+    if groups.is_empty() {
+        return Vec::new();
+    }
+    let one: Vec<String> = groups
+        .iter()
+        .map(|(path, texts)| with_prefix("", path, &texts.join("\n\n")))
+        .collect();
+    vec![one.join("\n\n")]
 }
 
-fn chunks(text: &str, title: &str) -> Vec<String> {
+/// Blocks, split to fit, then merged: the pieces that become chunks.
+fn sections(text: &str, title: &str) -> Vec<Piece> {
     let text = text.replace("\r\n", "\n");
     let mut merged: Vec<Piece> = Vec::new();
-    for mut piece in blocks(&text).into_iter().flat_map(split_long) {
-        // A first heading that repeats the title is the doc itself, not a
-        // section of it: what sits above it and below it is one section.
-        if piece
-            .path
-            .first()
-            .is_some_and(|h| h.eq_ignore_ascii_case(title))
-        {
-            piece.path.remove(0);
-        }
-        if let Some(last) = merged.last_mut() {
-            if last.path == piece.path
-                && (last.words < MIN_WORDS || piece.words < MIN_WORDS)
-                && last.words + piece.words <= MAX_WORDS
+    for piece in blocks(&text, title).into_iter().flat_map(split_long) {
+        match merged.last_mut() {
+            Some(last)
+                if last.path == piece.path
+                    && (last.units < MIN_WORDS || piece.units < MIN_WORDS)
+                    && last.units + piece.units <= MAX_WORDS =>
             {
                 last.text.push_str("\n\n");
                 last.text.push_str(&piece.text);
-                last.words += piece.words;
-                continue;
+                last.units += piece.units;
             }
+            _ => merged.push(piece),
         }
-        merged.push(piece);
     }
     merged
-        .into_iter()
-        .map(|p| with_prefix(title, &p.path, &p.text))
-        .collect()
 }
 
 fn with_prefix(title: &str, path: &[String], text: &str) -> String {
@@ -171,49 +221,57 @@ fn heading(line: &str) -> Option<(usize, &str)> {
     Some((level, text))
 }
 
-fn blocks(text: &str) -> Vec<Piece> {
+/// Push the block `lines` make, under `path`, when it has any text.
+fn emit(out: &mut Vec<Piece>, path: &[(usize, String)], lines: &mut Vec<&str>) {
+    if lines.is_empty() {
+        return;
+    }
+    let text = lines.join("\n").trim().to_string();
+    lines.clear();
+    let units = unit_count(&text);
+    if units > 0 {
+        let path = path.iter().map(|(_, h)| h.clone()).collect();
+        out.push(Piece { path, text, units });
+    }
+}
+
+fn blocks(text: &str, title: &str) -> Vec<Piece> {
     let mut out = Vec::new();
     let mut path: Vec<(usize, String)> = Vec::new();
     let mut para: Vec<&str> = Vec::new();
     let mut fence: Option<((char, usize), Vec<&str>)> = None;
-    let names = |path: &[(usize, String)]| path.iter().map(|(_, h)| h.clone()).collect();
-    let emit = |out: &mut Vec<Piece>, path: Vec<String>, lines: &mut Vec<&str>| {
-        let text = lines.join("\n").trim_matches('\n').to_string();
-        lines.clear();
-        let words = word_count(&text);
-        if words > 0 {
-            out.push(Piece { path, text, words });
-        }
-    };
+    let mut first_heading = true;
     for line in text.split('\n') {
         if let Some((open, code)) = &mut fence {
             code.push(line);
             if fence_closes(line, *open) {
                 let (_, mut code) = fence.take().expect("inside a fence");
-                emit(&mut out, names(&path), &mut code);
+                emit(&mut out, &path, &mut code);
             }
             continue;
         }
         if let Some(open) = fence_open(line) {
-            emit(&mut out, names(&path), &mut para);
+            emit(&mut out, &path, &mut para);
             fence = Some((open, vec![line]));
         } else if let Some((level, h)) = heading(line) {
-            emit(&mut out, names(&path), &mut para);
+            emit(&mut out, &path, &mut para);
+            let is_title = first_heading && !title.is_empty() && h.eq_ignore_ascii_case(title);
+            first_heading = false;
             while path.last().is_some_and(|(l, _)| *l >= level) {
                 path.pop();
             }
-            if !h.is_empty() {
+            if !h.is_empty() && !is_title {
                 path.push((level, h.to_string()));
             }
         } else if line.trim().is_empty() {
-            emit(&mut out, names(&path), &mut para);
+            emit(&mut out, &path, &mut para);
         } else {
             para.push(line);
         }
     }
-    emit(&mut out, names(&path), &mut para);
+    emit(&mut out, &path, &mut para);
     if let Some((_, mut code)) = fence {
-        emit(&mut out, names(&path), &mut code);
+        emit(&mut out, &path, &mut code);
     }
     out
 }
@@ -222,68 +280,89 @@ fn is_code(text: &str) -> bool {
     fence_open(text.lines().next().unwrap_or("")).is_some()
 }
 
-/// The sentences of a paragraph, each at most [`MAX_WORDS`].
-fn sentences(text: &str) -> Vec<String> {
-    let mut out = Vec::new();
+/// One sentence of a long block, or one part of a sentence too long to fit.
+struct Sentence {
+    text: String,
+    units: usize,
+    part: bool,
+}
+
+/// The sentences of a block; one over [`MAX_WORDS`] comes back as the
+/// fewest near-equal parts that fit, cut between units.
+fn sentences(text: &str) -> Vec<Sentence> {
+    let mut spans = Vec::new();
     let mut start = 0;
     let mut chars = text.char_indices().peekable();
     while let Some((i, c)) = chars.next() {
-        let ends = matches!(c, '.' | '!' | '?' | '…' | '。' | '！' | '？');
-        if ends && chars.peek().is_none_or(|&(_, n)| n.is_whitespace()) {
+        let western = matches!(c, '.' | '!' | '?' | '…')
+            && chars.peek().is_none_or(|&(_, n)| n.is_whitespace());
+        if western || matches!(c, '。' | '！' | '？') {
             let end = i + c.len_utf8();
-            out.push(&text[start..end]);
+            spans.push(&text[start..end]);
             start = end;
         }
     }
-    out.push(&text[start..]);
-    let mut result = Vec::new();
-    for s in out {
-        let words: Vec<&str> = s.split_whitespace().collect();
-        for part in words.chunks(MAX_WORDS) {
-            result.push(part.join(" "));
+    spans.push(&text[start..]);
+    let mut out = Vec::new();
+    for span in spans {
+        let us = units(span);
+        let n = us.len();
+        if n == 0 {
+            continue;
+        }
+        let parts = n.div_ceil(MAX_WORDS);
+        for k in 0..parts {
+            let (a, b) = (k * n / parts, (k + 1) * n / parts);
+            out.push(Sentence {
+                text: span[us[a].0..us[b - 1].1].to_string(),
+                units: b - a,
+                part: parts > 1,
+            });
         }
     }
-    result
+    out
 }
 
-/// A block over [`MAX_WORDS`] as pieces that fit, with one sentence of
-/// overlap between neighbours. Code and blocks that fit pass through.
+/// A block over [`MAX_WORDS`] as pieces that fit, each after the first
+/// opening with the sentence that closed the one before. Code and blocks
+/// that fit pass through.
 fn split_long(piece: Piece) -> Vec<Piece> {
-    if piece.words <= MAX_WORDS || is_code(&piece.text) {
+    if piece.units <= MAX_WORDS || is_code(&piece.text) {
         return vec![piece];
     }
     let mut out = Vec::new();
-    let mut cur: Vec<(String, usize)> = Vec::new();
-    let mut cur_words = 0;
-    let flush = |cur: &[(String, usize)], words: usize, out: &mut Vec<Piece>| {
+    let flush = |cur: &[Sentence], out: &mut Vec<Piece>| {
         let text = cur
             .iter()
-            .map(|(s, _)| s.as_str())
+            .map(|s| s.text.as_str())
             .collect::<Vec<_>>()
             .join(" ");
+        let units = cur.iter().map(|s| s.units).sum();
         out.push(Piece {
             path: piece.path.clone(),
             text,
-            words,
+            units,
         });
     };
+    let mut cur: Vec<Sentence> = Vec::new();
+    // How many sentences in `cur` are new, not the carried-over overlap.
+    let mut fresh = 0;
     for s in sentences(&piece.text) {
-        let n = word_count(&s);
-        if !cur.is_empty() && cur_words + n > MAX_WORDS {
-            flush(&cur, cur_words, &mut out);
+        let used: usize = cur.iter().map(|s| s.units).sum();
+        if fresh > 0 && used + s.units > MAX_WORDS {
+            flush(&cur, &mut out);
             let last = cur.pop().expect("not empty");
             cur.clear();
-            cur_words = 0;
-            if last.1 + n <= MAX_WORDS {
-                cur_words = last.1;
+            if !last.part && !s.part {
                 cur.push(last);
             }
+            fresh = 0;
         }
-        cur_words += n;
-        cur.push((s, n));
+        cur.push(s);
+        fresh += 1;
     }
-    if !cur.is_empty() {
-        flush(&cur, cur_words, &mut out);
+    if fresh > 0 {
+        flush(&cur, &mut out);
     }
     out
 }
@@ -298,9 +377,9 @@ mod tests {
 
     fn body_words(chunk: &str, title_lines: usize) -> usize {
         if title_lines == 0 {
-            return word_count(chunk);
+            return unit_count(chunk);
         }
-        word_count(chunk.split_once("\n\n").map_or(chunk, |(_, b)| b))
+        unit_count(chunk.split_once("\n\n").map_or(chunk, |(_, b)| b))
     }
 
     #[test]
@@ -389,10 +468,86 @@ mod tests {
     }
 
     #[test]
-    fn a_long_paragraph_without_punctuation_is_cut_every_max_words() {
-        let c = chunk_annotation(&words(400, "x"));
-        let counts: Vec<usize> = c.iter().map(|s| word_count(s)).collect();
-        assert_eq!(counts, [150, 150, 100]);
+    fn a_run_without_sentence_ends_is_cut_into_even_parts() {
+        let counts = |n: usize| -> Vec<usize> {
+            chunk_annotation(&words(n, "x"))
+                .iter()
+                .map(|s| unit_count(s))
+                .collect()
+        };
+        assert_eq!(counts(400), [133, 133, 134]);
+        assert_eq!(counts(151), [75, 76]);
+        assert_eq!(counts(300), [150, 150]);
+    }
+
+    #[test]
+    fn the_overlap_sentence_is_kept_even_past_the_maximum() {
+        let s: Vec<String> = (0..4)
+            .map(|i| format!("{} end{i}.", words(99, "w")))
+            .collect();
+        let c = chunk_annotation(&s.join(" "));
+        assert_eq!(c.len(), 4, "{c:#?}");
+        for (i, ch) in c.iter().enumerate().skip(1) {
+            assert!(ch.starts_with(&s[i - 1]), "chunk {i} lost its overlap");
+            assert!(ch.ends_with(&format!("end{i}.")));
+        }
+    }
+
+    #[test]
+    fn only_the_first_heading_can_be_the_doc_itself() {
+        let text = "# T\n\nintro\n\n## A\n\nfirst\n\n# T\n\nlater";
+        assert_eq!(
+            chunk_doc("T", text),
+            ["T\n\nintro", "T\nA\n\nfirst", "T\nT\n\nlater"]
+        );
+        let text = "# Other\n\nx\n\n# T\n\ny";
+        assert_eq!(chunk_doc("T", text), ["T\nOther\n\nx", "T\nT\n\ny"]);
+    }
+
+    #[test]
+    fn cjk_text_is_counted_by_character_and_split() {
+        let han: String = "文字".repeat(1400);
+        let c = chunk_annotation(&han);
+        assert!(c.len() >= 18, "{} chunks", c.len());
+        assert!(c.iter().all(|ch| unit_count(ch) <= MAX_WORDS));
+        assert_eq!(c.concat(), han);
+        let sentences = "这是一个关于发布流程的句子。".repeat(200);
+        let c = chunk_annotation(&sentences);
+        assert!(c.len() > 1);
+        assert!(c[0].ends_with('。'));
+    }
+
+    #[test]
+    fn an_unbroken_string_is_still_bounded() {
+        let blob = "QUJD".repeat(12_500);
+        let c = chunk_annotation(&blob);
+        assert!(c.len() > 1);
+        assert!(
+            c.iter().all(|ch| ch.len() <= MAX_WORDS * MAX_UNIT_CHARS),
+            "{}",
+            c[0].len()
+        );
+        assert_eq!(c.concat(), blob);
+    }
+
+    #[test]
+    fn units_are_words_cjk_characters_and_slices_of_long_runs() {
+        assert_eq!(unit_count("the release, again."), 3);
+        assert_eq!(unit_count("中文 and 日本"), 5);
+        assert_eq!(unit_count(&"a".repeat(MAX_UNIT_CHARS * 2 + 1)), 3);
+        assert_eq!(unit_count(" \n\t"), 0);
+    }
+
+    #[test]
+    fn a_short_annotation_still_reads_crlf_and_lifts_its_headings() {
+        assert_eq!(
+            chunk_annotation("# Decision\r\n\r\nWe ship on Tuesday.\r\nAlways."),
+            ["Decision\n\nWe ship on Tuesday.\nAlways."]
+        );
+        assert_eq!(
+            chunk_annotation("Intro\n\n## Why\n\nBecause."),
+            ["Intro\n\nWhy\n\nBecause."]
+        );
     }
 
     #[test]
@@ -477,7 +632,10 @@ mod tests {
     #[test]
     fn sentences_end_only_before_whitespace() {
         assert_eq!(
-            sentences("See v1.2.3 now. Then go! Why? Done…"),
+            sentences("See v1.2.3 now. Then go! Why? Done…")
+                .iter()
+                .map(|s| s.text.as_str())
+                .collect::<Vec<_>>(),
             ["See v1.2.3 now.", "Then go!", "Why?", "Done…"]
         );
     }

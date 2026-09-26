@@ -544,7 +544,7 @@ fn verb_name(command: &Option<Command>) -> Option<&'static str> {
     match command {
         Some(Command::Api) => Some("api"),
         Some(Command::Docs { .. }) => Some("docs"),
-        Some(Command::About) => Some("about"),
+        Some(Command::About { .. }) => Some("about"),
         Some(Command::Manual { .. }) => Some("manual"),
         Some(Command::Completions { .. }) => Some("completions"),
         Some(Command::Setup { .. }) => Some("setup"),
@@ -593,7 +593,7 @@ fn execute(cli: Cli) -> Exit {
             Some(Command::Manual { .. }) => {
                 Some("a reading surface; it opens no store and no daemon")
             }
-            Some(Command::About) => Some(
+            Some(Command::About { .. }) => Some(
                 "a credits screen; it names the store's path and opens neither it nor a daemon",
             ),
             Some(Command::Completions { .. }) => {
@@ -724,8 +724,12 @@ fn execute(cli: Cli) -> Exit {
 
     // `about` needs the themed Ctx and the store PATH, but opens neither a
     // store nor a network; dispatch it beside `manual`.
-    if let Some(Command::About) = &cli.command {
+    if let Some(Command::About { notices }) = &cli.command {
         let exit = Exit::self_framed("about", cli.json);
+        if *notices {
+            emit(tasqx_core::embed::NOTICE);
+            return exit;
+        }
         let facts = about::Facts::gather();
         emit(&about::render(&ctx, &facts));
         return exit;
@@ -1138,7 +1142,7 @@ fn execute(cli: Cli) -> Exit {
         Some(Command::Api) => unreachable!("handled above"),
         Some(Command::Daemon { .. }) => unreachable!("handled above"),
         Some(Command::Mcp { .. }) => unreachable!("handled above"),
-        Some(Command::About) => unreachable!("handled above"),
+        Some(Command::About { .. }) => unreachable!("handled above"),
         Some(Command::Manual { .. }) => unreachable!("handled above"),
         Some(Command::Completions { .. }) => unreachable!("handled above"),
         Some(Command::Setup { .. }) => unreachable!("handled above"),

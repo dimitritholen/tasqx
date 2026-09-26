@@ -189,7 +189,11 @@ fn similarity_rounds_to_three_decimals() {
     assert_eq!(round_similarity(0.300_49), 0.3);
     assert_eq!(round_similarity(0.2996), 0.3);
     assert_eq!(round_similarity(0.1234), 0.123);
-    assert_eq!(round_similarity(-0.0004), -0.0);
+    assert_eq!(round_similarity(-0.0004), 0.0);
+    assert!(
+        round_similarity(-0.0004).is_sign_positive(),
+        "no negative zero"
+    );
     assert_eq!(round_similarity(1.0), 1.0);
 }
 

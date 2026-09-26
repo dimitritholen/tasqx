@@ -5613,6 +5613,26 @@ fn about_names_the_store_without_creating_it() {
     );
 }
 
+/// D196 compiles a third-party model into the binary, and an installer that
+/// copies only the binary leaves the archive's NOTICE behind: the notices
+/// have to be printable from the binary itself, byte for byte the file.
+#[test]
+fn about_notices_prints_the_compiled_in_notice() {
+    let dir = fresh_config_dir("about-notices");
+    let out = Command::new(env!("CARGO_BIN_EXE_tasqx"))
+        .env("TASQX_CONFIG_DIR", &dir)
+        .env("TASQX_DB", dir.join("tasks.db"))
+        .env("HOME", &dir)
+        .args(["about", "--notices"])
+        .output()
+        .expect("run tasqx about --notices");
+    assert!(out.status.success(), "{out:?}");
+    let text = String::from_utf8(out.stdout).expect("utf-8");
+    let notice = include_str!("../../../NOTICE");
+    assert_eq!(text.trim_end(), notice.trim_end());
+    assert!(text.contains("potion-base-8M") && text.contains("Apache License"));
+}
+
 /// `tasqx api`'s store-open failure fires before the request is even parsed,
 /// which used to mean it fired before `id` was even READ — the one response
 /// shape a multiplexed caller (the daemon protocol, or any batching wrapper)
