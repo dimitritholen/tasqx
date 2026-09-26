@@ -134,8 +134,11 @@ pub(super) struct VectorCache {
     /// Times the copy was read from the store.
     #[cfg(test)]
     loads: usize,
-    /// Runs between a reconcile's scan and its check of the generation, so
-    /// a test can land another writer's change exactly there.
+    /// This call's entries, computed inside a caller's transaction that the
+    /// kept copy did not match; cleared by the next reconcile.
+    ephemeral: Option<Vec<Entry>>,
+    /// Runs between a reconcile's scan and the end of its snapshot, so a
+    /// test can land another writer's change exactly there.
     #[cfg(test)]
     after_scan: Option<Box<dyn FnMut() + Send>>,
 }
@@ -511,10 +514,6 @@ fn due_touch(
 /// How often a process records that its model searched a store.
 const TOUCH_EVERY_SECS: i64 = 24 * 3600;
 
-/// How many times a reconcile starts over when another writer changes
-/// memory under it, before it answers from the last snapshot it read.
-const RACE_RETRIES: usize = 3;
-
 impl VectorCache {
     fn reset(&mut self) {
         self.key = None;
@@ -526,22 +525,25 @@ impl VectorCache {
     /// Put `pending`'s vectors in the copy, replacing anything it held for
     /// the same owners.
     fn absorb_pending(&mut self, pending: &[Pending]) {
-        let owners: HashSet<(Kind, &str)> = pending
-            .iter()
-            .map(|p| (p.kind, p.owner_id.as_str()))
-            .collect();
-        self.entries
-            .retain(|e| !owners.contains(&(e.kind, e.owner_id.as_str())));
-        self.entries
-            .extend(pending.iter().filter_map(Pending::entry));
+        absorb_into(&mut self.entries, pending);
     }
+}
+
+/// Put `pending`'s vectors in `entries`, replacing any for the same owners.
+fn absorb_into(entries: &mut Vec<Entry>, pending: &[Pending]) {
+    let owners: HashSet<(Kind, &str)> = pending
+        .iter()
+        .map(|p| (p.kind, p.owner_id.as_str()))
+        .collect();
+    entries.retain(|e| !owners.contains(&(e.kind, e.owner_id.as_str())));
+    entries.extend(pending.iter().filter_map(Pending::entry));
 }
 
 impl Engine {
     /// Bring the copy (and, when it can, the stored index) up to date.
     /// Never fails: on an error the copy is emptied, so the search answers
     /// with no semantic hits rather than with stale ones; see [`absorb`].
-    fn reconcile_vectors(&self) {
+    pub(super) fn reconcile_vectors(&self) {
         if let Err(e) = self.try_reconcile() {
             absorb(&e);
             self.vectors.borrow_mut().reset();
@@ -551,6 +553,7 @@ impl Engine {
     fn try_reconcile(&self) -> rusqlite::Result<()> {
         let conn = &self.conn;
         let mut cache = self.vectors.borrow_mut();
+        cache.ephemeral = None;
         if let Some(previous) = cache.lost_timeout.get() {
             if conn.busy_timeout(previous).is_ok() {
                 cache.lost_timeout.set(None);
@@ -558,27 +561,43 @@ impl Engine {
         }
         let indexed = indexed(conn)?;
         if !conn.is_autocommit() {
-            // Inside a transaction the generation may be rolled back and
-            // then reached again by another commit (ABA), so nothing read
-            // here is kept under a key: computed for this call, reloaded on
-            // the next.
-            cache.reset();
-            cache.entries = load(conn, indexed)?;
+            // Inside a caller's transaction. The copy answers when its key is
+            // the generation visible here: every key it holds was read
+            // committed, and a transaction that changed memory sees a
+            // generation no committed read has reached yet, so an equal key
+            // means this snapshot's memory is the copy's. Otherwise the
+            // vectors are computed for this call alone and nothing is kept
+            // under a key — the transaction may roll back, and another commit
+            // then reach the same generation with other memory (ABA) — and
+            // the warm copy is left as it was for the next search.
+            let key = read_key(conn, indexed)?;
+            if cache.key == Some(key) && cache.complete {
+                return Ok(());
+            }
+            let mut entries = load(conn, indexed)?;
             let pending = scan_missing(conn, indexed)?;
-            cache.absorb_pending(&pending);
+            absorb_into(&mut entries, &pending);
+            cache.ephemeral = Some(entries);
             return Ok(());
         }
         // Read-only, or a store without the index: vectors are kept in the
         // copy only, with no texts waiting for a write that cannot happen
         // and no last-used bookkeeping.
         let writable = indexed && !conn.is_readonly("main").unwrap_or(true);
-        for _ in 0..RACE_RETRIES {
-            // Read before the rows, so a change landing between the two
-            // makes the key stale rather than the rows.
-            let key = read_key(conn, indexed)?;
+        // The generation, the stored vectors and the missing entries are read
+        // in ONE read transaction: a consistent snapshot, so they agree by
+        // construction however many writers commit meanwhile. The copy is
+        // keyed on the generation read inside it. A writer that commits after
+        // the snapshot moves the generation, so the next search reloads.
+        {
+            let snapshot = rusqlite::Transaction::new_unchecked(
+                conn,
+                rusqlite::TransactionBehavior::Deferred,
+            )?;
+            let key = read_key(&snapshot, indexed)?;
             if cache.key != Some(key) {
                 cache.reset();
-                cache.entries = load(conn, indexed)?;
+                cache.entries = load(&snapshot, indexed)?;
                 #[cfg(test)]
                 {
                     cache.loads += 1;
@@ -586,7 +605,7 @@ impl Engine {
                 cache.key = Some(key);
             }
             if !cache.complete {
-                let pending = scan_missing(conn, indexed)?;
+                let pending = scan_missing(&snapshot, indexed)?;
                 #[cfg(test)]
                 {
                     cache.embedded += pending.len();
@@ -594,62 +613,47 @@ impl Engine {
                         hook();
                     }
                 }
-                if read_key(conn, indexed)? != key {
-                    // Memory changed while it was read, so the rows loaded
-                    // may be stale: start over. What was embedded is still
-                    // written first — the guard refuses exactly the entries
-                    // that changed — so the next pass embeds only those.
-                    if writable {
-                        if let Err(NotPersisted::Failed(e)) =
-                            persist(conn, &pending, None, &cache.lost_timeout)
-                        {
-                            absorb(&e);
-                        }
-                    }
-                    cache.key = None;
-                    continue;
-                }
                 cache.absorb_pending(&pending);
                 if writable {
                     cache.unpersisted = pending;
                 }
                 cache.complete = true;
             }
-            if !writable {
-                return Ok(());
-            }
-            let (touch, seen) = due_touch(conn, cache.touched)?;
-            if seen.is_some() {
-                cache.touched = seen;
-            }
-            if cache.unpersisted.is_empty() && touch.is_none() {
-                return Ok(());
-            }
-            match persist(conn, &cache.unpersisted, touch, &cache.lost_timeout) {
-                Ok(_) => {
-                    // Our own write bumps nothing, so a moved key means
-                    // another writer changed memory since `key`: an entry
-                    // whose guard failed is in the copy with text its row no
-                    // longer holds. Start over rather than answer with it.
-                    if read_key(conn, indexed)? != key {
-                        cache.key = None;
-                        continue;
-                    }
-                    cache.unpersisted.clear();
-                    if touch.is_some() {
-                        cache.touched = touch;
-                    }
-                }
-                // Kept at this key: the next search retries the write.
-                Err(NotPersisted::Skipped) => {}
-                Err(NotPersisted::Failed(e)) => absorb(&e),
-            }
+            snapshot.commit()?;
+        }
+        if !writable {
             return Ok(());
         }
-        // Memory kept changing under every pass: no copy this call could
-        // confirm, so no semantic hits rather than possibly stale ones.
-        cache.reset();
+        let (touch, seen) = due_touch(conn, cache.touched)?;
+        if seen.is_some() {
+            cache.touched = seen;
+        }
+        if cache.unpersisted.is_empty() && touch.is_none() {
+            return Ok(());
+        }
+        // Written after the snapshot, each entry only while its row still
+        // holds the text that was embedded. One the guard refuses changed
+        // after the snapshot, which moved the generation: the next search
+        // reloads and embeds its new text.
+        match persist(conn, &cache.unpersisted, touch, &cache.lost_timeout) {
+            Ok(_) => {
+                cache.unpersisted.clear();
+                if touch.is_some() {
+                    cache.touched = touch;
+                }
+            }
+            // Kept at this key: the next search retries the write.
+            Err(NotPersisted::Skipped) => {}
+            Err(NotPersisted::Failed(e)) => absorb(&e),
+        }
         Ok(())
+    }
+
+    /// The entries a semantic pass reads: this call's own, computed inside a
+    /// caller's transaction, or the kept copy.
+    fn with_entries<T>(&self, f: impl FnOnce(&[Entry]) -> T) -> T {
+        let cache = self.vectors.borrow();
+        f(cache.ephemeral.as_deref().unwrap_or(&cache.entries))
     }
 
     /// D196's semantic list: every entry in `filter` whose best chunk's
@@ -684,23 +688,23 @@ impl Engine {
         filter: &SemanticFilter<'_>,
     ) -> SemanticPass {
         self.reconcile_vectors();
-        let cache = self.vectors.borrow();
         let mut compared = 0;
-        let mut hits: Vec<SemanticHit> = cache
-            .entries
-            .iter()
-            .filter(|e| in_filter(e, filter))
-            .filter_map(|e| {
-                compared += 1;
-                let (chunk, similarity) = best(e, q);
-                (similarity >= filter.min_similarity).then(|| SemanticHit {
-                    kind: e.kind,
-                    owner_id: e.owner_id.clone(),
-                    chunk,
-                    similarity,
+        let mut hits: Vec<SemanticHit> = self.with_entries(|entries| {
+            entries
+                .iter()
+                .filter(|e| in_filter(e, filter))
+                .filter_map(|e| {
+                    compared += 1;
+                    let (chunk, similarity) = best(e, q);
+                    (similarity >= filter.min_similarity).then(|| SemanticHit {
+                        kind: e.kind,
+                        owner_id: e.owner_id.clone(),
+                        chunk,
+                        similarity,
+                    })
                 })
-            })
-            .collect();
+                .collect()
+        });
         hits.sort_by(|a, b| {
             b.similarity
                 .total_cmp(&a.similarity)
@@ -725,20 +729,20 @@ impl Engine {
         q: &QueryVector,
         keys: &HashSet<(Kind, &'k str)>,
     ) -> HashMap<(Kind, &'k str), f64> {
-        let cache = self.vectors.borrow();
         // Keyed by position so a lookup with the copy's own `&str` finds a
         // caller's key without cloning either.
         let wanted: Vec<(Kind, &'k str)> = keys.iter().copied().collect();
         let index: HashMap<(Kind, &str), usize> =
             wanted.iter().enumerate().map(|(i, k)| (*k, i)).collect();
-        cache
-            .entries
-            .iter()
-            .filter_map(|e| {
-                let i = *index.get(&(e.kind, e.owner_id.as_str()))?;
-                Some((wanted[i], best(e, q).1))
-            })
-            .collect()
+        self.with_entries(|entries| {
+            entries
+                .iter()
+                .filter_map(|e| {
+                    let i = *index.get(&(e.kind, e.owner_id.as_str()))?;
+                    Some((wanted[i], best(e, q).1))
+                })
+                .collect()
+        })
     }
 
     /// The text of chunk `chunk` of an entry, cut again from its source row

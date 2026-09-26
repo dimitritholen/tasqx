@@ -201,6 +201,12 @@ const WEIGHT_ALL_WORDS: f64 = 1.0;
 const WEIGHT_ANY_WORD: f64 = 0.35;
 const WEIGHT_SEMANTIC: f64 = 1.3;
 
+/// How deep the all-words list (and D193's fallback under `mode: lexical`)
+/// takes part in the fusion, by bm25, and the semantic list by similarity: a
+/// constant, so fusion work is bounded and nothing a hit says moves with
+/// `limit`. `total`, `via` and `partial` still read every match (#838).
+const ALL_WORDS_DEPTH: usize = 1000;
+
 /// How deep D193's any-word list is taken in hybrid mode, by bm25: a
 /// constant, so which hits it finds — and so `via` and `partial` — never
 /// move with `limit`, and a common word never scans a whole store (#838).
@@ -245,7 +251,8 @@ fn min_similarity(p: &Value) -> Result<Option<f64>, ApiError> {
     match p.get("min_similarity") {
         None | Some(Value::Null) => Ok(None),
         Some(v) => match v.as_f64() {
-            Some(x) if (0.0..=1.0).contains(&x) => Ok(Some(x)),
+            // `+ 0.0`: a floor of `-0.0` is zero, and echoes as `0.0`.
+            Some(x) if (0.0..=1.0).contains(&x) => Ok(Some(x + 0.0)),
             _ => Err(ApiError::bad_request(format!(
                 "`min_similarity` must be a number from 0 to 1 (default \
                  {MEMORY_MIN_SIMILARITY:.2}), not {v}"
@@ -425,7 +432,13 @@ struct Fusion<'a> {
 /// best bm25 first.
 struct LexicalList {
     expr: String,
+    /// The first entries by bm25, to the list's cap: what takes part in
+    /// the fusion.
     keys: Vec<HitKey>,
+    /// Every entry the expression matched, past the cap too, when the list
+    /// was asked for them (what `total`, `via` and `partial` read); else the
+    /// same entries as `keys`.
+    members: HashSet<HitKey>,
 }
 
 /// The semantic side of one search, when it compared anything.
@@ -1168,11 +1181,36 @@ impl Engine {
         // Embedded once. The side counts as having run only when it compared
         // something: an empty copy (nothing indexed, or a reconcile that
         // could not settle) is no answer, and saying it ran would be false.
-        let query_vector = f
+        // #838's vocabulary gate: meaning runs only when the model knows at
+        // least half of the query's content words as whole tokens. Text it
+        // spells out in pieces, or has no words for, embeds to a direction
+        // near everything, and its "matches" are noise above the floor.
+        let profile = f
             .meaning
-            .filter(|m| has_content_word(m))
-            .and_then(crate::embed::embed)
-            .map(|v| crate::embed::QueryVector::new(&v));
+            .map(|m| crate::embed::vocabulary_profile(m, &QUERY_STOPWORDS));
+        let skipped = |reason: &str| {
+            let (content, known) = profile.unwrap_or((0, 0));
+            json!({ "reason": reason, "content_words": content, "known_words": known })
+        };
+        let mut semantic_skipped = Value::Null;
+        let query_vector = match f.meaning {
+            None => None,
+            Some(m) if !has_content_word(m) => {
+                semantic_skipped = skipped("no word of three letters or more");
+                None
+            }
+            Some(_) if profile.is_some_and(|(c, k)| c == 0 || k * 2 < c) => {
+                semantic_skipped = skipped("not enough words the model knows");
+                None
+            }
+            Some(m) => {
+                let v = crate::embed::embed_query(m);
+                if v.is_none() {
+                    semantic_skipped = skipped("no word the model knows");
+                }
+                v.map(|v| crate::embed::QueryVector::new(&v))
+            }
+        };
         let semantic = query_vector.as_ref().and_then(|q| {
             let pass = self.semantic_pass(
                 q,
@@ -1187,6 +1225,9 @@ impl Engine {
             );
             (pass.compared > 0).then(|| SemanticSide::new(pass.hits))
         });
+        if query_vector.is_some() && semantic.is_none() {
+            semantic_skipped = skipped("nothing to compare against");
+        }
 
         let mut fell_back = false;
         let (all_words, any_word) = match &f.lexical {
@@ -1216,16 +1257,16 @@ impl Engine {
                 } else {
                     phrase_escape(&query)?
                 };
-                let all = self.lexical_list(&window, expr, raw, None)?;
+                let all = self.lexical_list(&window, expr, raw, ALL_WORDS_DEPTH, true)?;
                 let any = match f.any_word {
                     AnyWord::Never => None,
                     AnyWord::Fallback if !all.keys.is_empty() => None,
                     AnyWord::Fallback => any_word_expr(&query)
-                        .map(|e| self.lexical_list(&window, e, false, None))
+                        .map(|e| self.lexical_list(&window, e, false, ALL_WORDS_DEPTH, true))
                         .transpose()?,
                     AnyWord::Fused if content.len() < 2 => None,
                     AnyWord::Fused => any_word_expr(&query)
-                        .map(|e| self.lexical_list(&window, e, false, Some(ANY_WORD_DEPTH)))
+                        .map(|e| self.lexical_list(&window, e, false, ANY_WORD_DEPTH, false))
                         .transpose()?,
                 };
                 fell_back = f.any_word == AnyWord::Fallback && any.is_some();
@@ -1233,8 +1274,8 @@ impl Engine {
             }
         };
 
-        let all_set: HashSet<&HitKey> = all_words.iter().flat_map(|l| &l.keys).collect();
-        let any_set: HashSet<&HitKey> = any_word.iter().flat_map(|l| &l.keys).collect();
+        let all_set: HashSet<&HitKey> = all_words.iter().flat_map(|l| &l.members).collect();
+        let any_set: HashSet<&HitKey> = any_word.iter().flat_map(|l| &l.members).collect();
         let sem_set: HashSet<&HitKey> = semantic.iter().flat_map(|s| &s.keys).collect();
         // `total` counts what every word and meaning matched. An entry that
         // holds only some of the words fills a page beyond them but is not
@@ -1266,7 +1307,9 @@ impl Engine {
         }
         if let Some(s) = &semantic {
             lists.push(Ranked {
-                keys: &s.keys,
+                // The same constant depth as the all-words list: the fusion
+                // does bounded work, and `total` still counts every match.
+                keys: &s.keys[..s.keys.len().min(ALL_WORDS_DEPTH)],
                 weight: WEIGHT_SEMANTIC,
                 lexical: false,
             });
@@ -1368,6 +1411,9 @@ impl Engine {
                 "model": crate::embed::MODEL_ID,
                 "min_similarity": f.floor,
             })),
+            // #838: why meaning did not run when it was asked for — null
+            // when it ran, and when it was not asked (`mode: lexical`).
+            "semantic_skipped": semantic_skipped,
         }))
     }
 
@@ -1444,14 +1490,16 @@ impl Engine {
         w: &SearchWindow,
         expr: String,
         raw: bool,
-        cap: Option<usize>,
+        cap: usize,
+        whole: bool,
     ) -> Result<LexicalList, ApiError> {
         // `bm25()` is aliased `score`, not `rank`: `rank` is a live column on
         // every FTS5 table and shadowing it inside a compound SELECT is asking
-        // for a quiet resolution surprise. Lower bm25 = better, so ORDER BY ASC.
-        let limit = cap.map_or(String::new(), |n| format!(" LIMIT {n}"));
+        // for a quiet resolution surprise. Lower bm25 = better, so ORDER BY
+        // ASC, then `(kind, id)`: equal scores must not fall to rowid order,
+        // which an export and import renumbers (#838).
         let sql = format!(
-            "{} ORDER BY score{limit}",
+            "{} ORDER BY score, kind, id LIMIT {cap}",
             Self::lexical_sql(
                 w,
                 "d.id AS id, 'doc' AS kind, bm25(docs_fts) AS score",
@@ -1476,8 +1524,28 @@ impl Engine {
             Err(e) if raw => return Err(ApiError::bad_request(raw_fts5_error(&e, &w.scope))),
             Err(e) => return Err(e.into()),
         };
+        // Past the cap, the rest of the match set without ranking it.
+        let members = if whole && keys.len() == cap {
+            let sql = Self::lexical_sql(
+                w,
+                "d.id AS id, 'doc' AS kind",
+                "a.id AS id, 'annotation' AS kind",
+                ("", ""),
+            );
+            let mut stmt = self.conn.prepare(&sql)?;
+            let rows = stmt.query_map(named.as_slice(), |r| {
+                Ok(HitKey::parse(&r.get::<_, String>(1)?, r.get(0)?))
+            })?;
+            rows.collect::<rusqlite::Result<HashSet<_>>>()?
+        } else {
+            keys.iter().cloned().collect()
+        };
         drop(named);
-        Ok(LexicalList { expr, keys })
+        Ok(LexicalList {
+            expr,
+            keys,
+            members,
+        })
     }
 
     /// The whole rows of `keys`, as `expr` matches them: the snippet cut

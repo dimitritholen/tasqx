@@ -514,7 +514,8 @@ fn migrate_vectors(conn: &Connection) -> Result<(), ApiError> {
         INSERT OR IGNORE INTO memory_generation (id, gen) VALUES (1, 0);
 
         CREATE TRIGGER IF NOT EXISTS memory_vectors_docs_au AFTER UPDATE ON docs
-        WHEN old.title IS NOT new.title OR old.search_body IS NOT new.search_body BEGIN
+        WHEN old.title IS NOT new.title OR old.search_body IS NOT new.search_body
+            OR old.id IS NOT new.id BEGIN
             DELETE FROM memory_vectors WHERE kind = 'doc' AND owner_id = old.id;
         END;
         CREATE TRIGGER IF NOT EXISTS memory_vectors_docs_ad AFTER DELETE ON docs BEGIN
@@ -563,7 +564,33 @@ fn migrate_vectors(conn: &Connection) -> Result<(), ApiError> {
             UPDATE memory_generation SET gen = gen + 1 WHERE id = 1;
         END;",
     )?;
+    // #838 review: the first cut of `memory_vectors_docs_au` did not fire on
+    // an id change, and `IF NOT EXISTS` keeps that one on a store it made.
+    // Replaced only when it is that old text, so an open rewrites no schema.
+    let docs_au: Option<String> = tx
+        .query_row(
+            "SELECT sql FROM sqlite_master WHERE type = 'trigger' AND name = 'memory_vectors_docs_au'",
+            [],
+            |r| r.get(0),
+        )
+        .optional()?;
+    if docs_au.is_some_and(|sql| !sql.contains("old.id IS NOT new.id")) {
+        tx.execute_batch(
+            "DROP TRIGGER memory_vectors_docs_au;
+             CREATE TRIGGER memory_vectors_docs_au AFTER UPDATE ON docs
+             WHEN old.title IS NOT new.title OR old.search_body IS NOT new.search_body
+                 OR old.id IS NOT new.id BEGIN
+                 DELETE FROM memory_vectors WHERE kind = 'doc' AND owner_id = old.id;
+             END;",
+        )?;
+    }
     let now = crate::clock::now().as_second();
+    // A model recorded as used in the future (a clock that was wrong) would
+    // never be older than the cutoff: bring it back to now, so it ages.
+    tx.execute(
+        "UPDATE memory_vector_models SET last_used = ?1 WHERE last_used > ?1",
+        params![now],
+    )?;
     // An earlier build of #837 left this partial index and wrote vectors
     // without recording their model. Its presence marks such a store: the
     // one scan of `memory_vectors` records every model found there as used
@@ -2618,6 +2645,56 @@ mod tests {
             |r| r.get(0),
         )
         .unwrap()
+    }
+
+    /// #838 review: a doc whose id changes (a raw `UPDATE docs SET id`)
+    /// takes its vectors with it rather than leaving them under the old id,
+    /// on a new store and on one migrated under the earlier trigger.
+    #[test]
+    fn a_doc_id_change_drops_its_vectors() {
+        for old_trigger in [false, true] {
+            let conn = fresh();
+            if old_trigger {
+                conn.execute_batch(
+                    "DROP TRIGGER memory_vectors_docs_au;
+                     CREATE TRIGGER memory_vectors_docs_au AFTER UPDATE ON docs
+                     WHEN old.title IS NOT new.title OR old.search_body IS NOT new.search_body BEGIN
+                         DELETE FROM memory_vectors WHERE kind = 'doc' AND owner_id = old.id;
+                     END;",
+                )
+                .unwrap();
+                migrate(&conn).unwrap();
+            }
+            conn.execute(
+                "INSERT INTO docs (id, title, body, search_body, created, modified) \
+                 VALUES ('d1', 't', 'b', 'b', 't', 't')",
+                [],
+            )
+            .unwrap();
+            put_vector(&conn, "doc", "d1", crate::embed::MODEL_ID, 0);
+            conn.execute("UPDATE docs SET id = 'd2' WHERE id = 'd1'", [])
+                .unwrap();
+            assert_eq!(vector_rows(&conn, "d1"), 0, "old trigger: {old_trigger}");
+        }
+    }
+
+    /// #838 review: a model recorded as used in the future (a skewed clock)
+    /// is brought back to now on open, so it ages and is swept like any
+    /// other instead of never.
+    #[test]
+    fn a_last_used_in_the_future_is_clamped_to_now() {
+        let conn = fresh();
+        let now = crate::clock::now().as_second();
+        record_model(&conn, "skewed", now + 365 * 24 * 3600);
+        migrate(&conn).unwrap();
+        let last: i64 = conn
+            .query_row(
+                "SELECT last_used FROM memory_vector_models WHERE model = 'skewed'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(last <= crate::clock::now().as_second(), "{last}");
     }
 
     /// Two binaries with different models on one store, opening in turn:

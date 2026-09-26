@@ -325,9 +325,10 @@ fn three_docs(s: &Scratch) -> (Engine, Connection, [String; 3]) {
     (a, Connection::open(s.db()).unwrap(), docs)
 }
 
-/// Another writer changes memory while this engine embeds: what it
-/// embedded is still written (the guard refuses only the changed entry),
-/// so the next pass embeds the one change instead of everything again.
+/// Another writer changes memory while this engine embeds: the search
+/// answers from the snapshot it read, what it embedded is written (the
+/// guard refuses only the changed entry), and the next search embeds the
+/// one change instead of everything again.
 #[test]
 fn a_change_during_the_scan_does_not_throw_the_embedding_away() {
     let s = Scratch::new("mid-scan");
@@ -344,18 +345,30 @@ fn a_change_during_the_scan_does_not_throw_the_embedding_away() {
         }
     }));
     let hits = finds(&a, GIRAFFE);
+    assert!(hits.contains(&(Kind::Doc, docs[1].clone())), "{hits:?}");
+    assert_eq!(
+        rows(&a.conn, &docs[0]),
+        0,
+        "the changed entry's guard refused it"
+    );
+    assert!(rows(&a.conn, &docs[1]) >= 1 && rows(&a.conn, &docs[2]) >= 1);
+    assert_eq!(a.vectors.borrow().embedded, 3);
+    let hits = finds(&a, GIRAFFE);
+    assert!(
+        !hits.contains(&(Kind::Doc, docs[0].clone())),
+        "it holds the volcano now"
+    );
     for d in &docs {
         assert!(rows(&a.conn, d) >= 1, "{d} stored");
     }
     assert_eq!(a.vectors.borrow().embedded, 4, "three, then the one change");
-    assert!(hits.contains(&(Kind::Doc, docs[1].clone())));
 }
 
-/// A writer that changes memory on every pass: after the retries the
-/// search answers with no semantic hits rather than from a copy it could
-/// not confirm, and what it embedded along the way is still stored.
+/// #838 adversarial review: writers bumping the generation on every search
+/// used to exhaust the retries and answer with no semantic hits at all. A
+/// reconcile reads one consistent snapshot, so a search always answers.
 #[test]
-fn a_reconcile_that_never_settles_answers_with_nothing() {
+fn a_writer_that_never_stops_does_not_silence_meaning() {
     let s = Scratch::new("no-settle");
     let (a, b, docs) = three_docs(&s);
     let first = docs[0].clone();
@@ -368,16 +381,41 @@ fn a_reconcile_that_never_settles_answers_with_nothing() {
         )
         .unwrap();
     }));
-    assert!(
-        finds(&a, GIRAFFE).is_empty(),
-        "no hits from an unsettled copy"
-    );
+    for round in 0..5 {
+        assert!(
+            found(&a, GIRAFFE, Kind::Doc, &docs[1]),
+            "round {round}: meaning answered"
+        );
+    }
     assert!(rows(&a.conn, &docs[1]) >= 1 && rows(&a.conn, &docs[2]) >= 1);
-    a.vectors.borrow_mut().after_scan = None;
+}
+
+/// #838 adversarial review: `task.brief` reads inside its own snapshot. It
+/// reconciles first, so the vectors are stored, and inside the snapshot it
+/// answers from the warm copy rather than reloading and re-embedding.
+#[test]
+fn a_brief_stores_the_vectors_and_stays_warm() {
+    let s = Scratch::new("brief");
+    let e = Engine::open(&s.db()).unwrap();
+    let d = add_doc(&e, "Giraffes", GIRAFFE);
+    e.task_add(&json!({ "title": "giraffes on the savanna" }))
+        .unwrap();
+    e.task_brief(&json!({ "ref": 1 })).unwrap();
     assert!(
-        found(&a, GIRAFFE, Kind::Doc, &docs[1]),
-        "settles once left alone"
+        rows(&e.conn, &d) >= 1,
+        "the brief's reconcile stored the vectors"
     );
+    let (loads, embedded) = {
+        let c = e.vectors.borrow();
+        (c.loads, c.embedded)
+    };
+    for _ in 0..3 {
+        e.task_brief(&json!({ "ref": 1 })).unwrap();
+    }
+    let c = e.vectors.borrow();
+    assert_eq!(c.loads, loads, "no reload");
+    assert_eq!(c.embedded, embedded, "nothing embedded again");
+    assert!(c.key.is_some(), "the warm copy was kept");
 }
 
 /// A search inside a transaction that is then rolled back: another commit
@@ -1256,6 +1294,18 @@ fn measure(label: &str, make: &dyn Fn(usize) -> (bool, String)) {
             })
             .collect();
         println!("{label}: memory.search hybrid, warm, five runs: {warm:?}");
+        // The same, for a query whose words match few entries: the case
+        // where FTS5 does not rank the whole store.
+        let rare = json!({ "query": "giraffe savanna acacia", "limit": 10 });
+        e.memory_search(&rare).unwrap();
+        let warm: Vec<Duration> = (0..5)
+            .map(|_| {
+                let t = Instant::now();
+                e.memory_search(&rare).unwrap();
+                t.elapsed()
+            })
+            .collect();
+        println!("{label}: memory.search hybrid, rare words, warm: {warm:?}");
         let t = Instant::now();
         e.task_add(&json!({ "title": "x" })).unwrap();
         e.semantic_candidates(q, &f);

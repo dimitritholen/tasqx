@@ -623,3 +623,27 @@ fn no_entry_with_every_word_is_said_beside_hits_found_by_meaning() {
     assert!(!out.contains("these match any word"), "{out}");
     assert!(out.contains("    some words  one word passage"), "{out}");
 }
+
+/// #838: a `--mode semantic` miss the vocabulary gate caused says so, not
+/// that the query had no word.
+#[test]
+fn a_semantic_miss_the_model_could_not_read_says_so() {
+    let ctx = Ctx::new(theme::default_theme(), Caps::PLAIN).with_cols(200);
+    let out = memory_hits(
+        &ctx,
+        &json!({ "count": 0, "total": 0, "hits": [], "relaxed": false, "matched": null,
+                 "semantic": null,
+                 "semantic_skipped": { "reason": "not enough words the model knows",
+                                       "content_words": 2, "known_words": 0 } }),
+        "onweersbui vanavond",
+        false,
+        None,
+    );
+    assert!(
+        out.contains(
+            "the model knows too few of the words in onweersbui vanavond to match by meaning \
+             — --mode lexical finds them by their characters"
+        ),
+        "{out}"
+    );
+}

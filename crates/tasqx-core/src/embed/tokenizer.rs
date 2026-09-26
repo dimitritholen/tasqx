@@ -120,7 +120,7 @@ pub(super) fn words(text: &str) -> Vec<&str> {
 }
 
 /// Step 4: one word's ids, appended to `out`.
-fn wordpiece(model: &Model, word: &str, buf: &mut String, out: &mut Vec<u32>) {
+pub(super) fn wordpiece(model: &Model, word: &str, buf: &mut String, out: &mut Vec<u32>) {
     if word.chars().count() > MAX_WORD_CHARS {
         out.push(UNK);
         return;
