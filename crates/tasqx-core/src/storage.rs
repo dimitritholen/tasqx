@@ -454,7 +454,94 @@ fn migrate(conn: &Connection) -> Result<(), ApiError> {
         "INTEGER NOT NULL DEFAULT 0",
     )?;
     normalize_stored_tags(conn)?;
+    // After the `removed` ALTER above: the annotation trigger reads it.
+    migrate_vectors(conn)?;
     Ok(())
+}
+
+/// D196: the semantic index's table and the triggers that keep it honest.
+///
+/// A row is one chunk's vector for one doc or annotation under one model
+/// (`vec` is [`crate::embed::BLOB_LEN`] bytes), or a single sentinel row,
+/// `chunk` -1 and `vec` NULL, for an entry with no token the model knows, so
+/// it is not re-embedded on every search. No text is stored.
+///
+/// The triggers only ever DELETE, and only in pure SQL: a trigger cannot
+/// embed, and one calling a function registered on the connection would make
+/// every older binary's write to `docs` or `annotations` fail. An owner's
+/// rows go, under every model, when the text they were built from changes or
+/// the row is deleted; `IS NOT` so an upsert that rewrites the same text
+/// keeps them. An annotation's rows are keyed by the OLD id, so a rekey (the
+/// D191 fold) drops them rather than leaving them under an id nothing holds.
+/// Inserts do nothing: the search embeds what has no row
+/// (`engine/vectors.rs`).
+///
+/// Another model's rows are deleted here, on open, and never by a search, so
+/// two binaries with different models on one store do not delete each
+/// other's work on every call.
+fn migrate_vectors(conn: &Connection) -> Result<(), ApiError> {
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS memory_vectors (
+            kind     TEXT NOT NULL CHECK (kind IN ('doc', 'annotation')),
+            owner_id TEXT NOT NULL,
+            model    TEXT NOT NULL,
+            chunk    INTEGER NOT NULL,
+            vec      BLOB,
+            PRIMARY KEY (kind, owner_id, model, chunk)
+        ) WITHOUT ROWID;
+        CREATE TRIGGER IF NOT EXISTS memory_vectors_docs_au AFTER UPDATE ON docs
+        WHEN old.title IS NOT new.title OR old.search_body IS NOT new.search_body BEGIN
+            DELETE FROM memory_vectors WHERE kind = 'doc' AND owner_id = old.id;
+        END;
+        CREATE TRIGGER IF NOT EXISTS memory_vectors_docs_ad AFTER DELETE ON docs BEGIN
+            DELETE FROM memory_vectors WHERE kind = 'doc' AND owner_id = old.id;
+        END;
+        CREATE TRIGGER IF NOT EXISTS memory_vectors_annotations_au AFTER UPDATE ON annotations
+        WHEN old.body IS NOT new.body OR old.id IS NOT new.id
+            OR old.removed IS NOT new.removed BEGIN
+            DELETE FROM memory_vectors WHERE kind = 'annotation' AND owner_id = old.id;
+        END;
+        CREATE TRIGGER IF NOT EXISTS memory_vectors_annotations_ad AFTER DELETE ON annotations
+        BEGIN
+            DELETE FROM memory_vectors WHERE kind = 'annotation' AND owner_id = old.id;
+        END;",
+    )?;
+    // The sweep runs on every open, so it must not scan the table: a partial
+    // index over exactly the rows of other models is empty on a healthy
+    // store, and the check and the delete both read it alone. Its condition
+    // names the model as a literal, which is what lets the planner match a
+    // query to it, so a binary with another model rebuilds it once.
+    let foreign = foreign_model_condition();
+    let index_sql: Option<String> = conn
+        .query_row(
+            "SELECT sql FROM sqlite_master WHERE type = 'index' \
+             AND name = 'memory_vectors_foreign_model'",
+            [],
+            |r| r.get(0),
+        )
+        .optional()?;
+    if !index_sql.is_some_and(|sql| sql.contains(&foreign)) {
+        conn.execute_batch(&format!(
+            "DROP INDEX IF EXISTS memory_vectors_foreign_model; \
+             CREATE INDEX memory_vectors_foreign_model ON memory_vectors(model) \
+             WHERE {foreign};"
+        ))?;
+    }
+    let stale: bool = conn.query_row(
+        &format!("SELECT EXISTS (SELECT 1 FROM memory_vectors WHERE {foreign})"),
+        [],
+        |r| r.get(0),
+    )?;
+    if stale {
+        conn.execute(&format!("DELETE FROM memory_vectors WHERE {foreign}"), [])?;
+    }
+    Ok(())
+}
+
+/// The rows [`migrate_vectors`]'s sweep deletes, as SQL with the model id
+/// spelled as a literal (it holds no quote, which a test pins).
+fn foreign_model_condition() -> String {
+    format!("model <> '{}'", crate::embed::MODEL_ID)
 }
 
 /// D41 memory subsystem: the `docs` table plus FTS5 indexes over `docs` and
@@ -2358,5 +2445,264 @@ mod tests {
             rows, 1,
             "a re-run migration must not touch buffered samples"
         );
+    }
+
+    /// D196: a vector row for `owner` under `model`, chunk `chunk`.
+    fn put_vector(conn: &Connection, kind: &str, owner: &str, model: &str, chunk: i64) {
+        conn.execute(
+            "INSERT INTO memory_vectors (kind, owner_id, model, chunk, vec) \
+             VALUES (?1, ?2, ?3, ?4, zeroblob(260))",
+            params![kind, owner, model, chunk],
+        )
+        .unwrap();
+    }
+
+    fn vector_rows(conn: &Connection, owner: &str) -> i64 {
+        conn.query_row(
+            "SELECT COUNT(*) FROM memory_vectors WHERE owner_id = ?1",
+            params![owner],
+            |r| r.get(0),
+        )
+        .unwrap()
+    }
+
+    fn fresh() -> Connection {
+        let conn = Connection::open_in_memory().unwrap();
+        configure(&conn).unwrap();
+        migrate(&conn).unwrap();
+        conn
+    }
+
+    /// A store written before D196 has no `memory_vectors` and none of its
+    /// triggers. The upgrade creates all five, and a re-run keeps the rows of
+    /// the current model while deleting another model's.
+    #[test]
+    fn migration_creates_the_vector_table_and_its_triggers_on_a_legacy_store() {
+        let conn = fresh();
+        let names = [
+            "memory_vectors",
+            "memory_vectors_docs_au",
+            "memory_vectors_docs_ad",
+            "memory_vectors_annotations_au",
+            "memory_vectors_annotations_ad",
+            "memory_vectors_foreign_model",
+        ];
+        conn.execute_batch(
+            "DROP TRIGGER memory_vectors_docs_au; DROP TRIGGER memory_vectors_docs_ad; \
+             DROP TRIGGER memory_vectors_annotations_au; \
+             DROP TRIGGER memory_vectors_annotations_ad; DROP TABLE memory_vectors;",
+        )
+        .unwrap();
+        let present = |name: &str| -> i64 {
+            conn.query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE name = ?1",
+                params![name],
+                |r| r.get(0),
+            )
+            .unwrap()
+        };
+        for n in names {
+            assert_eq!(present(n), 0, "precondition: {n} absent");
+        }
+        migrate(&conn).unwrap();
+        for n in names {
+            assert_eq!(present(n), 1, "{n} must exist after the upgrade");
+        }
+
+        put_vector(&conn, "doc", "d1", crate::embed::MODEL_ID, 0);
+        put_vector(&conn, "doc", "d1", "some-older-model", 0);
+        put_vector(&conn, "annotation", "a1", "some-older-model", -1);
+        migrate(&conn).unwrap();
+        let models: Vec<String> = conn
+            .prepare("SELECT model FROM memory_vectors")
+            .unwrap()
+            .query_map([], |r| r.get(0))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert_eq!(
+            models,
+            [crate::embed::MODEL_ID],
+            "open keeps the current model's rows and drops every other model's"
+        );
+    }
+
+    /// The sweep on open reads the partial index, never the whole table: it
+    /// runs on every open of every store.
+    #[test]
+    fn the_foreign_model_sweep_reads_its_partial_index() {
+        assert!(
+            !crate::embed::MODEL_ID.contains('\''),
+            "the literal holds no quote"
+        );
+        let conn = fresh();
+        let plan = query_plan(
+            &conn,
+            &format!(
+                "SELECT EXISTS (SELECT 1 FROM memory_vectors WHERE {})",
+                foreign_model_condition()
+            ),
+        );
+        assert!(plan.contains("memory_vectors_foreign_model"), "{plan}");
+        let plan = query_plan(
+            &conn,
+            &format!(
+                "DELETE FROM memory_vectors WHERE {}",
+                foreign_model_condition()
+            ),
+        );
+        assert!(plan.contains("memory_vectors_foreign_model"), "{plan}");
+    }
+
+    /// The table refuses a kind it does not know, so a typo in a writer is an
+    /// error rather than a row no search ever reads.
+    #[test]
+    fn the_vector_table_accepts_only_doc_and_annotation() {
+        let conn = fresh();
+        let err = conn.execute(
+            "INSERT INTO memory_vectors (kind, owner_id, model, chunk, vec) \
+             VALUES ('task', 'x', 'm', 0, NULL)",
+            [],
+        );
+        assert!(err.is_err(), "a third kind must be refused");
+    }
+
+    fn insert_doc(conn: &Connection, id: &str, title: &str, search_body: &str) {
+        conn.execute(
+            "INSERT INTO docs (id, title, body, search_body, created, modified) \
+             VALUES (?1, ?2, ?3, ?3, 't', 't')",
+            params![id, title, search_body],
+        )
+        .unwrap();
+    }
+
+    /// D196's doc triggers: a change to the embedded text drops the doc's
+    /// vectors under every model; a write that leaves that text as it was,
+    /// an upsert included, keeps them; an insert does nothing.
+    #[test]
+    fn doc_vectors_go_when_the_embedded_text_changes_and_only_then() {
+        let conn = fresh();
+        put_vector(&conn, "doc", "d1", crate::embed::MODEL_ID, 0);
+        insert_doc(&conn, "d1", "Title", "body");
+        assert_eq!(vector_rows(&conn, "d1"), 1, "an insert does nothing");
+
+        let seed = |conn: &Connection| {
+            conn.execute("DELETE FROM memory_vectors", []).unwrap();
+            put_vector(conn, "doc", "d1", crate::embed::MODEL_ID, 0);
+            put_vector(conn, "doc", "d1", crate::embed::MODEL_ID, 1);
+            put_vector(conn, "doc", "d1", "other-model", 0);
+        };
+
+        seed(&conn);
+        conn.execute(
+            "UPDATE docs SET modified = 'u', rev = rev + 1, body = 'raw', project = 'p' \
+             WHERE id = 'd1'",
+            [],
+        )
+        .unwrap();
+        assert_eq!(vector_rows(&conn, "d1"), 3, "other columns keep them");
+
+        conn.execute(
+            "INSERT INTO docs (id, title, body, search_body, created, modified) \
+             VALUES ('d1', 'Title', 'b', 'body', 't', 'v') \
+             ON CONFLICT(id) DO UPDATE SET title = excluded.title, \
+             search_body = excluded.search_body, modified = excluded.modified",
+            [],
+        )
+        .unwrap();
+        assert_eq!(
+            vector_rows(&conn, "d1"),
+            3,
+            "an unchanged upsert keeps them"
+        );
+
+        conn.execute("UPDATE docs SET title = 'New' WHERE id = 'd1'", [])
+            .unwrap();
+        assert_eq!(vector_rows(&conn, "d1"), 0, "a title change drops all");
+
+        seed(&conn);
+        conn.execute("UPDATE docs SET search_body = 'other' WHERE id = 'd1'", [])
+            .unwrap();
+        assert_eq!(
+            vector_rows(&conn, "d1"),
+            0,
+            "a search_body change drops all"
+        );
+
+        seed(&conn);
+        put_vector(&conn, "annotation", "d1", crate::embed::MODEL_ID, 0);
+        conn.execute("DELETE FROM docs WHERE id = 'd1'", [])
+            .unwrap();
+        assert_eq!(
+            vector_rows(&conn, "d1"),
+            1,
+            "a delete drops the doc's rows and not an annotation's that shares its id"
+        );
+    }
+
+    /// D196's annotation triggers: `body`, `id` and `removed` are what the
+    /// vector depends on; a change to any drops the OLD id's rows, a change
+    /// to anything else keeps them, and a delete drops them.
+    #[test]
+    fn annotation_vectors_go_when_body_id_or_removed_changes_and_only_then() {
+        let conn = fresh();
+        conn.execute_batch(
+            "INSERT INTO tasks (id, short_id, title, status, priority, urgency, \
+             tracked_seconds, rev, created, modified) \
+             VALUES ('t1', 1, 'T', 'pending', 'M', 0, 0, 0, 't', 't'), \
+                    ('t2', 2, 'U', 'pending', 'M', 0, 0, 0, 't', 't');",
+        )
+        .unwrap();
+        put_vector(&conn, "annotation", "a1", crate::embed::MODEL_ID, 0);
+        conn.execute(
+            "INSERT INTO annotations (id, task_id, body, created) VALUES ('a1', 't1', 'note', 't')",
+            [],
+        )
+        .unwrap();
+        assert_eq!(vector_rows(&conn, "a1"), 1, "an insert does nothing");
+
+        let seed = |conn: &Connection, id: &str| {
+            conn.execute("DELETE FROM memory_vectors", []).unwrap();
+            put_vector(conn, "annotation", id, crate::embed::MODEL_ID, 0);
+            put_vector(conn, "annotation", id, "other-model", 0);
+        };
+
+        seed(&conn, "a1");
+        conn.execute("UPDATE annotations SET task_id = 't2' WHERE id = 'a1'", [])
+            .unwrap();
+        conn.execute("UPDATE annotations SET body = 'note' WHERE id = 'a1'", [])
+            .unwrap();
+        assert_eq!(vector_rows(&conn, "a1"), 2, "unchanged text keeps them");
+
+        conn.execute(
+            "UPDATE annotations SET body = 'changed' WHERE id = 'a1'",
+            [],
+        )
+        .unwrap();
+        assert_eq!(vector_rows(&conn, "a1"), 0, "a body change drops all");
+
+        seed(&conn, "a1");
+        conn.execute("UPDATE annotations SET id = 'a2' WHERE id = 'a1'", [])
+            .unwrap();
+        assert_eq!(
+            vector_rows(&conn, "a1"),
+            0,
+            "a rekey drops the old id's rows"
+        );
+
+        seed(&conn, "a2");
+        conn.execute("UPDATE annotations SET removed = 'r' WHERE id = 'a2'", [])
+            .unwrap();
+        assert_eq!(vector_rows(&conn, "a2"), 0, "a removal drops all");
+
+        seed(&conn, "a2");
+        conn.execute("UPDATE annotations SET removed = NULL WHERE id = 'a2'", [])
+            .unwrap();
+        assert_eq!(vector_rows(&conn, "a2"), 0, "a restore drops all");
+
+        seed(&conn, "a2");
+        conn.execute("DELETE FROM annotations WHERE id = 'a2'", [])
+            .unwrap();
+        assert_eq!(vector_rows(&conn, "a2"), 0, "a delete drops all");
     }
 }
