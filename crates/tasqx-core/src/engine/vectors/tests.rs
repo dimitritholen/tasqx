@@ -1118,6 +1118,12 @@ fn undoing_a_note_operation_leaves_the_index_right() {
 
 /// `store.import` replaces a task's notes by deleting and re-inserting them
 /// and updates a doc in place; both modes leave the index right.
+///
+/// A merge takes the payload's note only when its task's `modified` is the
+/// later one (D185), and the wall clock can step backwards between the first
+/// import and the edit (a VM's time sync does), stamping the edit earlier:
+/// the merge then rightly keeps the stored text. The payload says it is the
+/// later copy outright rather than trusting the clock to agree.
 #[test]
 fn store_import_leaves_the_index_right_in_both_modes() {
     for merge in [false, true] {
@@ -1142,6 +1148,17 @@ fn store_import_leaves_the_index_right_in_both_modes() {
         let fresh_note = add_note(&from, &fresh_task, ORCHARD);
         let mut export = from.store_export(&json!({})).unwrap();
         export["merge"] = json!(merge);
+        let held = into.task_get(&json!({ "ref": task })).unwrap()["modified"]
+            .as_str()
+            .and_then(crate::util::parse_ts)
+            .expect("the stored task's modified");
+        let later = held + jiff::SignedDuration::from_secs(1);
+        export["tasks"]
+            .as_array_mut()
+            .unwrap()
+            .iter_mut()
+            .find(|t| t["id"] == json!(task))
+            .expect("the task is exported")["modified"] = json!(later.to_string());
         into.store_import(&export).unwrap();
 
         moved(&into, Kind::Annotation, &note, GIRAFFE, VOLCANO);
@@ -1155,20 +1172,23 @@ fn store_import_leaves_the_index_right_in_both_modes() {
 
 /// D191's fold rekeys the dropped copy's notes onto the survivor: the old
 /// id's vectors go with the old id, and the note is found under its new one.
+///
+/// The survivor is the older id, and an id is a clock read that a wall clock
+/// stepping backwards can mint out of order, so the two stores take their
+/// roles from the ids they minted rather than from which spawned first.
 #[test]
 fn the_recurrence_fold_s_rekey_leaves_the_index_right() {
-    let b = Engine::open_in_memory().unwrap();
-    let r = id(&b
+    let one = Engine::open_in_memory().unwrap();
+    let r = id(&one
         .task_add(&json!({
             "title": "R", "recurrence": "every 3 days", "due": "2026-09-25T00:00:00Z"
         }))
         .unwrap());
-    let a = Engine::open_in_memory().unwrap();
-    a.store_import(&b.store_export(&json!({})).unwrap())
+    let two = Engine::open_in_memory().unwrap();
+    two.store_import(&one.store_export(&json!({})).unwrap())
         .unwrap();
-    // A's spawn first, so A's copy is the older id and survives.
-    a.task_done(&json!({ "ref": r })).unwrap();
-    b.task_done(&json!({ "ref": r })).unwrap();
+    two.task_done(&json!({ "ref": r })).unwrap();
+    one.task_done(&json!({ "ref": r })).unwrap();
     let spawned = |e: &Engine| -> String {
         e.store_export(&json!({})).unwrap()["tasks"]
             .as_array()
@@ -1178,10 +1198,16 @@ fn the_recurrence_fold_s_rekey_leaves_the_index_right() {
             .map(id)
             .unwrap()
     };
-    let dropped = spawned(&b);
-    let old_note = add_note(&b, &dropped, GIRAFFE);
-    assert!(found(&b, GIRAFFE, Kind::Annotation, &old_note));
-    let kept = spawned(&a);
+    // A holds the older copy, which survives; B's is folded into it.
+    let (a, b) = if spawned(&two) < spawned(&one) {
+        (&two, &one)
+    } else {
+        (&one, &two)
+    };
+    let dropped = spawned(b);
+    let old_note = add_note(b, &dropped, GIRAFFE);
+    assert!(found(b, GIRAFFE, Kind::Annotation, &old_note));
+    let kept = spawned(a);
     assert!(kept < dropped, "precondition: A's copy survives");
     let mut export = b.store_export(&json!({})).unwrap();
     export["merge"] = json!(true);
@@ -1195,7 +1221,7 @@ fn the_recurrence_fold_s_rekey_leaves_the_index_right() {
     let survivor = a.task_get(&json!({ "ref": kept })).unwrap();
     let new_note = note_id(&survivor, GIRAFFE);
     assert_ne!(new_note, old_note, "the fold rekeyed it");
-    assert_eq!(finds(&a, GIRAFFE), [(Kind::Annotation, new_note)]);
+    assert_eq!(finds(a, GIRAFFE), [(Kind::Annotation, new_note)]);
     assert_eq!(rows(&a.conn, &old_note), 0);
 }
 
