@@ -279,7 +279,7 @@ fn a_write_that_lost_a_race_with_an_edit_stores_nothing() {
         .unwrap();
 
     assert_eq!(
-        persist(&a.conn, &pending, None).unwrap(),
+        persist(&a.conn, &pending, None, &Default::default()).unwrap(),
         0,
         "the guard refused both"
     );
@@ -306,9 +306,147 @@ fn a_note_removed_between_read_and_write_stores_nothing() {
     let pending = scan_missing(&a.conn, true).unwrap();
     b.annotation_remove(&json!({ "ref": task, "annotation_id": note }))
         .unwrap();
-    assert_eq!(persist(&a.conn, &pending, None).unwrap(), 0);
+    assert_eq!(
+        persist(&a.conn, &pending, None, &Default::default()).unwrap(),
+        0
+    );
     assert_eq!(rows(&a.conn, &note), 0);
     assert!(!found(&a, GIRAFFE, Kind::Annotation, &note));
+}
+
+/// Three docs on a file store, and a second connection to it.
+fn three_docs(s: &Scratch) -> (Engine, Connection, [String; 3]) {
+    let a = Engine::open(&s.db()).unwrap();
+    let docs = [
+        add_doc(&a, "One", GIRAFFE),
+        add_doc(&a, "Two", GIRAFFE),
+        add_doc(&a, "Three", GIRAFFE),
+    ];
+    (a, Connection::open(s.db()).unwrap(), docs)
+}
+
+/// Another writer changes memory while this engine embeds: what it
+/// embedded is still written (the guard refuses only the changed entry),
+/// so the next pass embeds the one change instead of everything again.
+#[test]
+fn a_change_during_the_scan_does_not_throw_the_embedding_away() {
+    let s = Scratch::new("mid-scan");
+    let (a, b, docs) = three_docs(&s);
+    let first = docs[0].clone();
+    let mut fired = false;
+    a.vectors.borrow_mut().after_scan = Some(Box::new(move || {
+        if !std::mem::replace(&mut fired, true) {
+            b.execute(
+                "UPDATE docs SET search_body = ?1 WHERE id = ?2",
+                params![VOLCANO, first],
+            )
+            .unwrap();
+        }
+    }));
+    let hits = finds(&a, GIRAFFE);
+    for d in &docs {
+        assert!(rows(&a.conn, d) >= 1, "{d} stored");
+    }
+    assert_eq!(a.vectors.borrow().embedded, 4, "three, then the one change");
+    assert!(hits.contains(&(Kind::Doc, docs[1].clone())));
+}
+
+/// A writer that changes memory on every pass: after the retries the
+/// search answers with no semantic hits rather than from a copy it could
+/// not confirm, and what it embedded along the way is still stored.
+#[test]
+fn a_reconcile_that_never_settles_answers_with_nothing() {
+    let s = Scratch::new("no-settle");
+    let (a, b, docs) = three_docs(&s);
+    let first = docs[0].clone();
+    let mut n = 0;
+    a.vectors.borrow_mut().after_scan = Some(Box::new(move || {
+        n += 1;
+        b.execute(
+            "UPDATE docs SET title = ?1 WHERE id = ?2",
+            params![format!("One {n}"), first],
+        )
+        .unwrap();
+    }));
+    assert!(
+        finds(&a, GIRAFFE).is_empty(),
+        "no hits from an unsettled copy"
+    );
+    assert!(rows(&a.conn, &docs[1]) >= 1 && rows(&a.conn, &docs[2]) >= 1);
+    a.vectors.borrow_mut().after_scan = None;
+    assert!(
+        found(&a, GIRAFFE, Kind::Doc, &docs[1]),
+        "settles once left alone"
+    );
+}
+
+/// A search inside a transaction that is then rolled back: another commit
+/// can bring the generation back to the value that search saw (ABA), so a
+/// copy read inside a transaction is never kept under a key.
+#[test]
+fn a_rolled_back_search_is_not_remembered() {
+    let s = Scratch::new("aba");
+    let a = Engine::open(&s.db()).unwrap();
+    let b = Engine::open(&s.db()).unwrap();
+    let doc = add_doc(&a, "Notes", GIRAFFE);
+    assert!(found(&a, GIRAFFE, Kind::Doc, &doc));
+    a.conn.execute_batch("BEGIN").unwrap();
+    a.conn
+        .execute(
+            "UPDATE docs SET search_body = ?1 WHERE id = ?2",
+            params![VOLCANO, doc],
+        )
+        .unwrap();
+    assert!(
+        found(&a, VOLCANO, Kind::Doc, &doc),
+        "sees its own transaction"
+    );
+    a.conn.execute_batch("ROLLBACK").unwrap();
+    add_doc(&b, "Other", ORCHARD); // the generation is where the rollback left it
+    assert!(
+        found(&a, GIRAFFE, Kind::Doc, &doc),
+        "the rolled-back text is gone"
+    );
+    assert!(!found(&a, VOLCANO, Kind::Doc, &doc));
+}
+
+/// A read-only store keeps the vectors it computed, and nothing else: no
+/// copy of the texts waiting for a write that can never happen, and no
+/// second embedding on the next search.
+#[test]
+fn a_read_only_store_keeps_vectors_but_no_pending_writes() {
+    let s = Scratch::new("ro-pending");
+    let doc = {
+        let w = Engine::open(&s.db()).unwrap();
+        add_doc(&w, "Wildlife", GIRAFFE)
+    };
+    let r = Engine::open_read_only(&s.db()).unwrap();
+    assert!(found(&r, GIRAFFE, Kind::Doc, &doc));
+    assert!(r.vectors.borrow().unpersisted.is_empty());
+    let embedded = r.vectors.borrow().embedded;
+    assert!(found(&r, GIRAFFE, Kind::Doc, &doc));
+    assert_eq!(r.vectors.borrow().embedded, embedded, "not embedded twice");
+    assert_eq!(r.vectors.borrow().touched, None, "no last-used bookkeeping");
+}
+
+/// A busy timeout the guard could not put back is put back on the next
+/// search, before anything is written.
+#[test]
+fn a_lost_busy_timeout_is_restored_on_the_next_search() {
+    let e = Engine::open_in_memory().unwrap();
+    add_doc(&e, "Wildlife", GIRAFFE);
+    e.conn.busy_timeout(Duration::ZERO).unwrap();
+    e.vectors
+        .borrow()
+        .lost_timeout
+        .set(Some(Duration::from_millis(3000)));
+    finds(&e, GIRAFFE);
+    let timeout: i64 = e
+        .conn
+        .pragma_query_value(None, "busy_timeout", |r| r.get(0))
+        .unwrap();
+    assert_eq!(timeout, 3000);
+    assert_eq!(e.vectors.borrow().lost_timeout.get(), None);
 }
 
 /// Another writer holds the lock: the search does not wait out the busy
@@ -495,9 +633,11 @@ fn the_cache_survives_writes_memory_cannot_see() {
 fn concurrent_opens_of_one_store_all_succeed() {
     for round in 0..3 {
         let s = Scratch::new(&format!("open-{round}"));
+        // The store exists: the first-ever open of a new file switches it to
+        // WAL, which is not what this test is about.
+        let e = Engine::open(&s.db()).unwrap();
         if round > 0 {
             // A store that predates the index, upgraded by every opener.
-            let e = Engine::open(&s.db()).unwrap();
             e.conn
                 .execute_batch(
                     "DROP TRIGGER memory_vectors_docs_au; DROP TABLE memory_vectors; \
@@ -505,6 +645,7 @@ fn concurrent_opens_of_one_store_all_succeed() {
                 )
                 .unwrap();
         }
+        drop(e);
         let barrier = std::sync::Arc::new(std::sync::Barrier::new(8));
         let handles: Vec<_> = (0..8)
             .map(|_| {

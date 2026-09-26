@@ -27,7 +27,7 @@
     expect(dead_code, reason = "memory.search calls it from #838 (D196)")
 )]
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::HashSet;
 use std::time::Duration;
 
@@ -122,10 +122,19 @@ pub(super) struct VectorCache {
     /// When this process last saw the model's `last_used` recorded, in unix
     /// seconds; it is written at most once a day.
     touched: Option<i64>,
-    /// Entries embedded by this copy, for the tests.
+    /// A busy timeout [`NoWait`] could not put back. The next reconcile puts
+    /// it back before anything else, and writes nothing until it has.
+    lost_timeout: Cell<Option<Duration>>,
+    /// Entries embedded by this copy.
+    #[cfg(test)]
     embedded: usize,
-    /// Times the copy was read from the store, for the tests.
+    /// Times the copy was read from the store.
+    #[cfg(test)]
     loads: usize,
+    /// Runs between a reconcile's scan and its check of the generation, so
+    /// a test can land another writer's change exactly there.
+    #[cfg(test)]
+    after_scan: Option<Box<dyn FnMut() + Send>>,
 }
 
 pub(super) type VectorCell = RefCell<VectorCache>;
@@ -342,24 +351,32 @@ pub(super) enum NotPersisted {
 }
 
 /// Sets a connection's busy timeout to zero and puts the old one back when
-/// dropped, whichever way the write in between ends.
+/// dropped, whichever way the write in between ends. A restore that fails
+/// is recorded in `lost`, never dropped silently.
 struct NoWait<'c> {
     conn: &'c Connection,
     previous: Duration,
+    lost: &'c Cell<Option<Duration>>,
 }
 
 impl<'c> NoWait<'c> {
-    fn new(conn: &'c Connection) -> rusqlite::Result<NoWait<'c>> {
+    fn new(conn: &'c Connection, lost: &'c Cell<Option<Duration>>) -> rusqlite::Result<NoWait<'c>> {
         let ms: i64 = conn.pragma_query_value(None, "busy_timeout", |r| r.get(0))?;
         let previous = Duration::from_millis(ms.max(0).unsigned_abs());
         conn.busy_timeout(Duration::ZERO)?;
-        Ok(NoWait { conn, previous })
+        Ok(NoWait {
+            conn,
+            previous,
+            lost,
+        })
     }
 }
 
 impl Drop for NoWait<'_> {
     fn drop(&mut self) {
-        let _ = self.conn.busy_timeout(self.previous);
+        if self.conn.busy_timeout(self.previous).is_err() {
+            self.lost.set(Some(self.previous));
+        }
     }
 }
 
@@ -367,16 +384,18 @@ impl Drop for NoWait<'_> {
 /// only while its source row still holds the text that was embedded, and,
 /// with `touch` (unix seconds), record that the current model searched this
 /// store then. Returns the rows inserted; an entry that lost a race with an
-/// edit inserts none.
+/// edit inserts none. `lost` is where a busy timeout that could not be put
+/// back is kept; while it holds one, nothing is written.
 pub(super) fn persist(
     conn: &Connection,
     pending: &[Pending],
     touch: Option<i64>,
+    lost: &Cell<Option<Duration>>,
 ) -> Result<usize, NotPersisted> {
-    if !conn.is_autocommit() || conn.is_readonly("main").unwrap_or(true) {
+    if !conn.is_autocommit() || conn.is_readonly("main").unwrap_or(true) || lost.get().is_some() {
         return Err(NotPersisted::Skipped);
     }
-    let _no_wait = NoWait::new(conn).map_err(NotPersisted::Failed)?;
+    let _no_wait = NoWait::new(conn, lost).map_err(NotPersisted::Failed)?;
     write_guarded(conn, pending, touch).map_err(NotPersisted::Failed)
 }
 
@@ -529,7 +548,27 @@ impl Engine {
     fn try_reconcile(&self) -> rusqlite::Result<()> {
         let conn = &self.conn;
         let mut cache = self.vectors.borrow_mut();
+        if let Some(previous) = cache.lost_timeout.get() {
+            if conn.busy_timeout(previous).is_ok() {
+                cache.lost_timeout.set(None);
+            }
+        }
         let indexed = indexed(conn)?;
+        if !conn.is_autocommit() {
+            // Inside a transaction the generation may be rolled back and
+            // then reached again by another commit (ABA), so nothing read
+            // here is kept under a key: computed for this call, reloaded on
+            // the next.
+            cache.reset();
+            cache.entries = load(conn, indexed)?;
+            let pending = scan_missing(conn, indexed)?;
+            cache.absorb_pending(&pending);
+            return Ok(());
+        }
+        // Read-only, or a store without the index: vectors are kept in the
+        // copy only, with no texts waiting for a write that cannot happen
+        // and no last-used bookkeeping.
+        let writable = indexed && !conn.is_readonly("main").unwrap_or(true);
         for _ in 0..RACE_RETRIES {
             // Read before the rows, so a change landing between the two
             // makes the key stale rather than the rows.
@@ -537,35 +576,53 @@ impl Engine {
             if cache.key != Some(key) {
                 cache.reset();
                 cache.entries = load(conn, indexed)?;
-                cache.loads += 1;
+                #[cfg(test)]
+                {
+                    cache.loads += 1;
+                }
                 cache.key = Some(key);
             }
             if !cache.complete {
                 let pending = scan_missing(conn, indexed)?;
-                cache.embedded += pending.len();
+                #[cfg(test)]
+                {
+                    cache.embedded += pending.len();
+                    if let Some(hook) = cache.after_scan.as_mut() {
+                        hook();
+                    }
+                }
                 if read_key(conn, indexed)? != key {
-                    // Memory changed while it was read: the rows loaded may
-                    // be stale. Start over.
+                    // Memory changed while it was read, so the rows loaded
+                    // may be stale: start over. What was embedded is still
+                    // written first — the guard refuses exactly the entries
+                    // that changed — so the next pass embeds only those.
+                    if writable {
+                        if let Err(NotPersisted::Failed(e)) =
+                            persist(conn, &pending, None, &cache.lost_timeout)
+                        {
+                            absorb(&e);
+                        }
+                    }
                     cache.key = None;
                     continue;
                 }
                 cache.absorb_pending(&pending);
-                cache.unpersisted = pending;
+                if writable {
+                    cache.unpersisted = pending;
+                }
                 cache.complete = true;
             }
-            let touch = if indexed {
-                let (due, seen) = due_touch(conn, cache.touched)?;
-                if seen.is_some() {
-                    cache.touched = seen;
-                }
-                due
-            } else {
-                None
-            };
-            if !indexed || (cache.unpersisted.is_empty() && touch.is_none()) {
+            if !writable {
                 return Ok(());
             }
-            match persist(conn, &cache.unpersisted, touch) {
+            let (touch, seen) = due_touch(conn, cache.touched)?;
+            if seen.is_some() {
+                cache.touched = seen;
+            }
+            if cache.unpersisted.is_empty() && touch.is_none() {
+                return Ok(());
+            }
+            match persist(conn, &cache.unpersisted, touch, &cache.lost_timeout) {
                 Ok(_) => {
                     // Our own write bumps nothing, so a moved key means
                     // another writer changed memory since `key`: an entry
@@ -586,6 +643,9 @@ impl Engine {
             }
             return Ok(());
         }
+        // Memory kept changing under every pass: no copy this call could
+        // confirm, so no semantic hits rather than possibly stale ones.
+        cache.reset();
         Ok(())
     }
 

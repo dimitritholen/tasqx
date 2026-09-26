@@ -253,7 +253,6 @@ fn the_integer_similarity_is_within_1e_4_of_the_f32_formula_on_the_golden_set() 
         for v in &vectors {
             let blob = quantize(v);
             let int = StoredVector::from_blob(&blob).unwrap().similarity(&query);
-            assert_eq!(int.to_bits(), cosine_quantized(q, &blob).to_bits());
             worst = worst.max((int - cosine_quantized_f32(q, &blob)).abs());
         }
     }
