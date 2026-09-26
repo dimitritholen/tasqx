@@ -2981,8 +2981,8 @@ fn an_unrelated_query_finds_nothing_by_meaning() {
     );
     assert_eq!(
         out["relaxed"],
-        json!(false),
-        "no partial hit came back: {out}"
+        json!(true),
+        "no entry held every word, and the any-word list ran: {out}"
     );
 }
 
@@ -3072,6 +3072,90 @@ fn an_all_words_hit_is_not_partial() {
     // One word has no any-word list to run.
     let one = search(&e, json!({ "query": "login" }));
     assert_eq!(one["matched_any"], Value::Null, "{one}");
+}
+
+/// Review of 3da3f52: `total` counts what every word and meaning matched;
+/// entries holding only some of the words fill a page beyond them without
+/// inflating `total`, and `relaxed` says whether any entry held every word
+/// — neither moves with what the page happens to hold.
+#[test]
+fn partial_hits_fill_the_page_but_are_not_counted_while_every_word_matched() {
+    let e = meaning_store();
+    for i in 0..6 {
+        e.memory_add(&json!({ "title": format!("noise {i}"), "body": format!("unrelated errors number {i}") }))
+            .expect("doc");
+    }
+    // A floor nothing reaches keeps meaning out, so what is counted is
+    // exactly what every word matched: the incident log.
+    let out = search(
+        &e,
+        json!({ "query": "login errors", "limit": 50, "min_similarity": 0.95 }),
+    );
+    let partial = hits(&out)
+        .iter()
+        .filter(|h| h["partial"] == json!(true))
+        .count();
+    assert_eq!(partial, 6, "the any-word list filled the page: {out}");
+    assert_eq!(out["count"], json!(7), "{out}");
+    assert_eq!(out["total"], json!(1), "{out}");
+    assert_eq!(out["has_more"], json!(false), "{out}");
+    assert_eq!(
+        out["relaxed"],
+        json!(false),
+        "an entry held every word: {out}"
+    );
+
+    // When neither every word nor meaning found anything, the any-word
+    // matches are the answer, and they are counted (D193's fallback).
+    let out = search(
+        &e,
+        json!({ "query": "errors zeppelin", "limit": 2, "min_similarity": 0.95 }),
+    );
+    assert_eq!(out["relaxed"], json!(true), "{out}");
+    assert_eq!(out["total"], json!(7), "six noise docs and the log: {out}");
+    assert_eq!(out["has_more"], json!(true), "{out}");
+}
+
+/// Review of 3da3f52: "every word" means every CONTENT word in hybrid mode.
+/// A hit holding all of them is never partial for lacking a "the", and one
+/// content word runs no any-word list.
+#[test]
+fn stopwords_never_make_a_hit_partial() {
+    let e = meaning_store();
+    let out = search(&e, json!({ "query": "the login errors" }));
+    assert_eq!(out["matched"], json!("\"login\" \"errors\""), "{out}");
+    let first = &hits(&out)[0];
+    assert_eq!(first["title"], json!("incident log"), "{out}");
+    assert_eq!(first["partial"], json!(false), "{first}");
+    let one = search(&e, json!({ "query": "the login" }));
+    assert_eq!(one["matched_any"], Value::Null, "{one}");
+    // Mode lexical keeps the words as typed (D193 as it was).
+    let lexical = search(
+        &e,
+        json!({ "query": "the login errors", "mode": "lexical" }),
+    );
+    assert_eq!(
+        lexical["matched"],
+        json!("\"the\" \"login\" \"errors\""),
+        "{lexical}"
+    );
+}
+
+/// Review of 3da3f52: the any-word list is capped at a fixed depth by bm25,
+/// so it neither scans a whole store nor moves with `limit`.
+#[test]
+fn the_any_word_list_is_capped() {
+    let e = engine();
+    for i in 0..210 {
+        e.memory_add(&json!({ "title": format!("z{i}"), "body": format!("zebra sighting {i}") }))
+            .expect("doc");
+    }
+    let out = search(&e, json!({ "query": "zebra quagga", "limit": 500 }));
+    let partial = hits(&out)
+        .iter()
+        .filter(|h| h["partial"] == json!(true))
+        .count();
+    assert_eq!(partial, 200, "{}", out["total"]);
 }
 
 /// Review #838: `via`, `partial` and `score` are read from every match, not

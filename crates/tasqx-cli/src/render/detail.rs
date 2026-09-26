@@ -233,8 +233,9 @@ pub fn task_brief(ctx: &Ctx, result: &Value, now: Timestamp) -> String {
             // #790/D180: nothing when false or null — an annotation and a
             // doc `memory.add` wrote both have no origin to be behind.
             let stale = h.get("stale").and_then(Value::as_bool).unwrap_or(false);
-            // D196 (#838): why the hit is here when it is not every word —
-            // found by meaning alone, with its similarity, or some words.
+            // D196 (#838): a hit found by meaning alone says so, with its
+            // similarity. The brief's words side is its derived OR, which
+            // never claims every word, so no hit here is partial.
             let why = if h.get("via").and_then(Value::as_str) == Some("semantic") {
                 h.get("similarity")
                     .and_then(Value::as_f64)
@@ -243,8 +244,6 @@ pub fn task_brief(ctx: &Ctx, result: &Value, now: Timestamp) -> String {
                         format!("  {}", ctx.paint("muted", &format!("{mark} {sim:.2}")))
                     })
                     .unwrap_or_default()
-            } else if h.get("partial").and_then(Value::as_bool) == Some(true) {
-                format!("  {}", ctx.paint("muted", "some words"))
             } else {
                 String::new()
             };

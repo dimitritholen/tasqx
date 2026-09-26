@@ -1015,8 +1015,9 @@ const R_MEMORY_SEARCH: Shape = &[&[
     // under `mode: semantic`, which runs no expression (D196) — a mode no v1
     // client sends.
     nul("matched", Ty::Str),
-    // D193: whether `matched` is the any-word fallback rather than the
-    // all-words expression the caller's words first asked for.
+    // D193: no entry held every word and the any-word list ran — under
+    // `mode: lexical` in place of the all-words search (`matched` is then
+    // that OR), in hybrid mode beside it (`matched_any`).
     req("relaxed", Ty::Bool),
     // #838: the any-word expression, when it ran.
     nul("matched_any", Ty::Str),

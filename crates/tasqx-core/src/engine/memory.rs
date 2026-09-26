@@ -201,6 +201,11 @@ const WEIGHT_ALL_WORDS: f64 = 1.0;
 const WEIGHT_ANY_WORD: f64 = 0.35;
 const WEIGHT_SEMANTIC: f64 = 1.3;
 
+/// How deep D193's any-word list is taken in hybrid mode, by bm25: a
+/// constant, so which hits it finds — and so `via` and `partial` — never
+/// move with `limit`, and a common word never scans a whole store (#838).
+const ANY_WORD_DEPTH: usize = 200;
+
 /// How many words a snippet carries — FTS5's `snippet()` token count, and
 /// the cut a semantic hit's best chunk gets, so both read alike.
 const SNIPPET_TOKENS: usize = 12;
@@ -1189,20 +1194,40 @@ impl Engine {
             Some(mode) => {
                 let query = req_str(p, "query")?;
                 let raw = matches!(mode, MatchMode::Raw);
+                // Hybrid asks for every CONTENT word (a hit is not partial
+                // for lacking a "the"), and runs the any-word list only when
+                // there are two of them to choose between. `mode: lexical`
+                // keeps the words as typed: D193 as it was.
+                let content: Vec<&str> = {
+                    let mut seen = HashSet::new();
+                    content_words(&query)
+                        .filter(|(_, bare)| seen.insert(bare.clone()))
+                        .map(|(word, _)| word)
+                        .collect()
+                };
                 let expr = if raw {
                     query.clone()
+                } else if f.any_word == AnyWord::Fused && !content.is_empty() {
+                    content
+                        .iter()
+                        .map(|w| phrase(w))
+                        .collect::<Vec<_>>()
+                        .join(" ")
                 } else {
                     phrase_escape(&query)?
                 };
-                let all = self.lexical_list(&window, expr, raw)?;
-                let any_expr = match f.any_word {
+                let all = self.lexical_list(&window, expr, raw, None)?;
+                let any = match f.any_word {
                     AnyWord::Never => None,
                     AnyWord::Fallback if !all.keys.is_empty() => None,
-                    AnyWord::Fallback | AnyWord::Fused => any_word_expr(&query),
+                    AnyWord::Fallback => any_word_expr(&query)
+                        .map(|e| self.lexical_list(&window, e, false, None))
+                        .transpose()?,
+                    AnyWord::Fused if content.len() < 2 => None,
+                    AnyWord::Fused => any_word_expr(&query)
+                        .map(|e| self.lexical_list(&window, e, false, Some(ANY_WORD_DEPTH)))
+                        .transpose()?,
                 };
-                let any = any_expr
-                    .map(|e| self.lexical_list(&window, e, false))
-                    .transpose()?;
                 fell_back = f.any_word == AnyWord::Fallback && any.is_some();
                 (Some(all), any)
             }
@@ -1211,12 +1236,16 @@ impl Engine {
         let all_set: HashSet<&HitKey> = all_words.iter().flat_map(|l| &l.keys).collect();
         let any_set: HashSet<&HitKey> = any_word.iter().flat_map(|l| &l.keys).collect();
         let sem_set: HashSet<&HitKey> = semantic.iter().flat_map(|s| &s.keys).collect();
-        let total = all_set
-            .iter()
-            .chain(&any_set)
-            .chain(&sem_set)
-            .collect::<HashSet<_>>()
-            .len();
+        // `total` counts what every word and meaning matched. An entry that
+        // holds only some of the words fills a page beyond them but is not
+        // counted — unless nothing else matched, when the any-word matches
+        // ARE the answer (D193's fallback).
+        let counted: HashSet<&HitKey> = if all_set.is_empty() && sem_set.is_empty() {
+            any_set.clone()
+        } else {
+            all_set.union(&sem_set).copied().collect()
+        };
+        let total = counted.len();
 
         let mut lists = Vec::new();
         if let Some(l) = &all_words {
@@ -1247,25 +1276,25 @@ impl Engine {
         // Whole rows for the page alone, each snippet cut by the expression
         // that found it: all the words when it holds them, any word when not.
         let partial = |k: &HitKey| !all_set.contains(k) && any_set.contains(k);
-        let ids_by = |pick: &dyn Fn(&HitKey) -> bool| -> Vec<&HitKey> {
-            page.iter().map(|h| &h.key).filter(|k| pick(k)).collect()
+        // One MATCH pass for every lexical row on the page: the any-word
+        // expression matches whatever the all-words one does, so it cuts a
+        // snippet for both kinds of hit.
+        let lexical_ids: Vec<&HitKey> = page
+            .iter()
+            .map(|h| &h.key)
+            .filter(|k| all_set.contains(k) || any_set.contains(k))
+            .collect();
+        let mut rows: HashMap<HitKey, Value> = match (&any_word, &all_words) {
+            (Some(l), _) => self.lexical_rows(&window, &l.expr, false, &lexical_ids)?,
+            (None, Some(l)) => {
+                let raw = matches!(f.lexical, Some(MatchMode::Raw));
+                self.lexical_rows(&window, &l.expr, raw, &lexical_ids)?
+            }
+            (None, None) => HashMap::new(),
         };
-        let mut rows: HashMap<HitKey, Value> = HashMap::new();
-        if let Some(l) = &all_words {
-            let raw = matches!(f.lexical, Some(MatchMode::Raw));
-            rows.extend(self.lexical_rows(
-                &window,
-                &l.expr,
-                raw,
-                &ids_by(&|k| all_set.contains(k)),
-            )?);
-        }
-        if let Some(l) = &any_word {
-            rows.extend(self.lexical_rows(&window, &l.expr, false, &ids_by(&partial))?);
-        }
-        let below_floor: HashMap<(vectors::Kind, String), f64> = match &query_vector {
+        let below_floor: HashMap<(vectors::Kind, &str), f64> = match &query_vector {
             Some(q) if semantic.is_some() => {
-                let keys: Vec<(vectors::Kind, &str)> = page
+                let keys: HashSet<(vectors::Kind, &str)> = page
                     .iter()
                     .filter(|h| !sem_set.contains(&h.key))
                     .map(|h| (h.key.kind, h.key.id.as_str()))
@@ -1280,7 +1309,7 @@ impl Engine {
         };
 
         let mut hits = Vec::with_capacity(page.len());
-        let mut any_partial = false;
+        let mut counted_shown = 0;
         for fused in &page {
             let row = match rows.remove(&fused.key) {
                 Some(row) => Some(row),
@@ -1294,11 +1323,13 @@ impl Engine {
                 .and_then(|s| s.similarity.get(&fused.key).copied())
                 .or_else(|| {
                     below_floor
-                        .get(&(fused.key.kind, fused.key.id.clone()))
+                        .get(&(fused.key.kind, fused.key.id.as_str()))
                         .copied()
                 });
             let is_partial = partial(&fused.key);
-            any_partial |= is_partial;
+            if counted.contains(&fused.key) {
+                counted_shown += 1;
+            }
             row["via"] = json!(fused.via.as_str());
             row["partial"] = json!(is_partial);
             row["similarity"] = json!(similarity);
@@ -1312,6 +1343,7 @@ impl Engine {
         // D69: `matched` is the words expression that decided the words
         // side — D193's OR when it stood in for the all-words search, as it
         // always has; null when no words expression ran (`mode: semantic`).
+        let any_word_ran = any_word.is_some();
         let matched = if fell_back {
             any_word.as_ref().map(|l| l.expr.clone())
         } else {
@@ -1320,13 +1352,16 @@ impl Engine {
         Ok(json!({
             "count": hits.len(),
             "total": total,
-            "has_more": hits.len() < total,
+            // Whether a COUNTED match was left behind (#132): partial hits
+            // past `total` fill a page without making it longer.
+            "has_more": counted_shown < total,
             "hits": hits,
             "matched": matched,
             // The any-word expression, when it ran (#838).
             "matched_any": any_word.map(|l| l.expr),
-            // D193: a hit on the page holds only some of the words.
-            "relaxed": fell_back || any_partial,
+            // D193: no entry held every word, and the any-word list ran —
+            // a fact about the store, not about which hits the page holds.
+            "relaxed": fell_back || (all_set.is_empty() && any_word_ran),
             // D196: the meaning side's model and floor, or null when it did
             // not run or compared nothing.
             "semantic": semantic.as_ref().map(|_| json!({
@@ -1409,12 +1444,14 @@ impl Engine {
         w: &SearchWindow,
         expr: String,
         raw: bool,
+        cap: Option<usize>,
     ) -> Result<LexicalList, ApiError> {
         // `bm25()` is aliased `score`, not `rank`: `rank` is a live column on
         // every FTS5 table and shadowing it inside a compound SELECT is asking
         // for a quiet resolution surprise. Lower bm25 = better, so ORDER BY ASC.
+        let limit = cap.map_or(String::new(), |n| format!(" LIMIT {n}"));
         let sql = format!(
-            "{} ORDER BY score",
+            "{} ORDER BY score{limit}",
             Self::lexical_sql(
                 w,
                 "d.id AS id, 'doc' AS kind, bm25(docs_fts) AS score",

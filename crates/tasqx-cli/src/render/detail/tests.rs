@@ -949,6 +949,8 @@ fn a_brief_memory_hit_says_when_meaning_or_some_words_found_it() {
             .to_string()
     };
     assert!(line("Idempotency").ends_with("~ 0.41"), "{out}");
-    assert!(line("Retry budget").ends_with("some words"), "{out}");
+    // The brief's words side is its derived OR, which never claims every
+    // word: no hit of it is marked partial (#838 review).
+    assert_eq!(line("Retry budget").trim(), "Retry budget", "{out}");
     assert_eq!(line("Retry path").trim(), "Retry path", "{out}");
 }

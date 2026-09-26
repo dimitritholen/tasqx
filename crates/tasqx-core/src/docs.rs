@@ -1004,11 +1004,11 @@ pub const R_MEMORY_ADD: &[FieldDoc] = &[
 /// `memory.search`'s result.
 pub const R_MEMORY_SEARCH: &[FieldDoc] = &[
     f("count", "integer", "How many hits came back."),
-    f("total", "integer", "How many entries matched before `limit` truncated: every lexical match and every semantic one at or above the floor, counted once (#132, D196)."),
-    f("has_more", "boolean", "Whether anything was left behind."),
-    f("hits", "array", "The hits, best first: the lexical (bm25) and semantic lists fused by reciprocal rank, docs and annotations together (D196)."),
+    f("total", "integer", "How many entries matched before `limit` truncated: every all-words match and every semantic one at or above the floor, counted once. An entry only the any-word list found is not counted unless those two found nothing (#132, D196)."),
+    f("has_more", "boolean", "Whether a counted match (see `total`) was left behind."),
+    f("hits", "array", "The hits, best first: the all-words, any-word and semantic lists fused by weighted reciprocal rank, docs and annotations together (D196)."),
     n("matched", "string", "The FTS5 expression actually run — how `count: 0` is told apart from a store holding nothing on the subject. Null under `mode: semantic`, which runs none."),
-    f("relaxed", "boolean", "Whether a hit on the page holds only some of a plain query's words (D193). In hybrid mode the any-word list always runs beside the other two and its hits say `partial`; under `mode: lexical` it runs only when no entry has every word, and then `matched` is that OR. Always false for `raw` and `mode: semantic`."),
+    f("relaxed", "boolean", "Whether no entry held every word of a plain query and the any-word list ran (D193). In hybrid mode that list always runs for two content words or more and its hits say `partial`; under `mode: lexical` it runs only when no entry has every word, and then `matched` is that OR. Always false for `raw` and `mode: semantic`."),
     n("matched_any", "string", "The any-word OR expression, when it ran (#838): always in hybrid mode for a query of two content words or more, only as D193's fallback under `mode: lexical`."),
     n("semantic", "object", "The meaning side's `{model, min_similarity}`, or null when it did not run: `mode: lexical` or `raw`, a query with no word of three letters or more that is not a stopword (an id such as `D41`), no word the model knows, or nothing to compare against (D196)."),
 ];
@@ -1030,7 +1030,7 @@ pub const MEMORY_HIT_ROW: &[FieldDoc] = &[
     n("standing", "boolean", "For a doc hit, whether it is a standing ruling (D156); null on an annotation hit, which has no such flag."),
     n("project", "string", "Which project this hit is scoped to — a doc's own column, or the annotation's task's — or null for global knowledge (#657)."),
     n("stale", "boolean", "true when the doc's origin file no longer matches what was imported; null for annotations and docs with no origin (D180)."),
-    f("via", "string", "Which list found it: `lexical` (the words; `matched` explains it), `semantic` (meaning; `similarity` explains it) or `both` (D196)."),
+    f("via", "string", "Which side found it: `lexical` (words — all of them, which `matched` explains, or only some, which `partial` says and `matched_any` explains), `semantic` (meaning; `similarity` explains it) or `both` (D196)."),
     n("similarity", "number", "Its best chunk's cosine to the query, to three decimals — also on a hit the words found, when the entry has a vector; null when it has none or the semantic side did not run."),
     f("score", "number", "The fused score: Σ weight/(20 + rank) over the lists it is on — every word 1.0, any word 0.35, meaning 1.3 (D196, #838). Higher is better."),
     f("partial", "boolean", "true when the only words that found it are D193's any-word list: it lacks some of the query's words. `relaxed` is true when any hit on the page is."),

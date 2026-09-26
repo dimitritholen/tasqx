@@ -1244,6 +1244,18 @@ fn measure(label: &str, make: &dyn Fn(usize) -> (bool, String)) {
             })
             .collect();
         println!("{label}: warm, five runs: {warm:?}");
+        // The whole hybrid search (#838): all-words, the capped any-word
+        // list and meaning, fused, with the page's rows read whole.
+        let hybrid = json!({ "query": q, "limit": 10 });
+        e.memory_search(&hybrid).unwrap();
+        let warm: Vec<Duration> = (0..5)
+            .map(|_| {
+                let t = Instant::now();
+                e.memory_search(&hybrid).unwrap();
+                t.elapsed()
+            })
+            .collect();
+        println!("{label}: memory.search hybrid, warm, five runs: {warm:?}");
         let t = Instant::now();
         e.task_add(&json!({ "title": "x" })).unwrap();
         e.semantic_candidates(q, &f);
