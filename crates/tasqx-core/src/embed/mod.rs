@@ -139,21 +139,86 @@ fn blob_scale(blob: &[u8; BLOB_LEN]) -> f32 {
 }
 
 /// Cosine similarity of a query from [`embed`] and a stored vector from
-/// [`quantize`], without dequantising it: the scale cancels, so this is the
-/// dot product with the int8 values over their norm, each sum in index
-/// order. 0 for a stored vector that is all zeros.
+/// [`quantize`], without dequantising it. 0 for a stored vector that is all
+/// zeros. [`QueryVector`] and [`StoredVector`] are the same computation with
+/// each side prepared once, which is how search scores many vectors.
 pub fn cosine_quantized(query: &[f32; DIMS], stored: &[u8; BLOB_LEN]) -> f32 {
-    let mut d = 0.0f32;
-    let mut n = 0.0f32;
-    for i in 0..DIMS {
-        let q = f32::from(stored[i] as i8);
-        d += query[i] * q;
-        n += q * q;
+    StoredVector::from_blob(stored).map_or(0.0, |s| s.similarity(&QueryVector::new(query)))
+}
+
+/// Largest magnitude a query component takes in fixed point.
+const QUERY_STEPS: f32 = 32767.0;
+
+/// A query in i16 fixed point: each value rounded to a step of
+/// `max(abs(v)) / 32767`, which moves a similarity by well under 1e-4 (a
+/// test holds the golden set to that). Its dot product with a stored
+/// vector's int8 values is integer arithmetic, so it is exact: the sum has
+/// one value whatever order it is taken in, the compiler may vectorise it,
+/// and every CPU gives the same bits.
+pub struct QueryVector {
+    q: [i16; DIMS],
+    scale: f64,
+}
+
+impl QueryVector {
+    /// `v` in fixed point. An all-zero vector gives a query every stored
+    /// vector scores 0 against.
+    pub fn new(v: &[f32; DIMS]) -> QueryVector {
+        let max = v.iter().fold(0.0f32, |m, x| m.max(x.abs()));
+        let mut q = [0i16; DIMS];
+        if max == 0.0 || !max.is_finite() {
+            return QueryVector { q, scale: 0.0 };
+        }
+        let step = max / QUERY_STEPS;
+        for (o, x) in q.iter_mut().zip(v) {
+            *o = (x / step).round().clamp(-QUERY_STEPS, QUERY_STEPS) as i16;
+        }
+        QueryVector {
+            q,
+            scale: f64::from(step),
+        }
     }
-    if n == 0.0 {
-        0.0
-    } else {
-        d / n.sqrt()
+}
+
+/// A stored vector's int8 values and their norm, read once from its blob.
+/// The blob's own scale cancels out of a cosine and is not needed.
+pub struct StoredVector {
+    q: [i8; DIMS],
+    norm: f64,
+}
+
+impl StoredVector {
+    /// `None` unless `blob` is exactly [`BLOB_LEN`] bytes.
+    pub fn from_blob(blob: &[u8]) -> Option<StoredVector> {
+        if blob.len() != BLOB_LEN {
+            return None;
+        }
+        let mut q = [0i8; DIMS];
+        for (o, &b) in q.iter_mut().zip(&blob[..DIMS]) {
+            *o = b as i8;
+        }
+        // At most 256 * 127^2, far inside i32.
+        let n: i32 = q.iter().map(|&x| i32::from(x) * i32::from(x)).sum();
+        Some(StoredVector {
+            q,
+            norm: f64::from(n).sqrt(),
+        })
+    }
+
+    /// The cosine of this vector and `query`. The dot product is exact in
+    /// i32 (at most 256 * 32767 * 127, under 2^31); the one division is in
+    /// f64 and correctly rounded, so the result is the same on every CPU.
+    pub fn similarity(&self, query: &QueryVector) -> f32 {
+        if self.norm == 0.0 || query.scale == 0.0 {
+            return 0.0;
+        }
+        let dot: i32 = self
+            .q
+            .iter()
+            .zip(&query.q)
+            .map(|(&s, &q)| i32::from(s) * i32::from(q))
+            .sum();
+        (f64::from(dot) * query.scale / self.norm) as f32
     }
 }
 

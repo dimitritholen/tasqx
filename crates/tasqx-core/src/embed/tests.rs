@@ -216,3 +216,61 @@ fn embed_throughput() {
     assert_eq!(n, 1000);
     eprintln!("parse {parse:?}; 1000 chunks of ~50 words in {took:?}");
 }
+
+/// The f32 formula `cosine_quantized` used before the integer kernel: the
+/// dot product with the int8 values over their norm, summed in index order.
+fn cosine_quantized_f32(query: &[f32; DIMS], stored: &[u8; BLOB_LEN]) -> f32 {
+    let (mut d, mut n) = (0.0f32, 0.0f32);
+    for i in 0..DIMS {
+        let q = f32::from(stored[i] as i8);
+        d += query[i] * q;
+        n += q * q;
+    }
+    if n == 0.0 {
+        0.0
+    } else {
+        d / n.sqrt()
+    }
+}
+
+/// D196 via #837's review: the integer kernel (the query in i16 fixed point,
+/// an exact i32 dot product) stays within 1e-4 of the f32 formula on every
+/// pair of the golden set, so moving to it moves no similarity by more
+/// than a tenth of the three decimals search reports.
+#[test]
+fn the_integer_similarity_is_within_1e_4_of_the_f32_formula_on_the_golden_set() {
+    let golden: serde_json::Value = serde_json::from_str(GOLDEN).unwrap();
+    let vectors: Vec<[f32; DIMS]> = golden["samples"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|s| embed(s["text"].as_str().unwrap()))
+        .collect();
+    assert!(vectors.len() > 10, "the golden set has vectors to compare");
+    let mut worst = 0.0f32;
+    for q in &vectors {
+        let query = QueryVector::new(q);
+        for v in &vectors {
+            let blob = quantize(v);
+            let int = StoredVector::from_blob(&blob).unwrap().similarity(&query);
+            assert_eq!(int.to_bits(), cosine_quantized(q, &blob).to_bits());
+            worst = worst.max((int - cosine_quantized_f32(q, &blob)).abs());
+        }
+    }
+    assert!(worst < 1e-4, "worst difference {worst}");
+}
+
+#[test]
+fn a_stored_vector_needs_exactly_a_blob() {
+    assert!(StoredVector::from_blob(&[0u8; BLOB_LEN - 1]).is_none());
+    assert!(StoredVector::from_blob(&[0u8; BLOB_LEN + 1]).is_none());
+    let zero = StoredVector::from_blob(&[0u8; BLOB_LEN]).unwrap();
+    let q = QueryVector::new(&embed("hello").unwrap());
+    assert_eq!(zero.similarity(&q), 0.0);
+    assert_eq!(
+        StoredVector::from_blob(&quantize(&embed("hello").unwrap()))
+            .unwrap()
+            .similarity(&QueryVector::new(&[0.0; DIMS])),
+        0.0
+    );
+}

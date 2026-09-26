@@ -8,13 +8,16 @@
 //! search needs it, and written back with a guard: the source row must still
 //! hold the text that was embedded, or nothing is inserted. The write never
 //! waits on the lock; when it cannot be made (another writer holds the lock,
-//! the file is read-only), the vectors serve this call from memory and the
-//! next search tries again. The index never fails a search.
+//! the file is read-only), the vectors stay in this process's copy and the
+//! write is tried again on a later search, without embedding them again. The
+//! index never fails a search, and never answers from vectors it has reason
+//! to distrust: on an error it answers with none.
 //!
-//! The copy in memory is keyed on `PRAGMA data_version`, which moves when
-//! ANOTHER connection commits, and on this connection's `total_changes`,
-//! which moves when this one writes anything at all (a trigger's delete
-//! included), because `data_version` does not see a connection's own commits.
+//! The copy in memory is keyed on `memory_generation`, a counter pure-SQL
+//! triggers bump on every change a semantic list can see, whichever process
+//! or binary made it. A store with no such table (read-only, written by an
+//! older binary) is keyed on `PRAGMA data_version` instead; that connection
+//! cannot write, so another connection's commit is the only change there is.
 
 // `memory.search` is this module's caller, and it arrives with #838; until
 // then only the tests below reach the primitive. `expect`, so the attribute
@@ -31,7 +34,7 @@ use std::time::Duration;
 use rusqlite::{params, Connection, ErrorCode, OptionalExtension};
 
 use super::Engine;
-use crate::embed::{self, BLOB_LEN, DIMS, MODEL_ID};
+use crate::embed::{self, QueryVector, StoredVector, BLOB_LEN, MODEL_ID};
 
 /// What a vector belongs to. Ordered as the words sort, so a tie on
 /// similarity breaks the same way D196's `(kind, id)` reads.
@@ -87,41 +90,6 @@ pub(crate) struct SemanticHits {
     pub total: usize,
 }
 
-/// A stored vector as the cache holds it: the int8 values and their norm,
-/// taken as [`embed::cosine_quantized`] takes it, so a similarity computed
-/// here has the same bits as one computed there.
-struct Stored {
-    q: [i8; DIMS],
-    norm: f32,
-}
-
-impl Stored {
-    fn from_blob(blob: &[u8]) -> Option<Stored> {
-        if blob.len() != BLOB_LEN {
-            return None;
-        }
-        let mut q = [0i8; DIMS];
-        let mut n = 0.0f32;
-        for (i, slot) in q.iter_mut().enumerate() {
-            *slot = blob[i] as i8;
-            let f = f32::from(*slot);
-            n += f * f;
-        }
-        Some(Stored { q, norm: n.sqrt() })
-    }
-
-    fn similarity(&self, query: &[f32; DIMS]) -> f32 {
-        if self.norm == 0.0 {
-            return 0.0;
-        }
-        let mut d = 0.0f32;
-        for (qv, &s) in query.iter().zip(&self.q) {
-            d += qv * f32::from(s);
-        }
-        d / self.norm
-    }
-}
-
 /// An entry and every chunk vector it has, with what the filter needs.
 struct Entry {
     kind: Kind,
@@ -129,18 +97,35 @@ struct Entry {
     project: Option<String>,
     /// An annotation's task; `None` for a doc.
     task_id: Option<String>,
-    chunks: Vec<(i64, Stored)>,
+    chunks: Vec<(i64, StoredVector)>,
+}
+
+/// What the copy was read at.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Key {
+    /// `memory_generation.gen`.
+    Generation(i64),
+    /// `PRAGMA data_version`, on a store without the index's tables.
+    Unindexed(i64),
 }
 
 /// The per-process copy of the current model's vectors.
 #[derive(Default)]
 pub(super) struct VectorCache {
-    /// `(data_version, total_changes)` the entries were read at.
-    key: Option<(i64, u64)>,
-    /// Every entry had a row under the current model at `key`, so a search
-    /// at the same key has nothing to embed and need not look.
+    key: Option<Key>,
+    /// Every entry at `key` is in `entries`, stored or waiting in
+    /// `unpersisted`, so a search at the same key embeds nothing.
     complete: bool,
     entries: Vec<Entry>,
+    /// Embedded at `key` but not yet written: retried on a later search.
+    unpersisted: Vec<Pending>,
+    /// When this process last saw the model's `last_used` recorded, in unix
+    /// seconds; it is written at most once a day.
+    touched: Option<i64>,
+    /// Entries embedded by this copy, for the tests.
+    embedded: usize,
+    /// Times the copy was read from the store, for the tests.
+    loads: usize,
 }
 
 pub(super) type VectorCell = RefCell<VectorCache>;
@@ -162,17 +147,17 @@ pub(super) struct Pending {
 }
 
 impl Pending {
-    fn into_entry(self) -> Option<Entry> {
-        let chunks: Vec<(i64, Stored)> = self
+    fn entry(&self) -> Option<Entry> {
+        let chunks: Vec<(i64, StoredVector)> = self
             .vectors
             .iter()
-            .filter_map(|(ix, blob)| Stored::from_blob(blob).map(|s| (*ix, s)))
+            .filter_map(|(ix, blob)| StoredVector::from_blob(blob).map(|s| (*ix, s)))
             .collect();
-        (!chunks.is_empty()).then_some(Entry {
+        (!chunks.is_empty()).then(|| Entry {
             kind: self.kind,
-            owner_id: self.owner_id,
-            project: self.project,
-            task_id: self.task_id,
+            owner_id: self.owner_id.clone(),
+            project: self.project.clone(),
+            task_id: self.task_id.clone(),
             chunks,
         })
     }
@@ -201,22 +186,32 @@ fn absorb(e: &rusqlite::Error) {
     }
 }
 
-fn data_version(conn: &Connection) -> rusqlite::Result<i64> {
-    conn.pragma_query_value(None, "data_version", |r| r.get(0))
-}
-
-fn table_exists(conn: &Connection) -> rusqlite::Result<bool> {
+/// Whether the store has the index's tables. A read-only open runs no
+/// migration, so a store an older binary wrote has none.
+fn indexed(conn: &Connection) -> rusqlite::Result<bool> {
     conn.query_row(
-        "SELECT EXISTS (SELECT 1 FROM sqlite_master \
-         WHERE type = 'table' AND name = 'memory_vectors')",
+        "SELECT COUNT(*) = 3 FROM sqlite_master WHERE type = 'table' \
+         AND name IN ('memory_vectors', 'memory_generation', 'memory_vector_models')",
         [],
         |r| r.get(0),
     )
 }
 
+fn read_key(conn: &Connection, indexed: bool) -> rusqlite::Result<Key> {
+    if indexed {
+        conn.query_row("SELECT gen FROM memory_generation WHERE id = 1", [], |r| {
+            r.get(0)
+        })
+        .map(Key::Generation)
+    } else {
+        conn.pragma_query_value(None, "data_version", |r| r.get(0))
+            .map(Key::Unindexed)
+    }
+}
+
 /// Every current-model vector whose owner still exists, grouped by owner.
-fn load(conn: &Connection) -> rusqlite::Result<Vec<Entry>> {
-    if !table_exists(conn)? {
+fn load(conn: &Connection, indexed: bool) -> rusqlite::Result<Vec<Entry>> {
+    if !indexed {
         return Ok(Vec::new());
     }
     const DOCS: &str = "SELECT v.owner_id, v.chunk, v.vec, d.project, NULL \
@@ -236,8 +231,7 @@ fn load(conn: &Connection) -> rusqlite::Result<Vec<Entry>> {
         while let Some(r) = rows.next()? {
             let owner: String = r.get(0)?;
             let chunk: i64 = r.get(1)?;
-            let blob = r.get_ref(2)?.as_blob()?;
-            let Some(stored) = Stored::from_blob(blob) else {
+            let Some(stored) = StoredVector::from_blob(r.get_ref(2)?.as_blob()?) else {
                 continue;
             };
             match out.last_mut() {
@@ -265,18 +259,17 @@ fn embed_chunks(chunks: &[String]) -> Vec<(i64, [u8; BLOB_LEN])> {
 }
 
 /// Every entry that has no row under the current model, read and embedded.
-/// Docs: all of them. Annotations: live and non-empty.
-pub(super) fn scan_missing(conn: &Connection) -> rusqlite::Result<Vec<Pending>> {
-    let has_table = table_exists(conn)?;
+/// Docs: all of them. Annotations: live and non-empty. Without the index's
+/// tables, every entry.
+pub(super) fn scan_missing(conn: &Connection, indexed: bool) -> rusqlite::Result<Vec<Pending>> {
     let missing = |kind: &str, alias: &str| {
-        if has_table {
+        if indexed {
             format!(
                 "AND NOT EXISTS (SELECT 1 FROM memory_vectors v WHERE v.kind = '{kind}' \
                  AND v.owner_id = {alias}.id AND v.model = ?1)"
             )
         } else {
-            // A read-only store an older binary wrote: nothing is stored,
-            // everything is computed for the call. `?1` still has a home.
+            // `?1` still needs a home.
             "AND ?1 IS NOT NULL".to_string()
         }
     };
@@ -341,35 +334,57 @@ pub(super) fn scan_missing(conn: &Connection) -> rusqlite::Result<Vec<Pending>> 
 /// Why nothing was written.
 #[derive(Debug)]
 pub(super) enum NotPersisted {
-    /// Read-only, or inside a transaction someone else owns: not attempted.
+    /// Read-only, unindexed, or inside a transaction someone else owns: not
+    /// attempted.
     Skipped,
     /// Attempted and refused; see [`absorb`].
     Failed(rusqlite::Error),
 }
 
+/// Sets a connection's busy timeout to zero and puts the old one back when
+/// dropped, whichever way the write in between ends.
+struct NoWait<'c> {
+    conn: &'c Connection,
+    previous: Duration,
+}
+
+impl<'c> NoWait<'c> {
+    fn new(conn: &'c Connection) -> rusqlite::Result<NoWait<'c>> {
+        let ms: i64 = conn.pragma_query_value(None, "busy_timeout", |r| r.get(0))?;
+        let previous = Duration::from_millis(ms.max(0).unsigned_abs());
+        conn.busy_timeout(Duration::ZERO)?;
+        Ok(NoWait { conn, previous })
+    }
+}
+
+impl Drop for NoWait<'_> {
+    fn drop(&mut self) {
+        let _ = self.conn.busy_timeout(self.previous);
+    }
+}
+
 /// Write `pending` in one transaction taken without waiting, each entry
-/// only while its source row still holds the text that was embedded. Returns
-/// how many entries were written; one that lost a race with an edit is not.
-pub(super) fn persist(conn: &Connection, pending: &[Pending]) -> Result<usize, NotPersisted> {
+/// only while its source row still holds the text that was embedded, and,
+/// with `touch` (unix seconds), record that the current model searched this
+/// store then. Returns the rows inserted; an entry that lost a race with an
+/// edit inserts none.
+pub(super) fn persist(
+    conn: &Connection,
+    pending: &[Pending],
+    touch: Option<i64>,
+) -> Result<usize, NotPersisted> {
     if !conn.is_autocommit() || conn.is_readonly("main").unwrap_or(true) {
         return Err(NotPersisted::Skipped);
     }
-    if !table_exists(conn).map_err(NotPersisted::Failed)? {
-        return Err(NotPersisted::Skipped);
-    }
-    let previous: i64 = conn
-        .pragma_query_value(None, "busy_timeout", |r| r.get(0))
-        .map_err(NotPersisted::Failed)?;
-    conn.busy_timeout(Duration::ZERO)
-        .map_err(NotPersisted::Failed)?;
-    let result = write_guarded(conn, pending);
-    let restored = conn.busy_timeout(Duration::from_millis(previous.max(0).unsigned_abs()));
-    let written = result.map_err(NotPersisted::Failed)?;
-    restored.map_err(NotPersisted::Failed)?;
-    Ok(written)
+    let _no_wait = NoWait::new(conn).map_err(NotPersisted::Failed)?;
+    write_guarded(conn, pending, touch).map_err(NotPersisted::Failed)
 }
 
-fn write_guarded(conn: &Connection, pending: &[Pending]) -> rusqlite::Result<usize> {
+fn write_guarded(
+    conn: &Connection,
+    pending: &[Pending],
+    touch: Option<i64>,
+) -> rusqlite::Result<usize> {
     let tx = rusqlite::Transaction::new_unchecked(conn, rusqlite::TransactionBehavior::Immediate)?;
     let mut doc = tx.prepare(
         "INSERT OR IGNORE INTO memory_vectors (kind, owner_id, model, chunk, vec) \
@@ -381,24 +396,8 @@ fn write_guarded(conn: &Connection, pending: &[Pending]) -> rusqlite::Result<usi
          SELECT 'annotation', ?1, ?2, ?3, ?4 WHERE EXISTS (SELECT 1 FROM annotations \
          WHERE id = ?1 AND body = ?5 AND removed IS NULL)",
     )?;
-    let mut doc_holds = tx.prepare(
-        "SELECT EXISTS (SELECT 1 FROM docs WHERE id = ?1 AND title IS ?2 AND search_body IS ?3)",
-    )?;
-    let mut annotation_holds = tx.prepare(
-        "SELECT EXISTS (SELECT 1 FROM annotations WHERE id = ?1 AND body = ?2 \
-         AND removed IS NULL)",
-    )?;
-    let mut written = 0;
+    let mut inserted = 0;
     for p in pending {
-        let holds: bool = match p.kind {
-            Kind::Doc => doc_holds.query_row(params![p.owner_id, p.text_a, p.text_b], |r| r.get(0)),
-            Kind::Annotation => {
-                annotation_holds.query_row(params![p.owner_id, p.text_a], |r| r.get(0))
-            }
-        }?;
-        if !holds {
-            continue;
-        }
         let sentinel = [(-1i64, None)];
         let rows: Vec<(i64, Option<&[u8]>)> = if p.vectors.is_empty() {
             sentinel.to_vec()
@@ -409,7 +408,7 @@ fn write_guarded(conn: &Connection, pending: &[Pending]) -> rusqlite::Result<usi
                 .collect()
         };
         for (ix, blob) in rows {
-            match p.kind {
+            inserted += match p.kind {
                 Kind::Doc => {
                     doc.execute(params![p.owner_id, MODEL_ID, ix, blob, p.text_a, p.text_b])?
                 }
@@ -418,11 +417,17 @@ fn write_guarded(conn: &Connection, pending: &[Pending]) -> rusqlite::Result<usi
                 }
             };
         }
-        written += 1;
     }
-    drop((doc, annotation, doc_holds, annotation_holds));
+    drop((doc, annotation));
+    if let Some(now) = touch {
+        tx.execute(
+            "INSERT INTO memory_vector_models (model, last_used) VALUES (?1, ?2) \
+             ON CONFLICT (model) DO UPDATE SET last_used = MAX(last_used, excluded.last_used)",
+            params![MODEL_ID, now],
+        )?;
+    }
     tx.commit()?;
-    Ok(written)
+    Ok(inserted)
 }
 
 fn in_filter(e: &Entry, f: &SemanticFilter<'_>) -> bool {
@@ -444,7 +449,7 @@ fn in_filter(e: &Entry, f: &SemanticFilter<'_>) -> bool {
 
 /// The best chunk of `e` for `query`, by rounded similarity, the lowest
 /// chunk index on a tie.
-fn best(e: &Entry, query: &[f32; DIMS]) -> (i64, f64) {
+fn best(e: &Entry, query: &QueryVector) -> (i64, f64) {
     let mut top = (i64::MAX, f64::NEG_INFINITY);
     for (ix, s) in &e.chunks {
         let sim = embed::round_similarity(s.similarity(query));
@@ -455,70 +460,133 @@ fn best(e: &Entry, query: &[f32; DIMS]) -> (i64, f64) {
     top
 }
 
+/// Whether the current model's `last_used` is due to be written: `(Some(now),
+/// _)` when neither this process (`touched`) nor the store has it within a
+/// day; otherwise `(None, Some(when the store has it))` when the store had
+/// to be asked.
+fn due_touch(
+    conn: &Connection,
+    touched: Option<i64>,
+) -> rusqlite::Result<(Option<i64>, Option<i64>)> {
+    let now = crate::clock::now().as_second();
+    let fresh = |t: i64| now.saturating_sub(t) < TOUCH_EVERY_SECS;
+    if touched.is_some_and(fresh) {
+        return Ok((None, None));
+    }
+    let recorded: Option<i64> = conn
+        .query_row(
+            "SELECT last_used FROM memory_vector_models WHERE model = ?1",
+            params![MODEL_ID],
+            |r| r.get(0),
+        )
+        .optional()?;
+    Ok(match recorded {
+        Some(t) if fresh(t) => (None, Some(t)),
+        _ => (Some(now), None),
+    })
+}
+
+/// How often a process records that its model searched a store.
+const TOUCH_EVERY_SECS: i64 = 24 * 3600;
+
+/// How many times a reconcile starts over when another writer changes
+/// memory under it, before it answers from the last snapshot it read.
+const RACE_RETRIES: usize = 3;
+
+impl VectorCache {
+    fn reset(&mut self) {
+        self.key = None;
+        self.complete = false;
+        self.entries.clear();
+        self.unpersisted.clear();
+    }
+
+    /// Put `pending`'s vectors in the copy, replacing anything it held for
+    /// the same owners.
+    fn absorb_pending(&mut self, pending: &[Pending]) {
+        let owners: HashSet<(Kind, &str)> = pending
+            .iter()
+            .map(|p| (p.kind, p.owner_id.as_str()))
+            .collect();
+        self.entries
+            .retain(|e| !owners.contains(&(e.kind, e.owner_id.as_str())));
+        self.entries
+            .extend(pending.iter().filter_map(Pending::entry));
+    }
+}
+
 impl Engine {
-    /// Bring the index up to date and return what it could not store: the
-    /// entries embedded for this call only. Never fails; see [`absorb`].
-    fn reconcile_vectors(&self) -> Vec<Entry> {
-        match self.try_reconcile() {
-            Ok(ephemeral) => ephemeral,
-            Err(e) => {
-                absorb(&e);
-                self.vectors.borrow_mut().key = None;
-                Vec::new()
-            }
+    /// Bring the copy (and, when it can, the stored index) up to date.
+    /// Never fails: on an error the copy is emptied, so the search answers
+    /// with no semantic hits rather than with stale ones; see [`absorb`].
+    fn reconcile_vectors(&self) {
+        if let Err(e) = self.try_reconcile() {
+            absorb(&e);
+            self.vectors.borrow_mut().reset();
         }
     }
 
-    fn try_reconcile(&self) -> rusqlite::Result<Vec<Entry>> {
+    fn try_reconcile(&self) -> rusqlite::Result<()> {
         let conn = &self.conn;
-        // Read before the rows, so a commit landing between the two makes
-        // the key stale rather than the rows.
-        let key = (data_version(conn)?, conn.total_changes());
         let mut cache = self.vectors.borrow_mut();
-        if cache.key == Some(key) && cache.complete {
-            return Ok(Vec::new());
-        }
-        if cache.key != Some(key) {
-            cache.entries = load(conn)?;
-            cache.key = Some(key);
-            cache.complete = false;
-        }
-        let pending = scan_missing(conn)?;
-        if pending.is_empty() {
-            cache.complete = true;
-            return Ok(Vec::new());
-        }
-        match persist(conn, &pending) {
-            Ok(written) => {
-                let after = (data_version(conn)?, conn.total_changes());
-                if after.0 == key.0 && written == pending.len() {
-                    // Nobody else committed since `key`: the store is what
-                    // was loaded plus what was just written.
-                    cache
-                        .entries
-                        .extend(pending.into_iter().filter_map(Pending::into_entry));
-                    cache.key = Some(after);
-                    cache.complete = true;
-                    Ok(Vec::new())
-                } else {
+        let indexed = indexed(conn)?;
+        for _ in 0..RACE_RETRIES {
+            // Read before the rows, so a change landing between the two
+            // makes the key stale rather than the rows.
+            let key = read_key(conn, indexed)?;
+            if cache.key != Some(key) {
+                cache.reset();
+                cache.entries = load(conn, indexed)?;
+                cache.loads += 1;
+                cache.key = Some(key);
+            }
+            if !cache.complete {
+                let pending = scan_missing(conn, indexed)?;
+                cache.embedded += pending.len();
+                if read_key(conn, indexed)? != key {
+                    // Memory changed while it was read: the rows loaded may
+                    // be stale. Start over.
                     cache.key = None;
-                    Ok(pending
-                        .into_iter()
-                        .filter_map(Pending::into_entry)
-                        .collect())
+                    continue;
                 }
+                cache.absorb_pending(&pending);
+                cache.unpersisted = pending;
+                cache.complete = true;
             }
-            Err(not) => {
-                if let NotPersisted::Failed(e) = &not {
-                    absorb(e);
+            let touch = if indexed {
+                let (due, seen) = due_touch(conn, cache.touched)?;
+                if seen.is_some() {
+                    cache.touched = seen;
                 }
-                cache.complete = false;
-                Ok(pending
-                    .into_iter()
-                    .filter_map(Pending::into_entry)
-                    .collect())
+                due
+            } else {
+                None
+            };
+            if !indexed || (cache.unpersisted.is_empty() && touch.is_none()) {
+                return Ok(());
             }
+            match persist(conn, &cache.unpersisted, touch) {
+                Ok(_) => {
+                    // Our own write bumps nothing, so a moved key means
+                    // another writer changed memory since `key`: an entry
+                    // whose guard failed is in the copy with text its row no
+                    // longer holds. Start over rather than answer with it.
+                    if read_key(conn, indexed)? != key {
+                        cache.key = None;
+                        continue;
+                    }
+                    cache.unpersisted.clear();
+                    if touch.is_some() {
+                        cache.touched = touch;
+                    }
+                }
+                // Kept at this key: the next search retries the write.
+                Err(NotPersisted::Skipped) => {}
+                Err(NotPersisted::Failed(e)) => absorb(&e),
+            }
+            return Ok(());
         }
+        Ok(())
     }
 
     /// D196's semantic list: every entry in `filter` whose best chunk's
@@ -534,17 +602,12 @@ impl Engine {
         let Some(q) = embed::embed(query) else {
             return SemanticHits::default();
         };
-        let ephemeral = self.reconcile_vectors();
-        let fresh: HashSet<(Kind, &str)> = ephemeral
-            .iter()
-            .map(|e| (e.kind, e.owner_id.as_str()))
-            .collect();
+        let q = QueryVector::new(&q);
+        self.reconcile_vectors();
         let cache = self.vectors.borrow();
         let mut hits: Vec<SemanticHit> = cache
             .entries
             .iter()
-            .filter(|e| fresh.is_empty() || !fresh.contains(&(e.kind, e.owner_id.as_str())))
-            .chain(ephemeral.iter())
             .filter(|e| in_filter(e, filter))
             .filter_map(|e| {
                 let (chunk, similarity) = best(e, &q);

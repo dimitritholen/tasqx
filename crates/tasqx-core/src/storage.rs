@@ -459,28 +459,42 @@ fn migrate(conn: &Connection) -> Result<(), ApiError> {
     Ok(())
 }
 
-/// D196: the semantic index's table and the triggers that keep it honest.
+/// D196: the semantic index's tables and the triggers that keep it honest.
 ///
-/// A row is one chunk's vector for one doc or annotation under one model
-/// (`vec` is [`crate::embed::BLOB_LEN`] bytes), or a single sentinel row,
-/// `chunk` -1 and `vec` NULL, for an entry with no token the model knows, so
-/// it is not re-embedded on every search. No text is stored.
+/// `memory_vectors`: a row is one chunk's vector for one doc or annotation
+/// under one model (`vec` is [`crate::embed::BLOB_LEN`] bytes), or a single
+/// sentinel row, `chunk` -1 and `vec` NULL, for an entry with no token the
+/// model knows, so it is not re-embedded on every search. No text is stored.
 ///
-/// The triggers only ever DELETE, and only in pure SQL: a trigger cannot
-/// embed, and one calling a function registered on the connection would make
-/// every older binary's write to `docs` or `annotations` fail. An owner's
-/// rows go, under every model, when the text they were built from changes or
-/// the row is deleted; `IS NOT` so an upsert that rewrites the same text
-/// keeps them. An annotation's rows are keyed by the OLD id, so a rekey (the
-/// D191 fold) drops them rather than leaving them under an id nothing holds.
-/// Inserts do nothing: the search embeds what has no row
+/// The vector triggers only ever DELETE, and only in pure SQL: a trigger
+/// cannot embed, and one calling a function registered on the connection
+/// would make every older binary's write to `docs` or `annotations` fail. An
+/// owner's rows go, under every model, when the text they were built from
+/// changes or the row is deleted; `IS NOT` so an upsert that rewrites the
+/// same text keeps them. An annotation's rows are keyed by the OLD id, so a
+/// rekey (the D191 fold) drops them rather than leaving them under an id
+/// nothing holds. Inserts do nothing: the search embeds what has no row
 /// (`engine/vectors.rs`).
 ///
-/// Another model's rows are deleted here, on open, and never by a search, so
-/// two binaries with different models on one store do not delete each
-/// other's work on every call.
+/// `memory_generation` is one counter the generation triggers bump on every
+/// change a semantic list can see: a doc's or a note's text, id or scope, a
+/// note's task, a task's project or id, a delete. A process keys its copy of
+/// the vectors on it, so a timer, a token count or a tag leaves the copy warm
+/// where `PRAGMA data_version` would have thrown it away, and a writer that
+/// has never heard of vectors still bumps it. A task INSERT does not: a note
+/// cannot exist before its task.
+///
+/// `memory_vector_models` records when each model last searched, in unix
+/// seconds. Another model's rows are never deleted just for being another
+/// model's — a CLI and an MCP server on different builds would delete each
+/// other's work on every open — only once that model has not searched this
+/// store for [`STALE_MODEL_SECS`]; a model with no record is never swept.
+///
+/// All of it runs in one `BEGIN IMMEDIATE`, so two processes opening one
+/// store at once cannot interleave the checks and the DDL.
 fn migrate_vectors(conn: &Connection) -> Result<(), ApiError> {
-    conn.execute_batch(
+    let tx = Transaction::new_unchecked(conn, rusqlite::TransactionBehavior::Immediate)?;
+    tx.execute_batch(
         "CREATE TABLE IF NOT EXISTS memory_vectors (
             kind     TEXT NOT NULL CHECK (kind IN ('doc', 'annotation')),
             owner_id TEXT NOT NULL,
@@ -489,6 +503,16 @@ fn migrate_vectors(conn: &Connection) -> Result<(), ApiError> {
             vec      BLOB,
             PRIMARY KEY (kind, owner_id, model, chunk)
         ) WITHOUT ROWID;
+        CREATE TABLE IF NOT EXISTS memory_vector_models (
+            model     TEXT PRIMARY KEY,
+            last_used INTEGER NOT NULL
+        ) WITHOUT ROWID;
+        CREATE TABLE IF NOT EXISTS memory_generation (
+            id  INTEGER PRIMARY KEY CHECK (id = 1),
+            gen INTEGER NOT NULL
+        );
+        INSERT OR IGNORE INTO memory_generation (id, gen) VALUES (1, 0);
+
         CREATE TRIGGER IF NOT EXISTS memory_vectors_docs_au AFTER UPDATE ON docs
         WHEN old.title IS NOT new.title OR old.search_body IS NOT new.search_body BEGIN
             DELETE FROM memory_vectors WHERE kind = 'doc' AND owner_id = old.id;
@@ -504,45 +528,64 @@ fn migrate_vectors(conn: &Connection) -> Result<(), ApiError> {
         CREATE TRIGGER IF NOT EXISTS memory_vectors_annotations_ad AFTER DELETE ON annotations
         BEGIN
             DELETE FROM memory_vectors WHERE kind = 'annotation' AND owner_id = old.id;
+        END;
+
+        CREATE TRIGGER IF NOT EXISTS memory_generation_docs_ai AFTER INSERT ON docs BEGIN
+            UPDATE memory_generation SET gen = gen + 1 WHERE id = 1;
+        END;
+        CREATE TRIGGER IF NOT EXISTS memory_generation_docs_au AFTER UPDATE ON docs
+        WHEN old.id IS NOT new.id OR old.title IS NOT new.title
+            OR old.search_body IS NOT new.search_body OR old.project IS NOT new.project BEGIN
+            UPDATE memory_generation SET gen = gen + 1 WHERE id = 1;
+        END;
+        CREATE TRIGGER IF NOT EXISTS memory_generation_docs_ad AFTER DELETE ON docs BEGIN
+            UPDATE memory_generation SET gen = gen + 1 WHERE id = 1;
+        END;
+        CREATE TRIGGER IF NOT EXISTS memory_generation_annotations_ai
+        AFTER INSERT ON annotations BEGIN
+            UPDATE memory_generation SET gen = gen + 1 WHERE id = 1;
+        END;
+        CREATE TRIGGER IF NOT EXISTS memory_generation_annotations_au
+        AFTER UPDATE ON annotations
+        WHEN old.id IS NOT new.id OR old.task_id IS NOT new.task_id
+            OR old.body IS NOT new.body OR old.removed IS NOT new.removed BEGIN
+            UPDATE memory_generation SET gen = gen + 1 WHERE id = 1;
+        END;
+        CREATE TRIGGER IF NOT EXISTS memory_generation_annotations_ad
+        AFTER DELETE ON annotations BEGIN
+            UPDATE memory_generation SET gen = gen + 1 WHERE id = 1;
+        END;
+        CREATE TRIGGER IF NOT EXISTS memory_generation_tasks_au AFTER UPDATE ON tasks
+        WHEN old.id IS NOT new.id OR old.project IS NOT new.project BEGIN
+            UPDATE memory_generation SET gen = gen + 1 WHERE id = 1;
+        END;
+        CREATE TRIGGER IF NOT EXISTS memory_generation_tasks_ad AFTER DELETE ON tasks BEGIN
+            UPDATE memory_generation SET gen = gen + 1 WHERE id = 1;
         END;",
     )?;
-    // The sweep runs on every open, so it must not scan the table: a partial
-    // index over exactly the rows of other models is empty on a healthy
-    // store, and the check and the delete both read it alone. Its condition
-    // names the model as a literal, which is what lets the planner match a
-    // query to it, so a binary with another model rebuilds it once.
-    let foreign = foreign_model_condition();
-    let index_sql: Option<String> = conn
-        .query_row(
-            "SELECT sql FROM sqlite_master WHERE type = 'index' \
-             AND name = 'memory_vectors_foreign_model'",
-            [],
-            |r| r.get(0),
-        )
-        .optional()?;
-    if !index_sql.is_some_and(|sql| sql.contains(&foreign)) {
-        conn.execute_batch(&format!(
-            "DROP INDEX IF EXISTS memory_vectors_foreign_model; \
-             CREATE INDEX memory_vectors_foreign_model ON memory_vectors(model) \
-             WHERE {foreign};"
-        ))?;
-    }
-    let stale: bool = conn.query_row(
-        &format!("SELECT EXISTS (SELECT 1 FROM memory_vectors WHERE {foreign})"),
-        [],
-        |r| r.get(0),
+    let cutoff = crate::clock::now().as_second() - STALE_MODEL_SECS;
+    let swept = tx.execute(
+        "DELETE FROM memory_vectors WHERE model IN (SELECT model FROM memory_vector_models \
+         WHERE model <> ?1 AND last_used < ?2)",
+        params![crate::embed::MODEL_ID, cutoff],
     )?;
-    if stale {
-        conn.execute(&format!("DELETE FROM memory_vectors WHERE {foreign}"), [])?;
+    tx.execute(
+        "DELETE FROM memory_vector_models WHERE model <> ?1 AND last_used < ?2",
+        params![crate::embed::MODEL_ID, cutoff],
+    )?;
+    if swept > 0 {
+        tx.execute(
+            "UPDATE memory_generation SET gen = gen + 1 WHERE id = 1",
+            [],
+        )?;
     }
+    tx.commit()?;
     Ok(())
 }
 
-/// The rows [`migrate_vectors`]'s sweep deletes, as SQL with the model id
-/// spelled as a literal (it holds no quote, which a test pins).
-fn foreign_model_condition() -> String {
-    format!("model <> '{}'", crate::embed::MODEL_ID)
-}
+/// How long a model may go without searching a store before
+/// [`migrate_vectors`] deletes its vectors there: seven days.
+pub(crate) const STALE_MODEL_SECS: i64 = 7 * 24 * 3600;
 
 /// D41 memory subsystem: the `docs` table plus FTS5 indexes over `docs` and
 /// `annotations`, kept in sync by triggers so no writer can forget the index.
@@ -2473,26 +2516,40 @@ mod tests {
         conn
     }
 
-    /// A store written before D196 has no `memory_vectors` and none of its
-    /// triggers. The upgrade creates all five, and a re-run keeps the rows of
-    /// the current model while deleting another model's.
+    const VECTOR_OBJECTS: [&str; 15] = [
+        "memory_vectors",
+        "memory_vector_models",
+        "memory_generation",
+        "memory_vectors_docs_au",
+        "memory_vectors_docs_ad",
+        "memory_vectors_annotations_au",
+        "memory_vectors_annotations_ad",
+        "memory_generation_docs_ai",
+        "memory_generation_docs_au",
+        "memory_generation_docs_ad",
+        "memory_generation_annotations_ai",
+        "memory_generation_annotations_au",
+        "memory_generation_annotations_ad",
+        "memory_generation_tasks_au",
+        "memory_generation_tasks_ad",
+    ];
+
+    fn drop_vector_objects(conn: &Connection) {
+        for name in &VECTOR_OBJECTS[3..] {
+            conn.execute_batch(&format!("DROP TRIGGER {name};"))
+                .unwrap();
+        }
+        for name in &VECTOR_OBJECTS[..3] {
+            conn.execute_batch(&format!("DROP TABLE {name};")).unwrap();
+        }
+    }
+
+    /// A store written before D196 has none of the index's tables or
+    /// triggers; the upgrade creates every one, and a re-run is a no-op.
     #[test]
-    fn migration_creates_the_vector_table_and_its_triggers_on_a_legacy_store() {
+    fn migration_creates_the_vector_tables_and_triggers_on_a_legacy_store() {
         let conn = fresh();
-        let names = [
-            "memory_vectors",
-            "memory_vectors_docs_au",
-            "memory_vectors_docs_ad",
-            "memory_vectors_annotations_au",
-            "memory_vectors_annotations_ad",
-            "memory_vectors_foreign_model",
-        ];
-        conn.execute_batch(
-            "DROP TRIGGER memory_vectors_docs_au; DROP TRIGGER memory_vectors_docs_ad; \
-             DROP TRIGGER memory_vectors_annotations_au; \
-             DROP TRIGGER memory_vectors_annotations_ad; DROP TABLE memory_vectors;",
-        )
-        .unwrap();
+        drop_vector_objects(&conn);
         let present = |name: &str| -> i64 {
             conn.query_row(
                 "SELECT COUNT(*) FROM sqlite_master WHERE name = ?1",
@@ -2501,57 +2558,137 @@ mod tests {
             )
             .unwrap()
         };
-        for n in names {
+        for n in VECTOR_OBJECTS {
             assert_eq!(present(n), 0, "precondition: {n} absent");
         }
         migrate(&conn).unwrap();
-        for n in names {
+        for n in VECTOR_OBJECTS {
             assert_eq!(present(n), 1, "{n} must exist after the upgrade");
         }
-
         put_vector(&conn, "doc", "d1", crate::embed::MODEL_ID, 0);
-        put_vector(&conn, "doc", "d1", "some-older-model", 0);
-        put_vector(&conn, "annotation", "a1", "some-older-model", -1);
         migrate(&conn).unwrap();
-        let models: Vec<String> = conn
-            .prepare("SELECT model FROM memory_vectors")
-            .unwrap()
-            .query_map([], |r| r.get(0))
-            .unwrap()
-            .collect::<Result<_, _>>()
-            .unwrap();
-        assert_eq!(
-            models,
-            [crate::embed::MODEL_ID],
-            "open keeps the current model's rows and drops every other model's"
-        );
+        assert_eq!(vector_rows(&conn, "d1"), 1, "a re-run keeps the rows");
+        assert_eq!(generation(&conn), 0, "and bumps nothing");
     }
 
-    /// The sweep on open reads the partial index, never the whole table: it
-    /// runs on every open of every store.
+    fn generation(conn: &Connection) -> i64 {
+        conn.query_row("SELECT gen FROM memory_generation", [], |r| r.get(0))
+            .unwrap()
+    }
+
+    fn record_model(conn: &Connection, model: &str, last_used: i64) {
+        conn.execute(
+            "INSERT OR REPLACE INTO memory_vector_models (model, last_used) VALUES (?1, ?2)",
+            params![model, last_used],
+        )
+        .unwrap();
+    }
+
+    fn model_rows(conn: &Connection, model: &str) -> i64 {
+        conn.query_row(
+            "SELECT COUNT(*) FROM memory_vectors WHERE model = ?1",
+            params![model],
+            |r| r.get(0),
+        )
+        .unwrap()
+    }
+
+    /// Two binaries with different models on one store, opening in turn:
+    /// neither deletes the other's vectors while both are in use. Only a
+    /// model that has not searched for more than seven days is swept, and
+    /// the current model, and a model with no record, never are.
     #[test]
-    fn the_foreign_model_sweep_reads_its_partial_index() {
-        assert!(
-            !crate::embed::MODEL_ID.contains('\''),
-            "the literal holds no quote"
-        );
+    fn open_sweeps_only_a_model_unused_for_seven_days() {
         let conn = fresh();
-        let plan = query_plan(
-            &conn,
-            &format!(
-                "SELECT EXISTS (SELECT 1 FROM memory_vectors WHERE {})",
-                foreign_model_condition()
-            ),
+        let now = crate::clock::now().as_second();
+        let day = 24 * 3600;
+        for model in [
+            crate::embed::MODEL_ID,
+            "in-use",
+            "six-days",
+            "eight-days",
+            "unrecorded",
+        ] {
+            put_vector(&conn, "doc", "d1", model, 0);
+        }
+        record_model(&conn, "in-use", now);
+        record_model(&conn, "six-days", now - 6 * day);
+        record_model(&conn, "eight-days", now - 8 * day);
+        record_model(&conn, crate::embed::MODEL_ID, now - 30 * day);
+        for _ in 0..3 {
+            migrate(&conn).unwrap();
+        }
+        assert_eq!(model_rows(&conn, "in-use"), 1, "a model in use is kept");
+        assert_eq!(model_rows(&conn, "six-days"), 1);
+        assert_eq!(model_rows(&conn, "unrecorded"), 1);
+        assert_eq!(model_rows(&conn, crate::embed::MODEL_ID), 1, "ours never");
+        assert_eq!(model_rows(&conn, "eight-days"), 0, "swept");
+        let records: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM memory_vector_models WHERE model = 'eight-days'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(records, 0, "with its record");
+        assert_eq!(generation(&conn), 1, "a sweep is a change a cache must see");
+    }
+
+    /// The generation moves on what a semantic list can see and on nothing
+    /// else.
+    #[test]
+    fn the_generation_moves_on_memory_changes_only() {
+        let conn = fresh();
+        let bumps = |sql: &str| -> i64 {
+            let before = generation(&conn);
+            conn.execute_batch(sql).unwrap();
+            generation(&conn) - before
+        };
+        let task = "INSERT INTO tasks (id, short_id, title, status, created, modified) \
+                    VALUES ('t1', 1, 'T', 'pending', 't', 't');";
+        assert_eq!(bumps(task), 0, "a task insert");
+        assert_eq!(
+            bumps("UPDATE tasks SET title = 'U', rev = 2, tracked_seconds = 5;"),
+            0
         );
-        assert!(plan.contains("memory_vectors_foreign_model"), "{plan}");
-        let plan = query_plan(
-            &conn,
-            &format!(
-                "DELETE FROM memory_vectors WHERE {}",
-                foreign_model_condition()
-            ),
+        assert_eq!(
+            bumps("UPDATE tasks SET project = 'p';"),
+            1,
+            "a task's project"
         );
-        assert!(plan.contains("memory_vectors_foreign_model"), "{plan}");
+        insert_doc(&conn, "d1", "Title", "body");
+        assert_eq!(
+            bumps("UPDATE docs SET modified = 'x', rev = 3, standing = 1, body = 'raw';"),
+            0
+        );
+        assert_eq!(bumps("UPDATE docs SET title = 'T2';"), 1);
+        assert_eq!(bumps("UPDATE docs SET search_body = 'b2';"), 1);
+        assert_eq!(bumps("UPDATE docs SET project = 'p';"), 1);
+        assert_eq!(bumps("DELETE FROM docs;"), 1);
+        assert_eq!(
+            bumps(
+                "INSERT INTO docs (id, title, body, search_body, created, modified) \
+                 VALUES ('d2', 't', 'b', 'b', 't', 't');"
+            ),
+            1
+        );
+        assert_eq!(
+            bumps(
+                "INSERT INTO annotations (id, task_id, body, created) \
+                 VALUES ('a1', 't1', 'n', 't');"
+            ),
+            1
+        );
+        assert_eq!(bumps("UPDATE annotations SET created = 'u';"), 0);
+        assert_eq!(bumps("UPDATE annotations SET body = 'm';"), 1);
+        assert_eq!(bumps("UPDATE annotations SET task_id = 't2';"), 1);
+        assert_eq!(bumps("UPDATE annotations SET removed = 'r';"), 1);
+        assert_eq!(bumps("UPDATE annotations SET id = 'a2';"), 1);
+        assert_eq!(bumps("DELETE FROM annotations;"), 1);
+        assert_eq!(bumps("DELETE FROM tasks;"), 1);
+        let before = generation(&conn);
+        put_vector(&conn, "doc", "d2", crate::embed::MODEL_ID, 0);
+        assert_eq!(generation(&conn), before, "a vector insert is not a change");
     }
 
     /// The table refuses a kind it does not know, so a typo in a writer is an
