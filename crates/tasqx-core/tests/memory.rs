@@ -905,7 +905,7 @@ fn search_echoes_the_expression_that_produced_the_result() {
 
 // ---- D193: a plain query with no all-words hit falls back to any word ------
 
-fn hit_sources(v: &Value) -> Vec<String> {
+fn hit_titles(v: &Value) -> Vec<String> {
     let mut s: Vec<String> = v["hits"]
         .as_array()
         .expect("hits")
@@ -941,7 +941,7 @@ fn a_plain_query_with_no_all_words_hit_falls_back_to_any_word() {
     let out = call(&e, "memory.search", json!({ "query": "SDK 3.0 release" })).unwrap();
     assert_eq!(out["count"], 2, "{out}");
     assert_eq!(out["total"], 2, "{out}");
-    assert_eq!(hit_sources(&out), ["Version bump", "sdk notes"]);
+    assert_eq!(hit_titles(&out), ["Version bump", "sdk notes"]);
     assert_eq!(out["relaxed"], true, "{out}");
     assert_eq!(
         out["matched"], "\"SDK\" OR \"3.0\" OR \"release\"",
@@ -960,7 +960,7 @@ fn an_all_words_hit_never_falls_back() {
         call(&e, "memory.add", json!({ "title": title, "body": body })).unwrap();
     }
     let out = call(&e, "memory.search", json!({ "query": "SDK release" })).unwrap();
-    assert_eq!(hit_sources(&out), ["both"], "{out}");
+    assert_eq!(hit_titles(&out), ["both"], "{out}");
     assert_eq!(out["relaxed"], false);
     assert_eq!(out["matched"], "\"SDK\" \"release\"");
 }
@@ -1021,6 +1021,75 @@ fn a_miss_on_every_word_reports_the_any_word_expression() {
     assert_eq!(out["matched"], "\"zeppelin\" OR \"canary\"");
 }
 
+/// Review of D193: a filler word in the query is in nearly every entry, so
+/// an OR that kept it answered a miss with noise and lost D69's "nothing is
+/// stored about this". The fallback drops the stopwords the brief's derived
+/// query drops, and on a store with nothing on the subject still finds nothing.
+#[test]
+fn the_fallback_drops_filler_words_so_a_miss_stays_a_miss() {
+    let e = engine();
+    for (title, body) in [
+        ("deploy", "the deploy runs on the main branch"),
+        ("review", "the reviewer signs off on the diff"),
+    ] {
+        call(&e, "memory.add", json!({ "title": title, "body": body })).unwrap();
+    }
+    let out = call(
+        &e,
+        "memory.search",
+        json!({ "query": "the zeppelin hangar" }),
+    )
+    .unwrap();
+    assert_eq!(out["count"], 0, "filler words became noise: {out}");
+    assert_eq!(out["relaxed"], true, "{out}");
+    assert_eq!(out["matched"], "\"zeppelin\" OR \"hangar\"");
+
+    // One content word left is still a different search from the AND that
+    // also required "the", so it runs, and `matched` is exactly that.
+    let out = call(&e, "memory.search", json!({ "query": "the zeppelin" })).unwrap();
+    assert_eq!(out["count"], 0, "{out}");
+    assert_eq!(out["relaxed"], true, "{out}");
+    assert_eq!(out["matched"], "\"zeppelin\"");
+}
+
+/// Nothing to relax: a word repeated (in any case), or nothing but filler,
+/// leaves no any-word search that differs from the AND that ran.
+#[test]
+fn no_fallback_when_the_any_word_terms_are_the_and_terms_or_none() {
+    let e = engine();
+    call(
+        &e,
+        "memory.add",
+        json!({ "title": "deploy", "body": "the deploy runs on the main branch" }),
+    )
+    .unwrap();
+    for (query, matched) in [
+        ("release Release", "\"release\" \"Release\""),
+        ("of the with", "\"of\" \"the\" \"with\""),
+    ] {
+        let out = call(&e, "memory.search", json!({ "query": query })).unwrap();
+        assert_eq!(out["relaxed"], false, "{query}: {out}");
+        assert_eq!(out["matched"], matched, "{query}");
+        assert_eq!(out["count"], 0, "{query}: {out}");
+    }
+}
+
+/// Words FTS5 folds together are one term in the OR, not two.
+#[test]
+fn the_fallback_dedupes_words_case_insensitively() {
+    let e = engine();
+    call(
+        &e,
+        "memory.add",
+        json!({ "title": "sdk notes", "body": "the SDK release is cut from the tag" }),
+    )
+    .unwrap();
+    let out = call(&e, "memory.search", json!({ "query": "SDK sdk canary" })).unwrap();
+    assert_eq!(out["relaxed"], true, "{out}");
+    assert_eq!(out["matched"], "\"SDK\" OR \"canary\"");
+    assert_eq!(hit_titles(&out), ["sdk notes"]);
+}
+
 /// The fallback widens the words, never the scope: a project scope and a
 /// `scope` both hold, and hits outside them stay out.
 #[test]
@@ -1054,7 +1123,7 @@ fn the_fallback_keeps_the_scope_it_was_asked_for() {
     )
     .unwrap();
     assert_eq!(out["relaxed"], true, "{out}");
-    assert_eq!(hit_sources(&out), ["alpha sdk"], "{out}");
+    assert_eq!(hit_titles(&out), ["alpha sdk"], "{out}");
 
     let out = call(
         &e,
@@ -1063,7 +1132,7 @@ fn the_fallback_keeps_the_scope_it_was_asked_for() {
     )
     .unwrap();
     assert_eq!(out["relaxed"], true, "{out}");
-    assert_eq!(hit_sources(&out), ["alpha sdk", "beta sdk"], "{out}");
+    assert_eq!(hit_titles(&out), ["alpha sdk", "beta sdk"], "{out}");
 }
 
 // ---- D71: the document a search finds can be read ---------------------------

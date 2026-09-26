@@ -50,7 +50,7 @@ tasqx memory search blue-green
 
 - Plain words are matched as phrases, so hyphens and dots are safe to type.
 - Every word is required first. When no entry has them all, entries with any of
-  them are shown instead, under a note saying so.
+  them (filler words like "the" aside) are shown instead, under a note saying so.
 - Power users can pass `--raw` for FTS5 operator syntax.
 - The answer includes the query that actually ran, so "no hits" is
   distinguishable from "nothing stored about this".
