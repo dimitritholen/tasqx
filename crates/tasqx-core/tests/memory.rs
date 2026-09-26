@@ -3635,7 +3635,6 @@ fn the_gate_counts_the_same_content_words_the_search_does() {
     let e = meaning_store();
     for (query, code, content) in [
         ("认证问题", "unknown_words", 1),
-        ("U.S.A.", "unknown_words", 1),
         ("인증", "no_content_word", 0),
     ] {
         let out = search(&e, json!({ "query": query }));
@@ -3643,4 +3642,30 @@ fn the_gate_counts_the_same_content_words_the_search_does() {
         assert_eq!(skipped["code"], json!(code), "{query}: {out}");
         assert_eq!(skipped["content_words"], json!(content), "{query}: {out}");
     }
+}
+
+/// #838 review: a content word the tokenizer splits on punctuation is known
+/// when every piece is — `rate-limiting` is two known words, not an unknown
+/// one — while noise joined by a hyphen still skips.
+#[test]
+fn a_hyphenated_or_quoted_content_word_is_known_by_its_pieces() {
+    let e = meaning_store();
+    for query in [
+        "rate-limiting",
+        "error-handling",
+        "don't retry",
+        // Not `retry-logic cache-miss backoff`: the vocabulary has neither
+        // `retry` nor `backoff` whole, so that query is one known word in
+        // three and rightly skips.
+        "rate-limiting cache-miss",
+    ] {
+        let out = search(&e, json!({ "query": query }));
+        assert_eq!(out["semantic_skipped"], Value::Null, "{query}: {out}");
+    }
+    let out = search(&e, json!({ "query": "asdf-qwer" }));
+    assert_eq!(
+        out["semantic_skipped"]["code"],
+        json!("unknown_words"),
+        "{out}"
+    );
 }

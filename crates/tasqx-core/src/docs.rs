@@ -1019,7 +1019,7 @@ pub const R_MEMORY_SEARCH_SEMANTIC_SKIPPED: &[FieldDoc] = &[
     f("code", "string", "Why, as a stable code to branch on: `no_content_word` (no word of three letters or more — an id such as `D41`), `unknown_words` (fewer than half the content words are one whole vocabulary token, or none is known), `no_vectors` (nothing indexed in scope to compare against), `unavailable` (the meaning index could not be read this time; try again)."),
     f("reason", "string", "The same, in words for a person; its text may change."),
     f("content_words", "integer", "The query's content words: whitespace-separated words, trimmed of punctuation, with three letters or more and not a stopword — an identifier such as `D41` is not one."),
-    f("known_words", "integer", "How many of them the model knows whole: the word is one vocabulary token, not `##` pieces and not `[UNK]`."),
+    f("known_words", "integer", "How many of them the model knows whole: every piece the tokenizer splits the word into, punctuation left out, is one vocabulary token, not `##` pieces and not `[UNK]`."),
 ];
 
 /// `memory.search`'s `semantic` object.
