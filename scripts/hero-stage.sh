@@ -15,9 +15,10 @@
 #   #51 is about, committed under a fixed date so its hash is the same on
 #   every take;
 # - a Claude Code config directory holding nothing but a login, the
-#   first-run answers and the permission mode the tape waits on, so no hook, plugin, memory or setting of the person
-#   recording reaches the session, and the header shows `~/acme-sdk` rather
-#   than a real path (HOME is target/hero/home inside the take);
+#   first-run answers and the permission mode the tape waits on, so no hook,
+#   plugin, memory or setting of the person recording reaches the session,
+#   and the header shows `~/acme-sdk` rather than a real path (HOME is
+#   target/hero/home inside the take);
 # - an MCP config naming tasqx alone, pointed at take.db with --no-daemon, so
 #   a running daemon cannot answer from the real store.
 #
