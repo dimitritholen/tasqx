@@ -22,8 +22,9 @@ Set Theme "Catppuccin Mocha"
 Set WaitTimeout 120s
 
 # Claude Code shows a rotating startup notice for its first few launches in a
-# fresh config directory; three hidden launches spend them, so the take opens
-# on the header and an empty prompt.
+# fresh config directory; three hidden launches spend most of them. One
+# promotional notice has survived every take so far, so the take opens on the
+# header, that notice and an empty prompt.
 Hide
 Type "for i in 1 2 3; do target/hero/launch.sh; done"
 Enter
