@@ -74,6 +74,10 @@ fn main() {
             request_and_env_are_passed,
         ),
         (
+            "no_tasqx_sync_variable_reaches_a_connector",
+            sync_secrets_are_not_inherited,
+        ),
+        (
             "configure_passes_values_and_reads_a_rejection",
             configure_rejection_is_read,
         ),
@@ -204,6 +208,31 @@ fn fake(mode: &str) {
                 serde_json::json!({
                     "protocol": 1, "name": "fake", "version": "0.0.1",
                     "fields": [{"key": "path", "label": "Folder", "secret": false, "help": "where"}]
+                })
+            );
+        }
+        "env" => {
+            // Which variables this child can see, by name; never the values.
+            let seen: BTreeMap<String, bool> = [
+                "TASQX_SYNC_PASSPHRASE",
+                "TASQX_SYNC_FOO",
+                "tasqx_sync_lower",
+                "TASQX_R2_ENDPOINT",
+                "TASQX_REMOTE_STATE_DIR",
+            ]
+            .iter()
+            .map(|k| (k.to_string(), std::env::var_os(k).is_some()))
+            .collect();
+            let dir = std::env::var("TASQX_REMOTE_STATE_DIR").unwrap();
+            std::fs::write(
+                Path::new(&dir).join("env.json"),
+                serde_json::to_vec(&seen).unwrap(),
+            )
+            .unwrap();
+            print!(
+                "{}",
+                serde_json::json!({
+                    "protocol": 1, "name": "fake", "version": "0.0.1", "fields": []
                 })
             );
         }
@@ -379,6 +408,38 @@ fn request_and_env_are_passed() {
     let seen: serde_json::Value =
         serde_json::from_slice(&std::fs::read(state.join("last-request.json")).unwrap()).unwrap();
     assert_eq!(seen, serde_json::json!({"protocol": 1, "verb": "describe"}));
+}
+
+/// The sync passphrase and every `TASQX_SYNC_<KEY>` secret are `sync`'s,
+/// not the connector's: a connector gets secrets only in the JSON request
+/// `configure` sends, so it never sees a `TASQX_SYNC_*` variable of the
+/// parent's (D198, D202). Everything else, its own `TASQX_R2_*` overrides
+/// included, is still inherited.
+fn sync_secrets_are_not_inherited() {
+    // One case at a time in one process (harness = false), so setting the
+    // parent's environment here races nothing.
+    std::env::set_var("TASQX_SYNC_PASSPHRASE", "correct horse battery staple");
+    std::env::set_var("TASQX_SYNC_FOO", "s3cret");
+    std::env::set_var("tasqx_sync_lower", "x");
+    std::env::set_var("TASQX_R2_ENDPOINT", "https://example.invalid");
+    let dir = scratch("env");
+    let state = dir.join("state");
+    fake_connector("env", &state).describe().unwrap();
+    std::env::remove_var("TASQX_SYNC_PASSPHRASE");
+    std::env::remove_var("TASQX_SYNC_FOO");
+    std::env::remove_var("tasqx_sync_lower");
+    std::env::remove_var("TASQX_R2_ENDPOINT");
+    let seen: BTreeMap<String, bool> =
+        serde_json::from_slice(&std::fs::read(state.join("env.json")).unwrap()).unwrap();
+    assert!(!seen["TASQX_SYNC_PASSPHRASE"], "{seen:?}");
+    assert!(!seen["TASQX_SYNC_FOO"], "{seen:?}");
+    // Names are case-insensitive on Windows, so there the prefix is too.
+    assert_eq!(seen["tasqx_sync_lower"], !cfg!(windows), "{seen:?}");
+    assert!(
+        seen["TASQX_R2_ENDPOINT"],
+        "a connector's own override: {seen:?}"
+    );
+    assert!(seen["TASQX_REMOTE_STATE_DIR"], "{seen:?}");
 }
 
 fn configure_rejection_is_read() {

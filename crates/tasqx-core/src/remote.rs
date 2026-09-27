@@ -624,6 +624,11 @@ impl Connector {
             source: std::io::Error::other(e),
         })?;
         let mut cmd = Command::new(&self.program);
+        for (name, _) in std::env::vars_os() {
+            if is_sync_secret_var(&name) {
+                cmd.env_remove(&name);
+            }
+        }
         cmd.env(STATE_DIR_ENV, &self.state_dir);
         for (k, v) in &self.env {
             cmd.env(k, v);
@@ -653,6 +658,30 @@ impl Connector {
         let reply = serde_json::from_value(value)
             .map_err(|e| self.malformed(verb, format!("wrong shape ({e})")))?;
         Ok((code.unwrap_or_default(), reply))
+    }
+}
+
+/// The prefix of the variables `tasqx sync` reads secrets from: the sync
+/// passphrase (`TASQX_SYNC_PASSPHRASE`, D202) and a connector field's
+/// `TASQX_SYNC_<KEY>` (D201).
+const SYNC_SECRET_PREFIX: &str = "TASQX_SYNC_";
+
+/// Whether a variable of this process's is one of `sync`'s secrets, which a
+/// connector must not inherit (D198): it gets a secret only in the JSON
+/// request `configure` sends, and never the passphrase that keeps its own
+/// blobs unreadable to it. Everything else is inherited, since a connector
+/// legitimately needs `HOME`, `PATH`, the keyring's session bus, proxies, CA
+/// bundles and its own `TASQX_<NAME>_*` overrides. Windows compares variable
+/// names without case, so there the prefix is matched the same way.
+fn is_sync_secret_var(name: &std::ffi::OsStr) -> bool {
+    // By bytes, so a name that is not UTF-8 after the prefix is still caught.
+    let Some(head) = name.as_encoded_bytes().get(..SYNC_SECRET_PREFIX.len()) else {
+        return false;
+    };
+    if cfg!(windows) {
+        head.eq_ignore_ascii_case(SYNC_SECRET_PREFIX.as_bytes())
+    } else {
+        head == SYNC_SECRET_PREFIX.as_bytes()
     }
 }
 
