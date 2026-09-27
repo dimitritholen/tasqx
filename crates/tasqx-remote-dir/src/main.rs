@@ -28,15 +28,26 @@
 //! client has not finished delivering; that is reported as retryable rather
 //! than read as an empty remote or a corrupt one.
 //!
+//! **Conflict copies** (D200). Across machines the sync client is the
+//! transport, and no lock is exclusive: two machines that push while apart
+//! both write HEAD, and the client keeps one and renames the other — Dropbox
+//! to `HEAD (<device>'s conflicted copy <date>)`, Syncthing to
+//! `HEAD.sync-conflict-<date>-<time>-<device>`, iCloud Drive to `HEAD 2`.
+//! Pull hands back HEAD's blob first and then every conflict copy's, once per
+//! hash; a copy whose blob has not arrived is skipped with a note and tried
+//! again next pull. Pull records what it handed back in the state dir, and a
+//! push that lands on the HEAD that pull saw removes the copies whose content
+//! it handed back: the caller has merged them. A copy that turned up after the
+//! pull stays for the next one. Pruning never deletes a blob a copy names.
+//!
 //! **The lock** is a file created with `create_new`, so exactly one process on
 //! a filesystem that honours exclusive creation gets it. A crashed push leaves
 //! it behind; one older than [`LOCK_STALE`] is taken to belong to a dead
 //! process and removed. That outlives tasqx's default 120-second connector
 //! timeout, after which the push that took it has been killed anyway. Across
 //! machines behind a sync client no lock is exclusive — the client, not this
-//! program, decides what happens when two machines write HEAD at once — and
-//! detecting the conflict copies that produces is a later addition; `pull`
-//! answers with a LIST so it has room to hand them back.
+//! program, decides what happens when two machines write HEAD at once, and
+//! the conflict copies that produces are handled as above.
 
 use std::collections::BTreeMap;
 use std::io::{Read, Write};
@@ -52,6 +63,9 @@ const PROTOCOL: u64 = 1;
 const EXIT_FAILED: i32 = 1;
 const EXIT_CONFLICT: i32 = 2;
 const STATE_DIR_ENV: &str = "TASQX_REMOTE_STATE_DIR";
+
+/// In the state dir: what the last pull handed back, for push to supersede.
+const PULLED: &str = "pulled.json";
 
 /// How many snapshots survive a push: HEAD and the four before it.
 const KEEP: usize = 5;
@@ -143,7 +157,8 @@ fn describe() -> Value {
             "label": "Folder",
             "secret": false,
             "help": "An absolute path to a folder every machine can reach: a network share, \
-                     or a folder Dropbox, Syncthing or iCloud keeps in sync.",
+                     or a folder Dropbox, iCloud Drive or Syncthing keeps in sync. Dedicate \
+                     the folder to tasqx: keep nothing else in it.",
         }],
     })
 }
@@ -277,30 +292,151 @@ fn read_head(root: &Path) -> Result<Option<String>, String> {
     }
 }
 
-fn not_synced(hash: &str, what: &str) -> String {
+fn not_synced(file: &str, hash: &str, what: &str) -> String {
     format!(
-        "remote not fully synced yet: HEAD names snapshot {hash}, which {what}; \
+        "remote not fully synced yet: {file} names snapshot {hash}, which {what}; \
          try again once the folder has finished syncing"
     )
 }
 
-fn pull(root: &Path, out_dir: &Path) -> Result<Value, Stop> {
-    let Some(head) = read_head(root)? else {
-        return Ok(json!({ "snapshots": [] }));
-    };
-    let bytes = match std::fs::read(blob_path(root, &head)) {
-        Ok(b) => b,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            return Err(not_synced(&head, "is not there").into())
-        }
-        Err(e) => return Err(format!("cannot read snapshot {head}: {e}").into()),
-    };
-    if sha256_hex(&bytes) != head {
-        return Err(not_synced(&head, "does not match its hash").into());
+/// Whether `name`, a file in the remote's root, is a sync client's conflict
+/// copy of HEAD. Each client's own spelling and nothing near it, since what a
+/// match names gets merged and later deleted.
+fn is_conflict_copy(name: &str) -> bool {
+    let digits = |s: &str, n: usize| s.len() == n && s.bytes().all(|b| b.is_ascii_digit());
+    // Dropbox: `HEAD (<device>'s conflicted copy <date>)`, with or without the
+    // device, and with a number when that name was taken.
+    if let Some(inner) = name
+        .strip_prefix("HEAD (")
+        .and_then(|r| r.strip_suffix(')'))
+    {
+        return inner.starts_with("conflicted copy ") || inner.contains("'s conflicted copy ");
     }
-    let out = out_dir.join(&head);
-    write_atomic(&out, &bytes, false)?;
-    Ok(json!({ "snapshots": [{ "version": head, "path": out }] }))
+    // Syncthing: `<name>.sync-conflict-<yyyymmdd>-<hhmmss>-<short device id>`,
+    // the extension (HEAD has none) after it. The device id may be empty.
+    if let Some(rest) = name.strip_prefix("HEAD.sync-conflict-") {
+        let mut parts = rest.splitn(3, '-');
+        let (Some(date), Some(time), Some(device)) = (parts.next(), parts.next(), parts.next())
+        else {
+            return false;
+        };
+        return digits(date, 8)
+            && digits(time, 6)
+            && device.bytes().all(|b| b.is_ascii_alphanumeric());
+    }
+    // iCloud Drive: `HEAD 2`, `HEAD 3`, …
+    if let Some(n) = name.strip_prefix("HEAD ") {
+        return !n.is_empty()
+            && !n.starts_with('0')
+            && n.bytes().all(|b| b.is_ascii_digit())
+            && n != "1";
+    }
+    false
+}
+
+/// The conflict copies of HEAD in `root`, by file name, sorted so every pull
+/// lists them in one order.
+fn conflict_copies(root: &Path) -> Result<Vec<String>, String> {
+    let entries =
+        std::fs::read_dir(root).map_err(|e| format!("cannot list {}: {e}", root.display()))?;
+    let mut names: Vec<String> = entries
+        .flatten()
+        .filter_map(|e| e.file_name().into_string().ok())
+        .filter(|n| is_conflict_copy(n))
+        .collect();
+    names.sort();
+    Ok(names)
+}
+
+/// The hash a conflict copy names, or why it cannot be read as one.
+fn read_copy(root: &Path, name: &str) -> Result<String, String> {
+    let text = std::fs::read_to_string(root.join(name)).map_err(|e| e.to_string())?;
+    let hash = text.trim();
+    if is_hash(hash) {
+        Ok(hash.to_string())
+    } else {
+        Err("it does not hold a snapshot hash".into())
+    }
+}
+
+/// The bytes of blob `hash`, or why it is not (yet) whole.
+fn read_blob(root: &Path, hash: &str) -> Result<Vec<u8>, String> {
+    match std::fs::read(blob_path(root, hash)) {
+        Ok(b) if sha256_hex(&b) == hash => Ok(b),
+        Ok(_) => Err("does not match its hash".into()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Err("is not there".into()),
+        Err(e) => Err(format!("cannot be read: {e}")),
+    }
+}
+
+fn pull(root: &Path, out_dir: &Path) -> Result<Value, Stop> {
+    let mut hashes: Vec<String> = Vec::new();
+    let mut snapshots = Vec::new();
+    if let Some(head) = read_head(root)? {
+        // HEAD's own blob missing is retryable, never skipped: HEAD is what
+        // the next push must compare with.
+        let bytes = read_blob(root, &head).map_err(|what| not_synced("HEAD", &head, &what))?;
+        let out = out_dir.join(&head);
+        write_atomic(&out, &bytes, false)?;
+        snapshots.push(json!({ "version": head, "path": out }));
+        hashes.push(head);
+    }
+    for name in conflict_copies(root)? {
+        let hash = match read_copy(root, &name) {
+            Ok(h) => h,
+            Err(why) => {
+                eprintln!("tasqx-remote-dir: skipping conflict copy {name:?}: {why}");
+                continue;
+            }
+        };
+        if hashes.contains(&hash) {
+            continue;
+        }
+        // Its blob may still be on its way; the next pull looks again.
+        let bytes = match read_blob(root, &hash) {
+            Ok(b) => b,
+            Err(what) => {
+                eprintln!(
+                    "tasqx-remote-dir: skipping conflict copy {name:?} for now: {}",
+                    not_synced(&name, &hash, &what)
+                );
+                continue;
+            }
+        };
+        let out = out_dir.join(&hash);
+        write_atomic(&out, &bytes, false)?;
+        snapshots.push(json!({ "version": hash, "path": out }));
+        hashes.push(hash);
+    }
+    // Every hash handed back, so the push that follows knows which conflict
+    // copies its caller has merged.
+    write_atomic(
+        &state_dir()?.join(PULLED),
+        json!(hashes).to_string().as_bytes(),
+        true,
+    )?;
+    Ok(json!({ "snapshots": snapshots }))
+}
+
+/// The hashes the last pull from this state dir handed back: what the caller
+/// of the push being made has merged. Nothing when there was no pull.
+fn merged() -> Vec<String> {
+    state_dir()
+        .and_then(|d| std::fs::read(d.join(PULLED)).map_err(|e| e.to_string()))
+        .ok()
+        .and_then(|text| serde_json::from_slice(&text).ok())
+        .unwrap_or_default()
+}
+
+/// Remove the conflict copies whose hash is in `merged`. Runs under the lock,
+/// after HEAD has moved; a copy that cannot be read or removed is left.
+fn supersede(root: &Path, merged: &[String]) -> Result<(), String> {
+    for name in conflict_copies(root)? {
+        if read_copy(root, &name).is_ok_and(|h| merged.contains(&h)) {
+            let _ = std::fs::remove_file(root.join(&name));
+        }
+    }
+    Ok(())
 }
 
 fn push(root: &Path, in_path: &Path, expected: Option<&str>) -> Result<Value, Stop> {
@@ -326,6 +462,10 @@ fn push(root: &Path, in_path: &Path, expected: Option<&str>) -> Result<Value, St
     // Another push's prune may have removed a blob we found already present.
     store_blob(&blob, &bytes, &hash)?;
     write_atomic(&root.join("HEAD"), format!("{hash}\n").as_bytes(), false)?;
+    if let Err(e) = supersede(root, &merged()) {
+        // The push landed; the copies come back on the next pull.
+        eprintln!("tasqx-remote-dir: pushed, but removing merged conflict copies failed: {e}");
+    }
     if let Err(e) = prune(root, &hash) {
         // The push landed; a failed cleanup only costs disk.
         eprintln!("tasqx-remote-dir: pushed, but pruning old snapshots failed: {e}");
@@ -345,7 +485,7 @@ fn store_blob(blob: &Path, bytes: &[u8], hash: &str) -> Result<bool, String> {
 }
 
 /// Record `head` in `history` and delete every blob not among its last
-/// [`KEEP`] entries. Runs under the lock.
+/// [`KEEP`] entries, nor named by a conflict copy. Runs under the lock.
 fn prune(root: &Path, head: &str) -> Result<(), String> {
     let file = root.join("history");
     let mut history: Vec<String> = std::fs::read_to_string(&file)
@@ -356,8 +496,13 @@ fn prune(root: &Path, head: &str) -> Result<(), String> {
         .collect();
     history.retain(|h| h != head);
     history.push(head.to_string());
-    let keep = history.split_off(history.len().saturating_sub(KEEP));
+    let mut keep = history.split_off(history.len().saturating_sub(KEEP));
     write_atomic(&file, format!("{}\n", keep.join("\n")).as_bytes(), false)?;
+    // A copy nobody has merged yet still needs its blob. Listing must work:
+    // pruning blind could delete one.
+    for name in conflict_copies(root)? {
+        keep.extend(read_copy(root, &name).ok());
+    }
 
     let dir = root.join("snapshots");
     let entries =

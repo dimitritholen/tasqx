@@ -199,3 +199,204 @@ fn configure_tightens_an_open_state_dir() {
     configure_directly(&state, &work.join("remote"));
     assert_eq!(mode_of(&state), 0o700);
 }
+
+// Conflict copies of HEAD (D200). Two machines that push while apart leave the
+// sync client holding two HEADs; it keeps one and renames the other.
+
+fn sha(bytes: &[u8]) -> String {
+    use sha2::Digest;
+    format!("{:x}", sha2::Sha256::digest(bytes))
+}
+
+/// Put a blob in the remote as another machine's push would have, and a file
+/// `name` in the remote's root naming it. Returns the blob's hash.
+fn plant(remote: &Path, name: &str, bytes: &[u8]) -> String {
+    let hash = sha(bytes);
+    std::fs::write(remote.join("snapshots").join(&hash), bytes).unwrap();
+    std::fs::write(remote.join(name), format!("{hash}\n")).unwrap();
+    hash
+}
+
+fn pulled(c: &Connector, work: &Path) -> Vec<String> {
+    let out = work.join("out");
+    let _ = std::fs::remove_dir_all(&out);
+    c.pull(&out)
+        .unwrap()
+        .into_iter()
+        .map(|s| {
+            assert_eq!(sha(&std::fs::read(&s.path).unwrap()), s.version);
+            s.version
+        })
+        .collect()
+}
+
+/// Each name is a conflict copy some sync client makes of HEAD: pull hands it
+/// back after HEAD.
+fn assert_pulled_beside_head(label: &str, names: &[&str]) {
+    for (i, name) in names.iter().enumerate() {
+        let (work, remote, c) = configured(&format!("{label}-{i}"));
+        let head = version(push_bytes(&c, &work, b"this machine", None));
+        let other = plant(&remote, name, format!("the other machine {i}").as_bytes());
+        assert_eq!(pulled(&c, &work), vec![head, other], "{name:?}");
+    }
+}
+
+#[test]
+fn a_dropbox_conflicted_copy_of_head_is_pulled_beside_it() {
+    assert_pulled_beside_head(
+        "dropbox",
+        &[
+            "HEAD (Dimitri's conflicted copy 2026-09-27)",
+            "HEAD (conflicted copy 2026-09-27)",
+            "HEAD (Dimitri's conflicted copy 2026-09-27 (1))",
+            "HEAD (MacBook-Pro's conflicted copy 2026-09-27 2)",
+        ],
+    );
+}
+
+#[test]
+fn a_syncthing_sync_conflict_copy_of_head_is_pulled_beside_it() {
+    assert_pulled_beside_head(
+        "syncthing",
+        &[
+            "HEAD.sync-conflict-20260927-101530-ABCDEF7",
+            // A device Syncthing cannot name leaves the modifier empty.
+            "HEAD.sync-conflict-20260927-101530-",
+        ],
+    );
+}
+
+#[test]
+fn an_icloud_numbered_copy_of_head_is_pulled_beside_it() {
+    assert_pulled_beside_head("icloud", &["HEAD 2", "HEAD 3", "HEAD 12"]);
+}
+
+#[test]
+fn every_conflict_copy_is_pulled_once_per_hash_head_first() {
+    let (work, remote, c) = configured("many");
+    let head = version(push_bytes(&c, &work, b"this machine", None));
+    let b = plant(&remote, "HEAD 2", b"machine b");
+    // The same content twice, and a copy that agrees with HEAD.
+    std::fs::write(
+        remote.join("HEAD.sync-conflict-20260927-101530-ABCDEF7"),
+        format!("{b}\n"),
+    )
+    .unwrap();
+    std::fs::write(remote.join("HEAD 3"), format!("{head}\n")).unwrap();
+    assert_eq!(pulled(&c, &work), vec![head, b]);
+}
+
+#[test]
+fn files_that_only_look_like_conflict_copies_are_ignored() {
+    let (work, remote, c) = configured("look-alikes");
+    let head = version(push_bytes(&c, &work, b"this machine", None));
+    for (i, name) in [
+        "HEADER",
+        "HEAD.bak",
+        "notHEAD 2",
+        "HEAD 1",
+        "HEAD 02",
+        "HEAD 2x",
+        "HEAD 2.txt",
+        "head 2",
+        "HEAD (copy)",
+        "HEAD (conflicted copy",
+        "HEAD (Dimitri's conflicted copy 2026-09-27).txt",
+        "HEAD.sync-conflict-2026-bad",
+        "HEAD.sync-conflict-2026-101530-ABCDEF7",
+        "HEAD.sync-conflict-20260927-1015-ABCDEF7",
+        "HEAD.sync-conflict-20260927-101530-ABC.txt",
+        "history 2",
+        "lock (conflicted copy 2026-09-27)",
+    ]
+    .iter()
+    .enumerate()
+    {
+        plant(&remote, name, format!("look-alike {i}").as_bytes());
+    }
+    assert_eq!(pulled(&c, &work), vec![head]);
+}
+
+#[test]
+fn a_conflict_copy_whose_blob_has_not_arrived_is_skipped_until_it_does() {
+    let (work, remote, c) = configured("copy-half-synced");
+    let head = version(push_bytes(&c, &work, b"this machine", None));
+    let other = plant(&remote, "HEAD 2", b"machine b");
+    let blob = remote.join("snapshots").join(&other);
+    std::fs::remove_file(&blob).unwrap();
+    assert_eq!(pulled(&c, &work), vec![head.clone()], "skipped, not fatal");
+    std::fs::write(&blob, b"machine").unwrap();
+    assert_eq!(pulled(&c, &work), vec![head.clone()], "torn is skipped too");
+    std::fs::write(&blob, b"machine b").unwrap();
+    assert_eq!(pulled(&c, &work), vec![head, other], "picked up once there");
+}
+
+#[test]
+fn push_removes_the_conflict_copies_it_merged_and_keeps_a_later_one() {
+    let (work, remote, c) = configured("supersede");
+    let head = version(push_bytes(&c, &work, b"this machine", None));
+    plant(&remote, "HEAD 2", b"machine b");
+    plant(
+        &remote,
+        "HEAD (Dimitri's conflicted copy 2026-09-27)",
+        b"machine c",
+    );
+    assert_eq!(pulled(&c, &work).len(), 3);
+    // Arrives after the pull: this push has not merged it.
+    let late = plant(
+        &remote,
+        "HEAD.sync-conflict-20260927-101530-ABCDEF7",
+        b"machine d",
+    );
+    let merged = version(push_bytes(&c, &work, b"merged b and c", Some(&head)));
+    assert!(!remote.join("HEAD 2").exists());
+    assert!(!remote
+        .join("HEAD (Dimitri's conflicted copy 2026-09-27)")
+        .exists());
+    assert!(remote
+        .join("HEAD.sync-conflict-20260927-101530-ABCDEF7")
+        .exists());
+    assert_eq!(pulled(&c, &work), vec![merged, late]);
+}
+
+#[test]
+fn a_push_that_conflicts_removes_no_conflict_copy() {
+    let (work, remote, c) = configured("supersede-conflict");
+    let head = version(push_bytes(&c, &work, b"this machine", None));
+    plant(&remote, "HEAD 2", b"machine b");
+    assert_eq!(pulled(&c, &work).len(), 2);
+    // Another machine on the same folder, whose own state dir has pulled
+    // nothing, moves HEAD on first — and supersedes nothing either.
+    let other = Connector::new(BIN.into(), work.join("other-state"));
+    assert!(matches!(
+        other.configure(&values(&remote)).unwrap(),
+        Configured::Ok
+    ));
+    version(push_bytes(&other, &work, b"someone else", Some(&head)));
+    assert!(remote.join("HEAD 2").exists());
+    assert!(matches!(
+        push_bytes(&c, &work, b"merged b", Some(&head)),
+        PushOutcome::Conflict
+    ));
+    assert!(remote.join("HEAD 2").exists());
+}
+
+#[test]
+fn pruning_keeps_every_blob_a_conflict_copy_names() {
+    let (work, remote, c) = configured("prune-copies");
+    let mut expected = Some(version(push_bytes(&c, &work, b"blob 0", None)));
+    let other = plant(&remote, "HEAD 2", b"machine b");
+    // No pull in between, so nothing is superseded and HEAD 2 must survive
+    // pushes enough to push its blob out of `history` many times over.
+    for i in 1..8 {
+        expected = Some(version(push_bytes(
+            &c,
+            &work,
+            format!("blob {i}").as_bytes(),
+            expected.as_deref(),
+        )));
+    }
+    assert!(remote.join("HEAD 2").exists());
+    assert!(remote.join("snapshots").join(&other).exists());
+    assert_eq!(pulled(&c, &work), vec![expected.unwrap(), other]);
+}
