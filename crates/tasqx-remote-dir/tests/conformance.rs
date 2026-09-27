@@ -400,3 +400,40 @@ fn pruning_keeps_every_blob_a_conflict_copy_names() {
     assert!(remote.join("snapshots").join(&other).exists());
     assert_eq!(pulled(&c, &work), vec![expected.unwrap(), other]);
 }
+
+#[test]
+fn a_push_supersedes_only_what_the_pull_just_before_it_returned() {
+    let (work, remote, c) = configured("supersede-once");
+    let head = version(push_bytes(&c, &work, b"this machine", None));
+    let b = plant(&remote, "HEAD 2", b"machine b");
+    assert_eq!(pulled(&c, &work).len(), 2);
+    let merged = version(push_bytes(&c, &work, b"merged b", Some(&head)));
+    assert!(!remote.join("HEAD 2").exists());
+    // The same content turns up again, and this machine pushes on without
+    // pulling: that push merged nothing, so it removes nothing.
+    std::fs::write(remote.join("HEAD 2"), format!("{b}\n")).unwrap();
+    version(push_bytes(&c, &work, b"more work", Some(&merged)));
+    assert!(remote.join("HEAD 2").exists());
+}
+
+#[test]
+fn an_unreadable_conflict_copy_stops_pruning_altogether() {
+    let (work, remote, c) = configured("prune-garbage");
+    let mut expected: Option<String> = None;
+    let mut versions = Vec::new();
+    std::fs::create_dir_all(remote.join("snapshots")).unwrap();
+    std::fs::write(remote.join("HEAD 2"), b"not a hash\n").unwrap();
+    for i in 0..8 {
+        let v = version(push_bytes(
+            &c,
+            &work,
+            format!("blob {i}").as_bytes(),
+            expected.as_deref(),
+        ));
+        versions.push(v.clone());
+        expected = Some(v);
+    }
+    for v in &versions {
+        assert!(remote.join("snapshots").join(v).exists(), "{v} pruned");
+    }
+}

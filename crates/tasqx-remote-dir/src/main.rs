@@ -35,10 +35,11 @@
 //! `HEAD.sync-conflict-<date>-<time>-<device>`, iCloud Drive to `HEAD 2`.
 //! Pull hands back HEAD's blob first and then every conflict copy's, once per
 //! hash; a copy whose blob has not arrived is skipped with a note and tried
-//! again next pull. Pull records what it handed back in the state dir, and a
-//! push that lands on the HEAD that pull saw removes the copies whose content
-//! it handed back: the caller has merged them. A copy that turned up after the
-//! pull stays for the next one. Pruning never deletes a blob a copy names.
+//! again next pull. Pull records what it handed back in the state dir, and the
+//! next push that lands removes the copies whose content it handed back — the
+//! caller has merged them — and consumes the record. A copy that turned up
+//! after the pull stays for the next one. Pruning never deletes a blob a copy
+//! names, and does not run at all while a copy cannot be read.
 //!
 //! **The lock** is a file created with `create_new`, so exactly one process on
 //! a filesystem that honours exclusive creation gets it. A crashed push leaves
@@ -419,7 +420,8 @@ fn pull(root: &Path, out_dir: &Path) -> Result<Value, Stop> {
 }
 
 /// The hashes the last pull from this state dir handed back: what the caller
-/// of the push being made has merged. Nothing when there was no pull.
+/// of the push being made has merged. Nothing when no pull came since the
+/// last push that landed, which consumes the record.
 fn merged() -> Vec<String> {
     state_dir()
         .and_then(|d| std::fs::read(d.join(PULLED)).map_err(|e| e.to_string()))
@@ -466,6 +468,16 @@ fn push(root: &Path, in_path: &Path, expected: Option<&str>) -> Result<Value, St
         // The push landed; the copies come back on the next pull.
         eprintln!("tasqx-remote-dir: pushed, but removing merged conflict copies failed: {e}");
     }
+    // Consumed: a later push without a pull in between merged nothing. A
+    // conflicting push never gets here and leaves it for the next pull to
+    // overwrite.
+    if let Ok(state) = state_dir() {
+        match std::fs::remove_file(state.join(PULLED)) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => eprintln!("tasqx-remote-dir: pushed, but cannot remove {PULLED}: {e}"),
+        }
+    }
     if let Err(e) = prune(root, &hash) {
         // The push landed; a failed cleanup only costs disk.
         eprintln!("tasqx-remote-dir: pushed, but pruning old snapshots failed: {e}");
@@ -485,7 +497,9 @@ fn store_blob(blob: &Path, bytes: &[u8], hash: &str) -> Result<bool, String> {
 }
 
 /// Record `head` in `history` and delete every blob not among its last
-/// [`KEEP`] entries, nor named by a conflict copy. Runs under the lock.
+/// [`KEEP`] entries, nor named by a conflict copy. A conflict copy that cannot
+/// be read stops the deleting: what it names is unknown, so nothing is known
+/// to be unneeded. Runs under the lock.
 fn prune(root: &Path, head: &str) -> Result<(), String> {
     let file = root.join("history");
     let mut history: Vec<String> = std::fs::read_to_string(&file)
@@ -498,10 +512,13 @@ fn prune(root: &Path, head: &str) -> Result<(), String> {
     history.push(head.to_string());
     let mut keep = history.split_off(history.len().saturating_sub(KEEP));
     write_atomic(&file, format!("{}\n", keep.join("\n")).as_bytes(), false)?;
-    // A copy nobody has merged yet still needs its blob. Listing must work:
-    // pruning blind could delete one.
+    // A copy nobody has merged yet still needs its blob. Listing and reading
+    // every copy must work: pruning on partial knowledge could delete one.
     for name in conflict_copies(root)? {
-        keep.extend(read_copy(root, &name).ok());
+        let hash = read_copy(root, &name).map_err(|why| {
+            format!("conflict copy {name:?} cannot be read ({why}), so nothing is pruned")
+        })?;
+        keep.push(hash);
     }
 
     let dir = root.join("snapshots");
