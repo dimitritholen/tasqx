@@ -79,6 +79,7 @@ task, and where to find help.
 | Command | What it does | Page |
 |---|---|---|
 | `export` / `import` | Back up and restore as JSON | [Import and Export](Import-and-Export.md) |
+| `sync` | Merge this store with another machine's, over a shared remote | [Syncing Between Machines](Syncing-Between-Machines.md#tasqx-sync) |
 | `config` | Read and change settings | [Settings and Themes](Settings-and-Themes.md#tasqx-config) |
 | `theme` | Browse and pick a color theme | [Settings and Themes](Settings-and-Themes.md#tasqx-theme) |
 | `completions` | Turn on Tab completion | [Shell Completion](Shell-Completion.md) |
@@ -91,6 +92,8 @@ task, and where to find help.
   `due:friday`, `repeat:"every monday"` and `remind:-1h` work.
 - [Finding Tasks](Finding-Tasks.md#the-filter-language) — the filter language
   that every listing command understands.
+- [Syncing Between Machines](Syncing-Between-Machines.md) — no-account start
+  with a shared folder, Cloudflare R2 step by step, what merges and wins.
 
 ## A few things that are true everywhere
 
