@@ -183,7 +183,7 @@ Both stores now hold both sides' work.
 ## tasqx sync
 
 The same merge, without carrying files around: each machine syncs with one
-shared remote. Choose the remote once per store, then sync whenever you like.
+shared remote instead of trading export files by hand.
 
 ```console
 tasqx sync setup dir --set path=/mnt/share/tasqx
@@ -191,19 +191,9 @@ tasqx sync
 tasqx sync --status
 ```
 
-`tasqx sync` pulls what the remote holds, merges it into this store exactly as
-`import --merge` does, and pushes the result back. If another machine pushed
-in between, it merges that too and tries again, three times at most. The
-remote is a connector program, `tasqx-remote-<name>` on your `PATH`:
-`tasqx-remote-dir` keeps it in a folder every machine can reach, and
-`tasqx-remote-r2` in a Cloudflare R2 bucket.
-
-Every snapshot is encrypted on this machine before the connector sees it, so
-the folder or the bucket only ever holds ciphertext. `sync setup` asks for a
-passphrase (or reads `TASQX_SYNC_PASSPHRASE` when there is no terminal); give
-every machine that syncs with the remote the same one. Lose it and the
-remote's snapshots cannot be read, though each machine's own store is
-untouched.
+See [Syncing Between Machines](Syncing-Between-Machines.md) for the
+Cloudflare R2 setup, what merges and wins, secrets, headless/CI use and the
+`config edit` Sync section.
 
 ## Good habits
 

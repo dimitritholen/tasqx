@@ -88,6 +88,10 @@ const WIKI: &[(&str, &str)] = &[
         include_str!("../../../../docs/wiki/Import-and-Export.md"),
     ),
     (
+        "Syncing-Between-Machines.md",
+        include_str!("../../../../docs/wiki/Syncing-Between-Machines.md"),
+    ),
+    (
         "Settings-and-Themes.md",
         include_str!("../../../../docs/wiki/Settings-and-Themes.md"),
     ),
@@ -127,6 +131,10 @@ const GUIDES: &[(&str, &str)] = &[
     (
         "token-accounting.md",
         include_str!("../../../../docs/guides/token-accounting.md"),
+    ),
+    (
+        "writing-a-connector.md",
+        include_str!("../../../../docs/guides/writing-a-connector.md"),
     ),
 ];
 
