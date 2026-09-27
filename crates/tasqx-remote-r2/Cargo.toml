@@ -27,11 +27,12 @@ serde_json = { workspace = true }
 # links on Linux, so there this adds no second copy.
 sha2 = "0.11"
 hmac = "0.13"
-# Blocking HTTP, no async runtime. native-tls, NOT the default rustls: ring,
-# rustls-webpki and untrusted are ISC and webpki-roots is CDLA-Permissive-2.0,
-# none of them on deny.toml's allow list. On Linux this links the system
-# OpenSSL.
-ureq = { version = "3.4.2", default-features = false, features = ["native-tls-no-default"] }
+# Blocking HTTP, no async runtime. rustls, not native-tls: prebuilt binaries
+# (musl among them) must not link the system OpenSSL. Not ureq's `rustls`
+# feature either, which brings webpki-roots (CDLA-Permissive-2.0, not on
+# deny.toml's allow list): the provider is ring via `_ring`, and the roots are
+# the OS trust store via `platform-verifier`.
+ureq = { version = "3.4.2", default-features = false, features = ["rustls-no-provider", "_ring", "platform-verifier"] }
 # The Secret Access Key goes to the OS keyring (Keychain, Credential Manager,
 # Secret Service), never to a file in the state dir.
 keyring = "4.2.0"

@@ -87,10 +87,9 @@ pub struct Upload {
 impl Client {
     pub fn new(endpoint: Endpoint, access_key_id: &str, secret: &str) -> Self {
         let tls = TlsConfig::builder()
-            // native-tls, not rustls: rustls pulls ring, rustls-webpki and
-            // untrusted, which are ISC, and webpki-roots, which is
-            // CDLA-Permissive-2.0 — none of them on deny.toml's allow list.
-            .provider(TlsProvider::NativeTls)
+            // rustls over ring, so no system OpenSSL is linked; roots from
+            // the OS trust store, not the bundled webpki-roots (D199).
+            .provider(TlsProvider::Rustls)
             .root_certs(RootCerts::PlatformVerifier)
             .build();
         let agent = ureq::Agent::config_builder()
@@ -233,4 +232,27 @@ fn between(text: &str, open: &str, close: &str) -> Option<String> {
     let start = text.find(open)? + open.len();
     let len = text[start..].find(close)?;
     Some(text[start..start + len].trim().to_string()).filter(|s| !s.is_empty())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// An https endpoint gets as far as a TLS handshake: the provider and the
+    /// OS trust store are wired, so the only failure is the peer's.
+    #[test]
+    fn https_reaches_a_tls_handshake() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        // A peer that accepts, then hangs up without speaking TLS.
+        std::thread::spawn(move || {
+            for s in listener.incoming() {
+                drop(s);
+            }
+        });
+        let endpoint = Endpoint::parse(&format!("https://127.0.0.1:{port}")).unwrap();
+        let client = Client::new(endpoint, "AKID", "secret");
+        let err = client.send("GET", "/b/k", &[], None).unwrap_err();
+        assert!(err.contains("cannot reach R2"), "{err}");
+    }
 }
