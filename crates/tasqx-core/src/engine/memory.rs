@@ -1808,28 +1808,32 @@ impl Engine {
         let id = req_str(p, "id")?;
         require_uuid_shape(&id)?;
         let tx = self.begin_mutation()?;
-        let n = tx.execute("DELETE FROM docs WHERE id = ?1", params![id])?;
-        if n == 0 {
+        // D197: the event names the doc's `source` as well as its id, because
+        // two stores that each imported one file hold it under two ids (D183)
+        // and a merge carrying this removal finds the other copy by its
+        // source; `project` scopes the event in a filtered export, the way
+        // the doc itself was scoped (D171).
+        let held: Option<(Option<String>, Option<String>)> = tx
+            .query_row(
+                "SELECT source, project FROM docs WHERE id = ?1",
+                params![id],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .optional()?;
+        let Some((source, project)) = held else {
             return Err(ApiError::not_found(
                 format!("no memory doc with id {id}"),
                 None,
             ));
-        }
-        // D160: a doc is the one graph node this engine HARD deletes, so its
-        // explicit links go with it, in this transaction. The `links` table
-        // carries no foreign key — its endpoints are polymorphic, so SQLite
-        // cannot be asked to enforce this — which makes the cascade the
-        // engine's job and leaving it out exactly the dangling-edge shape D12
-        // fixed for `dependencies`: invisible to every reader that resolves
-        // both ends, still in the file, and impossible to remove by id nobody
-        // can list. Annotations are NOT cascaded: `annotation.remove` leaves a
-        // tombstone (D113), so the node is still there to point at.
-        tx.execute(
-            "DELETE FROM links WHERE (from_type = 'memory' AND from_id = ?1) \
-                OR (to_type = 'memory' AND to_id = ?1)",
-            params![id],
+        };
+        delete_doc(&tx, &id)?;
+        insert_event(
+            &tx,
+            Entity::Doc,
+            &id,
+            "memory.remove",
+            &json!({ "id": id, "source": source, "project": project }),
         )?;
-        insert_event(&tx, Entity::Doc, &id, "memory.remove", &json!({}))?;
         tx.commit()?;
         Ok(json!({ "id": id, "removed": true }))
     }
@@ -2200,6 +2204,28 @@ impl Engine {
             "modified": ts,
         }))
     }
+}
+
+/// Delete doc `id` and its links: `memory.remove`'s write, shared with the
+/// merge that carries one (D197).
+///
+/// D160: a doc is the one graph node this engine HARD deletes, so its
+/// explicit links go with it, in this transaction. The `links` table carries
+/// no foreign key — its endpoints are polymorphic, so SQLite cannot be asked
+/// to enforce this — which makes the cascade the engine's job and leaving it
+/// out exactly the dangling-edge shape D12 fixed for `dependencies`:
+/// invisible to every reader that resolves both ends, still in the file, and
+/// impossible to remove by id nobody can list. Annotations are NOT cascaded:
+/// `annotation.remove` leaves a tombstone (D113), so the node is still there
+/// to point at. Answers whether a doc was deleted.
+pub(super) fn delete_doc(tx: &rusqlite::Transaction, id: &str) -> Result<bool, ApiError> {
+    let n = tx.execute("DELETE FROM docs WHERE id = ?1", params![id])?;
+    tx.execute(
+        "DELETE FROM links WHERE (from_type = 'memory' AND from_id = ?1) \
+            OR (to_type = 'memory' AND to_id = ?1)",
+        params![id],
+    )?;
+    Ok(n > 0)
 }
 
 #[cfg(test)]

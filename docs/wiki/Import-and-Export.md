@@ -105,7 +105,7 @@ tasqx import backup.json --dry-run
 `tasqx import other.json --merge` folds a second live store into this one
 instead of restoring over it. For a task this store *already* holds, the
 annotations, checks, tags and dependency edges written on either side are
-unioned — nothing here is thrown away, and nothing in the document is. A
+unioned — nothing written on either side is thrown away. A
 field that can only have one value (title, status, priority, project, the
 dates) is taken from whichever side changed *that field* last, going by each
 side's history, so a task completed here and retitled there comes back
@@ -120,6 +120,14 @@ follows its own last edit, so a `passed` recorded here is not rolled back by a
 copy that never saw it pass, and a note follows the task's. A task the document
 carries and this store has never seen is imported exactly as it would be
 without the flag.
+
+Removals travel too. A tag, check, note, dependency edge, link or memory doc
+removed on one machine stays removed when that machine merges the other's
+older copy, and is removed on the other machine when it merges this one. Each
+side's history decides: a removal counts when it is later than the last time
+the row was added or changed, so a tag added back after it was removed
+elsewhere stays. A removed note is scrubbed on the other machine the same way
+`tasqx unannotate` scrubs it here: its text leaves the file.
 
 Without `--merge`, the document stays authoritative about a task it names: its
 notes, checks, tags and edges replace what is here. That is what a restore
