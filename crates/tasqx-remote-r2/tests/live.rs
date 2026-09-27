@@ -3,7 +3,7 @@
 //! Runs only when all four of `TASQX_R2_TEST_ACCOUNT_ID`, `_BUCKET`,
 //! `_ACCESS_KEY_ID` and `_SECRET_ACCESS_KEY` are set, and says it skipped
 //! otherwise. The bucket is not touched outside one fresh object key per run,
-//! `tasqx-conformance/<pid>-<nanos>/snapshot.age`, which the suite needs empty
+//! `tasqx-conformance/<pid>-<nanos>/snapshot.tqx`, which the suite needs empty
 //! and which is left behind afterwards: clear the prefix now and then. The
 //! secret travels as `TASQX_R2_SECRET_ACCESS_KEY`, so the OS keyring is not
 //! used.
@@ -36,7 +36,7 @@ fn the_r2_connector_passes_the_conformance_suite_against_a_real_bucket() {
         .unwrap()
         .as_nanos();
     let object_key = format!(
-        "tasqx-conformance/{}-{nanos}/snapshot.age",
+        "tasqx-conformance/{}-{nanos}/snapshot.tqx",
         std::process::id()
     );
     let good = BTreeMap::from([
