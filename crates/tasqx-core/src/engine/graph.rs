@@ -521,9 +521,21 @@ impl Engine {
     /// this call already took: there is nothing left to remove either way, and
     /// answering ok would be the unfalsifiable write D33 refuses — the reasoning
     /// `tag.remove` applies to a tag the task never had.
+    ///
+    /// The event names the edge as well as the id (D197): another store may
+    /// hold the same edge under an id of its own (D181's twin), and a merge
+    /// that carries this removal finds that row by its ends and relation.
     pub fn link_remove(&self, p: &Value) -> Result<Value, ApiError> {
         let id = req_str(p, "id")?;
         let tx = self.begin_mutation()?;
+        let edge: Option<(String, String, String)> = tx
+            .query_row(
+                "SELECT from_type || ':' || from_id, to_type || ':' || to_id, relation \
+                 FROM links WHERE id = ?1",
+                params![id],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .optional()?;
         let removed = tx.execute("DELETE FROM links WHERE id = ?1", params![id])?;
         if removed == 0 {
             return Err(ApiError::not_found(
@@ -534,7 +546,14 @@ impl Engine {
                 Some(json!({ "id": id })),
             ));
         }
-        insert_event(&tx, Entity::Link, &id, "link.remove", &json!({}))?;
+        let (from, to, relation) = edge.unwrap_or_default();
+        insert_event(
+            &tx,
+            Entity::Link,
+            &id,
+            "link.remove",
+            &json!({ "id": id, "from": from, "to": to, "relation": relation }),
+        )?;
         tx.commit()?;
         Ok(json!({ "id": id, "removed": true }))
     }

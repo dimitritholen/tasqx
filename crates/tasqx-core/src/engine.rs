@@ -12,6 +12,7 @@ mod commands;
 mod field_merge;
 mod graph;
 mod memory;
+mod merge_removals;
 mod projects;
 mod relationships;
 
@@ -1585,6 +1586,10 @@ macro_rules! engine_sources {
             ),
             ("engine/graph.rs", include_str!("engine/graph.rs")),
             ("engine/memory.rs", include_str!("engine/memory.rs")),
+            (
+                "engine/merge_removals.rs",
+                include_str!("engine/merge_removals.rs"),
+            ),
             ("engine/projects.rs", include_str!("engine/projects.rs")),
             (
                 "engine/relationships.rs",

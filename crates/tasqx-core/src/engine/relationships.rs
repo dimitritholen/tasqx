@@ -412,76 +412,11 @@ impl Engine {
             ));
         }
 
-        tx.execute(
-            "UPDATE annotations SET body = '', removed = ?1 WHERE id = ?2",
-            params![ts, annotation_id],
-        )?;
+        scrub_annotation(&tx, &task.id, &annotation_id, &ts)?;
         tx.execute(
             "UPDATE tasks SET rev=?1, modified=?2 WHERE id=?3",
             params![task.rev + 1, ts, task.id],
         )?;
-
-        // D113's own text used to promise this in part (2) and contradict it in
-        // part (1): the `annotations` row and its FTS index are scrubbed above,
-        // but until now the ORIGINAL `annotation.add` event — append-only,
-        // readable forever via `event.list` and `store.export` — still carried
-        // the full plaintext body. That is the exact leak the finding named:
-        // a secret pasted into a note, "removed", still sitting in the file.
-        //
-        // This is a narrow, deliberate exception to append-only, not a second
-        // precedent: ONLY the `annotation.add` event's own `body` field is
-        // redacted, ONLY here, in the SAME transaction as the tombstone, and
-        // ONLY for the annotation `annotation_remove` has just established is
-        // being removed — so a live annotation's `add` event is never touched
-        // by this code path (it only runs once removal is already underway).
-        // `id` is kept so `event.list` still shows which note this record was
-        // for, and `undo`'s `revert_annotation_add` never reads this payload's
-        // `body` at all (it re-reads `annotations.body` fresh, and by this
-        // point `annotation.remove` is the newest event, which refuses `undo`
-        // by name — see D54/D113(3) — so the redacted payload is never even a
-        // candidate for restoration).
-        // A task can carry more than one `annotation.add` event, so this scans
-        // by task and matches on the payload's own `id`, tolerantly (a
-        // malformed payload is skipped, never a hard failure — matching how
-        // event payloads are read elsewhere, `commands.rs`).
-        //
-        // D165: every `annotation.update` event for the note is redacted by the
-        // same rule, because each carries a body (the new one and the one it
-        // replaced — the latter is what makes the edit undoable).
-        let mut stmt = tx.prepare(
-            "SELECT id, op, payload FROM events \
-             WHERE op IN ('annotation.add', 'annotation.update') AND entity_id = ?1",
-        )?;
-        let rows = stmt.query_map(params![task.id], |r| {
-            Ok((
-                r.get::<_, String>(0)?,
-                r.get::<_, String>(1)?,
-                r.get::<_, Option<String>>(2)?,
-            ))
-        })?;
-        let mut redact = Vec::new();
-        for row in rows {
-            let (event_id, op, payload) = row?;
-            let Some(payload) = payload else { continue };
-            let Ok(v) = serde_json::from_str::<Value>(&payload) else {
-                continue;
-            };
-            if opt_str(&v, "id").ok().flatten().as_deref() == Some(annotation_id.as_str()) {
-                let scrubbed = if op == "annotation.add" {
-                    json!({ "id": annotation_id, "body": null, "redacted": true })
-                } else {
-                    json!({ "id": annotation_id, "body": null, "previous": null, "redacted": true })
-                };
-                redact.push((event_id, scrubbed));
-            }
-        }
-        drop(stmt);
-        for (event_id, scrubbed) in redact {
-            tx.execute(
-                "UPDATE events SET payload = ?1 WHERE id = ?2",
-                params![scrubbed.to_string(), event_id],
-            )?;
-        }
 
         insert_event(
             &tx,
@@ -708,6 +643,83 @@ impl Engine {
             "blocked": blocked,
         }))
     }
+}
+
+/// Tombstone annotation `annotation_id` of task `task_id` at `ts` and redact
+/// every event that carried its text: `annotation.remove`'s scrub (D113),
+/// shared with the merge that carries one (D197). A row already tombstoned
+/// keeps its `removed` stamp, so running this twice changes nothing.
+///
+/// D113's own text used to promise this in part (2) and contradict it in
+/// part (1): the `annotations` row and its FTS index are scrubbed here, but
+/// until then the ORIGINAL `annotation.add` event — append-only, readable
+/// forever via `event.list` and `store.export` — still carried the full
+/// plaintext body. That is the exact leak the finding named: a secret pasted
+/// into a note, "removed", still sitting in the file.
+///
+/// This is a narrow, deliberate exception to append-only, not a second
+/// precedent: ONLY the `annotation.add` event's own `body` field is redacted,
+/// ONLY in the SAME transaction as the tombstone, and ONLY for an annotation
+/// its caller has established is being removed — `annotation_remove`, or a
+/// merge whose log holds its removal — so a live annotation's `add` event is
+/// never touched by this code path. `id` is kept so `event.list` still shows
+/// which note this record was for, and `undo`'s `revert_annotation_add` never
+/// reads this payload's `body` at all (it re-reads `annotations.body` fresh,
+/// and by this point `annotation.remove` is the newest event, which refuses
+/// `undo` by name — see D54/D113(3) — so the redacted payload is never even a
+/// candidate for restoration). A task can carry more than one
+/// `annotation.add` event, so this scans by task and matches on the payload's
+/// own `id`, tolerantly (a malformed payload is skipped, never a hard failure
+/// — matching how event payloads are read elsewhere, `commands.rs`).
+///
+/// D165: every `annotation.update` event for the note is redacted by the same
+/// rule, because each carries a body (the new one and the one it replaced —
+/// the latter is what makes the edit undoable).
+pub(super) fn scrub_annotation(
+    tx: &rusqlite::Transaction,
+    task_id: &str,
+    annotation_id: &str,
+    ts: &str,
+) -> Result<(), ApiError> {
+    tx.execute(
+        "UPDATE annotations SET body = '', removed = COALESCE(removed, ?1) WHERE id = ?2",
+        params![ts, annotation_id],
+    )?;
+    let mut stmt = tx.prepare(
+        "SELECT id, op, payload FROM events \
+         WHERE op IN ('annotation.add', 'annotation.update') AND entity_id = ?1",
+    )?;
+    let rows = stmt.query_map(params![task_id], |r| {
+        Ok((
+            r.get::<_, String>(0)?,
+            r.get::<_, String>(1)?,
+            r.get::<_, Option<String>>(2)?,
+        ))
+    })?;
+    let mut redact = Vec::new();
+    for row in rows {
+        let (event_id, op, payload) = row?;
+        let Some(payload) = payload else { continue };
+        let Ok(v) = serde_json::from_str::<Value>(&payload) else {
+            continue;
+        };
+        if opt_str(&v, "id").ok().flatten().as_deref() == Some(annotation_id) {
+            let scrubbed = if op == "annotation.add" {
+                json!({ "id": annotation_id, "body": null, "redacted": true })
+            } else {
+                json!({ "id": annotation_id, "body": null, "previous": null, "redacted": true })
+            };
+            redact.push((event_id, scrubbed));
+        }
+    }
+    drop(stmt);
+    for (event_id, scrubbed) in redact {
+        tx.execute(
+            "UPDATE events SET payload = ?1 WHERE id = ?2",
+            params![scrubbed.to_string(), event_id],
+        )?;
+    }
+    Ok(())
 }
 
 /// The states a check may be in (D138).

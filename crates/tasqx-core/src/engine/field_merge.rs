@@ -119,9 +119,9 @@ fn touches(ev: &LoggedEvent, group: &str) -> bool {
 /// The id breaks what is left of a tie the same way on every machine, so two
 /// stores merging each other agree on which came last. An unparseable `ts`
 /// sorts first.
-type Order<'a> = (Option<Timestamp>, u8, &'a str);
+pub(super) type Order<'a> = (Option<Timestamp>, u8, &'a str);
 
-fn order(ev: &LoggedEvent) -> Order<'_> {
+pub(super) fn order(ev: &LoggedEvent) -> Order<'_> {
     let ts = parse_ts(&ev.ts);
     let opened = matches!(ev.op.as_str(), "stop" | "done" | "cancel")
         .then(|| ev.payload["interval_started"].as_str().and_then(parse_ts))

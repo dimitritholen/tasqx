@@ -628,6 +628,10 @@ const METHODS: [(&str, &str, &str); 49] = [
          (D185), takes each field from the side whose event last wrote it and counts tracked \
          time from the union of both event logs — listed in <code>merged</code> as \
          <code>{id, took, from_payload, from_store, tracked_delta_seconds}</code> (D189). \
+         A merge also applies every removal either event log holds — of a tag, check, \
+         annotation, dependency edge, link or memory doc — that is later than the row's last \
+         write, so a row removed on one machine stays removed on both; a removed annotation \
+         takes D113's scrub (D197). \
          A project this store already knows keeps its own non-empty description over the \
          payload's — a project carries no <code>modified</code> stamp, so there is no \
          later-wins call to make — listed in <code>project_description_conflicts</code> as \

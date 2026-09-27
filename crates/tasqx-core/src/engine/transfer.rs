@@ -152,8 +152,49 @@ impl Engine {
         }
         let (links, dropped_links) = self.export_links(&carried)?;
         let link_ids: HashSet<&str> = links.iter().filter_map(|l| l["id"].as_str()).collect();
-        let (events, dropped_events) =
-            self.export_events(&present, &doc_ids, &project_ids, &link_ids)?;
+        // D197: the removal of a doc or a link that is gone from this store
+        // travels, so a merge elsewhere can apply it; D185 keeps the rows'
+        // tombstones out of the document, not the events that say they went.
+        // Scoped like the row was: a filtered export carries a doc's removal
+        // when the doc's project is in scope, and a link's when both its ends
+        // are nodes this document carries — the leak rule D171 and D181 set.
+        let live = |sql: &str| -> Result<HashSet<String>, ApiError> {
+            let mut stmt = self.conn.prepare(sql)?;
+            let ids = stmt
+                .query_map([], |r| r.get::<_, String>(0))?
+                .collect::<Result<_, _>>()?;
+            Ok(ids)
+        };
+        let (live_docs, live_links) = (live("SELECT id FROM docs")?, live("SELECT id FROM links")?);
+        let removal_travels = |entity: Entity, entity_id: &str, payload: &Value| match entity {
+            Entity::Doc => {
+                !live_docs.contains(entity_id)
+                    && doc_in_scope(
+                        needed_projects.as_ref(),
+                        include_unscoped,
+                        payload["project"].as_str(),
+                    )
+            }
+            Entity::Link => {
+                let carries = |end: &Value| {
+                    end.as_str()
+                        .and_then(|e| e.split_once(':'))
+                        .and_then(|(ty, id)| Some((NodeType::parse(ty)?, id)))
+                        .is_some_and(|node| carried.contains(&node))
+                };
+                !live_links.contains(entity_id)
+                    && (needed_projects.is_none()
+                        || (carries(&payload["from"]) && carries(&payload["to"])))
+            }
+            _ => false,
+        };
+        let (events, dropped_events) = self.export_events(
+            &present,
+            &doc_ids,
+            &project_ids,
+            &link_ids,
+            &removal_travels,
+        )?;
 
         // D171 review finding: `default_project` names the STORE's default
         // regardless of `filter`, so a filtered export whose scope drops that
@@ -259,12 +300,17 @@ impl Engine {
     /// task-level winner: the stored body stands when the store's `modified`
     /// is the later one, and an older replica cannot overwrite an edit written
     /// since. An id this task does not hold is inserted either way.
+    ///
+    /// `removed` (D197) answers whether a merge's union log removed a row by
+    /// key; such a note is never written back, so a tombstone on this side
+    /// does not get its text again from an older copy.
     fn import_annotations(
         tx: &rusqlite::Transaction,
         id: &str,
         tv: &Value,
         merge: bool,
         take_payload: bool,
+        removed: &dyn Fn(String) -> bool,
     ) -> Result<(), ApiError> {
         if !merge {
             tx.execute("DELETE FROM annotations WHERE task_id = ?1", params![id])?;
@@ -302,6 +348,9 @@ impl Engine {
                 // Keeping the stored row is the whole of it — the store won,
                 // so its body stands and nothing is written.
                 if merge && !take_payload && holder.is_some() {
+                    continue;
+                }
+                if removed(merge_removals::annotation_key(&aid)) {
                     continue;
                 }
                 // ON CONFLICT DO UPDATE, never INSERT OR REPLACE: REPLACE
@@ -355,12 +404,15 @@ impl Engine {
     /// comparison below (`parse_ts(&modified) <= parse_ts(&held)`) read that as
     /// older than anything, silently skipping the payload's body, state,
     /// evidence and position rather than refusing the document by name.
+    ///
+    /// `removed` (D197): a check a merge's union log removed is not written.
     fn import_checks(
         tx: &rusqlite::Transaction,
         id: &str,
         tv: &Value,
         merge: bool,
         now_ts: Timestamp,
+        removed: &dyn Fn(String) -> bool,
     ) -> Result<bool, ApiError> {
         if !merge {
             tx.execute("DELETE FROM checks WHERE task_id = ?1", params![id])?;
@@ -402,6 +454,9 @@ impl Engine {
             // payload's copy was written strictly later. A tie keeps the
             // store's, which is what makes merging one document twice a no-op.
             let owner = child_owner(tx, "checks", "checks[].id", "check", id, &cid)?;
+            if removed(merge_removals::check_key(&cid)) {
+                continue;
+            }
             if merge && owner.is_some() {
                 let held: String = tx.query_row(
                     "SELECT modified FROM checks WHERE id = ?1",
@@ -585,14 +640,7 @@ impl Engine {
         let mut dropped = 0i64;
         for r in rows {
             let v = r?;
-            let keep = match needed {
-                None => true,
-                Some(set) => match v["project"].as_str() {
-                    Some(name) => set.contains(name),
-                    None => include_unscoped,
-                },
-            };
-            if keep {
+            if doc_in_scope(needed, include_unscoped, v["project"].as_str()) {
                 out.push(v);
             } else {
                 dropped += 1;
@@ -681,12 +729,19 @@ impl Engine {
     /// nothing real history depends on. A genuine `memory.add`, including one
     /// written by the UNRELATED `memory.import` CLI command, is real history
     /// and stays.
+    ///
+    /// D197: a `memory.remove` or `link.remove` also travels when
+    /// `removal_travels` says so — the doc or link is gone from this store and
+    /// in the document's scope — because a merge elsewhere applies it. Only
+    /// the removal: the rest of a gone row's history stays out, since its
+    /// `memory.add` names the title the removal took away.
     fn export_events(
         &self,
         present: &HashSet<&str>,
         doc_ids: &HashSet<&str>,
         project_ids: &HashSet<&str>,
         link_ids: &HashSet<&str>,
+        removal_travels: &dyn Fn(Entity, &str, &Value) -> bool,
     ) -> Result<(Vec<Value>, i64), ApiError> {
         let mut stmt = self.conn.prepare(
             "SELECT id, entity, entity_id, op, payload, ts, actor FROM events ORDER BY id",
@@ -706,16 +761,29 @@ impl Engine {
         let mut dropped = 0i64;
         for r in rows {
             let (id, entity, entity_id, op, payload, ts, actor) = r?;
+            let payload: Value = payload
+                .as_deref()
+                .and_then(|p| serde_json::from_str(p).ok())
+                .unwrap_or(Value::Null);
+            let removal = |kind: Entity| {
+                let op_removes = match kind {
+                    Entity::Doc => op == "memory.remove",
+                    _ => op == "link.remove",
+                };
+                op_removes && removal_travels(kind, &entity_id, &payload)
+            };
             let keep = match Entity::parse(&entity) {
                 Some(Entity::Task) => present.contains(entity_id.as_str()),
-                Some(Entity::Doc) => doc_ids.contains(entity_id.as_str()),
+                Some(Entity::Doc) => doc_ids.contains(entity_id.as_str()) || removal(Entity::Doc),
                 Some(Entity::Project) => project_ids.contains(entity_id.as_str()),
                 // D181: the `links` table IS part of the archive now, so a link
                 // event is scoped to the link this document carries, exactly
                 // like the three kinds above. It used to travel whole, which on
                 // a filtered export left the log describing edges the document
                 // had no row for.
-                Some(Entity::Link) => link_ids.contains(entity_id.as_str()),
+                Some(Entity::Link) => {
+                    link_ids.contains(entity_id.as_str()) || removal(Entity::Link)
+                }
                 // A future entity kind this build does not know: pass it
                 // through rather than silently dropping history it cannot
                 // scope — the same "refuse or widen, never guess" stance as
@@ -726,10 +794,6 @@ impl Engine {
                 dropped += 1;
                 continue;
             }
-            let payload: Value = payload
-                .as_deref()
-                .and_then(|p| serde_json::from_str(p).ok())
-                .unwrap_or(Value::Null);
             let via_store_import =
                 matches!(payload.get("via"), Some(Value::String(s)) if s == "store.import");
             if op == "import" || (op == "memory.add" && via_store_import) {
@@ -1047,6 +1111,23 @@ impl Engine {
             }
         }
 
+        // D197: on a merge, every removal either log holds is applied where it
+        // is the latest word on its row. `gone` collects the doc and
+        // annotation nodes that removal took, so pass 2b drops a payload link
+        // to one instead of refusing it as a dangling end.
+        let mut gone: HashSet<(NodeType, String)> = HashSet::new();
+        let doc_removals = if merge {
+            let log = union_log(
+                Self::stored_entity_events(&tx, Entity::Doc)?,
+                payload_entity_events(p, Entity::Doc),
+            );
+            let ledger = merge_removals::doc_ledger(&log);
+            gone.extend(Self::delete_removed_docs(&tx, &ledger)?);
+            ledger
+        } else {
+            merge_removals::Ledger::default()
+        };
+
         // D41 memory docs: optional, so a pre-D41 document still imports.
         // Upsert by id via ON CONFLICT DO UPDATE — the UPDATE path fires
         // docs_fts_au, so the search index follows (the same trigger rule the
@@ -1169,6 +1250,16 @@ impl Engine {
                 // that means the same thing on both machines, so the later edit
                 // carries the text — and a tie keeps the store's copy, which is
                 // what makes importing the same document twice a no-op.
+                // D197: a doc whose removal is the latest word on it, in
+                // either log, is not written back.
+                if merge
+                    && doc_removals
+                        .removal(&merge_removals::doc_keys(&did, source.as_deref()))
+                        .is_some()
+                {
+                    gone.insert((NodeType::Memory, did));
+                    continue;
+                }
                 let held: Option<(String, String)> =
                     match source.as_deref().filter(|s| !s.is_empty()) {
                         Some(s) => tx
@@ -2081,6 +2172,23 @@ impl Engine {
                 )?;
             }
 
+            // D197: the child rows whose removal is the latest word on them
+            // in the union of both logs — the events pass above already wrote
+            // the payload's half into this store's.
+            let removals = match merging {
+                true => Some(merge_removals::task_ledger(&Self::stored_task_events(
+                    &tx,
+                    id,
+                    &HashSet::new(),
+                )?)),
+                false => None,
+            };
+            let removed = |key: String| {
+                removals
+                    .as_ref()
+                    .is_some_and(|l| l.removal(&[key]).is_some())
+            };
+
             // Replace tags — or union them, on a merge: a tag set is D3's
             // "already commutes" case, so both sides' labels stand.
             if !merging {
@@ -2091,11 +2199,13 @@ impl Engine {
                 "tags",
                 opt_str_array(tv, "tags").and_then(normalize_tags),
             )? {
-                ensure_tag_link(&tx, id, &tg)?;
+                if !removed(merge_removals::tag_key(&tg)) {
+                    ensure_tag_link(&tx, id, &tg)?;
+                }
             }
 
-            Self::import_annotations(&tx, id, tv, merging, take_payload)?;
-            let checks_updated = Self::import_checks(&tx, id, tv, merging, now_ts)?;
+            Self::import_annotations(&tx, id, tv, merging, take_payload, &removed)?;
+            let checks_updated = Self::import_checks(&tx, id, tv, merging, now_ts, &removed)?;
             Self::import_token_measurements(&tx, id, tv, merging)?;
 
             // Edges are deferred to pass 2: a payload may list a target *after*
@@ -2107,10 +2217,13 @@ impl Engine {
             if !merging {
                 tx.execute("DELETE FROM dependencies WHERE task_id = ?1", params![id])?;
             }
-            edges.push((
-                id.to_string(),
-                import_field(id, "depends_on", opt_str_array(tv, "depends_on"))?,
-            ));
+            let mut depends_on = import_field(id, "depends_on", opt_str_array(tv, "depends_on"))?;
+            depends_on.retain(|d| !removed(merge_removals::dependency_key(d)));
+            edges.push((id.to_string(), depends_on));
+            let removals_applied = match &removals {
+                Some(ledger) => Self::apply_task_removals(&tx, id, ledger, &mut gone)?,
+                None => false,
+            };
             if let Some((took, from_payload, from_store, tracked_delta)) = outcome {
                 // An upsert reports a row affected even when it rewrote the
                 // same bytes, so "did this merge add anything" is counted from
@@ -2118,8 +2231,10 @@ impl Engine {
                 // cannot see, a check both stores held taking the payload's
                 // state on its own `modified`. Pass 2 finishes the answer with
                 // the edges it inserts.
-                let changed =
-                    write || checks_updated || Self::child_row_count(&tx, id)? != children_before;
+                let changed = write
+                    || checks_updated
+                    || removals_applied
+                    || Self::child_row_count(&tx, id)? != children_before;
                 merged.push(MergedTask {
                     id: id.to_string(),
                     took,
@@ -2230,6 +2345,35 @@ impl Engine {
         // repeats: an id already in the STORE is a re-import, which the upsert
         // answers as the no-op every other section here answers it as.
         let mut seen_links: HashSet<String> = HashSet::new();
+        // D197: the links whose removal is the latest word on them, over this
+        // store's link events and the payload's staged ones, their memory
+        // ends already on the rows the docs pass kept. The stored ones go
+        // first, so the twin lookup below never lands on a row about to go.
+        let link_removals = if merge {
+            let staged = link_events
+                .iter()
+                .map(|(eid, entity_id, op, payload, ts, _)| {
+                    let payload = remap_memory_ends(payload, &remap);
+                    (
+                        entity_id.clone(),
+                        field_merge::LoggedEvent {
+                            id: eid.clone(),
+                            op: op.clone(),
+                            payload: serde_json::from_str(&payload).unwrap_or(Value::Null),
+                            ts: ts.clone(),
+                        },
+                    )
+                });
+            let log = union_log(
+                Self::stored_entity_events(&tx, Entity::Link)?,
+                staged.collect(),
+            );
+            let ledger = merge_removals::link_ledger(&log);
+            Self::delete_removed_links(&tx, &ledger)?;
+            ledger
+        } else {
+            merge_removals::Ledger::default()
+        };
         if let Some(rows) = opt_array(p, "links")?.cloned() {
             // #88's date gate for `created_at` below, on one instant for the
             // whole pass, as the task and doc passes read theirs.
@@ -2250,8 +2394,19 @@ impl Engine {
                          payload cannot state two, so this document cannot be restored anywhere"
                     )));
                 }
-                let from = import_link_end(&tx, &lid, "from", &req_str(lv, "from")?, &remap)?;
-                let to = import_link_end(&tx, &lid, "to", &req_str(lv, "to")?, &remap)?;
+                let (from_ref, to_ref) = (req_str(lv, "from")?, req_str(lv, "to")?);
+                // D197: an end a removal took on this merge — a doc, or an
+                // annotation now a tombstone — takes the link with it, as
+                // `memory.remove` cascades a doc's links.
+                if merge
+                    && [&from_ref, &to_ref]
+                        .iter()
+                        .any(|r| end_is_gone(r, &remap, &gone))
+                {
+                    continue;
+                }
+                let from = import_link_end(&tx, &lid, "from", &from_ref, &remap)?;
+                let to = import_link_end(&tx, &lid, "to", &to_ref, &remap)?;
                 // `link_add`'s invariant, restated here because import is not a
                 // back door around it: an edge from a node to itself carries no
                 // information and every traversal would have to special-case
@@ -2296,6 +2451,18 @@ impl Engine {
                 let created =
                     import_link_field(&lid, "created_at", opt_when(lv, "created_at", now_ts))?
                         .unwrap_or_else(now);
+                if merge
+                    && link_removals
+                        .removal(&merge_removals::link_keys(
+                            &lid,
+                            &node_id(&from),
+                            &node_id(&to),
+                            &relation,
+                        ))
+                        .is_some()
+                {
+                    continue;
+                }
 
                 // The table's OTHER uniqueness — (from, to, relation) — which
                 // an `ON CONFLICT(id)` upsert cannot see: a payload stating an
@@ -2596,6 +2763,242 @@ impl Engine {
             }
         }
         Ok(out)
+    }
+
+    /// D197: every `entity` event this store holds, as `(entity_id, event)`.
+    fn stored_entity_events(
+        tx: &rusqlite::Transaction,
+        entity: Entity,
+    ) -> Result<Vec<(String, field_merge::LoggedEvent)>, ApiError> {
+        let mut stmt =
+            tx.prepare("SELECT id, entity_id, op, payload, ts FROM events WHERE entity = ?1")?;
+        let rows = stmt.query_map(params![entity.as_str()], |r| {
+            Ok((
+                r.get::<_, String>(1)?,
+                field_merge::LoggedEvent {
+                    id: r.get(0)?,
+                    op: r.get(2)?,
+                    payload: r
+                        .get::<_, Option<String>>(3)?
+                        .and_then(|p| serde_json::from_str(&p).ok())
+                        .unwrap_or(Value::Null),
+                    ts: r.get(4)?,
+                },
+            ))
+        })?;
+        Ok(rows.collect::<Result<_, _>>()?)
+    }
+
+    /// D197: delete every stored doc whose removal is the latest word on it
+    /// in `ledger`, through `memory.remove`'s own write, and answer the nodes
+    /// that went.
+    fn delete_removed_docs(
+        tx: &rusqlite::Transaction,
+        ledger: &merge_removals::Ledger,
+    ) -> Result<Vec<(NodeType, String)>, ApiError> {
+        let mut candidates: HashSet<(String, Option<String>)> = HashSet::new();
+        for (sql, named) in [
+            (
+                "SELECT id, source FROM docs WHERE id = ?1",
+                ledger.removed_under("doc:").collect::<Vec<_>>(),
+            ),
+            (
+                "SELECT id, source FROM docs WHERE source = ?1 AND source <> ''",
+                ledger.removed_under("source:").collect(),
+            ),
+        ] {
+            for key in named {
+                let row = tx
+                    .query_row(sql, params![key], |r| Ok((r.get(0)?, r.get(1)?)))
+                    .optional()?;
+                candidates.extend(row);
+            }
+        }
+        let mut gone = Vec::new();
+        for (id, source) in candidates {
+            let keys = merge_removals::doc_keys(&id, source.as_deref());
+            if ledger.removal(&keys).is_some() && super::memory::delete_doc(tx, &id)? {
+                gone.push((NodeType::Memory, id));
+            }
+        }
+        Ok(gone)
+    }
+
+    /// D197: delete every stored link whose removal is the latest word on it
+    /// in `ledger`, found by its id or by its edge.
+    fn delete_removed_links(
+        tx: &rusqlite::Transaction,
+        ledger: &merge_removals::Ledger,
+    ) -> Result<(), ApiError> {
+        const EDGE: &str = "SELECT id, from_type || ':' || from_id, to_type || ':' || to_id, \
+                            relation FROM links";
+        let row = |r: &rusqlite::Row| -> rusqlite::Result<(String, String, String, String)> {
+            Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))
+        };
+        let mut candidates = HashSet::new();
+        for id in ledger.removed_under("link:") {
+            candidates.extend(
+                tx.query_row(&format!("{EDGE} WHERE id = ?1"), params![id], row)
+                    .optional()?,
+            );
+        }
+        for edge in ledger.removed_under("edge:") {
+            let Some((from, to, relation)) = merge_removals::split_edge(edge) else {
+                continue;
+            };
+            candidates.extend(
+                tx.query_row(
+                    &format!(
+                        "{EDGE} WHERE from_type || ':' || from_id = ?1 \
+                         AND to_type || ':' || to_id = ?2 AND relation = ?3"
+                    ),
+                    params![from, to, relation],
+                    row,
+                )
+                .optional()?,
+            );
+        }
+        for (id, from, to, relation) in candidates {
+            let keys = merge_removals::link_keys(&id, &from, &to, &relation);
+            if ledger.removal(&keys).is_some() {
+                tx.execute("DELETE FROM links WHERE id = ?1", params![id])?;
+            }
+        }
+        Ok(())
+    }
+
+    /// D197: apply to task `id`'s stored child rows every removal that is the
+    /// latest word on its row in `ledger` — a tag, a check or a dependency
+    /// edge is deleted, and an annotation takes D113's scrub, its tombstone
+    /// stamped with the removal's own `ts`. Every removed annotation joins
+    /// `gone`. Answers whether a row changed, which moves the task's `rev`.
+    fn apply_task_removals(
+        tx: &rusqlite::Transaction,
+        id: &str,
+        ledger: &merge_removals::Ledger,
+        gone: &mut HashSet<(NodeType, String)>,
+    ) -> Result<bool, ApiError> {
+        let mut changed = false;
+        let stands = |key: String| ledger.removal(&[key]).is_some();
+        for tag in ledger.removed_under("tag:") {
+            if stands(merge_removals::tag_key(tag)) {
+                changed |= tx.execute(
+                    "DELETE FROM task_tags WHERE task_id = ?1 \
+                     AND tag_id = (SELECT id FROM tags WHERE name = ?2)",
+                    params![id, tag],
+                )? > 0;
+            }
+        }
+        for check in ledger.removed_under("check:") {
+            if stands(merge_removals::check_key(check)) {
+                changed |= tx.execute(
+                    "DELETE FROM checks WHERE id = ?1 AND task_id = ?2",
+                    params![check, id],
+                )? > 0;
+            }
+        }
+        for dep in ledger.removed_under("dependency:") {
+            if stands(merge_removals::dependency_key(dep)) {
+                changed |= tx.execute(
+                    "DELETE FROM dependencies WHERE task_id = ?1 AND depends_on_id = ?2",
+                    params![id, dep],
+                )? > 0;
+            }
+        }
+        for note in ledger.removed_under("annotation:") {
+            let key = merge_removals::annotation_key(note);
+            let Some(ts) = ledger.removal(&[key]) else {
+                continue;
+            };
+            gone.insert((NodeType::Annotation, note.to_string()));
+            let live: Option<bool> = tx
+                .query_row(
+                    "SELECT removed IS NULL FROM annotations WHERE id = ?1 AND task_id = ?2",
+                    params![note, id],
+                    |r| r.get(0),
+                )
+                .optional()?;
+            // A tombstone already here is scrubbed again all the same: the
+            // events pass may just have written an older copy's `add` or
+            // `update` carrying the text.
+            if let Some(live) = live {
+                super::relationships::scrub_annotation(tx, id, note, ts)?;
+                changed |= live;
+            }
+        }
+        Ok(changed)
+    }
+}
+
+/// D197: the payload's `entity` events as `(entity_id, event)`, read
+/// tolerantly — the events pass refuses a malformed one by name, in the same
+/// transaction, so one skipped here never reaches a commit.
+fn payload_entity_events(p: &Value, entity: Entity) -> Vec<(String, field_merge::LoggedEvent)> {
+    let text = |ev: &Value, key: &str| ev[key].as_str().map(str::to_string);
+    p["events"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|ev| ev["entity"] == entity.as_str())
+        .filter_map(|ev| {
+            Some((
+                text(ev, "entity_id")?,
+                field_merge::LoggedEvent {
+                    id: text(ev, "id")?,
+                    op: text(ev, "op")?,
+                    payload: ev["payload"].clone(),
+                    ts: text(ev, "ts")?,
+                },
+            ))
+        })
+        .collect()
+}
+
+/// D197: the union of two logs, one row per event id, the store's copy
+/// first — the rule the events pass's `INSERT OR IGNORE` applies.
+fn union_log(
+    store: Vec<(String, field_merge::LoggedEvent)>,
+    payload: Vec<(String, field_merge::LoggedEvent)>,
+) -> Vec<(String, field_merge::LoggedEvent)> {
+    let mut seen: HashSet<String> = store.iter().map(|(_, e)| e.id.clone()).collect();
+    let mut out = store;
+    out.extend(
+        payload
+            .into_iter()
+            .filter(|(_, e)| seen.insert(e.id.clone())),
+    );
+    out
+}
+
+/// D197: whether a link end names a node a removal took on this merge,
+/// after the remap the docs and projects passes built.
+fn end_is_gone(
+    reference: &str,
+    remap: &HashMap<(NodeType, String), String>,
+    gone: &HashSet<(NodeType, String)>,
+) -> bool {
+    let Some((ty, id)) = reference
+        .split_once(':')
+        .and_then(|(ty, id)| Some((NodeType::parse(ty)?, id.to_string())))
+    else {
+        return false;
+    };
+    let id = remap.get(&(ty, id.clone())).cloned().unwrap_or(id);
+    gone.contains(&(ty, id))
+}
+
+/// Whether a doc in `project` belongs in an export scoped to `needed`
+/// (D171): every doc when unfiltered, a scoped doc when its project is
+/// needed, and an unscoped one only when `include_unscoped` asks.
+fn doc_in_scope(
+    needed: Option<&HashSet<&str>>,
+    include_unscoped: bool,
+    project: Option<&str>,
+) -> bool {
+    match (needed, project) {
+        (None, _) => true,
+        (Some(set), Some(name)) => set.contains(name),
+        (Some(_), None) => include_unscoped,
     }
 }
 
@@ -6999,5 +7402,352 @@ mod tests {
             .store_import(&document)
             .expect("the document must restore, not refuse a dangling end");
         assert_eq!(r["links_imported"], json!(0), "{r}");
+    }
+
+    // ---- #880: removals travel through `import --merge` (D197) -------------
+
+    /// One of every removable row, on two machines that share its history: A
+    /// wrote them, B was seeded from A's export.
+    struct Removables {
+        a: Engine,
+        b: Engine,
+        id: String,
+        sid: i64,
+        blocker: String,
+        note: String,
+        check: String,
+        link: String,
+        doc: String,
+    }
+
+    const SECRET: &str = "the password is hunter2";
+
+    fn removables_on_two_machines() -> Removables {
+        let a = Engine::open_in_memory().expect("open a");
+        let blocker = a.task_add(&json!({ "title": "blocker" })).expect("blocker");
+        let added = a
+            .task_add(&json!({ "title": "shared work", "tags": ["x"] }))
+            .expect("add");
+        let id = added["id"].as_str().expect("id").to_string();
+        let sid = added["short_id"].as_i64().expect("short_id");
+        let note = a
+            .annotation_add(&json!({ "ref": sid, "body": SECRET }))
+            .expect("note")["annotation"]["id"]
+            .as_str()
+            .expect("note id")
+            .to_string();
+        let check = a
+            .check_add(&json!({ "ref": sid, "body": "a criterion" }))
+            .expect("check")["check"]["id"]
+            .as_str()
+            .expect("check id")
+            .to_string();
+        a.dependency_add(&json!({ "ref": sid, "depends_on": blocker["short_id"].clone() }))
+            .expect("dependency");
+        let link = a
+            .link_add(&json!({
+                "from": sid,
+                "to": blocker["short_id"].clone(),
+                "relation": "references",
+            }))
+            .expect("link")["id"]
+            .as_str()
+            .expect("link id")
+            .to_string();
+        let doc = a
+            .memory_add(&json!({
+                "title": "the ruling",
+                "body": "why it is so",
+                "source": "docs/ruling.md",
+            }))
+            .expect("doc")["id"]
+            .as_str()
+            .expect("doc id")
+            .to_string();
+        let b = Engine::open_in_memory().expect("open b");
+        b.store_import(&a.store_export(&json!({})).expect("export the seed"))
+            .expect("seed b");
+        tick(&[&a, &b]);
+        Removables {
+            a,
+            b,
+            id,
+            sid,
+            blocker: blocker["id"].as_str().expect("blocker id").to_string(),
+            note,
+            check,
+            link,
+            doc,
+        }
+    }
+
+    /// Whether `e` still holds the row of kind `kind` the fixture wrote.
+    fn holds(e: &Engine, r: &Removables, kind: &str) -> bool {
+        let row = exported_row(e, &r.id);
+        let has = |field: &str, key: Option<&str>, want: &str| {
+            row[field]
+                .as_array()
+                .expect(field)
+                .iter()
+                .any(|v| match key {
+                    Some(k) => v[k] == json!(want),
+                    None => *v == json!(want),
+                })
+        };
+        match kind {
+            "tag" => has("tags", None, "x"),
+            "check" => has("checks", Some("id"), &r.check),
+            "annotation" => has("annotations", Some("id"), &r.note),
+            "dependency" => has("depends_on", None, &r.blocker),
+            "link" => e.link_list(&json!({})).expect("link.list")["links"]
+                .as_array()
+                .expect("links")
+                .iter()
+                .any(|l| l["id"] == json!(r.link)),
+            "doc" => e.store_export(&json!({})).expect("export")["docs"]
+                .as_array()
+                .expect("docs")
+                .iter()
+                .any(|d| d["id"] == json!(r.doc)),
+            other => panic!("unknown kind {other}"),
+        }
+    }
+
+    /// A's removal of the row of `kind`, through the ordinary API.
+    fn remove_on_a(r: &Removables, kind: &str) {
+        let a = &r.a;
+        match kind {
+            "tag" => a
+                .tag_remove(&json!({ "ref": r.sid, "tags": ["x"] }))
+                .map(drop),
+            "check" => a
+                .check_remove(&json!({ "ref": r.sid, "check_id": r.check }))
+                .map(drop),
+            "annotation" => a
+                .annotation_remove(&json!({ "ref": r.sid, "annotation_id": r.note }))
+                .map(drop),
+            "dependency" => a
+                .dependency_remove(&json!({ "ref": r.sid, "depends_on": r.blocker }))
+                .map(drop),
+            "link" => a.link_remove(&json!({ "id": r.link })).map(drop),
+            "doc" => a.memory_remove(&json!({ "id": r.doc })).map(drop),
+            other => panic!("unknown kind {other}"),
+        }
+        .unwrap_or_else(|e| panic!("remove the {kind} on a: {}", e.message));
+    }
+
+    /// Everything a merge could move, minus `urgency`, which is scored
+    /// against the clock at export time.
+    fn merge_state(e: &Engine) -> Value {
+        let mut doc = e.store_export(&json!({})).expect("export");
+        for t in doc["tasks"].as_array_mut().expect("tasks") {
+            t.as_object_mut().expect("task").remove("urgency");
+        }
+        doc
+    }
+
+    /// #880's contract for one kind: A removes the row; merging B's older
+    /// copy into A does not bring it back, merging A's into B removes it
+    /// there too, and a second merge of the same document changes nothing.
+    fn removal_travels_both_ways(kind: &str) {
+        let r = removables_on_two_machines();
+        assert!(
+            holds(&r.a, &r, kind) && holds(&r.b, &r, kind),
+            "{kind}: seeded"
+        );
+        remove_on_a(&r, kind);
+        assert!(!holds(&r.a, &r, kind), "{kind}: removed on a");
+
+        merge_into(&r.a, &r.b);
+        assert!(
+            !holds(&r.a, &r, kind),
+            "{kind}: merging B's older copy must not bring A's removed row back"
+        );
+
+        merge_into(&r.b, &r.a);
+        assert!(
+            !holds(&r.b, &r, kind),
+            "{kind}: A's removal must travel to B through the merge"
+        );
+
+        let before = merge_state(&r.b);
+        merge_into(&r.b, &r.a);
+        assert_eq!(
+            merge_state(&r.b),
+            before,
+            "{kind}: merging the same document twice changes nothing the second time"
+        );
+        let before = merge_state(&r.a);
+        merge_into(&r.a, &r.b);
+        assert_eq!(
+            merge_state(&r.a),
+            before,
+            "{kind}: and neither does merging back the store that already agrees"
+        );
+    }
+
+    #[test]
+    fn a_removed_tag_travels_through_a_merge() {
+        removal_travels_both_ways("tag");
+    }
+
+    #[test]
+    fn a_removed_check_travels_through_a_merge() {
+        removal_travels_both_ways("check");
+    }
+
+    #[test]
+    fn a_removed_annotation_travels_through_a_merge() {
+        removal_travels_both_ways("annotation");
+    }
+
+    #[test]
+    fn a_removed_dependency_travels_through_a_merge() {
+        removal_travels_both_ways("dependency");
+    }
+
+    #[test]
+    fn a_removed_link_travels_through_a_merge() {
+        removal_travels_both_ways("link");
+    }
+
+    #[test]
+    fn a_removed_memory_doc_travels_through_a_merge() {
+        removal_travels_both_ways("doc");
+    }
+
+    /// The secret D113 scrubbed on A is not in B's file after B merges A's
+    /// export — not in the row, not in any event — and B's older copy does
+    /// not write it back into A either.
+    #[test]
+    fn a_merged_annotation_removal_scrubs_the_body_from_the_file() {
+        let r = removables_on_two_machines();
+        remove_on_a(&r, "annotation");
+        let scrubbed = |e: &Engine, side: &str| {
+            let (body, removed): (String, Option<String>) = e
+                .conn()
+                .query_row(
+                    "SELECT body, removed FROM annotations WHERE id = ?1",
+                    params![r.note],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .expect("the tombstone stays");
+            assert_eq!(body, "", "{side}: the annotations.body column is scrubbed");
+            assert!(removed.is_some(), "{side}: and the row is a tombstone");
+            let leaks: i64 = e
+                .conn()
+                .query_row(
+                    "SELECT COUNT(*) FROM events WHERE payload LIKE '%' || ?1 || '%'",
+                    params!["hunter2"],
+                    |row| row.get(0),
+                )
+                .expect("count");
+            assert_eq!(leaks, 0, "{side}: no event still carries the secret");
+        };
+        merge_into(&r.a, &r.b);
+        scrubbed(&r.a, "a after merging b");
+        merge_into(&r.b, &r.a);
+        scrubbed(&r.b, "b after merging a");
+    }
+
+    /// A removal older than a re-add of the same row loses, in both
+    /// directions: A drops the tag, then B drops it and adds it back.
+    #[test]
+    fn a_removal_older_than_a_re_add_loses() {
+        let r = removables_on_two_machines();
+        remove_on_a(&r, "tag");
+        tick(&[&r.a, &r.b]);
+        r.b.tag_remove(&json!({ "ref": r.sid, "tags": ["x"] }))
+            .expect("remove on b");
+        r.b.tag_add(&json!({ "ref": r.sid, "tags": ["x"] }))
+            .expect("re-add on b");
+
+        merge_into(&r.a, &r.b);
+        assert!(holds(&r.a, &r, "tag"), "B's later re-add wins on A");
+        merge_into(&r.b, &r.a);
+        assert!(
+            holds(&r.b, &r, "tag"),
+            "and A's older removal does not undo it on B"
+        );
+    }
+
+    /// The same for a link, whose re-add mints a new id for the same edge.
+    #[test]
+    fn a_link_removal_older_than_the_same_edge_re_added_loses() {
+        let r = removables_on_two_machines();
+        remove_on_a(&r, "link");
+        tick(&[&r.a, &r.b]);
+        r.b.link_remove(&json!({ "id": r.link }))
+            .expect("remove on b");
+        r.b.link_add(&json!({
+            "from": r.sid,
+            "to": format!("task:{}", r.blocker),
+            "relation": "references",
+        }))
+        .expect("re-add on b");
+
+        let edges = |e: &Engine| {
+            e.link_list(&json!({})).expect("link.list")["links"]
+                .as_array()
+                .expect("links")
+                .len()
+        };
+        merge_into(&r.a, &r.b);
+        assert_eq!(edges(&r.a), 1, "B's later re-add wins on A");
+        merge_into(&r.b, &r.a);
+        assert_eq!(
+            edges(&r.b),
+            1,
+            "and A's older removal does not undo it on B"
+        );
+    }
+
+    /// D185's restore contract is unchanged: without `merge` a document's
+    /// removal events are history, not instructions.
+    #[test]
+    fn a_plain_import_does_not_apply_removal_events() {
+        let r = removables_on_two_machines();
+        remove_on_a(&r, "link");
+        remove_on_a(&r, "doc");
+        r.b.store_import(&r.a.store_export(&json!({})).expect("export a"))
+            .expect("plain import");
+        assert!(
+            holds(&r.b, &r, "link"),
+            "a restore keeps what it does not carry"
+        );
+        assert!(
+            holds(&r.b, &r, "doc"),
+            "a restore keeps what it does not carry"
+        );
+    }
+
+    /// (a): the two removals that used to record `{}` name the row they took,
+    /// in the terms another store can find it by, and the export carries them
+    /// although the rows themselves are gone.
+    #[test]
+    fn link_and_doc_removal_events_name_their_row_and_travel_in_the_export() {
+        let r = removables_on_two_machines();
+        remove_on_a(&r, "link");
+        remove_on_a(&r, "doc");
+        let document = r.a.store_export(&json!({})).expect("export");
+        let event = |op: &str| {
+            document["events"]
+                .as_array()
+                .expect("events")
+                .iter()
+                .find(|e| e["op"] == json!(op))
+                .cloned()
+                .unwrap_or_else(|| panic!("the export carries the {op} event: {document}"))
+        };
+        let link = event("link.remove");
+        assert_eq!(link["entity_id"], json!(r.link));
+        assert_eq!(link["payload"]["id"], json!(r.link));
+        assert_eq!(link["payload"]["from"], json!(format!("task:{}", r.id)));
+        assert_eq!(link["payload"]["to"], json!(format!("task:{}", r.blocker)));
+        assert_eq!(link["payload"]["relation"], json!("references"));
+        let doc = event("memory.remove");
+        assert_eq!(doc["entity_id"], json!(r.doc));
+        assert_eq!(doc["payload"]["id"], json!(r.doc));
+        assert_eq!(doc["payload"]["source"], json!("docs/ruling.md"));
     }
 }

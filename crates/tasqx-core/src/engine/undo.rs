@@ -264,8 +264,8 @@ pub const NOT_UNDOABLE: &[(&str, &str)] = &[
     ),
     (
         "memory.remove",
-        "The event records only the doc's id, not its title or text; `tasqx memory add` \
-         re-files it, or `tasqx memory import` restores it from its file.",
+        "The event records the doc's id, source and project, not its title or text; \
+         `tasqx memory add` re-files it, or `tasqx memory import` restores it from its file.",
     ),
     (
         "memory.update",
@@ -284,8 +284,8 @@ pub const NOT_UNDOABLE: &[(&str, &str)] = &[
     ),
     (
         "link.remove",
-        "The row is gone and the event carries only the link's id, not its endpoints or \
-         metadata; `tasqx api link.add` writes the edge again.",
+        "The row is gone and the event carries the link's id, ends and relation, not its \
+         metadata or when it was made; `tasqx api link.add` writes the edge again.",
     ),
     (
         "annotation.remove",
