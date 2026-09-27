@@ -47,14 +47,27 @@ impl Endpoint {
         }
     }
 
-    /// An override, `http[s]://host[:port]` with no path.
+    /// An override, `https://host[:port]` with no path. Plain `http://` only
+    /// for a loopback host: anywhere else it would carry the signed requests
+    /// and the snapshot in clear.
     pub fn parse(raw: &str) -> Result<Self, String> {
         let base = raw.trim().trim_end_matches('/');
-        let host = base
-            .strip_prefix("https://")
-            .or_else(|| base.strip_prefix("http://"))
-            .filter(|h| !h.is_empty() && !h.contains(['/', '?', '#', '@']))
-            .ok_or_else(|| format!("{ENDPOINT_ENV}={raw:?} is not an http(s)://host[:port] URL"))?;
+        let (host, tls) = match base.strip_prefix("https://") {
+            Some(h) => (h, true),
+            None => (base.strip_prefix("http://").unwrap_or_default(), false),
+        };
+        if host.is_empty() || host.contains(['/', '?', '#', '@']) {
+            return Err(format!(
+                "{ENDPOINT_ENV}={raw:?} is not an https://host[:port] URL"
+            ));
+        }
+        if !tls && !is_loopback(host) {
+            return Err(format!(
+                "{ENDPOINT_ENV}={raw:?} is plain http to a host that is not this machine; \
+                 use https://, since the request would carry the snapshot and its \
+                 signature unencrypted"
+            ));
+        }
         Ok(Self {
             host: host.to_string(),
             base: base.to_string(),
@@ -68,6 +81,23 @@ impl Endpoint {
             _ => Ok(Self::r2(account_id)),
         }
     }
+}
+
+/// Whether `authority` (`host[:port]`) names this machine: `localhost`,
+/// 127.0.0.0/8, or `[::1]`.
+fn is_loopback(authority: &str) -> bool {
+    let host = match authority.strip_prefix('[') {
+        Some(rest) => match rest.split_once(']') {
+            Some((ip, "")) => ip,
+            Some((ip, port)) if port.starts_with(':') => ip,
+            _ => return false,
+        },
+        None => authority.split_once(':').map_or(authority, |(h, _)| h),
+    };
+    host.eq_ignore_ascii_case("localhost")
+        || host
+            .parse::<std::net::IpAddr>()
+            .is_ok_and(|ip| ip.is_loopback())
 }
 
 /// A signed-request client for one bucket's credentials.
@@ -237,6 +267,42 @@ fn between(text: &str, open: &str, close: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn plain_http_is_accepted_for_a_loopback_host_only() {
+        for ok in [
+            "http://127.0.0.1:8080",
+            "http://127.5.6.7",
+            "http://localhost:9000/",
+            "http://LOCALHOST",
+            "http://[::1]:9000",
+        ] {
+            assert!(Endpoint::parse(ok).is_ok(), "{ok}");
+        }
+        for refused in [
+            "http://example.com",
+            "http://10.0.0.1:9000",
+            "http://127.0.0.1.evil.example",
+            "http://localhost.evil.example",
+            "http://[::2]:9000",
+        ] {
+            let msg = Endpoint::parse(refused).unwrap_err();
+            assert!(msg.contains(ENDPOINT_ENV), "{refused}: {msg}");
+            assert!(msg.contains("https://"), "{refused}: {msg}");
+        }
+    }
+
+    #[test]
+    fn https_is_accepted_for_any_host() {
+        for ok in [
+            "https://example.com",
+            "https://0123456789abcdef0123456789abcdef.eu.r2.cloudflarestorage.com",
+            "https://10.0.0.1:8443",
+        ] {
+            let e = Endpoint::parse(ok).unwrap();
+            assert_eq!(e.base, ok);
+        }
+    }
 
     /// An https endpoint gets as far as a TLS handshake: the provider and the
     /// OS trust store are wired, so the only failure is the peer's.
