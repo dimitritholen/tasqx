@@ -93,6 +93,21 @@ fn main() {
             "the_state_dir_lives_beside_the_store",
             state_dir_lives_beside_the_store,
         ),
+        #[cfg(unix)]
+        (
+            "a_non_executable_file_on_path_does_not_shadow_the_real_one",
+            a_non_executable_candidate_is_skipped,
+        ),
+        #[cfg(unix)]
+        (
+            "a_fresh_state_dir_and_remotes_are_created_0700",
+            a_fresh_state_dir_is_private,
+        ),
+        #[cfg(unix)]
+        (
+            "a_group_readable_state_dir_is_tightened_to_0700",
+            an_open_state_dir_is_tightened,
+        ),
     ];
     let filters: Vec<String> = std::env::args()
         .skip(1)
@@ -390,10 +405,76 @@ fn connectors_are_found_on_path() {
     std::fs::create_dir_all(&b).unwrap();
     let file = format!("tasqx-remote-dir{}", std::env::consts::EXE_SUFFIX);
     std::fs::write(b.join(&file), b"").unwrap();
+    make_executable(&b.join(&file));
     let path = std::env::join_paths([&a, &b]).unwrap();
     let found = tasqx_core::remote::find_in("dir", &path).expect("on the second entry");
     assert_eq!(found, b.join(&file));
     assert!(tasqx_core::remote::find_in("s3", &path).is_none());
+}
+
+/// Give `path` its owner's execute bit; nothing to do on Windows, where the
+/// suffix is what makes a file runnable.
+fn make_executable(path: &Path) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    #[cfg(not(unix))]
+    let _ = path;
+}
+
+/// A stray file of the right name without an execute bit, earlier on PATH,
+/// must not shadow the real connector behind it: running it fails with
+/// "Permission denied" and the user never learns why.
+#[cfg(unix)]
+fn a_non_executable_candidate_is_skipped() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = scratch("path-noexec");
+    let (a, b) = (dir.join("a"), dir.join("b"));
+    std::fs::create_dir_all(&a).unwrap();
+    std::fs::create_dir_all(&b).unwrap();
+    std::fs::write(a.join("tasqx-remote-dir"), b"").unwrap();
+    std::fs::set_permissions(
+        a.join("tasqx-remote-dir"),
+        std::fs::Permissions::from_mode(0o644),
+    )
+    .unwrap();
+    std::fs::write(b.join("tasqx-remote-dir"), b"").unwrap();
+    make_executable(&b.join("tasqx-remote-dir"));
+    let path = std::env::join_paths([&a, &b]).unwrap();
+    assert_eq!(
+        tasqx_core::remote::find_in("dir", &path),
+        Some(b.join("tasqx-remote-dir"))
+    );
+}
+
+#[cfg(unix)]
+fn mode_of(path: &Path) -> u32 {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::metadata(path).unwrap().permissions().mode() & 0o777
+}
+
+/// Connectors keep credentials in their state dir, so nobody but the user may
+/// list or read it — and `remotes/` above it is created the same way.
+#[cfg(unix)]
+fn a_fresh_state_dir_is_private() {
+    let dir = scratch("private-fresh");
+    let state = dir.join("remotes").join("fake");
+    fake_connector("record", &state).describe().unwrap();
+    assert_eq!(mode_of(&state), 0o700, "the state dir");
+    assert_eq!(mode_of(&dir.join("remotes")), 0o700, "remotes/");
+}
+
+#[cfg(unix)]
+fn an_open_state_dir_is_tightened() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = scratch("private-open");
+    let state = dir.join("remotes").join("fake");
+    std::fs::create_dir_all(&state).unwrap();
+    std::fs::set_permissions(&state, std::fs::Permissions::from_mode(0o755)).unwrap();
+    fake_connector("record", &state).describe().unwrap();
+    assert_eq!(mode_of(&state), 0o700);
 }
 
 fn bad_names_are_refused() {
