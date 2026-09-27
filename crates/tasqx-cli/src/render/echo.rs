@@ -1968,6 +1968,17 @@ pub fn sync_status(ctx: &Ctx, result: &Value, now: Timestamp) -> String {
         outcome(ctx, "sync"),
         Fact::new(connector.clone(), connector),
     ];
+    // Whether snapshots are sealed before they leave (D202); never the
+    // passphrase itself.
+    if result.get("encrypted").and_then(Value::as_bool) == Some(true) {
+        fixed.push(Fact::role(ctx, "card.label", "encrypted"));
+    } else {
+        fixed.push(Fact::role(
+            ctx,
+            "warn",
+            "no passphrase: run tasqx sync setup again",
+        ));
+    }
     let last = result
         .get("synced_at")
         .and_then(Value::as_str)
@@ -1999,6 +2010,7 @@ pub fn sync_set_up(ctx: &Ctx, result: &Value) -> String {
             format!("sync through {}", s(result, "connector")),
             format!("sync through {}", s(result, "connector")),
         ),
+        Fact::role(ctx, "card.label", "encrypted"),
     ];
     let droppable = vec![Fact::role(ctx, "card.label", "tasqx sync runs it")];
     record(ctx, None, fixed, droppable)

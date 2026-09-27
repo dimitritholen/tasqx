@@ -1424,6 +1424,12 @@ pub(super) enum ThemeAction {
 pub(super) enum SyncAction {
     /// Choose the remote: ask the connector what it needs, hand it your
     /// answers, and record it beside this store once it accepts them.
+    ///
+    /// Also sets the sync passphrase every snapshot is encrypted with before
+    /// the connector sees it (D202): asked twice at a prompt that does not
+    /// echo, or read from `TASQX_SYNC_PASSPHRASE`, never from `--set`. Every
+    /// machine syncing with the remote needs the same one; it is kept in
+    /// `<store>.sync.key` beside the store, readable by you alone.
     Setup {
         /// The connector's name: `dir` runs `tasqx-remote-dir` from PATH.
         connector: String,

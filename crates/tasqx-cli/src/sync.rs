@@ -32,12 +32,16 @@
 //! again. The last synced version and time are recorded only after an
 //! attempt ends with the remote holding this store.
 //!
-//! **The snapshot boundary.** Snapshot bytes are opaque to the connector.
+//! **The snapshot boundary.** A connector only ever holds ciphertext (D202).
 //! [`pull_snapshots`] and [`push_snapshot`] are the only two places bytes
-//! cross between this store and the remote — task #883's encryption goes
-//! there and nowhere else. Decrypting means writing the plaintext to a file
-//! of its own and pointing [`Pulled`]'s `path` at it, since that file is what
-//! `store.import` reads.
+//! cross between this store and the remote: the push seals the export with
+//! the store's sync passphrase ([`seal`]) before the connector is handed the
+//! file, and the pull opens every snapshot before any of them is merged —
+//! one that is plaintext, altered, truncated or sealed under another
+//! passphrase stops the sync with nothing from that pull merged. The opened
+//! document is written to a file of its own in the attempt's private working
+//! directory, since that file is what `store.import` reads. The passphrase is
+//! `<store>.sync.key` beside the store, 0600, never in `<store>.sync.json`.
 
 use std::path::{Path, PathBuf};
 
@@ -47,6 +51,10 @@ use tasqx_core::ApiError;
 
 use crate::backend::Backend;
 use crate::theme::Ctx;
+
+mod seal;
+
+use seal::SyncKey;
 
 /// Attempts before a sync that keeps losing the race gives up.
 pub(crate) const MAX_ATTEMPTS: u32 = 3;
@@ -92,35 +100,53 @@ struct Pulled {
     path: PathBuf,
 }
 
-/// Pull, and read every snapshot back as export bytes. The inbound half of
-/// the snapshot boundary (#883 decrypts here).
-fn pull_snapshots(remote: &dyn Remote, out_dir: &Path) -> Result<Vec<Pulled>, ApiError> {
+/// Pull into `work/pull`, and open every snapshot into `work` as export
+/// bytes. The inbound half of the snapshot boundary: all of them are opened
+/// before the caller merges any, so one that will not open leaves the store
+/// untouched by this pull.
+fn pull_snapshots(
+    remote: &dyn Remote,
+    work: &Path,
+    key: &SyncKey,
+) -> Result<Vec<Pulled>, ApiError> {
     remote
-        .pull(out_dir)
+        .pull(&work.join("pull"))
         .map_err(remote_error)?
         .into_iter()
-        .map(|s| {
-            let doc = std::fs::read(&s.path)
+        .enumerate()
+        .map(|(i, s)| {
+            let blob = std::fs::read(&s.path)
                 .map_err(io_error(format!("cannot read snapshot {}", s.version)))?;
+            let doc = key.open(&blob).map_err(|e| {
+                ApiError::bad_request(format!(
+                    "sync: snapshot {} was refused and nothing it holds was merged: {e}",
+                    s.version
+                ))
+            })?;
+            let path = work.join(format!("opened-{i}.json"));
+            std::fs::write(&path, &doc)
+                .map_err(io_error(format!("cannot write {}", path.display())))?;
             Ok(Pulled {
                 version: s.version,
                 doc,
-                path: s.path,
+                path,
             })
         })
         .collect()
 }
 
-/// Write the export into `dir` and push it. The outbound half of the snapshot
-/// boundary (#883 encrypts here).
+/// Seal the export into `dir` and push that. The outbound half of the
+/// snapshot boundary: the connector is never handed the export itself.
 fn push_snapshot(
     remote: &dyn Remote,
     dir: &Path,
     doc: &[u8],
     expected: Option<&str>,
+    key: &SyncKey,
 ) -> Result<PushOutcome, ApiError> {
-    let path = dir.join("snapshot.json");
-    std::fs::write(&path, doc).map_err(io_error(format!("cannot write {}", path.display())))?;
+    let blob = seal::seal(key, doc).map_err(|e| ApiError::internal(format!("sync: {e}")))?;
+    let path = dir.join("snapshot.tasqxenc");
+    std::fs::write(&path, blob).map_err(io_error(format!("cannot write {}", path.display())))?;
     remote.push(&path, expected).map_err(remote_error)
 }
 
@@ -254,12 +280,18 @@ struct Synced {
 }
 
 /// The loop: pull, merge every snapshot, export, push; again on conflict.
-fn run_loop(be: &mut Backend, remote: &dyn Remote, work_root: &Path) -> Result<Synced, ApiError> {
+/// The comparison that skips the push is over opened documents: ciphertext
+/// differs on every seal.
+fn run_loop(
+    be: &mut Backend,
+    remote: &dyn Remote,
+    work_root: &Path,
+    key: &SyncKey,
+) -> Result<Synced, ApiError> {
     let mut tally = Tally::default();
     for attempt in 1..=MAX_ATTEMPTS {
         let work = WorkDir::new(work_root, attempt)?;
-        let pull_dir = work.0.join("pull");
-        let pulled = pull_snapshots(remote, &pull_dir)?;
+        let pulled = pull_snapshots(remote, &work.0, key)?;
         for snapshot in &pulled {
             let result = merge(be, snapshot)?;
             tally.add(&result);
@@ -276,7 +308,7 @@ fn run_loop(be: &mut Backend, remote: &dyn Remote, work_root: &Path) -> Result<S
                 });
             }
         }
-        match push_snapshot(remote, &work.0, &doc, head.as_deref())? {
+        match push_snapshot(remote, &work.0, &doc, head.as_deref(), key)? {
             PushOutcome::Pushed { version } => {
                 return Ok(Synced {
                     version,
@@ -337,6 +369,47 @@ fn write_state(path: &Path, state: &State) -> Result<(), ApiError> {
     std::fs::rename(&tmp, path).map_err(io_error(format!("cannot write {}", path.display())))
 }
 
+/// Where this store's sync passphrase lives: beside the store and its
+/// `.sync.json`, never inside it, so the state file can be read, printed or
+/// copied without carrying the key.
+fn key_path(store: &Path) -> PathBuf {
+    let mut name = store.file_name().unwrap_or_default().to_os_string();
+    name.push(".sync.key");
+    store.with_file_name(name)
+}
+
+/// The passphrase, or `None` when there is no key file or it is empty.
+fn read_key(path: &Path) -> Option<String> {
+    let text = std::fs::read_to_string(path).ok()?;
+    (!text.is_empty()).then_some(text)
+}
+
+/// Write the passphrase whole, readable by this user alone. On Unix the file
+/// is CREATED 0600 — a fresh temp file made with that mode and renamed over —
+/// so there is no moment at which it exists with a wider one.
+fn write_key(path: &Path, passphrase: &str) -> Result<(), ApiError> {
+    use std::io::Write;
+    let tmp = path.with_extension("key.tmp");
+    let _ = std::fs::remove_file(&tmp);
+    let written = (|| {
+        let mut open = std::fs::OpenOptions::new();
+        open.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            open.mode(0o600);
+        }
+        let mut f = open.open(&tmp)?;
+        f.write_all(passphrase.as_bytes())?;
+        f.sync_all()?;
+        std::fs::rename(&tmp, path)
+    })();
+    written.map_err(|e| {
+        let _ = std::fs::remove_file(&tmp);
+        ApiError::internal(format!("sync: cannot write {}: {e}", path.display()))
+    })
+}
+
 /// The store the backend writes to. Through a daemon that is the daemon's
 /// file, which only the daemon can name (`core.capabilities.store`, D74) —
 /// `$TASQX_DB` is not in effect there, and the connector's state and this
@@ -373,11 +446,19 @@ pub(crate) fn run(be: &mut Backend, ctx: &Ctx) -> crate::CmdOutcome {
     let Some(name) = read_state(&state_path(&store)).map(|s| s.connector) else {
         return Err(not_set_up());
     };
+    let Some(passphrase) = read_key(&key_path(&store)) else {
+        return Err(ApiError::bad_request(format!(
+            "sync: this store has no sync passphrase, so its snapshots cannot be encrypted \
+             (it was set up before sync encrypted them): run `tasqx sync setup {name}` again \
+             to set one"
+        )));
+    };
+    let key = SyncKey::new(passphrase);
     let connector = connector_at(&store, &name)?.with_limits(Limits {
         timeout: remote::TRANSFER_TIMEOUT,
         ..Limits::default()
     });
-    let synced = run_loop(be, &connector, &std::env::temp_dir())?;
+    let synced = run_loop(be, &connector, &std::env::temp_dir(), &key)?;
     let state = State {
         connector: name,
         version: Some(synced.version),
@@ -407,9 +488,11 @@ fn not_set_up() -> ApiError {
 
 /// `tasqx sync --status`.
 pub(crate) fn status(be: &mut Backend, ctx: &Ctx) -> crate::CmdOutcome {
-    let state = read_state(&state_path(&store_path(be)?));
+    let store = store_path(be)?;
+    let state = read_state(&state_path(&store));
     let result = json!({
         "set_up": state.is_some(),
+        "encrypted": state.is_some() && read_key(&key_path(&store)).is_some(),
         "connector": state.as_ref().map(|s| s.connector.clone()),
         "version": state.as_ref().and_then(|s| s.version.clone()),
         "synced_at": state.as_ref().and_then(|s| s.synced_at.clone()),
@@ -438,6 +521,7 @@ pub(crate) fn setup(be: &mut Backend, ctx: &Ctx, name: &str, set: &[String]) -> 
     };
     let ask = |f: &remote::Field| prompt::ask(f);
     let env = |k: &str| std::env::var(k).ok();
+    refuse_passphrase_in_set(&given)?;
     let given = collect_values(
         name,
         &description.fields,
@@ -445,6 +529,15 @@ pub(crate) fn setup(be: &mut Backend, ctx: &Ctx, name: &str, set: &[String]) -> 
         &env,
         interactive.then_some(&ask as &Ask),
     )?;
+    let ask_twice = prompt::passphrase;
+    let passphrase = collect_passphrase(&env, interactive.then_some(&ask_twice as &AskTwice))?;
+    if passphrase.chars().count() < ADVISED_PASSPHRASE_CHARS {
+        eprintln!(
+            "tasqx: note: the sync passphrase is under {ADVISED_PASSPHRASE_CHARS} characters; \
+             whoever holds a snapshot can try passphrases against it offline, so a longer \
+             one (several words) is much harder to guess"
+        );
+    }
     match connector.configure(&given).map_err(remote_error)? {
         remote::Configured::Rejected(error) => Err(ApiError::bad_request(format!(
             "{name} refused these settings: {error}"
@@ -452,6 +545,7 @@ pub(crate) fn setup(be: &mut Backend, ctx: &Ctx, name: &str, set: &[String]) -> 
         remote::Configured::Ok => {
             // The same connector set up again keeps its last sync; another one
             // starts with none, since that version names a different remote.
+            write_key(&key_path(&store), &passphrase)?;
             let path = state_path(&store);
             let (version, synced_at) = match read_state(&path) {
                 Some(old) if old.connector == name => (old.version, old.synced_at),
@@ -469,6 +563,7 @@ pub(crate) fn setup(be: &mut Backend, ctx: &Ctx, name: &str, set: &[String]) -> 
                 "connector": name,
                 "connector_version": description.version,
                 "state": path.to_string_lossy(),
+                "encrypted": true,
             });
             let text = crate::render::sync_set_up(ctx, &result);
             Ok((result, text))
@@ -492,6 +587,62 @@ fn secret_env(key: &str) -> String {
         })
         .collect();
     format!("TASQX_SYNC_{key}")
+}
+
+/// Where `sync setup` reads the sync passphrase off a terminal.
+const PASSPHRASE_ENV: &str = "TASQX_SYNC_PASSPHRASE";
+
+/// Under this many characters `sync setup` warns, and still takes it.
+const ADVISED_PASSPHRASE_CHARS: usize = 12;
+
+/// How the passphrase is asked for on the terminal: twice, neither echoed.
+type AskTwice = dyn Fn() -> Result<(String, String), ApiError>;
+
+/// The passphrase never comes from `--set`, for the reason a secret field
+/// does not: argv lands in shell history and in `ps`.
+fn refuse_passphrase_in_set(given: &remote::Values) -> Result<(), ApiError> {
+    if given.contains_key("passphrase") {
+        return Err(ApiError::bad_request(format!(
+            "the sync passphrase is never taken from --set, which would leave it in your shell \
+             history and in `ps`: run `tasqx sync setup` on a terminal to be asked for it with \
+             the prompt, which does not echo, or put it in the environment variable \
+             {PASSPHRASE_ENV}"
+        )));
+    }
+    Ok(())
+}
+
+/// The sync passphrase: [`PASSPHRASE_ENV`] when set, else asked twice on a
+/// terminal. Refused when empty, or when the two answers differ.
+fn collect_passphrase(
+    env: &dyn Fn(&str) -> Option<String>,
+    ask: Option<&AskTwice>,
+) -> Result<String, ApiError> {
+    let passphrase = match (env(PASSPHRASE_ENV), ask) {
+        (Some(p), _) => p,
+        (None, Some(ask)) => {
+            let (first, again) = ask()?;
+            if first != again {
+                return Err(ApiError::bad_request(
+                    "the two passphrases differ; nothing was set up",
+                ));
+            }
+            first
+        }
+        (None, None) => {
+            return Err(ApiError::bad_request(format!(
+                "sync needs a passphrase to encrypt this store's snapshots, and stdin is not a \
+                 terminal to ask on: put it in the environment variable {PASSPHRASE_ENV}"
+            )))
+        }
+    };
+    if passphrase.is_empty() {
+        return Err(ApiError::bad_request(
+            "the sync passphrase is empty; every snapshot is encrypted with it, so it must \
+             have at least one character (and should have many)",
+        ));
+    }
+    Ok(passphrase)
 }
 
 /// How a field is asked for on the terminal.
@@ -602,6 +753,24 @@ mod prompt {
         Ok(line.trim_end_matches(['\r', '\n']).to_string())
     }
 
+    /// The sync passphrase, asked twice without echo.
+    pub(super) fn passphrase() -> Result<(String, String), ApiError> {
+        let mut err = std::io::stderr();
+        let _ = writeln!(
+            err,
+            "Every snapshot is encrypted with this passphrase before it leaves this machine. \
+             Every machine syncing with this remote needs the same one; without it the \
+             snapshots cannot be read."
+        );
+        let _ = write!(err, "Sync passphrase: ");
+        let _ = err.flush();
+        let first = secret()?;
+        let _ = write!(err, "Again, to confirm: ");
+        let _ = err.flush();
+        let again = secret()?;
+        Ok((first, again))
+    }
+
     /// Raw mode leaves the terminal on every way out of here.
     struct Raw;
 
@@ -680,13 +849,32 @@ mod tests {
         t
     }
 
-    /// A document another machine would have pushed, holding these tasks.
-    fn snapshot_of(titles: &[&str]) -> Vec<u8> {
+    const PASSPHRASE: &str = "correct horse battery staple";
+
+    /// Every machine in these tests shares one passphrase, at the cheapest
+    /// Argon2 cost so a debug build does not spend seconds per seal.
+    fn key() -> SyncKey {
+        SyncKey::cheap(PASSPHRASE)
+    }
+
+    /// What a connector would hold for this document.
+    fn sealed(doc: &[u8]) -> Vec<u8> {
+        seal::seal(&key(), doc).unwrap()
+    }
+
+    /// The export document another machine would have pushed, holding these
+    /// tasks, before it is sealed.
+    fn document_of(titles: &[&str]) -> Vec<u8> {
         let mut other = Backend::Local(Engine::open_in_memory().unwrap());
         for t in titles {
             add(&mut other, t);
         }
         serde_json::to_vec(&other.call("store.export", &json!({})).unwrap()).unwrap()
+    }
+
+    /// The same, as the connector holds it.
+    fn snapshot_of(titles: &[&str]) -> Vec<u8> {
+        sealed(&document_of(titles))
     }
 
     type Hook = Box<dyn FnMut(&mut Vec<(String, Vec<u8>)>)>;
@@ -768,7 +956,7 @@ mod tests {
         let mut be = store(&dir, "a");
         add(&mut be, "Water the plants");
         let fake = Fake::new(Vec::new());
-        let done = run_loop(&mut be, &fake, &dir).unwrap();
+        let done = run_loop(&mut be, &fake, &dir, &key()).unwrap();
         assert!(done.pushed);
         assert_eq!(done.attempts, 1);
         assert_eq!(*fake.pushes.borrow(), vec![None]);
@@ -784,7 +972,7 @@ mod tests {
             ("head".into(), snapshot_of(&["From head"])),
             ("copy".into(), snapshot_of(&["From a conflict copy"])),
         ]);
-        let done = run_loop(&mut be, &fake, &dir).unwrap();
+        let done = run_loop(&mut be, &fake, &dir, &key()).unwrap();
         assert_eq!(
             titles(&mut be),
             ["From a conflict copy", "From head", "Local"]
@@ -800,8 +988,10 @@ mod tests {
         let mut be = store(&dir, "a");
         add(&mut be, "Local");
         let mine = serde_json::to_vec(&be.call("store.export", &json!({})).unwrap()).unwrap();
-        let fake = Fake::new(vec![("head".into(), mine)]);
-        let done = run_loop(&mut be, &fake, &dir).unwrap();
+        // Sealed afresh: another salt and nonce than any seal of this store
+        // would draw, so only the OPENED documents can compare equal.
+        let fake = Fake::new(vec![("head".into(), sealed(&mine))]);
+        let done = run_loop(&mut be, &fake, &dir, &key()).unwrap();
         assert!(!done.pushed);
         assert_eq!(done.version, "head");
         assert!(fake.pushes.borrow().is_empty());
@@ -820,7 +1010,7 @@ mod tests {
                 *snaps = vec![("raced".into(), bytes)];
             }
         }));
-        let done = run_loop(&mut be, &fake, &dir).unwrap();
+        let done = run_loop(&mut be, &fake, &dir, &key()).unwrap();
         assert!(done.pushed);
         assert_eq!(done.attempts, 2);
         assert_eq!(
@@ -829,7 +1019,8 @@ mod tests {
         );
         assert_eq!(titles(&mut be), ["Local", "Theirs", "Theirs, later"]);
         // What landed on the remote is this store, all three tasks of it.
-        let pushed: Value = serde_json::from_slice(&fake.snapshots.borrow()[0].1).unwrap();
+        let pushed: Value =
+            serde_json::from_slice(&key().open(&fake.snapshots.borrow()[0].1).unwrap()).unwrap();
         assert_eq!(pushed["tasks"].as_array().unwrap().len(), 3);
     }
 
@@ -845,7 +1036,7 @@ mod tests {
             let bytes = snaps[0].1.clone();
             *snaps = vec![(format!("moved{n}"), bytes)];
         }));
-        let err = run_loop(&mut be, &fake, &dir).unwrap_err();
+        let err = run_loop(&mut be, &fake, &dir, &key()).unwrap_err();
         assert_eq!(err.code, tasqx_core::ErrorCode::Conflict, "{err}");
         assert!(err.message.contains("run `tasqx sync` again"), "{err}");
         assert_eq!(fake.pushes.borrow().len(), MAX_ATTEMPTS as usize);
@@ -860,7 +1051,7 @@ mod tests {
         add(&mut be, "Local");
         let mut fake = Fake::new(vec![("v0".into(), snapshot_of(&["Theirs"]))]);
         fake.fail_push = true;
-        let err = run_loop(&mut be, &fake, &dir).unwrap_err();
+        let err = run_loop(&mut be, &fake, &dir, &key()).unwrap_err();
         assert_eq!(err.code, tasqx_core::ErrorCode::Internal, "{err}");
         assert!(err.message.contains("the link dropped"), "{err}");
         assert_eq!(titles(&mut be), ["Local", "Theirs"]);
@@ -880,7 +1071,7 @@ mod tests {
         let work = dir.join("work");
         std::fs::create_dir_all(&work).unwrap();
         let fake = Fake::new(vec![("v0".into(), snapshot_of(&["Theirs"]))]);
-        run_loop(&mut be, &fake, &work).unwrap();
+        run_loop(&mut be, &fake, &work, &key()).unwrap();
         assert_eq!(std::fs::read_dir(&work).unwrap().count(), 0);
     }
 
@@ -888,10 +1079,131 @@ mod tests {
     fn a_snapshot_that_is_not_an_export_is_refused_by_version() {
         let dir = scratch("junk");
         let mut be = store(&dir, "a");
-        let fake = Fake::new(vec![("v9".into(), b"{\"nope\": 1}".to_vec())]);
-        let err = run_loop(&mut be, &fake, &dir).unwrap_err();
+        let fake = Fake::new(vec![("v9".into(), sealed(b"{\"nope\": 1}"))]);
+        let err = run_loop(&mut be, &fake, &dir, &key()).unwrap_err();
         assert!(err.message.contains("v9"), "{err}");
         assert!(fake.pushes.borrow().is_empty());
+    }
+
+    #[test]
+    fn what_is_pushed_is_sealed_and_holds_no_plaintext() {
+        let dir = scratch("sealed");
+        let mut be = store(&dir, "a");
+        add(&mut be, "Renew the passport");
+        let fake = Fake::new(Vec::new());
+        run_loop(&mut be, &fake, &dir, &key()).unwrap();
+        let blob = fake.snapshots.borrow()[0].1.clone();
+        assert!(
+            !blob.windows(8).any(|w| w == b"passport"),
+            "no title in clear"
+        );
+        assert!(serde_json::from_slice::<Value>(&blob).is_err(), "not JSON");
+        let opened: Value = serde_json::from_slice(&key().open(&blob).unwrap()).unwrap();
+        assert_eq!(opened["tasks"][0]["title"], "Renew the passport");
+    }
+
+    /// A snapshot that will not open stops the sync before ANY snapshot of
+    /// the pull is merged — even one that would have opened — and nothing is
+    /// pushed.
+    fn refused_before_any_merge(tag: &str, bad: Vec<u8>) -> ApiError {
+        let dir = scratch(tag);
+        let mut be = store(&dir, "a");
+        add(&mut be, "Local");
+        let fake = Fake::new(vec![
+            ("good".into(), snapshot_of(&["Theirs"])),
+            ("bad".into(), bad),
+        ]);
+        let err = run_loop(&mut be, &fake, &dir, &key()).unwrap_err();
+        assert_eq!(err.code, tasqx_core::ErrorCode::BadRequest, "{err}");
+        assert!(err.message.contains("bad"), "names the version: {err}");
+        assert!(err.message.contains("nothing"), "{err}");
+        assert_eq!(titles(&mut be), ["Local"], "nothing merged");
+        assert!(fake.pushes.borrow().is_empty(), "nothing pushed");
+        err
+    }
+
+    #[test]
+    fn a_snapshot_under_another_passphrase_is_refused_before_any_merge() {
+        let other = seal::seal(&SyncKey::cheap("another passphrase"), &document_of(&["X"]));
+        let err = refused_before_any_merge("wrongpass", other.unwrap());
+        assert!(
+            err.message.contains("passphrase"),
+            "the likely cause: {err}"
+        );
+    }
+
+    #[test]
+    fn a_snapshot_with_a_flipped_byte_is_refused_before_any_merge() {
+        let mut blob = snapshot_of(&["X"]);
+        let mid = blob.len() / 2;
+        blob[mid] ^= 0x80;
+        let err = refused_before_any_merge("flipped", blob);
+        assert!(err.message.contains("altered"), "{err}");
+    }
+
+    #[test]
+    fn a_truncated_snapshot_is_refused_before_any_merge() {
+        let mut blob = snapshot_of(&["X"]);
+        blob.truncate(blob.len() - 20);
+        let err = refused_before_any_merge("truncated", blob);
+        assert!(err.message.contains("truncated"), "{err}");
+    }
+
+    #[test]
+    fn a_plaintext_snapshot_is_refused_before_any_merge() {
+        let err = refused_before_any_merge("plain", document_of(&["X"]));
+        assert!(err.message.contains("not encrypted"), "{err}");
+    }
+
+    #[test]
+    fn the_key_sits_beside_the_store_owner_only_and_round_trips() {
+        let dir = scratch("key");
+        let path = key_path(&dir.join("tasks.db"));
+        assert_eq!(path, dir.join("tasks.db.sync.key"));
+        assert_eq!(read_key(&path), None);
+        write_key(&path, "first").unwrap();
+        write_key(&path, "second").unwrap();
+        assert_eq!(read_key(&path).as_deref(), Some("second"));
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(&path).unwrap().permissions().mode();
+            assert_eq!(mode & 0o777, 0o600, "{mode:o}");
+        }
+        std::fs::write(&path, "").unwrap();
+        assert_eq!(read_key(&path), None, "an empty key file is no key");
+    }
+
+    #[test]
+    fn the_passphrase_comes_from_its_env_var_or_the_prompt_never_set() {
+        let env = |k: &str| (k == "TASQX_SYNC_PASSPHRASE").then(|| "from env".to_string());
+        assert_eq!(collect_passphrase(&env, None).unwrap(), "from env");
+
+        let err = refuse_passphrase_in_set(&given(&[("passphrase", "hunter2")])).unwrap_err();
+        assert_eq!(err.code, tasqx_core::ErrorCode::BadRequest);
+        assert!(err.message.contains("TASQX_SYNC_PASSPHRASE"), "{err}");
+        assert!(!err.message.contains("hunter2"), "{err}");
+        refuse_passphrase_in_set(&given(&[("path", "/x")])).unwrap();
+
+        let err = collect_passphrase(&|_| None, None).unwrap_err();
+        assert!(err.message.contains("TASQX_SYNC_PASSPHRASE"), "{err}");
+
+        let twice = || Ok(("typed".to_string(), "typed".to_string()));
+        assert_eq!(
+            collect_passphrase(&|_| None, Some(&twice)).unwrap(),
+            "typed"
+        );
+        let differ = || Ok(("typed".to_string(), "typo".to_string()));
+        let err = collect_passphrase(&|_| None, Some(&differ)).unwrap_err();
+        assert!(err.message.contains("differ"), "{err}");
+    }
+
+    #[test]
+    fn an_empty_passphrase_is_refused() {
+        let err = collect_passphrase(&|_| Some(String::new()), None).unwrap_err();
+        assert!(err.message.contains("empty"), "{err}");
+        let blank = || Ok((String::new(), String::new()));
+        assert!(collect_passphrase(&|_| None, Some(&blank)).is_err());
     }
 
     #[test]
@@ -919,7 +1231,7 @@ mod tests {
     fn merge_ignores_a_dry_run_the_document_asks_for() {
         let dir = scratch("dryrun");
         let mut be = store(&dir, "a");
-        let mut doc: Value = serde_json::from_slice(&snapshot_of(&["Theirs"])).unwrap();
+        let mut doc: Value = serde_json::from_slice(&document_of(&["Theirs"])).unwrap();
         doc["dry_run"] = json!(true);
         let path = dir.join("snap.json");
         std::fs::write(&path, serde_json::to_vec(&doc).unwrap()).unwrap();

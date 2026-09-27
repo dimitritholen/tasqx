@@ -1,5 +1,6 @@
 {
   "connector": null,
+  "encrypted": false,
   "set_up": false,
   "synced_at": null,
   "version": null

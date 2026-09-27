@@ -94,6 +94,20 @@ unicode-truncate = "2.0.1"
 # used to sit below was a third declaration site that could drift on its own.
 unicode-width = "0.2.2"
 
+# `tasqx sync` encrypts every snapshot before a connector sees it (D202):
+# XChaCha20-Poly1305 under a key Argon2id derives from the store's sync
+# passphrase. RustCrypto's own crates, MIT OR Apache-2.0, on the same
+# `digest 0.11`/`cipher 0.5` generation `tasqx-remote-r2` already builds, so
+# they add a handful of small crates rather than a second stack. Chosen over the
+# `age` crate, whose tree carries a non-optional i18n/fluent stack and hybrid
+# post-quantum recipients: over five times the packages, for one passphrase.
+chacha20poly1305 = { version = "0.11", default-features = false, features = ["alloc", "zeroize"] }
+argon2 = { version = "0.6", default-features = false, features = ["alloc", "zeroize"] }
+# Salt and nonce, from the OS. Already in the graph under `crypto-common`.
+getrandom = "0.4"
+# The derived key is wiped when dropped. Already in the graph.
+zeroize = "1.9"
+
 [target.'cfg(unix)'.dependencies]
 # The SIGTERM/SIGHUP/SIGQUIT half of D26's terminal-safety guarantee: the
 # panic hook and the `Restore` guard cover a panic and the three key-driven

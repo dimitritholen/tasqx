@@ -198,6 +198,13 @@ remote is a connector program, `tasqx-remote-<name>` on your `PATH`:
 `tasqx-remote-dir` keeps it in a folder every machine can reach, and
 `tasqx-remote-r2` in a Cloudflare R2 bucket.
 
+Every snapshot is encrypted on this machine before the connector sees it, so
+the folder or the bucket only ever holds ciphertext. `sync setup` asks for a
+passphrase (or reads `TASQX_SYNC_PASSPHRASE` when there is no terminal); give
+every machine that syncs with the remote the same one. Lose it and the
+remote's snapshots cannot be read, though each machine's own store is
+untouched.
+
 ## Good habits
 
 A dated backup, in one line:

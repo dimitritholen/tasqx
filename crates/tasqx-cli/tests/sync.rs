@@ -23,6 +23,10 @@ use serde_json::Value;
 
 const CONNECTOR: &str = "tasqx-remote-dir";
 
+/// Every machine of a world shares this sync passphrase unless a test gives
+/// one another (D202).
+const PASSPHRASE: &str = "correct horse battery staple";
+
 /// A fresh scratch dir of this test's own, named per tag and per process.
 fn scratch(tag: &str) -> PathBuf {
     let p = std::env::temp_dir().join(format!("tasqx-sync-{tag}-{}", std::process::id()));
@@ -100,6 +104,7 @@ impl World {
             world: self,
             dir,
             config_dir,
+            passphrase: PASSPHRASE,
         }
     }
 }
@@ -108,6 +113,7 @@ struct Machine<'w> {
     world: &'w World,
     dir: PathBuf,
     config_dir: PathBuf,
+    passphrase: &'static str,
 }
 
 impl Machine<'_> {
@@ -118,6 +124,7 @@ impl Machine<'_> {
             .env("PATH", &self.world.path_var)
             .env_remove("TASQX_SOCK")
             .env_remove("TASQX_NOW")
+            .env("TASQX_SYNC_PASSPHRASE", self.passphrase)
             .env("NO_COLOR", "1")
             .arg("--no-daemon")
             .args(args);
@@ -165,6 +172,10 @@ impl Machine<'_> {
 
     fn state_file(&self) -> PathBuf {
         self.dir.join("tasks.db.sync.json")
+    }
+
+    fn key_file(&self) -> PathBuf {
+        self.dir.join("tasks.db.sync.key")
     }
 
     fn export(&self) -> Value {
@@ -373,10 +384,169 @@ fn two_stores_converge_through_the_folder_remote() {
         "the two stores converge"
     );
 
-    // Nothing left to exchange: a further sync on either side pushes nothing.
+    // Nothing left to exchange: a further sync on either side pushes nothing,
+    // though every seal of the same store is different ciphertext.
     let quiet = b.json(&["sync"]);
     assert_eq!(quiet["pushed"], false, "{quiet}");
     assert_eq!(quiet["tasks_new"], 0, "{quiet}");
+
+    // The folder never held a byte of either store in clear (D202).
+    let blobs = remote_blobs(&world.remote());
+    assert!(!blobs.is_empty(), "the connector kept snapshots");
+    for (path, bytes) in blobs {
+        for marker in [&b"Water the plants"[..], b"the fern needs more", b"garden"] {
+            assert!(
+                !bytes.windows(marker.len()).any(|w| w == marker),
+                "{} holds {:?} in clear",
+                path.display(),
+                String::from_utf8_lossy(marker)
+            );
+        }
+    }
+}
+
+/// Every file `tasqx-remote-dir` keeps in the remote folder.
+fn remote_blobs(remote: &Path) -> Vec<(PathBuf, Vec<u8>)> {
+    let mut out = Vec::new();
+    let mut dirs = vec![remote.to_path_buf()];
+    while let Some(dir) = dirs.pop() {
+        for entry in std::fs::read_dir(&dir).expect("read the remote folder") {
+            let path = entry.expect("dir entry").path();
+            if path.is_dir() {
+                dirs.push(path);
+            } else {
+                let bytes = std::fs::read(&path).expect("read a remote file");
+                out.push((path, bytes));
+            }
+        }
+    }
+    out
+}
+
+/// A machine that set up the same remote with another passphrase cannot read
+/// it: the sync fails naming the passphrase, nothing is merged and nothing is
+/// recorded. Set up again with the right one, it joins (D202).
+#[test]
+fn a_machine_with_another_passphrase_merges_nothing_until_set_up_with_the_right_one() {
+    let world = World::new("wrongpass");
+    let a = world.machine("a");
+    let mut b = world.machine("b");
+    b.passphrase = "a different passphrase";
+    a.set_up();
+    b.set_up();
+    a.ok(&["init", "home"]);
+    a.ok(&["add", "Renew the passport"]);
+    a.ok(&["sync"]);
+
+    b.ok(&["init", "work"]);
+    let before = b.export();
+    let (code, out, err) = b.run(&["sync"]);
+    assert_eq!(code, 2, "refused:\n{out}{err}");
+    assert!(err.contains("passphrase"), "names the likely cause: {err}");
+    assert!(err.contains("nothing"), "says nothing was merged: {err}");
+    assert_eq!(b.export()["tasks"], before["tasks"], "store unchanged");
+    let state: Value = serde_json::from_slice(&std::fs::read(b.state_file()).unwrap()).unwrap();
+    assert_eq!(state["version"], Value::Null, "no sync recorded: {state}");
+
+    b.passphrase = PASSPHRASE;
+    b.set_up();
+    let got = b.json(&["sync"]);
+    assert_eq!(got["tasks_new"], 1, "{got}");
+}
+
+/// The passphrase is kept beside the store, owner-only, and never in the
+/// state file; `--status` says encryption is on without printing it.
+#[test]
+fn setup_keeps_the_passphrase_in_its_own_private_file_and_status_says_encrypted() {
+    let world = World::new("keyfile");
+    let a = world.machine("a");
+    a.set_up();
+    assert_eq!(std::fs::read_to_string(a.key_file()).unwrap(), PASSPHRASE);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = std::fs::metadata(a.key_file())
+            .unwrap()
+            .permissions()
+            .mode();
+        assert_eq!(mode & 0o777, 0o600, "{mode:o}");
+    }
+    let state = std::fs::read_to_string(a.state_file()).unwrap();
+    assert!(!state.contains(PASSPHRASE), "{state}");
+
+    let status = a.json(&["sync", "--status"]);
+    assert_eq!(status["encrypted"], true, "{status}");
+    assert!(!status.to_string().contains(PASSPHRASE), "{status}");
+    let text = a.ok(&["sync", "--status"]);
+    assert!(text.contains("encrypted"), "{text}");
+    assert!(!text.contains(PASSPHRASE), "{text}");
+}
+
+/// The passphrase never travels in argv; off a terminal it comes from
+/// `TASQX_SYNC_PASSPHRASE`, and without it setup is refused before the
+/// connector records anything. Empty is refused; short is warned about.
+#[test]
+fn the_passphrase_comes_from_the_environment_never_from_set() {
+    let world = World::new("passarg");
+    let mut a = world.machine("a");
+    let path = format!("path={}", world.remote().display());
+
+    let (code, out, err) = a.run(&[
+        "sync",
+        "setup",
+        "dir",
+        "--set",
+        &path,
+        "--set",
+        "passphrase=hunter2",
+    ]);
+    assert_eq!(code, 2, "refused:\n{out}{err}");
+    assert!(err.contains("TASQX_SYNC_PASSPHRASE"), "the way in: {err}");
+    assert!(!err.contains("hunter2"), "{err}");
+    assert!(!a.state_file().exists() && !a.key_file().exists());
+
+    let out = a
+        .cmd(&["sync", "setup", "dir", "--set", &path])
+        .env_remove("TASQX_SYNC_PASSPHRASE")
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&out.stderr).contains("TASQX_SYNC_PASSPHRASE"));
+    assert!(!a.state_file().exists() && !a.key_file().exists());
+
+    a.passphrase = "";
+    let (code, _, err) = a.run(&["sync", "setup", "dir", "--set", &path]);
+    assert_eq!(code, 2, "{err}");
+    assert!(err.contains("empty"), "{err}");
+    assert!(!a.state_file().exists() && !a.key_file().exists());
+
+    a.passphrase = "short";
+    let (code, _, err) = a.run(&["sync", "setup", "dir", "--set", &path]);
+    assert_eq!(code, 0, "a short passphrase is taken: {err}");
+    assert!(
+        err.contains("under 12 characters"),
+        "and warned about: {err}"
+    );
+    assert!(a.key_file().is_file());
+}
+
+/// A store set up before snapshots were encrypted has a state file and no
+/// key: sync refuses and says to set up again (D202).
+#[test]
+fn a_store_set_up_before_encryption_is_told_to_set_up_again() {
+    let world = World::new("prekey");
+    let a = world.machine("a");
+    a.set_up();
+    std::fs::remove_file(a.key_file()).unwrap();
+    a.ok(&["init", "home"]);
+    let (code, _, err) = a.run(&["sync"]);
+    assert_eq!(code, 2, "{err}");
+    assert!(err.contains("tasqx sync setup dir"), "{err}");
+    assert!(
+        world.remote().read_dir().unwrap().next().is_none(),
+        "nothing reached the remote"
+    );
+    assert_eq!(a.json(&["sync", "--status"])["encrypted"], false);
 }
 
 #[test]
@@ -470,6 +640,7 @@ impl<'w> Daemon<'w> {
             .env("TASQX_CONFIG_DIR", self.dir.join("cfg"))
             .env("PATH", &self.world.path_var)
             .env_remove("TASQX_NOW")
+            .env("TASQX_SYNC_PASSPHRASE", PASSPHRASE)
             .env("NO_COLOR", "1")
             .args(args)
             .output()
