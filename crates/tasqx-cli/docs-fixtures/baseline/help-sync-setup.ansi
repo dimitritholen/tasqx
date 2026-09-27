@@ -1,15 +1,31 @@
-Choose the remote: ask the connector what it needs, hand it your answers, and record it beside this store once it accepts them
+Choose the remote: ask the connector what it needs, hand it your answers, and record it beside this store once it accepts them.
+
+Also sets the sync passphrase every snapshot is encrypted with before the connector sees it (D202): asked twice at a prompt that does not echo, or read from `TASQX_SYNC_PASSPHRASE`, never from `--set`. Every machine syncing with the remote needs the same one; it is kept in `<store>.sync.key` beside the store, readable by you alone.
 
 Usage: tasqx sync setup [OPTIONS] <CONNECTOR>
 
 Arguments:
-  <CONNECTOR>  The connector's name: `dir` runs `tasqx-remote-dir` from PATH
+  <CONNECTOR>
+          The connector's name: `dir` runs `tasqx-remote-dir` from PATH
 
 Options:
-      --json             Print the raw JSON API result instead of the human table
-      --set <KEY=VALUE>  Answer one of the connector's questions without being asked (`--set path=/mnt/share/tasqx`); repeat for more. Required for every question when stdin is not a terminal. A secret is refused here, since argv lands in shell history and `ps`: answer it at the prompt, which does not echo, or in `TASQX_SYNC_<KEY>` (the key upper-cased, e.g. `TASQX_SYNC_SECRET_ACCESS_KEY`)
-      --theme <THEME>    Theme name (built-in nord|gruvbox|dracula|solarized|mono, or a user file). Overrides $TASQX_THEME and the config file (DESIGN.md §8)
-      --socket <SOCKET>  Local socket / named-pipe address of a tasqx daemon. Overrides $TASQX_SOCK. When a daemon is reachable, one-shot commands route through it (single writer); otherwise they run in-process. Also selects the address for `daemon` and `watch`
-      --no-daemon        Never route through a daemon; always run one-shot in-process (the pre-daemon behaviour). Escape hatch for scripts
-  -h, --help             Print help
-  -V, --version          Print version
+      --json
+          Print the raw JSON API result instead of the human table
+
+      --set <KEY=VALUE>
+          Answer one of the connector's questions without being asked (`--set path=/mnt/share/tasqx`); repeat for more. Required for every question when stdin is not a terminal. A secret is refused here, since argv lands in shell history and `ps`: answer it at the prompt, which does not echo, or in `TASQX_SYNC_<KEY>` (the key upper-cased, e.g. `TASQX_SYNC_SECRET_ACCESS_KEY`)
+
+      --theme <THEME>
+          Theme name (built-in nord|gruvbox|dracula|solarized|mono, or a user file). Overrides $TASQX_THEME and the config file (DESIGN.md §8)
+
+      --socket <SOCKET>
+          Local socket / named-pipe address of a tasqx daemon. Overrides $TASQX_SOCK. When a daemon is reachable, one-shot commands route through it (single writer); otherwise they run in-process. Also selects the address for `daemon` and `watch`
+
+      --no-daemon
+          Never route through a daemon; always run one-shot in-process (the pre-daemon behaviour). Escape hatch for scripts
+
+  -h, --help
+          Print help (see a summary with '-h')
+
+  -V, --version
+          Print version
