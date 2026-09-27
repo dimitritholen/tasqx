@@ -21,6 +21,9 @@ allow = [
   "0BSD",
   "BSD-3-Clause",
   "BSL-1.0",
+  # ring, untrusted and rustls-webpki: tasqx-remote-r2's rustls stack (D199), so the
+  # connector ships without a system OpenSSL. OSI-approved, MIT-equivalent.
+  "ISC",
   # tasqx's OWN license (the workspace crates are in this check's graph). No
   # dependency is expected to carry it; one that did would deserve a look, but
   # the gate cannot distinguish "ours" from "theirs" by license id alone.
