@@ -1429,7 +1429,10 @@ pub(super) enum SyncAction {
         connector: String,
         /// Answer one of the connector's questions without being asked
         /// (`--set path=/mnt/share/tasqx`); repeat for more. Required for
-        /// every question when stdin is not a terminal.
+        /// every question when stdin is not a terminal. A secret is refused
+        /// here, since argv lands in shell history and `ps`: answer it at the
+        /// prompt, which does not echo, or in `TASQX_SYNC_<KEY>` (the key
+        /// upper-cased, e.g. `TASQX_SYNC_SECRET_ACCESS_KEY`).
         #[arg(long = "set", value_name = "KEY=VALUE")]
         set: Vec<String>,
     },

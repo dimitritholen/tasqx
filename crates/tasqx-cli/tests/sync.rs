@@ -69,6 +69,18 @@ impl World {
         World { root, path_var }
     }
 
+    /// Another workspace connector binary, installed under its own name.
+    fn install_binary(&self, crate_name: &str) {
+        let exe = format!("{crate_name}{}", std::env::consts::EXE_SUFFIX);
+        let built = Path::new(env!("CARGO_BIN_EXE_tasqx")).with_file_name(&exe);
+        assert!(
+            built.is_file(),
+            "{} is missing: build the workspace",
+            built.display()
+        );
+        std::fs::copy(built, self.root.join("bin").join(exe)).expect("copy the connector");
+    }
+
     /// The same connector again under another name, as a second connector.
     fn install_as(&self, name: &str) {
         let exe = format!("tasqx-remote-{name}{}", std::env::consts::EXE_SUFFIX);
@@ -572,4 +584,32 @@ fn a_store_over_one_mebibyte_syncs_in_process_and_through_a_daemon() {
         without_local_fields(on_daemon),
         "the two stores converge"
     );
+}
+
+/// A secret never travels in argv, where shell history and `ps` would keep
+/// it: `--set` of a field `describe` marks secret is refused before the
+/// connector's `configure` runs, naming the two ways in (D201).
+/// `tasqx-remote-r2` is the connector with a secret field; the refusal comes
+/// before any request, so no bucket is needed.
+#[test]
+fn a_secret_field_in_set_is_refused_and_nothing_is_recorded() {
+    let world = World::new("secret");
+    world.install_binary("tasqx-remote-r2");
+    let a = world.machine("a");
+    let (code, out, err) = a.run(&["sync", "setup", "r2", "--set", "secret_access_key=hunter2"]);
+    assert_eq!(code, 2, "bad_request:\n{out}{err}");
+    assert!(err.contains("secret_access_key"), "names the field: {err}");
+    assert!(
+        err.contains("TASQX_SYNC_SECRET_ACCESS_KEY"),
+        "names the env var: {err}"
+    );
+    assert!(err.contains("prompt"), "names the prompt: {err}");
+    assert!(!err.contains("hunter2"), "never echoes the value: {err}");
+    assert!(!a.state_file().exists());
+
+    // Off a terminal, a missing secret names the env var as the way in.
+    let (code, _, err) = a.run(&["sync", "setup", "r2"]);
+    assert_eq!(code, 2, "{err}");
+    assert!(err.contains("TASQX_SYNC_SECRET_ACCESS_KEY"), "{err}");
+    assert!(!a.state_file().exists());
 }
