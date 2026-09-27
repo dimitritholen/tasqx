@@ -6,7 +6,7 @@ Usage: tasqx sync [OPTIONS]
        tasqx sync <COMMAND>
 
 Commands:
-  setup  Choose the remote: ask the connector what it needs, hand it your answers, and record it in `config.toml` once it accepts them
+  setup  Choose the remote: ask the connector what it needs, hand it your answers, and record it beside this store once it accepts them
 
 Options:
       --json
@@ -36,9 +36,9 @@ EXAMPLES
   tasqx sync
   tasqx sync --status
 
-NOTE  One remote per store. The remote is a connector, `tasqx-remote-<name>` on PATH (D198); `sync setup` asks it what it needs, hands it your answers, and writes only its name to `[sync] connector` in config.toml once it accepts them. The connector keeps its own settings and secrets; tasqx keeps none (D201).
+NOTE  One remote per store. The remote is a connector, `tasqx-remote-<name>` on PATH (D198); `sync setup` asks it what it needs, hands it your answers, and once it accepts them records its name in `<store>.sync.json` beside the store — never in config.toml, so two stores can sync to two remotes. The connector keeps its own settings and secrets; tasqx keeps none (D201).
       `sync` pulls every snapshot the remote holds and merges each into this store exactly as `import --merge` does (D185, D189, D197), then pushes the result back. When another machine pushed in between, it starts over from the pull, three attempts at most; what it merged stays merged either way.
-      Nothing is pushed when the remote already holds exactly this store. The last version synced and when are kept beside the store in `<store>.sync.json`, and written only once the remote holds this store.
-      Through a daemon the merge goes through the daemon, the store's one writer, and the sync state sits beside the daemon's store.
+      Nothing is pushed when the remote already holds exactly this store. The last version synced and when are kept in the same `<store>.sync.json`, written only once the remote holds this store.
+      Through a daemon the merge goes through the daemon, the store's one writer, and the sync state sits beside the daemon's store. The snapshot travels to it as a file path, not inline, so a store of any size syncs.
 
 See also: import · export        Full manual: tasqx manual

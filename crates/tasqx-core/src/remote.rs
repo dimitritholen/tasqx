@@ -59,6 +59,13 @@ pub const PROTOCOL: u32 = 1;
 /// The exit code that means "push conflict" and nothing else.
 pub const EXIT_CONFLICT: i32 = 2;
 
+/// The kill deadline `tasqx sync` gives one `pull` or `push` (D201), instead of
+/// [`Limits::default`]'s 120 s: a multi-megabyte upload on a slow link can
+/// take longer than that. A connector's own per-request timeout must stay
+/// below it — `tasqx-remote-r2`'s `CALL_TIMEOUT` (540 s, D199) does, and a
+/// unit test there holds it to that.
+pub const TRANSFER_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10 * 60);
+
 /// The environment variable naming the connector's own state directory.
 pub const STATE_DIR_ENV: &str = "TASQX_REMOTE_STATE_DIR";
 
