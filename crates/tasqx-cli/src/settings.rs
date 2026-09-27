@@ -6,6 +6,9 @@
 
 use super::*;
 
+use crate::sync;
+use tasqx_core::remote;
+
 /// Resolve the active theme (flag > $TASQX_THEME > config > default) and detect
 /// terminal capability, producing the render context every command shares.
 /// Warn, but never refuse, when a theme name cannot be honoured.
@@ -1021,9 +1024,10 @@ pub(crate) fn run_config_edit(be: &mut Backend, ctx: &Ctx, theme_flag: Option<&s
 
     let rows = settings_rows(&mut |k| store_value(be, k), &themes, theme_flag)?;
 
-    let mut app = tui::settings::App::new(rows);
+    let sync = sync_info(be);
+    let mut app = tui::settings::App::new(rows, sync);
     let caps = ctx.caps;
-    let saved = tui::with_terminal(|term| settings_loop(term, &mut app, caps, theme_flag))
+    let saved = tui::with_terminal(|term| settings_loop(term, &mut app, caps, theme_flag, be, ctx))
         .map_err(|e| ApiError::internal(format!("terminal error: {e}")))?;
 
     // Printed after the alt screen is gone, so the user's scrollback keeps a
@@ -1160,6 +1164,8 @@ pub(crate) fn settings_loop(
     app: &mut tui::settings::App,
     caps: Caps,
     theme_flag: Option<&str>,
+    be: &mut Backend,
+    ctx: &Ctx,
 ) -> std::io::Result<Vec<(String, String)>> {
     use ratatui::crossterm::event::{self, Event};
 
@@ -1181,9 +1187,136 @@ pub(crate) fn settings_loop(
                     config::write_value(s, v).map(|_| ())
                 });
             }
+            Some(tui::settings::Action::SyncListConnectors) => {
+                let path = std::env::var_os("PATH").unwrap_or_default();
+                app.sync_names_found(remote::list_on(&path));
+            }
+            Some(tui::settings::Action::SyncDescribe { name }) => {
+                match describe_connector(be, &name) {
+                    Ok(fields) => app.sync_form_ready(name, fields),
+                    Err(e) => app.sync_describe_failed(e.message),
+                }
+            }
+            Some(tui::settings::Action::SyncSubmit {
+                name,
+                values,
+                passphrase,
+            }) => match submit_sync_setup(be, ctx, &name, values, passphrase) {
+                Ok(info) => app.sync_setup_ok(info),
+                Err(e) => app.sync_setup_failed(e.message),
+            },
+            Some(tui::settings::Action::SyncNow) => match sync::run(be, ctx) {
+                Ok((_json, text)) => {
+                    let one_line = text.lines().next().unwrap_or("synced").to_string();
+                    app.sync_now_done(sync_info(be), one_line);
+                }
+                Err(e) => app.sync_now_failed(e.message),
+            },
+            Some(tui::settings::Action::SyncDisconnect) => match disconnect_sync(be) {
+                Ok(()) => app.sync_disconnected(),
+                Err(e) => {
+                    app.mode = tui::settings::Mode::Browse;
+                    app.status = format!("not disconnected: {}", e.message);
+                }
+            },
             None => {}
         }
     }
+}
+
+/// The Sync section as it stands on disk right now: the connector's name,
+/// its last synced version (short) and how long ago that was, and whether a
+/// passphrase is set up — the same three files `tasqx sync --status` reads
+/// (`<store>.sync.json`, `<store>.sync.key`), through the same helpers.
+///
+/// `store_path` fails for a store the daemon cannot name a file for (an
+/// in-memory store, or a pre-D74 daemon) — the Sync section reads as "not set
+/// up" there rather than surfacing that as an error the user did not ask for;
+/// `c`/`s`/`d` will report it properly the moment they are pressed.
+pub(crate) fn sync_info(be: &mut Backend) -> tui::settings::SyncInfo {
+    let Ok(store) = sync::store_path(be) else {
+        return tui::settings::SyncInfo::default();
+    };
+    let Some(state) = sync::read_state(&sync::state_path(&store)) else {
+        return tui::settings::SyncInfo::default();
+    };
+    let now = crate::clock::now();
+    let synced_relative = state
+        .synced_at
+        .as_deref()
+        .and_then(|t| t.parse::<jiff::Timestamp>().ok())
+        .map(|at| render::day_ago(at, now));
+    tui::settings::SyncInfo {
+        connector: Some(state.connector),
+        version: state.version.as_deref().map(sync::short_version),
+        synced_relative,
+        encrypted: sync::read_key(&sync::key_path(&store)).is_some(),
+    }
+}
+
+/// `c` (connect), once a name is chosen: the connector's own fields, the same
+/// `describe` reply `tasqx sync setup` reads before it asks for them.
+pub(crate) fn describe_connector(
+    be: &mut Backend,
+    name: &str,
+) -> Result<Vec<remote::Field>, ApiError> {
+    let store = sync::store_path(be)?;
+    let connector = sync::connector_at(&store, name)?;
+    let description = connector
+        .describe()
+        .map_err(|e| ApiError::internal(format!("sync: {e}")))?;
+    Ok(description.fields)
+}
+
+/// The form's submit: the SAME write `tasqx sync setup` performs
+/// (`sync::apply_setup`), never a second implementation of it. Re-resolves
+/// the connector and its `describe` rather than carrying either across
+/// frames, exactly as cheap as the first call — `describe_connector` above
+/// runs one more connector round trip than reusing a cached reply would, in
+/// exchange for not having to keep a `Connector` (which borrows nothing but
+/// still carries a live process contract) alive inside `tui::settings::App`,
+/// which does no I/O by design.
+pub(crate) fn submit_sync_setup(
+    be: &mut Backend,
+    ctx: &Ctx,
+    name: &str,
+    values: remote::Values,
+    passphrase: String,
+) -> Result<tui::settings::SyncInfo, ApiError> {
+    let store = sync::store_path(be)?;
+    let connector = sync::connector_at(&store, name)?;
+    let description = connector
+        .describe()
+        .map_err(|e| ApiError::internal(format!("sync: {e}")))?;
+    sync::apply_setup(
+        ctx,
+        &store,
+        name,
+        &connector,
+        &description,
+        values,
+        passphrase,
+    )?;
+    Ok(sync_info(be))
+}
+
+/// `d` (disconnect), confirmed: remove `<store>.sync.json` and
+/// `<store>.sync.key`. The remote itself is never touched — the confirm text
+/// says so, and there is nothing here that could reach it: no connector is
+/// even resolved.
+pub(crate) fn disconnect_sync(be: &mut Backend) -> Result<(), ApiError> {
+    let store = sync::store_path(be)?;
+    for path in [sync::state_path(&store), sync::key_path(&store)] {
+        if let Err(e) = std::fs::remove_file(&path) {
+            if e.kind() != std::io::ErrorKind::NotFound {
+                return Err(ApiError::internal(format!(
+                    "sync: cannot remove {}: {e}",
+                    path.display()
+                )));
+            }
+        }
+    }
+    Ok(())
 }
 
 /// One row per setting: key, value, and which layer supplied it. The source

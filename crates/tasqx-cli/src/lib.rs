@@ -2567,12 +2567,15 @@ mod tests {
     #[test]
     fn a_save_action_actually_reaches_the_writer() {
         let s = config::find("theme.name").unwrap();
-        let mut app = tui::settings::App::new(vec![build_row(
-            s,
-            "nord".into(),
-            "default".into(),
-            &["nord".to_string(), "mono".to_string()],
-        )]);
+        let mut app = tui::settings::App::new(
+            vec![build_row(
+                s,
+                "nord".into(),
+                "default".into(),
+                &["nord".to_string(), "mono".to_string()],
+            )],
+            tui::settings::SyncInfo::default(),
+        );
         let mut saved = Vec::new();
         let mut seen: Vec<(String, String)> = Vec::new();
 
@@ -2599,8 +2602,10 @@ mod tests {
     #[test]
     fn a_failed_write_is_reported_and_not_recorded() {
         let s = config::find("theme.name").unwrap();
-        let mut app =
-            tui::settings::App::new(vec![build_row(s, "nord".into(), "default".into(), &[])]);
+        let mut app = tui::settings::App::new(
+            vec![build_row(s, "nord".into(), "default".into(), &[])],
+            tui::settings::SyncInfo::default(),
+        );
         let mut saved = Vec::new();
 
         apply_save(&mut app, "theme.name", "mono", None, &mut saved, |_, _| {
@@ -2619,8 +2624,10 @@ mod tests {
     #[test]
     fn an_invalid_value_never_reaches_the_writer() {
         let s = config::find("theme.name").unwrap();
-        let mut app =
-            tui::settings::App::new(vec![build_row(s, "nord".into(), "default".into(), &[])]);
+        let mut app = tui::settings::App::new(
+            vec![build_row(s, "nord".into(), "default".into(), &[])],
+            tui::settings::SyncInfo::default(),
+        );
         let mut saved = Vec::new();
         let mut called = false;
 
@@ -2648,8 +2655,10 @@ mod tests {
     fn the_frame_theme_follows_the_picker_and_yields_to_a_flag() {
         let s = config::find("theme.name").unwrap();
         let themes = vec!["nord".to_string(), "gruvbox".to_string()];
-        let mut app =
-            tui::settings::App::new(vec![build_row(s, "nord".into(), "default".into(), &themes)]);
+        let mut app = tui::settings::App::new(
+            vec![build_row(s, "nord".into(), "default".into(), &themes)],
+            tui::settings::SyncInfo::default(),
+        );
 
         assert_eq!(
             frame_theme_name(&app, None),
@@ -2738,6 +2747,175 @@ mod tests {
         assert_eq!(
             theme_row.choices, themes,
             "the theme row must carry its candidates"
+        );
+    }
+
+    // ---- config edit's Sync section (#884) ----------------------------------
+
+    /// The real `tasqx-remote-dir` connector, built beside `tasqx` in this
+    /// workspace's target directory. `None` when the workspace has not built
+    /// it — the tests below skip rather than fail, the same way a missing
+    /// fixture would, since a unit test (unlike an integration test) gets no
+    /// `CARGO_BIN_EXE_*` to find it by.
+    fn workspace_connector(name: &str) -> Option<PathBuf> {
+        let exe = std::env::current_exe().ok()?;
+        // This test binary lives in `<target>/<profile>/deps/`; a sibling
+        // package's binary is one level up, in `<target>/<profile>/`.
+        let dir = exe.parent()?.parent()?;
+        let file = format!("{name}{}", std::env::consts::EXE_SUFFIX);
+        let path = dir.join(file);
+        path.is_file().then_some(path)
+    }
+
+    /// A `PATH` of this test's own, with `tasqx-remote-dir` on it under its
+    /// real name, ahead of whatever else is already there.
+    fn sync_tui_scratch(tag: &str) -> (PathBuf, std::ffi::OsString) {
+        let dir = std::env::temp_dir().join(format!(
+            "tasqx-config-edit-sync-{tag}-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        let bin = dir.join("bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        let connector =
+            workspace_connector("tasqx-remote-dir").expect("run `cargo test --workspace` first");
+        let exe = format!("tasqx-remote-dir{}", std::env::consts::EXE_SUFFIX);
+        std::fs::copy(&connector, bin.join(&exe)).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(bin.join(&exe), std::fs::Permissions::from_mode(0o755))
+                .unwrap();
+        }
+        let mut dirs = vec![bin.clone()];
+        dirs.extend(std::env::split_paths(
+            &std::env::var_os("PATH").unwrap_or_default(),
+        ));
+        (dir, std::env::join_paths(dirs).unwrap())
+    }
+
+    /// Submitting the connect form performs the SAME write `tasqx sync setup`
+    /// does: `<store>.sync.json` names the connector, `<store>.sync.key`
+    /// holds the passphrase at 0600, both byte-for-byte what the CLI path
+    /// would have written for the same inputs. Driven through the form's own
+    /// state machine (`on_key`) and `submit_sync_setup`, never through a real
+    /// terminal.
+    #[test]
+    fn the_form_submit_writes_the_same_state_and_key_file_as_sync_setup() {
+        let (dir, path_var) = sync_tui_scratch("submit");
+        // `Connector::find` reads the real `PATH`; there is no injection
+        // point for it, so this ADDS to the process' PATH rather than
+        // replacing it (never removing what was already reachable) — the
+        // same trade the module doc for `sync.rs`'s own integration suite
+        // makes, there through a child process' env instead of this one.
+        std::env::set_var("PATH", &path_var);
+
+        let store = dir.join("tasks.db");
+        let mut be = Backend::Local(tasqx_core::Engine::open(store.to_str().unwrap()).unwrap());
+        let ctx = Ctx::new(theme::load("nord", None), theme::Caps::detect());
+
+        let remote = dir.join("remote");
+        std::fs::create_dir_all(&remote).unwrap();
+
+        let fields = describe_connector(&mut be, "dir").expect("describe dir");
+        assert_eq!(fields.len(), 1, "dir asks for one field: path");
+        let mut app = tui::settings::App::new(
+            vec![build_row(
+                config::find("theme.name").unwrap(),
+                "nord".into(),
+                "default".into(),
+                &[],
+            )],
+            tui::settings::SyncInfo::default(),
+        );
+        app.sync_form_ready("dir".to_string(), fields);
+        let press = |c| ratatui::crossterm::event::KeyEvent::new(c, KeyModifiers::NONE);
+        use ratatui::crossterm::event::{KeyCode, KeyModifiers};
+        for c in remote.to_string_lossy().chars() {
+            app.on_key(press(KeyCode::Char(c)));
+        }
+        app.on_key(press(KeyCode::Enter)); // path -> passphrase
+        for c in "correct horse battery staple".chars() {
+            app.on_key(press(KeyCode::Char(c)));
+        }
+        app.on_key(press(KeyCode::Enter)); // passphrase -> confirm
+        for c in "correct horse battery staple".chars() {
+            app.on_key(press(KeyCode::Char(c)));
+        }
+        let Some(tui::settings::Action::SyncSubmit {
+            name,
+            values,
+            passphrase,
+        }) = app.on_key(press(KeyCode::Enter))
+        else {
+            panic!("the filled-in form must submit");
+        };
+
+        let info = submit_sync_setup(&mut be, &ctx, &name, values, passphrase)
+            .expect("the connector must accept an absolute path");
+        assert_eq!(info.connector.as_deref(), Some("dir"));
+        assert!(info.encrypted);
+
+        // The same two files `tasqx sync setup` writes, and the same shape:
+        // the connector's name, no version yet, and the key at 0600.
+        let state: Value =
+            serde_json::from_slice(&std::fs::read(sync::state_path(&store)).unwrap()).unwrap();
+        assert_eq!(state["connector"], "dir");
+        assert_eq!(state["version"], Value::Null);
+        let key = std::fs::read_to_string(sync::key_path(&store)).unwrap();
+        assert_eq!(key, "correct horse battery staple");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(sync::key_path(&store))
+                .unwrap()
+                .permissions()
+                .mode();
+            assert_eq!(mode & 0o777, 0o600, "{mode:o}");
+        }
+    }
+
+    /// `d`, confirmed, removes both files and leaves the remote untouched —
+    /// there is nothing in the disconnect path that could reach it, since no
+    /// connector is even resolved.
+    #[test]
+    fn disconnect_removes_both_files_and_leaves_the_remote_untouched() {
+        let (dir, path_var) = sync_tui_scratch("disconnect");
+        std::env::set_var("PATH", &path_var);
+        let store = dir.join("tasks.db");
+        let mut be = Backend::Local(tasqx_core::Engine::open(store.to_str().unwrap()).unwrap());
+        let ctx = Ctx::new(theme::load("nord", None), theme::Caps::detect());
+        let remote = dir.join("remote");
+        std::fs::create_dir_all(&remote).unwrap();
+
+        let connector = sync::connector_at(&store, "dir").unwrap();
+        let description = connector.describe().unwrap();
+        let values = tasqx_core::remote::Values::from([(
+            "path".to_string(),
+            remote.to_string_lossy().into_owned(),
+        )]);
+        sync::apply_setup(
+            &ctx,
+            &store,
+            "dir",
+            &connector,
+            &description,
+            values,
+            "correct horse battery staple".to_string(),
+        )
+        .expect("set up first");
+        assert!(sync::state_path(&store).is_file());
+        assert!(sync::key_path(&store).is_file());
+        let before: Vec<_> = std::fs::read_dir(&remote).unwrap().collect();
+
+        disconnect_sync(&mut be).expect("disconnect");
+        assert!(!sync::state_path(&store).exists());
+        assert!(!sync::key_path(&store).exists());
+        let after: Vec<_> = std::fs::read_dir(&remote).unwrap().collect();
+        assert_eq!(
+            before.len(),
+            after.len(),
+            "the remote directory itself is untouched"
         );
     }
 
