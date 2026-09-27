@@ -163,12 +163,38 @@ fn configure(values: &BTreeMap<String, String>) -> Result<Value, Stop> {
     match check_folder(values) {
         Err(error) => Ok(json!({ "ok": false, "error": error })),
         Ok(root) => {
-            std::fs::create_dir_all(&state)
-                .map_err(|e| format!("cannot create {}: {e}", state.display()))?;
+            private_dir(&state).map_err(|e| format!("cannot create {}: {e}", state.display()))?;
             let config = json!({ "path": root });
-            write_atomic(&state.join("config.json"), config.to_string().as_bytes())?;
+            write_atomic(
+                &state.join("config.json"),
+                config.to_string().as_bytes(),
+                true,
+            )?;
             Ok(json!({ "ok": true }))
         }
+    }
+}
+
+/// Create the state dir readable by its owner alone (0700 on Unix), and
+/// tighten one that is open to group or world. tasqx's runner does the same
+/// before it runs us; doing it here too keeps the promise when we are run by
+/// anything else. Other connectors keep credentials in theirs.
+fn private_dir(dir: &Path) -> std::io::Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
+        std::fs::DirBuilder::new()
+            .recursive(true)
+            .mode(0o700)
+            .create(dir)?;
+        if std::fs::metadata(dir)?.permissions().mode() & 0o077 != 0 {
+            std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))?;
+        }
+        Ok(())
+    }
+    #[cfg(not(unix))]
+    {
+        std::fs::create_dir_all(dir)
     }
 }
 
@@ -273,7 +299,7 @@ fn pull(root: &Path, out_dir: &Path) -> Result<Value, Stop> {
         return Err(not_synced(&head, "does not match its hash").into());
     }
     let out = out_dir.join(&head);
-    write_atomic(&out, &bytes)?;
+    write_atomic(&out, &bytes, false)?;
     Ok(json!({ "snapshots": [{ "version": head, "path": out }] }))
 }
 
@@ -299,7 +325,7 @@ fn push(root: &Path, in_path: &Path, expected: Option<&str>) -> Result<Value, St
     }
     // Another push's prune may have removed a blob we found already present.
     store_blob(&blob, &bytes, &hash)?;
-    write_atomic(&root.join("HEAD"), format!("{hash}\n").as_bytes())?;
+    write_atomic(&root.join("HEAD"), format!("{hash}\n").as_bytes(), false)?;
     if let Err(e) = prune(root, &hash) {
         // The push landed; a failed cleanup only costs disk.
         eprintln!("tasqx-remote-dir: pushed, but pruning old snapshots failed: {e}");
@@ -314,7 +340,7 @@ fn store_blob(blob: &Path, bytes: &[u8], hash: &str) -> Result<bool, String> {
             return Ok(false);
         }
     }
-    write_atomic(blob, bytes)?;
+    write_atomic(blob, bytes, false)?;
     Ok(true)
 }
 
@@ -331,7 +357,7 @@ fn prune(root: &Path, head: &str) -> Result<(), String> {
     history.retain(|h| h != head);
     history.push(head.to_string());
     let keep = history.split_off(history.len().saturating_sub(KEEP));
-    write_atomic(&file, format!("{}\n", keep.join("\n")).as_bytes())?;
+    write_atomic(&file, format!("{}\n", keep.join("\n")).as_bytes(), false)?;
 
     let dir = root.join("snapshots");
     let entries =
@@ -348,7 +374,9 @@ fn prune(root: &Path, head: &str) -> Result<(), String> {
 }
 
 /// Write `bytes` to `path` so a reader sees the old file or the whole new one.
-fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), String> {
+/// `private` makes it readable by its owner alone (0600 on Unix) from the
+/// moment it exists, not after a chmod that leaves a window.
+fn write_atomic(path: &Path, bytes: &[u8], private: bool) -> Result<(), String> {
     static N: AtomicUsize = AtomicUsize::new(0);
     let dir = path.parent().unwrap_or(Path::new("."));
     let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("file");
@@ -358,7 +386,16 @@ fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), String> {
         N.fetch_add(1, Ordering::SeqCst)
     ));
     let written = (|| {
-        let mut f = std::fs::File::create(&tmp)?;
+        let mut open = std::fs::OpenOptions::new();
+        open.write(true).create(true).truncate(true);
+        #[cfg(unix)]
+        if private {
+            use std::os::unix::fs::OpenOptionsExt;
+            open.mode(0o600);
+        }
+        #[cfg(not(unix))]
+        let _ = private;
+        let mut f = open.open(&tmp)?;
         f.write_all(bytes)?;
         f.sync_all()?;
         std::fs::rename(&tmp, path)

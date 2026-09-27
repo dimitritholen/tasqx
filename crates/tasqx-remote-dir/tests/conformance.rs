@@ -145,3 +145,57 @@ fn a_lock_left_by_a_crashed_push_is_broken_once_stale() {
         v
     );
 }
+
+/// Run the binary directly, without the runner, so what is checked is the
+/// connector's own care for its state dir and not the runner's.
+#[cfg(unix)]
+fn configure_directly(state: &Path, remote: &Path) {
+    use std::io::Write;
+    let mut child = std::process::Command::new(BIN)
+        .env("TASQX_REMOTE_STATE_DIR", state)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    let request = serde_json::json!({
+        "protocol": 1, "verb": "configure", "values": {"path": remote}
+    });
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(request.to_string().as_bytes())
+        .unwrap();
+    let out = child.wait_with_output().unwrap();
+    assert!(out.status.success());
+    let reply: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(reply["ok"], true, "{reply}");
+}
+
+#[cfg(unix)]
+fn mode_of(path: &Path) -> u32 {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::metadata(path).unwrap().permissions().mode() & 0o777
+}
+
+#[cfg(unix)]
+#[test]
+fn configure_keeps_its_state_private() {
+    let work = scratch("private-fresh");
+    let state = work.join("state");
+    configure_directly(&state, &work.join("remote"));
+    assert_eq!(mode_of(&state), 0o700, "the state dir");
+    assert_eq!(mode_of(&state.join("config.json")), 0o600, "config.json");
+}
+
+#[cfg(unix)]
+#[test]
+fn configure_tightens_an_open_state_dir() {
+    use std::os::unix::fs::PermissionsExt;
+    let work = scratch("private-open");
+    let state = work.join("state");
+    std::fs::create_dir_all(&state).unwrap();
+    std::fs::set_permissions(&state, std::fs::Permissions::from_mode(0o755)).unwrap();
+    configure_directly(&state, &work.join("remote"));
+    assert_eq!(mode_of(&state), 0o700);
+}

@@ -379,7 +379,47 @@ pub fn find_in(name: &str, path_var: &OsStr) -> Option<PathBuf> {
     let file = format!("{BINARY_PREFIX}{name}{}", std::env::consts::EXE_SUFFIX);
     std::env::split_paths(path_var)
         .map(|dir| dir.join(&file))
-        .find(|p| p.is_file())
+        .find(|p| is_runnable(p))
+}
+
+/// A file this platform would run. On Unix that takes an execute bit: a stray
+/// non-executable file of the right name earlier on `PATH` must not shadow the
+/// real connector behind it, the way a shell skips it too. On Windows the
+/// suffix [`find_in`] adds is what makes a file runnable.
+fn is_runnable(path: &Path) -> bool {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::metadata(path).is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
+    }
+    #[cfg(not(unix))]
+    {
+        path.is_file()
+    }
+}
+
+/// Create `dir` (and any missing parent) readable by its owner alone, and
+/// tighten it to that if it already exists open to group or world. A connector
+/// keeps its credentials here. On Windows a directory under the user's profile
+/// is already private to them, so this only creates it.
+fn private_dir(dir: &Path) -> std::io::Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
+        std::fs::DirBuilder::new()
+            .recursive(true)
+            .mode(0o700)
+            .create(dir)?;
+        let mode = std::fs::metadata(dir)?.permissions().mode();
+        if mode & 0o077 != 0 {
+            std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))?;
+        }
+        Ok(())
+    }
+    #[cfg(not(unix))]
+    {
+        std::fs::create_dir_all(dir)
+    }
 }
 
 /// Where remote `remote`'s connector keeps its state: `remotes/<remote>/`
@@ -564,7 +604,7 @@ impl Connector {
     /// Returns the exit code (0, or 2 for `push`) beside the reply.
     fn call<T: DeserializeOwned>(&self, request: Request) -> Result<(i32, T), Error> {
         let verb = request.verb();
-        std::fs::create_dir_all(&self.state_dir).map_err(|source| Error::Local {
+        private_dir(&self.state_dir).map_err(|source| Error::Local {
             context: format!("cannot create {}", self.state_dir.display()),
             source,
         })?;
