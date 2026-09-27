@@ -1,0 +1,44 @@
+Sync this store with its remote: pull, merge, push (D201).
+
+Pulls every snapshot the remote holds, merges each into this store the way `import --merge` does, and pushes the result back, retrying from the pull when another machine pushed in between. The remote is a connector, `tasqx-remote-<name>` on PATH, chosen by `sync setup`.
+
+Usage: tasqx sync [OPTIONS]
+       tasqx sync <COMMAND>
+
+Commands:
+  setup  Choose the remote: ask the connector what it needs, hand it your answers, and record it in `config.toml` once it accepts them
+
+Options:
+      --json
+          Print the raw JSON API result instead of the human table
+
+      --status
+          Print the connector, the last version synced and when, and sync nothing
+
+      --theme <THEME>
+          Theme name (built-in nord|gruvbox|dracula|solarized|mono, or a user file). Overrides $TASQX_THEME and the config file (DESIGN.md §8)
+
+      --socket <SOCKET>
+          Local socket / named-pipe address of a tasqx daemon. Overrides $TASQX_SOCK. When a daemon is reachable, one-shot commands route through it (single writer); otherwise they run in-process. Also selects the address for `daemon` and `watch`
+
+      --no-daemon
+          Never route through a daemon; always run one-shot in-process (the pre-daemon behaviour). Escape hatch for scripts
+
+  -h, --help
+          Print help (see a summary with '-h')
+
+  -V, --version
+          Print version
+
+EXAMPLES
+  tasqx sync setup dir --set path=/mnt/share/tasqx    # a shared folder as the remote
+  tasqx sync setup r2    # a Cloudflare R2 bucket; asks for each setting
+  tasqx sync
+  tasqx sync --status
+
+NOTE  One remote per store. The remote is a connector, `tasqx-remote-<name>` on PATH (D198); `sync setup` asks it what it needs, hands it your answers, and writes only its name to `[sync] connector` in config.toml once it accepts them. The connector keeps its own settings and secrets; tasqx keeps none (D201).
+      `sync` pulls every snapshot the remote holds and merges each into this store exactly as `import --merge` does (D185, D189, D197), then pushes the result back. When another machine pushed in between, it starts over from the pull, three attempts at most; what it merged stays merged either way.
+      Nothing is pushed when the remote already holds exactly this store. The last version synced and when are kept beside the store in `<store>.sync.json`, and written only once the remote holds this store.
+      Through a daemon the merge goes through the daemon, the store's one writer, and the sync state sits beside the daemon's store.
+
+See also: import · export        Full manual: tasqx manual

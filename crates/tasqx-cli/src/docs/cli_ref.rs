@@ -162,6 +162,10 @@ const NO_SCREEN: &[(&str, &str)] = &[
         "it redraws until you leave it, and it needs a running daemon to follow.",
     ),
     (
+        "sync",
+        "it talks to a remote this machine has set up, which the demo store has none of.",
+    ),
+    (
         "mcp",
         "it speaks JSON-RPC on stdin and stdout for as long as the agent holds the pipe.",
     ),

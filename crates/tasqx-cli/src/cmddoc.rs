@@ -952,6 +952,28 @@ pub const COMMAND_REF: &[CmdDoc] = &[
         topic: Topic::JsonApi,
     },
     CmdDoc {
+        verb: "sync",
+        aliases: &[],
+        method: "store.import + store.export",
+        summary: "Sync this store with its remote: pull, merge, push.",
+        usage: "tasqx sync [--status] | tasqx sync setup <connector> [--set KEY=VALUE]...",
+        examples: &[
+            ex_norun(
+                "tasqx sync setup dir --set path=/mnt/share/tasqx",
+                "a shared folder as the remote",
+            ),
+            ex_norun("tasqx sync setup r2", "a Cloudflare R2 bucket; asks for each setting"),
+            ex_norun_plain("tasqx sync"),
+            ex_norun_plain("tasqx sync --status"),
+        ],
+        notes: &["One remote per store. The remote is a connector, `tasqx-remote-<name>` on PATH (D198); `sync setup` asks it what it needs, hands it your answers, and writes only its name to `[sync] connector` in config.toml once it accepts them. The connector keeps its own settings and secrets; tasqx keeps none (D201).",
+                 "`sync` pulls every snapshot the remote holds and merges each into this store exactly as `import --merge` does (D185, D189, D197), then pushes the result back. When another machine pushed in between, it starts over from the pull, three attempts at most; what it merged stays merged either way.",
+                 "Nothing is pushed when the remote already holds exactly this store. The last version synced and when are kept beside the store in `<store>.sync.json`, and written only once the remote holds this store.",
+                 "Through a daemon the merge goes through the daemon, the store's one writer, and the sync state sits beside the daemon's store."],
+        see_also: &["import", "export"],
+        topic: Topic::JsonApi,
+    },
+    CmdDoc {
         verb: "api",
         aliases: &[],
         method: "(any)",

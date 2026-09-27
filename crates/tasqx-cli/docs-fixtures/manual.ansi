@@ -51,6 +51,7 @@
   tokens       Record token spend after the fact, or repair stored attribution (D50, D167).
   export       Dump tasks as canonical JSON.
   import       Load tasks from a JSON file or stdin.
+  sync         Sync this store with its remote: pull, merge, push.
   api          One JSON envelope in on stdin → one out on stdout.
   daemon       Long-lived single-writer server.
   watch        Live-updating task view.

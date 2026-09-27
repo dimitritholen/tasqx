@@ -1908,6 +1908,102 @@ fn merged_task_line(task: &Value) -> String {
     line
 }
 
+/// `tasqx sync` (D201): what the merges brought in, then where the remote now
+/// stands. Only non-zero counts print (rule 8); with none, `nothing new here`
+/// says the pull was looked at rather than skipped.
+pub fn synced(ctx: &Ctx, result: &Value) -> String {
+    let n = |k: &str| result.get(k).and_then(Value::as_u64).unwrap_or(0);
+    let version = crate::sync::short_version(&s(result, "version"));
+    let mut fixed = vec![outcome(ctx, "synced")];
+    let mut counts = Vec::new();
+    match n("tasks_new") {
+        0 => {}
+        1 => counts.push("1 new task".to_string()),
+        k => counts.push(format!("{k} new tasks")),
+    }
+    match n("tasks_updated") {
+        0 => {}
+        k => counts.push(format!("{k} updated")),
+    }
+    if counts.is_empty() {
+        counts.push("nothing new here".into());
+    }
+    for (i, text) in counts.into_iter().enumerate() {
+        let mut f = Fact::new(text.clone(), text);
+        if i > 0 {
+            f.sep = attach(ctx);
+        }
+        fixed.push(f);
+    }
+    let pushed = result
+        .get("pushed")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    fixed.push(if pushed {
+        Fact::changed(ctx, "card.strong", &format!("pushed {version}"))
+    } else {
+        Fact::role(ctx, "card.label", &format!("remote already at {version}"))
+    });
+    let mut droppable = Vec::new();
+    let attempts = n("attempts");
+    if attempts > 1 {
+        droppable.push(Fact::detail(ctx, &format!("on attempt {attempts}")));
+    }
+    record(ctx, None, fixed, droppable)
+}
+
+/// `tasqx sync --status`: the connector, and when this store last synced
+/// through it, as a day (rule 3: a past moment is a day, no clock).
+pub fn sync_status(ctx: &Ctx, result: &Value, now: Timestamp) -> String {
+    let Some(connector) = result.get("connector").and_then(Value::as_str) else {
+        let fixed = vec![
+            outcome(ctx, "sync"),
+            Fact::role(ctx, "warn", "not set up"),
+            Fact::detail(ctx, "tasqx sync setup <connector> chooses a remote"),
+        ];
+        return record(ctx, None, fixed, Vec::new());
+    };
+    let connector = san(connector);
+    let mut fixed = vec![
+        outcome(ctx, "sync"),
+        Fact::new(connector.clone(), connector),
+    ];
+    let last = result
+        .get("synced_at")
+        .and_then(Value::as_str)
+        .and_then(|t| t.parse::<Timestamp>().ok());
+    match last {
+        None => fixed.push(Fact::role(ctx, "card.label", "never synced")),
+        Some(at) => {
+            fixed.push(Fact::new(
+                format!("last synced {}", day_ago(at, now)),
+                format!(
+                    "{} {}",
+                    quiet(ctx, "card.label", "last synced"),
+                    day_ago(at, now)
+                ),
+            ));
+            let version = crate::sync::short_version(&s(result, "version"));
+            fixed.push(Fact::detail(ctx, &version));
+        }
+    }
+    record(ctx, None, fixed, Vec::new())
+}
+
+/// `tasqx sync setup` (D201): which connector took the settings, and where
+/// its name was written.
+pub fn sync_set_up(ctx: &Ctx, result: &Value) -> String {
+    let fixed = vec![
+        outcome(ctx, "set up"),
+        Fact::new(
+            format!("sync through {}", s(result, "connector")),
+            format!("sync through {}", s(result, "connector")),
+        ),
+    ];
+    let droppable = vec![Fact::role(ctx, "card.label", "tasqx sync runs it")];
+    record(ctx, None, fixed, droppable)
+}
+
 /// `tasqx export`'s note, on stderr because stdout IS the document.
 pub fn export_note(dropped: i64, cols: usize, unicode: bool) -> String {
     let what = if dropped == 1 {

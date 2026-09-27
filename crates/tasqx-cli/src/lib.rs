@@ -36,6 +36,7 @@ mod serve;
 mod settings;
 mod setup;
 mod sugar;
+mod sync;
 mod theme;
 mod tokens;
 mod tui;
@@ -74,7 +75,7 @@ use tasqx_core::{
 
 use command::{
     cli_command, ChartKind, CheckAction, Cli, Command, ConfigAction, McpAction, MemoryAction,
-    ThemeAction, TokensAction,
+    SyncAction, ThemeAction, TokensAction,
 };
 use theme::{Caps, Ctx};
 
@@ -1126,6 +1127,13 @@ fn execute(cli: Cli) -> Exit {
             dry_run,
             merge,
         }) => run_import(&mut backend, &ctx, file, dry_run, merge),
+        Some(Command::Sync { action, status }) => match action {
+            Some(SyncAction::Setup { connector, set }) => {
+                sync::setup(&mut backend, &ctx, &connector, &set)
+            }
+            None if status => sync::status(&mut backend, &ctx),
+            None => sync::run(&mut backend, &ctx),
+        },
         Some(Command::Next {
             filter,
             card,
