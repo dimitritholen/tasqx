@@ -69,6 +69,13 @@ impl World {
         World { root, path_var }
     }
 
+    /// The same connector again under another name, as a second connector.
+    fn install_as(&self, name: &str) {
+        let exe = format!("tasqx-remote-{name}{}", std::env::consts::EXE_SUFFIX);
+        std::fs::copy(connector_binary(), self.root.join("bin").join(exe))
+            .expect("copy the connector");
+    }
+
     fn remote(&self) -> PathBuf {
         self.root.join("remote")
     }
@@ -76,20 +83,26 @@ impl World {
     fn machine(&self, name: &str) -> Machine<'_> {
         let dir = self.root.join(name);
         std::fs::create_dir_all(&dir).expect("create machine dir");
-        Machine { world: self, dir }
+        let config_dir = dir.join("cfg");
+        Machine {
+            world: self,
+            dir,
+            config_dir,
+        }
     }
 }
 
 struct Machine<'w> {
     world: &'w World,
     dir: PathBuf,
+    config_dir: PathBuf,
 }
 
 impl Machine<'_> {
     fn cmd(&self, args: &[&str]) -> Command {
         let mut c = Command::new(env!("CARGO_BIN_EXE_tasqx"));
         c.env("TASQX_DB", self.dir.join("tasks.db"))
-            .env("TASQX_CONFIG_DIR", self.dir.join("cfg"))
+            .env("TASQX_CONFIG_DIR", &self.config_dir)
             .env("PATH", &self.world.path_var)
             .env_remove("TASQX_SOCK")
             .env_remove("TASQX_NOW")
@@ -127,7 +140,19 @@ impl Machine<'_> {
     }
 
     fn config_file(&self) -> PathBuf {
-        self.dir.join("cfg").join("config.toml")
+        self.config_dir.join("config.toml")
+    }
+
+    /// A config.toml with a setting in it, so "untouched" is a real claim.
+    fn seed_config(&self) -> String {
+        let text = "[theme]\nname = \"mono\"\n".to_string();
+        std::fs::create_dir_all(&self.config_dir).unwrap();
+        std::fs::write(self.config_file(), &text).unwrap();
+        text
+    }
+
+    fn state_file(&self) -> PathBuf {
+        self.dir.join("tasks.db.sync.json")
     }
 
     fn export(&self) -> Value {
@@ -197,37 +222,72 @@ fn status_says_not_set_up_until_setup_and_then_names_the_connector_and_the_last_
 }
 
 #[test]
-fn setup_with_set_writes_the_sync_table_and_a_refusal_leaves_config_untouched() {
+fn setup_with_set_records_the_connector_beside_the_store_and_a_refusal_records_nothing() {
     let world = World::new("setup");
     let a = world.machine("a");
+    let config = a.seed_config();
 
     // Refused by the connector: a relative folder. Its words reach the user,
-    // and config.toml is not written.
+    // and nothing is recorded.
     let (code, out, err) = a.run(&["sync", "setup", "dir", "--set", "path=relative/dir"]);
     assert_ne!(code, 0, "a refusal is a failure:\n{out}{err}");
     assert!(
         err.contains("is not an absolute path"),
         "the connector's own error is shown: {err}"
     );
-    assert!(!a.config_file().exists(), "nothing written on ok:false");
+    assert!(!a.state_file().exists(), "nothing written on ok:false");
 
     a.set_up();
-    let text = std::fs::read_to_string(a.config_file()).expect("config.toml written");
-    let table: toml::Table = text.parse().expect("valid TOML");
-    assert_eq!(
-        table["sync"]["connector"].as_str(),
-        Some("dir"),
-        "the [sync] table names the connector:\n{text}"
-    );
+    let state: Value =
+        serde_json::from_slice(&std::fs::read(a.state_file()).expect("state written")).unwrap();
+    assert_eq!(state["connector"], "dir", "{state}");
+    assert_eq!(state["version"], Value::Null, "not synced yet: {state}");
     assert!(
-        !text.contains(&world.remote().display().to_string()),
-        "no connector setting is kept in config.toml:\n{text}"
+        !state
+            .to_string()
+            .contains(&world.remote().display().to_string()),
+        "no connector setting is kept by tasqx: {state}"
     );
 
     // A second refusal leaves the working setup exactly as it was.
+    let before = std::fs::read(a.state_file()).unwrap();
     let (code, _, _) = a.run(&["sync", "setup", "dir", "--set", "path=relative/dir"]);
     assert_ne!(code, 0);
-    assert_eq!(std::fs::read_to_string(a.config_file()).unwrap(), text);
+    assert_eq!(std::fs::read(a.state_file()).unwrap(), before);
+
+    a.ok(&["sync"]);
+    assert_eq!(
+        std::fs::read_to_string(a.config_file()).unwrap(),
+        config,
+        "neither setup nor sync touches config.toml"
+    );
+}
+
+/// One remote per STORE: two stores on one machine (one config dir) with
+/// different connectors each see their own.
+#[test]
+fn two_stores_sharing_a_config_keep_their_own_connectors() {
+    let world = World::new("perstore");
+    world.install_as("folder");
+    let a = world.machine("a");
+    let mut b = world.machine("b");
+    b.config_dir = a.config_dir.clone();
+    let config = a.seed_config();
+
+    a.set_up();
+    let path = format!("path={}", world.root.join("other-remote").display());
+    b.ok(&["sync", "setup", "folder", "--set", &path]);
+
+    assert_eq!(a.json(&["sync", "--status"])["connector"], "dir");
+    assert_eq!(b.json(&["sync", "--status"])["connector"], "folder");
+    let mut c = world.machine("c");
+    c.config_dir = a.config_dir.clone();
+    assert_eq!(
+        c.json(&["sync", "--status"])["set_up"],
+        false,
+        "a third store sharing the config is not set up"
+    );
+    assert_eq!(std::fs::read_to_string(a.config_file()).unwrap(), config);
 }
 
 #[test]
@@ -238,7 +298,7 @@ fn setup_off_a_terminal_without_a_required_value_names_the_field() {
     assert_eq!(code, 2, "bad_request:\n{out}{err}");
     assert!(err.contains("path"), "names the key: {err}");
     assert!(err.contains("--set"), "names the way out: {err}");
-    assert!(!a.config_file().exists());
+    assert!(!a.state_file().exists());
 
     let (code, _, err) = a.run(&["sync", "setup", "dir", "--set", "nope=1"]);
     assert_eq!(
@@ -338,55 +398,65 @@ fn a_removed_annotation_is_gone_on_the_other_store_after_both_sync() {
     );
 }
 
-/// Through a daemon, the daemon is the only writer: the merge lands in ITS
-/// store, `$TASQX_DB` is never opened, and both the connector's state and the
-/// sync state sit beside the daemon's file (D5, D74).
-#[test]
-fn through_a_daemon_the_merge_lands_in_the_daemons_store_and_nothing_else() {
-    use std::sync::atomic::{AtomicBool, Ordering};
-    use std::sync::Arc;
-    use std::time::{Duration, Instant};
+/// A daemon serving `<root>/<name>/tasks.db` on a socket of this test's own,
+/// and a way to run the binary through it. `$TASQX_DB` names a file the daemon
+/// has never seen, so an answer that reached it came over the socket.
+struct Daemon<'w> {
+    world: &'w World,
+    dir: PathBuf,
+    sock: String,
+    shutdown: std::sync::Arc<std::sync::atomic::AtomicBool>,
+}
 
-    let world = World::new("daemon");
-    let a = world.machine("a");
-    a.set_up();
-    a.ok(&["init", "home"]);
-    a.ok(&["add", "Book the ferry"]);
-    a.ok(&["sync"]);
-
-    let served = world.root.join("served");
-    std::fs::create_dir_all(&served).unwrap();
-    let daemon_db = served.join("tasks.db");
-    let env_db = world.root.join("env").join("tasks.db");
-    let sock = if cfg!(windows) {
-        format!("tasqx-sync-daemon-{}", std::process::id())
-    } else {
-        world.root.join("d.sock").to_string_lossy().into_owned()
-    };
-    let shutdown = Arc::new(AtomicBool::new(false));
-    {
-        let (db, sk, sd) = (
-            daemon_db.to_string_lossy().into_owned(),
-            sock.clone(),
-            shutdown.clone(),
-        );
-        std::thread::spawn(move || {
-            let engine = tasqx_core::Engine::open(&db).expect("open daemon store");
-            tasqx_core::daemon::serve(engine, &sk, sd).expect("serve");
-        });
+impl<'w> Daemon<'w> {
+    fn start(world: &'w World, name: &str) -> Daemon<'w> {
+        use std::time::{Duration, Instant};
+        let dir = world.root.join(name);
+        std::fs::create_dir_all(&dir).unwrap();
+        let sock = if cfg!(windows) {
+            format!("tasqx-sync-{name}-{}", std::process::id())
+        } else {
+            world
+                .root
+                .join(format!("{name}.sock"))
+                .to_string_lossy()
+                .into_owned()
+        };
+        let shutdown = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        {
+            let (db, sk, sd) = (
+                dir.join("tasks.db").to_string_lossy().into_owned(),
+                sock.clone(),
+                shutdown.clone(),
+            );
+            std::thread::spawn(move || {
+                let engine = tasqx_core::Engine::open(&db).expect("open daemon store");
+                tasqx_core::daemon::serve(engine, &sk, sd).expect("serve");
+            });
+        }
+        let deadline = Instant::now() + Duration::from_secs(20);
+        while tasqx_core::daemon::try_connect(&sock).is_none() {
+            assert!(Instant::now() < deadline, "daemon never came up at {sock}");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        Daemon {
+            world,
+            dir,
+            sock,
+            shutdown,
+        }
     }
-    let deadline = Instant::now() + Duration::from_secs(20);
-    while tasqx_core::daemon::try_connect(&sock).is_none() {
-        assert!(Instant::now() < deadline, "daemon never came up at {sock}");
-        std::thread::sleep(Duration::from_millis(10));
+
+    fn env_db(&self) -> PathBuf {
+        self.world.root.join("env").join("tasks.db")
     }
 
-    let via_daemon = |args: &[&str]| {
+    fn ok(&self, args: &[&str]) -> String {
         let out = Command::new(env!("CARGO_BIN_EXE_tasqx"))
-            .env("TASQX_DB", &env_db)
-            .env("TASQX_SOCK", &sock)
-            .env("TASQX_CONFIG_DIR", served.join("cfg"))
-            .env("PATH", &world.path_var)
+            .env("TASQX_DB", self.env_db())
+            .env("TASQX_SOCK", &self.sock)
+            .env("TASQX_CONFIG_DIR", self.dir.join("cfg"))
+            .env("PATH", &self.world.path_var)
             .env_remove("TASQX_NOW")
             .env("NO_COLOR", "1")
             .args(args)
@@ -398,15 +468,43 @@ fn through_a_daemon_the_merge_lands_in_the_daemons_store_and_nothing_else() {
             String::from_utf8_lossy(&out.stdout),
             String::from_utf8_lossy(&out.stderr)
         );
-    };
-    let path = format!("path={}", world.remote().display());
-    via_daemon(&["sync", "setup", "dir", "--set", &path]);
-    via_daemon(&["sync"]);
-    shutdown.store(true, Ordering::SeqCst);
+        String::from_utf8_lossy(&out.stdout).into_owned()
+    }
 
-    let engine = tasqx_core::Engine::open(daemon_db.to_str().unwrap()).unwrap();
-    let listed = tasqx_core::dispatch(&engine, "task.list", &serde_json::json!({})).unwrap();
-    assert_eq!(listed["tasks"][0]["title"], "Book the ferry", "{listed}");
+    fn set_up(&self) {
+        let path = format!("path={}", self.world.remote().display());
+        self.ok(&["sync", "setup", "dir", "--set", &path]);
+    }
+
+    /// The daemon's store, read directly once it is stopped.
+    fn stop_and_export(self) -> Value {
+        self.shutdown
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        let db = self.dir.join("tasks.db");
+        let engine = tasqx_core::Engine::open(db.to_str().unwrap()).unwrap();
+        tasqx_core::dispatch(&engine, "store.export", &serde_json::json!({})).unwrap()
+    }
+}
+
+/// Through a daemon, the daemon is the only writer: the merge lands in ITS
+/// store, `$TASQX_DB` is never opened, and the connector's state and the sync
+/// state sit beside the daemon's file (D5, D74).
+#[test]
+fn through_a_daemon_the_merge_lands_in_the_daemons_store_and_nothing_else() {
+    let world = World::new("daemon");
+    let a = world.machine("a");
+    a.set_up();
+    a.ok(&["init", "home"]);
+    a.ok(&["add", "Book the ferry"]);
+    a.ok(&["sync"]);
+
+    let d = Daemon::start(&world, "served");
+    d.set_up();
+    d.ok(&["sync"]);
+    let env_db = d.env_db();
+    let served = d.dir.clone();
+    let export = d.stop_and_export();
+    assert_eq!(task(&export, "Book the ferry")["project"], "home");
     assert!(!env_db.exists(), "$TASQX_DB was never opened");
     assert!(
         served.join("tasks.db.sync.json").is_file(),
@@ -415,5 +513,63 @@ fn through_a_daemon_the_merge_lands_in_the_daemons_store_and_nothing_else() {
     assert!(
         served.join("remotes").join("dir").is_dir(),
         "connector state beside it too"
+    );
+}
+
+/// A document of `n` tasks, each carrying a 4 KB note, in the import shape.
+fn big_document(n: usize) -> Value {
+    let tasks: Vec<Value> = (0..n)
+        .map(|i| {
+            serde_json::json!({
+                "id": format!("01a0e2ec-0000-7000-8000-{i:012x}"),
+                "short_id": i + 1,
+                "title": format!("Bulk task {i}"),
+                "status": "pending",
+                "project": "home",
+                "created": "2026-09-01T00:00:00Z",
+                "modified": "2026-09-01T00:00:00Z",
+                "annotations": [{
+                    "id": format!("01a0e2ec-0001-7000-8000-{i:012x}"),
+                    "body": "x".repeat(4000),
+                    "created": "2026-09-01T00:00:00Z",
+                }],
+            })
+        })
+        .collect();
+    serde_json::json!({ "tasks": tasks })
+}
+
+/// A store whose export is over the daemon's 1 MiB request frame syncs both
+/// in-process and through a daemon, because `sync` hands `store.import` and
+/// `store.export` a file path instead of the document (D201).
+#[test]
+fn a_store_over_one_mebibyte_syncs_in_process_and_through_a_daemon() {
+    let world = World::new("big");
+    let a = world.machine("a");
+    let doc = world.root.join("big.json");
+    std::fs::write(&doc, big_document(300).to_string()).unwrap();
+    a.ok(&["import", doc.to_str().unwrap()]);
+    assert!(
+        a.ok(&["export"]).len() > 1 << 20,
+        "the export must exceed the daemon's frame for this test to mean anything"
+    );
+    a.set_up();
+    a.ok(&["sync"]);
+
+    let d = Daemon::start(&world, "served");
+    d.set_up();
+    d.ok(&["sync"]);
+    d.ok(&["add", "Written through the daemon", "project:home"]);
+    d.ok(&["sync"]);
+    let on_daemon = d.stop_and_export();
+
+    let got = a.json(&["sync"]);
+    assert_eq!(got["tasks_new"], 1, "{got}");
+    let on_a = a.export();
+    assert_eq!(on_a["tasks"].as_array().unwrap().len(), 301);
+    assert_eq!(
+        without_local_fields(on_a),
+        without_local_fields(on_daemon),
+        "the two stores converge"
     );
 }

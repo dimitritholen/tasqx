@@ -19,10 +19,13 @@ pub const ENDPOINT_ENV: &str = "TASQX_R2_ENDPOINT";
 /// How long to wait for the TCP and TLS handshake.
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 
-/// How long one whole call may take, body included. Under the runner's
-/// 120-second kill, so a stalled transfer ends here with a reason rather than
-/// there with a signal.
-const CALL_TIMEOUT: Duration = Duration::from_secs(90);
+/// How long one whole call may take, body included: nine minutes, room for a
+/// multi-megabyte upload on a slow link. Under the ten-minute kill `tasqx
+/// sync` gives a `pull` or `push` (`tasqx_core::remote::TRANSFER_TIMEOUT`,
+/// D201), so a stalled transfer ends here with a reason rather than there
+/// with a signal. `describe` and `configure` never get here with a body, and
+/// their probe answers in seconds.
+const CALL_TIMEOUT: Duration = Duration::from_secs(540);
 
 /// R2 takes any region; `auto` is the one its docs sign with.
 const REGION: &str = "auto";
@@ -267,6 +270,20 @@ fn between(text: &str, open: &str, close: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A stalled transfer must end here, with a reason, before `tasqx sync`'s
+    /// runner kills the process (D199, D201) — and leave a multi-megabyte
+    /// upload on a slow link most of that time rather than 90 s of it.
+    #[test]
+    fn a_call_times_out_before_the_sync_runner_kills_it() {
+        let runner = tasqx_core::remote::TRANSFER_TIMEOUT;
+        assert!(CALL_TIMEOUT < runner, "{CALL_TIMEOUT:?} vs {runner:?}");
+        assert!(
+            CALL_TIMEOUT + CONNECT_TIMEOUT < runner,
+            "the handshake too fits under the kill"
+        );
+        assert!(CALL_TIMEOUT >= Duration::from_secs(540), "{CALL_TIMEOUT:?}");
+    }
 
     #[test]
     fn plain_http_is_accepted_for_a_loopback_host_only() {

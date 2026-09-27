@@ -1423,7 +1423,7 @@ pub(super) enum ThemeAction {
 #[derive(Subcommand)]
 pub(super) enum SyncAction {
     /// Choose the remote: ask the connector what it needs, hand it your
-    /// answers, and record it in `config.toml` once it accepts them.
+    /// answers, and record it beside this store once it accepts them.
     Setup {
         /// The connector's name: `dir` runs `tasqx-remote-dir` from PATH.
         connector: String,
