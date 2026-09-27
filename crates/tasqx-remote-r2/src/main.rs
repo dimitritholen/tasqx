@@ -22,10 +22,11 @@
 //!   with no Secret Service. When set, every verb reads the secret from it
 //!   and the keyring is not touched; it is never persisted. `configure` then
 //!   needs no `secret_access_key` value, and refuses one that differs.
-//! - `TASQX_R2_ENDPOINT`: `http[s]://host[:port]` in place of
+//! - `TASQX_R2_ENDPOINT`: `https://host[:port]` in place of
 //!   `https://<account_id>.r2.cloudflarestorage.com` — a jurisdiction
 //!   endpoint such as `https://<account_id>.eu.r2.cloudflarestorage.com`, or
-//!   a test server. Read on every call, never saved.
+//!   a test server. Plain `http://` is refused unless the host is loopback
+//!   (`localhost`, 127.0.0.0/8, `[::1]`). Read on every call, never saved.
 //!
 //! **Versions are ETags.** `pull` is one GET: 404 is an empty remote, 200 is
 //! the snapshot, streamed to a file in `out_dir`, and its ETag (quotes
