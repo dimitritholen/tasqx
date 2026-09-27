@@ -298,7 +298,11 @@ pub const PARAMS: &[(&str, &[&str], bool)] = &[
         &["group_by", "filter", "metrics", "since", "until"],
         false,
     ),
-    ("store.export", &["filter", "include_unscoped"], false),
+    (
+        "store.export",
+        &["filter", "include_unscoped", "out_path"],
+        false,
+    ),
     (
         "store.import",
         &[
@@ -310,6 +314,7 @@ pub const PARAMS: &[(&str, &[&str], bool)] = &[
             "links",
             "dry_run",
             "merge",
+            "path",
         ],
         true,
     ),

@@ -289,20 +289,6 @@ pub const SETTINGS: &[Setting] = &[
                   does not look switched on (D57).",
     },
     Setting {
-        key: "sync.connector",
-        home: Home::Toml,
-        kind: Kind::Str,
-        // Empty: sync is off until `tasqx sync setup` names a connector. The
-        // connector's own settings are never here — it keeps them itself
-        // (D198) — so this row is the one thing `config.toml` knows of sync.
-        default: "",
-        env: None,
-        flag: None,
-        choices: Choices::Free,
-        summary: "The remote `tasqx sync` runs, `tasqx-remote-<name>` on PATH; \
-                  written by `tasqx sync setup` (D201).",
-    },
-    Setting {
         key: "default_project",
         home: Home::Store,
         kind: Kind::Str,

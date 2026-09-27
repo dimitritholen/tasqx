@@ -593,7 +593,7 @@ const METHODS: [(&str, &str, &str); 49] = [
     ),
     (
         "store.export",
-        "<code>filter?</code>, <code>include_unscoped?</code>",
+        "<code>filter?</code>, <code>include_unscoped?</code>, <code>out_path?</code>",
         "<code>{tasks, projects, dropped_projects, docs, dropped_docs, links, dropped_links, \
          events, dropped_events, default_project, dropped_dependencies}</code>. \
          <code>events</code> is the whole audit log except the bookkeeping rows a `store.import` \
@@ -601,13 +601,16 @@ const METHODS: [(&str, &str, &str); 49] = [
          other filter scopes those four to what the exported tasks need and reports what it \
          dropped (D171, D181) — <code>include_unscoped</code> widens that scope back to docs \
          with no project. A link travels only when BOTH its ends are nodes the document \
-         carries.",
+         carries. <code>out_path</code> (absolute, never an existing file) writes the \
+         document there instead and answers <code>{out_path, bytes, tasks}</code> with the \
+         <code>dropped_*</code> counts, so a store past a daemon's 1 MiB frame can leave it \
+         (D201).",
     ),
     (
         "store.import",
         "<code>tasks</code>, <code>projects?</code>, <code>default_project?</code>, \
          <code>docs?</code>, <code>events?</code>, <code>links?</code>, <code>dry_run?</code>, \
-         <code>merge?</code>",
+         <code>merge?</code>, <code>path?</code>",
         "<code>{imported, projects_imported, projects_created, docs_imported, docs_declared, \
          events_imported, links_imported, default_project, renumbered, docs_merged, \
          dry_run, merged, project_description_conflicts, deduplicated}</code>. \
@@ -641,7 +644,10 @@ const METHODS: [(&str, &str, &str); 49] = [
          Two copies of one recurrence \
          occurrence (same <code>spawned_from</code>, <code>due</code> and <code>scheduled</code>, \
          anywhere in the store) fold into the lowest id, listed in \
-         <code>deduplicated</code> (D191).",
+         <code>deduplicated</code> (D191). <code>path</code> (absolute) reads the document \
+         from a file instead of <code>tasks</code> and the rest, for one past a daemon's \
+         1 MiB frame; <code>merge</code> and <code>dry_run</code> still come from the params \
+         (D201).",
     ),
     (
         "event.list",

@@ -18,6 +18,17 @@ impl Engine {
     /// `dropped_dependencies` is always present and is 0 for an unfiltered
     /// export, which stays a byte-identical round trip.
     pub fn store_export(&self, p: &Value) -> Result<Value, ApiError> {
+        // D201: the document to a file, for a store too big for the daemon's
+        // 1 MiB frame. The rest of the params are the inline export's.
+        if let Some(out) = opt_str(p, "out_path")? {
+            let out = absolute_param("out_path", &out)?;
+            let mut inner = p.clone();
+            if let Some(o) = inner.as_object_mut() {
+                o.remove("out_path");
+            }
+            let doc = self.store_export(&inner)?;
+            return write_export_file(&out, &doc);
+        }
         // One instant for the whole export: the filter's relative dates, every
         // row's wait/schedule release and every recomputed urgency agree about
         // what time it is.
@@ -974,6 +985,11 @@ impl Engine {
     /// renumbering decision runs for real, against this store, inside the
     /// same `BEGIN IMMEDIATE`; only the very last step differs.
     pub fn store_import(&self, p: &Value) -> Result<Value, ApiError> {
+        // D201: the document from a file, for one too big for the daemon's
+        // 1 MiB frame. How it is applied still comes from the params alone.
+        if let Some(path) = opt_str(p, "path")? {
+            return self.store_import(&import_document_from(&path, p)?);
+        }
         let dry_run = opt_bool(p, "dry_run")?.unwrap_or(false);
         // D185: default false, so a restore keeps D138's wholesale replace.
         // True turns a KNOWN task's child tables into unions and its scalars
@@ -3172,6 +3188,88 @@ fn remap_memory_ends(payload: &str, remap: &HashMap<(NodeType, String), String>)
         }
     }
     Value::Object(obj).to_string()
+}
+
+/// A path param the engine reads or writes: absolute, because through a
+/// daemon a relative one would resolve against the daemon's working
+/// directory, not the caller's (D201).
+fn absolute_param(key: &str, raw: &str) -> Result<std::path::PathBuf, ApiError> {
+    let path = std::path::PathBuf::from(raw);
+    if !path.is_absolute() {
+        return Err(ApiError::bad_request(format!(
+            "`{key}` must be an absolute path, got {raw:?}"
+        )));
+    }
+    Ok(path)
+}
+
+/// `store.export`'s `out_path` (D201): write the document, never over an
+/// existing file, and answer with what a caller needs without reading it.
+fn write_export_file(out: &std::path::Path, doc: &Value) -> Result<Value, ApiError> {
+    use std::io::Write;
+    let bytes = serde_json::to_vec(doc)
+        .map_err(|e| ApiError::internal(format!("cannot encode the export: {e}")))?;
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(out)
+        .map_err(|e| {
+            if e.kind() == std::io::ErrorKind::AlreadyExists {
+                ApiError::bad_request(format!(
+                    "{} already exists; `out_path` never overwrites a file",
+                    out.display()
+                ))
+            } else {
+                ApiError::bad_request(format!("cannot create {}: {e}", out.display()))
+            }
+        })?;
+    file.write_all(&bytes)
+        .and_then(|()| file.sync_all())
+        .map_err(|e| ApiError::internal(format!("cannot write {}: {e}", out.display())))?;
+    let mut summary = json!({
+        "out_path": out.to_string_lossy(),
+        "bytes": bytes.len(),
+        "tasks": opt_array(doc, "tasks")?.map_or(0, Vec::len),
+    });
+    for (k, v) in doc.as_object().into_iter().flatten() {
+        if k.starts_with("dropped_") || k == "default_project" {
+            summary[k] = v.clone();
+        }
+    }
+    Ok(summary)
+}
+
+/// `store.import`'s `path` (D201): the document read from the file, with the
+/// params' own `merge` and `dry_run` on it — a document says what it
+/// carries, never how it is applied.
+fn import_document_from(raw: &str, p: &Value) -> Result<Value, ApiError> {
+    let path = absolute_param("path", raw)?;
+    if p.get("tasks").is_some() {
+        return Err(ApiError::bad_request(
+            "store.import takes the document inline (`tasks`, …) or from `path`, not both",
+        ));
+    }
+    let bytes = std::fs::read(&path)
+        .map_err(|e| ApiError::bad_request(format!("cannot read {}: {e}", path.display())))?;
+    let mut doc: Value = serde_json::from_slice(&bytes)
+        .map_err(|e| ApiError::bad_request(format!("{} is not JSON: {e}", path.display())))?;
+    if doc.is_array() {
+        doc = json!({ "tasks": doc });
+    }
+    let Some(obj) = doc.as_object_mut() else {
+        return Err(ApiError::bad_request(format!(
+            "{} is not an export document: expected an object with `tasks`",
+            path.display()
+        )));
+    };
+    obj.remove("path");
+    for key in ["merge", "dry_run"] {
+        match p.get(key) {
+            Some(v) => obj.insert(key.into(), v.clone()),
+            None => obj.remove(key),
+        };
+    }
+    Ok(doc)
 }
 
 #[cfg(test)]
@@ -7749,5 +7847,106 @@ mod tests {
         assert_eq!(doc["entity_id"], json!(r.doc));
         assert_eq!(doc["payload"]["id"], json!(r.doc));
         assert_eq!(doc["payload"]["source"], json!("docs/ruling.md"));
+    }
+
+    /// A scratch directory of this test's own for the by-file forms (D201).
+    fn file_dir(label: &str) -> std::path::PathBuf {
+        let d = std::env::temp_dir().join(format!(
+            "tasqx-transfer-files-{label}-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        d
+    }
+
+    fn one_task_store() -> Engine {
+        let e = Engine::open_in_memory().unwrap();
+        crate::dispatch(&e, "project.create", &json!({"name": "home"})).unwrap();
+        crate::dispatch(&e, "task.add", &json!({"title": "By file"})).unwrap();
+        e
+    }
+
+    /// D201: `out_path` writes the whole document to a file and answers with
+    /// a summary, so a store bigger than the daemon's 1 MiB frame can leave
+    /// it. The file holds what the inline form returns.
+    #[test]
+    fn store_export_out_path_writes_the_document_and_answers_small() {
+        let e = one_task_store();
+        let dir = file_dir("export");
+        let out = dir.join("doc.json");
+        let r = e
+            .store_export(&json!({"out_path": out.to_str().unwrap()}))
+            .unwrap();
+        assert_eq!(r["out_path"], json!(out.to_str().unwrap()), "{r}");
+        assert_eq!(r["tasks"], json!(1), "{r}");
+        assert!(r.get("events").is_none(), "no document inline: {r}");
+        let bytes = std::fs::read(&out).unwrap();
+        assert_eq!(r["bytes"], json!(bytes.len()), "{r}");
+        let doc: Value = serde_json::from_slice(&bytes).unwrap();
+        let inline = e.store_export(&json!({})).unwrap();
+        assert_eq!(doc["tasks"][0]["id"], inline["tasks"][0]["id"]);
+        assert_eq!(doc["events"], inline["events"]);
+    }
+
+    #[test]
+    fn store_export_out_path_must_be_absolute_and_new() {
+        let e = one_task_store();
+        let err = e
+            .store_export(&json!({"out_path": "relative.json"}))
+            .unwrap_err();
+        assert_eq!(err.code, ErrorCode::BadRequest);
+        assert!(err.message.contains("absolute"), "{}", err.message);
+        let dir = file_dir("export-exists");
+        let out = dir.join("taken.json");
+        std::fs::write(&out, b"mine").unwrap();
+        let err = e
+            .store_export(&json!({"out_path": out.to_str().unwrap()}))
+            .unwrap_err();
+        assert!(err.message.contains("already exists"), "{}", err.message);
+        assert_eq!(std::fs::read(&out).unwrap(), b"mine", "never overwritten");
+    }
+
+    /// D201: `path` reads the document from a file; `merge` and `dry_run`
+    /// still come from the params, never from the document.
+    #[test]
+    fn store_import_path_reads_the_document_from_a_file() {
+        let from = one_task_store();
+        let dir = file_dir("import");
+        let doc = dir.join("doc.json");
+        let mut exported = from.store_export(&json!({})).unwrap();
+        exported["dry_run"] = json!(true);
+        std::fs::write(&doc, serde_json::to_vec(&exported).unwrap()).unwrap();
+
+        let into = Engine::open_in_memory().unwrap();
+        let r = into
+            .store_import(&json!({"path": doc.to_str().unwrap(), "merge": true}))
+            .unwrap();
+        assert_eq!(r["imported"], json!(1), "{r}");
+        assert_eq!(
+            r["dry_run"],
+            json!(false),
+            "the document's own dry_run is ignored"
+        );
+        assert_eq!(exported_task_count(&into), 1);
+    }
+
+    #[test]
+    fn store_import_path_is_absolute_and_alone() {
+        let e = Engine::open_in_memory().unwrap();
+        let err = e.store_import(&json!({"path": "doc.json"})).unwrap_err();
+        assert_eq!(err.code, ErrorCode::BadRequest);
+        assert!(err.message.contains("absolute"), "{}", err.message);
+        let dir = file_dir("import-both");
+        let doc = dir.join("doc.json");
+        std::fs::write(&doc, b"{\"tasks\": []}").unwrap();
+        let err = e
+            .store_import(&json!({"path": doc.to_str().unwrap(), "tasks": []}))
+            .unwrap_err();
+        assert!(err.message.contains("not both"), "{}", err.message);
+        let err = e
+            .store_import(&json!({"path": dir.join("missing.json").to_str().unwrap()}))
+            .unwrap_err();
+        assert!(err.message.contains("cannot read"), "{}", err.message);
     }
 }

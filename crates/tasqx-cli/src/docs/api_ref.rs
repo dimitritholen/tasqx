@@ -951,11 +951,18 @@ const PARAM_DOCS: &[(&str, &str, &str, &str, &str)] = &[
         "Widen a filtered export's `docs`/`projects` to ones that carry no project at all. Refused with no `filter` — an unfiltered export already carries everything, so there is nothing to widen from (D171).",
     ),
     (
+        "store.export",
+        "out_path",
+        "string",
+        "",
+        "An absolute path to write the document to instead of returning it — for a store too big for a daemon's 1 MiB frame (D201). Never overwrites: a file already there is refused. The result is then `{out_path, bytes, tasks}` plus the `dropped_*` counts and `default_project`.",
+    ),
+    (
         "store.import",
         "tasks",
         "array of object",
         "",
-        "The task documents to import, in the shape `store.export` emits. Required, so a misspelled key at the top level is still refused by absence.",
+        "The task documents to import, in the shape `store.export` emits. Required unless `path` is given, so a misspelled key at the top level is still refused by absence.",
     ),
     (
         "store.import",
@@ -1005,6 +1012,13 @@ const PARAM_DOCS: &[(&str, &str, &str, &str, &str)] = &[
         "boolean",
         "false",
         "Merge a task this store ALREADY holds instead of replacing it (D185): its annotations, checks, token measurements, tags and dependency edges are unioned with what is here, its `_rev` guard is skipped, each scalar field group is taken from the side whose latest event touched it (D189; the later `modified` decides a group neither log touched, or a copy that carries no log), and its tracked total is counted from the union of both event logs, plus the larger of the two sides' totals the logs do not explain, so both directions of a merge agree. Reported per task in `merged`. Default false keeps the wholesale replace a restore wants (D138).",
+    ),
+    (
+        "store.import",
+        "path",
+        "string",
+        "",
+        "An absolute path to read the whole document from instead of sending it inline — for a document too big for a daemon's 1 MiB frame (D201). Refused beside `tasks`; `merge` and `dry_run` still come from these params, never from the file.",
     ),
     (
         "event.list",

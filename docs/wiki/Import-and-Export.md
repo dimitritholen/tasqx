@@ -183,7 +183,7 @@ Both stores now hold both sides' work.
 ## tasqx sync
 
 The same merge, without carrying files around: each machine syncs with one
-shared remote. Choose the remote once per machine, then sync whenever you like.
+shared remote. Choose the remote once per store, then sync whenever you like.
 
 ```console
 tasqx sync setup dir --set path=/mnt/share/tasqx

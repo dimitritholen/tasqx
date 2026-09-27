@@ -6,7 +6,14 @@
 //! every other verb: it merges through `store.import` with `merge: true`
 //! (D185, D189, D197) and reads the result back through `store.export`, both
 //! via [`Backend`], so a running daemon stays the single writer and nothing
-//! here opens the store beside it.
+//! here opens the store beside it. Both are handed a FILE path (`path`,
+//! `out_path`), never the document inline: a real store's export is several
+//! megabytes and a daemon refuses a request frame over 1 MiB.
+//!
+//! The store's remote is its own: `sync setup` records the connector's name
+//! in `<store>.sync.json` beside the store, where each sync then records the
+//! version and time it left the remote at. Nothing about sync is in
+//! `config.toml`, so two stores on one machine can sync to two remotes.
 //!
 //! One attempt:
 //!
@@ -16,8 +23,8 @@
 //!    of them (D198), so one left unmerged would be lost;
 //! 3. export, and push with `expected_version` = the first snapshot's version
 //!    (`None` when the remote was empty). When the pull returned exactly one
-//!    snapshot and the export is byte-identical to it, nothing is pushed: the
-//!    remote already holds this store.
+//!    snapshot and the export equals it apart from each task's `_rev` and
+//!    `urgency`, nothing is pushed: the remote already holds this store.
 //!
 //! A conflict means another machine pushed between 1 and 3; the loop starts
 //! over at 1, at most [`MAX_ATTEMPTS`] times. Merging is idempotent, so what
@@ -28,28 +35,21 @@
 //! **The snapshot boundary.** Snapshot bytes are opaque to the connector.
 //! [`pull_snapshots`] and [`push_snapshot`] are the only two places bytes
 //! cross between this store and the remote — task #883's encryption goes
-//! there and nowhere else.
+//! there and nowhere else. Decrypting means writing the plaintext to a file
+//! of its own and pointing [`Pulled`]'s `path` at it, since that file is what
+//! `store.import` reads.
 
 use std::path::{Path, PathBuf};
-use std::time::Duration;
 
 use serde_json::{json, Value};
 use tasqx_core::remote::{self, Connector, Limits, PushOutcome, Snapshot};
 use tasqx_core::ApiError;
 
 use crate::backend::Backend;
-use crate::config;
 use crate::theme::Ctx;
 
 /// Attempts before a sync that keeps losing the race gives up.
 pub(crate) const MAX_ATTEMPTS: u32 = 3;
-
-/// The bound on one `pull` or `push`. exec.rs's default of 120 s is for a
-/// reply; a multi-megabyte upload on a slow link can take longer than that.
-pub(crate) const TRANSFER_TIMEOUT: Duration = Duration::from_secs(10 * 60);
-
-/// The settings key naming the connector (`[sync] connector` in config.toml).
-pub(crate) const CONNECTOR_KEY: &str = "sync.connector";
 
 /// What a sync needs from a remote. [`Connector`] is the real one; the tests
 /// below drive the loop through a fake that misbehaves on cue.
@@ -84,10 +84,12 @@ fn io_error(what: String) -> impl FnOnce(std::io::Error) -> ApiError {
     move |e| ApiError::internal(format!("sync: {what}: {e}"))
 }
 
-/// One pulled snapshot, opened: the remote's version and the export document.
+/// One pulled snapshot, opened: the remote's version, the export document,
+/// and the file holding it, which is what `store.import` is handed.
 struct Pulled {
     version: String,
     doc: Vec<u8>,
+    path: PathBuf,
 }
 
 /// Pull, and read every snapshot back as export bytes. The inbound half of
@@ -103,6 +105,7 @@ fn pull_snapshots(remote: &dyn Remote, out_dir: &Path) -> Result<Vec<Pulled>, Ap
             Ok(Pulled {
                 version: s.version,
                 doc,
+                path: s.path,
             })
         })
         .collect()
@@ -186,23 +189,36 @@ impl Tally {
 }
 
 /// Merge one snapshot into the store through `store.import`, `merge: true`.
+///
+/// By file path, never inline: a real store's export is several megabytes and
+/// a daemon refuses a request frame over 1 MiB. The daemon runs as this user
+/// on a socket private to this user, so it can read the file we can (D201).
 fn merge(be: &mut Backend, snapshot: &Pulled) -> Result<Value, ApiError> {
-    let mut params: Value = serde_json::from_slice(&snapshot.doc).map_err(|e| {
-        ApiError::bad_request(format!(
-            "sync: snapshot {} is not JSON ({e}); the remote holds something tasqx did not write",
-            snapshot.version
-        ))
-    })?;
-    let Some(obj) = params.as_object_mut().filter(|o| o.contains_key("tasks")) else {
-        return Err(ApiError::bad_request(format!(
-            "sync: snapshot {} is not a tasqx export: it has no `tasks`",
-            snapshot.version
-        )));
-    };
-    // The document decides what it carries, never how it is applied.
-    obj.remove("dry_run");
-    obj.insert("merge".into(), Value::Bool(true));
-    be.call("store.import", &params)
+    let path = std::path::absolute(&snapshot.path).map_err(io_error(format!(
+        "cannot resolve snapshot {}",
+        snapshot.version
+    )))?;
+    let params = json!({ "path": path.to_string_lossy(), "merge": true });
+    be.call("store.import", &params).map_err(|e| {
+        ApiError::new(
+            e.code,
+            format!("sync: snapshot {}: {}", snapshot.version, e.message),
+            e.data,
+        )
+    })
+}
+
+/// Export the store into `dir` by file, for `merge`'s reason, and read it back.
+fn export(be: &mut Backend, dir: &Path) -> Result<(Vec<u8>, Value), ApiError> {
+    let out = dir.join("export.json");
+    be.call(
+        "store.export",
+        &json!({ "out_path": out.to_string_lossy() }),
+    )?;
+    let bytes = std::fs::read(&out).map_err(io_error(format!("cannot read {}", out.display())))?;
+    let doc = serde_json::from_slice(&bytes)
+        .map_err(|e| ApiError::internal(format!("sync: the export is not JSON: {e}")))?;
+    Ok((bytes, doc))
 }
 
 /// Per-store fields of a task that an export carries but a merge never takes
@@ -248,9 +264,7 @@ fn run_loop(be: &mut Backend, remote: &dyn Remote, work_root: &Path) -> Result<S
             let result = merge(be, snapshot)?;
             tally.add(&result);
         }
-        let export = be.call("store.export", &json!({}))?;
-        let doc = serde_json::to_vec(&export)
-            .map_err(|e| ApiError::internal(format!("sync: cannot encode the export: {e}")))?;
+        let (doc, export) = export(be, &work.0)?;
         let head = pulled.first().map(|p| p.version.clone());
         if let [only] = pulled.as_slice() {
             if same_store(&only.doc, &export) {
@@ -291,21 +305,22 @@ fn state_path(store: &Path) -> PathBuf {
     store.with_file_name(name)
 }
 
-/// The last successful sync, as recorded.
+/// This store's remote and its last successful sync. `sync setup` writes the
+/// connector with no version; a sync fills the other two in.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct State {
     connector: String,
-    version: String,
-    synced_at: String,
+    version: Option<String>,
+    synced_at: Option<String>,
 }
 
 fn read_state(path: &Path) -> Option<State> {
     let v: Value = serde_json::from_slice(&std::fs::read(path).ok()?).ok()?;
     let field = |k: &str| v.get(k).and_then(Value::as_str).map(str::to_string);
     Some(State {
-        connector: field("connector")?,
-        version: field("version")?,
-        synced_at: field("synced_at")?,
+        connector: field("connector").filter(|c| remote::is_valid_name(c))?,
+        version: field("version"),
+        synced_at: field("synced_at"),
     })
 }
 
@@ -340,13 +355,6 @@ fn store_path(be: &mut Backend) -> Result<PathBuf, ApiError> {
         })
 }
 
-/// The configured connector name, if `sync setup` has run.
-fn configured_connector() -> Option<String> {
-    let s = config::find(CONNECTOR_KEY).expect("sync.connector is a registered setting");
-    let (name, _) = config::resolve(s, None, config::toml_value(s).as_deref());
-    Some(name).filter(|n| !n.is_empty())
-}
-
 fn connector_at(store: &Path, name: &str) -> Result<Connector, ApiError> {
     let state = remote::state_dir(store, name).map_err(remote_error)?;
     Connector::find(name, state).map_err(remote_error)
@@ -361,19 +369,19 @@ pub(crate) fn short_version(v: &str) -> String {
 
 /// `tasqx sync`.
 pub(crate) fn run(be: &mut Backend, ctx: &Ctx) -> crate::CmdOutcome {
-    let Some(name) = configured_connector() else {
+    let store = store_path(be)?;
+    let Some(name) = read_state(&state_path(&store)).map(|s| s.connector) else {
         return Err(not_set_up());
     };
-    let store = store_path(be)?;
     let connector = connector_at(&store, &name)?.with_limits(Limits {
-        timeout: TRANSFER_TIMEOUT,
+        timeout: remote::TRANSFER_TIMEOUT,
         ..Limits::default()
     });
     let synced = run_loop(be, &connector, &std::env::temp_dir())?;
     let state = State {
         connector: name,
-        version: synced.version,
-        synced_at: crate::clock::now().to_string(),
+        version: Some(synced.version),
+        synced_at: Some(crate::clock::now().to_string()),
     };
     write_state(&state_path(&store), &state)?;
     let result = json!({
@@ -399,17 +407,12 @@ fn not_set_up() -> ApiError {
 
 /// `tasqx sync --status`.
 pub(crate) fn status(be: &mut Backend, ctx: &Ctx) -> crate::CmdOutcome {
-    let connector = configured_connector();
-    let last = match &connector {
-        // A state recorded under another connector says nothing about this one.
-        Some(name) => read_state(&state_path(&store_path(be)?)).filter(|s| &s.connector == name),
-        None => None,
-    };
+    let state = read_state(&state_path(&store_path(be)?));
     let result = json!({
-        "set_up": connector.is_some(),
-        "connector": connector,
-        "version": last.as_ref().map(|s| s.version.clone()),
-        "synced_at": last.as_ref().map(|s| s.synced_at.clone()),
+        "set_up": state.is_some(),
+        "connector": state.as_ref().map(|s| s.connector.clone()),
+        "version": state.as_ref().and_then(|s| s.version.clone()),
+        "synced_at": state.as_ref().and_then(|s| s.synced_at.clone()),
     });
     let text = crate::render::sync_status(ctx, &result, crate::clock::now());
     Ok((result, text))
@@ -468,12 +471,25 @@ pub(crate) fn setup(be: &mut Backend, ctx: &Ctx, name: &str, set: &[String]) -> 
             "{name} refused these settings: {error}"
         ))),
         remote::Configured::Ok => {
-            let s = config::find(CONNECTOR_KEY).expect("sync.connector is a registered setting");
-            let path = config::write_value(s, name)?;
+            // The same connector set up again keeps its last sync; another one
+            // starts with none, since that version names a different remote.
+            let path = state_path(&store);
+            let (version, synced_at) = match read_state(&path) {
+                Some(old) if old.connector == name => (old.version, old.synced_at),
+                _ => (None, None),
+            };
+            write_state(
+                &path,
+                &State {
+                    connector: name.to_string(),
+                    version,
+                    synced_at,
+                },
+            )?;
             let result = json!({
                 "connector": name,
                 "connector_version": description.version,
-                "config": path.to_string_lossy(),
+                "state": path.to_string_lossy(),
             });
             let text = crate::render::sync_set_up(ctx, &result);
             Ok((result, text))
@@ -812,11 +828,18 @@ mod tests {
         assert_eq!(path, dir.join("tasks.db.sync.json"));
         let s = State {
             connector: "dir".into(),
-            version: "abc".into(),
-            synced_at: "2026-09-27T10:00:00Z".into(),
+            version: Some("abc".into()),
+            synced_at: Some("2026-09-27T10:00:00Z".into()),
         };
         write_state(&path, &s).unwrap();
         assert_eq!(read_state(&path), Some(s));
+        let set_up_only = State {
+            connector: "r2".into(),
+            version: None,
+            synced_at: None,
+        };
+        write_state(&path, &set_up_only).unwrap();
+        assert_eq!(read_state(&path), Some(set_up_only));
     }
 
     #[test]
@@ -825,9 +848,12 @@ mod tests {
         let mut be = store(&dir, "a");
         let mut doc: Value = serde_json::from_slice(&snapshot_of(&["Theirs"])).unwrap();
         doc["dry_run"] = json!(true);
+        let path = dir.join("snap.json");
+        std::fs::write(&path, serde_json::to_vec(&doc).unwrap()).unwrap();
         let pulled = Pulled {
             version: "v".into(),
-            doc: serde_json::to_vec(&doc).unwrap(),
+            doc: Vec::new(),
+            path,
         };
         merge(&mut be, &pulled).unwrap();
         assert_eq!(titles(&mut be), ["Theirs"]);

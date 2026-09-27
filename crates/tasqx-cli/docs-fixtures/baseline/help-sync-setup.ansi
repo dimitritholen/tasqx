@@ -1,4 +1,4 @@
-Choose the remote: ask the connector what it needs, hand it your answers, and record it in `config.toml` once it accepts them
+Choose the remote: ask the connector what it needs, hand it your answers, and record it beside this store once it accepts them
 
 Usage: tasqx sync setup [OPTIONS] <CONNECTOR>
 
