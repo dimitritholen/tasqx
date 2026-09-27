@@ -418,6 +418,7 @@ struct Daemon<'w> {
     dir: PathBuf,
     sock: String,
     shutdown: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    server: std::thread::JoinHandle<()>,
 }
 
 impl<'w> Daemon<'w> {
@@ -425,8 +426,12 @@ impl<'w> Daemon<'w> {
         use std::time::{Duration, Instant};
         let dir = world.root.join(name);
         std::fs::create_dir_all(&dir).unwrap();
+        // A pipe name is global on Windows, and the tests of this binary share
+        // a pid and run in parallel, so the name carries the world's own
+        // root (`tasqx-sync-<tag>-<pid>`) as a Unix socket's path does.
         let sock = if cfg!(windows) {
-            format!("tasqx-sync-{name}-{}", std::process::id())
+            let world_name = world.root.file_name().expect("world root has a name");
+            format!("{}-{name}", world_name.to_string_lossy())
         } else {
             world
                 .root
@@ -435,13 +440,14 @@ impl<'w> Daemon<'w> {
                 .into_owned()
         };
         let shutdown = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let server;
         {
             let (db, sk, sd) = (
                 dir.join("tasks.db").to_string_lossy().into_owned(),
                 sock.clone(),
                 shutdown.clone(),
             );
-            std::thread::spawn(move || {
+            server = std::thread::spawn(move || {
                 let engine = tasqx_core::Engine::open(&db).expect("open daemon store");
                 tasqx_core::daemon::serve(engine, &sk, sd).expect("serve");
             });
@@ -456,6 +462,7 @@ impl<'w> Daemon<'w> {
             dir,
             sock,
             shutdown,
+            server,
         }
     }
 
@@ -488,10 +495,12 @@ impl<'w> Daemon<'w> {
         self.ok(&["sync", "setup", "dir", "--set", &path]);
     }
 
-    /// The daemon's store, read directly once it is stopped.
+    /// The daemon's store, read directly once it is stopped and its thread
+    /// has returned, so its last write is in and its endpoint is released.
     fn stop_and_export(self) -> Value {
         self.shutdown
             .store(true, std::sync::atomic::Ordering::SeqCst);
+        self.server.join().expect("daemon thread");
         let db = self.dir.join("tasks.db");
         let engine = tasqx_core::Engine::open(db.to_str().unwrap()).unwrap();
         tasqx_core::dispatch(&engine, "store.export", &serde_json::json!({})).unwrap()
