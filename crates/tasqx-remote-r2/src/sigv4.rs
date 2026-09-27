@@ -186,8 +186,8 @@ mod tests {
     #[test]
     fn a_path_keeps_its_slashes_and_encodes_the_rest() {
         assert_eq!(
-            uri_encode_path("/b/tasqx/snapshot.age"),
-            "/b/tasqx/snapshot.age"
+            uri_encode_path("/b/tasqx/snapshot.tqx"),
+            "/b/tasqx/snapshot.tqx"
         );
         assert_eq!(uri_encode_path("/b/a b+c~_-."), "/b/a%20b%2Bc~_-.");
     }

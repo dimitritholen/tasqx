@@ -113,7 +113,7 @@ fn pull_on_an_empty_bucket_returns_nothing() {
 #[test]
 fn pull_returns_the_bytes_and_the_etag_unquoted() {
     let (work, s3, c) = configured("pull");
-    s3.seed("tasqx/snapshot.age", "abc123", b"remote bytes");
+    s3.seed("tasqx/snapshot.tqx", "abc123", b"remote bytes");
     let snaps = c.pull(&work.join("out")).unwrap();
     let [only] = snaps.as_slice() else {
         panic!("{snaps:?}")
@@ -122,7 +122,7 @@ fn pull_returns_the_bytes_and_the_etag_unquoted() {
     assert_eq!(std::fs::read(&only.path).unwrap(), b"remote bytes");
     let get = s3.seen().pop().unwrap();
     assert_eq!(get.method, "GET");
-    assert_eq!(get.path, format!("/{}/tasqx/snapshot.age", fake_s3::BUCKET));
+    assert_eq!(get.path, format!("/{}/tasqx/snapshot.tqx", fake_s3::BUCKET));
 }
 
 #[test]
@@ -165,7 +165,7 @@ fn the_first_push_sends_if_none_match_and_the_next_if_match() {
 #[test]
 fn a_412_is_a_conflict() {
     let (work, s3, c) = configured("412");
-    s3.seed("tasqx/snapshot.age", "theirs", b"theirs");
+    s3.seed("tasqx/snapshot.tqx", "theirs", b"theirs");
     assert_eq!(
         push_bytes(&c, &work, b"mine", Some("stale")),
         PushOutcome::Conflict
@@ -189,7 +189,7 @@ fn a_409_conditional_request_conflict_is_a_conflict() {
 fn a_conflict_exits_2() {
     use std::io::Write;
     let (work, s3, _c) = configured("exit-2");
-    s3.seed("tasqx/snapshot.age", "theirs", b"theirs");
+    s3.seed("tasqx/snapshot.tqx", "theirs", b"theirs");
     let blob = work.join("blob");
     std::fs::write(&blob, b"mine").unwrap();
     let mut child = std::process::Command::new(BIN)

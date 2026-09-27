@@ -59,7 +59,8 @@ const EXIT_CONFLICT: i32 = 2;
 const STATE_DIR_ENV: &str = "TASQX_REMOTE_STATE_DIR";
 
 /// Where the snapshot lives in the bucket unless `object_key` says otherwise.
-const DEFAULT_KEY: &str = "tasqx/snapshot.age";
+/// `.tqx`: the object is tasqx's own sealed snapshot (D202), not an `age` file.
+const DEFAULT_KEY: &str = "tasqx/snapshot.tqx";
 
 /// Cloudflare's page on creating R2 API tokens.
 const TOKEN_HELP_URL: &str = "https://developers.cloudflare.com/r2/api/tokens/";
