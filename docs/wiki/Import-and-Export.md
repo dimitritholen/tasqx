@@ -180,6 +180,24 @@ tasqx import b.json --merge
 
 Both stores now hold both sides' work.
 
+## tasqx sync
+
+The same merge, without carrying files around: each machine syncs with one
+shared remote. Choose the remote once per machine, then sync whenever you like.
+
+```console
+tasqx sync setup dir --set path=/mnt/share/tasqx
+tasqx sync
+tasqx sync --status
+```
+
+`tasqx sync` pulls what the remote holds, merges it into this store exactly as
+`import --merge` does, and pushes the result back. If another machine pushed
+in between, it merges that too and tries again, three times at most. The
+remote is a connector program, `tasqx-remote-<name>` on your `PATH`:
+`tasqx-remote-dir` keeps it in a folder every machine can reach, and
+`tasqx-remote-r2` in a Cloudflare R2 bucket.
+
 ## Good habits
 
 A dated backup, in one line:

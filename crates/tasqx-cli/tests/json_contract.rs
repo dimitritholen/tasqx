@@ -202,6 +202,10 @@ fn cases(tmp: &str) -> Vec<(Case, Vec<String>)> {
         // `~/.claude`; installing is `tests/setup.rs`'s business.
         c("setup", &["setup", "--list", "--home", "SETUP_HOME"]),
         c_fresh("import", &["import", "IMPORT_FILE"]),
+        // `--status` only reads: no connector is set up in this store's
+        // config, so it answers `set_up: false` without running one. Syncing
+        // for real is `tests/sync.rs`'s business.
+        c("sync", &["sync", "--status"]),
     ];
     raw.into_iter()
         .map(|case| {

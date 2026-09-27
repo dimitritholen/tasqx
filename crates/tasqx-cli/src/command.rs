@@ -971,6 +971,23 @@ pub(super) enum Command {
         #[arg(long)]
         merge: bool,
     },
+    /// Sync this store with its remote: pull, merge, push (D201).
+    ///
+    /// Pulls every snapshot the remote holds, merges each into this store the
+    /// way `import --merge` does, and pushes the result back, retrying from
+    /// the pull when another machine pushed in between. The remote is a
+    /// connector, `tasqx-remote-<name>` on PATH, chosen by `sync setup`.
+    #[command(
+        after_help = crate::cmddoc::after_help("sync"),
+        args_conflicts_with_subcommands = true
+    )]
+    Sync {
+        #[command(subcommand)]
+        action: Option<SyncAction>,
+        /// Print the connector, the last version synced and when, and sync nothing.
+        #[arg(long)]
+        status: bool,
+    },
     /// Print the single highest-urgency unblocked task (the "what now" button).
     #[command(after_help = crate::cmddoc::after_help("next"))]
     Next {
@@ -1400,6 +1417,21 @@ pub(super) enum ThemeAction {
     Set {
         /// Theme name: a built-in or a user file in the themes directory.
         name: String,
+    },
+}
+
+#[derive(Subcommand)]
+pub(super) enum SyncAction {
+    /// Choose the remote: ask the connector what it needs, hand it your
+    /// answers, and record it in `config.toml` once it accepts them.
+    Setup {
+        /// The connector's name: `dir` runs `tasqx-remote-dir` from PATH.
+        connector: String,
+        /// Answer one of the connector's questions without being asked
+        /// (`--set path=/mnt/share/tasqx`); repeat for more. Required for
+        /// every question when stdin is not a terminal.
+        #[arg(long = "set", value_name = "KEY=VALUE")]
+        set: Vec<String>,
     },
 }
 

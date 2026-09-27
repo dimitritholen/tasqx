@@ -1,0 +1,850 @@
+//! `tasqx sync` (D201): one store, one remote, and a loop of pull, merge, push.
+//!
+//! The local SQLite file stays the store. The remote is a connector
+//! (`tasqx-remote-<name>` on PATH, D198) that holds snapshots — whole
+//! `store.export` documents — and `sync` is a client of the same dispatch as
+//! every other verb: it merges through `store.import` with `merge: true`
+//! (D185, D189, D197) and reads the result back through `store.export`, both
+//! via [`Backend`], so a running daemon stays the single writer and nothing
+//! here opens the store beside it.
+//!
+//! One attempt:
+//!
+//! 1. pull into a fresh working directory (a connector may write a fixed file
+//!    name, so no attempt reuses another's);
+//! 2. merge EVERY snapshot the pull returned, in order — a push supersedes all
+//!    of them (D198), so one left unmerged would be lost;
+//! 3. export, and push with `expected_version` = the first snapshot's version
+//!    (`None` when the remote was empty). When the pull returned exactly one
+//!    snapshot and the export is byte-identical to it, nothing is pushed: the
+//!    remote already holds this store.
+//!
+//! A conflict means another machine pushed between 1 and 3; the loop starts
+//! over at 1, at most [`MAX_ATTEMPTS`] times. Merging is idempotent, so what
+//! an abandoned attempt merged stays merged and costs nothing when pulled
+//! again. The last synced version and time are recorded only after an
+//! attempt ends with the remote holding this store.
+//!
+//! **The snapshot boundary.** Snapshot bytes are opaque to the connector.
+//! [`pull_snapshots`] and [`push_snapshot`] are the only two places bytes
+//! cross between this store and the remote — task #883's encryption goes
+//! there and nowhere else.
+
+use std::path::{Path, PathBuf};
+use std::time::Duration;
+
+use serde_json::{json, Value};
+use tasqx_core::remote::{self, Connector, Limits, PushOutcome, Snapshot};
+use tasqx_core::ApiError;
+
+use crate::backend::Backend;
+use crate::config;
+use crate::theme::Ctx;
+
+/// Attempts before a sync that keeps losing the race gives up.
+pub(crate) const MAX_ATTEMPTS: u32 = 3;
+
+/// The bound on one `pull` or `push`. exec.rs's default of 120 s is for a
+/// reply; a multi-megabyte upload on a slow link can take longer than that.
+pub(crate) const TRANSFER_TIMEOUT: Duration = Duration::from_secs(10 * 60);
+
+/// The settings key naming the connector (`[sync] connector` in config.toml).
+pub(crate) const CONNECTOR_KEY: &str = "sync.connector";
+
+/// What a sync needs from a remote. [`Connector`] is the real one; the tests
+/// below drive the loop through a fake that misbehaves on cue.
+pub(crate) trait Remote {
+    fn pull(&self, out_dir: &Path) -> Result<Vec<Snapshot>, remote::Error>;
+    fn push(&self, in_path: &Path, expected: Option<&str>) -> Result<PushOutcome, remote::Error>;
+}
+
+impl Remote for Connector {
+    fn pull(&self, out_dir: &Path) -> Result<Vec<Snapshot>, remote::Error> {
+        Connector::pull(self, out_dir)
+    }
+
+    fn push(&self, in_path: &Path, expected: Option<&str>) -> Result<PushOutcome, remote::Error> {
+        Connector::push(self, in_path, expected)
+    }
+}
+
+/// A connector error in the API's vocabulary: an unknown connector is
+/// `not_found`, a name that cannot be one is `bad_request`, and everything a
+/// running connector can go wrong with — a failed exit, a bad reply, a
+/// timeout — is exit 1, a failure this command could not complete.
+fn remote_error(e: remote::Error) -> ApiError {
+    match e {
+        remote::Error::NotFound { .. } => ApiError::not_found(e.to_string(), None),
+        remote::Error::BadName { .. } => ApiError::bad_request(e.to_string()),
+        other => ApiError::internal(format!("sync: {other}")),
+    }
+}
+
+fn io_error(what: String) -> impl FnOnce(std::io::Error) -> ApiError {
+    move |e| ApiError::internal(format!("sync: {what}: {e}"))
+}
+
+/// One pulled snapshot, opened: the remote's version and the export document.
+struct Pulled {
+    version: String,
+    doc: Vec<u8>,
+}
+
+/// Pull, and read every snapshot back as export bytes. The inbound half of
+/// the snapshot boundary (#883 decrypts here).
+fn pull_snapshots(remote: &dyn Remote, out_dir: &Path) -> Result<Vec<Pulled>, ApiError> {
+    remote
+        .pull(out_dir)
+        .map_err(remote_error)?
+        .into_iter()
+        .map(|s| {
+            let doc = std::fs::read(&s.path)
+                .map_err(io_error(format!("cannot read snapshot {}", s.version)))?;
+            Ok(Pulled {
+                version: s.version,
+                doc,
+            })
+        })
+        .collect()
+}
+
+/// Write the export into `dir` and push it. The outbound half of the snapshot
+/// boundary (#883 encrypts here).
+fn push_snapshot(
+    remote: &dyn Remote,
+    dir: &Path,
+    doc: &[u8],
+    expected: Option<&str>,
+) -> Result<PushOutcome, ApiError> {
+    let path = dir.join("snapshot.json");
+    std::fs::write(&path, doc).map_err(io_error(format!("cannot write {}", path.display())))?;
+    remote.push(&path, expected).map_err(remote_error)
+}
+
+/// A directory for one attempt, private to this user, gone when dropped.
+struct WorkDir(PathBuf);
+
+impl WorkDir {
+    fn new(root: &Path, attempt: u32) -> Result<WorkDir, ApiError> {
+        let dir = root.join(format!("tasqx-sync-{}-{attempt}", std::process::id()));
+        // Never into a directory somebody else made: a leftover of our own
+        // (a crashed run under a recycled pid) is cleared first, and then the
+        // create is non-recursive, so it fails rather than adopt one.
+        let _ = std::fs::remove_dir_all(&dir);
+        let mut builder = std::fs::DirBuilder::new();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::DirBuilderExt;
+            builder.mode(0o700);
+        }
+        builder
+            .create(&dir)
+            .map_err(io_error(format!("cannot create {}", dir.display())))?;
+        Ok(WorkDir(dir))
+    }
+}
+
+impl Drop for WorkDir {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+/// What the merges of one sync reported, summed over every attempt.
+#[derive(Debug, Default, PartialEq, Eq)]
+struct Tally {
+    snapshots: u64,
+    tasks_new: u64,
+    tasks_updated: u64,
+}
+
+impl Tally {
+    /// Count one `store.import` result: a task the store did not hold is new;
+    /// one it held is updated when the merge took a field or tracked time from
+    /// the snapshot (D189's `from_payload`, `tracked_delta_seconds`).
+    fn add(&mut self, result: &Value) {
+        let merged = result
+            .get("merged")
+            .and_then(Value::as_array)
+            .map(Vec::as_slice)
+            .unwrap_or_default();
+        let imported = result.get("imported").and_then(Value::as_u64).unwrap_or(0);
+        self.snapshots += 1;
+        self.tasks_new += imported.saturating_sub(merged.len() as u64);
+        self.tasks_updated += merged
+            .iter()
+            .filter(|m| {
+                m.get("from_payload")
+                    .and_then(Value::as_array)
+                    .is_some_and(|a| !a.is_empty())
+                    || m.get("tracked_delta_seconds")
+                        .and_then(Value::as_i64)
+                        .is_some_and(|d| d != 0)
+            })
+            .count() as u64;
+    }
+}
+
+/// Merge one snapshot into the store through `store.import`, `merge: true`.
+fn merge(be: &mut Backend, snapshot: &Pulled) -> Result<Value, ApiError> {
+    let mut params: Value = serde_json::from_slice(&snapshot.doc).map_err(|e| {
+        ApiError::bad_request(format!(
+            "sync: snapshot {} is not JSON ({e}); the remote holds something tasqx did not write",
+            snapshot.version
+        ))
+    })?;
+    let Some(obj) = params.as_object_mut().filter(|o| o.contains_key("tasks")) else {
+        return Err(ApiError::bad_request(format!(
+            "sync: snapshot {} is not a tasqx export: it has no `tasks`",
+            snapshot.version
+        )));
+    };
+    // The document decides what it carries, never how it is applied.
+    obj.remove("dry_run");
+    obj.insert("merge".into(), Value::Bool(true));
+    be.call("store.import", &params)
+}
+
+/// Per-store fields of a task that an export carries but a merge never takes
+/// from the payload: `_rev` is this store's own concurrency counter (a merge
+/// skips its guard, D185) and `urgency` is scored at the instant of export.
+/// Two machines holding the same tasks export different values for both.
+const LOCAL_TASK_FIELDS: [&str; 2] = ["_rev", "urgency"];
+
+/// Whether a pulled snapshot already holds exactly what this store exports,
+/// the per-store fields aside. Without that exception two converged machines
+/// would each find the other's snapshot different and push on every sync.
+fn same_store(snapshot: &[u8], export: &Value) -> bool {
+    let strip = |mut v: Value| {
+        if let Some(tasks) = v.get_mut("tasks").and_then(Value::as_array_mut) {
+            for t in tasks.iter_mut().filter_map(Value::as_object_mut) {
+                for k in LOCAL_TASK_FIELDS {
+                    t.remove(k);
+                }
+            }
+        }
+        v
+    };
+    serde_json::from_slice::<Value>(snapshot).is_ok_and(|s| strip(s) == strip(export.clone()))
+}
+
+/// How one sync ended.
+#[derive(Debug)]
+struct Synced {
+    version: String,
+    pushed: bool,
+    attempts: u32,
+    tally: Tally,
+}
+
+/// The loop: pull, merge every snapshot, export, push; again on conflict.
+fn run_loop(be: &mut Backend, remote: &dyn Remote, work_root: &Path) -> Result<Synced, ApiError> {
+    let mut tally = Tally::default();
+    for attempt in 1..=MAX_ATTEMPTS {
+        let work = WorkDir::new(work_root, attempt)?;
+        let pull_dir = work.0.join("pull");
+        let pulled = pull_snapshots(remote, &pull_dir)?;
+        for snapshot in &pulled {
+            let result = merge(be, snapshot)?;
+            tally.add(&result);
+        }
+        let export = be.call("store.export", &json!({}))?;
+        let doc = serde_json::to_vec(&export)
+            .map_err(|e| ApiError::internal(format!("sync: cannot encode the export: {e}")))?;
+        let head = pulled.first().map(|p| p.version.clone());
+        if let [only] = pulled.as_slice() {
+            if same_store(&only.doc, &export) {
+                return Ok(Synced {
+                    version: only.version.clone(),
+                    pushed: false,
+                    attempts: attempt,
+                    tally,
+                });
+            }
+        }
+        match push_snapshot(remote, &work.0, &doc, head.as_deref())? {
+            PushOutcome::Pushed { version } => {
+                return Ok(Synced {
+                    version,
+                    pushed: true,
+                    attempts: attempt,
+                    tally,
+                })
+            }
+            PushOutcome::Conflict => continue,
+        }
+    }
+    Err(ApiError::conflict(format!(
+        "sync: another machine pushed during each of {MAX_ATTEMPTS} attempts, so nothing was \
+         pushed. Everything pulled is merged into this store and kept; run `tasqx sync` again"
+    )))
+}
+
+// ------------------------------------------------------------------- state
+
+/// Where this store's sync state lives: a file beside the store, named after
+/// it, so it follows `$TASQX_DB` exactly as the store does and two stores in
+/// one directory keep two states.
+fn state_path(store: &Path) -> PathBuf {
+    let mut name = store.file_name().unwrap_or_default().to_os_string();
+    name.push(".sync.json");
+    store.with_file_name(name)
+}
+
+/// The last successful sync, as recorded.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct State {
+    connector: String,
+    version: String,
+    synced_at: String,
+}
+
+fn read_state(path: &Path) -> Option<State> {
+    let v: Value = serde_json::from_slice(&std::fs::read(path).ok()?).ok()?;
+    let field = |k: &str| v.get(k).and_then(Value::as_str).map(str::to_string);
+    Some(State {
+        connector: field("connector")?,
+        version: field("version")?,
+        synced_at: field("synced_at")?,
+    })
+}
+
+/// Write the state whole or not at all: a temp file beside it, renamed over.
+fn write_state(path: &Path, state: &State) -> Result<(), ApiError> {
+    let body = json!({
+        "connector": state.connector,
+        "version": state.version,
+        "synced_at": state.synced_at,
+    });
+    let tmp = path.with_extension("json.tmp");
+    std::fs::write(&tmp, format!("{body:#}\n"))
+        .map_err(io_error(format!("cannot write {}", tmp.display())))?;
+    std::fs::rename(&tmp, path).map_err(io_error(format!("cannot write {}", path.display())))
+}
+
+/// The store the backend writes to. Through a daemon that is the daemon's
+/// file, which only the daemon can name (`core.capabilities.store`, D74) —
+/// `$TASQX_DB` is not in effect there, and the connector's state and this
+/// store's sync state must sit beside the store that is actually synced.
+fn store_path(be: &mut Backend) -> Result<PathBuf, ApiError> {
+    let caps = be.call("core.capabilities", &json!({}))?;
+    caps.get("store")
+        .and_then(Value::as_str)
+        .filter(|s| !s.is_empty())
+        .map(PathBuf::from)
+        .ok_or_else(|| {
+            ApiError::bad_request(
+                "sync: cannot tell which file this store is (an in-memory store, or a daemon \
+                 older than D74), so there is nowhere to keep its sync state",
+            )
+        })
+}
+
+/// The configured connector name, if `sync setup` has run.
+fn configured_connector() -> Option<String> {
+    let s = config::find(CONNECTOR_KEY).expect("sync.connector is a registered setting");
+    let (name, _) = config::resolve(s, None, config::toml_value(s).as_deref());
+    Some(name).filter(|n| !n.is_empty())
+}
+
+fn connector_at(store: &Path, name: &str) -> Result<Connector, ApiError> {
+    let state = remote::state_dir(store, name).map_err(remote_error)?;
+    Connector::find(name, state).map_err(remote_error)
+}
+
+/// The first eight characters of a version, for a person to compare.
+pub(crate) fn short_version(v: &str) -> String {
+    v.trim_matches('"').chars().take(8).collect()
+}
+
+// ---------------------------------------------------------------- commands
+
+/// `tasqx sync`.
+pub(crate) fn run(be: &mut Backend, ctx: &Ctx) -> crate::CmdOutcome {
+    let Some(name) = configured_connector() else {
+        return Err(not_set_up());
+    };
+    let store = store_path(be)?;
+    let connector = connector_at(&store, &name)?.with_limits(Limits {
+        timeout: TRANSFER_TIMEOUT,
+        ..Limits::default()
+    });
+    let synced = run_loop(be, &connector, &std::env::temp_dir())?;
+    let state = State {
+        connector: name,
+        version: synced.version,
+        synced_at: crate::clock::now().to_string(),
+    };
+    write_state(&state_path(&store), &state)?;
+    let result = json!({
+        "connector": state.connector,
+        "version": state.version,
+        "pushed": synced.pushed,
+        "attempts": synced.attempts,
+        "snapshots_merged": synced.tally.snapshots,
+        "tasks_new": synced.tally.tasks_new,
+        "tasks_updated": synced.tally.tasks_updated,
+        "synced_at": state.synced_at,
+    });
+    let text = crate::render::synced(ctx, &result);
+    Ok((result, text))
+}
+
+fn not_set_up() -> ApiError {
+    ApiError::bad_request(
+        "sync is not set up: run `tasqx sync setup <connector>` to choose a remote \
+         (`tasqx sync setup dir` keeps it in a shared folder)",
+    )
+}
+
+/// `tasqx sync --status`.
+pub(crate) fn status(be: &mut Backend, ctx: &Ctx) -> crate::CmdOutcome {
+    let connector = configured_connector();
+    let last = match &connector {
+        // A state recorded under another connector says nothing about this one.
+        Some(name) => read_state(&state_path(&store_path(be)?)).filter(|s| &s.connector == name),
+        None => None,
+    };
+    let result = json!({
+        "set_up": connector.is_some(),
+        "connector": connector,
+        "version": last.as_ref().map(|s| s.version.clone()),
+        "synced_at": last.as_ref().map(|s| s.synced_at.clone()),
+    });
+    let text = crate::render::sync_status(ctx, &result, crate::clock::now());
+    Ok((result, text))
+}
+
+/// `tasqx sync setup <connector> [--set key=value]…`.
+pub(crate) fn setup(be: &mut Backend, ctx: &Ctx, name: &str, set: &[String]) -> crate::CmdOutcome {
+    let mut given = remote::Values::new();
+    for pair in set {
+        let Some((key, value)) = pair.split_once('=').filter(|(k, _)| !k.trim().is_empty()) else {
+            return Err(ApiError::bad_request(format!(
+                "--set {pair:?} is not KEY=VALUE"
+            )));
+        };
+        given.insert(key.trim().to_string(), value.to_string());
+    }
+    let store = store_path(be)?;
+    let connector = connector_at(&store, name)?;
+    let description = connector.describe().map_err(remote_error)?;
+    let keys: Vec<&str> = description.fields.iter().map(|f| f.key.as_str()).collect();
+    if let Some(unknown) = given.keys().find(|k| !keys.contains(&k.as_str())) {
+        return Err(ApiError::bad_request(format!(
+            "{name} has no setting {unknown:?}; it asks for: {}",
+            keys.join(", ")
+        )));
+    }
+    let missing: Vec<&remote::Field> = description
+        .fields
+        .iter()
+        .filter(|f| !given.contains_key(&f.key))
+        .collect();
+    if !missing.is_empty() {
+        use std::io::IsTerminal;
+        if !std::io::stdin().is_terminal() {
+            let named: Vec<String> = missing
+                .iter()
+                .map(|f| format!("{} ({})", f.key, f.label))
+                .collect();
+            return Err(ApiError::bad_request(format!(
+                "{name} needs {} and stdin is not a terminal to ask on: pass {}",
+                named.join(", "),
+                missing
+                    .iter()
+                    .map(|f| format!("--set {}=<value>", f.key))
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            )));
+        }
+        for field in missing {
+            let value = prompt::ask(field)?;
+            given.insert(field.key.clone(), value);
+        }
+    }
+    match connector.configure(&given).map_err(remote_error)? {
+        remote::Configured::Rejected(error) => Err(ApiError::bad_request(format!(
+            "{name} refused these settings: {error}"
+        ))),
+        remote::Configured::Ok => {
+            let s = config::find(CONNECTOR_KEY).expect("sync.connector is a registered setting");
+            let path = config::write_value(s, name)?;
+            let result = json!({
+                "connector": name,
+                "connector_version": description.version,
+                "config": path.to_string_lossy(),
+            });
+            let text = crate::render::sync_set_up(ctx, &result);
+            Ok((result, text))
+        }
+    }
+}
+
+/// Asking for a field on the terminal: plain text echoes, a secret does not.
+mod prompt {
+    use std::io::{BufRead, Write};
+
+    use ratatui::crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
+    use ratatui::crossterm::terminal;
+    use tasqx_core::remote::Field;
+    use tasqx_core::ApiError;
+
+    fn failed(e: std::io::Error) -> ApiError {
+        ApiError::internal(format!("cannot read from the terminal: {e}"))
+    }
+
+    pub(super) fn ask(field: &Field) -> Result<String, ApiError> {
+        let mut err = std::io::stderr();
+        let _ = writeln!(err, "{}", field.help);
+        if let Some(url) = &field.help_url {
+            let _ = writeln!(err, "  {url}");
+        }
+        let _ = write!(err, "{}: ", field.label);
+        let _ = err.flush();
+        if field.secret {
+            return secret();
+        }
+        let mut line = String::new();
+        std::io::stdin()
+            .lock()
+            .read_line(&mut line)
+            .map_err(failed)?;
+        Ok(line.trim_end_matches(['\r', '\n']).to_string())
+    }
+
+    /// Raw mode leaves the terminal on every way out of here.
+    struct Raw;
+
+    impl Drop for Raw {
+        fn drop(&mut self) {
+            let _ = terminal::disable_raw_mode();
+            eprintln!();
+        }
+    }
+
+    fn secret() -> Result<String, ApiError> {
+        terminal::enable_raw_mode().map_err(failed)?;
+        let _raw = Raw;
+        let mut value = String::new();
+        loop {
+            let Event::Key(key) = event::read().map_err(failed)? else {
+                continue;
+            };
+            if key.kind != KeyEventKind::Press {
+                continue;
+            }
+            match key.code {
+                KeyCode::Enter => return Ok(value),
+                KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                    return Err(ApiError::bad_request("setup cancelled"));
+                }
+                KeyCode::Esc => return Err(ApiError::bad_request("setup cancelled")),
+                KeyCode::Backspace => {
+                    value.pop();
+                }
+                KeyCode::Char(c) => value.push(c),
+                _ => {}
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::cell::RefCell;
+    use tasqx_core::Engine;
+
+    fn scratch(tag: &str) -> PathBuf {
+        let d = std::env::temp_dir().join(format!("tasqx-sync-unit-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        d
+    }
+
+    /// A store on disk, as the command would have it.
+    fn store(dir: &Path, name: &str) -> Backend {
+        let path = dir.join(format!("{name}.db"));
+        Backend::Local(Engine::open(path.to_str().unwrap()).unwrap())
+    }
+
+    fn add(be: &mut Backend, title: &str) {
+        if be.call("project.list", &json!({})).unwrap()["projects"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+        {
+            be.call("project.create", &json!({"name": "home"})).unwrap();
+        }
+        be.call("task.add", &json!({"title": title})).unwrap();
+    }
+
+    fn titles(be: &mut Backend) -> Vec<String> {
+        let mut t: Vec<String> = be.call("store.export", &json!({})).unwrap()["tasks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|t| t["title"].as_str().unwrap().to_string())
+            .collect();
+        t.sort();
+        t
+    }
+
+    /// A document another machine would have pushed, holding these tasks.
+    fn snapshot_of(titles: &[&str]) -> Vec<u8> {
+        let mut other = Backend::Local(Engine::open_in_memory().unwrap());
+        for t in titles {
+            add(&mut other, t);
+        }
+        serde_json::to_vec(&other.call("store.export", &json!({})).unwrap()).unwrap()
+    }
+
+    type Hook = Box<dyn FnMut(&mut Vec<(String, Vec<u8>)>)>;
+
+    /// An in-memory remote. `snapshots` is what a pull returns, first = HEAD.
+    /// `before_push` runs inside every push, before the version check — the
+    /// seat of another machine racing this one.
+    struct Fake {
+        snapshots: RefCell<Vec<(String, Vec<u8>)>>,
+        pushes: RefCell<Vec<Option<String>>>,
+        next: RefCell<u32>,
+        before_push: RefCell<Option<Hook>>,
+        fail_push: bool,
+    }
+
+    impl Fake {
+        fn new(snapshots: Vec<(String, Vec<u8>)>) -> Fake {
+            Fake {
+                snapshots: RefCell::new(snapshots),
+                pushes: RefCell::new(Vec::new()),
+                next: RefCell::new(0),
+                before_push: RefCell::new(None),
+                fail_push: false,
+            }
+        }
+    }
+
+    impl Remote for Fake {
+        fn pull(&self, out_dir: &Path) -> Result<Vec<Snapshot>, remote::Error> {
+            std::fs::create_dir_all(out_dir).unwrap();
+            // A fixed file name per slot, as tasqx-remote-r2 writes one: a
+            // reused directory would hand back the previous attempt's bytes.
+            let mut out = Vec::new();
+            for (i, (version, bytes)) in self.snapshots.borrow().iter().enumerate() {
+                let path = out_dir.join(format!("snapshot-{i}"));
+                assert!(!path.exists(), "every attempt pulls into a fresh directory");
+                std::fs::write(&path, bytes).unwrap();
+                out.push(Snapshot {
+                    version: version.clone(),
+                    path,
+                });
+            }
+            Ok(out)
+        }
+
+        fn push(
+            &self,
+            in_path: &Path,
+            expected: Option<&str>,
+        ) -> Result<PushOutcome, remote::Error> {
+            self.pushes.borrow_mut().push(expected.map(str::to_string));
+            if self.fail_push {
+                return Err(remote::Error::Failed {
+                    program: "tasqx-remote-fake".into(),
+                    verb: "push",
+                    code: Some(1),
+                    stderr: "the link dropped".into(),
+                });
+            }
+            if let Some(hook) = self.before_push.borrow_mut().as_mut() {
+                hook(&mut self.snapshots.borrow_mut());
+            }
+            let head = self.snapshots.borrow().first().map(|s| s.0.clone());
+            if head.as_deref() != expected {
+                return Ok(PushOutcome::Conflict);
+            }
+            let mut n = self.next.borrow_mut();
+            *n += 1;
+            let version = format!("v{n}");
+            let bytes = std::fs::read(in_path).unwrap();
+            *self.snapshots.borrow_mut() = vec![(version.clone(), bytes)];
+            Ok(PushOutcome::Pushed { version })
+        }
+    }
+
+    #[test]
+    fn an_empty_remote_is_pushed_to_with_no_expected_version() {
+        let dir = scratch("empty");
+        let mut be = store(&dir, "a");
+        add(&mut be, "Water the plants");
+        let fake = Fake::new(Vec::new());
+        let done = run_loop(&mut be, &fake, &dir).unwrap();
+        assert!(done.pushed);
+        assert_eq!(done.attempts, 1);
+        assert_eq!(*fake.pushes.borrow(), vec![None]);
+        assert_eq!(done.version, "v1");
+    }
+
+    #[test]
+    fn every_snapshot_is_merged_and_the_push_expects_the_first() {
+        let dir = scratch("every");
+        let mut be = store(&dir, "a");
+        add(&mut be, "Local");
+        let fake = Fake::new(vec![
+            ("head".into(), snapshot_of(&["From head"])),
+            ("copy".into(), snapshot_of(&["From a conflict copy"])),
+        ]);
+        let done = run_loop(&mut be, &fake, &dir).unwrap();
+        assert_eq!(
+            titles(&mut be),
+            ["From a conflict copy", "From head", "Local"]
+        );
+        assert_eq!(*fake.pushes.borrow(), vec![Some("head".to_string())]);
+        assert_eq!(done.tally.snapshots, 2);
+        assert_eq!(done.tally.tasks_new, 2);
+    }
+
+    #[test]
+    fn a_remote_that_already_holds_this_store_is_not_pushed_to() {
+        let dir = scratch("same");
+        let mut be = store(&dir, "a");
+        add(&mut be, "Local");
+        let mine = serde_json::to_vec(&be.call("store.export", &json!({})).unwrap()).unwrap();
+        let fake = Fake::new(vec![("head".into(), mine)]);
+        let done = run_loop(&mut be, &fake, &dir).unwrap();
+        assert!(!done.pushed);
+        assert_eq!(done.version, "head");
+        assert!(fake.pushes.borrow().is_empty());
+    }
+
+    #[test]
+    fn a_conflict_starts_over_from_the_pull_and_merges_what_raced_in() {
+        let dir = scratch("retry");
+        let mut be = store(&dir, "a");
+        add(&mut be, "Local");
+        let fake = Fake::new(vec![("v0".into(), snapshot_of(&["Theirs"]))]);
+        let raced = snapshot_of(&["Theirs, later"]);
+        let mut once = Some(raced);
+        *fake.before_push.borrow_mut() = Some(Box::new(move |snaps| {
+            if let Some(bytes) = once.take() {
+                *snaps = vec![("raced".into(), bytes)];
+            }
+        }));
+        let done = run_loop(&mut be, &fake, &dir).unwrap();
+        assert!(done.pushed);
+        assert_eq!(done.attempts, 2);
+        assert_eq!(
+            *fake.pushes.borrow(),
+            vec![Some("v0".to_string()), Some("raced".to_string())]
+        );
+        assert_eq!(titles(&mut be), ["Local", "Theirs", "Theirs, later"]);
+        // What landed on the remote is this store, all three tasks of it.
+        let pushed: Value = serde_json::from_slice(&fake.snapshots.borrow()[0].1).unwrap();
+        assert_eq!(pushed["tasks"].as_array().unwrap().len(), 3);
+    }
+
+    #[test]
+    fn a_remote_that_keeps_moving_fails_after_three_attempts_and_keeps_the_merges() {
+        let dir = scratch("persistent");
+        let mut be = store(&dir, "a");
+        add(&mut be, "Local");
+        let fake = Fake::new(vec![("v0".into(), snapshot_of(&["Theirs"]))]);
+        let mut n = 0;
+        *fake.before_push.borrow_mut() = Some(Box::new(move |snaps| {
+            n += 1;
+            let bytes = snaps[0].1.clone();
+            *snaps = vec![(format!("moved{n}"), bytes)];
+        }));
+        let err = run_loop(&mut be, &fake, &dir).unwrap_err();
+        assert_eq!(err.code, tasqx_core::ErrorCode::Conflict, "{err}");
+        assert!(err.message.contains("run `tasqx sync` again"), "{err}");
+        assert_eq!(fake.pushes.borrow().len(), MAX_ATTEMPTS as usize);
+        assert_eq!(titles(&mut be), ["Local", "Theirs"], "the merge is kept");
+    }
+
+    #[test]
+    fn a_push_that_fails_records_nothing_and_keeps_only_the_merge() {
+        let dir = scratch("failed");
+        let db = dir.join("a.db");
+        let mut be = Backend::Local(Engine::open(db.to_str().unwrap()).unwrap());
+        add(&mut be, "Local");
+        let mut fake = Fake::new(vec![("v0".into(), snapshot_of(&["Theirs"]))]);
+        fake.fail_push = true;
+        let err = run_loop(&mut be, &fake, &dir).unwrap_err();
+        assert_eq!(err.code, tasqx_core::ErrorCode::Internal, "{err}");
+        assert!(err.message.contains("the link dropped"), "{err}");
+        assert_eq!(titles(&mut be), ["Local", "Theirs"]);
+        assert!(!state_path(&db).exists(), "no sync recorded");
+        assert_eq!(
+            fake.snapshots.borrow()[0].0,
+            "v0",
+            "the remote is untouched"
+        );
+    }
+
+    #[test]
+    fn working_directories_are_gone_after_a_sync() {
+        let dir = scratch("clean");
+        let mut be = store(&dir, "a");
+        add(&mut be, "Local");
+        let work = dir.join("work");
+        std::fs::create_dir_all(&work).unwrap();
+        let fake = Fake::new(vec![("v0".into(), snapshot_of(&["Theirs"]))]);
+        run_loop(&mut be, &fake, &work).unwrap();
+        assert_eq!(std::fs::read_dir(&work).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn a_snapshot_that_is_not_an_export_is_refused_by_version() {
+        let dir = scratch("junk");
+        let mut be = store(&dir, "a");
+        let fake = Fake::new(vec![("v9".into(), b"{\"nope\": 1}".to_vec())]);
+        let err = run_loop(&mut be, &fake, &dir).unwrap_err();
+        assert!(err.message.contains("v9"), "{err}");
+        assert!(fake.pushes.borrow().is_empty());
+    }
+
+    #[test]
+    fn state_sits_beside_the_store_and_round_trips() {
+        let dir = scratch("state");
+        let path = state_path(&dir.join("tasks.db"));
+        assert_eq!(path, dir.join("tasks.db.sync.json"));
+        let s = State {
+            connector: "dir".into(),
+            version: "abc".into(),
+            synced_at: "2026-09-27T10:00:00Z".into(),
+        };
+        write_state(&path, &s).unwrap();
+        assert_eq!(read_state(&path), Some(s));
+    }
+
+    #[test]
+    fn merge_ignores_a_dry_run_the_document_asks_for() {
+        let dir = scratch("dryrun");
+        let mut be = store(&dir, "a");
+        let mut doc: Value = serde_json::from_slice(&snapshot_of(&["Theirs"])).unwrap();
+        doc["dry_run"] = json!(true);
+        let pulled = Pulled {
+            version: "v".into(),
+            doc: serde_json::to_vec(&doc).unwrap(),
+        };
+        merge(&mut be, &pulled).unwrap();
+        assert_eq!(titles(&mut be), ["Theirs"]);
+    }
+
+    #[test]
+    fn a_snapshot_differing_only_in_rev_and_urgency_is_the_same_store() {
+        let doc = |rev: i64, urgency: f64, title: &str| json!({"tasks": [{"id": "t", "_rev": rev, "urgency": urgency, "title": title}]});
+        let snap = serde_json::to_vec(&doc(5, 6.0, "a")).unwrap();
+        assert!(same_store(&snap, &doc(4, 7.5, "a")));
+        assert!(!same_store(&snap, &doc(5, 6.0, "b")));
+        assert!(!same_store(b"not json", &doc(5, 6.0, "a")));
+    }
+
+    #[test]
+    fn short_version_is_eight_characters_without_quotes() {
+        assert_eq!(short_version("\"0123456789abcdef\""), "01234567");
+        assert_eq!(short_version("abc"), "abc");
+    }
+}

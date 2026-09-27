@@ -90,6 +90,14 @@
     },
     {
       "default": "",
+      "home": "config.toml",
+      "key": "sync.connector",
+      "source": "default",
+      "summary": "The remote `tasqx sync` runs, `tasqx-remote-<name>` on PATH; written by `tasqx sync setup` (D201).",
+      "value": ""
+    },
+    {
+      "default": "",
       "home": "store",
       "key": "default_project",
       "source": "store",
