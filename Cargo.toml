@@ -12,7 +12,7 @@
 # declares none — see the floor comment. Only a real compile on the floor
 # toolchain catches that class.
 resolver = "3"
-members = ["crates/tasqx-core", "crates/tasqx-cli", "crates/tasqx-remote-dir"]
+members = ["crates/tasqx-core", "crates/tasqx-cli", "crates/tasqx-remote-dir", "crates/tasqx-remote-r2"]
 
 [workspace.package]
 version = "0.14.0"

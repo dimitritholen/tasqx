@@ -1,0 +1,42 @@
+[package]
+name = "tasqx-remote-r2"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+readme.workspace = true
+description = "A tasqx remote connector that keeps snapshots in a Cloudflare R2 bucket."
+keywords = ["tasqx", "sync", "task-manager", "cloudflare", "r2"]
+categories = ["command-line-utilities"]
+
+[[bin]]
+name = "tasqx-remote-r2"
+path = "src/main.rs"
+
+[dependencies]
+# NOT tasqx-core, for the reason tasqx-remote-dir gives: the wire contract is a
+# handful of JSON fields, and the conformance suite keeps the two in step.
+serde = { workspace = true }
+serde_json = { workspace = true }
+# SigV4 by hand over these two (src/sigv4.rs, held to AWS's published test
+# vectors) rather than rusty-s3, which is BSD-2-Clause (not on deny.toml's
+# allow list) and adds url, jiff and percent-encoding for three fixed requests.
+# The 0.11/0.13 majors are the ones keyring's Secret Service store already
+# links on Linux, so there this adds no second copy.
+sha2 = "0.11"
+hmac = "0.13"
+# Blocking HTTP, no async runtime. native-tls, NOT the default rustls: ring,
+# rustls-webpki and untrusted are ISC and webpki-roots is CDLA-Permissive-2.0,
+# none of them on deny.toml's allow list. On Linux this links the system
+# OpenSSL.
+ureq = { version = "3.4.2", default-features = false, features = ["native-tls-no-default"] }
+# The Secret Access Key goes to the OS keyring (Keychain, Credential Manager,
+# Secret Service), never to a file in the state dir.
+keyring = "4.2.0"
+
+[dev-dependencies]
+# The version is required, not decoration: deny.toml refuses a wildcard, and a
+# bare path dependency is one. scripts/bump-version.sh moves it with the rest.
+tasqx-core = { path = "../tasqx-core", version = "0.14.0", features = ["conformance"] }
