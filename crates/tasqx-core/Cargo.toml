@@ -20,6 +20,12 @@ categories = ["database", "data-structures"]
 # the default build's dependency graph or its test surface. The `Notifier` trait
 # and the log backend are always compiled; this only adds the OS backend.
 notify-os = ["dep:notify-rust"]
+# The connector conformance suite (`remote::conformance`, D198): test support,
+# not engine. A connector crate turns it on from its `[dev-dependencies]` and
+# runs the suite against its own built binary, so a third-party Rust connector
+# gets the same checks `tasqx-remote-dir` does without the library shipping
+# assertion code to every client that links it.
+conformance = []
 
 [dependencies]
 interprocess = "2.2"
@@ -36,6 +42,14 @@ serde_json = { workspace = true }
 # for the same reason — so the lockfile gains nothing by naming it here too.
 unicode-width = "0.2.2"
 uuid = { version = "1.23.5", features = ["v7", "v5"] }
+
+# `harness = false`: the runner's tests need fake connectors that are real
+# executables on all three OSes, so the test binary re-executes itself as one —
+# and libtest would print `running 1 test` on the fake's stdout first. See the
+# file's header.
+[[test]]
+name = "remote_runner"
+harness = false
 
 [target.'cfg(windows)'.dependencies]
 # Interprocess exposes no named-pipe I/O timeouts. CancelIoEx lets the bounded
