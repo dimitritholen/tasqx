@@ -432,40 +432,19 @@ pub(crate) fn setup(be: &mut Backend, ctx: &Ctx, name: &str, set: &[String]) -> 
     let store = store_path(be)?;
     let connector = connector_at(&store, name)?;
     let description = connector.describe().map_err(remote_error)?;
-    let keys: Vec<&str> = description.fields.iter().map(|f| f.key.as_str()).collect();
-    if let Some(unknown) = given.keys().find(|k| !keys.contains(&k.as_str())) {
-        return Err(ApiError::bad_request(format!(
-            "{name} has no setting {unknown:?}; it asks for: {}",
-            keys.join(", ")
-        )));
-    }
-    let missing: Vec<&remote::Field> = description
-        .fields
-        .iter()
-        .filter(|f| !given.contains_key(&f.key))
-        .collect();
-    if !missing.is_empty() {
+    let interactive = {
         use std::io::IsTerminal;
-        if !std::io::stdin().is_terminal() {
-            let named: Vec<String> = missing
-                .iter()
-                .map(|f| format!("{} ({})", f.key, f.label))
-                .collect();
-            return Err(ApiError::bad_request(format!(
-                "{name} needs {} and stdin is not a terminal to ask on: pass {}",
-                named.join(", "),
-                missing
-                    .iter()
-                    .map(|f| format!("--set {}=<value>", f.key))
-                    .collect::<Vec<_>>()
-                    .join(" ")
-            )));
-        }
-        for field in missing {
-            let value = prompt::ask(field)?;
-            given.insert(field.key.clone(), value);
-        }
-    }
+        std::io::stdin().is_terminal()
+    };
+    let ask = |f: &remote::Field| prompt::ask(f);
+    let env = |k: &str| std::env::var(k).ok();
+    let given = collect_values(
+        name,
+        &description.fields,
+        given,
+        &env,
+        interactive.then_some(&ask as &Ask),
+    )?;
     match connector.configure(&given).map_err(remote_error)? {
         remote::Configured::Rejected(error) => Err(ApiError::bad_request(format!(
             "{name} refused these settings: {error}"
@@ -495,6 +474,100 @@ pub(crate) fn setup(be: &mut Backend, ctx: &Ctx, name: &str, set: &[String]) -> 
             Ok((result, text))
         }
     }
+}
+
+/// The environment variable a secret field can be given in, off a terminal:
+/// `TASQX_SYNC_<KEY>`, the key upper-cased with anything but a letter or a
+/// digit made `_`. Read once by `sync setup`, handed to `configure`, never
+/// stored by tasqx.
+fn secret_env(key: &str) -> String {
+    let key: String = key
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() {
+                c.to_ascii_uppercase()
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    format!("TASQX_SYNC_{key}")
+}
+
+/// How a field is asked for on the terminal.
+type Ask = dyn Fn(&remote::Field) -> Result<String, ApiError>;
+
+/// The answers to hand `configure`, from `--set`, a secret's env var, and —
+/// when `ask` is given, on a terminal — the prompt.
+///
+/// A secret field is refused in `--set`: argv lands in shell history and in
+/// `ps`, where a token must never be. Its two ways in are the no-echo prompt
+/// and [`secret_env`].
+fn collect_values(
+    name: &str,
+    fields: &[remote::Field],
+    mut given: remote::Values,
+    env: &dyn Fn(&str) -> Option<String>,
+    ask: Option<&Ask>,
+) -> Result<remote::Values, ApiError> {
+    let keys: Vec<&str> = fields.iter().map(|f| f.key.as_str()).collect();
+    if let Some(unknown) = given.keys().find(|k| !keys.contains(&k.as_str())) {
+        return Err(ApiError::bad_request(format!(
+            "{name} has no setting {unknown:?}; it asks for: {}",
+            keys.join(", ")
+        )));
+    }
+    if let Some(f) = fields
+        .iter()
+        .find(|f| f.secret && given.contains_key(&f.key))
+    {
+        return Err(ApiError::bad_request(format!(
+            "{} ({}) is secret, and --set would leave it in your shell history and in `ps`: \
+             run `tasqx sync setup {name}` on a terminal to be asked for it with the prompt, \
+             which does not echo, or put it in the environment variable {}",
+            f.key,
+            f.label,
+            secret_env(&f.key)
+        )));
+    }
+    for f in fields.iter().filter(|f| f.secret) {
+        if let Some(v) = env(&secret_env(&f.key)) {
+            given.insert(f.key.clone(), v);
+        }
+    }
+    let missing: Vec<&remote::Field> = fields
+        .iter()
+        .filter(|f| !given.contains_key(&f.key))
+        .collect();
+    if missing.is_empty() {
+        return Ok(given);
+    }
+    let Some(ask) = ask else {
+        let named: Vec<String> = missing
+            .iter()
+            .map(|f| format!("{} ({})", f.key, f.label))
+            .collect();
+        let ways: Vec<String> = missing
+            .iter()
+            .map(|f| {
+                if f.secret {
+                    format!("{}=<value> in the environment", secret_env(&f.key))
+                } else {
+                    format!("--set {}=<value>", f.key)
+                }
+            })
+            .collect();
+        return Err(ApiError::bad_request(format!(
+            "{name} needs {} and stdin is not a terminal to ask on: pass {}",
+            named.join(", "),
+            ways.join(", ")
+        )));
+    };
+    for field in missing {
+        let value = ask(field)?;
+        given.insert(field.key.clone(), value);
+    }
+    Ok(given)
 }
 
 /// Asking for a field on the terminal: plain text echoes, a secret does not.
@@ -866,6 +939,72 @@ mod tests {
         assert!(same_store(&snap, &doc(4, 7.5, "a")));
         assert!(!same_store(&snap, &doc(5, 6.0, "b")));
         assert!(!same_store(b"not json", &doc(5, 6.0, "a")));
+    }
+
+    fn field(key: &str, secret: bool) -> remote::Field {
+        remote::Field {
+            key: key.into(),
+            label: key.to_uppercase(),
+            secret,
+            help: String::new(),
+            help_url: None,
+        }
+    }
+
+    fn given(pairs: &[(&str, &str)]) -> remote::Values {
+        pairs
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect()
+    }
+
+    #[test]
+    fn a_secret_comes_from_its_env_var_and_is_refused_in_set() {
+        let fields = [field("account", false), field("api-token", true)];
+        let env = |k: &str| (k == "TASQX_SYNC_API_TOKEN").then(|| "s3cret".to_string());
+        let values = collect_values("x", &fields, given(&[("account", "me")]), &env, None).unwrap();
+        assert_eq!(values, given(&[("account", "me"), ("api-token", "s3cret")]));
+
+        let err = collect_values(
+            "x",
+            &fields,
+            given(&[("account", "me"), ("api-token", "s3cret")]),
+            &env,
+            None,
+        )
+        .unwrap_err();
+        assert_eq!(err.code, tasqx_core::ErrorCode::BadRequest);
+        assert!(err.message.contains("api-token"), "{}", err.message);
+        assert!(
+            err.message.contains("TASQX_SYNC_API_TOKEN"),
+            "{}",
+            err.message
+        );
+        assert!(!err.message.contains("s3cret"), "{}", err.message);
+    }
+
+    #[test]
+    fn a_missing_secret_off_a_terminal_names_its_env_var_and_a_plain_field_names_set() {
+        let fields = [field("account", false), field("token", true)];
+        let err = collect_values("x", &fields, given(&[]), &|_| None, None).unwrap_err();
+        assert!(
+            err.message.contains("--set account=<value>"),
+            "{}",
+            err.message
+        );
+        assert!(err.message.contains("TASQX_SYNC_TOKEN"), "{}", err.message);
+        assert!(!err.message.contains("--set token"), "{}", err.message);
+    }
+
+    #[test]
+    fn on_a_terminal_every_missing_field_is_asked_for() {
+        let fields = [field("account", false), field("token", true)];
+        let ask = |f: &remote::Field| Ok(format!("typed {}", f.key));
+        let values = collect_values("x", &fields, given(&[]), &|_| None, Some(&ask)).unwrap();
+        assert_eq!(
+            values,
+            given(&[("account", "typed account"), ("token", "typed token")])
+        );
     }
 
     #[test]
