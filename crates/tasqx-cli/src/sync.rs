@@ -135,6 +135,9 @@ impl WorkDir {
         // create is non-recursive, so it fails rather than adopt one.
         let _ = std::fs::remove_dir_all(&dir);
         let mut builder = std::fs::DirBuilder::new();
+        builder.recursive(false);
+        // On Windows a directory under the user's temp dir is already
+        // private to them, so only Unix narrows the mode.
         #[cfg(unix)]
         {
             use std::os::unix::fs::DirBuilderExt;
