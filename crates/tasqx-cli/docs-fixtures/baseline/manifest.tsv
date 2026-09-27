@@ -93,6 +93,7 @@ help-memory	pipe	100	-	memory --help	-	-
 help-tokens	pipe	100	-	tokens --help	-	-
 help-export	pipe	100	-	export --help	-	-
 help-import	pipe	100	-	import --help	-	-
+help-sync	pipe	100	-	sync --help	-	-
 help-next	pipe	100	-	next --help	-	-
 help-dashboard	pipe	100	-	dashboard --help	-	-
 help-pick	pipe	100	-	pick --help	-	-
@@ -121,6 +122,7 @@ help-config-describe	pipe	100	-	config describe --help	-	-
 help-config-set	pipe	100	-	config set --help	-	-
 help-config-unset	pipe	100	-	config unset --help	-	-
 help-config-path	pipe	100	-	config path --help	-	-
+help-sync-setup	pipe	100	-	sync setup --help	-	-
 help-config-store	pipe	100	-	config store --help	-	-
 help-config-edit	pipe	100	-	config edit --help	-	-
 help-memory-add	pipe	100	-	memory add --help	-	-
@@ -150,6 +152,8 @@ memory-list-json	pipe	100	-	memory list --json	-	-
 theme-list-json	pipe	100	-	theme list --json	-	-
 config-list-json	pipe	100	-	config list --json	-	-
 dashboard-json	pipe	100	-	dashboard --json	-	-
+sync-status-json	pipe	100	-	sync --status --json	-	-
+sync-status	pipe	100	-	sync --status	-	-
 
 # --- --card / --card --ascii, the four verbs that take it ---
 show-card	pipe	100	-	show 51 --card	-	-

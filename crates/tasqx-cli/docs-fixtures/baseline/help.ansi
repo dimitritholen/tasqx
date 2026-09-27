@@ -35,6 +35,7 @@ Commands:
   tokens       Token accounting maintenance (DESIGN.md §12-D50)
   export       Export tasks as canonical JSON (maps to store.export)
   import       Import tasks from a file, or `-` for stdin (maps to store.import)
+  sync         Sync this store with its remote: pull, merge, push (D201)
   next         Print the single highest-urgency unblocked task (the "what now" button)
   dashboard    Open the dashboard: an overview screen over the working set, deadlines, blocked work, projects, burndown and token spend (DESIGN.md §12-D58)
   pick         Browse tasks on a full-screen list, and start one (maps to task.list, task.get, then task.start)
