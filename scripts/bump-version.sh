@@ -75,13 +75,13 @@ if $apply; then
     # has no GNU `0,/re/` address, so on macOS the sed form wrote nothing
     # and left a `Cargo.toml-E` behind.
     perl -pi -e "if (!\$done && s/^version = \"[^\"]+\"/version = \"${new}\"/) { \$done = 1 }" Cargo.toml
-    # tasqx-cli's path dependency on tasqx-core pins a literal version
-    # requirement rather than inheriting workspace.package.version (Cargo
+    # tasqx-cli's path dependency on tasqx-core, and tasqx-remote-dir's
+    # dev-dependency on it, pin a literal version requirement rather than inheriting workspace.package.version (Cargo
     # has no `version.workspace = true` for a dependency's version req) —
     # left at the old value this is a silent staleness, not an error, until
     # someone tries to publish. Bump it alongside.
-    perl -pi -e "s/(tasqx-core = \{ path = \"\.\.\/tasqx-core\", version = \")[^\"]+(\" \})/\${1}${new}\$2/" \
-        crates/tasqx-cli/Cargo.toml
+    perl -pi -e "s/(tasqx-core = \{ path = \"\.\.\/tasqx-core\", version = \")[^\"]+(\")/\${1}${new}\$2/" \
+        crates/tasqx-cli/Cargo.toml crates/tasqx-remote-dir/Cargo.toml
     # Keep Cargo.lock's own recorded crate versions in sync immediately,
     # rather than leaving that for whoever next runs a cargo command to
     # discover as an unexplained lockfile diff.

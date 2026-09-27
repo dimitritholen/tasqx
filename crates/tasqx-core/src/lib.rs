@@ -35,6 +35,8 @@
 //!  * [`otlp`]      — the opt-in local OTLP receiver that buffers live samples.
 //!  * [`attribution`] — a task's window turned into a measured token spend (#17).
 //!  * [`util`]      — the shared time/JSON param readers (D17, D32).
+//!  * [`exec`]      — run a child: JSON in, JSON out, a kill deadline, capped stdout.
+//!  * [`remote`]    — the storage-connector protocol and its runner (D198).
 //!
 //! The full §4 method catalogue is implemented (task add/list/get/start/stop/
 //! done/modify/cancel/reopen, project create/list/archive/use, tag add/remove,
@@ -70,6 +72,7 @@ pub mod docs;
 pub mod embed;
 pub mod engine;
 pub mod error;
+pub mod exec;
 pub mod filter;
 pub mod frontmatter;
 pub mod markdown;
@@ -79,6 +82,7 @@ pub mod notify;
 pub mod otlp;
 pub mod recur;
 pub mod remind;
+pub mod remote;
 pub mod scheduler;
 pub mod storage;
 pub mod sugar;
