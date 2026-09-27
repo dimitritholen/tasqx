@@ -91,8 +91,13 @@ jobs:
         env:
           RUSTFLAGS: -D warnings
 
+      # Both connectors ship alongside the CLI: `tasqx sync` shells out to
+      # `tasqx-remote-<name>` on PATH, so an archive without them is a `tasqx
+      # sync setup` that can never find a remote. tasqx-remote-r2 links
+      # rustls+ring, not OpenSSL, so this is safe on every target here
+      # including the cross-compiled one.
       - name: Build
-        run: cargo build --release -p tasqx-cli --target ${{ matrix.target }}
+        run: cargo build --release -p tasqx-cli -p tasqx-remote-dir -p tasqx-remote-r2 --target ${{ matrix.target }}
 
       # An archive holding only a binary makes Tab completion something the user
       # has to go and find; `completions/` is the half a packager (or a person
@@ -153,6 +158,8 @@ jobs:
           STAGE="tasqx-${VERSION}-${{ matrix.target }}"
           mkdir "$STAGE"
           cp "target/${{ matrix.target }}/release/tasqx" "$STAGE/"
+          cp "target/${{ matrix.target }}/release/tasqx-remote-dir" "$STAGE/"
+          cp "target/${{ matrix.target }}/release/tasqx-remote-r2" "$STAGE/"
           cp README.md LICENSE.md NOTICE "$STAGE/"
           cp -R completions "$STAGE/"
           tar czf "$STAGE.tar.gz" "$STAGE"
@@ -166,6 +173,8 @@ jobs:
           $stage = "tasqx-$version-${{ matrix.target }}"
           New-Item -ItemType Directory $stage | Out-Null
           Copy-Item "target/${{ matrix.target }}/release/tasqx.exe" $stage
+          Copy-Item "target/${{ matrix.target }}/release/tasqx-remote-dir.exe" $stage
+          Copy-Item "target/${{ matrix.target }}/release/tasqx-remote-r2.exe" $stage
           Copy-Item README.md, LICENSE.md, NOTICE $stage
           Copy-Item completions $stage -Recurse
           Compress-Archive -Path $stage -DestinationPath "$stage.zip"
