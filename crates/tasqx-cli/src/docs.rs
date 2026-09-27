@@ -1192,7 +1192,11 @@ fn page_overview() -> String {
          <code>default_project</code> is shown there but not editable — it lives in the store and \
          is set with <code>tasqx use</code>. Piped or redirected, <code>config edit</code> refuses \
          and exits 2 instead of writing escape codes into your pipe; scripts should use \
-         <code>config set</code>.",
+         <code>config set</code>. A Sync section sits below the settings: <code>c</code> connects \
+         a <code>tasqx-remote-*</code> connector found on <code>PATH</code> through a form (the \
+         connector's own fields, then the sync passphrase, twice), <code>s</code> runs \
+         <code>tasqx sync</code>, and <code>d</code> disconnects after confirming — the remote \
+         itself is untouched either way.",
     ));
 
     s.push_str(&page_close("overview"));

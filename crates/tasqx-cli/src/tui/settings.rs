@@ -11,8 +11,11 @@
 //! the caller can reload the theme every frame and the user sees a theme before
 //! committing to it. A config file can never do that.
 
+use std::collections::BTreeMap;
+
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
-use ratatui::layout::{Constraint, Layout};
+use ratatui::layout::{Constraint, Layout, Rect};
+use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 use ratatui::Frame;
@@ -21,6 +24,7 @@ use crate::config::{self, Choices, Home, Kind, Setting};
 use crate::render;
 use crate::theme::{Caps, Theme};
 use crate::tui::{first_visible, rt_style};
+use tasqx_core::remote;
 
 /// One editable line: a registry entry plus what it currently resolves to.
 ///
@@ -39,13 +43,132 @@ pub struct Row {
 }
 
 /// What the screen is doing right now.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, PartialEq, Eq, Debug)]
 pub enum Mode {
     Browse,
     /// An inline picker is open over the selected row's `choices`.
     Pick {
         cursor: usize,
     },
+    /// `c` (connect): choosing among the `tasqx-remote-*` connectors found on
+    /// PATH.
+    SyncPick {
+        names: Vec<String>,
+        cursor: usize,
+    },
+    /// The connector's own fields, followed by the sync passphrase twice —
+    /// the same values `tasqx sync setup` collects off argv/env/prompt
+    /// (D201), collected here off this form instead.
+    SyncForm(SyncForm),
+    /// `d` (disconnect): confirm before removing `<store>.sync.json` and
+    /// `<store>.sync.key`. The remote itself is untouched, which the render
+    /// side says so the confirm text does not have to be taken on faith.
+    SyncConfirmDisconnect,
+}
+
+/// One connector field, plus what the user has typed into it.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct SyncField {
+    pub key: String,
+    pub label: String,
+    pub secret: bool,
+    pub help: String,
+    pub help_url: Option<String>,
+    pub value: String,
+}
+
+/// The connect form's state: the connector's own fields (from `describe`),
+/// then the sync passphrase, asked twice exactly as the terminal prompt
+/// asks it (D201) — so a typo is caught here before it is ever sent anywhere.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct SyncForm {
+    pub connector: String,
+    pub fields: Vec<SyncField>,
+    pub cursor: usize,
+    pub passphrase: String,
+    pub passphrase_again: String,
+    /// The connector's own `ok: false` error, or a local check (empty/
+    /// mismatched passphrase) — shown inline, with the form kept open, never
+    /// dropping what was already typed.
+    pub error: Option<String>,
+}
+
+impl SyncForm {
+    fn new(connector: String, fields: Vec<remote::Field>) -> Self {
+        SyncForm {
+            connector,
+            fields: fields
+                .into_iter()
+                .map(|f| SyncField {
+                    key: f.key,
+                    label: f.label,
+                    secret: f.secret,
+                    help: f.help,
+                    help_url: f.help_url,
+                    value: String::new(),
+                })
+                .collect(),
+            cursor: 0,
+            passphrase: String::new(),
+            passphrase_again: String::new(),
+            error: None,
+        }
+    }
+
+    /// The connector's own fields, plus the passphrase asked for twice.
+    fn len(&self) -> usize {
+        self.fields.len() + 2
+    }
+
+    fn is_secret(&self, i: usize) -> bool {
+        self.fields.get(i).is_none_or(|f| f.secret)
+    }
+
+    fn label(&self, i: usize) -> &str {
+        match self.fields.get(i) {
+            Some(f) => &f.label,
+            None if i == self.fields.len() => "Sync passphrase",
+            None => "Confirm passphrase",
+        }
+    }
+
+    fn value(&self, i: usize) -> &str {
+        let n = self.fields.len();
+        if let Some(f) = self.fields.get(i) {
+            &f.value
+        } else if i == n {
+            &self.passphrase
+        } else {
+            &self.passphrase_again
+        }
+    }
+
+    fn value_mut(&mut self, i: usize) -> &mut String {
+        let n = self.fields.len();
+        if i < n {
+            &mut self.fields[i].value
+        } else if i == n {
+            &mut self.passphrase
+        } else {
+            &mut self.passphrase_again
+        }
+    }
+}
+
+/// This store's sync setup, as the Sync section shows it (#884). `App` does
+/// no I/O, so every field here is supplied by the caller: it comes from
+/// `<store>.sync.json` (and whether `<store>.sync.key` exists), the same
+/// files `tasqx sync --status` reads.
+#[derive(Clone, Default, PartialEq, Eq, Debug)]
+pub struct SyncInfo {
+    pub connector: Option<String>,
+    /// [`crate::sync::short_version`]'s eight characters, never the whole
+    /// thing — this is a screen a person reads, not a script.
+    pub version: Option<String>,
+    /// A day, relative to now (`crate::render::day_ago`), not a timestamp —
+    /// the same rule `sync --status` follows.
+    pub synced_relative: Option<String>,
+    pub encrypted: bool,
 }
 
 /// An intent for the caller to carry out. `App` never writes anything itself.
@@ -58,6 +181,24 @@ pub enum Action {
         value: String,
     },
     Quit,
+    /// `c`: list the `tasqx-remote-*` connectors on PATH.
+    SyncListConnectors,
+    /// A name chosen from that list: ask it to `describe` itself.
+    SyncDescribe {
+        name: String,
+    },
+    /// The form's last field, submitted: the SAME write `tasqx sync setup`
+    /// performs (`sync::apply_setup`), never a second implementation of it.
+    SyncSubmit {
+        name: String,
+        values: BTreeMap<String, String>,
+        passphrase: String,
+    },
+    /// `s`: run the same `tasqx sync` the command runs.
+    SyncNow,
+    /// The disconnect confirm's `y`: remove `<store>.sync.json` and
+    /// `<store>.sync.key`. The remote is untouched.
+    SyncDisconnect,
 }
 
 pub struct App {
@@ -70,10 +211,14 @@ pub struct App {
     /// `Choices::Themes` so neither `on_key` nor `preview_theme` has to test a
     /// setting key by name.
     theme_row: Option<usize>,
+    /// The Sync section (#884). Separate from `rows`: it is not a registered
+    /// setting, has no `config.toml` home, and its own three keys (`c`/`s`/
+    /// `d`) act outside the row picker's Enter/toggle vocabulary.
+    pub sync: SyncInfo,
 }
 
 impl App {
-    pub fn new(rows: Vec<Row>) -> Self {
+    pub fn new(rows: Vec<Row>, sync: SyncInfo) -> Self {
         // The module's own invariant, owned HERE instead of asserted in
         // comments at three call sites: `row()` and the renderer index
         // `rows[selected]` unconditionally, so an empty screen must fail loud
@@ -93,6 +238,7 @@ impl App {
             mode: Mode::Browse,
             status: String::new(),
             theme_row,
+            sync,
         }
     }
 
@@ -138,9 +284,15 @@ impl App {
         if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
             return Some(Action::Quit);
         }
-        match self.mode {
+        match &self.mode {
             Mode::Browse => self.on_key_browse(key.code),
-            Mode::Pick { cursor } => self.on_key_pick(key.code, cursor),
+            Mode::Pick { cursor } => {
+                let cursor = *cursor;
+                self.on_key_pick(key.code, cursor)
+            }
+            Mode::SyncPick { .. } => self.on_key_sync_pick(key.code),
+            Mode::SyncForm(_) => self.on_key_sync_form(key),
+            Mode::SyncConfirmDisconnect => self.on_key_sync_confirm(key.code),
         }
     }
 
@@ -173,8 +325,199 @@ impl App {
             }
             KeyCode::Esc | KeyCode::Char('q') => Some(Action::Quit),
             KeyCode::Enter => self.begin_edit(),
+            KeyCode::Char('c') => {
+                self.status.clear();
+                Some(Action::SyncListConnectors)
+            }
+            KeyCode::Char('s') => {
+                if self.sync.connector.is_none() {
+                    self.status = "sync is not set up; press c to connect".to_string();
+                    None
+                } else {
+                    self.status = "syncing…".to_string();
+                    Some(Action::SyncNow)
+                }
+            }
+            KeyCode::Char('d') => {
+                if self.sync.connector.is_none() {
+                    self.status = "sync is not set up".to_string();
+                    None
+                } else {
+                    self.mode = Mode::SyncConfirmDisconnect;
+                    None
+                }
+            }
             _ => None,
         }
+    }
+
+    fn on_key_sync_pick(&mut self, code: KeyCode) -> Option<Action> {
+        let Mode::SyncPick { names, cursor } = &mut self.mode else {
+            return None;
+        };
+        let last = names.len().saturating_sub(1);
+        match code {
+            KeyCode::Up | KeyCode::Char('k') => {
+                *cursor = cursor.saturating_sub(1);
+                None
+            }
+            KeyCode::Down | KeyCode::Char('j') => {
+                *cursor = (*cursor + 1).min(last);
+                None
+            }
+            KeyCode::Esc | KeyCode::Char('q') => {
+                self.mode = Mode::Browse;
+                self.status = "cancelled".to_string();
+                None
+            }
+            KeyCode::Enter => {
+                let name = names.get(*cursor)?.clone();
+                Some(Action::SyncDescribe { name })
+            }
+            _ => None,
+        }
+    }
+
+    /// Esc is handled before the form is even borrowed, so cancelling from
+    /// any field never fights the borrow checker over `self.mode` — every
+    /// other key needs the form itself.
+    fn on_key_sync_form(&mut self, key: KeyEvent) -> Option<Action> {
+        if key.code == KeyCode::Esc {
+            self.mode = Mode::Browse;
+            self.status = "cancelled".to_string();
+            return None;
+        }
+        let Mode::SyncForm(form) = &mut self.mode else {
+            return None;
+        };
+        let last = form.len().saturating_sub(1);
+        match key.code {
+            KeyCode::Up | KeyCode::BackTab => {
+                form.cursor = form.cursor.saturating_sub(1);
+                None
+            }
+            KeyCode::Down | KeyCode::Tab => {
+                form.cursor = (form.cursor + 1).min(last);
+                None
+            }
+            KeyCode::Backspace => {
+                let i = form.cursor;
+                form.value_mut(i).pop();
+                None
+            }
+            KeyCode::Char(c) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
+                let i = form.cursor;
+                form.value_mut(i).push(c);
+                None
+            }
+            KeyCode::Enter => {
+                if form.cursor < last {
+                    form.cursor += 1;
+                    return None;
+                }
+                // The last field: submitting the whole form. Checked here,
+                // before a single byte reaches a connector, exactly like the
+                // terminal prompt's own two checks (`collect_passphrase`).
+                if form.passphrase.is_empty() {
+                    form.error =
+                        Some("the sync passphrase must have at least one character".to_string());
+                    return None;
+                }
+                if form.passphrase != form.passphrase_again {
+                    form.error = Some("the two passphrases differ".to_string());
+                    return None;
+                }
+                form.error = None;
+                let values: BTreeMap<String, String> = form
+                    .fields
+                    .iter()
+                    .map(|f| (f.key.clone(), f.value.clone()))
+                    .collect();
+                Some(Action::SyncSubmit {
+                    name: form.connector.clone(),
+                    values,
+                    passphrase: form.passphrase.clone(),
+                })
+            }
+            _ => None,
+        }
+    }
+
+    fn on_key_sync_confirm(&mut self, code: KeyCode) -> Option<Action> {
+        match code {
+            KeyCode::Char('y') | KeyCode::Char('Y') => Some(Action::SyncDisconnect),
+            _ => {
+                self.mode = Mode::Browse;
+                self.status = "cancelled".to_string();
+                None
+            }
+        }
+    }
+
+    /// The connector names found on PATH, or the explanation why there are
+    /// none — said explicitly rather than opening an empty picker a user
+    /// could not act on.
+    pub fn sync_names_found(&mut self, names: Vec<String>) {
+        if names.is_empty() {
+            self.status =
+                "no tasqx-remote-* connector found on PATH (install one first)".to_string();
+            return;
+        }
+        self.mode = Mode::SyncPick { names, cursor: 0 };
+    }
+
+    /// The chosen connector's own fields, ready for the form.
+    pub fn sync_form_ready(&mut self, name: String, fields: Vec<remote::Field>) {
+        self.mode = Mode::SyncForm(SyncForm::new(name, fields));
+    }
+
+    /// `describe` itself failed (not found, refused, timed out): back to
+    /// Browse, the same as any other failed action on this screen.
+    pub fn sync_describe_failed(&mut self, message: String) {
+        self.mode = Mode::Browse;
+        self.status = format!("not connected: {message}");
+    }
+
+    /// The connector accepted the form and the write landed: the new Sync
+    /// section replaces the old one and the form closes.
+    pub fn sync_setup_ok(&mut self, info: SyncInfo) {
+        let name = info.connector.clone().unwrap_or_default();
+        self.sync = info;
+        self.mode = Mode::Browse;
+        self.status = format!("connected to {name}");
+    }
+
+    /// The connector's own `ok: false`, or a transport failure reaching it:
+    /// shown INLINE, with the form kept open and everything already typed
+    /// still in it — the one thing this screen must not do is throw a
+    /// half-filled form away over a rejection the user can probably fix.
+    pub fn sync_setup_failed(&mut self, message: String) {
+        if let Mode::SyncForm(form) = &mut self.mode {
+            form.error = Some(message);
+        }
+    }
+
+    /// `tasqx sync` ran and something happened either way: the Sync section
+    /// is refreshed from what actually landed, and the one-line result sits
+    /// in the same footer status every other action on this screen reports
+    /// through.
+    pub fn sync_now_done(&mut self, info: SyncInfo, one_line: String) {
+        self.sync = info;
+        self.status = one_line;
+    }
+
+    /// `tasqx sync` itself failed: the Sync section is untouched (nothing
+    /// landed), and the failure is the status.
+    pub fn sync_now_failed(&mut self, message: String) {
+        self.status = format!("sync failed: {message}");
+    }
+
+    /// Both files are gone (or never existed) and the Sync section reports
+    /// "not set up" again, the same as a store that was never connected.
+    pub fn sync_disconnected(&mut self) {
+        self.sync = SyncInfo::default();
+        self.mode = Mode::Browse;
+        self.status = "disconnected (the remote itself is untouched)".to_string();
     }
 
     /// Enter on the selected row: toggle, open a picker, or explain why not.
@@ -296,18 +639,26 @@ impl App {
 pub fn render(app: &App, theme: &Theme, caps: &Caps, frame: &mut Frame) {
     let sty = |role: &str| rt_style(theme.role(role), caps);
     let area = frame.area();
-    // The footer gets four lines, not two: `store_home_message` is ~130
+    // The footer gets five lines, not two: `store_home_message` is ~130
     // characters and the summaries are not much shorter, so a single-line
     // detail area truncated the one sentence that tells the user what to do
-    // instead — "set it with `tas" is worse than no message at all.
+    // instead — "set it with `tas" is worse than no message at all. The fifth
+    // is the Sync section's own one-line status (#884): a fixed line rather
+    // than a row in the registry list, because it is not a registered
+    // setting and its three keys (`c`/`s`/`d`) act outside the row picker's
+    // Enter/toggle vocabulary.
     let [head, body, foot] = Layout::vertical([
         Constraint::Length(2),
         Constraint::Min(1),
-        Constraint::Length(4),
+        Constraint::Length(5),
     ])
     .areas(area);
-    let [detail_area, help_area] =
-        Layout::vertical([Constraint::Min(1), Constraint::Length(1)]).areas(foot);
+    let [detail_area, sync_area, help_area] = Layout::vertical([
+        Constraint::Min(1),
+        Constraint::Length(1),
+        Constraint::Length(1),
+    ])
+    .areas(foot);
 
     let marker = if caps.unicode { "▸" } else { ">" };
     let rule = if caps.unicode { "─" } else { "-" };
@@ -350,98 +701,269 @@ pub fn render(app: &App, theme: &Theme, caps: &Caps, frame: &mut Frame) {
     // invisible-field failure, reached through the widest value instead of the
     // widest title. `pad` never truncates, so that one row still overflows its
     // own line and ratatui clips it there.
-    let key_w = app
-        .rows
-        .iter()
-        .map(|r| render::width(r.setting.key))
-        .max()
-        .unwrap_or(0)
-        + 2;
-    let mut lines: Vec<Line> = Vec::new();
-    let mut anchor = 0usize;
-    for (i, row) in app.rows.iter().enumerate() {
-        let selected = i == app.selected;
-        if selected {
-            anchor = lines.len();
+    match &app.mode {
+        Mode::SyncPick { names, cursor } => {
+            render_sync_pick(names, *cursor, &sty, caps, body, frame)
         }
-        let shown = if row.value.is_empty() {
-            "(unset)"
-        } else {
-            row.value.as_str()
-        };
-        // A store-homed row, or one with nothing `begin_edit` can do with
-        // Enter (no bool to toggle, no closed choice set to pick from — the
-        // free-form Toml scalars like `otlp.port`), is dimmed so "shown but
-        // not editable here" reads before the user presses Enter on it, not
-        // only after (the muted `Line` returned by `begin_edit` on that press).
-        let has_inline_editor = row.setting.home != Home::Store
-            && (row.setting.kind == Kind::Bool || !row.choices.is_empty());
-        let value_style = if !has_inline_editor {
-            sty("muted")
-        } else if selected {
-            sty("accent")
-        } else {
-            ratatui::style::Style::default()
-        };
+        Mode::SyncForm(form) => render_sync_form(form, &sty, caps, body, frame),
+        Mode::SyncConfirmDisconnect => render_sync_confirm(&app.sync, &sty, body, frame),
+        Mode::Browse | Mode::Pick { .. } => {
+            let key_w = app
+                .rows
+                .iter()
+                .map(|r| render::width(r.setting.key))
+                .max()
+                .unwrap_or(0)
+                + 2;
+            let mut lines: Vec<Line> = Vec::new();
+            let mut anchor = 0usize;
+            for (i, row) in app.rows.iter().enumerate() {
+                let selected = i == app.selected;
+                if selected {
+                    anchor = lines.len();
+                }
+                let shown = if row.value.is_empty() {
+                    "(unset)"
+                } else {
+                    row.value.as_str()
+                };
+                // A store-homed row, or one with nothing `begin_edit` can do with
+                // Enter (no bool to toggle, no closed choice set to pick from — the
+                // free-form Toml scalars like `otlp.port`), is dimmed so "shown but
+                // not editable here" reads before the user presses Enter on it, not
+                // only after (the muted `Line` returned by `begin_edit` on that press).
+                let has_inline_editor = row.setting.home != Home::Store
+                    && (row.setting.kind == Kind::Bool || !row.choices.is_empty());
+                let value_style = if !has_inline_editor {
+                    sty("muted")
+                } else if selected {
+                    sty("accent")
+                } else {
+                    ratatui::style::Style::default()
+                };
+                lines.push(Line::from(vec![
+                    Span::styled(
+                        if selected {
+                            format!("{marker} ")
+                        } else {
+                            "  ".to_string()
+                        },
+                        sty("accent"),
+                    ),
+                    Span::styled(render::pad(row.setting.key, key_w), sty("project")),
+                    Span::styled(render::pad(shown, 22), value_style),
+                    Span::styled(row.source.clone(), sty("muted")),
+                ]));
+
+                // The inline picker sits directly under its own row, so the value being
+                // previewed and the list it came from are never separated on screen.
+                if selected {
+                    if let Mode::Pick { cursor } = &app.mode {
+                        for (j, cand) in row.choices.iter().enumerate() {
+                            let at = j == *cursor;
+                            if at {
+                                anchor = lines.len();
+                            }
+                            lines.push(Line::from(vec![
+                                Span::raw("      "),
+                                Span::styled(
+                                    if at {
+                                        format!("{marker} ")
+                                    } else {
+                                        "  ".to_string()
+                                    },
+                                    sty("warn"),
+                                ),
+                                Span::styled(
+                                    cand.clone(),
+                                    if at { sty("warn") } else { sty("muted") },
+                                ),
+                            ]));
+                        }
+                    }
+                }
+            }
+            let height = body.height as usize;
+            let start = first_visible(anchor, lines.len(), height);
+            let visible: Vec<Line> = lines.into_iter().skip(start).take(height).collect();
+            frame.render_widget(Paragraph::new(visible), body);
+        }
+    }
+
+    // --- footer --------------------------------------------------------------
+    let help = match &app.mode {
+        Mode::Browse => "up/down move   enter edit   c/s/d sync   esc quit",
+        Mode::Pick { .. } => "up/down preview   enter save   esc cancel",
+        Mode::SyncPick { .. } => "up/down move   enter choose   esc cancel",
+        Mode::SyncForm(_) => "tab/down next field   up previous   enter next / submit   esc cancel",
+        Mode::SyncConfirmDisconnect => "y disconnect   any other key cancels",
+    };
+    let detail = match &app.mode {
+        Mode::SyncForm(form) if app.status.is_empty() => Line::styled(
+            form.error.clone().unwrap_or_else(|| sync_field_help(form)),
+            sty(if form.error.is_some() {
+                "warn"
+            } else {
+                "muted"
+            }),
+        ),
+        _ if app.status.is_empty() => {
+            Line::styled(app.rows[app.selected].setting.summary, sty("muted"))
+        }
+        _ => Line::styled(app.status.clone(), sty("warn")),
+    };
+    frame.render_widget(
+        Paragraph::new(detail).wrap(ratatui::widgets::Wrap { trim: true }),
+        detail_area,
+    );
+    frame.render_widget(
+        Paragraph::new(Line::styled(sync_status_line(&app.sync), sty("muted"))),
+        sync_area,
+    );
+    frame.render_widget(Paragraph::new(Line::styled(help, sty("muted"))), help_area);
+}
+
+/// The Sync section's one line: the connector, its short version, when this
+/// store last synced through it, and whether it is encrypted — the same
+/// facts `tasqx sync --status` reports, kept to one line here because it sits
+/// permanently in the footer rather than filling the screen.
+fn sync_status_line(sync: &SyncInfo) -> String {
+    let Some(name) = &sync.connector else {
+        return "sync: not set up — c to connect".to_string();
+    };
+    let mut line = format!("sync: {name}");
+    if let Some(v) = &sync.version {
+        line.push_str(&format!(", v{v}"));
+    }
+    match &sync.synced_relative {
+        Some(t) => line.push_str(&format!(", synced {t}")),
+        None => line.push_str(", never synced"),
+    }
+    if !sync.encrypted {
+        line.push_str(" — no passphrase set, run c again");
+    }
+    line
+}
+
+/// The focused field's help text, and where to read more, as one line —
+/// exactly what the terminal prompt (`sync setup`'s own `ask`) prints ahead
+/// of the label, just drawn in the footer instead of above the input.
+fn sync_field_help(form: &SyncForm) -> String {
+    let Some(f) = form.fields.get(form.cursor) else {
+        return "the passphrase encrypts every snapshot before it leaves this machine".to_string();
+    };
+    match &f.help_url {
+        Some(url) => format!("{}  ({url})", f.help),
+        None => f.help.clone(),
+    }
+}
+
+fn render_sync_pick(
+    names: &[String],
+    cursor: usize,
+    sty: &dyn Fn(&str) -> Style,
+    caps: &Caps,
+    area: Rect,
+    frame: &mut Frame,
+) {
+    let marker = if caps.unicode { "▸" } else { ">" };
+    let mut lines = vec![
+        Line::styled("Connect: choose a connector found on PATH", sty("header")),
+        Line::raw(""),
+    ];
+    for (i, name) in names.iter().enumerate() {
+        let here = i == cursor;
         lines.push(Line::from(vec![
             Span::styled(
-                if selected {
+                if here {
                     format!("{marker} ")
                 } else {
                     "  ".to_string()
                 },
                 sty("accent"),
             ),
-            Span::styled(render::pad(row.setting.key, key_w), sty("project")),
-            Span::styled(render::pad(shown, 22), value_style),
-            Span::styled(row.source.clone(), sty("muted")),
+            Span::styled(
+                name.clone(),
+                if here {
+                    sty("accent")
+                } else {
+                    Style::default()
+                },
+            ),
         ]));
-
-        // The inline picker sits directly under its own row, so the value being
-        // previewed and the list it came from are never separated on screen.
-        if selected {
-            if let Mode::Pick { cursor } = app.mode {
-                for (j, cand) in row.choices.iter().enumerate() {
-                    let at = j == cursor;
-                    if at {
-                        anchor = lines.len();
-                    }
-                    lines.push(Line::from(vec![
-                        Span::raw("      "),
-                        Span::styled(
-                            if at {
-                                format!("{marker} ")
-                            } else {
-                                "  ".to_string()
-                            },
-                            sty("warn"),
-                        ),
-                        Span::styled(cand.clone(), if at { sty("warn") } else { sty("muted") }),
-                    ]));
-                }
-            }
-        }
     }
-    let height = body.height as usize;
-    let start = first_visible(anchor, lines.len(), height);
-    let visible: Vec<Line> = lines.into_iter().skip(start).take(height).collect();
-    frame.render_widget(Paragraph::new(visible), body);
+    frame.render_widget(Paragraph::new(lines), area);
+}
 
-    // --- footer --------------------------------------------------------------
-    let help = match app.mode {
-        Mode::Browse => "up/down move   enter edit   esc quit",
-        Mode::Pick { .. } => "up/down preview   enter save   esc cancel",
-    };
-    let detail = if app.status.is_empty() {
-        Line::styled(app.rows[app.selected].setting.summary, sty("muted"))
-    } else {
-        Line::styled(app.status.clone(), sty("warn"))
-    };
+fn render_sync_form(
+    form: &SyncForm,
+    sty: &dyn Fn(&str) -> Style,
+    caps: &Caps,
+    area: Rect,
+    frame: &mut Frame,
+) {
+    let marker = if caps.unicode { "▸" } else { ">" };
+    let mask = if caps.unicode { "•" } else { "*" };
+    let mut lines = vec![Line::styled(
+        format!("Connect: {}", form.connector),
+        sty("header"),
+    )];
+    lines.push(Line::raw(""));
+    for i in 0..form.len() {
+        let here = i == form.cursor;
+        let shown = if form.is_secret(i) {
+            mask.repeat(form.value(i).chars().count())
+        } else {
+            form.value(i).to_string()
+        };
+        lines.push(Line::from(vec![
+            Span::styled(
+                if here {
+                    format!("{marker} ")
+                } else {
+                    "  ".to_string()
+                },
+                sty("accent"),
+            ),
+            Span::styled(format!("{}: ", form.label(i)), sty("project")),
+            Span::styled(
+                shown,
+                if here {
+                    sty("accent")
+                } else {
+                    Style::default()
+                },
+            ),
+        ]));
+    }
     frame.render_widget(
-        Paragraph::new(detail).wrap(ratatui::widgets::Wrap { trim: true }),
-        detail_area,
+        Paragraph::new(lines).wrap(ratatui::widgets::Wrap { trim: true }),
+        area,
     );
-    frame.render_widget(Paragraph::new(Line::styled(help, sty("muted"))), help_area);
+}
+
+fn render_sync_confirm(
+    sync: &SyncInfo,
+    sty: &dyn Fn(&str) -> Style,
+    area: Rect,
+    frame: &mut Frame,
+) {
+    let name = sync.connector.as_deref().unwrap_or("");
+    let lines = vec![
+        Line::styled(format!("Disconnect from {name}?"), sty("header")),
+        Line::raw(""),
+        Line::styled(
+            "This removes this store's sync state and passphrase. The remote itself is \
+             untouched.",
+            sty("muted"),
+        ),
+        Line::raw(""),
+        Line::styled("y disconnect   any other key cancels", sty("accent")),
+    ];
+    frame.render_widget(
+        Paragraph::new(lines).wrap(ratatui::widgets::Wrap { trim: true }),
+        area,
+    );
 }
 
 #[cfg(test)]
@@ -486,7 +1008,7 @@ mod tests {
                 },
             })
             .collect();
-        App::new(rows)
+        App::new(rows, SyncInfo::default())
     }
 
     fn press(code: KeyCode) -> KeyEvent {
@@ -1268,5 +1790,291 @@ mod tests {
             text.contains("> theme.name"),
             "no ASCII marker on the selected row:\n{text}"
         );
+    }
+
+    // ---- Sync section (#884) -------------------------------------------------
+
+    fn field(key: &str, secret: bool) -> remote::Field {
+        remote::Field {
+            key: key.to_string(),
+            label: key.to_uppercase(),
+            secret,
+            help: format!("enter {key}"),
+            help_url: None,
+        }
+    }
+
+    /// `c` lists what `list_on` found; with none, the screen says so and never
+    /// opens an empty picker nobody could act on.
+    #[test]
+    fn c_with_no_connector_on_path_reports_it_instead_of_an_empty_picker() {
+        let mut a = app();
+        assert_eq!(
+            a.on_key(press(KeyCode::Char('c'))),
+            Some(Action::SyncListConnectors)
+        );
+        a.sync_names_found(Vec::new());
+        assert_eq!(a.mode, Mode::Browse);
+        assert!(a.status.contains("no tasqx-remote-"), "{}", a.status);
+    }
+
+    /// `c`, a name chosen, asks the caller to `describe` it; the reply
+    /// becomes the form, ready for input at its first field.
+    #[test]
+    fn choosing_a_connector_opens_its_form_on_the_first_field() {
+        let mut a = app();
+        a.on_key(press(KeyCode::Char('c')));
+        a.sync_names_found(vec!["dir".to_string(), "r2".to_string()]);
+        assert_eq!(
+            a.mode,
+            Mode::SyncPick {
+                names: vec!["dir".into(), "r2".into()],
+                cursor: 0
+            }
+        );
+        a.on_key(press(KeyCode::Down));
+        let act = a.on_key(press(KeyCode::Enter));
+        assert_eq!(
+            act,
+            Some(Action::SyncDescribe {
+                name: "r2".to_string()
+            })
+        );
+
+        a.sync_form_ready(
+            "r2".to_string(),
+            vec![field("path", false), field("token", true)],
+        );
+        let Mode::SyncForm(form) = &a.mode else {
+            panic!("expected a form: {:?}", a.mode);
+        };
+        assert_eq!(form.connector, "r2");
+        assert_eq!(form.cursor, 0);
+        assert_eq!(form.len(), 4, "two fields plus the passphrase twice");
+    }
+
+    /// Typing fills the field under the cursor; a secret field's own value is
+    /// tracked the same way (masking is a render concern, tested below), and
+    /// Tab/Down move forward one field at a time.
+    #[test]
+    fn typing_fills_the_focused_field_and_tab_moves_on() {
+        let mut a = app();
+        a.on_key(press(KeyCode::Char('c')));
+        a.sync_names_found(vec!["dir".to_string()]);
+        a.on_key(press(KeyCode::Enter));
+        a.sync_form_ready("dir".to_string(), vec![field("path", false)]);
+
+        for c in "/srv/sync".chars() {
+            a.on_key(press(KeyCode::Char(c)));
+        }
+        a.on_key(press(KeyCode::Tab));
+        for c in "hunter2".chars() {
+            a.on_key(press(KeyCode::Char(c)));
+        }
+        let Mode::SyncForm(form) = &a.mode else {
+            panic!("left the form");
+        };
+        assert_eq!(form.fields[0].value, "/srv/sync");
+        assert_eq!(form.passphrase, "hunter2");
+        assert_eq!(form.cursor, 1);
+
+        a.on_key(press(KeyCode::Backspace));
+        let Mode::SyncForm(form) = &a.mode else {
+            panic!("left the form");
+        };
+        assert_eq!(form.passphrase, "hunter");
+    }
+
+    /// Enter on the last field submits only once the two passphrases agree
+    /// and neither is empty — the same two checks `sync setup`'s own prompt
+    /// makes, just made here before a byte reaches anything.
+    #[test]
+    fn submitting_checks_the_passphrase_locally_before_asking_the_caller() {
+        let mut a = app();
+        a.on_key(press(KeyCode::Char('c')));
+        a.sync_names_found(vec!["dir".to_string()]);
+        a.on_key(press(KeyCode::Enter));
+        a.sync_form_ready("dir".to_string(), vec![field("path", false)]);
+
+        // path (cursor 0) -> passphrase (cursor 1) -> passphrase again
+        // (cursor 2, the last field). Only an Enter pressed AT the last field
+        // checks anything; the two before it just move the cursor on, one
+        // field at a time, same as Tab.
+        for c in "/srv".chars() {
+            a.on_key(press(KeyCode::Char(c)));
+        }
+        a.on_key(press(KeyCode::Enter));
+        a.on_key(press(KeyCode::Enter));
+        // Both passphrase fields are still empty here: refused locally, the
+        // form stays open.
+        assert_eq!(a.on_key(press(KeyCode::Enter)), None);
+        let Mode::SyncForm(form) = &a.mode else {
+            panic!("left the form");
+        };
+        assert!(form.error.as_deref().unwrap().contains("character"));
+
+        a.on_key(press(KeyCode::Up)); // back to the passphrase field
+        for c in "correct horse".chars() {
+            a.on_key(press(KeyCode::Char(c)));
+        }
+        a.on_key(press(KeyCode::Down)); // on to confirm it
+        for c in "correct horsE".chars() {
+            a.on_key(press(KeyCode::Char(c)));
+        }
+        assert_eq!(a.on_key(press(KeyCode::Enter)), None);
+        let Mode::SyncForm(form) = &a.mode else {
+            panic!("left the form");
+        };
+        assert!(form.error.as_deref().unwrap().contains("differ"));
+
+        // Fix the second one and submit for real.
+        for _ in 0.."correct horsE".chars().count() {
+            a.on_key(press(KeyCode::Backspace));
+        }
+        for c in "correct horse".chars() {
+            a.on_key(press(KeyCode::Char(c)));
+        }
+        let act = a.on_key(press(KeyCode::Enter));
+        assert_eq!(
+            act,
+            Some(Action::SyncSubmit {
+                name: "dir".to_string(),
+                values: BTreeMap::from([("path".to_string(), "/srv".to_string())]),
+                passphrase: "correct horse".to_string(),
+            })
+        );
+    }
+
+    /// A connector's own `ok: false` is shown INLINE and the form is kept
+    /// open with everything already typed still in it.
+    #[test]
+    fn a_rejected_setup_keeps_the_form_open_with_the_error_inline() {
+        let mut a = app();
+        a.on_key(press(KeyCode::Char('c')));
+        a.sync_names_found(vec!["dir".to_string()]);
+        a.on_key(press(KeyCode::Enter));
+        a.sync_form_ready("dir".to_string(), vec![field("path", false)]);
+        for c in "relative/dir".chars() {
+            a.on_key(press(KeyCode::Char(c)));
+        }
+        a.sync_setup_failed("dir refused these settings: is not an absolute path".to_string());
+        let Mode::SyncForm(form) = &a.mode else {
+            panic!("the form must stay open on a rejection");
+        };
+        assert_eq!(
+            form.fields[0].value, "relative/dir",
+            "nothing typed is lost"
+        );
+        assert!(form.error.as_ref().unwrap().contains("absolute"));
+    }
+
+    /// A successful setup replaces the Sync section and closes the form.
+    #[test]
+    fn a_successful_setup_replaces_the_sync_section() {
+        let mut a = app();
+        a.on_key(press(KeyCode::Char('c')));
+        a.sync_names_found(vec!["dir".to_string()]);
+        a.on_key(press(KeyCode::Enter));
+        a.sync_form_ready("dir".to_string(), Vec::new());
+        a.sync_setup_ok(SyncInfo {
+            connector: Some("dir".to_string()),
+            version: None,
+            synced_relative: None,
+            encrypted: true,
+        });
+        assert_eq!(a.mode, Mode::Browse);
+        assert_eq!(a.sync.connector.as_deref(), Some("dir"));
+        assert!(a.status.contains("connected to dir"));
+    }
+
+    /// `s` with nothing set up yet is refused locally, with a hint; set up,
+    /// it asks the caller to run the sync and shows a one-line result.
+    #[test]
+    fn s_asks_for_a_sync_only_once_set_up() {
+        let mut a = app();
+        assert_eq!(a.on_key(press(KeyCode::Char('s'))), None);
+        assert!(a.status.contains("press c to connect"), "{}", a.status);
+
+        a.sync.connector = Some("dir".to_string());
+        assert_eq!(a.on_key(press(KeyCode::Char('s'))), Some(Action::SyncNow));
+        assert_eq!(a.status, "syncing…");
+
+        a.sync_now_done(
+            SyncInfo {
+                connector: Some("dir".to_string()),
+                version: Some("abcd1234".to_string()),
+                synced_relative: Some("today".to_string()),
+                encrypted: true,
+            },
+            "synced, pushed abcd1234".to_string(),
+        );
+        assert_eq!(a.status, "synced, pushed abcd1234");
+        assert_eq!(a.sync.version.as_deref(), Some("abcd1234"));
+
+        a.sync_now_failed("the link dropped".to_string());
+        assert!(a.status.contains("the link dropped"));
+    }
+
+    /// `d` confirms before disconnecting, and any key but `y` cancels without
+    /// touching the Sync section.
+    #[test]
+    fn d_confirms_before_disconnecting_and_anything_but_y_cancels() {
+        let mut a = app();
+        a.sync.connector = Some("dir".to_string());
+        assert_eq!(a.on_key(press(KeyCode::Char('d'))), None);
+        assert_eq!(a.mode, Mode::SyncConfirmDisconnect);
+
+        assert_eq!(a.on_key(press(KeyCode::Esc)), None);
+        assert_eq!(a.mode, Mode::Browse);
+        assert_eq!(a.sync.connector.as_deref(), Some("dir"), "nothing changed");
+
+        a.mode = Mode::SyncConfirmDisconnect;
+        assert_eq!(
+            a.on_key(press(KeyCode::Char('y'))),
+            Some(Action::SyncDisconnect)
+        );
+        a.sync_disconnected();
+        assert_eq!(a.mode, Mode::Browse);
+        assert_eq!(a.sync, SyncInfo::default());
+        assert!(a.status.contains("remote itself is untouched"));
+    }
+
+    /// The Sync section's status line, the confirm dialog and the form all
+    /// draw, and a secret field's value is masked on screen — never its
+    /// plain text, even mid-typing.
+    #[test]
+    fn the_sync_section_draws_status_form_and_confirm() {
+        let mut a = app();
+        a.sync.connector = Some("dir".to_string());
+        a.sync.version = Some("abcd1234".to_string());
+        a.sync.synced_relative = Some("today".to_string());
+        a.sync.encrypted = true;
+        let buf = draw(&a);
+        let text = all_text(&buf);
+        assert!(text.contains("sync: dir"), "{text}");
+        assert!(text.contains("abcd1234"), "{text}");
+        assert!(text.contains("today"), "{text}");
+
+        a.mode = Mode::SyncForm(SyncForm::new(
+            "dir".to_string(),
+            vec![field("path", false), field("token", true)],
+        ));
+        if let Mode::SyncForm(form) = &mut a.mode {
+            form.fields[1].value = "s3cret".to_string();
+        }
+        let buf = draw(&a);
+        let text = all_text(&buf);
+        assert!(text.contains("Connect: dir"), "{text}");
+        assert!(
+            !text.contains("s3cret"),
+            "a secret value must never be drawn: {text}"
+        );
+        assert!(text.contains("••••••") || text.contains("******"), "{text}");
+
+        a.mode = Mode::SyncConfirmDisconnect;
+        let buf = draw(&a);
+        let text = all_text(&buf);
+        assert!(text.contains("Disconnect from dir?"), "{text}");
+        assert!(text.contains("untouched"), "{text}");
     }
 }

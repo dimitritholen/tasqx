@@ -389,6 +389,42 @@ pub fn find_in(name: &str, path_var: &OsStr) -> Option<PathBuf> {
         .find(|p| is_runnable(p))
 }
 
+/// Every connector name found on `path_var`: the `tasqx-remote-*` executables
+/// on `PATH`, named for the part after the prefix, deduped and sorted.
+///
+/// Written for `tasqx config edit`'s `c` (connect) key, which has to offer a
+/// picker before it knows which name the user wants — [`find_in`] answers
+/// "does this ONE name exist" and cannot be turned into a listing without
+/// reading every directory on `PATH` twice. Same rule as `find_in`: an
+/// execute bit on Unix, the platform's own suffix on Windows, and the first
+/// match on `PATH` wins when a name appears in more than one directory.
+pub fn list_on(path_var: &OsStr) -> Vec<String> {
+    let mut names: Vec<String> = Vec::new();
+    for dir in std::env::split_paths(path_var) {
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let Some(file) = path.file_name().and_then(|f| f.to_str()) else {
+                continue;
+            };
+            let stem = file
+                .strip_suffix(std::env::consts::EXE_SUFFIX)
+                .unwrap_or(file);
+            let Some(name) = stem.strip_prefix(BINARY_PREFIX) else {
+                continue;
+            };
+            if name.is_empty() || !is_runnable(&path) || names.iter().any(|n| n == name) {
+                continue;
+            }
+            names.push(name.to_string());
+        }
+    }
+    names.sort();
+    names
+}
+
 /// A file this platform would run. On Unix that takes an execute bit: a stray
 /// non-executable file of the right name earlier on `PATH` must not shadow the
 /// real connector behind it, the way a shell skips it too. On Windows the

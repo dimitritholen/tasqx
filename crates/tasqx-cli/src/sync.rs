@@ -334,7 +334,7 @@ fn run_loop(
 /// Where this store's sync state lives: a file beside the store, named after
 /// it, so it follows `$TASQX_DB` exactly as the store does and two stores in
 /// one directory keep two states.
-fn state_path(store: &Path) -> PathBuf {
+pub(crate) fn state_path(store: &Path) -> PathBuf {
     let mut name = store.file_name().unwrap_or_default().to_os_string();
     name.push(".sync.json");
     store.with_file_name(name)
@@ -343,13 +343,13 @@ fn state_path(store: &Path) -> PathBuf {
 /// This store's remote and its last successful sync. `sync setup` writes the
 /// connector with no version; a sync fills the other two in.
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct State {
-    connector: String,
-    version: Option<String>,
-    synced_at: Option<String>,
+pub(crate) struct State {
+    pub(crate) connector: String,
+    pub(crate) version: Option<String>,
+    pub(crate) synced_at: Option<String>,
 }
 
-fn read_state(path: &Path) -> Option<State> {
+pub(crate) fn read_state(path: &Path) -> Option<State> {
     let v: Value = serde_json::from_slice(&std::fs::read(path).ok()?).ok()?;
     let field = |k: &str| v.get(k).and_then(Value::as_str).map(str::to_string);
     Some(State {
@@ -375,14 +375,14 @@ fn write_state(path: &Path, state: &State) -> Result<(), ApiError> {
 /// Where this store's sync passphrase lives: beside the store and its
 /// `.sync.json`, never inside it, so the state file can be read, printed or
 /// copied without carrying the key.
-fn key_path(store: &Path) -> PathBuf {
+pub(crate) fn key_path(store: &Path) -> PathBuf {
     let mut name = store.file_name().unwrap_or_default().to_os_string();
     name.push(".sync.key");
     store.with_file_name(name)
 }
 
 /// The passphrase, or `None` when there is no key file or it is empty.
-fn read_key(path: &Path) -> Option<String> {
+pub(crate) fn read_key(path: &Path) -> Option<String> {
     let text = std::fs::read_to_string(path).ok()?;
     (!text.is_empty()).then_some(text)
 }
@@ -417,7 +417,7 @@ fn write_key(path: &Path, passphrase: &str) -> Result<(), ApiError> {
 /// file, which only the daemon can name (`core.capabilities.store`, D74) —
 /// `$TASQX_DB` is not in effect there, and the connector's state and this
 /// store's sync state must sit beside the store that is actually synced.
-fn store_path(be: &mut Backend) -> Result<PathBuf, ApiError> {
+pub(crate) fn store_path(be: &mut Backend) -> Result<PathBuf, ApiError> {
     let caps = be.call("core.capabilities", &json!({}))?;
     caps.get("store")
         .and_then(Value::as_str)
@@ -431,7 +431,7 @@ fn store_path(be: &mut Backend) -> Result<PathBuf, ApiError> {
         })
 }
 
-fn connector_at(store: &Path, name: &str) -> Result<Connector, ApiError> {
+pub(crate) fn connector_at(store: &Path, name: &str) -> Result<Connector, ApiError> {
     let state = remote::state_dir(store, name).map_err(remote_error)?;
     Connector::find(name, state).map_err(remote_error)
 }
@@ -482,7 +482,7 @@ pub(crate) fn run(be: &mut Backend, ctx: &Ctx) -> crate::CmdOutcome {
     Ok((result, text))
 }
 
-fn not_set_up() -> ApiError {
+pub(crate) fn not_set_up() -> ApiError {
     ApiError::bad_request(
         "sync is not set up: run `tasqx sync setup <connector>` to choose a remote \
          (`tasqx sync setup dir` keeps it in a shared folder)",
@@ -541,6 +541,33 @@ pub(crate) fn setup(be: &mut Backend, ctx: &Ctx, name: &str, set: &[String]) -> 
              one (several words) is much harder to guess"
         );
     }
+    apply_setup(
+        ctx,
+        &store,
+        name,
+        &connector,
+        &description,
+        given,
+        passphrase,
+    )
+}
+
+/// The write behind `sync setup`: validate through the connector, then
+/// persist the key and the state. The ONE implementation behind both `tasqx
+/// sync setup` (above, once it has collected `given` and `passphrase` off
+/// argv/env/prompt) and `config edit`'s `c` (connect) form, which collects the
+/// very same two things off its own widgets — a second copy of this write is
+/// exactly how a screen and its command end up disagreeing about what "set up"
+/// means.
+pub(crate) fn apply_setup(
+    ctx: &Ctx,
+    store: &Path,
+    name: &str,
+    connector: &Connector,
+    description: &remote::Description,
+    given: remote::Values,
+    passphrase: String,
+) -> crate::CmdOutcome {
     match connector.configure(&given).map_err(remote_error)? {
         remote::Configured::Rejected(error) => Err(ApiError::bad_request(format!(
             "{name} refused these settings: {error}"
@@ -548,8 +575,8 @@ pub(crate) fn setup(be: &mut Backend, ctx: &Ctx, name: &str, set: &[String]) -> 
         remote::Configured::Ok => {
             // The same connector set up again keeps its last sync; another one
             // starts with none, since that version names a different remote.
-            write_key(&key_path(&store), &passphrase)?;
-            let path = state_path(&store);
+            write_key(&key_path(store), &passphrase)?;
+            let path = state_path(store);
             let (version, synced_at) = match read_state(&path) {
                 Some(old) if old.connector == name => (old.version, old.synced_at),
                 _ => (None, None),
