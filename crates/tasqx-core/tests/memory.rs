@@ -3669,3 +3669,114 @@ fn a_hyphenated_or_quoted_content_word_is_known_by_its_pieces() {
         "{out}"
     );
 }
+
+// ---- memory.import: the cross-repo guard and the replaced report (#972) ------
+
+/// #972/D203: two clones whose directories share a name compute the same
+/// `source`, so the key alone cannot tell them apart. The stored origin can:
+/// a doc whose recorded file still exists and is not the file this batch
+/// read is somebody else's, and replacing it would destroy it beyond
+/// `undo`. The whole batch is refused with `conflict`, naming the doc, its
+/// source and both files, and nothing in it is written.
+#[test]
+fn memory_import_refuses_to_replace_a_doc_read_from_a_different_file() {
+    let fx = OriginFixture::new("guard");
+    let mine = fx.write("a.md", "# Mine\n\nmine body");
+    let theirs = fx.write("b.md", "# Theirs\n\ntheirs body");
+    let e = engine();
+    let mut first = fx.doc(&mine);
+    first["source"] = json!("clouter/README.md");
+    let stored = call(&e, "memory.import", json!({ "docs": [first] })).expect("first import");
+    let id = stored["docs"][0]["id"].as_str().unwrap().to_string();
+
+    let mut other = fx.doc(&theirs);
+    other["source"] = json!("clouter/README.md");
+    let mut fresh = fx.doc(&theirs);
+    fresh["source"] = json!("clouter/NEW.md");
+    let err = call(&e, "memory.import", json!({ "docs": [fresh, other] }))
+        .expect_err("a replace from a different file must be refused");
+    assert_eq!(err.code, ErrorCode::Conflict, "{err:?}");
+    for part in [
+        id.as_str(),
+        "clouter/README.md",
+        &mine.to_string_lossy(),
+        &theirs.to_string_lossy(),
+    ] {
+        assert!(
+            err.message.contains(part),
+            "missing {part}: {}",
+            err.message
+        );
+    }
+
+    let got = call(&e, "memory.get", json!({ "id": id })).unwrap();
+    assert_eq!(got["title"], "Mine", "the existing doc must be untouched");
+    let all = call(&e, "memory.list", json!({})).unwrap();
+    assert_eq!(
+        all["count"], 1,
+        "nothing from the refused batch lands: {all}"
+    );
+}
+
+/// #972/D203: the guard needs BOTH origins. A legacy row with no recorded
+/// file, a re-import that names none, and a recorded file that no longer
+/// exists on this machine (a moved repo, a store synced from another
+/// machine) all replace as before.
+#[test]
+fn memory_import_replaces_when_either_origin_is_unknown_or_the_old_file_is_gone() {
+    let fx = OriginFixture::new("guard-unknown");
+    let a = fx.write("a.md", "# A\n\nbody");
+    let e = engine();
+    let import = |doc: Value| call(&e, "memory.import", json!({ "docs": [doc] }));
+
+    import(json!({ "title": "Legacy", "body": "no file", "source": "k.md" })).unwrap();
+    let mut with_origin = fx.doc(&a);
+    with_origin["source"] = json!("k.md");
+    let out = import(with_origin).expect("a legacy row has no origin to disagree with");
+    assert_eq!(out["replaced"], 1);
+
+    let out = import(json!({ "title": "No origin", "body": "x", "source": "k.md" }))
+        .expect("an incoming doc with no origin is not guarded");
+    assert_eq!(out["replaced"], 1);
+
+    import(json!({
+        "title": "Gone", "body": "x", "source": "k.md",
+        "origin_path": fx.dir.join("deleted.md").to_string_lossy(),
+    }))
+    .unwrap();
+    let mut again = fx.doc(&a);
+    again["source"] = json!("k.md");
+    let out = import(again).expect("a recorded file that is gone is not a competing file");
+    assert_eq!(out["replaced"], 1);
+}
+
+/// #972: a replace used to be announced only as a count. `replaced_docs`
+/// names each one — id, source and the title it had BEFORE — and is always
+/// present, empty when nothing was replaced.
+#[test]
+fn memory_import_names_every_doc_it_replaced_with_its_previous_title() {
+    let e = engine();
+    let first = call(
+        &e,
+        "memory.import",
+        json!({ "docs": [{ "title": "Old title", "body": "b", "source": "r/a.md" }] }),
+    )
+    .unwrap();
+    assert_eq!(first["replaced_docs"], json!([]), "{first}");
+    let id = first["docs"][0]["id"].clone();
+
+    let second = call(
+        &e,
+        "memory.import",
+        json!({ "docs": [
+            { "title": "New title", "body": "b2", "source": "r/a.md" },
+            { "title": "Other", "body": "c", "source": "r/c.md" }
+        ] }),
+    )
+    .unwrap();
+    assert_eq!(
+        second["replaced_docs"],
+        json!([{ "id": id, "source": "r/a.md", "previous_title": "Old title" }]),
+        "{second}"
+    );
+}
