@@ -541,6 +541,36 @@ pub(crate) fn refuse_source_held_elsewhere(
     }
 }
 
+/// #972/D203: a `memory.import` replace keyed on a `source` whose stored doc
+/// was read from a DIFFERENT file than this one is two files sharing one key
+/// — two clones under the same directory name — not a re-import, and going
+/// ahead would overwrite the other file's doc beyond `undo`. A `conflict`
+/// naming the doc, its source and both files refuses it.
+///
+/// Only when both files are known and the stored one still exists here: an
+/// incoming doc with no origin (a JSON-API caller) carries no claim, and a
+/// stored file that is gone (the repo moved, or the store was synced from
+/// another machine whose paths these are) is not a competing file, so both
+/// replace as they always did. Legacy rows with no origin never reach here.
+fn refuse_replace_from_another_file(
+    id: &str,
+    source: &str,
+    stored: &str,
+    incoming: Option<&str>,
+) -> Result<(), ApiError> {
+    match incoming {
+        Some(incoming) if incoming != stored && std::path::Path::new(stored).exists() => {
+            Err(ApiError::conflict(format!(
+                "source {source:?} already belongs to memory doc {id}, read from {stored}; \
+                 this import read {incoming}, a different file under the same key (D203) — \
+                 nothing was imported. Rename one checkout's directory, or `tasqx memory rm \
+                 {id}` if the stored doc is obsolete"
+            )))
+        }
+        _ => Ok(()),
+    }
+}
+
 /// One document on its way into `docs`, as the two doors that land a file
 /// both spell it: `memory.import`'s per-entry read of a batch, and
 /// `memory.refresh`'s re-read of a file that changed under an existing doc.
@@ -808,6 +838,9 @@ impl Engine {
         }
         let mut out = Vec::new();
         let mut replaced = 0i64;
+        // #972: each doc a replace overwrote, with the title it had — the
+        // count alone never said WHICH doc's text was just lost.
+        let mut replaced_docs = Vec::new();
         for dv in docs {
             let dv = import_shape("", "doc", dv)?;
             import_keys(
@@ -843,19 +876,34 @@ impl Engine {
             // 404'd the moment ANY re-run happened — announced nowhere, and
             // at scale on a real store one source had been silently
             // overwritten 34 times.
-            let existing: Option<(String, i64)> = match &source {
+            let existing: Option<(String, i64, String, Option<String>)> = match &source {
                 Some(src) => tx
                     .query_row(
-                        "SELECT id, rev FROM docs WHERE source = ?1",
+                        "SELECT id, rev, title, origin_path FROM docs WHERE source = ?1",
                         params![src],
-                        |r| Ok((r.get(0)?, r.get(1)?)),
+                        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
                     )
                     .optional()?,
                 None => None,
             };
+            if let Some((id, _, _, Some(stored))) = &existing {
+                refuse_replace_from_another_file(
+                    id,
+                    source.as_deref().unwrap_or_default(),
+                    stored,
+                    origin_path.as_deref(),
+                )?;
+            }
             let is_replace = existing.is_some();
             let (id, rev) = match existing {
-                Some((id, cur_rev)) => (id, cur_rev + 1),
+                Some((id, cur_rev, previous_title, _)) => {
+                    replaced_docs.push(json!({
+                        "id": id,
+                        "source": source,
+                        "previous_title": previous_title,
+                    }));
+                    (id, cur_rev + 1)
+                }
                 None => (crate::clock::uuid_v7().to_string(), 0),
             };
             // The upsert itself, its comment and its event live in
@@ -893,7 +941,12 @@ impl Engine {
         }
         tx.commit()?;
 
-        Ok(json!({ "imported": out.len(), "replaced": replaced, "docs": out }))
+        Ok(json!({
+            "imported": out.len(),
+            "replaced": replaced,
+            "docs": out,
+            "replaced_docs": replaced_docs,
+        }))
     }
 
     // ---- memory.refresh ------------------------------------------------------

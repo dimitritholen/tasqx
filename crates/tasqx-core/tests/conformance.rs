@@ -1094,7 +1094,15 @@ const R_MEMORY_IMPORT: Shape = &[&[
     req("imported", Ty::Int),
     req("replaced", Ty::Int),
     req_of("docs", Ty::Array, &[IMPORTED_DOC_ROW]),
+    // #972: additive — each doc a replace overwrote, always present.
+    req_of("replaced_docs", Ty::Array, &[REPLACED_DOC_ROW]),
 ]];
+
+const REPLACED_DOC_ROW: &[Field] = &[
+    req("id", Ty::Str),
+    req("source", Ty::Str),
+    req("previous_title", Ty::Str),
+];
 
 /// One doc `memory.refresh` re-read from its file (#789).
 const REFRESHED_DOC_ROW: &[Field] = &[req("id", Ty::Str), nul("source", Ty::Str)];
@@ -2232,8 +2240,11 @@ fn cases() -> Vec<Case> {
         ),
         case(
             "memory.import",
-            "a two-doc batch, one with a source and one without",
-            |_| {
+            "a two-doc batch, one replacing by source and one without",
+            |e| {
+                // #972: a replace, so `replaced_docs` carries a row to check.
+                e.memory_add(&json!({ "title": "old", "body": "zero", "source": "a.md" }))
+                    .expect("doc");
                 json!({ "docs": [
                     { "title": "one", "body": "first", "source": "a.md" },
                     { "title": "two", "body": "second" },

@@ -108,7 +108,13 @@ tasqx memory import docs/adr
 - One transaction: if any file fails, nothing is imported.
 - Re-importing the same directory *replaces* those documents instead of
   duplicating them, so it's safe to re-run whenever the sources change.
+  Every document a re-import replaced is named under the summary line, with
+  the title it had (`replaced_docs` under `--json`).
   Over the JSON API, a batch that names one source twice is refused whole.
+- A document whose recorded file still exists and is not the file being
+  imported under its source — two clones under the same directory name — is
+  never replaced: the whole import is refused with `conflict` (exit 5),
+  naming the document and both files.
 - A replace bumps the document's revision, so an `update --expected-rev`
   taken before the re-import is refused with `conflict` instead of silently
   overwriting the freshly imported text.
@@ -117,13 +123,19 @@ tasqx memory import docs/adr
   stays global and an existing one keeps whatever scope it already had (like
   `--standing` on a re-import); naming a project moves an existing document's
   scope there, so re-pointing an import at a different project rescopes it.
-- The stored `source` is the path relative to the git toplevel above the
-  file, or, outside a git work tree, relative to the current directory — so
-  the same folder imported as `docs/`, `./docs/` or its absolute path, from
-  any directory and any machine, is one document per file, not several. An
-  import that finds a doc already holding an older spelling of the same file
-  name never removes it, but prints a `note:` line naming it so it can be
-  retired by hand. A symlink pointing at another file in the same import
+- The stored `source` is the git toplevel's directory name followed by the
+  file's path inside the repo — `clouter/README.md` — or, outside a git work
+  tree, the current directory's name followed by the path under it. A
+  worktree uses its main checkout's name, so it replaces the same documents.
+  The same folder imported as `docs/`, `./docs/` or its absolute path, from
+  any directory and any machine, is one document per file, not several, and
+  two repos' `README.md` are two documents, not one. Documents imported
+  before this keep their old, unprefixed source; the next import of the same
+  file lands beside them. An import that finds a doc already holding an
+  older spelling of the same file never removes it, but prints a `note:`
+  line naming it so it can be retired by hand — as the same file when that
+  doc recorded which file it came from, and only as a possibility when it
+  did not. A symlink pointing at another file in the same import
   collapses onto it too — same `source` once resolved — so only the real file
   becomes a document, and the alias is named in a `note:` line instead of
   refusing the batch.
