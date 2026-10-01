@@ -1246,9 +1246,12 @@ pub(crate) fn run_memory_import(
     // transaction with replace-by-source semantics — a failure imports
     // nothing, and a re-run replaces instead of duplicating.
     let (docs, alias_groups) = memory_docs_from_path(path)?;
-    let batch_sources: Vec<String> = docs
+    let batch_sources: Vec<(String, Option<String>)> = docs
         .iter()
-        .filter_map(|d| d["source"].as_str().map(String::from))
+        .filter_map(|d| {
+            let origin = d["origin_path"].as_str().map(String::from);
+            d["source"].as_str().map(|s| (s.to_string(), origin))
+        })
         .collect();
     let mut params = json!({ "docs": docs });
     if let Some(p) = project {
@@ -1270,6 +1273,19 @@ pub(crate) fn run_memory_import(
     } else {
         format!("Imported {imported} doc(s) into memory\n")
     };
+    // #972: the count never said WHICH doc's text was just lost — the
+    // engine's `replaced_docs` does, one line each, with the title it had.
+    for doc in result["replaced_docs"].as_array().into_iter().flatten() {
+        text.push_str(&render::note_line(
+            ctx,
+            &format!(
+                "replaced {} ({}), previously titled {:?}",
+                render::san(doc["source"].as_str().unwrap_or("?")),
+                render::san(doc["id"].as_str().unwrap_or("?")),
+                render::san(doc["previous_title"].as_str().unwrap_or("")),
+            ),
+        ));
+    }
     // #797: a symlink alias `memory_docs_from_path` collapsed onto the file it
     // points at (D179) — named so a caller understands why the directory held
     // more `.md` names than docs landed. #798: `--json` gets the same fact
@@ -1381,21 +1397,37 @@ fn superseded_report(
         Ok(superseded) => {
             let mut text = String::new();
             for s in &superseded {
-                text.push_str(&render::note_line(
-                    ctx,
-                    &format!(
-                        "{} looks like an older spelling of {}; remove it with `tasqx memory rm \
-                         {}` if so",
+                // #972: only a doc read from the very same file is called
+                // one; a legacy doc with no recorded file is a hint, since a
+                // bare `README.md` may be any repo's.
+                let line = if s.same_file {
+                    format!(
+                        "{} is an older key of the same file as {}; remove it with `tasqx \
+                         memory rm {}`",
                         s.source,
                         s.matches.join(" or "),
                         s.id
-                    ),
-                ));
+                    )
+                } else {
+                    format!(
+                        "{} has no recorded file; if it is an older key of {}, remove it with \
+                         `tasqx memory rm {}`",
+                        s.source,
+                        s.matches.join(" or "),
+                        s.id
+                    )
+                };
+                text.push_str(&render::note_line(ctx, &line));
             }
             let json = (!superseded.is_empty()).then(|| {
                 json!(superseded
                     .iter()
-                    .map(|s| json!({ "id": s.id, "source": s.source, "matches": s.matches }))
+                    .map(|s| json!({
+                        "id": s.id,
+                        "source": s.source,
+                        "matches": s.matches,
+                        "same_file": s.same_file,
+                    }))
                     .collect::<Vec<_>>())
             });
             (text, json)
@@ -1421,29 +1453,60 @@ struct SupersededSource {
     id: String,
     source: String,
     matches: Vec<String>,
+    /// #972: the stored doc's recorded file IS the file a match was read
+    /// from. False means no file is recorded for it, so this is a hint.
+    same_file: bool,
 }
 
-/// True when `a` and `b` (both `/`-normalised) look like two spellings of the
-/// same file: one ends with `/` + the other, or they are equal outright. A
-/// bare file-name compare would flag `guides/a.md` as an older spelling of
-/// `docs/a.md`; a suffix compare on the WHOLE remaining path does not.
+/// True when `a` and `b` (both `/`-normalised, a leading `./` dropped) look
+/// like two spellings of the same file: one ends with `/` + the other, or
+/// they are equal outright. A bare file-name compare would flag `guides/a.md`
+/// as an older spelling of `docs/a.md`; a suffix compare on the WHOLE
+/// remaining path does not.
 fn is_path_suffix_match(a: &str, b: &str) -> bool {
     let a = a.replace('\\', "/");
     let b = b.replace('\\', "/");
+    let (a, b) = (a.trim_start_matches("./"), b.trim_start_matches("./"));
     a == b || a.ends_with(&format!("/{b}")) || b.ends_with(&format!("/{a}"))
 }
 
+/// Which of `batch` (each entry's `source` and origin file) a stored doc
+/// keyed on `source` may be an older key of, and whether that is certain.
+///
+/// #972: since D203 led every key with the repo's directory name, a legacy
+/// bare `README.md` suffix-matches EVERY repo's `<repo>/README.md` — so a
+/// suffix alone no longer says "same file". A recorded origin settles it:
+/// only batch entries read from that very file count (`same_file`), and a
+/// recorded file that is none of them means another repo's doc, not
+/// reported. With no recorded file, every suffix match is listed as a hint.
+fn superseded_matches(
+    source: &str,
+    origin: Option<&str>,
+    batch: &[(String, Option<String>)],
+) -> Option<(Vec<String>, bool)> {
+    let matches: Vec<String> = batch
+        .iter()
+        .filter(|(b, b_origin)| {
+            is_path_suffix_match(source, b) && origin.is_none_or(|o| b_origin.as_deref() == Some(o))
+        })
+        .map(|(b, _)| b.clone())
+        .collect();
+    (!matches.is_empty()).then_some((matches, origin.is_some()))
+}
+
 /// Docs whose `source` looks like an older spelling of something this batch
-/// just imported: not itself one of `batch_sources`, but a path-suffix match
-/// of one. One `memory.list` call — no `limit`, which is that method's own
-/// spelling for "everything" — is the only cheap way to find a doc whose
-/// source might be anywhere in the store, so this is a single full scan
-/// rather than a page loop.
+/// just imported: not itself one of `batch`'s sources, but a path-suffix
+/// match of one, narrowed by the stored origin file (`superseded_matches`).
+/// One `memory.list` call — no `limit`, which is that method's own spelling
+/// for "everything" — is the only cheap way to find a doc whose source might
+/// be anywhere in the store, so this is a single full scan rather than a page
+/// loop; `memory.list` carries no origin, so each suffix candidate (rare)
+/// costs one `memory.get` for it.
 fn find_superseded_sources(
     be: &mut Backend,
-    batch_sources: &[String],
+    batch: &[(String, Option<String>)],
 ) -> Result<Vec<SupersededSource>, tasqx_core::ApiError> {
-    if batch_sources.is_empty() {
+    if batch.is_empty() {
         return Ok(Vec::new());
     }
     let result = be.call("memory.list", &json!({}))?;
@@ -1453,19 +1516,22 @@ fn find_superseded_sources(
         let Some(source) = doc["source"].as_str() else {
             continue;
         };
-        if source.is_empty() || batch_sources.iter().any(|b| b == source) {
+        if source.is_empty()
+            || batch.iter().any(|(b, _)| b == source)
+            || superseded_matches(source, None, batch).is_none()
+        {
             continue;
         }
-        let matches: Vec<String> = batch_sources
-            .iter()
-            .filter(|b| is_path_suffix_match(source, b))
-            .cloned()
-            .collect();
-        if !matches.is_empty() {
+        let id = doc["id"].as_str().unwrap_or_default().to_string();
+        let full = be.call("memory.get", &json!({ "id": id }))?;
+        if let Some((matches, same_file)) =
+            superseded_matches(source, full["origin_path"].as_str(), batch)
+        {
             out.push(SupersededSource {
-                id: doc["id"].as_str().unwrap_or_default().to_string(),
+                id,
                 source: source.to_string(),
                 matches,
+                same_file,
             });
         }
     }
@@ -1614,11 +1680,17 @@ pub(crate) fn memory_docs_from_path(
 /// directory. Three cases, in order:
 /// 1. `file` is inside a git work tree (found by walking up from its
 ///    canonicalised directory for a `.git` entry — a worktree's is a FILE,
-///    not a directory, so either counts): the path relative to that
-///    toplevel.
+///    not a directory, so either counts): the toplevel's directory name,
+///    then the path relative to that toplevel — `clouter/README.md`. A
+///    worktree is named after its MAIN checkout (`repo_dir`), so it keys the
+///    same docs the main checkout does.
 /// 2. No `.git` above it, but `file` is under the current directory: the
-///    path relative to the canonicalised cwd.
+///    cwd's directory name, then the path relative to the canonicalised cwd.
 /// 3. Neither (an `../elsewhere` import): the canonicalised absolute path.
+///
+/// The leading directory name is #972/D203: without it every repo's
+/// `README.md` shared one key, and importing a second repo's silently
+/// replaced the first's doc.
 ///
 /// Always `/`-joined, even on Windows, so the same folder imported from
 /// either platform names the same doc (task #784).
@@ -1626,15 +1698,43 @@ fn import_source(file: &std::path::Path) -> String {
     let canon = canonical(file);
     if let Some(toplevel) = git_toplevel(&canon) {
         if let Ok(rel) = canon.strip_prefix(&toplevel) {
-            return slash_joined(rel);
+            return led_by(&repo_dir(&toplevel), rel);
         }
     }
     if let Ok(cwd) = std::env::current_dir().and_then(std::fs::canonicalize) {
         if let Ok(rel) = canon.strip_prefix(&cwd) {
-            return slash_joined(rel);
+            return led_by(&cwd, rel);
         }
     }
     slash_joined(&canon)
+}
+
+/// `rel`, `/`-joined, under `dir`'s last component — or bare when `dir` has
+/// none (the filesystem root).
+fn led_by(dir: &std::path::Path, rel: &std::path::Path) -> String {
+    match dir.file_name() {
+        Some(name) => slash_joined(&std::path::Path::new(name).join(rel)),
+        None => slash_joined(rel),
+    }
+}
+
+/// The checkout whose directory name keys `toplevel`'s docs (D203): the main
+/// checkout when `toplevel` is a linked worktree — its `.git` file names a
+/// gitdir whose `commondir` leads back to the main `.git` — and `toplevel`
+/// itself otherwise, including whenever that chain cannot be read (a
+/// submodule, a bare common dir, a main checkout that moved).
+fn repo_dir(toplevel: &std::path::Path) -> std::path::PathBuf {
+    let main = || -> Option<std::path::PathBuf> {
+        let link = std::fs::read_to_string(toplevel.join(".git")).ok()?;
+        let gitdir = toplevel.join(link.trim().strip_prefix("gitdir:")?.trim());
+        let common = std::fs::read_to_string(gitdir.join("commondir")).ok()?;
+        let common = std::fs::canonicalize(gitdir.join(common.trim())).ok()?;
+        if common.file_name()? != ".git" {
+            return None;
+        }
+        common.parent().map(std::path::Path::to_path_buf)
+    };
+    main().unwrap_or_else(|| toplevel.to_path_buf())
 }
 
 /// `file`'s canonical absolute path, falling back to the path as given when
@@ -2008,23 +2108,73 @@ mod import_source_tests {
         let file = docs.join("a.md");
         std::fs::write(&file, "# A").unwrap();
 
-        assert_eq!(import_source(&file), "docs/a.md");
+        // #972/D203: the toplevel's own directory name leads the key, so
+        // the same relative path in two repos is two docs, not one.
+        let name = repo.file_name().unwrap().to_string_lossy().into_owned();
+        assert_eq!(import_source(&file), format!("{name}/docs/a.md"));
 
         let _ = std::fs::remove_dir_all(&repo);
     }
 
-    /// A worktree's `.git` is a FILE (`gitdir: <path>`), not a directory —
-    /// the toplevel search has to accept either.
+    /// #972/D203: two repos holding the same relative path compute two
+    /// different keys — the cross-repo clobber this key format exists for.
     #[test]
-    fn import_source_is_relative_to_a_git_toplevel_that_is_a_worktree_file() {
-        let repo = temp_dir("git-file");
+    fn import_source_tells_two_repos_with_the_same_relative_path_apart() {
+        let base = temp_dir("two-repos");
+        for name in ["alpha", "beta"] {
+            std::fs::create_dir_all(base.join(name).join(".git")).unwrap();
+            std::fs::write(base.join(name).join("README.md"), "# R").unwrap();
+        }
+
+        assert_eq!(
+            import_source(&base.join("alpha").join("README.md")),
+            "alpha/README.md"
+        );
+        assert_eq!(
+            import_source(&base.join("beta").join("README.md")),
+            "beta/README.md"
+        );
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// A worktree's `.git` is a FILE (`gitdir: <path>`), not a directory —
+    /// the toplevel search has to accept either. #972/D203: a worktree is
+    /// keyed under its MAIN checkout's directory name, read off the
+    /// `commondir` its gitdir names, so importing from a worktree replaces
+    /// the doc the main checkout imported instead of making a second one.
+    #[test]
+    fn import_source_keys_a_worktree_under_its_main_checkouts_name() {
+        let base = temp_dir("git-file");
+        let main = base.join("mainrepo");
+        let gitdir = main.join(".git").join("worktrees").join("wt");
+        std::fs::create_dir_all(&gitdir).unwrap();
+        std::fs::write(gitdir.join("commondir"), "../..\n").unwrap();
+        let repo = base.join("wt-checkout");
         let docs = repo.join("sub").join("docs");
+        std::fs::create_dir_all(&docs).unwrap();
+        std::fs::write(repo.join(".git"), format!("gitdir: {}\n", gitdir.display())).unwrap();
+        let file = docs.join("b.md");
+        std::fs::write(&file, "# B").unwrap();
+
+        assert_eq!(import_source(&file), "mainrepo/sub/docs/b.md");
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// A `.git` file whose gitdir cannot be read (a submodule's, or a main
+    /// checkout that moved) falls back to the worktree's own directory name.
+    #[test]
+    fn import_source_keys_an_unreadable_worktree_under_its_own_name() {
+        let repo = temp_dir("git-file-dangling");
+        let docs = repo.join("docs");
         std::fs::create_dir_all(&docs).unwrap();
         std::fs::write(repo.join(".git"), "gitdir: /elsewhere/.git/worktrees/x").unwrap();
         let file = docs.join("b.md");
         std::fs::write(&file, "# B").unwrap();
 
-        assert_eq!(import_source(&file), "sub/docs/b.md");
+        let name = repo.file_name().unwrap().to_string_lossy().into_owned();
+        assert_eq!(import_source(&file), format!("{name}/docs/b.md"));
 
         let _ = std::fs::remove_dir_all(&repo);
     }
@@ -2089,7 +2239,7 @@ mod import_source_tests {
 
 #[cfg(test)]
 mod superseded_report_tests {
-    use super::{superseded_report, SupersededSource};
+    use super::{superseded_matches, superseded_report, SupersededSource};
     use crate::theme::{default_theme, Caps, Ctx};
 
     fn ctx() -> Ctx {
@@ -2103,15 +2253,72 @@ mod superseded_report_tests {
         let found = Ok(vec![SupersededSource {
             id: "3f2".to_string(),
             source: "./docs/a.md".to_string(),
-            matches: vec!["docs/a.md".to_string()],
+            matches: vec!["repo/docs/a.md".to_string()],
+            same_file: true,
         }]);
 
         let (text, json) = superseded_report(&ctx(), found);
 
         assert!(text.contains("./docs/a.md"));
-        assert!(text.contains("docs/a.md"));
+        assert!(text.contains("repo/docs/a.md"));
+        assert!(text.contains("same file"));
         assert!(text.contains("tasqx memory rm 3f2"));
-        assert_eq!(json.unwrap()[0]["id"], "3f2");
+        let json = json.unwrap();
+        assert_eq!(json[0]["id"], "3f2");
+        assert_eq!(json[0]["same_file"], true);
+    }
+
+    /// #972: a legacy doc with no recorded file is only a HINT — the wording
+    /// must not claim it is the same file, because a bare `README.md` may be
+    /// any repo's.
+    #[test]
+    fn an_unknown_origin_candidate_is_worded_as_a_hint() {
+        let found = Ok(vec![SupersededSource {
+            id: "3f2".to_string(),
+            source: "README.md".to_string(),
+            matches: vec!["clouter/README.md".to_string()],
+            same_file: false,
+        }]);
+
+        let (text, json) = superseded_report(&ctx(), found);
+
+        assert!(!text.contains("same file"), "{text}");
+        assert!(text.contains("no recorded file"), "{text}");
+        assert!(text.contains("tasqx memory rm 3f2"));
+        assert_eq!(json.unwrap()[0]["same_file"], false);
+    }
+
+    /// #972: which batch entries a stored doc is reported against, and how.
+    #[test]
+    fn superseded_matches_only_claims_the_same_file_when_the_origins_agree() {
+        let batch = vec![(
+            "clouter/README.md".to_string(),
+            Some("/src/clouter/README.md".to_string()),
+        )];
+
+        // Another repo's doc under a legacy bare key: its file is known and
+        // is not this one, so it is not reported at all.
+        assert_eq!(
+            superseded_matches("README.md", Some("/src/other/README.md"), &batch),
+            None
+        );
+        // The same file under the legacy key: reported, as the same file.
+        assert_eq!(
+            superseded_matches("README.md", Some("/src/clouter/README.md"), &batch),
+            Some((vec!["clouter/README.md".to_string()], true))
+        );
+        // No recorded file: reported as a hint only.
+        assert_eq!(
+            superseded_matches("README.md", None, &batch),
+            Some((vec!["clouter/README.md".to_string()], false))
+        );
+        // A `./`-led spelling still counts as a suffix of the new key.
+        assert_eq!(
+            superseded_matches("./README.md", None, &batch),
+            Some((vec!["clouter/README.md".to_string()], false))
+        );
+        // Not a suffix at all: nothing.
+        assert_eq!(superseded_matches("docs/README.md", None, &batch), None);
     }
 
     /// No candidates: no note, no key — `run_memory_import` must not print an

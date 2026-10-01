@@ -5041,13 +5041,26 @@ fn memory_import_source_is_relative_to_the_git_toplevel_from_any_starting_direct
         v["count"], 1,
         "one doc for one file, however the path was spelled: {v}"
     );
-    assert_eq!(v["docs"][0]["source"], "docs/a.md");
+    // #972/D203: led by the toplevel's directory name.
+    assert_eq!(
+        v["docs"][0]["source"],
+        format!("{}/docs/a.md", dir_name(&repo))
+    );
 
     let _ = std::fs::remove_dir_all(&repo);
 }
 
+/// The last component of `p`, the name #972/D203 puts at the head of every
+/// imported doc's `source`.
+fn dir_name(p: &std::path::Path) -> String {
+    p.file_name()
+        .expect("a named directory")
+        .to_string_lossy()
+        .into_owned()
+}
+
 /// #784: outside a git work tree, `source` falls back to the path relative to
-/// the current directory.
+/// the current directory — led by that directory's name (#972/D203).
 #[test]
 fn memory_import_source_outside_a_git_tree_is_relative_to_cwd() {
     let dir = fresh_config_dir("memory-import-source-nogit");
@@ -5078,7 +5091,10 @@ fn memory_import_source_outside_a_git_tree_is_relative_to_cwd() {
     assert!(list.status.success());
     let v: serde_json::Value = serde_json::from_slice(&list.stdout).expect("json");
     assert_eq!(v["count"], 1, "{v}");
-    assert_eq!(v["docs"][0]["source"], "notes/n.md");
+    assert_eq!(
+        v["docs"][0]["source"],
+        format!("{}/notes/n.md", dir_name(&base))
+    );
 
     let _ = std::fs::remove_dir_all(&base);
 }
@@ -5137,13 +5153,19 @@ fn memory_import_notes_an_older_spelling_of_the_same_file_without_removing_it() 
     assert_eq!(superseded.len(), 1, "{v}");
     assert_eq!(superseded[0]["id"], old_id);
     assert_eq!(superseded[0]["source"], "./docs/a.md");
-    assert_eq!(superseded[0]["matches"][0], "docs/a.md");
+    assert_eq!(
+        superseded[0]["matches"][0],
+        format!("{}/docs/a.md", dir_name(&repo))
+    );
+    // #972: planted by `memory add`, so no file is recorded for it — a hint,
+    // not a claim that it is the same file.
+    assert_eq!(superseded[0]["same_file"], false);
 
     let text_out = run(&["memory", "import", "docs"]);
     assert!(text_out.status.success());
     let stdout = String::from_utf8_lossy(&text_out.stdout);
     assert!(
-        stdout.contains("looks like an older spelling of"),
+        stdout.contains("if it is an older key of"),
         "expected a note about the old source, got: {stdout}"
     );
 
@@ -5205,7 +5227,10 @@ fn memory_import_collapses_a_symlink_alias_to_one_doc() {
     assert!(list.status.success());
     let list_v: serde_json::Value = serde_json::from_slice(&list.stdout).expect("json");
     assert_eq!(list_v["count"], 1, "{list_v}");
-    assert_eq!(list_v["docs"][0]["source"], "docs/a.md");
+    assert_eq!(
+        list_v["docs"][0]["source"],
+        format!("{}/docs/a.md", dir_name(&repo))
+    );
 
     let _ = std::fs::remove_dir_all(&repo);
 }
@@ -5256,7 +5281,10 @@ fn memory_import_alias_that_sorts_first_still_loses_to_the_real_file() {
     );
     assert_eq!(
         v["aliases_skipped"],
-        serde_json::json!([{ "source": "docs/z.md", "via": ["docs/a.md"] }]),
+        serde_json::json!([{
+            "source": format!("{}/docs/z.md", dir_name(&repo)),
+            "via": ["docs/a.md"]
+        }]),
         "the alias, not the real file, must be named as skipped: {v}"
     );
 
@@ -5265,11 +5293,107 @@ fn memory_import_alias_that_sorts_first_still_loses_to_the_real_file() {
     let list_v: serde_json::Value = serde_json::from_slice(&list.stdout).expect("json");
     assert_eq!(list_v["count"], 1, "{list_v}");
     assert_eq!(
-        list_v["docs"][0]["source"], "docs/z.md",
+        list_v["docs"][0]["source"],
+        format!("{}/docs/z.md", dir_name(&repo)),
         "the real file must win, not the alias that sorted first: {list_v}"
     );
 
     let _ = std::fs::remove_dir_all(&repo);
+}
+
+/// #972/D203: every repo's `README.md` used to share the key `README.md`, so
+/// importing a second repo's silently replaced the first's (seen on a real
+/// store, 2026-10-01). The key now leads with the repo's directory name: two
+/// repos land two docs, and re-importing one replaces exactly that one —
+/// named in the text and under `--json`'s `replaced_docs`. Two CLONES under
+/// one directory name still share a key, and there the stored origin file
+/// refuses the replace with `conflict`.
+#[test]
+fn memory_import_keeps_two_repos_readmes_apart_and_names_what_it_replaces() {
+    let dir = fresh_config_dir("memory-import-two-repos");
+    let base = std::env::temp_dir().join(format!(
+        "tasqx-reg-memory-import-two-repos-{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&base);
+    for (name, title) in [
+        ("alpha", "Alpha"),
+        ("beta", "Beta"),
+        ("clone/alpha", "Clone"),
+    ] {
+        let repo = base.join(name);
+        std::fs::create_dir_all(repo.join(".git")).expect("create .git dir");
+        std::fs::write(repo.join("README.md"), format!("# {title}\n\nbody")).expect("write");
+    }
+    let run = |args: &[&str]| {
+        bin("memory-import-two-repos", &dir)
+            .current_dir(&base)
+            .args(args)
+            .output()
+            .expect("run tasqx")
+    };
+    let import = |rel: &str| run(&["--json", "memory", "import", rel]);
+
+    for rel in ["alpha/README.md", "beta/README.md"] {
+        let out = import(rel);
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let v: serde_json::Value = serde_json::from_slice(&out.stdout).expect("json");
+        assert_eq!(v["replaced"], 0, "a second repo must not replace: {v}");
+        assert_eq!(v["replaced_docs"], serde_json::json!([]), "{v}");
+    }
+    let list = run(&["--json", "memory", "list"]);
+    let listed: serde_json::Value = serde_json::from_slice(&list.stdout).expect("json");
+    assert_eq!(listed["count"], 2, "two repos, two docs: {listed}");
+    let alpha_id = listed["docs"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|d| d["source"] == "alpha/README.md")
+        .expect("alpha's doc")["id"]
+        .clone();
+
+    std::fs::write(base.join("alpha").join("README.md"), "# Alpha v2\n\nbody").expect("edit");
+    let out = import("alpha/README.md");
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).expect("json");
+    assert_eq!(
+        v["replaced_docs"],
+        serde_json::json!([{
+            "id": alpha_id,
+            "source": "alpha/README.md",
+            "previous_title": "Alpha"
+        }]),
+        "{v}"
+    );
+    std::fs::write(base.join("alpha").join("README.md"), "# Alpha v3\n\nbody").expect("edit");
+    let text = run(&["memory", "import", "alpha/README.md"]);
+    let stdout = String::from_utf8_lossy(&text.stdout);
+    assert!(
+        stdout.contains("alpha/README.md") && stdout.contains("Alpha v2"),
+        "the text must name the replaced doc and its old title: {stdout}"
+    );
+
+    // A second clone also named `alpha`: same key, different file.
+    let out = run(&["memory", "import", "clone/alpha/README.md"]);
+    assert_eq!(
+        out.status.code(),
+        Some(5),
+        "a replace from another file is a conflict: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains(alpha_id.as_str().unwrap()),
+        "the refusal names the doc: {stderr}"
+    );
+    let after = run(&["--json", "memory", "show", alpha_id.as_str().unwrap()]);
+    let doc: serde_json::Value = serde_json::from_slice(&after.stdout).expect("json");
+    assert_eq!(doc["title"], "Alpha v3", "the refused import wrote nothing");
+
+    let _ = std::fs::remove_dir_all(&base);
 }
 
 /// #788/D180: `memory import` records which file each doc came from and what
@@ -5318,7 +5442,11 @@ fn memory_import_records_the_origin_file_of_every_doc_it_lands() {
     );
     let doc: serde_json::Value = serde_json::from_slice(&show.stdout).expect("json");
 
-    assert_eq!(doc["source"], "docs/a.md", "{doc}");
+    assert_eq!(
+        doc["source"],
+        format!("{}/docs/a.md", dir_name(&repo)),
+        "{doc}"
+    );
     let origin_path = doc["origin_path"].as_str().expect("an origin_path");
     assert!(
         std::path::Path::new(origin_path).is_absolute(),
@@ -5388,7 +5516,7 @@ fn memory_import_refresh_re_reads_an_edited_file_and_names_a_deleted_one() {
         String::from_utf8_lossy(&out.stderr)
     );
     assert!(
-        text.contains("refreshed docs/edited.md"),
+        text.contains(&format!("refreshed {}/docs/edited.md", dir_name(&repo))),
         "the edited file must be named as refreshed: {text}"
     );
     assert!(
@@ -5417,8 +5545,10 @@ fn memory_import_refresh_re_reads_an_edited_file_and_names_a_deleted_one() {
 #[test]
 fn memory_search_prints_the_stale_word_after_an_edit_and_not_before() {
     let dir = fresh_config_dir("memory-search-stale");
+    // Not `...-stale-...`: since #972/D203 the repo's directory name leads
+    // the doc's source, which the hit prints, so a "stale" in it would match.
     let repo = std::env::temp_dir().join(format!(
-        "tasqx-reg-memory-search-stale-{}",
+        "tasqx-reg-memory-search-edited-{}",
         std::process::id()
     ));
     let _ = std::fs::remove_dir_all(&repo);
@@ -5431,9 +5561,12 @@ fn memory_search_prints_the_stale_word_after_an_edit_and_not_before() {
     )
     .expect("write doc");
 
+    // Wide enough for the source column, where `stale` rides: the
+    // directory-led source (#972/D203) of a temp repo no longer fits 80.
     let run = |args: &[&str]| {
         bin("memory-search-stale", &dir)
             .current_dir(&repo)
+            .env("COLUMNS", "160")
             .args(args)
             .output()
             .expect("run tasqx")

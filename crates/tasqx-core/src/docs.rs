@@ -1080,6 +1080,22 @@ pub const R_MEMORY_IMPORT: &[FieldDoc] = &[
         "How many of those replaced a doc with the same `source`, in place.",
     ),
     f("docs", "array", "One row per document in the batch."),
+    f(
+        "replaced_docs",
+        "array",
+        "One row per existing doc the batch replaced in place, naming the title it had before — always present, empty when nothing was replaced (#972).",
+    ),
+];
+
+/// One doc an import batch replaced in place (#972).
+pub const REPLACED_DOC_ROW: &[FieldDoc] = &[
+    f("id", "string", "The replaced doc's id, which it keeps."),
+    f("source", "string", "The source it is keyed on."),
+    f(
+        "previous_title",
+        "string",
+        "The title it had before this import replaced it.",
+    ),
 ];
 
 /// One document of an import batch, and whether it replaced one in place.
@@ -1695,6 +1711,7 @@ pub fn result_shape(method: &str) -> &'static [(&'static str, &'static [FieldDoc
         "memory.import" => &[
             ("result", R_MEMORY_IMPORT),
             ("result.docs[]", IMPORTED_DOC_ROW),
+            ("result.replaced_docs[]", REPLACED_DOC_ROW),
         ],
         "memory.refresh" => &[
             ("result", R_MEMORY_REFRESH),

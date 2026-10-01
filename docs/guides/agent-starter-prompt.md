@@ -98,8 +98,9 @@ holds markdown docs:
 
 No MCP tool imports; run it in the shell, or ask me to run it. It is non-recursive — a
 directory means its own `*.md` files. Re-running replaces docs from the same source
-rather than duplicating, keyed on each file's path as you spelled it, so spell the
-directory the same way every time.
+rather than duplicating, keyed on the repo's directory name and each file's path inside
+the repo (`clouter/README.md`), so any spelling of the directory finds the same docs and
+two repos' files never replace each other.
 
 ### Store what the next session needs
 
