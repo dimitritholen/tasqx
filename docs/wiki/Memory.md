@@ -132,8 +132,11 @@ tasqx memory import docs/adr
   tree, the current directory's name followed by the path under it. A
   worktree uses its main checkout's name, so it replaces the same documents.
   The same folder imported as `docs/`, `./docs/` or its absolute path, from
-  any directory and any machine, is one document per file, not several, and
-  two repos' `README.md` are two documents, not one. Documents imported
+  any directory, is one document per file, not several, and two repos'
+  `README.md` are two documents, not one. Across machines that holds for
+  checkouts with the same directory name: independent clones under one name
+  share keys and conflict, while differently named checkouts get distinct
+  keys. Documents imported
   before this keep their old, unprefixed source; the next import of the same
   file lands beside them. An import that finds a doc already holding an
   older spelling of the same file never removes it, but prints a `note:`
