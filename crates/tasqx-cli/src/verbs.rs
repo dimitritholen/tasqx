@@ -1321,8 +1321,10 @@ pub(crate) fn run_memory_import(
     // committed, so a failing `memory.list` must not turn a successful import
     // into a failed command — `superseded_report` turns the `Err` into one
     // `note:` line instead of a `?`.
-    let (superseded_text, superseded_json) =
-        superseded_report(ctx, find_superseded_sources(be, &batch_sources));
+    let (superseded_text, superseded_json) = superseded_report(
+        ctx,
+        find_superseded_sources(&mut |m, p| be.call(m, p), &batch_sources),
+    );
     text.push_str(&superseded_text);
     if let Some(v) = superseded_json {
         result["superseded"] = v;
@@ -1502,14 +1504,21 @@ fn superseded_matches(
 /// be anywhere in the store, so this is a single full scan rather than a page
 /// loop; `memory.list` carries no origin, so each suffix candidate (rare)
 /// costs one `memory.get` for it.
+///
+/// A candidate whose `memory.get` fails (removed since the list, say) is
+/// skipped, not fatal: a `?` there threw away every match the scan had
+/// already confirmed. Only `memory.list` failing ends the scan.
+///
+/// `call` is `Backend::call` as a closure — a seam, because `Backend::Local`
+/// cannot make one `memory.get` fail while the list still names its doc.
 fn find_superseded_sources(
-    be: &mut Backend,
+    call: &mut dyn FnMut(&str, &Value) -> Result<Value, tasqx_core::ApiError>,
     batch: &[(String, Option<String>)],
 ) -> Result<Vec<SupersededSource>, tasqx_core::ApiError> {
     if batch.is_empty() {
         return Ok(Vec::new());
     }
-    let result = be.call("memory.list", &json!({}))?;
+    let result = call("memory.list", &json!({}))?;
     let docs = result["docs"].as_array().cloned().unwrap_or_default();
     let mut out = Vec::new();
     for doc in docs {
@@ -1523,7 +1532,9 @@ fn find_superseded_sources(
             continue;
         }
         let id = doc["id"].as_str().unwrap_or_default().to_string();
-        let full = be.call("memory.get", &json!({ "id": id }))?;
+        let Ok(full) = call("memory.get", &json!({ "id": id })) else {
+            continue;
+        };
         if let Some((matches, same_file)) =
             superseded_matches(source, full["origin_path"].as_str(), batch)
         {
@@ -2208,7 +2219,7 @@ mod import_source_tests {
 
 #[cfg(test)]
 mod superseded_report_tests {
-    use super::{superseded_matches, superseded_report, SupersededSource};
+    use super::{find_superseded_sources, superseded_matches, superseded_report, SupersededSource};
     use crate::theme::{default_theme, Caps, Ctx};
 
     fn ctx() -> Ctx {
@@ -2288,6 +2299,34 @@ mod superseded_report_tests {
         );
         // Not a suffix at all: nothing.
         assert_eq!(superseded_matches("docs/README.md", None, &batch), None);
+    }
+
+    /// One candidate whose `memory.get` fails (a doc removed between the
+    /// list and the get) is skipped; the other candidate's confirmed match
+    /// still comes back, rather than the whole scan ending in `Err`.
+    #[test]
+    fn a_failing_get_skips_that_candidate_and_keeps_the_rest() {
+        let batch = vec![(
+            "clouter/README.md".to_string(),
+            Some("/src/clouter/README.md".to_string()),
+        )];
+        let mut call = |method: &str, params: &serde_json::Value| match method {
+            "memory.list" => Ok(serde_json::json!({ "docs": [
+                { "id": "gone", "source": "README.md" },
+                { "id": "kept", "source": "./README.md" },
+            ]})),
+            "memory.get" if params["id"] == "kept" => {
+                Ok(serde_json::json!({ "origin_path": "/src/clouter/README.md" }))
+            }
+            "memory.get" => Err(tasqx_core::ApiError::internal("no such doc")),
+            other => panic!("unexpected call {other}"),
+        };
+
+        let found = find_superseded_sources(&mut call, &batch).expect("the scan survives");
+
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].id, "kept");
+        assert!(found[0].same_file);
     }
 
     /// No candidates: no note, no key — `run_memory_import` must not print an
