@@ -1682,7 +1682,7 @@ pub(crate) fn memory_docs_from_path(
 ///    canonicalised directory for a `.git` entry — a worktree's is a FILE,
 ///    not a directory, so either counts): the toplevel's directory name,
 ///    then the path relative to that toplevel — `clouter/README.md`. A
-///    worktree is named after its MAIN checkout (`repo_dir`), so it keys the
+///    worktree is named after its MAIN checkout (`memory_doc::repo_dir`), so it keys the
 ///    same docs the main checkout does.
 /// 2. No `.git` above it, but `file` is under the current directory: the
 ///    cwd's directory name, then the path relative to the canonicalised cwd.
@@ -1696,9 +1696,9 @@ pub(crate) fn memory_docs_from_path(
 /// either platform names the same doc (task #784).
 fn import_source(file: &std::path::Path) -> String {
     let canon = canonical(file);
-    if let Some(toplevel) = git_toplevel(&canon) {
+    if let Some(toplevel) = tasqx_core::memory_doc::git_toplevel(&canon) {
         if let Ok(rel) = canon.strip_prefix(&toplevel) {
-            return led_by(&repo_dir(&toplevel), rel);
+            return led_by(&tasqx_core::memory_doc::repo_dir(&toplevel), rel);
         }
     }
     if let Ok(cwd) = std::env::current_dir().and_then(std::fs::canonicalize) {
@@ -1718,25 +1718,6 @@ fn led_by(dir: &std::path::Path, rel: &std::path::Path) -> String {
     }
 }
 
-/// The checkout whose directory name keys `toplevel`'s docs (D203): the main
-/// checkout when `toplevel` is a linked worktree — its `.git` file names a
-/// gitdir whose `commondir` leads back to the main `.git` — and `toplevel`
-/// itself otherwise, including whenever that chain cannot be read (a
-/// submodule, a bare common dir, a main checkout that moved).
-fn repo_dir(toplevel: &std::path::Path) -> std::path::PathBuf {
-    let main = || -> Option<std::path::PathBuf> {
-        let link = std::fs::read_to_string(toplevel.join(".git")).ok()?;
-        let gitdir = toplevel.join(link.trim().strip_prefix("gitdir:")?.trim());
-        let common = std::fs::read_to_string(gitdir.join("commondir")).ok()?;
-        let common = std::fs::canonicalize(gitdir.join(common.trim())).ok()?;
-        if common.file_name()? != ".git" {
-            return None;
-        }
-        common.parent().map(std::path::Path::to_path_buf)
-    };
-    main().unwrap_or_else(|| toplevel.to_path_buf())
-}
-
 /// `file`'s canonical absolute path, falling back to the path as given when
 /// the filesystem cannot answer — a broken symlink, or a race with whoever is
 /// editing the directory being imported. Shared by `source` (D179) and
@@ -1744,18 +1725,6 @@ fn repo_dir(toplevel: &std::path::Path) -> std::path::PathBuf {
 /// is.
 fn canonical(file: &std::path::Path) -> std::path::PathBuf {
     std::fs::canonicalize(file).unwrap_or_else(|_| file.to_path_buf())
-}
-
-/// The git toplevel above `file`: the nearest ancestor directory (starting at
-/// `file`'s own parent) that carries a `.git` entry, file or directory.
-fn git_toplevel(file: &std::path::Path) -> Option<std::path::PathBuf> {
-    let mut dir = file.parent()?;
-    loop {
-        if dir.join(".git").exists() {
-            return Some(dir.to_path_buf());
-        }
-        dir = dir.parent()?;
-    }
 }
 
 /// `rel` spelled with `/`, so a source string is the same text on Windows and

@@ -552,23 +552,51 @@ pub(crate) fn refuse_source_held_elsewhere(
 /// stored file that is gone (the repo moved, or the store was synced from
 /// another machine whose paths these are) is not a competing file, so both
 /// replace as they always did. Legacy rows with no origin never reach here.
+///
+/// "Gone" is `try_exists` answering `Ok(false)`, not `exists()`: that one
+/// says `false` on a metadata error too, and a present-but-unreadable file
+/// would then lose its doc. An error refuses with `bad_request`, the code
+/// `memory_doc::read_doc` gives a file it cannot read. Two files in one
+/// repository — a linked worktree and its main checkout, which share keys
+/// by design (D203) — are a re-import, not a competitor.
 fn refuse_replace_from_another_file(
     id: &str,
     source: &str,
     stored: &str,
     incoming: Option<&str>,
 ) -> Result<(), ApiError> {
-    match incoming {
-        Some(incoming) if incoming != stored && std::path::Path::new(stored).exists() => {
-            Err(ApiError::conflict(format!(
-                "source {source:?} already belongs to memory doc {id}, read from {stored}; \
-                 this import read {incoming}, a different file under the same key (D203) — \
-                 nothing was imported. Rename one checkout's directory, or `tasqx memory rm \
-                 {id}` if the stored doc is obsolete"
-            )))
-        }
-        _ => Ok(()),
+    let Some(incoming) = incoming.filter(|incoming| *incoming != stored) else {
+        return Ok(());
+    };
+    match std::path::Path::new(stored).try_exists() {
+        Ok(false) => Ok(()),
+        Err(e) => Err(ApiError::bad_request(format!(
+            "source {source:?} already belongs to memory doc {id}, read from {stored}, and \
+             that file cannot be checked ({e}); this import read {incoming} (D203) — nothing \
+             was imported, so the stored doc is not overwritten"
+        ))),
+        Ok(true) if same_repository(stored, incoming) => Ok(()),
+        Ok(true) => Err(ApiError::conflict(format!(
+            "source {source:?} already belongs to memory doc {id}, read from {stored}; \
+             this import read {incoming}, a different file under the same key (D203) — \
+             nothing was imported. Rename one checkout's directory, or `tasqx memory rm \
+             {id}` if the stored doc is obsolete"
+        ))),
     }
+}
+
+/// Whether `a` and `b` sit in one git repository: their toplevels resolve,
+/// through a linked worktree's `commondir`, to the same main checkout — the
+/// resolution `import_source` keys on (`memory_doc::repo_dir`). Outside a
+/// git work tree, or where the chain cannot be read, there is no shared
+/// repository to claim, so the answer is `false` and the guard stands.
+fn same_repository(a: &str, b: &str) -> bool {
+    let repo = |file: &str| {
+        let toplevel = crate::memory_doc::git_toplevel(std::path::Path::new(file))?;
+        let dir = crate::memory_doc::repo_dir(&toplevel);
+        Some(std::fs::canonicalize(&dir).unwrap_or(dir))
+    };
+    matches!((repo(a), repo(b)), (Some(a), Some(b)) if a == b)
 }
 
 /// One document on its way into `docs`, as the two doors that land a file

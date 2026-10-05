@@ -114,7 +114,11 @@ tasqx memory import docs/adr
 - A document whose recorded file still exists and is not the file being
   imported under its source — two clones under the same directory name — is
   never replaced: the whole import is refused with `conflict` (exit 5),
-  naming the document and both files.
+  naming the document and both files. A worktree and its main checkout are
+  one repository, not two clones, so importing from either replaces the
+  same documents. A recorded file that cannot be checked at all (a
+  permission error) refuses the import too, with exit 2, rather than being
+  taken for gone.
 - A replace bumps the document's revision, so an `update --expected-rev`
   taken before the re-import is refused with `conflict` instead of silently
   overwriting the freshly imported text.
