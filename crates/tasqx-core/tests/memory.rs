@@ -3780,3 +3780,104 @@ fn memory_import_names_every_doc_it_replaced_with_its_previous_title() {
         "{second}"
     );
 }
+
+/// #972/D203 review: `Path::exists` answers `false` on a metadata error, so a
+/// stored file that is present but unreadable — a directory whose mode shut
+/// this user out — read as "gone" and let the replace overwrite its doc. An
+/// error is not an absence: the guard refuses, and the stored doc stays.
+#[cfg(unix)]
+#[test]
+fn memory_import_refuses_a_replace_when_the_stored_file_cannot_be_checked() {
+    use std::os::unix::fs::PermissionsExt;
+    let fx = OriginFixture::new("guard-unreadable");
+    let locked = fx.dir.join("locked");
+    std::fs::create_dir_all(&locked).unwrap();
+    let mine = locked.join("a.md");
+    std::fs::write(&mine, "# Mine\n\nmine body").unwrap();
+    let theirs = fx.write("b.md", "# Theirs\n\ntheirs body");
+    let e = engine();
+    let mut first = fx.doc(&mine);
+    first["source"] = json!("clouter/README.md");
+    let id = call(&e, "memory.import", json!({ "docs": [first] })).expect("first import")["docs"]
+        [0]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o000)).unwrap();
+    // Root reads through any mode: there is no error to provoke then.
+    let provoked = mine.try_exists().is_err();
+    let mut other = fx.doc(&theirs);
+    other["source"] = json!("clouter/README.md");
+    let out = call(&e, "memory.import", json!({ "docs": [other] }));
+    std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o755)).unwrap();
+    if !provoked {
+        return;
+    }
+
+    let err = out.expect_err("an unreadable stored file must not be overwritten");
+    assert_eq!(err.code, ErrorCode::BadRequest, "{err:?}");
+    assert!(err.message.contains(&id), "{}", err.message);
+    let got = call(&e, "memory.get", json!({ "id": id })).unwrap();
+    assert_eq!(got["title"], "Mine", "the existing doc must be untouched");
+}
+
+/// #972/D203 review: a linked worktree shares its main checkout's keys, so
+/// importing the same file from it replaces the main checkout's doc. Both
+/// files exist and their paths differ, but they resolve to one git common
+/// dir — one repository — so the guard lets it through. Laid out by hand
+/// (a `.git` file naming a gitdir whose `commondir` leads back), as
+/// `import_source`'s own worktree test does.
+#[test]
+fn memory_import_replaces_a_main_checkout_doc_from_its_linked_worktree() {
+    let fx = OriginFixture::new("guard-worktree");
+    let base = std::fs::canonicalize(&fx.dir).unwrap();
+    let main = base.join("clouter");
+    let gitdir = main.join(".git").join("worktrees").join("wt");
+    std::fs::create_dir_all(&gitdir).unwrap();
+    std::fs::write(gitdir.join("commondir"), "../..\n").unwrap();
+    let wt = base.join("clouter-wt");
+    std::fs::create_dir_all(&wt).unwrap();
+    std::fs::write(wt.join(".git"), format!("gitdir: {}\n", gitdir.display())).unwrap();
+    let from_main = main.join("README.md");
+    std::fs::write(&from_main, "# Main\n\nmain body").unwrap();
+    let from_wt = wt.join("README.md");
+    std::fs::write(&from_wt, "# Worktree\n\nworktree body").unwrap();
+
+    let e = engine();
+    let mut first = fx.doc(&from_main);
+    first["source"] = json!("clouter/README.md");
+    call(&e, "memory.import", json!({ "docs": [first] })).expect("main checkout import");
+    let mut second = fx.doc(&from_wt);
+    second["source"] = json!("clouter/README.md");
+    let out = call(&e, "memory.import", json!({ "docs": [second] }))
+        .expect("a worktree of the same repository replaces its doc");
+    assert_eq!(out["replaced"], 1, "{out}");
+}
+
+/// #972/D203 review: the worktree allowance is one repository, not one
+/// directory name. Two independent clones both called `clouter` each carry
+/// their own `.git`, so a replace across them is still refused.
+#[test]
+fn memory_import_still_refuses_a_replace_across_two_clones_of_one_name() {
+    let fx = OriginFixture::new("guard-clones");
+    let base = std::fs::canonicalize(&fx.dir).unwrap();
+    let mut files = Vec::new();
+    for parent in ["one", "two"] {
+        let repo = base.join(parent).join("clouter");
+        std::fs::create_dir_all(repo.join(".git")).unwrap();
+        let file = repo.join("README.md");
+        std::fs::write(&file, format!("# {parent}\n\nbody")).unwrap();
+        files.push(file);
+    }
+
+    let e = engine();
+    let mut first = fx.doc(&files[0]);
+    first["source"] = json!("clouter/README.md");
+    call(&e, "memory.import", json!({ "docs": [first] })).expect("first clone import");
+    let mut second = fx.doc(&files[1]);
+    second["source"] = json!("clouter/README.md");
+    let err = call(&e, "memory.import", json!({ "docs": [second] }))
+        .expect_err("two clones under one name are two repositories");
+    assert_eq!(err.code, ErrorCode::Conflict, "{err:?}");
+}

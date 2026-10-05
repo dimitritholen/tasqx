@@ -71,6 +71,41 @@ pub fn unix_seconds(meta: &std::fs::Metadata) -> Option<i64> {
     i64::try_from(since.as_secs()).ok()
 }
 
+/// The git toplevel above `file`: the nearest ancestor directory (starting at
+/// `file`'s own parent) that carries a `.git` entry, file or directory.
+///
+/// Moved out of `tasqx-cli`'s `import_source` with [`repo_dir`] (#972) so the
+/// key the CLI computes and the engine's replace guard agree on which
+/// repository a file belongs to.
+pub fn git_toplevel(file: &Path) -> Option<std::path::PathBuf> {
+    let mut dir = file.parent()?;
+    loop {
+        if dir.join(".git").exists() {
+            return Some(dir.to_path_buf());
+        }
+        dir = dir.parent()?;
+    }
+}
+
+/// The checkout whose directory name keys `toplevel`'s docs (D203): the main
+/// checkout when `toplevel` is a linked worktree — its `.git` file names a
+/// gitdir whose `commondir` leads back to the main `.git` — and `toplevel`
+/// itself otherwise, including whenever that chain cannot be read (a
+/// submodule, a bare common dir, a main checkout that moved).
+pub fn repo_dir(toplevel: &Path) -> std::path::PathBuf {
+    let main = || -> Option<std::path::PathBuf> {
+        let link = std::fs::read_to_string(toplevel.join(".git")).ok()?;
+        let gitdir = toplevel.join(link.trim().strip_prefix("gitdir:")?.trim());
+        let common = std::fs::read_to_string(gitdir.join("commondir")).ok()?;
+        let common = std::fs::canonicalize(gitdir.join(common.trim())).ok()?;
+        if common.file_name()? != ".git" {
+            return None;
+        }
+        common.parent().map(Path::to_path_buf)
+    };
+    main().unwrap_or_else(|| toplevel.to_path_buf())
+}
+
 /// The title a frontmatter block would have given the document, if any:
 /// `title:` or `name:` (`title` first), a bare or single-quoted scalar value.
 /// Deliberately not a YAML parser — the values this needs to read are the
