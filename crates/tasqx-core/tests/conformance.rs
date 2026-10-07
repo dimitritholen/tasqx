@@ -1310,6 +1310,7 @@ const R_TASK_NEXT: Shape = &[&[
     ),
     nul("summary", Ty::Str),
     req("store_empty", Ty::Bool),
+    req("total", Ty::Int),
     opt_of(
         "active",
         Ty::Array,

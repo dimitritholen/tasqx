@@ -4549,6 +4549,38 @@ fn next_takes_a_filter_and_still_skips_blocked_work_in_scope() {
         !excluded.contains("fin blocker"),
         "`-urgent` must exclude the tagged task, not fail to parse: {excluded}"
     );
+
+    // D213: one implementation. `next --json` and `task.next` over the API
+    // name the same task, unscoped and scoped.
+    use std::io::Write;
+    let api_pick = |params: &str| -> i64 {
+        let mut child = bin("next-filter-scope", &dir)
+            .arg("api")
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .spawn()
+            .expect("spawn tasqx api");
+        let envelope =
+            format!(r#"{{"tasqx":"1","id":"n","method":"task.next","params":{params}}}"#);
+        child
+            .stdin
+            .take()
+            .expect("stdin")
+            .write_all(envelope.as_bytes())
+            .expect("write envelope");
+        let out = child.wait_with_output().expect("wait");
+        let v: serde_json::Value = serde_json::from_slice(&out.stdout).expect("one response");
+        v["result"]["task"]["short_id"].as_i64().expect("a task")
+    };
+    let cli_pick = |args: &[&str]| -> i64 {
+        let v: serde_json::Value = serde_json::from_str(&ok(args)).expect("--json output");
+        v["tasks"][0]["short_id"].as_i64().expect("a task")
+    };
+    assert_eq!(cli_pick(&["next", "--json"]), api_pick("{}"));
+    assert_eq!(
+        cli_pick(&["next", "--json", "project:fin"]),
+        api_pick(r#"{"filter":"project:fin"}"#)
+    );
 }
 
 /// #90 gave `next` `--card`/`--ascii` beside the `filter` tail #151 gave it

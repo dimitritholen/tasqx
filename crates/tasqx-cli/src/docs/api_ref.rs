@@ -1949,10 +1949,6 @@ mod tests {
             "otlp.status",
             // Daemon-internal.
             "reminder.fire",
-            // D213: `tasqx next` composes `task.list` itself and prints a screen;
-            // `task.next` is its MCP form, with the resume half, and
-            // `tasqx api task.next` is the way from a terminal.
-            "task.next",
             // The token ledger's corrective half: `tasqx api token.remove`.
             "token.remove",
             // D160's explicit links have no verb yet: `tasqx api link.add` is
