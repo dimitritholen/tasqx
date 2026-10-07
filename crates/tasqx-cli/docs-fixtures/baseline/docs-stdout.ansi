@@ -843,6 +843,9 @@ out).</p>
 <tr><td data-label="Command" headers="wiki-finding-tasks-tbl0-h0"><code>tasqx list project:work +api</code></td><td data-label="What it does" headers="wiki-finding-tasks-tbl0-h1">Narrowed</td></tr>
 <tr><td data-label="Command" headers="wiki-finding-tasks-tbl0-h0"><code>tasqx list due.before:friday</code></td><td data-label="What it does" headers="wiki-finding-tasks-tbl0-h1">Deadline pressure only</td></tr>
 </tbody></table></div>
+<p>A list shows at most 100 rows. When more match, the head says so (<code>100 of 192 tasks</code>) and a last line gives the command for the rest: <code>--offset 100</code> for the
+next page, <code>--limit 192</code> for all of them (<code>--limit</code> tops out at 10,000).
+<code>tasqx agenda</code> reads every match, so it is never cut.</p>
 <p>A bare <code>tasqx</code> in a pipe or script does the same thing; on an interactive
 terminal it opens the <a href="#wiki-dashboard-and-live-view">dashboard</a> instead.</p>
 <h3 id="wiki-finding-tasks--tasqx-next">tasqx next</h3>
