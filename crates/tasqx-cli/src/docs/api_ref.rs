@@ -955,7 +955,7 @@ const PARAM_DOCS: &[(&str, &str, &str, &str, &str)] = &[
         "out_path",
         "string",
         "",
-        "An absolute path to write the document to instead of returning it — for a store too big for a daemon's 1 MiB frame (D201). Never overwrites: a file already there is refused. The result is then `{out_path, bytes, tasks}` plus the `dropped_*` counts and `default_project`.",
+        "An absolute path to write the document to instead of returning it — for a store too big for a daemon's 1 MiB frame (D201). Never overwrites: a file already there is refused. The result is then `{out_path, bytes, tasks}` plus the `dropped_*` counts, `default_project`, and two counts the document cannot carry without changing on every import (D207): `skipped_events`, the bookkeeping a past import wrote about itself, and `removed_annotations`, the removed notes' tombstones left behind.",
     ),
     (
         "store.import",

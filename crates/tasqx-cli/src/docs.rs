@@ -597,14 +597,18 @@ const METHODS: [(&str, &str, &str); 49] = [
         "<code>{tasks, projects, dropped_projects, docs, dropped_docs, links, dropped_links, \
          events, dropped_events, default_project, dropped_dependencies}</code>. \
          <code>events</code> is the whole audit log except the bookkeeping rows a `store.import` \
-         itself writes. An unfiltered export carries every project/doc/link/event (D12); any \
+         itself writes. An unfiltered export carries \
+         every project/doc/link/event (D12) but a removed doc's history before its removal \
+         (D197), counted in <code>dropped_events</code>; any \
          other filter scopes those four to what the exported tasks need and reports what it \
          dropped (D171, D181) — <code>include_unscoped</code> widens that scope back to docs \
          with no project. A link travels only when BOTH its ends are nodes the document \
          carries. <code>out_path</code> (absolute, never an existing file) writes the \
          document there instead and answers <code>{out_path, bytes, tasks}</code> with the \
          <code>dropped_*</code> counts, so a store past a daemon's 1 MiB frame can leave it \
-         (D201).",
+         (D201), plus what the document leaves out that would change it if counted inside: \
+         <code>skipped_events</code> (that bookkeeping) and <code>removed_annotations</code> \
+         (removed notes' tombstones) (D207).",
     ),
     (
         "store.import",
@@ -612,8 +616,8 @@ const METHODS: [(&str, &str, &str); 49] = [
          <code>docs?</code>, <code>events?</code>, <code>links?</code>, <code>dry_run?</code>, \
          <code>merge?</code>, <code>path?</code>",
         "<code>{imported, projects_imported, projects_created, docs_imported, docs_declared, \
-         events_imported, links_imported, default_project, renumbered, docs_merged, \
-         dry_run, merged, project_description_conflicts, deduplicated}</code>. \
+         events_imported, events_logged, links_imported, default_project, renumbered, \
+         docs_merged, dry_run, merged, project_description_conflicts, deduplicated}</code>. \
          A task already in \
          the store at a higher <code>_rev</code> than the payload's refuses the whole import \
          (conflict) rather than silently discarding the annotations, tags and edges added since. \
