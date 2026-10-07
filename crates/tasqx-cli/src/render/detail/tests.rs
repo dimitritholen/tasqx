@@ -659,7 +659,7 @@ fn the_card_prints_checks_and_notes_below_the_facts_one_per_line() {
             "[ ] ok",
             "[!] tests",
             "the proof",
-            "· a note",
+            "[1] a note",
         ] {
             let at = body.iter().position(|l| l.contains(needle));
             let at = at.unwrap_or_else(|| panic!("{needle:?} missing at {cols}:\n{out}"));
