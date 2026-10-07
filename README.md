@@ -216,7 +216,7 @@ weekly review says what the agent did and what it got right.
 </td>
 <td>
 
-![The HTML weekly review: headline counts, then what needs attention](docs/img/report.png)
+![The HTML weekly review: what changed this week, then a standup](docs/img/report.png)
 
 </td>
 </tr>
