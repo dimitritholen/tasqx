@@ -813,7 +813,7 @@ pub const COMMAND_REF: &[CmdDoc] = &[
         ],
         notes: &[
             "`describe` prints a setting's meaning, unit and default — for `daemon.idle_timeout` the number `get`/`list` show is minutes, and the unit is otherwise only visible in the daemon's own startup banner.",
-            "`store` answers which store you are actually writing to — and says so when a running daemon owns it, because the remote path never consults $TASQX_DB, so a correct $TASQX_DB is silently inert whenever a daemon is listening.",
+            "`store` answers which store you are actually writing to, and why: through a daemon (whose store `$TASQX_DB`, when set, names too), in-process, or in-process because `$TASQX_DB` names a different store than the daemon on the default socket serves (D204).",
             "`list` shows both homes. Most settings live in `config.toml`; `default_project` lives in the store and is set with `tasqx use` (D21).",
             "Resolution order is `--flag`, then `$TASQX_*`, then `config.toml`, then the built-in default (D9). The SOURCE column names the layer that won.",
             "`edit` opens an interactive screen: up/down to move, enter to toggle a switch or open a theme picker, esc to leave. Moving through the theme list repaints the screen in that theme before anything is written.",

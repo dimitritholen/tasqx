@@ -247,7 +247,8 @@ pub(super) struct Cli {
 
     /// Local socket / named-pipe address of a tasqx daemon. Overrides $TASQX_SOCK.
     /// When a daemon is reachable, one-shot commands route through it (single
-    /// writer); otherwise they run in-process. Also selects the address for
+    /// writer); otherwise they run in-process. A set $TASQX_DB naming a
+    /// different store than that daemon's is refused. Also selects the address for
     /// `daemon` and `watch`.
     #[arg(long, global = true)]
     pub(super) socket: Option<String>,

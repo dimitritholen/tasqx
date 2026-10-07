@@ -258,6 +258,13 @@ tasqx daemon
 Ctrl-C stops it cleanly. `--no-daemon` on any command skips the routing when
 you need a command to run strictly in-process.
 
+`$TASQX_DB` always wins over a daemon on another store. If it names the file
+the daemon serves, commands route through the daemon as usual. If it names a
+different file, a daemon found on the default socket is passed over and the
+command runs in-process against `$TASQX_DB`. A daemon you named yourself, with
+`--socket` or `$TASQX_SOCK`, that serves a different file is a contradiction:
+the command is refused with exit 2, naming both files.
+
 ## tasqx tokens
 
 Maintenance for token accounting — the feature that answers "what did agent

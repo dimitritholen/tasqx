@@ -747,8 +747,12 @@ where
 /// no store.
 fn read_only_backend() -> Option<crate::Backend> {
     let socket = crate::resolve_socket(None);
-    if let Some(conn) = crate::daemon::try_connect(&socket) {
-        return Some(crate::Backend::Remote { conn, socket });
+    if let Some(mut conn) = crate::daemon::try_connect(&socket) {
+        // D204: a daemon on another store than `$TASQX_DB` is not the store
+        // a command would write to; complete from the file instead.
+        if crate::backend::tasqx_db_elsewhere(&mut conn).is_none() {
+            return Some(crate::Backend::Remote { conn, socket });
+        }
     }
     local_backend_at(&crate::db_path_read_only().ok()?)
 }

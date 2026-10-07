@@ -920,6 +920,8 @@ pub(crate) fn run_config(
             Ok(store_location(
                 be.remote_socket(),
                 daemon_store.as_deref(),
+                std::env::var("TASQX_DB").is_ok_and(|v| !v.is_empty()),
+                BYPASSED.get(),
                 db_path(),
             ))
         }
