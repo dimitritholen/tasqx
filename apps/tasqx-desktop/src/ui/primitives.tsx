@@ -1,4 +1,4 @@
-import { cloneElement, useId } from 'react';
+import { cloneElement, Component, useId } from 'react';
 import type { ComponentPropsWithoutRef, ReactElement, ReactNode } from 'react';
 
 import { isMac } from '../platform';
@@ -123,6 +123,33 @@ export function ErrorState({
       action={<Button onClick={onRetry}>Retry</Button>}
     />
   );
+}
+
+/**
+ * Catches a screen that throws while rendering, so the rest of the app stays
+ * usable: what broke, verbatim, and a retry that renders the screen again.
+ * React has no hook for this; a boundary must be a class.
+ */
+export class ScreenBoundary extends Component<{ children: ReactNode }, { error: Error | null }> {
+  state: { error: Error | null } = { error: null };
+
+  static getDerivedStateFromError(error: unknown): { error: Error } {
+    return { error: error instanceof Error ? error : new Error(String(error)) };
+  }
+
+  render() {
+    const { error } = this.state;
+    if (error === null) return this.props.children;
+    return (
+      <div className="screen" role="alert">
+        <EmptyState
+          title="This screen stopped working"
+          message={error.message}
+          action={<Button onClick={() => this.setState({ error: null })}>Retry</Button>}
+        />
+      </div>
+    );
+  }
 }
 
 /** A placeholder block while a read is in flight; it says nothing, so it is hidden. */

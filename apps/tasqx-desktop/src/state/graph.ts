@@ -324,29 +324,25 @@ export function keepsEdge(attrs: EdgeAttrs, filters: GraphFilters): boolean {
 }
 
 /**
- * Set `hidden` on every node and edge, in one batched update each so a
- * renderer refreshes once. An edge is hidden with either endpoint. Returns
+ * Set `hidden` on every node and edge whose visibility changed, one at a time.
+ * Not a batched update hinted `hidden`: Sigma repaints such a batch in place,
+ * and throws on a node or edge added since its last frame, which has no place
+ * in its buffers yet (#1113). An edge is hidden with either endpoint. Returns
  * what is left visible.
  */
 export function applyGraphFilters(graph: GraphModel, filters: GraphFilters): { nodes: number; edges: number } {
   let nodes = 0;
-  graph.updateEachNodeAttributes(
-    (_id, attrs) => {
-      const hidden = !keepsNode(attrs, filters);
-      if (!hidden) nodes += 1;
-      return attrs.hidden === hidden ? attrs : { ...attrs, hidden };
-    },
-    { attributes: ['hidden'] },
-  );
+  graph.forEachNode((id, attrs) => {
+    const hidden = !keepsNode(attrs, filters);
+    if (!hidden) nodes += 1;
+    if (attrs.hidden !== hidden) graph.setNodeAttribute(id, 'hidden', hidden);
+  });
   let edges = 0;
-  graph.updateEachEdgeAttributes(
-    (_id, attrs, _source, _target, sourceAttrs, targetAttrs) => {
-      const hidden = sourceAttrs.hidden || targetAttrs.hidden || !keepsEdge(attrs, filters);
-      if (!hidden) edges += 1;
-      return attrs.hidden === hidden ? attrs : { ...attrs, hidden };
-    },
-    { attributes: ['hidden'] },
-  );
+  graph.forEachEdge((id, attrs, _source, _target, sourceAttrs, targetAttrs) => {
+    const hidden = sourceAttrs.hidden || targetAttrs.hidden || !keepsEdge(attrs, filters);
+    if (!hidden) edges += 1;
+    if (attrs.hidden !== hidden) graph.setEdgeAttribute(id, 'hidden', hidden);
+  });
   return { nodes, edges };
 }
 
