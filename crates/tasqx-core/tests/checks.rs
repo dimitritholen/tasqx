@@ -283,6 +283,49 @@ fn completing_with_a_check_still_open_is_counted_not_refused() {
     );
 }
 
+/// D205: a failed criterion is not a proven one. Completing over it is still
+/// not refused, but the hint names it — apart from the open ones, because
+/// "nobody looked" and "somebody looked and it failed" are different news.
+#[test]
+fn completing_with_a_failed_check_says_so_and_names_both_counts() {
+    let e = engine();
+    let a = add(&e, "ship it");
+    let failed = check(&e, a, "this was tried and failed");
+    check(&e, a, "nobody looked at this");
+    call(
+        &e,
+        "check.set",
+        json!({ "ref": a, "check_id": failed, "state": "failed" }),
+    )
+    .expect("check.set");
+    let out = call(&e, "task.done", json!({ "ref": a })).expect("still never refused");
+    assert_eq!(out["status"], "done");
+    let hint = out["checks_hint"].as_str().unwrap_or_default();
+    assert!(
+        hint.starts_with("completed with 1 acceptance check failed and 1 still open;"),
+        "the hint names failed and open apart, in its first clause: {out}"
+    );
+}
+
+#[test]
+fn completing_with_only_a_failed_check_names_the_failure() {
+    let e = engine();
+    let a = add(&e, "ship it");
+    let failed = check(&e, a, "this was tried and failed");
+    call(
+        &e,
+        "check.set",
+        json!({ "ref": a, "check_id": failed, "state": "failed" }),
+    )
+    .expect("check.set");
+    let out = call(&e, "task.done", json!({ "ref": a })).expect("done");
+    let hint = out["checks_hint"].as_str().unwrap_or_default();
+    assert!(
+        hint.starts_with("completed with 1 acceptance check failed;"),
+        "a failed check is as loud as an open one: {out}"
+    );
+}
+
 #[test]
 fn completing_with_every_check_passed_says_nothing() {
     let e = engine();
@@ -354,6 +397,46 @@ fn outcomes_counts_unproven_completions_beside_their_denominator() {
         "the denominator is completions that HAD criteria"
     );
     assert_eq!(g["unproven"]["refs"], json!([unproven]));
+}
+
+/// D205: proven means every check PASSED. A failed check makes the
+/// completion unproven exactly as an open one does, and `failed` says how many
+/// of the unproven had a check marked failed rather than left open.
+#[test]
+fn outcomes_counts_a_failed_check_as_unproven_and_names_how_many_failed() {
+    let e = engine();
+    let failed = add(&e, "tried and failed");
+    let id = check(&e, failed, "this failed");
+    call(
+        &e,
+        "check.set",
+        json!({ "ref": failed, "check_id": id, "state": "failed" }),
+    )
+    .expect("check.set");
+    call(&e, "task.done", json!({ "ref": failed })).expect("done");
+
+    let open = add(&e, "left open");
+    check(&e, open, "nobody proved this");
+    call(&e, "task.done", json!({ "ref": open })).expect("done");
+
+    let proven = add(&e, "proved");
+    let id = check(&e, proven, "proved");
+    call(
+        &e,
+        "task.done",
+        json!({ "ref": proven, "checks_passed": [id] }),
+    )
+    .expect("done");
+
+    let out = call(&e, "report.outcomes", json!({ "metrics": ["unproven"] })).expect("outcomes");
+    let g = &out["groups"].as_array().expect("groups")[0];
+    assert_eq!(g["unproven"]["count"], 2, "{g}");
+    assert_eq!(g["unproven"]["n"], 3, "{g}");
+    assert_eq!(g["unproven"]["refs"], json!([failed, open]), "{g}");
+    assert_eq!(
+        g["unproven"]["failed"], 1,
+        "how many unproven completions had a failed check: {g}"
+    );
 }
 
 #[test]

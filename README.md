@@ -188,8 +188,8 @@ rate limit, and the brief for #51, which waited on it, hands that ruling over.
 
 "Done" means something. A task carries acceptance checks, each of which can
 be marked with the evidence that proved it, and completing a task names which
-ones passed. A completion that leaves a check unmarked is counted as unproven
-rather than refused.
+ones passed. A completion is proven only when every check passed; one that
+leaves a check open or failed is counted as unproven rather than refused.
 Every completion can carry the tokens it cost. `tasqx report --outcomes` then
 asks whether finished work stayed finished: how much came back as rework, how
 far tracked time ran over the estimate, which completions nobody documented,

@@ -686,8 +686,9 @@ pub const COMMAND_REF: &[CmdDoc] = &[
             "tasqx NEVER RUNS a check. The criterion is a claim and the evidence is a citation; \
              both are stored verbatim and neither is interpreted. A hook you installed is what \
              runs commands, calling `check set` like any other client.",
-            "Completing with a criterion still open is not refused — nothing is blocked — but \
-             `tasqx report --outcomes` counts it as an unproven completion.",
+            "Completing with a criterion still open or failed is not refused — nothing is \
+             blocked — but `done` says so and `tasqx report --outcomes` counts it as an \
+             unproven completion: only a task whose every check passed is proven.",
             "`failed` is a normal outcome. Use `rm` only when the criterion was the wrong thing \
              to ask; removing one the work failed hides the finding.",
         ],

@@ -1276,6 +1276,9 @@ const OUTCOME_RATE: &[Field] = &[
     req("refs", Ty::Array),
 ];
 
+/// D205: additive — how many of `unproven.count` had a check marked failed.
+const OUTCOME_UNPROVEN: &[Field] = &[req("failed", Ty::Int)];
+
 const OUTCOME_CALIBRATION: &[Field] = &[nul("median_ratio", Ty::Num), req("n", Ty::Int)];
 
 /// The four buckets, never a blend (D48, D50, D103). `confidence` is absent
@@ -1308,7 +1311,7 @@ const OUTCOME_GROUP_ROW: &[Field] = &[
     // HAD a budget, which is why it carries its own `n` like every other.
     req_of("overrun", Ty::Object, &[OUTCOME_RATE]),
     // D138. Same rate shape; its denominator is completions that HAD criteria.
-    req_of("unproven", Ty::Object, &[OUTCOME_RATE]),
+    req_of("unproven", Ty::Object, &[OUTCOME_RATE, OUTCOME_UNPROVEN]),
     // D150. Completions that overrode still-open blockers; its denominator is
     // completions, like `rework`'s, because any of them could have been one.
     req_of("forced", Ty::Object, &[OUTCOME_RATE]),

@@ -405,3 +405,24 @@ fn check_set_takes_a_position_in_place_of_the_id() {
     assert_eq!(task["checks"][0]["state"], "open", "{task}");
     assert_eq!(task["checks"][1]["state"], "passed", "{task}");
 }
+
+/// D205 (#1115): `done` over a FAILED check used to print nothing, where an
+/// open one printed a note. Both are one stderr line now, naming the counts.
+#[test]
+fn done_with_a_failed_check_warns_and_names_how_many_failed() {
+    let store = Store::new("done-failed-check");
+    let id = seeded_task(&store);
+    store.plain(&["check", "set", &id, "1", "failed"]);
+    let out = store.run(&["done", &id]);
+    assert!(out.status.success(), "done is never refused over checks");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    let notes: Vec<&str> = stderr
+        .lines()
+        .filter(|l| l.contains("acceptance check"))
+        .collect();
+    assert_eq!(notes.len(), 1, "one line: {stderr}");
+    assert!(
+        notes[0].contains("note: completed with 1 acceptance check failed and 1 still open"),
+        "the line names failed and open: {stderr}"
+    );
+}

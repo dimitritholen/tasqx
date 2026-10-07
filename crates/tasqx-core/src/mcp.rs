@@ -1174,8 +1174,8 @@ fn build_tool_specs() -> Vec<ToolSpec> {
                         "type": "array",
                         "items": { "type": "string" },
                         "description": "Ids of the acceptance criteria this work proved (D138). \
-                            Completing with criteria open is not refused, but \
-                            `tasqx_outcomes` counts it unproven."
+                            Completing with criteria open or failed is not refused, but \
+                            `checks_hint` says so and `tasqx_outcomes` counts it unproven."
                     },
                     "evidence": {
                         "type": "string",

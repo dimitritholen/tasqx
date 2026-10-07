@@ -296,7 +296,14 @@ pub fn outcomes(ctx: &Ctx, result: &Value, group_by: &str) -> String {
             cells.push(over(m, "count"));
         }
         if let Some(m) = g.get("unproven") {
-            cells.push(over(m, "count"));
+            // D205: how many of the unproven had a check FAILED, not just
+            // left open — said only when there is one, so the cell is
+            // unchanged on a store where nothing failed.
+            let cell = over(m, "count");
+            cells.push(match m.get("failed").and_then(Value::as_i64) {
+                Some(f) if f > 0 => format!("{cell} {f} failed"),
+                _ => cell,
+            });
         }
         if let Some(m) = g.get("cost") {
             // The group's dominant bucket, the D92 cell — `cost` is keyed with

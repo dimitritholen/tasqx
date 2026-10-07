@@ -345,6 +345,23 @@ fn outcome_rates_print_over_their_denominator_and_never_as_a_percentage() {
     assert!(out.contains("cacheR"), "{out}");
 }
 
+/// D205: the UNPROVEN cell says how many of its completions had a check
+/// FAILED, and only when one did — a store with none prints as before.
+#[test]
+fn the_unproven_cell_names_failed_checks_only_when_there_are_some() {
+    let ctx = Ctx::new(theme::default_theme(), Caps::PLAIN);
+    let row = |failed: i64| {
+        json!({ "groups": [{
+            "project": "work", "closed": 3, "completions": 3,
+            "unproven": { "count": 2, "n": 3, "rate": 0.667, "refs": [1, 2], "failed": failed },
+        }] })
+    };
+    let out = outcomes(&ctx, &row(1), "project");
+    assert!(out.contains("2/3 1 failed"), "{out}");
+    let out = outcomes(&ctx, &row(0), "project");
+    assert!(out.contains("2/3") && !out.contains("failed"), "{out}");
+}
+
 /// A rate with nothing to divide by prints `-`, not `0/0`: "none of them"
 /// and "there were none" are different answers.
 #[test]

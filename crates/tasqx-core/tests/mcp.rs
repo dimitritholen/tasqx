@@ -1398,6 +1398,61 @@ fn complete_task_with_token_args_carries_no_hint() {
     );
 }
 
+/// D205 (#1115): an agent reads the completion in order, and the unproven
+/// warning must not sit behind the longer token nudge. The text block is the
+/// serialized result, so the order asserted is the order sent; the wording
+/// names failed and open apart.
+#[test]
+fn complete_task_leads_with_the_checks_hint_naming_failed_and_open() {
+    let engine = engine();
+    let server = McpServer::new(&engine, Scope::Write);
+
+    let added = call(&server, 1, "tasqx_add_task", json!({ "title": "unproven" }));
+    let sid = tool_text(&added)["short_id"].as_i64().expect("short_id");
+    let mut ids = Vec::new();
+    for (id, body) in [(2, "tried and failed"), (3, "never looked at")] {
+        let checked = call(
+            &server,
+            id,
+            "tasqx_add_check",
+            json!({ "ref": sid, "body": body }),
+        );
+        ids.push(
+            tool_text(&checked)["check"]["id"]
+                .as_str()
+                .expect("check id")
+                .to_string(),
+        );
+    }
+    let set = call(
+        &server,
+        4,
+        "tasqx_set_check",
+        json!({ "ref": sid, "check_id": ids[0], "state": "failed" }),
+    );
+    assert!(!is_error(&set), "set_check failed: {set}");
+
+    let done = call(&server, 5, "tasqx_complete_task", json!({ "ref": sid }));
+    assert!(!is_error(&done), "complete failed: {done}");
+    let text = done["result"]["content"][0]["text"]
+        .as_str()
+        .expect("text block");
+    let checks_at = text.find("\"checks_hint\"").expect("checks_hint is sent");
+    let tokens_at = text.find("\"tokens_hint\"").expect("tokens_hint is sent");
+    assert!(
+        checks_at < tokens_at,
+        "checks_hint must come before tokens_hint: {text}"
+    );
+    let hint = tool_text(&done)["checks_hint"]
+        .as_str()
+        .unwrap_or_default()
+        .to_string();
+    assert!(
+        hint.starts_with("completed with 1 acceptance check failed and 1 still open;"),
+        "the hint names failed and open apart: {hint}"
+    );
+}
+
 /// D153: the closing card a person reads after a completion comes out of
 /// `tasqx_complete_task` itself, so the `tasqx_get_task` re-read that used to
 /// follow every completion disappears. The JSON block behind it is the frozen

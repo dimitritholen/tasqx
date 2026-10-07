@@ -1276,7 +1276,7 @@ pub const OUTCOME_GROUP_ROW: &[FieldDoc] = &[
     f(
         "unproven",
         "object",
-        "Completions whose acceptance criteria were not all passed (D138).",
+        "Completions whose acceptance criteria were not all passed — open or failed (D138, D205).",
     ),
     f(
         "forced",
@@ -1304,6 +1304,13 @@ pub const OUTCOME_RATE: &[FieldDoc] = &[
         "The short ids behind the count, so a number can be opened.",
     ),
 ];
+
+/// `unproven`'s one field beyond the rate (D205).
+pub const OUTCOME_UNPROVEN: &[FieldDoc] = &[f(
+    "failed",
+    "integer",
+    "How many of `count` had a check marked failed rather than left open (D205).",
+)];
 
 /// Tracked time over estimate, as a median.
 pub const OUTCOME_CALIBRATION: &[FieldDoc] = &[
@@ -1737,6 +1744,7 @@ pub fn result_shape(method: &str) -> &'static [(&'static str, &'static [FieldDoc
             ("result.groups[].abandonment", OUTCOME_ABANDONMENT),
             ("result.groups[].overrun", OUTCOME_RATE),
             ("result.groups[].unproven", OUTCOME_RATE),
+            ("result.groups[].unproven", OUTCOME_UNPROVEN),
             ("result.groups[].forced", OUTCOME_RATE),
         ],
         "store.export" => &[

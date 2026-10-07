@@ -85,10 +85,13 @@ interpreted. If you want something run, a hook you installed runs it and calls
 Criteria in an annotation look the same and are not: an annotation is prose,
 so nothing can ask at completion time whether it was met. A check has a state.
 
-Completing a task with a criterion still open is **not refused** — tasqx is a
-file on your disk, not a supervisor, and a refusal is something a script routes
-around. It is counted instead: `tasqx report --outcomes` has an OPEN column for
-completions whose criteria nobody marked, which is where the pattern shows up.
+Completing a task with a criterion still open or marked failed is **not
+refused** — tasqx is a file on your disk, not a supervisor, and a refusal is
+something a script routes around. `tasqx done` says so in one line, naming how
+many failed and how many are still open, and it is counted: a completion is
+proven only when every check passed, and `tasqx report --outcomes` has an
+UNPROVEN column for the rest, adding `N failed` when any had a failed check.
+That column is where the pattern shows up.
 
 `failed` is a normal outcome and worth recording. Remove a check only when the
 criterion was the wrong thing to ask — deleting one the work failed hides the
