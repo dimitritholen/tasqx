@@ -1,4 +1,4 @@
-Annotate a task (maps to annotation.add), or correct one note in place with `--edit <annotation-id>` (maps to annotation.update, D165)
+Annotate a task (maps to annotation.add), correct one note in place with `--edit <annotation>` (maps to annotation.update, D165), or move it to another task with `--move <annotation> --to <task>` (maps to annotation.move, D211). A note is named by its full id, a unique prefix of 8+ characters, or the `[n]` position `tasqx show` prints
 
 Usage: tasqx annotate [OPTIONS] <REF> [TEXT]...
 
@@ -7,19 +7,23 @@ Arguments:
   [TEXT]...  The annotation text; `-`, or nothing on a pipe, reads it from stdin; nothing on a terminal opens $VISUAL/$EDITOR
 
 Options:
-      --edit <ANNOTATION_ID>  Replace the body of this annotation instead of adding one; its id, timestamp and position are kept
-      --json                  Print the raw JSON API result instead of the human table
-      --theme <THEME>         Theme name (built-in nord|gruvbox|dracula|solarized|mono, or a user file). Overrides $TASQX_THEME and the config file (DESIGN.md §8)
-      --socket <SOCKET>       Local socket / named-pipe address of a tasqx daemon. Overrides $TASQX_SOCK. When a daemon is reachable, one-shot commands route through it (single writer); otherwise they run in-process. A set $TASQX_DB naming a different store than that daemon's is refused. Also selects the address for `daemon` and `watch`
-      --no-daemon             Never route through a daemon; always run one-shot in-process (the pre-daemon behaviour). Escape hatch for scripts
-  -h, --help                  Print help
-  -V, --version               Print version
+      --edit <ANNOTATION>  Replace the body of this annotation instead of adding one; its id, timestamp and position are kept
+      --json               Print the raw JSON API result instead of the human table
+      --move <ANNOTATION>  Move this annotation to the task named by `--to` instead of adding one; its id, text and timestamp are kept (maps to annotation.move, D211)
+      --theme <THEME>      Theme name (built-in nord|gruvbox|dracula|solarized|mono, or a user file). Overrides $TASQX_THEME and the config file (DESIGN.md §8)
+      --socket <SOCKET>    Local socket / named-pipe address of a tasqx daemon. Overrides $TASQX_SOCK. When a daemon is reachable, one-shot commands route through it (single writer); otherwise they run in-process. A set $TASQX_DB naming a different store than that daemon's is refused. Also selects the address for `daemon` and `watch`
+      --to <TASK>          The task `--move` sends the annotation to: short_id or UUID
+      --no-daemon          Never route through a daemon; always run one-shot in-process (the pre-daemon behaviour). Escape hatch for scripts
+  -h, --help               Print help
+  -V, --version            Print version
 
 EXAMPLES
   tasqx annotate 1 Called the plumber, waiting on a quote
 
 NOTE  A long or multi-line note: `tasqx annotate <ref> -` reads the whole of stdin, verbatim (D206); so does a bare `tasqx annotate <ref>` when stdin is a pipe. On a terminal a bare `annotate <ref>` opens `$VISUAL` or `$EDITOR` (else `vi`); an empty or unchanged file stores nothing. Empty stdin is refused. A note that is just `-` can no longer be written as an argument. `--edit` takes the same forms, the editor pre-filled with the note's current text.
-      Wrote something you shouldn't have? `tasqx unannotate <ref> <annotation-id>` scrubs it — there is no other way back.
-      Wrote something wrong? `--edit <annotation-id>` replaces that note's text in place (D165): its id, timestamp and position stay, so a corrected first note is still the card's Description, and `tasqx undo` puts the old text back.
+      A note is named by its full id, a unique prefix of 8+ characters, or the `[n]` position `tasqx show` prints beside it, oldest first (D211). A prefix shared by two notes exits 5 and lists them; notes written within about a minute share their first eight characters, so the position is the short way.
+      Wrote something you shouldn't have? `tasqx unannotate <ref> <annotation>` scrubs it — there is no other way back.
+      Put it on the wrong task? `--move <annotation> --to <task>` sends the note there with its id, text and timestamp (D211), and `tasqx undo` puts it back.
+      Wrote something wrong? `--edit <annotation>` replaces that note's text in place (D165): its id, timestamp and position stay, so a corrected first note is still the card's Description, and `tasqx undo` puts the old text back.
 
 See also: show · modify · unannotate        Full manual: tasqx manual
