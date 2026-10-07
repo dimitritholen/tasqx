@@ -27,6 +27,32 @@ requests — it works from a mail attachment, a chat upload, or a USB stick.
 A filter scopes both modes identically, so the page and the terminal table
 always answer the same question.
 
+The page is a review of a period, the 7 days ending today unless you pick
+another:
+
+```console
+tasqx report --html --since 2026-09-01 --until 2026-10-01 --out september.html
+```
+
+| Section | What it answers |
+|---|---|
+| The band | Done, added, net backlog change, blocked and overdue in the period, each against the period before it, with a sparkline per 7 days and a one-line summary of the biggest change |
+| Standup | Done yesterday (tracked against estimate, unproven completions flagged), in progress and for how long, blocked and by which task, the next five and why each is next |
+| Projects | Open, done in the period and its change, median tracked ÷ estimate, tokens per completion and overdue, per project. Click a row and every section shows that project alone |
+| Net flow | Added and done per 7 days since the store started, the net change, and the open backlog under it |
+| Outcomes | How tracked time compared with the estimate, and what was reopened, cancelled or completed unproven — the same counts `report --outcomes` prints |
+| Find a task | A search over every task in scope; a task opens in an overlay with its dependencies by title |
+
+Annotation bodies are not put in the file, because a report is meant to be
+shared and that is where client detail lives. `--with-notes` embeds the
+newest three per task behind a toggle. A filter that names one project
+(`tasqx report project:acme --html`) makes a page about that project alone,
+and a task it depends on elsewhere shows as "a task outside this report".
+
+`--all` adds cancelled tasks to the search. `--metrics` picks terminal
+columns and is refused with `--html`, and the page is always grouped by
+project, so `tasqx report status --html` is refused too.
+
 Cancelled tasks are not counted unless you pass `--all` or your filter names a
 status explicitly — a report about work shouldn't be padded by work you
 decided not to do.

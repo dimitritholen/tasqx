@@ -38,8 +38,10 @@ tasqx report --html --out review.html
 One self-contained file: inline CSS and SVG, no external requests, both light and
 dark schemes. Open it in a browser, attach it to a mail, drop it in a channel.
 Five built-in themes (`--theme nord`, `gruvbox`, `dracula`, `solarized`, `mono`).
-The header's stat row ends with four token tiles — cache read, cache write,
-input, output — one per bucket, never blended into a single total.
+It opens with what changed in the last 7 days against the 7 before, then a
+standup — done yesterday, in progress, blocked and by what, the next five — so
+it doubles as the notes for the meeting. `--since`/`--until` pick another
+period. Annotation bodies stay out of the file unless you add `--with-notes`.
 
 ## Time tracking honesty
 
