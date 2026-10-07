@@ -657,6 +657,20 @@ const R_TASK_ADD: Shape = &[&[
     // #621/D169, additive: this door parses none of the CLI's inline sugar,
     // so a title carrying it is named here. Absent when there is none.
     opt("warnings", Ty::Array),
+    // D213, additive: present only when the call named `checks` /
+    // `depends_on`. The ids are what `check.set` needs next.
+    opt_of(
+        "checks",
+        Ty::Array,
+        &[&[
+            req("id", Ty::Str),
+            req("body", Ty::Str),
+            req("state", Ty::Str),
+            req("position", Ty::Int),
+        ]],
+    ),
+    opt("depends_on", Ty::Array),
+    opt("blocked", Ty::Bool),
 ]];
 
 const R_TASK_LIST: Shape = &[&[
@@ -1275,6 +1289,38 @@ const R_TASK_BRIEF: Shape = &[&[
     opt_of("last_time", Ty::Object, &[BRIEF_LAST_TIME]),
 ]];
 
+/// One resume row of `task.next` (D213): a task and its newest note.
+const NEXT_ROW: &[Field] = &[
+    req("short_id", Ty::Int),
+    req("title", Ty::Str),
+    req("status", Ty::Str),
+    nul_of(
+        "note",
+        Ty::Object,
+        &[&[req("body", Ty::Str), req("created", Ty::Str)]],
+    ),
+];
+
+const R_TASK_NEXT: Shape = &[&[
+    // The row is `task.list`'s own, null when nothing is workable.
+    nul_of(
+        "task",
+        Ty::Object,
+        &[TASK_CORE, TASK_LIVE_TIME, TASK_BLOCKED, TASK_STATUS_FLAG],
+    ),
+    nul("summary", Ty::Str),
+    req("store_empty", Ty::Bool),
+    opt_of(
+        "active",
+        Ty::Array,
+        &[
+            NEXT_ROW,
+            &[nul("active_since", Ty::Str), nul("held_by", Ty::Str)],
+        ],
+    ),
+    opt_of("recent", Ty::Array, &[NEXT_ROW]),
+]];
+
 /// D137's per-metric sub-objects. Each is frozen separately because each is
 /// reachable on its own through `metrics`, and because the rule the whole
 /// report exists to keep — a rate never travels without the `n` it was
@@ -1726,6 +1772,31 @@ fn cases() -> Vec<Case> {
             "#621: a title carrying CLI inline sugar, so `warnings` is observed",
             |_| json!({ "title": "fix crash +bug due:friday" }),
             R_TASK_ADD,
+        ),
+        case(
+            "task.add",
+            "D213: checks and depends_on created with the task",
+            |e| {
+                plain_task(e);
+                json!({ "title": "gated", "checks": ["tests pass"], "depends_on": [1] })
+            },
+            R_TASK_ADD,
+        ),
+        case(
+            "task.next",
+            "D213: the pick with its summary, and the resume rows",
+            |e| {
+                plain_task(e);
+                plain_task(e);
+                e.annotation_add(&json!({ "ref": 1, "body": "Opening note.\n\nMore." }))
+                    .expect("annotate");
+                e.annotation_add(&json!({ "ref": 2, "body": "Latest note" }))
+                    .expect("annotate");
+                e.task_start(&json!({ "ref": 2, "actor": "agent-a" }))
+                    .expect("start");
+                json!({ "resume": true })
+            },
+            R_TASK_NEXT,
         ),
         case(
             "task.list",
@@ -3424,7 +3495,10 @@ fn every_mcp_tool_hands_back_the_frozen_result_of_its_method() {
             // is still `dispatch`'s own, unaltered. A THIRD tool growing a
             // rendered view lands here as "the tool's JSON block does not
             // parse", which is the right way to find out.
-            if matches!(tool.as_str(), "tasqx_get_task" | "tasqx_brief_task") {
+            if matches!(
+                tool.as_str(),
+                "tasqx_get_task" | "tasqx_brief_task" | "tasqx_next"
+            ) {
                 if let Some(obj) = params.as_object_mut() {
                     obj.insert("include_json".to_string(), json!(true));
                 }

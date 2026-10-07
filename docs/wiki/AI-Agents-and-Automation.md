@@ -68,8 +68,8 @@ writes from `tasqx watch` or the desktop app: a running daemon notices changes
 made by other processes on its store, so they show up live, within about half
 a second.
 
-Thirty-three tools, one verb each. Nine reads: `list_tasks`, `get_task`,
-`brief_task`, `summary`, `outcomes`, `list_projects`, `search_memory`,
+Thirty-three tools, one verb each. Ten reads: `list_tasks`, `get_task`,
+`brief_task`, `next`, `summary`, `outcomes`, `list_projects`, `search_memory`,
 `get_memory`, `list_memory`.
 Twenty-four writes: `add_task`, `modify_task`, `complete_task`, `reopen_task`,
 `cancel_task`, `start_timer`, `stop_timer`, `adjust_tracked`, `tag_task`, `untag_task`,
@@ -84,6 +84,17 @@ What makes this more than remote CRUD:
   relevant memory — under a query tasqx derives from the task's own title, tags
   and project. The agent supplies no search terms, which matters because a
   guessed term that finds nothing looks exactly like a store with nothing in it.
+- **"What now" and "where was I" in one call.** `next` is `tasqx next` over
+  MCP: the most urgent unblocked task, scoped by `project` and `filter`, with
+  the first paragraph of its opening note. With `resume: true` it also lists
+  the active tasks (and who holds each clock) and the five open tasks
+  annotated most recently, each with the start of its newest note and when it
+  was written. Like `get_task`, it answers the rendered view, and
+  `include_json: true` adds the machine block.
+- **A task with its criteria and prerequisites, in one call.** `add_task`
+  takes `checks` (strings) and `depends_on` (short ids or UUIDs) and creates
+  them with the task, all or nothing: an unknown prerequisite or a blank check
+  refuses the whole add and creates nothing.
 - **Completing a task returns what it unblocked**, so an agent can decompose a
   feature into a dependency chain with `add_dependency` and then walk it,
   picking up each task the moment its prerequisites clear.
@@ -184,7 +195,7 @@ in the description: it is in `DESIGN.md` §12 under that number, and
 `tasqx_search_memory` finds it once the repository's docs have been imported
 with `tasqx memory import`. The descriptions are kept short because they are
 not free. Some clients fetch a tool's schema on first use; most inject the
-whole roster into every request, where it costs on the order of thirty
+whole roster into every request, where it costs on the order of thirty-five
 kilobytes — a few thousand tokens — on every prompt. A guard test in the test
 suite holds that bound, and a `tools/list` handshake against your own build
 measures it exactly.

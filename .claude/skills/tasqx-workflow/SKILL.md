@@ -12,10 +12,19 @@ rules. This file holds only what neither says.
 
 tasqx is one JSON API behind three clients: the CLI, an MCP server
 (thirty-three `tasqx_*` tools), and HTML reports. Prefer the MCP tools. Fall back
-to the CLI for the verbs the MCP deliberately lacks: `next`, `why`, `agenda`,
+to the CLI for the verbs the MCP deliberately lacks: `why`, `agenda`,
 `chart`, `export`, `import`, `report --html`, `memory import`, `undo`, `use`,
 `archive`, and `tasqx --no-daemon tokens recompute` (refused over the daemon
 socket).
+
+## Starting and resuming
+
+`tasqx_next` is `tasqx next` over MCP: the one most urgent unblocked task, with
+its opening note. Pass `resume: true` at the start of a session to also get the
+active tasks (and who holds each clock) and the five open tasks annotated most
+recently, each with its newest note, so "where did I leave off" is one call. To
+create a task with its criteria and prerequisites, pass `checks` and
+`depends_on` to `tasqx_add_task` instead of one call each.
 
 ## Checks are claims, annotations are prose
 

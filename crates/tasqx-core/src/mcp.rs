@@ -556,6 +556,14 @@ const TRANSPORT_ONLY_ARGS: &[(&str, &str, &str)] = &[
         "whether the response carries the machine-readable block beside the rendered view.      The two blocks are the same result twice (D49), so on a task whose bulk is annotation      prose the second is that prose again — 54% of a 6.4 KB response for ONE annotation,      66% for a task read with `annotations_limit: 0`. Since D151 the default is FALSE:      the reader of a tool result is the model, which reads the view, and the duplicate is      opt-in for the script that parses it. `task.get` has no opinion on how many blocks      its answer is wrapped in.",
     ),
     (
+        "tasqx_next",
+        "include_json",
+        "whether the response carries the machine-readable block beside the rendered view (D213). \
+         Same argument and default as `tasqx_brief_task`'s (D151): the reader is the model and the \
+         model reads the view, so the JSON is what a script asks for. `task.next` has no opinion \
+         on how its answer is wrapped.",
+    ),
+    (
         "tasqx_brief_task",
         "include_json",
         "whether the response carries the machine-readable block beside the rendered view.      Same argument, same reason and same default as `tasqx_get_task`'s — false since D151,      because the caller reading this is the model and the model reads the view. The two      blocks are one result twice, and a brief's second block is the larger of the pair      because it carries the neighbourhood and the memory snippets as well. `task.brief`      has no opinion on how many blocks its answer is wrapped in.",
@@ -788,6 +796,40 @@ fn build_tool_specs() -> Vec<ToolSpec> {
                     }
                 },
                 "required": ["ref"]
+            }),
+        },
+        // D213. `tasqx next` over MCP, with the resume half folded in: the pick
+        // and "where was I" are one question asked at the start of a session.
+        ToolSpec {
+            name: "tasqx_next",
+            method: "task.next",
+            write: false,
+            destructive: false,
+            idempotent: true,
+            description: "The ONE task to work on now (D213): the most urgent unblocked task, \
+                as `tasqx next` picks it, with the first paragraph of its opening note. With \
+                `resume: true` it also lists the active tasks (and who holds each clock) and \
+                the five open tasks annotated most recently, each with the start of its newest \
+                note and when it was written. Use tasqx_list_tasks for more than one.",
+            schema: json!({
+                "type": "object",
+                "properties": {
+                    "project": { "type": "string", "description": "Limit the pick to this project." },
+                    "filter": {
+                        "type": "string",
+                        "description": "Filter DSL ANDed onto `@working`, e.g. `+mcp`."
+                    },
+                    "resume": {
+                        "type": "boolean",
+                        "description": "Also answer \"where did I leave off\": active tasks and \
+                             recently annotated open tasks in the same scope. Default false."
+                    },
+                    "include_json": {
+                        "type": "boolean",
+                        "description": "Send the machine-readable JSON block beside the \
+                             rendered view. Default FALSE (D151)."
+                    }
+                }
             }),
         },
         ToolSpec {
@@ -1036,7 +1078,8 @@ fn build_tool_specs() -> Vec<ToolSpec> {
                 task outside `@working` until then — plus the stored title, due, tags and \
                 resolved `scheduled`, so an ambiguous date or sugar captured into the title \
                 can be checked against what was stored. A title carrying CLI sugar adds a \
-                `warnings` entry naming it.",
+                `warnings` entry naming it. `checks` and `depends_on` are created in the same \
+                transaction (D213) and echoed as `checks[]` (with ids) and `depends_on`.",
             schema: json!({
                 "type": "object",
                 "properties": {
@@ -1071,6 +1114,17 @@ fn build_tool_specs() -> Vec<ToolSpec> {
                          meaning \"not my problem yet\"."
                     ),
                     "tags": { "type": "array", "items": { "type": "string" } },
+                    "checks": {
+                        "type": "array",
+                        "items": { "type": "string" },
+                        "description": "Acceptance criteria, created open with the task (D213)."
+                    },
+                    "depends_on": {
+                        "type": "array",
+                        "items": { "type": ["integer", "string"] },
+                        "description": "Short_ids or UUIDs this task waits on (D213). An \
+                            unknown one refuses the whole add."
+                    },
                     "estimate": { "type": "string", "description": "Duration: \"4h\", \"90m\", \"1h30m\", \"2d\", \"1w\", or ISO-8601 \"PT4H\"." },
                     "recurrence": {
                         "type": "string",
@@ -2641,6 +2695,21 @@ impl<'e> McpServer<'e> {
                         &render,
                         prepared.include_json,
                     );
+                }
+                // D213: small by construction (one summary, at most five
+                // 200-character notes and the active tasks), so no budget
+                // bisection; the view leads and the JSON follows on request.
+                if spec.method == "task.next" {
+                    let opts = crate::markdown::DetailOpts {
+                        time: self.time_format,
+                        now: crate::clock::now(),
+                    };
+                    let view = crate::markdown::task_next(&result, &opts);
+                    return if prepared.include_json {
+                        tool_ok_with_view(view, &result)
+                    } else {
+                        tool_ok_text(&view)
+                    };
                 }
                 if spec.method == "task.get" {
                     // Stamped HERE, never inside the renderer: that is what

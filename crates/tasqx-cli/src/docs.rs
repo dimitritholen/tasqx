@@ -182,13 +182,29 @@ const METHODS: [(&str, &str, &str); 50] = [
         "<code>title</code>, <code>project?</code>, <code>priority?</code>, <code>due?</code>, \
          <code>scheduled?</code>, <code>wait?</code>, <code>recurrence?</code>, \
          <code>remind?</code>, <code>estimate?</code>, <code>tags?</code>, \
-         <code>budget_tokens?</code>",
+         <code>budget_tokens?</code>, <code>checks?</code>, <code>depends_on?</code>",
         "The new task, incl. the <code>project</code> it landed in (the default, if none given). \
+         <code>checks</code> (strings) and <code>depends_on</code> (refs) are created in the same \
+         transaction as the task (D213): an unknown prerequisite or a blank check refuses the \
+         whole add and nothing is created, and the answer then carries <code>checks</code> \
+         (with the ids <code>check.set</code> takes), <code>depends_on</code> and \
+         <code>blocked</code>. \
          <code>budget_tokens</code> (D139) is a size gauge over FRESH tokens — input, output and \
          cache creation, never cache reads — which stops nothing and is read back as \
          <code>fresh_tokens</code> and <code>over</code> on <code>task.get</code>. The title \
          is stored verbatim: a title carrying the CLI's inline sugar (<code>+tag</code>, \
          <code>due:</code>, <code>!prio</code>…) adds a <code>warnings</code> entry naming it.",
+    ),
+    (
+        "task.next",
+        "<code>project?</code>, <code>filter?</code>, <code>resume?</code>",
+        "<code>{task, summary, store_empty}</code> (D213). <code>task</code> is the row \
+         <code>tasqx next</code> picks — <code>@working</code>, your scope ANDed on, highest \
+         urgency first — or null; <code>summary</code> is the first paragraph of its oldest \
+         annotation. With <code>resume: true</code> the answer also carries \
+         <code>active</code> (each active task in scope and the actor holding its clock, D140) \
+         and <code>recent</code> (the five open tasks annotated most recently, each with the \
+         first 200 characters of its newest note and when it was written).",
     ),
     (
         "task.list",
@@ -3788,11 +3804,12 @@ mod tests {
         // it went 7 -> 8 when `event.revert` joined, 8 -> 9 when `otlp.status`
         // (#222) did, 9 -> 10 when `memory.list` (#133) did, 10 -> 11 when
         // `report.outcomes` (D137) did, 11 -> 12 when `link.list` (D160) did,
-        // 12 -> 13 when `memory.refresh` (#789) did, and a floor that drifts
+        // 12 -> 13 when `memory.refresh` (#789) did, 13 -> 14 when `task.next`
+        // (D213) did, and a floor that drifts
         // below the truth is a guard that has stopped guarding.
         assert_eq!(
-            checked, 13,
-            "expected to check all 13 bare-callable return shapes; a row that stopped being \
+            checked, 14,
+            "expected to check all 14 bare-callable return shapes; a row that stopped being \
              checkable is coverage lost silently"
         );
     }

@@ -1312,6 +1312,13 @@ const EXAMPLES: &[Example] = &[
         why: "every hit carries a `rank`. Since D196 it is the negated fused reciprocal rank, not bm25, but the words list is still in bm25 order, computed through the platform's `log()`: two near-equal hits can trade places between macOS and Linux and move every number after them, and the drift job goes red for everyone but whoever captured last. The `tasqx brief` SCREEN is captured instead; it prints snippets and never the number.",
     },
     Example {
+        method: "task.next",
+        request: r#"{"tasqx":"1","id":"n1","method":"task.next","params":{"project":"api","resume":true}}"#,
+        fixture: "api-task-next",
+        response: "",
+        why: "",
+    },
+    Example {
         method: "task.start",
         request: r#"{"tasqx":"1","id":"s1","method":"task.start","params":{"ref":"50"}}"#,
         fixture: "api-task-start",
@@ -1942,6 +1949,10 @@ mod tests {
             "otlp.status",
             // Daemon-internal.
             "reminder.fire",
+            // D213: `tasqx next` composes `task.list` itself and prints a screen;
+            // `task.next` is its MCP form, with the resume half, and
+            // `tasqx api task.next` is the way from a terminal.
+            "task.next",
             // The token ledger's corrective half: `tasqx api token.remove`.
             "token.remove",
             // D160's explicit links have no verb yet: `tasqx api link.add` is

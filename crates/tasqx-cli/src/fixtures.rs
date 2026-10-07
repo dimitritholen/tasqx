@@ -71,6 +71,7 @@ screens![
     "annotate-echo",
     "api-task-list",
     "api-task-get",
+    "api-task-next",
     "api-task-done",
     "api-memory-list",
     "api-project-list",

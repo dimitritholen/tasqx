@@ -153,6 +153,70 @@ pub const R_TASK_ADD: &[FieldDoc] = &[
     f("tags", "array", "The tags as stored, lowercased and deduplicated."),
     n("scheduled", "string", "The scheduled date resolved to an instant, the same way `due` is."),
     o("warnings", "array", "Present only when the title carries CLI inline sugar (`+tag`, `due:`, `!prio`…), which this door stores verbatim and never parses: one line naming those words."),
+    o("checks", "array", "Present only when the call named `checks` (D213): the criteria created with the task, each `{id, body, state, position}` — the ids `check.set` takes."),
+    o("depends_on", "array", "Present only when the call named `depends_on` (D213): the short ids the task now waits on, deduplicated."),
+    o("blocked", "boolean", "Present with `depends_on`: whether any of those prerequisites is still open."),
+];
+
+/// One created criterion in `task.add`'s `checks`.
+pub const TASK_ADD_CHECK: &[FieldDoc] = &[
+    f(
+        "id",
+        "string",
+        "The criterion's id — what `check.set` takes as `check_id`.",
+    ),
+    f("body", "string", "The criterion as written."),
+    f(
+        "state",
+        "string",
+        "Always `open` here: a new criterion is a claim nobody has marked.",
+    ),
+    f(
+        "position",
+        "integer",
+        "Its place in the task's list, from 0, in the order given.",
+    ),
+];
+
+/// A resume row of `task.next` (D213), in `active[]` and `recent[]` alike.
+pub const NEXT_ROW: &[FieldDoc] = &[
+    f("short_id", "integer", "The task's short id."),
+    f("title", "string", "The task's title."),
+    f("status", "string", "The task's stored status text."),
+    n(
+        "note",
+        "object",
+        "The task's newest annotation, or null when it has none.",
+    ),
+];
+
+/// What `task.next` adds to an `active[]` row.
+pub const NEXT_ACTIVE_ROW: &[FieldDoc] = &[
+    n("active_since", "string", "When the running interval began."),
+    n(
+        "held_by",
+        "string",
+        "The actor on the task's latest start (D140); null when that start named none.",
+    ),
+];
+
+/// A `task.next` row's `note`.
+pub const NEXT_NOTE: &[FieldDoc] = &[
+    f(
+        "body",
+        "string",
+        "The note, whitespace collapsed and cut at 200 characters with `…`.",
+    ),
+    f("created", "string", "When the note was written."),
+];
+
+/// `task.next`'s result.
+pub const R_TASK_NEXT: &[FieldDoc] = &[
+    n("task", "object", "The most urgent unblocked task — the first row `task.list` gives for `@working`, scoped, sorted `-urgency` — or null when nothing is workable."),
+    n("summary", "string", "The first paragraph of that task's OLDEST annotation, whitespace collapsed and cut at 400 characters; null when the task has no notes or there is no task."),
+    f("store_empty", "boolean", "Whether the store has ever held a task, which tells \"nothing yet\" from \"nothing matched\"."),
+    o("active", "array", "Present with `resume: true`: every open-and-active task in scope, `{short_id, title, status, note, active_since, held_by}`. `held_by` is the actor on the task's latest start (D140), or null."),
+    o("recent", "array", "Present with `resume: true`: up to five open, non-active tasks in scope whose newest annotation is the most recent, newest first, `{short_id, title, status, note}`. `note` is `{body, created}` with the body cut at 200 characters."),
 ];
 
 /// `task.list`'s result.
@@ -1603,7 +1667,19 @@ pub fn result_shape(method: &str) -> &'static [(&'static str, &'static [FieldDoc
         ],
         "project.use" => &[("result", R_PROJECT_USE)],
         "project.archive" => &[("result", R_PROJECT_ARCHIVE)],
-        "task.add" => &[("result", R_TASK_ADD)],
+        "task.add" => &[("result", R_TASK_ADD), ("result.checks[]", TASK_ADD_CHECK)],
+        "task.next" => &[
+            ("result", R_TASK_NEXT),
+            ("result.task", TASK_CORE),
+            ("result.task", TASK_LIVE_TIME),
+            ("result.task", TASK_BLOCKED),
+            ("result.task", TASK_STATUS_FLAG),
+            ("result.active[]", NEXT_ROW),
+            ("result.active[]", NEXT_ACTIVE_ROW),
+            ("result.active[].note", NEXT_NOTE),
+            ("result.recent[]", NEXT_ROW),
+            ("result.recent[].note", NEXT_NOTE),
+        ],
         "task.list" => &[
             ("result", R_TASK_LIST),
             ("result.tasks[]", TASK_CORE),

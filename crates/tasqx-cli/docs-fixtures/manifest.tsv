@@ -94,6 +94,7 @@ done-echo	pipe-mut	100	-	done 47	-	-
 annotate-echo	pipe-mut	100	-	annotate 50 "Ship it behind a flag; the ceiling is 60 requests a minute per key."	-	-
 api-task-list	pipe	100	-	api	-	{"tasqx":"1","id":"e1","method":"task.list","params":{"filter":"+docs","sort":["-urgency"]}}
 api-task-get	pipe	100	-	api	-	{"tasqx":"1","id":"g1","method":"task.get","params":{"ref":"51"}}
+api-task-next	pipe	100	-	api	-	{"tasqx":"1","id":"n1","method":"task.next","params":{"project":"api","resume":true}}
 api-task-done	pipe-mut	100	-	api	-	{"tasqx":"1","id":"d1","method":"task.done","params":{"ref":"47"}}
 api-memory-list	pipe	100	-	api	-	{"tasqx":"1","id":"m1","method":"memory.list"}
 api-project-list	pipe	100	-	api	-	{"tasqx":"1","id":"p1","method":"project.list"}
