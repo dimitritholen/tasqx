@@ -81,7 +81,7 @@ const VERBS: [(&str, &str, &str); 46] = [
     ),
     ("list", "<code>ls</code>, <code>l</code>", "task.list"),
     ("agenda", "<code>ag</code>, <code>cal</code>", "task.list"),
-    ("next", "—", "task.list"),
+    ("next", "—", "task.next"),
     (
         "dashboard",
         "<code>dash</code>",
@@ -198,7 +198,7 @@ const METHODS: [(&str, &str, &str); 50] = [
     (
         "task.next",
         "<code>project?</code>, <code>filter?</code>, <code>resume?</code>",
-        "<code>{task, summary, store_empty}</code> (D213). <code>task</code> is the row \
+        "<code>{task, summary, store_empty, total}</code> (D213). <code>task</code> is the row \
          <code>tasqx next</code> picks — <code>@working</code>, your scope ANDed on, highest \
          urgency first — or null; <code>summary</code> is the first paragraph of its oldest \
          annotation. With <code>resume: true</code> the answer also carries \

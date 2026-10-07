@@ -2821,6 +2821,7 @@ impl Engine {
             "task": task,
             "summary": summary,
             "store_empty": listed["store_empty"],
+            "total": listed["total"],
         });
         if opt_bool(p, "resume")?.unwrap_or(false) {
             let (active, recent) = self.resume_rows(&scope)?;

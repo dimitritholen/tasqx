@@ -2234,14 +2234,27 @@ pub(crate) fn run_next(
     card: bool,
     ascii: bool,
 ) -> CmdOutcome {
-    // @working already excludes blocked tasks; highest urgency first, take one.
-    let filter_str = if filter.is_empty() {
-        "@working".to_string()
-    } else {
-        format!("@working and ({})", tasqx_core::filter::from_argv(filter))
-    };
-    let params = json!({ "filter": filter_str, "sort": ["-urgency"], "limit": 1 });
-    let result = be.call("task.list", &params)?;
+    // D213: the pick is `task.next`'s, the one implementation `tasqx_next`
+    // shares; the caller's words become its `filter`, and it ANDs them onto
+    // `@working` itself.
+    let mut params = json!({});
+    if !filter.is_empty() {
+        params["filter"] = json!(tasqx_core::filter::from_argv(filter));
+    }
+    let next = be.call("task.next", &params)?;
+    // Re-wrapped as the `task.list` envelope this command has always answered
+    // with, so `--json` and the renderer below are unchanged.
+    let tasks: Vec<Value> = next["task"]
+        .as_object()
+        .map_or_else(Vec::new, |_| vec![next["task"].clone()]);
+    let total = next["total"].as_u64().unwrap_or(0);
+    let result = json!({
+        "count": tasks.len(),
+        "total": total,
+        "next_offset": if total > 1 { json!(1) } else { Value::Null },
+        "store_empty": next["store_empty"],
+        "tasks": tasks,
+    });
     if card {
         // A `task.list` row carries none of what a card draws — no checks, no
         // unmet_blockers, no annotations (D146's card wants what `show` reads,

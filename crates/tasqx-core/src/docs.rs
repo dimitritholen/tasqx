@@ -215,6 +215,7 @@ pub const R_TASK_NEXT: &[FieldDoc] = &[
     n("task", "object", "The most urgent unblocked task — the first row `task.list` gives for `@working`, scoped, sorted `-urgency` — or null when nothing is workable."),
     n("summary", "string", "The first paragraph of that task's OLDEST annotation, whitespace collapsed and cut at 400 characters; null when the task has no notes or there is no task."),
     f("store_empty", "boolean", "Whether the store has ever held a task, which tells \"nothing yet\" from \"nothing matched\"."),
+    f("total", "integer", "How many unblocked tasks matched the scope, of which `task` is the most urgent."),
     o("active", "array", "Present with `resume: true`: every open-and-active task in scope, `{short_id, title, status, note, active_since, held_by}`. `held_by` is the actor on the task's latest start (D140), or null."),
     o("recent", "array", "Present with `resume: true`: up to five open, non-active tasks in scope whose newest annotation is the most recent, newest first, `{short_id, title, status, note}`. `note` is `{body, created}` with the body cut at 200 characters."),
 ];
