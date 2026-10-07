@@ -106,9 +106,15 @@ pub fn task_detail(ctx: &Ctx, result: &Value, now: Timestamp) -> String {
     let mut out = String::new();
     out.push_str(&ctx.paint("header", &format!("#{sid}  {}", s(result, "title"))));
     out.push('\n');
+    let mut at = annotation_base(result);
     for row in detail_rows(ctx, result, now) {
         if matches!(row.field, DetailField::Annotation) {
-            out.push_str(&format!("  {} {}\n", ctx.paint("muted", "·"), row.value));
+            at += 1;
+            out.push_str(&format!(
+                "  {} {}\n",
+                ctx.paint("muted", &format!("[{at}]")),
+                row.value
+            ));
             continue;
         }
         // D138: the marker carries the state, so it is painted and the
@@ -396,6 +402,19 @@ pub(crate) struct DetailRow {
 /// that checked label presence only against an all-fields fixture, so a
 /// condition drifting in one layout passed it. A row that renders in one
 /// layout and not the other is unrepresentable now.
+/// How many notes lie before the first one `result` carries (D211): the notes
+/// are numbered 1-based, oldest first, and `task.get` hands back the newest
+/// page, so a paged answer must not renumber its first row as 1. The number
+/// is what `annotate --edit`, `unannotate` and `annotate --move` take.
+fn annotation_base(result: &Value) -> usize {
+    let n = |k: &str| result.get(k).and_then(Value::as_u64).unwrap_or(0) as usize;
+    let on_page = result
+        .get("annotations")
+        .and_then(Value::as_array)
+        .map_or(0, Vec::len);
+    n("annotations_total").saturating_sub(n("annotations_offset") + on_page)
+}
+
 pub(crate) fn detail_rows(ctx: &Ctx, result: &Value, now: Timestamp) -> Vec<DetailRow> {
     // `detail.time_format` (D49's "on the one retreat", now reaching `show` —
     // see `Ctx::with_time_format`), read through the same pure formatters
@@ -1103,8 +1122,13 @@ pub(crate) fn task_detail_card(ctx: &Ctx, result: &Value, now: Timestamp) -> Str
     // hanging indent, wrapped at the terminal width.
     if !annotations.is_empty() {
         push(&mut out, String::new());
-        let aw = avail.saturating_sub(2).max(10);
-        for body in &annotations {
+        let base = annotation_base(result);
+        // The widest marker sets the hanging indent, so a page that crosses
+        // 9 -> 10 keeps its text in one column.
+        let mw = format!("[{}]", base + annotations.len()).len();
+        let aw = avail.saturating_sub(mw + 1).max(10);
+        for (i, body) in annotations.iter().enumerate() {
+            let marker = format!("{:<mw$}", format!("[{}]", base + i + 1));
             // #76.2: `wrap_words` reflows on `str::split_whitespace`, which
             // reads a `\n` as just another space — so a markdown annotation
             // (headers, a table, a list) came out as one run-on paragraph,
@@ -1121,10 +1145,13 @@ pub(crate) fn task_detail_card(ctx: &Ctx, result: &Value, now: Timestamp) -> Str
                 }
                 for line in wrap_words(src_line, aw) {
                     if first {
-                        push(&mut out, format!("{} {line}", ctx.paint("card.label", "·")));
+                        push(
+                            &mut out,
+                            format!("{} {line}", ctx.paint("card.label", &marker)),
+                        );
                         first = false;
                     } else {
-                        push(&mut out, format!("  {line}"));
+                        push(&mut out, format!("{} {line}", " ".repeat(mw)));
                     }
                 }
             }

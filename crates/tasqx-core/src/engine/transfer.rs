@@ -2976,7 +2976,7 @@ impl Engine {
             // events pass may just have written an older copy's `add` or
             // `update` carrying the text.
             if let Some(live) = live {
-                super::relationships::scrub_annotation(tx, id, note, ts)?;
+                super::relationships::scrub_annotation(tx, note, ts)?;
                 changed |= live;
             }
         }

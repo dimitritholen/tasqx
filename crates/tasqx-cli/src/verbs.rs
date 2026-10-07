@@ -825,7 +825,19 @@ fn annotation_body(be: &mut Backend, task: &str, id: &str) -> Result<String, tas
     let t = be.call("task.get", &json!({ "ref": task }))?;
     t.get("annotations")
         .and_then(Value::as_array)
-        .and_then(|a| a.iter().find(|n| n["id"] == id))
+        .and_then(|a| {
+            // D211: the id, a unique prefix of 8+ characters, or the 1-based
+            // position `show` prints (the page is the whole list here).
+            let pos = id.parse::<usize>().ok().filter(|_| id.len() < 8);
+            let mut hit = a.iter().enumerate().filter(|(i, n)| {
+                n["id"] == id
+                    || pos == Some(i + 1)
+                    || (id.len() >= 8 && n["id"].as_str().is_some_and(|x| x.starts_with(id)))
+            });
+            let first = hit.next();
+            let exact = first.filter(|(_, n)| n["id"] == id);
+            exact.or(first.filter(|_| hit.next().is_none())).map(|(_, n)| n)
+        })
         .and_then(|n| n["body"].as_str())
         .map(str::to_string)
         .ok_or_else(|| tasqx_core::ApiError::bad_request(format!("no annotation {id} on {task}")))
@@ -993,18 +1005,21 @@ mod editor_body_tests {
     }
 }
 
-/// `tasqx annotate` — add a note, or with `--edit <id>` correct one in place
-/// (`annotation.update`, D165).
+/// `tasqx annotate` — add a note, with `--edit <id>` correct one in place
+/// (`annotation.update`, D165), or with `--move <id> --to <task>` send it to
+/// another task (`annotation.move`, D211).
 pub(crate) fn run_annotate(
     be: &mut Backend,
     ctx: &Ctx,
     r#ref: String,
     edit: Option<String>,
+    move_to: Option<(String, String)>,
     text: Vec<String>,
 ) -> CmdOutcome {
     // #1114: `-` and a bare verb on a pipe read stdin; a bare verb on a
     // terminal opens the editor (on the note's current text under `--edit`).
     let body = match text.as_slice() {
+        _ if move_to.is_some() => String::new(),
         [dash] if dash == "-" => stdin_body()?,
         [] if !std::io::stdin().is_terminal() => stdin_body()?,
         [] => {
@@ -1016,21 +1031,29 @@ pub(crate) fn run_annotate(
         }
         _ => text.join(" "),
     };
-    let (result, word) = match edit {
-        Some(id) => (
+    let (result, word) = match (edit, move_to) {
+        (_, Some((id, to))) => {
+            let result = be.call(
+                "annotation.move",
+                &json!({ "ref": r#ref, "annotation_id": id, "to": to }),
+            )?;
+            let word = format!("note moved to #{}", result["to"]["short_id"]);
+            (result, word)
+        }
+        (Some(id), None) => (
             be.call(
                 "annotation.update",
                 &json!({ "ref": r#ref, "annotation_id": id, "body": body }),
             )?,
-            "note edited",
+            "note edited".to_string(),
         ),
-        None => (
+        (None, None) => (
             be.call("annotation.add", &json!({ "ref": r#ref, "body": body }))?,
-            "annotated",
+            "annotated".to_string(),
         ),
     };
     let task = read_back(be, &result).unwrap_or_else(|| result.clone());
-    let out = render::annotated(ctx, &result, &task, crate::clock::now(), word);
+    let out = render::annotated(ctx, &result, &task, crate::clock::now(), &word);
     Ok((result, out))
 }
 

@@ -1475,7 +1475,7 @@ fn build_tool_specs() -> Vec<ToolSpec> {
             // D113. Stated for the same reason `tasqx_remove_memory`'s
             // description states its own permanence: it is the one property of
             // this tool a caller cannot learn by trying.
-            description: "Permanently scrub one annotation's text by id. Unlike every other \
+            description: "Permanently scrub one annotation's text, named by id, id prefix or position. Unlike every other \
                 write here this is a HARD delete: the body is overwritten in the store and \
                 the original `annotation.add` event's body is redacted in the same \
                 transaction, so a secret is gone from `event.list` and `store.export` too \
@@ -1487,8 +1487,8 @@ fn build_tool_specs() -> Vec<ToolSpec> {
                     "ref": ref_schema(),
                     "annotation_id": {
                         "type": "string",
-                        "description": "The annotation's id, as tasqx_annotate_task or \
-                            tasqx_get_task reports."
+                        "description": "Full id, unique prefix of 8+ characters, or the 1-based \
+                            position `tasqx show` prints (D211)."
                     }
                 },
                 "required": ["ref", "annotation_id"]
@@ -1500,7 +1500,7 @@ fn build_tool_specs() -> Vec<ToolSpec> {
             write: true,
             destructive: true,
             idempotent: true,
-            description: "Correct one annotation's body in place, by id (D165): id, timestamp \
+            description: "Correct one annotation's body in place, by id, id prefix or position (D165, D211): id, timestamp \
                 and position are kept, and search stops finding the old text. `tasqx undo` \
                 covers it. An omitted `expected_rev` pins the task's current `_rev`, as on \
                 `tasqx_modify_task`.",
@@ -1510,13 +1510,39 @@ fn build_tool_specs() -> Vec<ToolSpec> {
                     "ref": ref_schema(),
                     "annotation_id": {
                         "type": "string",
-                        "description": "The annotation's id, as tasqx_annotate_task or \
-                            tasqx_get_task reports."
+                        "description": "Full id, unique prefix of 8+ characters, or the 1-based \
+                            position `tasqx show` prints (D211)."
                     },
                     "body": { "type": "string", "description": "The corrected text; replaces the old body whole." },
                     "expected_rev": { "type": "integer", "description": "Guard on the task's `_rev`; supplied by the server when omitted." }
                 },
                 "required": ["ref", "annotation_id", "body"]
+            }),
+        },
+        ToolSpec {
+            name: "tasqx_move_annotation",
+            method: "annotation.move",
+            write: true,
+            destructive: false,
+            idempotent: false,
+            description: "Move one annotation to another task (D211): id, body and timestamp \
+                are kept and search follows. For a note written on the wrong task. `tasqx \
+                undo` puts it back. The same task is `conflict`; a missing one `not_found`.",
+            schema: json!({
+                "type": "object",
+                "properties": {
+                    "ref": ref_schema(),
+                    "annotation_id": {
+                        "type": "string",
+                        "description": "Full id, unique prefix of 8+ characters, or 1-based \
+                            position on `ref`."
+                    },
+                    "to": {
+                        "type": ["integer", "string"],
+                        "description": "The task to move it to: short_id (integer) or full UUID."
+                    }
+                },
+                "required": ["ref", "annotation_id", "to"]
             }),
         },
         ToolSpec {
@@ -3725,6 +3751,7 @@ mod tests {
                 "check.set" => json!({ "ref": 1, "check_id": check, "state": "passed" }),
                 "check.remove" => json!({ "ref": 1, "check_id": check }),
                 "annotation.remove" => json!({ "ref": 1, "annotation_id": note }),
+                "annotation.move" => json!({ "ref": 1, "annotation_id": note, "to": 2 }),
                 "dependency.add" => json!({ "ref": 1, "depends_on": 2 }),
                 "dependency.remove" => json!({ "ref": 3, "depends_on": 1 }),
                 "memory.search" => json!({ "query": "t" }),

@@ -235,6 +235,10 @@ fn undo_store(tag: &str, op: &str, title: &str) -> Store {
                 .to_string();
             st.plain(&["annotate", "1", "--edit", &id, "call the printer"]);
         }
+        "annotation.move" => {
+            st.plain(&["annotate", "1", "call the printer"]);
+            st.plain(&["annotate", "1", "--move", "1", "--to", "2"]);
+        }
         "dependency.remove" => {
             st.plain(&["dep", "1", "2"]);
             st.plain(&["undep", "1", "2"]);
@@ -834,4 +838,45 @@ fn annotate_edit_replaces_the_note_in_place_and_undo_restores_it() {
     let out = st.plain(&["annotate", "1", "--edit", id, "call", "the", "plumber"]);
     assert!(out.contains("note edited"), "{out}");
     assert!(out.contains("call the plumber"), "{out}");
+}
+
+/// D211: a note is named by the `[n]` position `show` prints, `--edit` and
+/// `unannotate` take it, and `--move ... --to` sends it to another task.
+#[test]
+fn annotations_are_numbered_and_named_by_position_and_can_be_moved() {
+    let st = undo_store("annotate-handles", "annotation.add", "Write the report");
+    st.plain(&["annotate", "1", "second note"]);
+    let shown = st.plain(&["show", "1"]);
+    assert!(shown.contains("[1] call the printer"), "{shown}");
+    assert!(shown.contains("[2] second note"), "{shown}");
+
+    let out = st.plain(&["annotate", "1", "--edit", "2", "second", "thought"]);
+    assert!(out.contains("note edited"), "{out}");
+
+    let out = st.plain(&["annotate", "1", "--move", "1", "--to", "2"]);
+    assert!(out.contains("note moved to #2"), "{out}");
+    assert!(st.plain(&["show", "2"]).contains("[1] call the printer"));
+    assert!(!st.plain(&["show", "1"]).contains("call the printer"));
+
+    let back = st.plain(&["undo"]);
+    assert!(back.contains("undid annotate --move"), "{back}");
+    assert!(back.contains("note back on #1"), "{back}");
+
+    st.plain(&["unannotate", "1", "1"]);
+    assert!(st.plain(&["show", "1"]).contains("[1] second thought"));
+}
+
+/// `--move` needs `--to`, and cannot be combined with `--edit` or text.
+#[test]
+fn annotate_move_and_to_require_each_other() {
+    let st = undo_store("annotate-move-args", "annotation.add", "Write the report");
+    for args in [
+        vec!["annotate", "1", "--move", "1"],
+        vec!["annotate", "1", "--to", "2"],
+        vec!["annotate", "1", "--move", "1", "--to", "2", "--edit", "1"],
+        vec!["annotate", "1", "--move", "1", "--to", "2", "text"],
+    ] {
+        let out = st.bin().args(&args).output().expect("run");
+        assert!(!out.status.success(), "{args:?} should be refused");
+    }
 }

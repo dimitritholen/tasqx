@@ -866,6 +866,18 @@ const R_ANNOTATION_UPDATE: Shape = &[&[
     req("_rev", Ty::Int),
 ]];
 
+/// `annotation.move`'s answer (D211): the note as it now stands and the task
+/// it landed on.
+const R_ANNOTATION_MOVE: Shape = &[&[
+    req("short_id", Ty::Int),
+    req_of("annotation", Ty::Object, ANNOTATION),
+    req_of(
+        "to",
+        Ty::Object,
+        &[&[req("short_id", Ty::Int), req("title", Ty::Str)]],
+    ),
+]];
+
 const R_TOKEN_ADD: Shape = &[&[
     req("short_id", Ty::Int),
     req_of("measurement", Ty::Object, MEASUREMENT),
@@ -2002,6 +2014,20 @@ fn cases() -> Vec<Case> {
                 })
             },
             R_ANNOTATION_UPDATE,
+        ),
+        case(
+            "annotation.move",
+            "the note comes back under its own id, with the task it now sits on (D211)",
+            |e| {
+                plain_task(e);
+                e.task_add(&json!({ "title": "the right task" }))
+                    .expect("second task");
+                let added = e
+                    .annotation_add(&json!({ "ref": 1, "body": "written on the wrong task" }))
+                    .expect("add");
+                json!({ "ref": 1, "annotation_id": added["annotation"]["id"], "to": 2 })
+            },
+            R_ANNOTATION_MOVE,
         ),
         case(
             "token.add",

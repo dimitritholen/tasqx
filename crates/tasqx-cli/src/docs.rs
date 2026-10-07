@@ -112,7 +112,7 @@ const VERBS: [(&str, &str, &str); 46] = [
     (
         "annotate",
         "<code>note</code>",
-        "annotation.add + annotation.update",
+        "annotation.add + annotation.update + annotation.move",
     ),
     ("unannotate", "—", "annotation.remove"),
     ("tag", "—", "tag.add"),
@@ -336,10 +336,22 @@ const METHODS: [(&str, &str, &str); 49] = [
     (
         "annotation.remove",
         "<code>ref</code>, <code>annotation_id</code>",
-        "<code>{short_id, removed}</code>. Scrubs the annotation's body in the store (D113) — \
+        "<code>{short_id, removed}</code>. <code>annotation_id</code> is the full id, a unique \
+         prefix of 8+ characters (ambiguous is <code>conflict</code>, listing the candidates) \
+         or the note's 1-based position on the task, as <code>tasqx show</code> numbers it \
+         (D211). Scrubs the annotation's body in the store (D113) — \
          a hard delete, not a hide — and <code>removed</code> names only the id and the \
          instant, never the text. An unknown or already-removed id is \
          <code>not_found</code>; <code>event.revert</code> does not cover this op.",
+    ),
+    (
+        "annotation.move",
+        "<code>ref</code>, <code>annotation_id</code>, <code>to</code>",
+        "<code>{short_id, annotation, to}</code>. Puts one note on another task (D211): its id, \
+         body and <code>created</code> are kept, only the task changes, and search follows. \
+         <code>to</code> is the destination task ref; moving to the task the note is already \
+         on is <code>conflict</code>, a missing task or note <code>not_found</code>. \
+         <code>event.revert</code> puts it back.",
     ),
     (
         "annotation.update",
@@ -665,9 +677,9 @@ const METHODS: [(&str, &str, &str); 49] = [
         "—",
         "<code>{reverted, short_id, title, restored}</code> — <code>reverted</code> carries \
          the event id, its op and its timestamp. Undoes the <em>newest</em> event by \
-         APPENDING a compensating one, so the reversed event stays in the log. Six ops are \
+         APPENDING a compensating one, so the reversed event stays in the log. Seven ops are \
          undoable (<code>stop</code>, <code>tag.remove</code>, <code>dependency.remove</code>, \
-         <code>annotation.add</code>, <code>annotation.update</code>, <code>adjust_tracked</code>); every other one is <code>conflict</code> naming itself \
+         <code>annotation.add</code>, <code>annotation.update</code>, <code>annotation.move</code>, <code>adjust_tracked</code>); every other one is <code>conflict</code> naming itself \
          and what does take it back. The newest <em>event</em>, not the last call you made: a \
          call that changed nothing writes no event, so undo reaches past it — which is why the \
          answer names what it undid instead of saying ok.",
