@@ -2007,7 +2007,7 @@ impl Engine {
             let t = &mut snapshot.task;
             t.urgency = urgency::score_at(t.priority, t.due.as_deref(), &t.created, now_ts);
             let ctx = MatchCtx::from(&snapshot);
-            if filter.matches(&ctx) {
+            if filter.matches_titled(&ctx, &snapshot.task.title) {
                 let totals = if want_tokens {
                     tokens::measurement_totals(&snapshot.tokens)
                 } else {

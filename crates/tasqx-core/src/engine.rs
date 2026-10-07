@@ -329,7 +329,6 @@ impl<'a> From<&'a TaskSnapshot> for MatchCtx<'a> {
     fn from(snapshot: &'a TaskSnapshot) -> Self {
         let t = &snapshot.task;
         MatchCtx {
-            title: &t.title,
             status: t.status,
             priority: t.priority,
             project: t.project.as_deref(),
