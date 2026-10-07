@@ -710,7 +710,9 @@ command tells you when this happened.</li>
 <code>@working</code> set — the dashboard's working list included — because those answer
 "what should I do now". Name the project and they come back:
 <code>tasqx next project:kitchen-remodel</code>. <code>list</code>, <code>report</code> and <code>agenda</code> still
-show them.</li>
+show them. The rule applies to any filter that mentions <code>@working</code>, so
+<code>@working or +x</code> also hides a pending <code>+x</code> task in an archived project; leave
+<code>@working</code> out of the filter to see it.</li>
 <li><code>tasqx unarchive</code> is the way back. <code>tasqx undo</code> does not reverse an archive,
 because archiving the default project also cleared the default, which the
 log does not restore.</li>
