@@ -13,6 +13,6 @@
   [x] One worked example per SDK (js, py, go)
   [ ] The rate-limit ceiling is stated with its real number
   [ ] Reviewed by whoever ships 3.0
-  · Ruling: the guide ships WITH the 3.0 release, not after it. A migration note that lands a week late is a support ticket that already happened.
-  · Blocked until the rate limit lands: the guide has to state the real ceiling, and quoting a number that then changes is worse than waiting.
-  · Scope: the 2.x → 3.0 rename table, the auth change, and a worked example per SDK. Not the reference — that generates itself.
+  [1] Ruling: the guide ships WITH the 3.0 release, not after it. A migration note that lands a week late is a support ticket that already happened.
+  [2] Blocked until the rate limit lands: the guide has to state the real ceiling, and quoting a number that then changes is worse than waiting.
+  [3] Scope: the 2.x → 3.0 rename table, the auth change, and a worked example per SDK. Not the reference — that generates itself.

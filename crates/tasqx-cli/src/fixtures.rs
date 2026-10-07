@@ -90,6 +90,7 @@ screens![
     "api-tag-add",
     "api-tag-remove",
     "api-annotation-remove",
+    "api-annotation-move",
     "api-check-set",
     "api-check-remove",
     "api-dependency-add",
