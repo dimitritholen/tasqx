@@ -2318,19 +2318,28 @@ pub(crate) fn run_chart(engine: &Engine, ctx: &Ctx, kind: ChartKind) -> CmdOutco
 ///
 /// The scope comes from [`report_params`] — the SAME builder the terminal path
 /// uses — so the two output modes of one command cannot answer different
-/// questions again. `all` is hard `false`, and `since`/`until` hard `None`,
-/// rather than parameters, because clap already rejects `--all`/`--since`/
-/// `--until` alongside `--html` (the HTML page has no windowed path yet);
-/// spelling it here keeps the two facts in one place instead of accepting a
-/// flag we would then ignore.
+/// questions again. `since`/`until` resolve through the same date grammar,
+/// and on the page they are its period (D212).
+///
+/// The page is grouped by project, because a project row is what scopes it;
+/// a `status` or `priority` axis is refused rather than drawn as projects.
 pub(crate) fn run_html_report(
     engine: &Engine,
     ctx: &Ctx,
     args: Vec<String>,
+    (since, until): (Option<String>, Option<String>),
+    opts: html::Options,
     out: Option<String>,
 ) -> CmdOutcome {
-    let params = report_params(&args, false, None, None, now_ts())?;
-    let doc = html::generate(engine, &ctx.theme, &params)?;
+    let params = report_params(&args, opts.all, since, until, now_ts())?;
+    if params["group_by"] != "project" {
+        return Err(ApiError::bad_request(format!(
+            "the HTML report is grouped by project, which is what scopes the page \
+             (D212); drop {:?}, or use the terminal `tasqx report` for that axis",
+            params["group_by"].as_str().unwrap_or_default()
+        )));
+    }
+    let doc = html::generate(engine, &ctx.theme, &params, opts)?;
     match out {
         Some(path) => {
             if let Some(parent) = PathBuf::from(&path).parent() {

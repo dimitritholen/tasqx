@@ -839,10 +839,10 @@ pub(super) enum Command {
         /// Count cancelled tasks too. By default a report excludes cancelled
         /// tasks, unless the filter itself names a status (DESIGN D24).
         ///
-        /// Rejected alongside `--html`: the HTML page builds its own scope and
-        /// has no way to honour this yet, and accepting a flag we then ignore is
-        /// exactly the silent omission D24 exists to stop.
-        #[arg(long, conflicts_with = "html")]
+        /// With `--html` it puts cancelled tasks in the page's search index
+        /// (D212); the outcomes section counts cancellations either way, and
+        /// the band, standup, grid and chart keep D24's exclusion.
+        #[arg(long)]
         all: bool,
         /// Window `tracked_total`/the token buckets to work done or spend
         /// measured at or after this instant, instead of each task's lifetime
@@ -853,27 +853,17 @@ pub(super) enum Command {
         /// time or token measurement itself landed, regardless of whether or
         /// when its task completed.
         ///
-        /// Rejected alongside `--html`, same as `--all` above and for the same
-        /// reason: the HTML page builds its own scope and has no windowed path
-        /// yet.
+        /// With `--html` the pair is the page's period instead (D212): the
+        /// band, the grid and the outcomes count what happened in it, against
+        /// the same span before it. Default: the 7 days ending today.
         ///
         /// `allow_hyphen_values` for the same reason as `--due` above: a
         /// signed relative offset (`--since -7d`) is a leading-hyphen value.
-        #[arg(
-            long,
-            value_name = "WHEN",
-            allow_hyphen_values = true,
-            conflicts_with = "html"
-        )]
+        #[arg(long, value_name = "WHEN", allow_hyphen_values = true)]
         since: Option<String>,
         /// The other end of `--since`'s window: excludes anything at or after
         /// this instant.
-        #[arg(
-            long,
-            value_name = "WHEN",
-            allow_hyphen_values = true,
-            conflicts_with = "html"
-        )]
+        #[arg(long, value_name = "WHEN", allow_hyphen_values = true)]
         until: Option<String>,
         /// Show the four token buckets (cache read/write, in, out) as their
         /// own columns instead of the single largest-bucket cell (#212,
@@ -882,10 +872,15 @@ pub(super) enum Command {
         /// metric here is accepted but has no effect: COUNT/EST/OVERDUE/
         /// TRACKED already always show, and this flag only changes the
         /// TOKENS display.
+        ///
+        /// Refused alongside `--html` (D212): the page has no columns to
+        /// choose, and a flag it accepted and ignored is the silent no-op
+        /// `--out` above is guarded against.
         #[arg(
             long,
             value_delimiter = ',',
-            value_parser = tasqx_core::engine::SUMMARY_METRICS
+            value_parser = tasqx_core::engine::SUMMARY_METRICS,
+            conflicts_with = "html"
         )]
         metrics: Option<Vec<String>>,
         /// Report outcomes instead of counts (D137): rework, estimate
@@ -896,14 +891,18 @@ pub(super) enum Command {
         /// because a reader asking "how is this going" reaches for `report`
         /// either way — the same shape `--html` already has.
         ///
-        /// Rejected alongside `--html` and `--all`: the HTML page builds its
-        /// own scope and has no outcomes section, and `--all` is D24's
-        /// cancelled-work escape hatch, which `report.outcomes` has no use for
-        /// — there a cancellation is a measured outcome, not noise. Accepting
-        /// either and ignoring it is the silent omission `--out` above is
-        /// guarded against.
-        #[arg(long, conflicts_with_all = ["html", "all", "metrics"])]
+        /// With `--html` it names a section the page always carries (D212),
+        /// so it is accepted and changes nothing there. Rejected alongside
+        /// `--all`: that is D24's cancelled-work escape hatch, which
+        /// `report.outcomes` has no use for — there a cancellation is a
+        /// measured outcome, not noise.
+        #[arg(long, conflicts_with_all = ["all", "metrics"])]
         outcomes: bool,
+        /// Embed annotation bodies in the HTML page (newest three per task),
+        /// behind a toggle. Off by default (D212): the page is a file meant
+        /// to be shared, and bodies are where client detail lives.
+        #[arg(long, requires = "html")]
+        with_notes: bool,
     },
     /// Native terminal charts from the event log (DESIGN.md §8).
     #[command(after_help = crate::cmddoc::after_help("chart"))]

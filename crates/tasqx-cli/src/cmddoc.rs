@@ -734,7 +734,7 @@ pub const COMMAND_REF: &[CmdDoc] = &[
         method: "report.summary + report.outcomes",
         summary: "Summary counts, or outcomes, optionally grouped, as text or HTML.",
         usage: "tasqx report [group_by] [filter…] [--all] [--outcomes] [--since WHEN] \
-                [--until WHEN] [--metrics list] [--html] [--out FILE]",
+                [--until WHEN] [--metrics list] [--html] [--with-notes] [--out FILE]",
         examples: &[
             ex("tasqx report"),
             ex("tasqx report project"),
@@ -748,6 +748,10 @@ pub const COMMAND_REF: &[CmdDoc] = &[
             // long time only the terminal path kept that promise. Documented as an
             // example so the scoped form is discoverable, not just legal.
             ex_norun("tasqx report +urgent --html --out sprint.html", "scoped HTML"),
+            ex_norun(
+                "tasqx report --html --since 2026-09-01 --until 2026-10-01 --out september.html",
+                "HTML for one month",
+            ),
         ],
         notes: &[
             "group_by ∈ project|status|priority. `--html` defaults to stdout.",
@@ -760,7 +764,11 @@ pub const COMMAND_REF: &[CmdDoc] = &[
             "`--since`/`--until` window `tracked_total` and the token buckets by WHEN the \
              time or spend happened (D97) — a different axis from `completed.after:`/\
              `completed.before:` in the filter, which selects tasks by completion date. \
-             Rejected alongside `--html`, which has no windowed path yet.",
+             With `--html` they set the page's period instead (default: the 7 days ending today).",
+            "`--html` leads with what changed in the period, then a standup, a per-project grid that \
+             scopes the page, a net-flow chart, outcomes and a search over every task in scope (D212). \
+             Annotation bodies stay out of the file unless you pass `--with-notes`; `--all` adds \
+             cancelled tasks to its search; `--metrics` is refused with it.",
             "--socket is refused with `--html` (DESIGN.md D73): the HTML page renders from a direct local read of the store, never through a daemon.",
         ],
         see_also: &["chart", "list", "why"],

@@ -24,7 +24,7 @@ Options:
       --all
           Count cancelled tasks too. By default a report excludes cancelled tasks, unless the filter itself names a status (DESIGN D24).
           
-          Rejected alongside `--html`: the HTML page builds its own scope and has no way to honour this yet, and accepting a flag we then ignore is exactly the silent omission D24 exists to stop.
+          With `--html` it puts cancelled tasks in the page's search index (D212); the outcomes section counts cancellations either way, and the band, standup, grid and chart keep D24's exclusion.
 
       --socket <SOCKET>
           Local socket / named-pipe address of a tasqx daemon. Overrides $TASQX_SOCK. When a daemon is reachable, one-shot commands route through it (single writer); otherwise they run in-process. A set $TASQX_DB naming a different store than that daemon's is refused. Also selects the address for `daemon` and `watch`
@@ -37,7 +37,7 @@ Options:
           
           A different axis from `completed.after:` in the filter DSL above: that selects tasks by completion date, this bounds WHEN the tracked time or token measurement itself landed, regardless of whether or when its task completed.
           
-          Rejected alongside `--html`, same as `--all` above and for the same reason: the HTML page builds its own scope and has no windowed path yet.
+          With `--html` the pair is the page's period instead (D212): the band, the grid and the outcomes count what happened in it, against the same span before it. Default: the 7 days ending today.
           
           `allow_hyphen_values` for the same reason as `--due` above: a signed relative offset (`--since -7d`) is a leading-hyphen value.
 
@@ -45,7 +45,9 @@ Options:
           The other end of `--since`'s window: excludes anything at or after this instant
 
       --metrics <METRICS>
-          Show the four token buckets (cache read/write, in, out) as their own columns instead of the single largest-bucket cell (#212, D48a) — comma-separated, from the same vocabulary `report.summary`'s `metrics` param accepts. Naming a non-token metric here is accepted but has no effect: COUNT/EST/OVERDUE/ TRACKED already always show, and this flag only changes the TOKENS display
+          Show the four token buckets (cache read/write, in, out) as their own columns instead of the single largest-bucket cell (#212, D48a) — comma-separated, from the same vocabulary `report.summary`'s `metrics` param accepts. Naming a non-token metric here is accepted but has no effect: COUNT/EST/OVERDUE/ TRACKED already always show, and this flag only changes the TOKENS display.
+          
+          Refused alongside `--html` (D212): the page has no columns to choose, and a flag it accepted and ignored is the silent no-op `--out` above is guarded against.
           
           [possible values: count, est_total, overdue, tracked_total, tokens_in, tokens_out, tokens_cache_read, tokens_cache_creation, tokens_unsplit]
 
@@ -54,7 +56,10 @@ Options:
           
           A second method under one verb rather than a verb of its own, because a reader asking "how is this going" reaches for `report` either way — the same shape `--html` already has.
           
-          Rejected alongside `--html` and `--all`: the HTML page builds its own scope and has no outcomes section, and `--all` is D24's cancelled-work escape hatch, which `report.outcomes` has no use for — there a cancellation is a measured outcome, not noise. Accepting either and ignoring it is the silent omission `--out` above is guarded against.
+          With `--html` it names a section the page always carries (D212), so it is accepted and changes nothing there. Rejected alongside `--all`: that is D24's cancelled-work escape hatch, which `report.outcomes` has no use for — there a cancellation is a measured outcome, not noise.
+
+      --with-notes
+          Embed annotation bodies in the HTML page (newest three per task), behind a toggle. Off by default (D212): the page is a file meant to be shared, and bodies are where client detail lives
 
   -h, --help
           Print help (see a summary with '-h')
@@ -72,12 +77,14 @@ EXAMPLES
   tasqx report --outcomes project --since -30d
   tasqx report --html --out review.html    # self-contained HTML
   tasqx report +urgent --html --out sprint.html    # scoped HTML
+  tasqx report --html --since 2026-09-01 --until 2026-10-01 --out september.html    # HTML for one month
 
 NOTE  group_by ∈ project|status|priority. `--html` defaults to stdout.
       A filter scopes BOTH output modes — the HTML page and the terminal table answer the same question.
       Cancelled tasks are not counted, unless you pass `--all` or your filter names a status.
       The terminal's TOKENS column names the largest of four buckets by volume; `--metrics` naming a tokens_* bucket shows all four as their own columns instead, same as `--html` and `--json`.
-      `--since`/`--until` window `tracked_total` and the token buckets by WHEN the time or spend happened (D97) — a different axis from `completed.after:`/`completed.before:` in the filter, which selects tasks by completion date. Rejected alongside `--html`, which has no windowed path yet.
+      `--since`/`--until` window `tracked_total` and the token buckets by WHEN the time or spend happened (D97) — a different axis from `completed.after:`/`completed.before:` in the filter, which selects tasks by completion date. With `--html` they set the page's period instead (default: the 7 days ending today).
+      `--html` leads with what changed in the period, then a standup, a per-project grid that scopes the page, a net-flow chart, outcomes and a search over every task in scope (D212). Annotation bodies stay out of the file unless you pass `--with-notes`; `--all` adds cancelled tasks to its search; `--metrics` is refused with it.
       --socket is refused with `--html` (DESIGN.md D73): the HTML page renders from a direct local read of the store, never through a daemon.
 
 See also: chart · list · why        Full manual: tasqx manual

@@ -842,12 +842,26 @@ fn execute(cli: Cli) -> Exit {
             // to be dropped here with `..`, which is the whole of F1a: clap
             // parsed the filter, `report_params` knew how to read it, and this
             // one match arm never asked.
+            // D212: the window, `--all` and `--with-notes` reach the page;
+            // `--outcomes` is a section it always carries and `--metrics` is
+            // refused by clap, so neither is read here.
             Some(Command::Report {
                 html: true,
                 args,
                 out,
+                all,
+                since,
+                until,
+                with_notes,
                 ..
-            }) => run_html_report(&engine, &ctx, args, out),
+            }) => run_html_report(
+                &engine,
+                &ctx,
+                args,
+                (since, until),
+                html::Options { with_notes, all },
+                out,
+            ),
             _ => unreachable!(),
         });
     }
@@ -2850,12 +2864,33 @@ mod tests {
         }
     }
 
-    /// `--all` cannot reach the HTML page, so accepting the combination would
-    /// silently ignore it — the exact failure mode D24 exists to stop. clap must
-    /// reject it rather than parse it into a no-op.
+    /// D212: the page has a period and a search index, so `--since`/`--until`
+    /// set its window, `--all` puts cancelled work in the index, and
+    /// `--outcomes` names a section the page always carries. Each used to be
+    /// refused alongside `--html` (#1105, F1105-2).
     #[test]
-    fn report_all_is_rejected_alongside_html() {
-        assert!(Cli::try_parse_from(["tasqx", "report", "--html", "--all"]).is_err());
+    fn report_html_accepts_the_window_all_and_outcomes() {
+        for extra in [
+            &["--since", "-14d"][..],
+            &["--until", "2026-10-01"][..],
+            &["--all"][..],
+            &["--outcomes"][..],
+            &["--with-notes"][..],
+        ] {
+            let mut argv = vec!["tasqx", "report", "--html"];
+            argv.extend_from_slice(extra);
+            assert!(Cli::try_parse_from(&argv).is_ok(), "{argv:?} was refused");
+        }
+    }
+
+    /// D212: `--metrics` picks terminal columns, and the page has none to pick;
+    /// accepted, it would be ignored, which is the silent no-op F1105-9 found.
+    #[test]
+    fn report_html_refuses_metrics_and_notes_need_the_page() {
+        assert!(
+            Cli::try_parse_from(["tasqx", "report", "--html", "--metrics", "tokens_in"]).is_err()
+        );
+        assert!(Cli::try_parse_from(["tasqx", "report", "--with-notes"]).is_err());
     }
 
     /// The two `report_params` tests above cover disjoint halves — clap parses
