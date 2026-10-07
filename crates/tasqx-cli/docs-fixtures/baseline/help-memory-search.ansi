@@ -27,7 +27,7 @@ Options:
           Treat the query as raw FTS5 syntax (prefix*, AND/OR, columns). Words only: it searches as `--mode lexical`, and the engine refuses it beside a mode that runs meaning
 
       --socket <SOCKET>
-          Local socket / named-pipe address of a tasqx daemon. Overrides $TASQX_SOCK. When a daemon is reachable, one-shot commands route through it (single writer); otherwise they run in-process. Also selects the address for `daemon` and `watch`
+          Local socket / named-pipe address of a tasqx daemon. Overrides $TASQX_SOCK. When a daemon is reachable, one-shot commands route through it (single writer); otherwise they run in-process. A set $TASQX_DB naming a different store than that daemon's is refused. Also selects the address for `daemon` and `watch`
 
       --mode <MODE>
           How to match (default: hybrid, meaning and words fused; lexical forces exact words)
