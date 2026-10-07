@@ -199,20 +199,11 @@ pub(crate) fn dashboard_data(
     // `task.list` answers one page (100 rows) when no `limit` is named, and the
     // header counts and every panel are drawn from these rows, so walk the
     // pages: a store past one page opened on "5 open · 0 active" (#1112).
-    use tasqx_core::engine::task::MAX_TASK_LIST_LIMIT;
-    let mut tasks = be.call("task.list", &json!({ "limit": MAX_TASK_LIST_LIMIT }))?;
-    while let Some(next) = tasks["next_offset"].as_u64() {
-        let mut page = be.call(
-            "task.list",
-            &json!({ "limit": MAX_TASK_LIST_LIMIT, "offset": next }),
-        )?;
-        if let (Some(all), Some(more)) =
-            (tasks["tasks"].as_array_mut(), page["tasks"].as_array_mut())
-        {
-            all.append(more);
-        }
-        tasks["next_offset"] = page["next_offset"].take();
-    }
+    let tasks = crate::pick_screen::candidates_in_pages(
+        be,
+        "",
+        tasqx_core::engine::task::MAX_TASK_LIST_LIMIT,
+    )?;
     let summary = be.call(
         "report.summary",
         &json!({
