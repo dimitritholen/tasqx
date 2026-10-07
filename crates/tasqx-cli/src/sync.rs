@@ -257,7 +257,7 @@ fn export(be: &mut Backend, dir: &Path) -> Result<(Vec<u8>, Value), ApiError> {
 const LOCAL_TASK_FIELDS: [&str; 2] = ["_rev", "urgency"];
 
 /// Whether a pulled snapshot already holds exactly what this store exports,
-/// the per-store fields aside. Without that exception two converged machines
+/// the per-store fields and `dropped_events` aside. Without that exception two converged machines
 /// would each find the other's snapshot different and push on every sync.
 fn same_store(snapshot: &[u8], export: &Value) -> bool {
     let strip = |mut v: Value| {
@@ -267,6 +267,12 @@ fn same_store(snapshot: &[u8], export: &Value) -> bool {
                     t.remove(k);
                 }
             }
+        }
+        // Export bookkeeping, not data: the count of withheld `memory.add`
+        // events of removed docs (D197) differs between a store that removed
+        // the doc and one that only merged the removal (#1127).
+        if let Some(o) = v.as_object_mut() {
+            o.remove("dropped_events");
         }
         v
     };
@@ -964,6 +970,49 @@ mod tests {
         assert_eq!(done.attempts, 1);
         assert_eq!(*fake.pushes.borrow(), vec![None]);
         assert_eq!(done.version, "v1");
+    }
+
+    /// #1127: a doc added and removed before the first sync leaves the export
+    /// withholding its `memory.add` (D197), so `dropped_events` is nonzero on
+    /// the store that did it and zero on one that only merged the removal.
+    /// Two machines holding the same data must still agree they are in sync
+    /// rather than push at each other forever.
+    #[test]
+    fn a_removed_doc_s_dropped_events_do_not_keep_two_stores_pushing() {
+        let dir = scratch("dropped");
+        let mut a = store(&dir, "a");
+        let mut b = store(&dir, "b");
+        add(&mut a, "From a");
+        let doc = a
+            .call(
+                "memory.add",
+                &json!({"title": "Scratch", "body": "gone soon"}),
+            )
+            .unwrap();
+        a.call("memory.remove", &json!({"id": doc["id"]})).unwrap();
+        let dropped = |be: &mut Backend| {
+            be.call("store.export", &json!({})).unwrap()["dropped_events"].clone()
+        };
+        assert!(
+            dropped(&mut a).as_i64().unwrap() > 0,
+            "the setup must drop an event"
+        );
+
+        let fake = Fake::new(Vec::new());
+        run_loop(&mut a, &fake, &dir, &key()).unwrap();
+        // B merges A's snapshot first, so both share one project row.
+        run_loop(&mut b, &fake, &dir, &key()).unwrap();
+        assert_eq!(dropped(&mut b), json!(0), "B never saw the doc's add");
+        add(&mut b, "From b");
+        let mut pushes = Vec::new();
+        for _ in 0..3 {
+            for be in [&mut a, &mut b] {
+                pushes.push(run_loop(be, &fake, &dir, &key()).unwrap().pushed);
+            }
+        }
+        // One round to converge; the last round must push nothing.
+        assert_eq!(pushes[4..], [false, false], "never settled: {pushes:?}");
+        assert_eq!(titles(&mut a), titles(&mut b));
     }
 
     #[test]
