@@ -431,12 +431,12 @@ pub(crate) fn watch_render(
 /// The cheap checks (is `$TASQX_SOCK` even set, is `$TASQX_DB` even unset) run
 /// before the probe connection, so the common case — no ambient socket, or an
 /// operator who already set `$TASQX_DB` — never dials out at all.
-fn note_ambient_socket_if_unused(verb: &str) {
+fn note_ambient_socket_if_unused(verb: &str) -> bool {
     let sock = std::env::var("TASQX_SOCK").ok().filter(|s| !s.is_empty());
     let tasqx_db_set = std::env::var("TASQX_DB").is_ok_and(|v| !v.is_empty());
-    let Some(socket) = &sock else { return };
+    let Some(socket) = &sock else { return false };
     if tasqx_db_set {
-        return;
+        return false;
     }
     let mut conn = daemon::try_connect(socket);
     let daemon_store = conn.as_mut().and_then(|c| {
@@ -463,8 +463,16 @@ fn note_ambient_socket_if_unused(verb: &str) {
         &local,
     ) {
         eprintln!("{note}");
+        return true;
     }
+    false
 }
+
+/// #1122/D208: what `mcp serve` says when `$TASQX_SOCK` is set and the
+/// divergent-store note above had nothing to add: the variable is ignored, and
+/// why. One line, on stderr — stdout is the JSON-RPC channel.
+const MCP_SOCK_IGNORED: &str = "tasqx mcp: note: $TASQX_SOCK is ignored; mcp serve works on the \
+     store in-process and does not route through a daemon (DESIGN.md D73, D208)";
 
 /// #228.6: typed bare on a terminal, `tasqx api` used to sit with no prompt
 /// and no output — the process was waiting on `read_to_string`, but nothing
@@ -560,7 +568,12 @@ pub(crate) fn run_mcp(action: &McpAction) {
 /// credential. Diagnostics go to stderr only, while stdout carries nothing but
 /// newline-delimited JSON-RPC responses.
 pub(crate) fn run_mcp_serve(scope: Scope) {
-    note_ambient_socket_if_unused("mcp serve");
+    // One line either way: the specific note when a live daemon answers from
+    // another store, the generic one otherwise.
+    let sock_set = std::env::var("TASQX_SOCK").is_ok_and(|s| !s.is_empty());
+    if !note_ambient_socket_if_unused("mcp serve") && sock_set {
+        eprintln!("{MCP_SOCK_IGNORED}");
+    }
     let engine = match open_engine() {
         Ok(e) => e,
         Err(msg) => {
