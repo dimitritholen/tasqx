@@ -415,7 +415,7 @@ fn write_key(path: &Path, passphrase: &str) -> Result<(), ApiError> {
 
 /// The store the backend writes to. Through a daemon that is the daemon's
 /// file, which only the daemon can name (`core.capabilities.store`, D74) —
-/// `$TASQX_DB` is not in effect there, and the connector's state and this
+/// `$TASQX_DB`, when set, names that same file (D204), and the connector's state and this
 /// store's sync state must sit beside the store that is actually synced.
 fn store_path(be: &mut Backend) -> Result<PathBuf, ApiError> {
     let caps = be.call("core.capabilities", &json!({}))?;

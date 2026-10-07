@@ -856,39 +856,22 @@ fn execute(cli: Cli) -> Exit {
     // falls back to the in-process Engine exactly as before.
     let mut backend = match open_backend(cli.socket.as_deref(), cli.no_daemon) {
         Ok(b) => b,
-        Err(msg) => {
+        Err(err) => {
             // #229 item 8: a bare `error:` prefix is otherwise reserved for
             // clap's own usage errors, and exit 1 appeared nowhere in
             // DESIGN.md's documented `0/2/4/5/...` contract — a wrapper
             // branching on the exit code could not tell "the store is
             // unreachable" from a clap parse failure by either the code or
-            // the message shape. `ErrorCode::Internal` already maps to exit
-            // 1, so this reuses it rather than inventing a new code.
-            let err = ApiError::internal(msg);
+            // the message shape. An unopenable store is `internal` (exit 1);
+            // D204's `$TASQX_DB`-versus-socket refusal is `bad_request`.
             eprintln!("error [{}]: {}", code_str(&err), err.message);
             exit(err.exit_code());
         }
     };
 
-    // D74: `$TASQX_DB` is never silently inert. On the remote branch the
-    // daemon owns the store and the variable does nothing, and the write path
-    // says only `Added #N` — on 2026-07-25 that silence sent every write of an
-    // automated session into the user's real store. One stderr line, on the
-    // path that ignores the variable, every time the condition holds: the
-    // common case (no variable, or no daemon) stays silent, and this is
-    // deliberately NOT suppressed under `--json` or off a terminal, because
-    // the incident's consumer was exactly the automated kind suppression
-    // would blind. `config` is exempt — `config store` IS the fuller answer.
-    if let Backend::Remote { socket, .. } = &backend {
-        if std::env::var("TASQX_DB").is_ok_and(|v| !v.is_empty())
-            && !matches!(&cli.command, Some(Command::Config { .. }))
-        {
-            eprintln!(
-                "tasqx: note: routed through the daemon at {socket}; $TASQX_DB is not in \
-                 effect (pass --no-daemon to address your own store)"
-            );
-        }
-    }
+    // D74's "$TASQX_DB is not in effect" note is gone with D204: a routed
+    // command now only ever reaches a daemon whose store IS `$TASQX_DB`'s
+    // file (or `$TASQX_DB` is unset), so there is nothing inert to announce.
 
     // A bare `tasqx` opens the dashboard when — and only when — a human is
     // watching (D58). Everything else about a bare invocation is unchanged, and
@@ -1493,9 +1476,12 @@ mod tests {
         let (json, text) = store_location(
             None,
             None,
+            false,
+            None,
             Ok(PathBuf::from("/home/u/.local/tasqx/tasks.db")),
         );
         assert_eq!(json["backend"], "local");
+        assert_eq!(json["routing"], "local");
         assert_eq!(json["path"], "/home/u/.local/tasqx/tasks.db");
         assert!(
             text.contains("/home/u/.local/tasqx/tasks.db"),
@@ -1503,27 +1489,61 @@ mod tests {
         );
     }
 
-    /// The one that matters. `open_backend` prefers a reachable daemon and the
-    /// remote path never consults `TASQX_DB`, so a correct `TASQX_DB` is
-    /// silently not in effect whenever a daemon is listening. That cost this
-    /// project real data on 2026-07-25: an agent set a scratch store, a daemon
-    /// answered, and the writes landed in the user's live store with exit 0.
+    /// D204 case 2: a default-socket daemon on another store was passed over
+    /// for `$TASQX_DB`, and `config store` names both the file in use and the
+    /// daemon it did not use.
     #[test]
-    fn store_location_says_the_local_db_is_not_in_effect_when_a_daemon_answers() {
+    fn store_location_names_the_daemon_it_passed_over_for_tasqx_db() {
+        let bypassed = Bypassed {
+            socket: "/run/user/1000/tasqx/tasqx.sock".into(),
+            store: Some("/home/u/.local/tasqx/tasks.db".into()),
+        };
+        let (json, text) = store_location(
+            None,
+            None,
+            true,
+            Some(&bypassed),
+            Ok(PathBuf::from("/tmp/scratch.db")),
+        );
+        assert_eq!(json["backend"], "local");
+        assert_eq!(json["routing"], "local_tasqx_db_differs");
+        assert_eq!(json["path"], "/tmp/scratch.db");
+        assert_eq!(
+            json["bypassed_daemon"]["store"],
+            "/home/u/.local/tasqx/tasks.db"
+        );
+        assert!(
+            text.contains("/tmp/scratch.db")
+                && text.contains("/run/user/1000/tasqx/tasqx.sock")
+                && text.contains("/home/u/.local/tasqx/tasks.db"),
+            "name the file in use and the daemon passed over: {text}"
+        );
+    }
+
+    /// The one that matters. Before D204 a correct `TASQX_DB` was silently
+    /// not in effect whenever a daemon was listening — on 2026-07-25 an agent
+    /// set a scratch store, a daemon answered, and the writes landed in the
+    /// user's live store with exit 0. Now a routed command with `$TASQX_DB`
+    /// set reached a daemon on that very file, and the report says so.
+    #[test]
+    fn store_location_says_tasqx_db_names_the_daemons_store_when_a_daemon_answers() {
         let (json, text) = store_location(
             Some("/run/user/1000/tasqx/tasqx.sock"),
             Some("/home/u/.local/tasqx/tasks.db"),
+            true,
+            None,
             Ok(PathBuf::from("/tmp/scratch.db")),
         );
         assert_eq!(json["backend"], "daemon");
+        assert_eq!(json["routing"], "daemon_same_store");
         assert_eq!(json["socket"], "/run/user/1000/tasqx/tasqx.sock");
         assert!(
             text.contains("/run/user/1000/tasqx/tasqx.sock"),
             "name the socket actually being written through: {text}"
         );
         assert!(
-            text.contains("TASQX_DB"),
-            "the whole point is telling the reader their TASQX_DB is inert: {text}"
+            text.contains("$TASQX_DB names this same store"),
+            "say which D204 branch applied: {text}"
         );
         // D74: the daemon's own file IS named — the caller asked the daemon,
         // which is not the guess D47 forbade.
@@ -1547,9 +1567,12 @@ mod tests {
         let (json, text) = store_location(
             Some("tasqx-default"),
             None,
+            false,
+            None,
             Ok(PathBuf::from("/tmp/scratch.db")),
         );
         assert_eq!(json["backend"], "daemon");
+        assert_eq!(json["routing"], "daemon");
         assert_eq!(json["store"], Value::Null);
         assert!(
             text.contains("cannot name it"),

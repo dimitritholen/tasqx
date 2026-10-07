@@ -90,16 +90,20 @@ fn canon(p: &str) -> PathBuf {
 }
 
 /// D74 / #254: `tasqx config store` on the daemon branch names the daemon's
-/// own file, by asking it — `$TASQX_DB` names a different file here precisely
-/// so a local guess cannot pass as the daemon's answer. D47 forbade printing
-/// the client's inert local path; it never forbade the daemon telling the
-/// truth about its own.
+/// own file, by asking it. `$TASQX_DB` is unset here: with it naming another
+/// file and `$TASQX_SOCK` set, D204 refuses (see
+/// `tasqx_db_disagreeing_with_an_explicit_socket_is_refused`). D47 forbade
+/// printing the client's inert local path; it never forbade the daemon telling
+/// the truth about its own.
 #[test]
 fn config_store_names_the_daemons_file_by_asking_it() {
     let w = world("cfgstore");
     let shutdown = start_daemon(&w);
 
-    let out = bin(&w).args(["config", "store"]).output().expect("run");
+    let out = via_daemon(&w)
+        .args(["config", "store"])
+        .output()
+        .expect("run");
     shutdown.store(true, Ordering::Relaxed);
     assert!(
         out.status.success(),
@@ -114,49 +118,7 @@ fn config_store_names_the_daemons_file_by_asking_it() {
     assert_eq!(
         canon(named),
         canon(&w.daemon_db.to_string_lossy()),
-        "the named store must be the daemon's file, not $TASQX_DB's"
-    );
-    assert!(
-        !stdout.contains(&*w.env_db.to_string_lossy()),
-        "the client's inert local path must still not be presented (D47): {stdout}"
-    );
-}
-
-/// D74 / #246: a command that routes through a daemon while `$TASQX_DB` is set
-/// says the variable is not in effect — on stderr, every time the condition
-/// holds, including for the exact `add`+`list` pair that confirmed the
-/// 2026-07-25 operator in the wrong belief. The control run without the
-/// variable stays silent: quiet in the common case is the condition being
-/// rare, not the note being throttled.
-#[test]
-fn a_remote_routed_command_says_tasqx_db_is_not_in_effect() {
-    let w = world("inertenv");
-    let shutdown = start_daemon(&w);
-
-    let out = bin(&w).args(["list"]).output().expect("run list");
-    let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(out.status.success(), "list through the daemon: {stderr}");
-    assert!(
-        stderr.contains("$TASQX_DB is not in effect"),
-        "the path that ignores the variable must say the word: {stderr}"
-    );
-    assert!(
-        stderr.contains("--no-daemon"),
-        "the note must name the way out: {stderr}"
-    );
-
-    // Control: no $TASQX_DB, same daemon, same verb — silence.
-    let mut quiet = Command::new(env!("CARGO_BIN_EXE_tasqx"));
-    quiet
-        .env("TASQX_CONFIG_DIR", &w.config_dir)
-        .env("TASQX_SOCK", &w.sock)
-        .env_remove("TASQX_DB");
-    let out = quiet.args(["list"]).output().expect("run control");
-    shutdown.store(true, Ordering::Relaxed);
-    let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(
-        !stderr.contains("TASQX_DB"),
-        "with no variable set there is nothing to warn about: {stderr}"
+        "the named store must be the daemon's file"
     );
 }
 
@@ -630,4 +592,194 @@ fn an_unreachable_socket_from_env_discovery_gets_the_note_not_the_warning() {
         stderr.contains("no daemon at") && stderr.contains("running in-process against $TASQX_DB"),
         "env discovery gets D106's note instead, so a killed daemon does not look silent: {stderr}"
     );
+}
+
+/// Does a `list` against this command's target show `title`? `--json` keeps
+/// the check off the rendered table's truncation.
+fn lists(mut c: Command, title: &str) -> bool {
+    let out = c.args(["--json", "list"]).output().expect("run list");
+    assert!(
+        out.status.success(),
+        "list: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    String::from_utf8_lossy(&out.stdout).contains(title)
+}
+
+/// The daemon's own store, read through it with no `$TASQX_DB` in the way.
+fn via_daemon(w: &World) -> Command {
+    let mut c = Command::new(env!("CARGO_BIN_EXE_tasqx"));
+    c.env("TASQX_CONFIG_DIR", &w.config_dir)
+        .env("TASQX_SOCK", &w.sock)
+        .env_remove("TASQX_DB");
+    c
+}
+
+/// D204 case 1: `$TASQX_DB` naming the daemon's own store — spelled
+/// differently, so the canonical compare is what decides — routes through the
+/// daemon exactly as before, and says nothing: the variable IS in effect.
+#[test]
+fn tasqx_db_naming_the_daemons_own_store_routes_through_it_silently() {
+    let w = world("samedb");
+    let shutdown = start_daemon(&w);
+    let spelled = w
+        .daemon_db
+        .parent()
+        .expect("parent")
+        .join(".")
+        .join(w.daemon_db.file_name().expect("file name"));
+
+    let out = bin(&w)
+        .env("TASQX_DB", &spelled)
+        .args(["add", "d204 same store"])
+        .output()
+        .expect("run add");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(out.status.success(), "add through the daemon: {stderr}");
+    assert!(
+        !stderr.contains("tasqx: note"),
+        "$TASQX_DB names the daemon's store, so there is nothing to note: {stderr}"
+    );
+    assert!(
+        lists(via_daemon(&w), "d204 same store"),
+        "the write must land in the daemon's store"
+    );
+
+    let out = bin(&w)
+        .env("TASQX_DB", &spelled)
+        .args(["--json", "config", "store"])
+        .output()
+        .expect("run config store");
+    shutdown.store(true, Ordering::Relaxed);
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).expect("config store --json");
+    assert_eq!(json["backend"], "daemon", "{json}");
+    assert_eq!(json["routing"], "daemon_same_store", "{json}");
+}
+
+/// D204 case 3: `$TASQX_DB` and an explicit socket (`$TASQX_SOCK`, then
+/// `--socket`) that disagree are refused with exit 2, naming both files —
+/// and neither store is written.
+#[test]
+fn tasqx_db_disagreeing_with_an_explicit_socket_is_refused() {
+    let w = world("refused");
+    let shutdown = start_daemon(&w);
+    let daemon_name = w
+        .daemon_db
+        .file_name()
+        .expect("file name")
+        .to_string_lossy()
+        .into_owned();
+
+    let by_env = bin(&w)
+        .args(["add", "d204 refused"])
+        .output()
+        .expect("run add");
+    let by_flag = bin(&w)
+        .env_remove("TASQX_SOCK")
+        .args(["--socket", &w.sock, "add", "d204 refused"])
+        .output()
+        .expect("run add --socket");
+    for (how, out) in [("$TASQX_SOCK", &by_env), ("--socket", &by_flag)] {
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert_eq!(out.status.code(), Some(2), "{how}: {stderr}");
+        assert!(stderr.contains("error [bad_request]"), "{how}: {stderr}");
+        assert!(
+            stderr.contains(&*w.env_db.to_string_lossy()) && stderr.contains(&daemon_name),
+            "{how}: the refusal must name both stores: {stderr}"
+        );
+        assert!(
+            stderr.contains("--no-daemon"),
+            "{how}: and the way out: {stderr}"
+        );
+    }
+    assert!(
+        !lists(via_daemon(&w), "d204 refused"),
+        "the daemon's store must not be written"
+    );
+    shutdown.store(true, Ordering::Relaxed);
+    assert!(
+        !w.env_db.exists(),
+        "$TASQX_DB's store must not be created either"
+    );
+}
+
+/// D204 cases 2 and 4: a daemon found only on the DEFAULT socket that serves a
+/// different store than `$TASQX_DB` is not routed through — the command runs
+/// in-process against `$TASQX_DB`, silently, and `config store` says why. The
+/// default socket is moved under a scratch `$HOME` (short, under `/tmp`, for
+/// the Unix socket path limit); Windows' default is a fixed pipe name, so
+/// this is `#[cfg(unix)]` like the `#184` tests.
+#[cfg(unix)]
+#[test]
+fn a_default_socket_daemon_on_another_store_is_bypassed_for_tasqx_db() {
+    use std::io::BufRead;
+    let w = world("defsock");
+    let home = PathBuf::from(format!("/tmp/tq204-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&home);
+    std::fs::create_dir_all(&home).expect("create scratch HOME");
+    let at_home = || {
+        let mut c = Command::new(env!("CARGO_BIN_EXE_tasqx"));
+        c.env("TASQX_CONFIG_DIR", &w.config_dir)
+            .env("HOME", &home)
+            .env_remove("XDG_RUNTIME_DIR")
+            .env_remove("XDG_DATA_HOME")
+            .env_remove("TASQX_SOCK")
+            .env_remove("TASQX_DB");
+        c
+    };
+
+    let mut child = at_home()
+        .args(["daemon", "--db", &w.daemon_db.to_string_lossy()])
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .expect("spawn daemon");
+    let stderr = child.stderr.take().expect("piped stderr");
+    let (tx, rx) = std::sync::mpsc::channel();
+    thread::spawn(move || {
+        for line in std::io::BufReader::new(stderr)
+            .lines()
+            .map_while(Result::ok)
+        {
+            if let Some(rest) = line.strip_prefix("tasqx daemon: listening on ") {
+                let _ = tx.send(rest.trim_end_matches(" (Ctrl-C to stop)").to_string());
+            }
+        }
+    });
+    let sock = rx
+        .recv_timeout(Duration::from_secs(20))
+        .expect("the daemon must announce its default socket");
+
+    let mut add = at_home();
+    add.env("TASQX_DB", &w.env_db)
+        .args(["add", "d204 bypassed"]);
+    let out = add.output().expect("run add");
+    let add_stderr = String::from_utf8_lossy(&out.stderr).into_owned();
+
+    let mut local = at_home();
+    local.env("TASQX_DB", &w.env_db).arg("--no-daemon");
+    let in_env_db = lists(local, "d204 bypassed");
+    let in_daemon = lists(at_home(), "d204 bypassed");
+
+    let mut store = at_home();
+    store
+        .env("TASQX_DB", &w.env_db)
+        .args(["--json", "config", "store"]);
+    let store_out = store.output().expect("run config store");
+
+    let _ = child.kill();
+    let _ = child.wait();
+    let _ = std::fs::remove_dir_all(&home);
+
+    assert!(out.status.success(), "add: {add_stderr}");
+    assert!(
+        add_stderr.is_empty(),
+        "the bypass is silent (D204): {add_stderr}"
+    );
+    assert!(in_env_db, "the write must land in $TASQX_DB's store");
+    assert!(!in_daemon, "the daemon's store must not be written");
+    let json: serde_json::Value =
+        serde_json::from_slice(&store_out.stdout).expect("config store --json");
+    assert_eq!(json["backend"], "local", "{json}");
+    assert_eq!(json["routing"], "local_tasqx_db_differs", "{json}");
+    assert_eq!(json["bypassed_daemon"]["socket"], sock.as_str(), "{json}");
 }

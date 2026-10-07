@@ -26,8 +26,9 @@ Worth knowing:
   watch the whole screen repaint in each one before anything is written. It
   needs a real terminal; scripts use `set`/`unset`.
 - **`config store`** answers which SQLite file a command would actually write
-  to — including the case where a running daemon owns the store and your
-  `$TASQX_DB` is being ignored because of it.
+  to, and why: through a running daemon, or in-process — including the case
+  where your `$TASQX_DB` names a different file than the daemon serves, so
+  the daemon was passed over.
 
 ## tasqx theme
 

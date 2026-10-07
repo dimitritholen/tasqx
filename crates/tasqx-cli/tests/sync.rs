@@ -581,8 +581,9 @@ fn a_removed_annotation_is_gone_on_the_other_store_after_both_sync() {
 }
 
 /// A daemon serving `<root>/<name>/tasks.db` on a socket of this test's own,
-/// and a way to run the binary through it. `$TASQX_DB` names a file the daemon
-/// has never seen, so an answer that reached it came over the socket.
+/// and a way to run the binary through it. `$TASQX_DB` names the daemon's own
+/// file: one naming another file beside `$TASQX_SOCK` is refused (D204), and
+/// leaving it unset would aim a failed route at the real default store.
 struct Daemon<'w> {
     world: &'w World,
     dir: PathBuf,
@@ -636,13 +637,9 @@ impl<'w> Daemon<'w> {
         }
     }
 
-    fn env_db(&self) -> PathBuf {
-        self.world.root.join("env").join("tasks.db")
-    }
-
     fn ok(&self, args: &[&str]) -> String {
         let out = Command::new(env!("CARGO_BIN_EXE_tasqx"))
-            .env("TASQX_DB", self.env_db())
+            .env("TASQX_DB", self.dir.join("tasks.db"))
             .env("TASQX_SOCK", &self.sock)
             .env("TASQX_CONFIG_DIR", self.dir.join("cfg"))
             .env("PATH", &self.world.path_var)
@@ -679,8 +676,8 @@ impl<'w> Daemon<'w> {
 }
 
 /// Through a daemon, the daemon is the only writer: the merge lands in ITS
-/// store, `$TASQX_DB` is never opened, and the connector's state and the sync
-/// state sit beside the daemon's file (D5, D74).
+/// store, and the connector's state and the sync state sit beside the
+/// daemon's file (D5, D74).
 #[test]
 fn through_a_daemon_the_merge_lands_in_the_daemons_store_and_nothing_else() {
     let world = World::new("daemon");
@@ -693,11 +690,9 @@ fn through_a_daemon_the_merge_lands_in_the_daemons_store_and_nothing_else() {
     let d = Daemon::start(&world, "served");
     d.set_up();
     d.ok(&["sync"]);
-    let env_db = d.env_db();
     let served = d.dir.clone();
     let export = d.stop_and_export();
     assert_eq!(task(&export, "Book the ferry")["project"], "home");
-    assert!(!env_db.exists(), "$TASQX_DB was never opened");
     assert!(
         served.join("tasks.db.sync.json").is_file(),
         "sync state beside the daemon's store"
