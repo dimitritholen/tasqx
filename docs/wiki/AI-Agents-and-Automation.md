@@ -68,7 +68,7 @@ writes from `tasqx watch` or the desktop app: a running daemon notices changes
 made by other processes on its store, so they show up live, within about half
 a second.
 
-Thirty-three tools, one verb each. Ten reads: `list_tasks`, `get_task`,
+Thirty-four tools, one verb each. Ten reads: `list_tasks`, `get_task`,
 `brief_task`, `next`, `summary`, `outcomes`, `list_projects`, `search_memory`,
 `get_memory`, `list_memory`.
 Twenty-four writes: `add_task`, `modify_task`, `complete_task`, `reopen_task`,

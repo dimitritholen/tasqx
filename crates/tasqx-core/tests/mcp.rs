@@ -94,12 +94,12 @@ fn full_protocol_sequence() {
     }));
     assert!(note.is_none(), "notifications must not produce a response");
 
-    // 3. tools/list — all 33 tools present, each with an inputSchema.
+    // 3. tools/list — all 34 tools present, each with an inputSchema.
     let listed = server
         .handle_message(&json!({ "jsonrpc": "2.0", "id": 2, "method": "tools/list" }))
         .expect("tools/list is a request");
     let tools = listed["result"]["tools"].as_array().expect("tools array");
-    assert_eq!(tools.len(), 33, "expected 33 tools");
+    assert_eq!(tools.len(), 34, "expected 34 tools");
     assert!(tools.iter().any(|t| t["name"] == "tasqx_next"));
     let names: Vec<&str> = tools.iter().map(|t| t["name"].as_str().unwrap()).collect();
     for expected in [
@@ -3666,8 +3666,8 @@ fn the_read_only_refusal_names_the_flag_that_fixes_it() {
 /// so the cap moved from 35,584 to 36,608.
 ///
 /// D213 added `tasqx_next` and the `checks` and `depends_on` arguments on
-/// `tasqx_add_task`. Measured beside every tool above: 33 tools, 36,931 bytes,
-/// so the cap moved from 35,584 to 37,120.
+/// `tasqx_add_task`. Measured beside every tool above: 34 tools, 37,947 bytes,
+/// so the cap moved from 36,608 to 38,016.
 ///
 /// The floor is not zero. With every `description` key removed from the roster
 /// the same serialization is 11,597 bytes of schema skeleton — property names,
@@ -3679,7 +3679,7 @@ fn the_read_only_refusal_names_the_flag_that_fixes_it() {
 fn the_whole_tool_roster_stays_inside_its_per_prompt_budget() {
     const MAX_DESCRIPTION: usize = 800;
     const MAX_ENTRY: usize = 3_072;
-    const MAX_ROSTER: usize = 37_120;
+    const MAX_ROSTER: usize = 38_016;
 
     let engine = engine();
     let server = McpServer::new(&engine, Scope::Write);
