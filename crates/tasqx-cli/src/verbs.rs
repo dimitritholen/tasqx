@@ -837,9 +837,8 @@ fn annotation_body(be: &mut Backend, task: &str, id: &str) -> Result<String, tas
 // ponytail: no quoting in `editor`; an editor path with spaces needs a wrapper script.
 fn editor_body(editor: &str, initial: &str) -> Result<String, tasqx_core::ApiError> {
     use tasqx_core::ApiError;
-    let path = std::env::temp_dir().join(format!("tasqx-note-{}.md", std::process::id()));
-    std::fs::write(&path, initial)
-        .map_err(|e| ApiError::bad_request(format!("cannot write {}: {e}", path.display())))?;
+    let path = create_note_file(initial)
+        .map_err(|e| ApiError::bad_request(format!("cannot create the note file: {e}")))?;
     let mut parts = editor.split_whitespace();
     let status = std::process::Command::new(parts.next().unwrap_or("vi"))
         .args(parts)
@@ -855,12 +854,72 @@ fn editor_body(editor: &str, initial: &str) -> Result<String, tasqx_core::ApiErr
     }
     let body =
         edited.map_err(|e| ApiError::bad_request(format!("cannot read the note back: {e}")))?;
-    if body.trim().is_empty() || body == initial {
+    // Editors end a save with a newline the writer did not mean.
+    let body = body.trim_end().to_string();
+    if body.is_empty() || body == initial.trim_end() {
         return Err(ApiError::bad_request(
             "note empty or unchanged: nothing stored",
         ));
     }
     Ok(body)
+}
+
+/// Write `initial` to `path`, which must not exist (`create_new`, 0600 on
+/// unix), so a planted file or symlink there is refused, never followed.
+fn write_new(path: &std::path::Path, initial: &str) -> std::io::Result<()> {
+    use std::io::Write as _;
+    let mut opts = std::fs::OpenOptions::new();
+    opts.write(true).create_new(true);
+    #[cfg(unix)]
+    std::os::unix::fs::OpenOptionsExt::mode(&mut opts, 0o600);
+    opts.open(path)?.write_all(initial.as_bytes())
+}
+
+/// A fresh temp file holding `initial`; a taken name is retried with another
+/// suffix.
+fn create_note_file(initial: &str) -> std::io::Result<std::path::PathBuf> {
+    for attempt in 0..100u32 {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.subsec_nanos());
+        let path = std::env::temp_dir().join(format!(
+            "tasqx-note-{}-{nanos}-{attempt}.md",
+            std::process::id()
+        ));
+        match write_new(&path, initial) {
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            r => return r.map(|()| path),
+        }
+    }
+    Err(std::io::ErrorKind::AlreadyExists.into())
+}
+
+#[cfg(test)]
+mod annotation_body_tests {
+    use super::annotation_body;
+    use crate::backend::Backend;
+    use serde_json::json;
+    use tasqx_core::Engine;
+
+    /// `task.get` pages its notes; `--edit` on the oldest of 25 must still find it.
+    #[test]
+    fn the_oldest_of_many_notes_is_found() {
+        let mut be = Backend::Local(Engine::open_in_memory().unwrap());
+        be.call("task.add", &json!({ "title": "T" })).unwrap();
+        let mut first = String::new();
+        for i in 0..25 {
+            let r = be
+                .call(
+                    "annotation.add",
+                    &json!({ "ref": 1, "body": format!("note {i}") }),
+                )
+                .unwrap();
+            if i == 0 {
+                first = r["annotation"]["id"].as_str().unwrap().to_string();
+            }
+        }
+        assert_eq!(annotation_body(&mut be, "1", &first).unwrap(), "note 0");
+    }
 }
 
 #[cfg(all(test, unix))]
@@ -879,6 +938,51 @@ mod editor_body_tests {
     #[test]
     fn what_the_editor_saves_is_the_body() {
         assert_eq!(editor_body(&fake("a", "line one"), "").unwrap(), "line one");
+    }
+
+    /// Like `fake`, but `body` goes through printf's escapes (`\n`).
+    fn fake_raw(tag: &str, body: &str) -> String {
+        use std::os::unix::fs::PermissionsExt;
+        let p = std::env::temp_dir().join(format!("tasqx-fakeed-{tag}-{}.sh", std::process::id()));
+        std::fs::write(&p, format!("#!/bin/sh\nprintf '{body}' > \"$1\"\n")).unwrap();
+        std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
+        p.display().to_string()
+    }
+
+    #[test]
+    fn a_trailing_newline_from_the_editor_is_dropped() {
+        assert_eq!(
+            editor_body(&fake_raw("n", "text\\n\\n"), "").unwrap(),
+            "text"
+        );
+        // Unchanged is judged on the trimmed text: a save that only adds the newline aborts.
+        assert!(editor_body(&fake_raw("n2", "same\\n"), "same").is_err());
+    }
+
+    #[test]
+    fn a_planted_symlink_is_refused_not_followed() {
+        let dir = std::env::temp_dir().join(format!("tasqx-plant-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let victim = dir.join("victim");
+        std::fs::write(&victim, "precious").unwrap();
+        let link = dir.join("link");
+        std::os::unix::fs::symlink(&victim, &link).unwrap();
+        let err = super::write_new(&link, "overwritten").unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::AlreadyExists);
+        assert_eq!(std::fs::read_to_string(&victim).unwrap(), "precious");
+        // A real note file is private and distinct per call.
+        let (a, b) = (
+            super::create_note_file("x").unwrap(),
+            super::create_note_file("y").unwrap(),
+        );
+        assert_ne!(a, b);
+        let mode =
+            std::os::unix::fs::PermissionsExt::mode(&std::fs::metadata(&a).unwrap().permissions());
+        assert_eq!(mode & 0o777, 0o600);
+        let _ = std::fs::remove_file(a);
+        let _ = std::fs::remove_file(b);
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]
