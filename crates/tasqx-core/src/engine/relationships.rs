@@ -21,6 +21,10 @@ impl Engine {
         let ts = now();
         let tx = self.begin_mutation()?;
         let task = self.resolve_ref_on(&tx, p)?;
+        // D215: which of the requested tags this call really attached, so
+        // `undo` takes off those and not one the task already carried.
+        let present = task_tags(&tx, &task.id)?;
+        let added: Vec<&String> = tags.iter().filter(|t| !present.contains(t)).collect();
         for tag in &tags {
             ensure_tag_link(&tx, &task.id, tag)?;
         }
@@ -33,7 +37,7 @@ impl Engine {
             Entity::Task,
             &task.id,
             "tag.add",
-            &json!({ "tags": tags }),
+            &json!({ "tags": tags, "added": added }),
         )?;
 
         // Re-read the full tag set inside the transaction for the response.

@@ -874,6 +874,13 @@ const PARAM_DOCS: &[(&str, &str, &str, &str, &str)] = &[
         "The project to archive. Archiving hides it from the list; it removes nothing.",
     ),
     (
+        "project.unarchive",
+        "name",
+        "string",
+        "",
+        "The archived project to put back into rotation. A project that is not archived is a `conflict`.",
+    ),
+    (
         "token.add",
         "source",
         "string",
@@ -1282,6 +1289,13 @@ const EXAMPLES: &[Example] = &[
         fixture: "api-project-archive",
         response: "",
         why: "",
+    },
+    Example {
+        method: "project.unarchive",
+        request: r#"{"tasqx":"1","id":"pun1","method":"project.unarchive","params":{"name":"mobile"}}"#,
+        fixture: "",
+        response: r#"{"id":"pun1","ok":true,"result":{"archived":false,"name":"mobile","open_tasks":0},"tasqx":"1"}"#,
+        why: "the example store has no archived project to put back, so the response is typed; `project_unarchive` in the core tests pins its shape.",
     },
     Example {
         method: "task.add",

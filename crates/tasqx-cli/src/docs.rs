@@ -69,10 +69,11 @@ mod obj_ref;
 /// which is unassertable prose-equivalence. So the column is gone and the page
 /// renders [`crate::cmddoc`]'s summary instead. One string per verb, used by
 /// both surfaces, with no second copy left to drift.
-const VERBS: [(&str, &str, &str); 46] = [
+const VERBS: [(&str, &str, &str); 47] = [
     ("init", "—", "project.create"),
     ("use", "—", "project.use"),
     ("archive", "—", "project.archive"),
+    ("unarchive", "—", "project.unarchive"),
     ("add", "<code>a</code>, <code>new</code>", "task.add"),
     (
         "modify",
@@ -155,7 +156,7 @@ const VERBS: [(&str, &str, &str); 46] = [
 
 /// The method table the JSON API page renders: `(method, params, returns)`.
 /// Single source, same reason as [`VERBS`].
-const METHODS: [(&str, &str, &str); 51] = [
+const METHODS: [(&str, &str, &str); 52] = [
     (
         "project.create",
         "<code>name</code>, <code>description?</code>",
@@ -176,6 +177,11 @@ const METHODS: [(&str, &str, &str); 51] = [
         "project.archive",
         "<code>name</code>",
         "The archived project, plus <code>default_cleared</code>.",
+    ),
+    (
+        "project.unarchive",
+        "<code>name</code>",
+        "<code>{name, archived, open_tasks}</code>. Puts an archived project back into rotation.",
     ),
     (
         "task.add",
@@ -2517,7 +2523,7 @@ fn p(html: &str) -> String {
 /// written for a word — extending it is a one-line edit the day a roster grows
 /// that far, which is cheaper than the sentence going stale unwatched.
 fn count_word(n: usize) -> &'static str {
-    const WORDS: [&str; 18] = [
+    const WORDS: [&str; 19] = [
         "zero",
         "one",
         "two",
@@ -2540,6 +2546,8 @@ fn count_word(n: usize) -> &'static str {
         "fifteen",
         "sixteen",
         "seventeen",
+        // Eighteen when `project.unarchive` joined (D215).
+        "eighteen",
     ];
     WORDS
         .get(n)

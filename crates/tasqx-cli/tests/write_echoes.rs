@@ -243,6 +243,18 @@ fn undo_store(tag: &str, op: &str, title: &str) -> Store {
             st.plain(&["dep", "1", "2"]);
             st.plain(&["undep", "1", "2"]);
         }
+        "done" => {
+            st.plain(&["done", "1"]);
+        }
+        "cancel" => {
+            st.plain(&["cancel", "1"]);
+        }
+        "tag.add" => {
+            st.plain(&["tag", "1", "urgent"]);
+        }
+        "modify" => {
+            st.plain(&["modify", "1", "due:monday", "--clear", "project"]);
+        }
         other => panic!("no seed for {other}"),
     }
     st
@@ -909,4 +921,30 @@ fn bare_chart_draws_throughput() {
     let bare = st.plain(&["chart"]);
     assert_eq!(bare, st.plain(&["chart", "throughput"]));
     assert!(!bare.contains("Usage:"), "{bare}");
+
+/// D215: `undo` reaches `done`, `cancel`, `tag` and `modify`, and the line says
+/// exactly what it reverted.
+#[test]
+fn undo_names_what_it_reverted_for_done_cancel_tag_and_modify() {
+    let out = undo_store("undo-done", "done", "Write the report").plain(&["undo"]);
+    assert!(out.contains("undid done"), "{out}");
+    assert!(out.contains("back to pending"), "{out}");
+    assert!(out.starts_with("#1  Write the report"), "{out}");
+
+    let out = undo_store("undo-cancel", "cancel", "Write the report").plain(&["undo"]);
+    assert!(out.contains("undid cancel"), "{out}");
+    assert!(out.contains("back to pending"), "{out}");
+
+    let out = undo_store("undo-tag", "tag.add", "Write the report").plain(&["undo"]);
+    assert!(out.contains("undid tag"), "{out}");
+    assert!(out.contains("+urgent taken off"), "{out}");
+
+    let out = undo_store("undo-modify", "modify", "Write the report").plain(&["undo"]);
+    assert!(out.contains("undid modify"), "{out}");
+    assert!(
+        out.contains("restored") && out.contains("due") && out.contains("project"),
+        "{out}"
+    );
+    assert!(out.contains("project is work again"), "{out}");
+    assert!(out.contains("due is cleared again"), "{out}");
 }

@@ -992,7 +992,10 @@ impl Engine {
         // #12: the done event carries the correlation record for this
         // completion — see `commands::Correlation` for why it lives in the
         // event payload rather than on the task row.
-        let mut done_payload = json!({ "completed": ts });
+        // D215: `from` is the status this completion left, so `undo` can put it
+        // back; with `interval_started` it also says how long the closed
+        // interval was (`completed` minus the start).
+        let mut done_payload = json!({ "completed": ts, "from": task.status.as_str() });
         // D189: completing a running task closes its interval, and names it.
         if task.status == Status::Active {
             done_payload["interval_started"] = json!(task.active_since);
@@ -1038,7 +1041,19 @@ impl Engine {
         // leave the caller unable to tell which happened, and this is inside
         // the same transaction as the completion, so the refusal takes the
         // completion with it.
+        // D215: what each proven criterion held before, for `undo`.
+        let mut checks_before: Vec<Value> = Vec::new();
         for id in &checks_passed {
+            let prior: Option<(String, Option<String>)> = tx
+                .query_row(
+                    "SELECT state, evidence FROM checks WHERE id = ?1 AND task_id = ?2",
+                    params![id, task.id],
+                    |r| Ok((r.get(0)?, r.get(1)?)),
+                )
+                .optional()?;
+            if let Some((state, ev)) = prior {
+                checks_before.push(json!({ "id": id, "state": state, "evidence": ev }));
+            }
             let changed = tx.execute(
                 "UPDATE checks SET state = 'passed', evidence = COALESCE(?1, evidence), \
                  modified = ?2 WHERE id = ?3 AND task_id = ?4",
@@ -1047,6 +1062,9 @@ impl Engine {
             if changed == 0 {
                 return Err(relationships::no_such_check(&tx, &task, id)?);
             }
+        }
+        if !checks_before.is_empty() {
+            done_payload["checks_before"] = json!(checks_before);
         }
         insert_event(&tx, Entity::Task, &task.id, "done", &done_payload)?;
 
@@ -1735,6 +1753,23 @@ impl Engine {
         if let Some(name) = &project_target {
             require_live_project(&tx, name)?;
         }
+        // D215: what every column this call writes held before it, for `undo`.
+        // `tracked` and a cancellation of a running task write columns that
+        // are not in `assignments`, so they are named here too. First reading
+        // wins: the original value, whichever branch writes it first.
+        let mut before = serde_json::Map::new();
+        let mut wrote: Vec<&str> = assignments.iter().map(|(c, _)| *c).collect();
+        if new_tracked_seconds.is_some() {
+            wrote.extend(["tracked_seconds", "tracked_adjustment_seconds"]);
+        }
+        if cancelling && task.status == Status::Active {
+            wrote.extend(["active_since", "tracked_seconds"]);
+        }
+        for col in wrote {
+            if !before.contains_key(col) {
+                before.insert(col.to_string(), column_json(&tx, &task.id, col)?);
+            }
+        }
         for (col, val) in &assignments {
             update_column(&tx, &task.id, col, val)?;
         }
@@ -1778,13 +1813,11 @@ impl Engine {
             "UPDATE tasks SET urgency=?1, rev=?2, modified=?3 WHERE id=?4",
             params![new_urg, new_rev, ts, task.id],
         )?;
-        insert_event(
-            &tx,
-            Entity::Task,
-            &task.id,
-            "modify",
-            &Value::Object(set.clone()),
-        )?;
+        insert_event(&tx, Entity::Task, &task.id, "modify", &{
+            let mut payload = set.clone();
+            payload.insert("before".to_string(), Value::Object(before));
+            Value::Object(payload)
+        })?;
         tx.commit()?;
 
         let mut out = json!({ "short_id": task.short_id, "_rev": new_rev, "set": resolved_set });
@@ -2097,9 +2130,35 @@ impl Engine {
         // number, only ever used to compare below and to render the `tokens`
         // field when projected.
         let mut tasks: Vec<(TaskSnapshot, crate::tokens::TokenTotals)> = Vec::new();
+        // D215: the working set is what to do next, and a shelved project is
+        // not. Its tasks stay in every other read; `@working` leaves them out
+        // unless the filter names the project.
+        let shelved: Vec<String> = if filter.mentions_working() {
+            let named = filter.project_names();
+            let mut stmt = self
+                .conn
+                .prepare("SELECT name FROM projects WHERE archived = 1")?;
+            let names = stmt.query_map([], |r| r.get::<_, String>(0))?;
+            let mut v = Vec::new();
+            for n in names {
+                let n = n?;
+                if !named.contains(&n.as_str()) {
+                    v.push(n);
+                }
+            }
+            v
+        } else {
+            Vec::new()
+        };
         for mut snapshot in all.drain(..) {
             let t = &mut snapshot.task;
             t.urgency = urgency::score_at(t.priority, t.due.as_deref(), &t.created, now_ts);
+            if matches!(t.status, Status::Pending | Status::Active)
+                && !snapshot.blocked
+                && t.project.as_ref().is_some_and(|p| shelved.contains(p))
+            {
+                continue;
+            }
             let ctx = MatchCtx::from(&snapshot);
             if filter.matches_titled(&ctx, &snapshot.task.title) {
                 let totals = if want_tokens {
@@ -3399,6 +3458,8 @@ impl Engine {
         // D189: cancelling a running task closes its interval, and names it.
         if task.status == Status::Active {
             cancel_payload["interval_started"] = json!(task.active_since);
+            // D215: the seconds it folded in, exactly, for `undo`.
+            cancel_payload["interval"] = json!(iso_duration(elapsed));
         }
 
         tx.execute(
@@ -4442,14 +4503,6 @@ mod tests {
             prev["spawned_from"],
             Value::Null,
             "a first occurrence has none"
-        );
-
-        // Undo cannot take the completion back piecemeal: the newest event is
-        // still the spawn's `add`, which is refused, so the copies stay with it.
-        assert!(e.event_revert().is_err());
-        assert_eq!(
-            e.task_get(&json!({ "ref": spawn })).unwrap()["checks"],
-            got["checks"]
         );
 
         // Written after the completion, so it is not the pinned delivery

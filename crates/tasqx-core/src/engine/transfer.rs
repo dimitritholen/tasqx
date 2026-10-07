@@ -4710,6 +4710,75 @@ mod tests {
         assert_eq!(exported_row(&b, &id)["title"], json!("later, on b"));
     }
 
+    /// D215: A undoes a `done`/`cancel` after B already pulled the original.
+    /// The undo is a later write of the status group, so B takes the reopened
+    /// row, and the merge converges in both directions.
+    #[test]
+    fn store_import_merge_carries_an_undone_done_and_an_undone_cancel() {
+        for cancel in [false, true] {
+            let (a, b, id, sid) = one_task_on_two_machines();
+            tick(&[&a, &b]);
+            if cancel {
+                a.task_cancel(&json!({ "ref": sid })).expect("cancel on a");
+            } else {
+                a.task_done(&json!({ "ref": sid })).expect("done on a");
+            }
+            tick(&[&a, &b]);
+            merge_into(&b, &a);
+            let closed = if cancel { "cancelled" } else { "done" };
+            assert_eq!(exported_row(&b, &id)["status"], json!(closed));
+            tick(&[&a, &b]);
+            a.event_revert().expect("undo on a");
+            tick(&[&a, &b]);
+            // B's row is now the later one by `modified`, so only the undo's
+            // own place in the status log can hand the group to A.
+            b.annotation_add(&json!({ "ref": sid, "body": "unrelated, on b" }))
+                .expect("note on b");
+
+            merge_into(&b, &a);
+            let row = exported_row(&b, &id);
+            assert_eq!(row["status"], json!("pending"), "cancel={cancel}: {row}");
+            assert_eq!(row["completed"], Value::Null, "cancel={cancel}: {row}");
+            merge_into(&a, &b);
+            assert_eq!(exported_row(&a, &id)["status"], json!("pending"));
+        }
+    }
+
+    /// D215: an undone `modify` writes the restored fields back on the other
+    /// store; and when that store changed the same field after the undo, the
+    /// later write is the one both stores end on.
+    #[test]
+    fn store_import_merge_carries_an_undone_modify_and_yields_to_a_later_edit() {
+        let (a, b, id, sid) = one_task_on_two_machines();
+        tick(&[&a, &b]);
+        a.task_modify(&json!({ "ref": sid, "set": { "title": "typo" } }))
+            .expect("modify on a");
+        tick(&[&a, &b]);
+        merge_into(&b, &a);
+        assert_eq!(exported_row(&b, &id)["title"], json!("typo"));
+        tick(&[&a, &b]);
+        a.event_revert().expect("undo on a");
+        tick(&[&a, &b]);
+        b.annotation_add(&json!({ "ref": sid, "body": "unrelated, on b" }))
+            .expect("note on b");
+        merge_into(&b, &a);
+        assert_eq!(exported_row(&b, &id)["title"], json!("shared work"));
+
+        // Same field again, the other way round: B edits after A's undo.
+        tick(&[&a, &b]);
+        a.task_modify(&json!({ "ref": sid, "set": { "title": "second typo" } }))
+            .expect("modify on a");
+        tick(&[&a, &b]);
+        a.event_revert().expect("undo on a");
+        tick(&[&a, &b]);
+        b.task_modify(&json!({ "ref": sid, "set": { "title": "chosen on b" } }))
+            .expect("modify on b");
+        merge_into(&a, &b);
+        merge_into(&b, &a);
+        assert_eq!(exported_row(&a, &id)["title"], json!("chosen on b"));
+        assert_eq!(exported_row(&b, &id)["title"], json!("chosen on b"));
+    }
+
     /// D189: importing one document twice changes nothing the second time —
     /// every tracked delta in it is already in this store's log.
     #[test]

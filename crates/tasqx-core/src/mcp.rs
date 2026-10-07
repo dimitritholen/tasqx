@@ -485,6 +485,12 @@ const UNEXPOSED_METHODS: &[(&str, &str)] = &[
         "retiring a project is a decision about the human's workspace, not about the work.          An agent asked to tidy the project list is being asked to make that decision on          their behalf, and the CLI is where it belongs.",
     ),
     (
+        "project.unarchive",
+        "the other half of `project.archive`, and for the same reason: whether a project is in \
+         rotation is a decision about the human's workspace (D215), and the CLI is where it \
+         belongs.",
+    ),
+    (
         "project.use",
         "ruled out by D22: an agent has `project` on `task.add` and should name it, rather          than silently re-aiming the human's default for every later call, including the          human's own.",
     ),

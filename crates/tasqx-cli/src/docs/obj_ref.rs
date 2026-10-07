@@ -613,7 +613,8 @@ fn task_lifecycle() -> String {
         p("<strong>Blocked</strong> is not a status either: it is the \
            <a href=\"#obj-dependency\"><code>blocked</code></a> flag, true while an open task \
            waits on a task that is neither done nor cancelled. <code>@working</code> is pending \
-           or active and not blocked, and <code>task.done</code> refuses a blocked task unless \
+           or active and not blocked, and an archived project's tasks are left out of it unless the \
+           filter names the project (D215). <code>task.done</code> refuses a blocked task unless \
            <code>force</code> records the override (D150)."),
     )
 }

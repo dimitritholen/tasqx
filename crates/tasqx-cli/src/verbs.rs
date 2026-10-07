@@ -1197,6 +1197,14 @@ pub(crate) fn run_archive(be: &mut Backend, ctx: &Ctx, name: String) -> CmdOutco
     Ok((result, text))
 }
 
+/// D215: put an archived project back into rotation. The mirror of
+/// [`run_archive`]; the core decides unknown (exit 4) and not-archived (exit 5).
+pub(crate) fn run_unarchive(be: &mut Backend, ctx: &Ctx, name: String) -> CmdOutcome {
+    let result = be.call("project.unarchive", &json!({ "name": name }))?;
+    let text = render::project_unarchived(ctx, &result);
+    Ok((result, text))
+}
+
 pub(crate) fn run_projects(be: &mut Backend, ctx: &Ctx, all: bool) -> CmdOutcome {
     let result = be.call("project.list", &json!({ "include_archived": all }))?;
     let text = render::project_table(ctx, &result);

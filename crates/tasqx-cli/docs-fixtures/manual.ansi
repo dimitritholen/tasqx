@@ -40,6 +40,7 @@
   undep        Remove a dependency edge.
   use          Set the default project for bare adds.
   archive      Retire a project — out of rotation, tasks untouched.
+  unarchive    Put an archived project back into rotation.
   projects     List projects (default marked with `*`).
   check        Acceptance criteria on a task: add, mark, drop.
   brief        Everything needed before starting a task, in one read.

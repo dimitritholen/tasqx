@@ -171,11 +171,26 @@ tasqx undo
 
 `undo` is deliberately narrow, and honest about it:
 
-- Seven operations are undoable: `stop`, `untag`, `undep`, `annotate`,
-  `annotate --edit`, `annotate --move` and `adjust`.
-  Everything else is refused *by name*, with the command that does take it
-  back — undoing a `done` is `tasqx reopen`, undoing a `modify` is a second
-  `modify`.
+- Eleven operations are undoable: `done`, `cancel`, `modify`, `tag`, `stop`,
+  `untag`, `undep`, `annotate`, `annotate --edit`, `annotate --move` and
+  `adjust`. Everything else is refused *by name*, with the command that does
+  take it back — undoing a `start` is `tasqx stop`, undoing an `archive` is
+  `tasqx unarchive`.
+- Undoing a **`done`** puts the task back in the status it left. If it was
+  running, the interval reopens and its time comes back off the total; criteria
+  the completion proved (`--check`) go back to open. If completing it spawned
+  the next instance of a recurring task, that instance is removed too — but only
+  while nothing has touched it. Touch it (annotate it, change it, start it) and
+  undo refuses, naming it, rather than throw your work away. A completion that
+  also recorded a token measurement is refused too: a measurement is the record
+  of what a turn cost, and `undo` does not retract one.
+- Undoing a **`cancel`** puts back the status it left. Undoing a **`modify`**
+  puts back every field it changed, and the answer lists them, so a cleared
+  `project` is back and `due` is cleared again. Undoing a **`tag`** takes off
+  only the tags that call attached, not one the task already had.
+- A `modify` or `tag` written by an older tasqx did not record what it
+  replaced, so undo refuses those and says so; from this version on every one
+  does.
 - It reverses the newest *recorded* event, which is not always the last
   command you typed: a command that changed nothing recorded nothing, so undo
   reaches past it. That's why the answer names exactly what it undid — read it.

@@ -2547,22 +2547,20 @@ fn annotation_remove_of_an_unknown_id_lists_the_tasks_live_annotations() {
 #[test]
 fn undo_refuses_an_operation_outside_the_closed_set_and_names_the_way_back() {
     for (setup, op, way_back) in [
-        ("modify", "modify", "tasqx show"),
-        ("done", "done", "tasqx reopen"),
+        ("start", "start", "tasqx stop"),
+        ("reopen", "reopen", "tasqx done"),
         ("add", "add", "tasqx cancel"),
     ] {
         let e = engine();
         let (task, _) = undo_fixture(&e);
         let by_ref = json!({ "ref": task["short_id"].clone() });
         match setup {
-            "modify" => {
-                e.task_modify(
-                    &json!({ "ref": task["short_id"].clone(), "set": { "title": "typo" } }),
-                )
-                .expect("modify");
+            "start" => {
+                e.task_start(&by_ref).expect("start");
             }
-            "done" => {
+            "reopen" => {
                 e.task_done(&by_ref).expect("done");
+                e.task_reopen(&by_ref).expect("reopen");
             }
             // `add` needs no setup: the fixture's own last event is the tag.add,
             // so add one more task and its `add` is the newest event.

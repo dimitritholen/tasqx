@@ -84,6 +84,7 @@ help-dep	pipe	100	-	dep --help	-	-
 help-undep	pipe	100	-	undep --help	-	-
 help-use	pipe	100	-	use --help	-	-
 help-archive	pipe	100	-	archive --help	-	-
+help-unarchive	pipe	100	-	unarchive --help	-	-
 help-projects	pipe	100	-	projects --help	-	-
 help-report	pipe	100	-	report --help	-	-
 help-chart	pipe	100	-	chart --help	-	-

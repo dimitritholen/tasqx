@@ -262,6 +262,7 @@ pub const COMMAND_REF: &[CmdDoc] = &[
         notes: &[
             "The single highest-urgency unblocked task — the \"what now\" button.",
             "A filter narrows `@working` rather than replacing it: `tasqx next project:work` still skips blocked and backlog tasks in that project, unlike `tasqx list project:work` which shows every status once a filter is given.",
+            "Tasks in an archived project are left out (D215) unless the filter names the project: `tasqx next project:old` reaches an archived `old`. `tasqx unarchive old` puts the whole project back.",
             "`--card` prints the picked task as a fixed 72-column box-drawn card meant to be \
              pasted into a document (a chat, a PR); `--ascii` draws its borders with `+ - |`. \
              The default screen is unchanged (D146).",
@@ -507,11 +508,12 @@ pub const COMMAND_REF: &[CmdDoc] = &[
         ],
         notes: &[
             "It takes no ref, and that is the design: only the NEWEST event can be reversed exactly, because nothing has happened since to have read or overwritten what the inverse puts back.",
-            "Seven operations are undoable — `stop`, `untag`, `undep`, `annotate`, `annotate --edit`, `annotate --move` and `adjust`. Every other one exits 5 naming itself and the verb that does take it back (`done` -> `tasqx reopen`, `modify` -> `tasqx show` then a second `modify`).",
+            "Eleven operations are undoable — `done`, `cancel`, `modify`, `tag`, `stop`, `untag`, `undep`, `annotate`, `annotate --edit`, `annotate --move` and `adjust`. Every other one exits 5 naming itself and the verb that does take it back (`start` -> `tasqx stop`, `archive` -> `tasqx unarchive`).",
+            "Undoing a `done` puts the task back in the status it left, takes a running interval back off the total, and reopens the criteria the completion proved. A recurring task's next instance is removed with it when nothing has touched that instance; if it was touched, or the completion recorded a token measurement, undo refuses and says which. Undoing a `cancel` restores the status it left. Undoing a `modify` puts back every field it changed, and the answer lists them; a `modify` or `tag` recorded by an older tasqx did not note what it replaced, so undo refuses those and says so.",
             "Undo APPENDS: the event it reverses stays in the log and a new `undo` event lands behind it, so `tasqx chart` and the audit trail read `X happened, then it was undone`.",
             "There is no redo, so `tasqx undo` twice in a row exits 5: the second one would find the first undo as the newest event and the pair would toggle forever.",
             "It reverses the newest RECORDED event, which is not always the last command you typed. A command that changed nothing records nothing — `tasqx undep 1 2` where no such edge exists, or `tasqx start` on a task already running — so `undo` reaches past it to the previous change. That is why the answer names what it undid: read it before assuming it hit what you were aiming at.",
-            "A single event outside the undoable five permanently blocks undo for everything BEFORE it, not just for itself: the newest event on an active store is almost always `add`, `done` or `modify`, and once one of those lands, an annotation from ten seconds earlier can never be reached (#228.2). This is a same-breath affordance — undo the thing you just did — not an undo stack.",
+            "A single event outside the undoable eleven permanently blocks undo for everything BEFORE it, not just for itself: the newest event on an active store is often `add` or `start`, and once one of those lands, an annotation from ten seconds earlier can never be reached (#228.2). This is a same-breath affordance — undo the thing you just did — not an undo stack.",
         ],
         see_also: &["untag", "undep", "reopen", "chart"],
         topic: Topic::Capturing,
@@ -659,10 +661,28 @@ pub const COMMAND_REF: &[CmdDoc] = &[
         notes: &[
             "Archiving is a shelf, not a delete: the tasks keep their history and their project, and `tasqx projects --all` still lists the project.",
             "An archived project is out of rotation for WRITES — `use` refuses it (exit 5), and so does an `add`/`modify` that names it, and so does a second `archive` of it (`project is already archived`, exit 5). No write may name an archived project, this one included; `store.import` restoring the flag from a document is the one write that still can. Reads are unaffected: `list`, `report` and `agenda` still show it and its tasks — archiving is a rotation change, not a hide.",
-            "There is no `unarchive` verb and no `project.unarchive` method: among the project methods, archiving is one-way. `store.import` does write a project's `archived` flag from the document, so restoring a saved export un-archives one — a data restore, not an undo.",
+            "`tasqx unarchive <name>` is the way back (D215). `undo` does not reverse an archive: the archive may also have cleared your default project, which the log does not restore.",
+            "Tasks in an archived project are left out of `tasqx next` and of `@working` — the working set is what to do next — unless the filter names the project, as in `tasqx next project:old`. `list`, `report` and `agenda` are unaffected.",
             "Archiving the project that IS the default clears the default: a bare `tasqx add` then has no project until `tasqx use <project>`. The line says which of the two happened.",
         ],
         see_also: &["projects", "use", "init"],
+        topic: Topic::Projects,
+    },
+    CmdDoc {
+        verb: "unarchive",
+        aliases: &[],
+        method: "project.unarchive",
+        summary: "Put an archived project back into rotation.",
+        usage: "tasqx unarchive <name>",
+        examples: &[ex_norun(
+            "tasqx unarchive keuken-verbouwen",
+            "put it back among the projects `use`, `add` and `next` take",
+        )],
+        notes: &[
+            "Only an archived project can be unarchived: a project that is not is a `conflict` (exit 5), an unknown name is exit 4. Its tasks never left, so nothing is restored besides the project itself.",
+            "It does not re-point the default project an archive may have cleared; `tasqx use <name>` does that.",
+        ],
+        see_also: &["archive", "projects", "use"],
         topic: Topic::Projects,
     },
     CmdDoc {

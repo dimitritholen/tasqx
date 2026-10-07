@@ -140,6 +140,21 @@ pub const R_PROJECT_ARCHIVE: &[FieldDoc] = &[
     ),
 ];
 
+/// `project.unarchive`'s result.
+pub const R_PROJECT_UNARCHIVE: &[FieldDoc] = &[
+    f(
+        "name",
+        "string",
+        "The project that was put back into rotation.",
+    ),
+    f("archived", "boolean", "Always false on success."),
+    f(
+        "open_tasks",
+        "integer",
+        "How much open work it holds, so the line can say what just came back into `next` (D215).",
+    ),
+];
+
 /// `task.add`'s result.
 pub const R_TASK_ADD: &[FieldDoc] = &[
     f("id", "string", "The new task's uuid — stable, and what an export and an import agree on."),
@@ -1600,7 +1615,7 @@ pub const R_EVENT_REVERT: &[FieldDoc] = &[
     f("reverted", "object", "The event that was undone."),
     f("short_id", "integer", "The task's short id — the small number every `ref` accepts and the CLI prints."),
     f("title", "string", "The title of the task the undo touched."),
-    f("restored", "object", "What the inverse put back — per-op, the undo's own vocabulary."),
+    f("restored", "object", "What the inverse put back — per-op: `done` and `cancel` answer `{status, tracked?, interval_started?, checks?, removed_spawn?}`, `modify` answers `{fields}` (each restored column and its value), `tag.add` answers `{removed}`."),
     f("_rev", "integer", "The task's revision counter. The methods that change the task or its tags, notes, checks and dependencies bump it; `token.add`, `token.remove` and `reminder.fire` leave it alone. Send it back as `expected_rev` to make a change conditional."),
 ];
 
@@ -1668,6 +1683,7 @@ pub fn result_shape(method: &str) -> &'static [(&'static str, &'static [FieldDoc
         ],
         "project.use" => &[("result", R_PROJECT_USE)],
         "project.archive" => &[("result", R_PROJECT_ARCHIVE)],
+        "project.unarchive" => &[("result", R_PROJECT_UNARCHIVE)],
         "task.add" => &[("result", R_TASK_ADD), ("result.checks[]", TASK_ADD_CHECK)],
         "task.next" => &[
             ("result", R_TASK_NEXT),

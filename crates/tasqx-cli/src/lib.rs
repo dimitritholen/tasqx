@@ -1094,6 +1094,7 @@ fn execute(cli: Cli) -> Exit {
         }
         Some(Command::Use { name }) => run_use(&mut backend, &ctx, name),
         Some(Command::Archive { name }) => run_archive(&mut backend, &ctx, name),
+        Some(Command::Unarchive { name }) => run_unarchive(&mut backend, &ctx, name),
         Some(Command::Projects { all }) => run_projects(&mut backend, &ctx, all),
         Some(Command::Report {
             args,

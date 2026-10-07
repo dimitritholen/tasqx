@@ -651,7 +651,7 @@ pub(super) enum Command {
     /// else, because that is the only position from which its inverses are exact
     /// rather than plausible (see `engine/undo.rs`); a `<ref>` here would look
     /// like a courtesy and would silently reach past whatever happened
-    /// elsewhere. Seven operations are undoable and every other one refuses by
+    /// elsewhere. Eleven operations are undoable and every other one refuses by
     /// name, saying what does take it back.
     #[command(alias = "u", after_help = crate::cmddoc::after_help("undo"))]
     Undo,
@@ -810,6 +810,20 @@ pub(super) enum Command {
         // reason for THIS site is written down, and where the carve-out this
         // site used to need is recorded as retired.
         #[arg(value_name = "PROJECT", add = crate::complete::candidates::projects())]
+        name: String,
+    },
+    /// Put an archived project back into rotation (maps to project.unarchive).
+    ///
+    /// D215: the mirror of `archive`. The project's tasks never left; this puts
+    /// the project back among the ones `use`, `add` and `next` take. A project
+    /// that is not archived is a `conflict` (exit 5). It does not re-point the
+    /// default project an archive may have cleared; `tasqx use` does.
+    #[command(after_help = crate::cmddoc::after_help("unarchive"))]
+    Unarchive {
+        /// An archived project name.
+        //
+        // Offers archived projects too: they are exactly what this takes.
+        #[arg(value_name = "PROJECT", add = crate::complete::candidates::projects_including_archived())]
         name: String,
     },
     /// List projects (maps to project.list).

@@ -44,6 +44,7 @@ pub const PARAMS: &[(&str, &[&str], bool)] = &[
     ("project.list", &["include_archived"], false),
     ("project.use", &["name"], false),
     ("project.archive", &["name"], false),
+    ("project.unarchive", &["name"], false),
     (
         "task.add",
         &[
@@ -419,6 +420,7 @@ pub fn dispatch(engine: &Engine, method: &str, params: &Value) -> Result<Value, 
         "project.list" => engine.project_list(params),
         "project.use" => engine.project_use(params),
         "project.archive" => engine.project_archive(params),
+        "project.unarchive" => engine.project_unarchive(params),
         "check.add" => engine.check_add(params),
         "check.set" => engine.check_set(params),
         "check.remove" => engine.check_remove(params),
