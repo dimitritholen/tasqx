@@ -783,3 +783,51 @@ fn a_default_socket_daemon_on_another_store_is_bypassed_for_tasqx_db() {
     assert_eq!(json["routing"], "local_tasqx_db_differs", "{json}");
     assert_eq!(json["bypassed_daemon"]["socket"], sock.as_str(), "{json}");
 }
+
+/// #1122/D208: `mcp serve` with `$TASQX_SOCK` set says once, on stderr, that
+/// the variable is ignored; stdout stays the JSON-RPC channel.
+#[test]
+fn mcp_serve_says_an_ambient_socket_is_ignored() {
+    use std::io::Write;
+    let w = world("mcpsock");
+    let mut child = Command::new(env!("CARGO_BIN_EXE_tasqx"))
+        .env("TASQX_CONFIG_DIR", &w.config_dir)
+        .env("TASQX_SOCK", &w.sock)
+        .env("TASQX_DB", &w.env_db)
+        .args(["--no-daemon", "mcp", "serve"])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .expect("spawn tasqx mcp serve");
+    let mut stdin = child.stdin.take().expect("stdin");
+    writeln!(
+        stdin,
+        r#"{{"jsonrpc":"2.0","id":1,"method":"initialize","params":{{"protocolVersion":"2025-06-18","capabilities":{{}},"clientInfo":{{"name":"t","version":"0"}}}}}}"#
+    )
+    .expect("write initialize");
+    drop(stdin);
+    let out = child.wait_with_output().expect("wait");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    let notes: Vec<&str> = stderr
+        .lines()
+        .filter(|l| l.contains("TASQX_SOCK"))
+        .collect();
+    assert_eq!(notes.len(), 1, "exactly one note, got: {stderr}");
+    assert!(
+        notes[0].contains("ignored") && notes[0].contains("D73") && notes[0].contains("D208"),
+        "{}",
+        notes[0]
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let first = stdout.lines().next().expect("a response on stdout");
+    let v: serde_json::Value = serde_json::from_str(first).expect("stdout is JSON-RPC");
+    assert_eq!(v["id"], 1);
+    assert!(v["result"].is_object(), "{v}");
+    assert!(
+        stdout
+            .lines()
+            .all(|l| serde_json::from_str::<serde_json::Value>(l).is_ok()),
+        "stdout must carry only JSON-RPC: {stdout}"
+    );
+}
