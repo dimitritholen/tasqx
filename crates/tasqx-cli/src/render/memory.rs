@@ -228,6 +228,11 @@ pub fn memory_hits(
             title: String,
             source: String,
             handle: String,
+            /// #790/D180: a doc hit whose file moved on since it was
+            /// imported. Its own cell, so it outlives the source column
+            /// (#1121). False for an annotation and for a doc `memory.add`
+            /// wrote: neither has an origin to be behind.
+            stale: bool,
             snippet: String,
             /// D196: the similarity of a hit found by meaning alone, whose
             /// snippet is its closest passage rather than the words that
@@ -244,26 +249,17 @@ pub fn memory_hits(
                 let task = source
                     .strip_prefix("task:#")
                     .filter(|n| !n.is_empty() && n.chars().all(|c| c.is_ascii_digit()));
-                let (mut source, handle) = match (s(h, "kind").as_str(), task) {
+                let (source, handle) = match (s(h, "kind").as_str(), task) {
                     // The source already names the task, and the handle says
                     // it, so the source column stays empty (rule 11).
                     ("annotation", Some(n)) => (String::new(), format!("annotation on #{n}")),
                     _ => (source, s(h, "id")),
                 };
-                // #790/D180: a doc hit whose file moved on since it was
-                // imported. Nothing when false or null — an annotation and a
-                // doc `memory.add` wrote both have no origin to be behind.
-                if h.get("stale").and_then(Value::as_bool).unwrap_or(false) {
-                    source = if source.is_empty() {
-                        "stale".to_string()
-                    } else {
-                        format!("{source} stale")
-                    };
-                }
                 Hit {
                     title: s(h, "title"),
                     source,
                     handle,
+                    stale: h.get("stale").and_then(Value::as_bool).unwrap_or(false),
                     // The engine's snippet keeps the body's line breaks,
                     // which a one-line cell cannot.
                     snippet: s(h, "snippet")
@@ -290,10 +286,12 @@ pub fn memory_hits(
             let (title_w, handle_w) = (width(&r.title), width(&r.handle));
             if title_w + columns::GAP + handle_w <= ctx.cols {
                 let source_w = width(&r.source);
+                let stale = if r.stale { STALE } else { "" };
                 let w = columns::fit(
                     &[
                         Column::fixed(title_w),
                         Column::drops(source_w, source_w),
+                        Column::fixed(width(stale)),
                         Column::fixed(handle_w),
                     ],
                     ctx.cols,
@@ -302,6 +300,7 @@ pub fn memory_hits(
                     [
                         (None, r.title.as_str()),
                         (Some("muted"), r.source.as_str()),
+                        (Some("muted"), stale),
                         (Some("muted"), r.handle.as_str()),
                     ]
                     .iter()
@@ -314,7 +313,16 @@ pub fn memory_hits(
             } else {
                 out.push_str(&truncate(&r.title, ctx.cols, ctx.caps.unicode));
                 out.push('\n');
-                out.push_str(&format!("  {}\n", ctx.paint("muted", &r.handle)));
+                let stale = if r.stale {
+                    format!("  {STALE}")
+                } else {
+                    String::new()
+                };
+                out.push_str(&format!(
+                    "  {}{}\n",
+                    ctx.paint("muted", &r.handle),
+                    ctx.paint("muted", &stale)
+                ));
             }
             if !r.snippet.is_empty() {
                 // Four cells, under the handle's two: `muted` draws nothing
@@ -484,6 +492,8 @@ pub fn memory_hits(
 
 /// #838's tag for a hit that holds only some of the query's words, on a
 /// page where others hold them all.
+/// #790/D180: the word on a doc hit whose origin file has changed since import.
+const STALE: &str = "stale";
 const SOME_WORDS: &str = "some words";
 
 /// D196's mark for a hit found by meaning alone: `≈`, or `~` where the
