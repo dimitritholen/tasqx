@@ -946,6 +946,11 @@ pub(super) enum Command {
         /// nothing to widen from.
         #[arg(long)]
         include_unscoped: bool,
+        /// Write the document to this file instead of stdout. The file is
+        /// replaced whole (written beside it, then renamed over it), so an
+        /// interrupted export never leaves half a backup.
+        #[arg(long, value_name = "PATH", value_hint = ValueHint::FilePath)]
+        out: Option<String>,
     },
     /// Import tasks from a file, or `-` for stdin (maps to store.import).
     #[command(after_help = crate::cmddoc::after_help("import"))]

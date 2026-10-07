@@ -1419,6 +1419,9 @@ const R_STORE_IMPORT: Shape = &[&[
     // missing one, and could not tell them apart on its own.
     req("docs_declared", Ty::Bool),
     req("events_imported", Ty::Int),
+    // #1116: the rows the import wrote about itself, beside the ones it
+    // carried in.
+    req("events_logged", Ty::Int),
     // D181: how many links the document restored. Always present, zero for a
     // document written before the section existed — the same rule every other
     // counter here follows.

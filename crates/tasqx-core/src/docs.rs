@@ -1401,7 +1401,7 @@ pub const R_STORE_EXPORT: &[FieldDoc] = &[
     f(
         "dropped_events",
         "integer",
-        "How many events a filtered export left out because they belong to a task, doc, project or link this document does not carry.",
+        "How many events the export left out because they belong to a task, doc, project or link this document does not carry — on an unfiltered export, the history of a removed doc other than its removal, since its `memory.add` names the title the removal took away (D197).",
     ),
     n(
         "default_project",
@@ -1475,6 +1475,7 @@ pub const R_STORE_IMPORT: &[FieldDoc] = &[
     f("docs_imported", "integer", "How many knowledge docs came in."),
     f("docs_declared", "boolean", "Whether the document had a `docs` section at all — an empty one told apart from a missing one (#179)."),
     f("events_imported", "integer", "How many audit rows came in."),
+    f("events_logged", "integer", "How many audit rows the import wrote about itself — an `import` per task and project, a `memory.add` per doc — on top of `events_imported`; an export never carries them (#1116)."),
     f("links_imported", "integer", "How many explicit links came in (D181) — an edge this store already held under a different id counts, because that is the same edge stated twice. Zero for a document with no `links` section."),
     n("default_project", "string", "The default project after the import, or null."),
     f("renumbered", "array", "Every task whose `short_id` a DIFFERENT task in this store already held, as `{id, from, to}` — it kept its id and took the next free number (D177). Empty when nothing moved."),
