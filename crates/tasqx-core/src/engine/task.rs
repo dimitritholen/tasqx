@@ -23,6 +23,26 @@ pub const DEFAULT_TASK_LIST_LIMIT: u64 = 100;
 /// clamp closes elsewhere in this file's neighbourhood.
 pub const MAX_TASK_LIST_LIMIT: u64 = 10_000;
 
+/// How much of a task's opening note `task.next` carries as its summary (D213).
+const NEXT_SUMMARY_CHARS: usize = 400;
+/// How much of a task's newest note `task.next`'s resume rows carry (D213).
+const RESUME_NOTE_CHARS: usize = 200;
+/// How many recently annotated open tasks `task.next`'s resume names (D213).
+const RESUME_RECENT: usize = 5;
+
+/// `s` on one line: every run of whitespace becomes a single space.
+fn one_line(s: &str) -> String {
+    s.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// `s` cut to `max` characters on a character boundary, with `…` after a cut.
+fn cut_chars(s: &str, max: usize) -> String {
+    match s.char_indices().nth(max) {
+        Some((i, _)) => format!("{}…", &s[..i]),
+        None => s.to_string(),
+    }
+}
+
 /// Which optional side tables a bulk snapshot load should read.
 ///
 /// The bulk loader exists so no reader drifts back to point queries, but
@@ -289,7 +309,10 @@ impl Engine {
 
     /// `task.add` — create a task. Params: `title` (required), `project`,
     /// `priority`, `due`, `scheduled`, `wait`, `estimate`, `tags`, `recurrence`,
-    /// `remind`.
+    /// `remind`, `checks` (acceptance criteria, D138) and `depends_on` (refs,
+    /// D213). The last two land in the SAME transaction as the task: a
+    /// dependency that does not resolve, or a blank check, refuses the whole
+    /// add and nothing — not even a short_id — is consumed.
     ///
     /// Every free-form spec (`estimate`, `recurrence`, `remind`, the three
     /// dates) is parsed and NORMALIZED before the insert, so a bad spec fails
@@ -324,6 +347,11 @@ impl Engine {
             None => None,
         };
         let tags = normalize_tags(opt_str_array(p, "tags")?)?;
+        let checks = opt_str_array(p, "checks")?;
+        if checks.iter().any(|c| c.trim().is_empty()) {
+            return Err(ApiError::bad_request("a check cannot be blank"));
+        }
+        let dep_refs = opt_array(p, "depends_on")?.map_or(&[][..], |v| v.as_slice());
         // Recurrence rule (optional). Validate + normalize before storing so a
         // bad rule fails the add cleanly and the stored form is canonical.
         let recurrence = match opt_str_nonempty(p, "recurrence")? {
@@ -383,6 +411,17 @@ impl Engine {
         if let Some(name) = &project {
             require_live_project(&tx, name)?;
         }
+        // D213: resolved before anything is written, so a missing prerequisite
+        // refuses the add without consuming a short_id. A new task has no
+        // dependents, so these edges cannot close a cycle; a repeated ref is
+        // one edge.
+        let mut targets: Vec<Task> = Vec::new();
+        for r in dep_refs {
+            let t = self.resolve_ref_value_on(&tx, r)?;
+            if !targets.iter().any(|x| x.id == t.id) {
+                targets.push(t);
+            }
+        }
         let short_id = alloc_short_id(&tx)?;
         tx.execute(
             &format!(
@@ -431,6 +470,52 @@ impl Engine {
                 "recurrence": recurrence.clone(),
             }),
         )?;
+        // D213: the same rows and events `check.add` and `dependency.add`
+        // write, so a store replays them identically; `rev` ends at one per
+        // event, as it does when the calls are made one by one.
+        let mut added_checks = Vec::with_capacity(checks.len());
+        for (position, body) in checks.iter().enumerate() {
+            let cid = crate::clock::uuid_v7().to_string();
+            tx.execute(
+                "INSERT INTO checks (id, task_id, body, state, evidence, position, created, modified) \
+                 VALUES (?1, ?2, ?3, 'open', NULL, ?4, ?5, ?5)",
+                params![cid, id, body, position as i64, ts],
+            )?;
+            insert_event(
+                &tx,
+                Entity::Task,
+                &id,
+                "check.add",
+                &json!({ "id": cid, "body": body }),
+            )?;
+            added_checks
+                .push(json!({ "id": cid, "body": body, "state": "open", "position": position }));
+        }
+        for target in &targets {
+            tx.execute(
+                "INSERT INTO dependencies (task_id, depends_on_id) VALUES (?1, ?2)",
+                params![id, target.id],
+            )?;
+            insert_event(
+                &tx,
+                Entity::Task,
+                &id,
+                "dependency.add",
+                &json!({ "depends_on": target.id }),
+            )?;
+        }
+        let extra = (added_checks.len() + targets.len()) as i64;
+        if extra > 0 {
+            tx.execute(
+                "UPDATE tasks SET rev = rev + ?1 WHERE id = ?2",
+                params![extra, id],
+            )?;
+        }
+        let blocked = if targets.is_empty() {
+            false
+        } else {
+            self.is_blocked(&id)?
+        };
         tx.commit()?;
 
         let mut out = json!({
@@ -459,6 +544,15 @@ impl Engine {
             // Additive per D56, the same move D85 already made for `due`.
             "scheduled": scheduled,
         });
+        // Additive per D56, and present only when asked for: the ids a caller
+        // needs for `check.set`, and the edges that now hold the task back.
+        if !added_checks.is_empty() {
+            out["checks"] = json!(added_checks);
+        }
+        if !targets.is_empty() {
+            out["depends_on"] = json!(targets.iter().map(|t| t.short_id).collect::<Vec<_>>());
+            out["blocked"] = json!(blocked);
+        }
         with_title_warning(&mut out, &title);
         Ok(out)
     }
@@ -2683,6 +2777,156 @@ impl Engine {
             .and_then(|p| serde_json::from_str::<Value>(p).ok())
             .and_then(|v| payload_field(&v, "actor"));
         Ok(actor.map(|a| (a, short_id, title)))
+    }
+
+    // ---- task.next -----------------------------------------------------------
+
+    /// `task.next` — D213. `tasqx next` as a method: the single most urgent
+    /// unblocked task, plus (`resume: true`) where work was left off.
+    /// Params: `project?`, `filter?`, `resume?`.
+    ///
+    /// The pick is `task.list` itself — `@working`, the caller's scope ANDed
+    /// on (the CLI's rule, so the two cannot disagree), `-urgency`, one row —
+    /// not a second ranking. `summary` is the first paragraph of the task's
+    /// OLDEST note, the paragraph the card's Description row shows.
+    ///
+    /// `resume` adds `active` (every active task in scope with the actor that
+    /// holds its clock, D140) and `recent` (the five open tasks whose newest
+    /// note is the freshest, each with the first 200
+    /// characters of that note and when it was written), so one call answers
+    /// "what now" and "where was I".
+    pub fn task_next(&self, p: &Value) -> Result<Value, ApiError> {
+        let mut scope: Vec<String> = Vec::new();
+        if let Some(project) = opt_str_nonempty(p, "project")? {
+            scope.push(format!("project:{project}"));
+        }
+        if let Some(f) = opt_str(p, "filter")?.filter(|f| !f.trim().is_empty()) {
+            scope.push(format!("({f})"));
+        }
+        let scope = scope.join(" and ");
+        let working = if scope.is_empty() {
+            "@working".to_string()
+        } else {
+            format!("@working and ({scope})")
+        };
+        let listed = self.task_list(&json!({
+            "filter": working, "sort": ["-urgency"], "limit": 1,
+        }))?;
+        let task = listed["tasks"].get(0).cloned().unwrap_or(Value::Null);
+        let summary = match task["short_id"].as_i64() {
+            Some(sid) => self.opening_paragraph(sid)?,
+            None => None,
+        };
+        let mut out = json!({
+            "task": task,
+            "summary": summary,
+            "store_empty": listed["store_empty"],
+        });
+        if opt_bool(p, "resume")?.unwrap_or(false) {
+            let (active, recent) = self.resume_rows(&scope)?;
+            out["active"] = json!(active);
+            out["recent"] = json!(recent);
+        }
+        Ok(out)
+    }
+
+    /// The first paragraph of a task's oldest note, whitespace collapsed and
+    /// cut at [`NEXT_SUMMARY_CHARS`]; `None` when it has no notes.
+    fn opening_paragraph(&self, short_id: i64) -> Result<Option<String>, ApiError> {
+        let body: Option<String> = self
+            .conn
+            .query_row(
+                "SELECT a.body FROM annotations a JOIN tasks t ON t.id = a.task_id \
+                 WHERE t.short_id = ?1 ORDER BY a.id ASC LIMIT 1",
+                params![short_id],
+                |r| r.get(0),
+            )
+            .optional()?;
+        Ok(body.map(|b| {
+            let para = b.trim_start().split("\n\n").next().unwrap_or("");
+            cut_chars(&one_line(para), NEXT_SUMMARY_CHARS)
+        }))
+    }
+
+    /// `task.next`'s resume half: active tasks, then the open ones with the
+    /// freshest newest note, both limited to the caller's scope.
+    fn resume_rows(&self, scope: &str) -> Result<(Vec<Value>, Vec<Value>), ApiError> {
+        // ponytail: scope is resolved through task.list, so it sees at most
+        // MAX_TASK_LIST_LIMIT tasks; a SQL-side filter if a store outgrows it.
+        let in_scope: Option<std::collections::HashSet<i64>> = if scope.is_empty() {
+            None
+        } else {
+            let listed = self.task_list(&json!({
+                "filter": scope, "fields": ["short_id"], "limit": MAX_TASK_LIST_LIMIT,
+            }))?;
+            Some(
+                listed["tasks"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|t| t["short_id"].as_i64())
+                    .collect(),
+            )
+        };
+        let mut stmt = self.conn.prepare(
+            "SELECT t.id, t.short_id, t.title, t.status, t.active_since, a.body, a.created \
+             FROM tasks t \
+             LEFT JOIN annotations a ON a.id = \
+                 (SELECT MAX(a2.id) FROM annotations a2 WHERE a2.task_id = t.id) \
+             WHERE t.status NOT IN ('done', 'cancelled') \
+             ORDER BY a.id DESC",
+        )?;
+        let rows = stmt.query_map([], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, i64>(1)?,
+                r.get::<_, String>(2)?,
+                r.get::<_, String>(3)?,
+                r.get::<_, Option<String>>(4)?,
+                r.get::<_, Option<String>>(5)?,
+                r.get::<_, Option<String>>(6)?,
+            ))
+        })?;
+        let (mut active, mut recent) = (Vec::new(), Vec::new());
+        for row in rows {
+            let (id, short_id, title, status, since, body, created) = row?;
+            if in_scope.as_ref().is_some_and(|s| !s.contains(&short_id)) {
+                continue;
+            }
+            let note = match (body, created) {
+                (Some(b), Some(c)) => json!({
+                    "body": cut_chars(&one_line(&b), RESUME_NOTE_CHARS),
+                    "created": c,
+                }),
+                _ => Value::Null,
+            };
+            let mut item =
+                json!({ "short_id": short_id, "title": title, "status": status, "note": note });
+            if status == "active" {
+                item["active_since"] = json!(since);
+                item["held_by"] = json!(self.clock_holder_of(&id)?);
+                active.push(item);
+            } else if !item["note"].is_null() && recent.len() < RESUME_RECENT {
+                recent.push(item);
+            }
+        }
+        Ok((active, recent))
+    }
+
+    /// The actor named on a task's latest `start` event (D140), if any.
+    fn clock_holder_of(&self, task_id: &str) -> Result<Option<String>, ApiError> {
+        let payload: Option<String> = self
+            .conn
+            .query_row(
+                "SELECT payload FROM events WHERE entity_id = ?1 AND op = 'start' \
+                 ORDER BY rowid DESC LIMIT 1",
+                params![task_id],
+                |r| r.get(0),
+            )
+            .optional()?;
+        Ok(payload
+            .and_then(|p| serde_json::from_str::<Value>(&p).ok())
+            .and_then(|v| payload_field(&v, "actor")))
     }
 
     // ---- task.brief ----------------------------------------------------------

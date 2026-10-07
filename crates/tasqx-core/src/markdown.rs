@@ -414,6 +414,79 @@ pub fn task_brief(result: &Value, opts: &DetailOpts) -> String {
     out
 }
 
+/// Render one `task.next` result as markdown (D213): the pick and its
+/// summary, then — when the call asked to resume — what is active and what
+/// was annotated last. A section with nothing in it is omitted, like the
+/// brief's, except the pick itself: "nothing to do" is the answer there.
+pub fn task_next(result: &Value, opts: &DetailOpts) -> String {
+    let mut out = String::new();
+    match result.get("task").filter(|t| !t.is_null()) {
+        Some(t) => {
+            out.push_str(&format!(
+                "## Next: #{} {}\n",
+                t.get("short_id").and_then(Value::as_i64).unwrap_or(0),
+                str_of(t, "title")
+            ));
+            let mut facts = vec![str_of(t, "status")];
+            let pri = str_of(t, "priority");
+            if !pri.is_empty() {
+                facts.push(format!("priority {pri}"));
+            }
+            let due = str_of(t, "due");
+            if !due.is_empty() {
+                facts.push(format!("due {}", fmt_instant(&due, opts)));
+            }
+            if let Some(u) = t.get("urgency").and_then(Value::as_f64) {
+                facts.push(format!("urgency {u:.1}"));
+            }
+            out.push_str(&format!("{}\n", facts.join(" · ")));
+            let summary = str_of(result, "summary");
+            if !summary.is_empty() {
+                out.push_str(&format!("\n{summary}\n"));
+            }
+        }
+        None => {
+            let why = if result.get("store_empty").and_then(Value::as_bool) == Some(true) {
+                "Nothing to do: the store holds no tasks yet."
+            } else {
+                "Nothing to do: no unblocked task matches."
+            };
+            out.push_str(&format!("{why}\n"));
+        }
+    }
+    for (key, heading) in [("active", "Active now"), ("recent", "Recently annotated")] {
+        let rows = result
+            .get(key)
+            .and_then(Value::as_array)
+            .filter(|r| !r.is_empty());
+        let Some(rows) = rows else { continue };
+        out.push_str(&format!("\n### {heading}\n"));
+        for r in rows {
+            let mut line = format!(
+                "- #{} {}",
+                r.get("short_id").and_then(Value::as_i64).unwrap_or(0),
+                str_of(r, "title")
+            );
+            if key == "active" {
+                match r.get("held_by").and_then(Value::as_str) {
+                    Some(h) => line.push_str(&format!(" — clock held by {h}")),
+                    None => line.push_str(" — clock running"),
+                }
+            }
+            if let Some(n) = r.get("note").filter(|n| !n.is_null()) {
+                line.push_str(&format!(
+                    "\n  {} — {}",
+                    fmt_instant(&str_of(n, "created"), opts),
+                    str_of(n, "body")
+                ));
+            }
+            out.push_str(&line);
+            out.push('\n');
+        }
+    }
+    out
+}
+
 /// Everything a brief adds after its task half: the previous occurrence's
 /// delivery (D170), the neighbourhood and the memory hits.
 ///

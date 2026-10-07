@@ -100,6 +100,7 @@ fn full_protocol_sequence() {
         .expect("tools/list is a request");
     let tools = listed["result"]["tools"].as_array().expect("tools array");
     assert_eq!(tools.len(), 33, "expected 33 tools");
+    assert!(tools.iter().any(|t| t["name"] == "tasqx_next"));
     let names: Vec<&str> = tools.iter().map(|t| t["name"].as_str().unwrap()).collect();
     for expected in [
         "tasqx_list_tasks",
@@ -282,7 +283,11 @@ fn read_scope_tools_list_hides_write_tools() {
     // them for the same reason: an agent that cannot write should still be able
     // to see its own record, and D136's `tasqx_brief_task` for the reason
     // beside it — orienting is a read.
-    assert_eq!(tools.len(), 9, "read scope should list only the read tools");
+    assert_eq!(
+        tools.len(),
+        10,
+        "read scope should list only the read tools"
+    );
     for t in tools {
         assert_eq!(
             t["annotations"]["readOnlyHint"], true,
@@ -3660,6 +3665,10 @@ fn the_read_only_refusal_names_the_flag_that_fixes_it() {
 /// tools beside it. Measured beside every tool above: 33 tools, 36,392 bytes,
 /// so the cap moved from 35,584 to 36,608.
 ///
+/// D213 added `tasqx_next` and the `checks` and `depends_on` arguments on
+/// `tasqx_add_task`. Measured beside every tool above: 33 tools, 36,931 bytes,
+/// so the cap moved from 35,584 to 37,120.
+///
 /// The floor is not zero. With every `description` key removed from the roster
 /// the same serialization is 11,597 bytes of schema skeleton — property names,
 /// `type`, the closed `enum` lists D30 renders from the engine's own consts,
@@ -3670,7 +3679,7 @@ fn the_read_only_refusal_names_the_flag_that_fixes_it() {
 fn the_whole_tool_roster_stays_inside_its_per_prompt_budget() {
     const MAX_DESCRIPTION: usize = 800;
     const MAX_ENTRY: usize = 3_072;
-    const MAX_ROSTER: usize = 36_608;
+    const MAX_ROSTER: usize = 37_120;
 
     let engine = engine();
     let server = McpServer::new(&engine, Scope::Write);
@@ -4532,4 +4541,288 @@ fn list_tasks_at_working_carries_the_rulings_block_a_plain_filter_does_not() {
         plain.get("rulings").is_none(),
         "a filter that is not picking work carries no addendum: {plain}"
     );
+}
+
+// ---- tasqx_next and add_task's checks and dependencies (D213, #1120) ---------
+
+/// The text of block zero of a tools/call result (the rendered view).
+fn view_of(result: &Value) -> String {
+    result["result"]["content"][0]["text"]
+        .as_str()
+        .expect("text block")
+        .to_string()
+}
+
+fn add(server: &McpServer, title: &str, extra: Value) -> i64 {
+    let mut args = json!({ "title": title });
+    for (k, v) in extra.as_object().expect("object").iter() {
+        args[k] = v.clone();
+    }
+    let r = call(server, 1, "tasqx_add_task", args);
+    assert!(!is_error(&r), "add failed: {r}");
+    tool_text(&r)["short_id"].as_i64().unwrap()
+}
+
+#[test]
+fn next_answers_the_most_urgent_unblocked_task_as_a_view_with_json_optional() {
+    let engine = engine();
+    let server = McpServer::new(&engine, Scope::Read);
+    let w = McpServer::new(&engine, Scope::Write);
+    let low = add(&w, "low one", json!({ "priority": "L" }));
+    let high = add(&w, "high one", json!({ "priority": "H" }));
+    let blocked = add(
+        &w,
+        "blocked urgent",
+        json!({ "priority": "H", "due": "yesterday" }),
+    );
+    let r = call(
+        &w,
+        2,
+        "tasqx_add_dependency",
+        json!({ "ref": blocked, "depends_on": low }),
+    );
+    assert!(!is_error(&r));
+    call(
+        &w,
+        3,
+        "tasqx_annotate_task",
+        json!({ "ref": high, "body": "Ship the thing.\n\nSecond paragraph stays out." }),
+    );
+
+    let r = call(&server, 4, "tasqx_next", json!({}));
+    assert!(!is_error(&r), "{r}");
+    let view = view_of(&r);
+    assert!(view.contains("high one"), "{view}");
+    assert!(view.contains("Ship the thing."), "{view}");
+    assert!(!view.contains("Second paragraph"), "{view}");
+    assert!(!view.contains("blocked urgent"), "{view}");
+    assert_eq!(
+        r["result"]["content"].as_array().unwrap().len(),
+        1,
+        "view alone by default (D151)"
+    );
+
+    let r = call(&server, 5, "tasqx_next", json!({ "include_json": true }));
+    let body = tool_json(&r);
+    assert_eq!(body["task"]["short_id"], high);
+    assert!(
+        body.get("active").is_none(),
+        "no resume block unasked: {body}"
+    );
+}
+
+#[test]
+fn next_on_an_empty_scope_says_so_and_project_scopes_the_pick() {
+    let engine = engine();
+    let w = McpServer::new(&engine, Scope::Write);
+    engine
+        .project_create(&json!({ "name": "alpha" }))
+        .expect("project");
+    engine
+        .project_create(&json!({ "name": "beta" }))
+        .expect("project");
+    add(
+        &w,
+        "alpha work",
+        json!({ "project": "alpha", "priority": "L" }),
+    );
+    add(
+        &w,
+        "beta work",
+        json!({ "project": "beta", "priority": "H" }),
+    );
+
+    let r = call(
+        &w,
+        2,
+        "tasqx_next",
+        json!({ "project": "alpha", "include_json": true }),
+    );
+    assert_eq!(tool_json(&r)["task"]["title"], "alpha work");
+    let r = call(&w, 3, "tasqx_next", json!({ "filter": "project:beta" }));
+    assert!(view_of(&r).contains("beta work"));
+    let r = call(&w, 4, "tasqx_next", json!({ "filter": "+nosuchtag" }));
+    assert!(!is_error(&r));
+    assert!(
+        view_of(&r).to_lowercase().contains("nothing"),
+        "{}",
+        view_of(&r)
+    );
+}
+
+#[test]
+fn next_with_resume_names_the_active_task_its_holder_and_the_latest_notes() {
+    let engine = engine();
+    let w = McpServer::new(&engine, Scope::Write);
+    let a = add(&w, "in flight", json!({}));
+    let b = add(&w, "noted earlier", json!({}));
+    let c = add(&w, "noted last", json!({}));
+    let done = add(&w, "finished", json!({}));
+    call(
+        &w,
+        2,
+        "tasqx_annotate_task",
+        json!({ "ref": b, "body": "older note" }),
+    );
+    call(
+        &w,
+        3,
+        "tasqx_annotate_task",
+        json!({ "ref": done, "body": "done note" }),
+    );
+    call(&w, 4, "tasqx_complete_task", json!({ "ref": done }));
+    let long = "x".repeat(600);
+    call(
+        &w,
+        5,
+        "tasqx_annotate_task",
+        json!({ "ref": c, "body": long }),
+    );
+    call(&w, 6, "tasqx_start_timer", json!({ "ref": a }));
+
+    let r = call(
+        &w,
+        7,
+        "tasqx_next",
+        json!({ "resume": true, "include_json": true }),
+    );
+    assert!(!is_error(&r), "{r}");
+    let body = tool_json(&r);
+    assert_eq!(body["active"][0]["short_id"], a);
+    assert!(
+        body["active"][0]["held_by"].is_string(),
+        "the MCP connection stamps an actor (D140): {body}"
+    );
+    let recent = body["recent"].as_array().expect("recent");
+    let ids: Vec<i64> = recent
+        .iter()
+        .map(|t| t["short_id"].as_i64().unwrap())
+        .collect();
+    assert_eq!(
+        ids,
+        vec![c, b],
+        "newest note first, done tasks left out: {body}"
+    );
+    let note = recent[0]["note"]["body"].as_str().unwrap();
+    assert!(
+        note.chars().count() <= 201,
+        "cut near 200 chars: {}",
+        note.len()
+    );
+    assert!(recent[0]["note"]["created"].is_string());
+    let view = view_of(&r);
+    assert!(
+        view.contains("in flight") && view.contains("noted last"),
+        "{view}"
+    );
+}
+
+#[test]
+fn next_with_resume_is_scoped_by_project_and_caps_recent_at_five() {
+    let engine = engine();
+    let w = McpServer::new(&engine, Scope::Write);
+    engine
+        .project_create(&json!({ "name": "p" }))
+        .expect("project");
+    for i in 0..7 {
+        let t = add(&w, &format!("p task {i}"), json!({ "project": "p" }));
+        call(
+            &w,
+            2,
+            "tasqx_annotate_task",
+            json!({ "ref": t, "body": "n" }),
+        );
+    }
+    engine
+        .project_create(&json!({ "name": "q" }))
+        .expect("project");
+    let other = add(&w, "elsewhere", json!({ "project": "q" }));
+    call(
+        &w,
+        3,
+        "tasqx_annotate_task",
+        json!({ "ref": other, "body": "n" }),
+    );
+    let r = call(
+        &w,
+        4,
+        "tasqx_next",
+        json!({ "project": "p", "resume": true, "include_json": true }),
+    );
+    let body = tool_json(&r);
+    let recent = body["recent"].as_array().unwrap();
+    assert_eq!(recent.len(), 5);
+    assert!(recent
+        .iter()
+        .all(|t| t["title"].as_str().unwrap().starts_with("p task")));
+}
+
+#[test]
+fn add_task_takes_checks_and_dependencies_in_one_call() {
+    let engine = engine();
+    let w = McpServer::new(&engine, Scope::Write);
+    let first = add(&w, "first", json!({}));
+    let second = add(&w, "second", json!({}));
+    let r = call(
+        &w,
+        2,
+        "tasqx_add_task",
+        json!({
+            "title": "gated", "checks": ["tests pass", "docs written"],
+            "depends_on": [first, second]
+        }),
+    );
+    assert!(!is_error(&r), "{r}");
+    let out = tool_text(&r);
+    let sid = out["short_id"].as_i64().unwrap();
+    assert_eq!(out["depends_on"], json!([first, second]));
+    assert_eq!(out["checks"].as_array().unwrap().len(), 2);
+    assert_eq!(out["blocked"], true);
+
+    let got = tool_json(&call(
+        &w,
+        3,
+        "tasqx_get_task",
+        json!({ "ref": sid, "include_json": true }),
+    ));
+    let bodies: Vec<&str> = got["checks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|c| c["body"].as_str().unwrap())
+        .collect();
+    assert_eq!(bodies, vec!["tests pass", "docs written"]);
+    assert_eq!(got["blocked"], true);
+}
+
+#[test]
+fn add_task_with_a_missing_dependency_creates_nothing() {
+    let engine = engine();
+    let w = McpServer::new(&engine, Scope::Write);
+    let r = call(
+        &w,
+        1,
+        "tasqx_add_task",
+        json!({ "title": "orphan", "checks": ["c"], "depends_on": [999] }),
+    );
+    assert!(is_error(&r), "{r}");
+    let list = tool_json(&call(&w, 2, "tasqx_list_tasks", json!({ "filter": "" })));
+    assert_eq!(list["total"], 0, "nothing was created: {list}");
+    let r = call(&w, 3, "tasqx_add_task", json!({ "title": "next" }));
+    assert_eq!(tool_text(&r)["short_id"], 1, "no short_id was burned");
+}
+
+#[test]
+fn add_task_refuses_a_blank_check() {
+    let engine = engine();
+    let w = McpServer::new(&engine, Scope::Write);
+    let r = call(
+        &w,
+        1,
+        "tasqx_add_task",
+        json!({ "title": "t", "checks": [""] }),
+    );
+    assert!(is_error(&r), "{r}");
+    let list = tool_json(&call(&w, 2, "tasqx_list_tasks", json!({ "filter": "" })));
+    assert_eq!(list["total"], 0);
 }

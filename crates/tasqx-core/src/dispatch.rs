@@ -57,6 +57,9 @@ pub const PARAMS: &[(&str, &[&str], bool)] = &[
             "tags",
             "recurrence",
             "remind",
+            // D213: acceptance criteria and prerequisites created with the task.
+            "checks",
+            "depends_on",
             // D139: a size gauge over fresh tokens, null for no threshold.
             "budget_tokens",
         ],
@@ -96,6 +99,8 @@ pub const PARAMS: &[(&str, &[&str], bool)] = &[
         &["ref", "memory_limit", "max_body_bytes"],
         false,
     ),
+    // D213. `resume` is the only part that reads beyond `task.list`.
+    ("task.next", &["project", "filter", "resume"], false),
     // task.start/task.done also take the #12 correlation params: they are
     // stored in the start/done event payloads, the durable per-occurrence
     // record the async token-attribution engine reads later.
@@ -406,6 +411,7 @@ pub fn dispatch(engine: &Engine, method: &str, params: &Value) -> Result<Value, 
         "task.modify" => engine.task_modify(params),
         "task.get" => engine.task_get(params),
         "task.brief" => engine.task_brief(params),
+        "task.next" => engine.task_next(params),
         "task.cancel" => engine.task_cancel(params),
         "task.reopen" => engine.task_reopen(params),
         "tag.add" => engine.tag_add(params),
@@ -737,9 +743,9 @@ mod tests {
     #[test]
     fn an_unknown_method_points_at_core_capabilities() {
         let engine = crate::engine::Engine::open_in_memory().unwrap();
-        let e = dispatch(&engine, "task.next", &json!({})).unwrap_err();
+        let e = dispatch(&engine, "task.ghost", &json!({})).unwrap_err();
         assert!(
-            e.message.contains("task.next"),
+            e.message.contains("task.ghost"),
             "must still name the method that was not found: {}",
             e.message
         );
