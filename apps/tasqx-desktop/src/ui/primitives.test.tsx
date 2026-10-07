@@ -1,7 +1,7 @@
 import { render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 
-import { Button, EmptyState, Field, IconButton, Kbd, Panel, Pill, Spinner } from './primitives';
+import { Button, EmptyState, Field, IconButton, Kbd, Panel, Pill, ScreenBoundary, Spinner } from './primitives';
 
 test('a button carries its variant and size classes', () => {
   render(
@@ -94,4 +94,24 @@ test('Kbd renders a two-key sequence as two keys', () => {
   render(<Kbd keys="g d" />);
   expect(screen.getByText('G')).toBeInTheDocument();
   expect(screen.getByText('D')).toBeInTheDocument();
+});
+
+test('a screen that throws shows what broke and a retry, not a blank window', async () => {
+  let broken = true;
+  function Flaky() {
+    if (broken) throw new Error('Sigma: node "task:x" can\'t be repaint');
+    return <p>drawn</p>;
+  }
+  const quiet = vi.spyOn(console, 'error').mockImplementation(() => {});
+  render(
+    <ScreenBoundary>
+      <Flaky />
+    </ScreenBoundary>,
+  );
+  expect(screen.getByRole('alert')).toHaveTextContent('This screen stopped working');
+  expect(screen.getByRole('alert')).toHaveTextContent("can't be repaint");
+  broken = false;
+  await userEvent.click(screen.getByRole('button', { name: 'Retry' }));
+  expect(screen.getByText('drawn')).toBeInTheDocument();
+  quiet.mockRestore();
 });

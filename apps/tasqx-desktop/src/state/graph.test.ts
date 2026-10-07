@@ -16,6 +16,7 @@ import {
   searchNodes,
   syncGraphModel,
 } from './graph';
+import type { GraphData, GraphModel } from './graph';
 
 const T1 = 'task:t1';
 const T2 = 'task:t2';
@@ -136,6 +137,69 @@ describe('the graph model', () => {
     expect(searchNodes(graph, data, 'graph').map((n) => n.id)).toEqual([T1, DOC]);
     applyGraphFilters(graph, { ...DEFAULT_GRAPH_FILTERS, nodeTypes: ['task'] });
     expect(searchNodes(graph, data, 'graph').map((n) => n.id)).toEqual([T1]);
+  });
+});
+
+/**
+ * Sigma 3.0.3's graph listeners, reduced to the rule that blanked the window
+ * (#1113): an added node or edge has no program slot until the next frame's
+ * process pass, and a batched attribute update hinted as not moving anything
+ * repaints in place, so it throws on an item still waiting for that slot.
+ */
+function sigmaLike(graph: GraphModel): { process(): void } {
+  const indexed = new Set<string>();
+  const LAYOUT = ['x', 'y', 'zIndex', 'type'];
+  graph.on('eachNodeAttributesUpdated', ({ hints }) => {
+    if (hints?.attributes === undefined || hints.attributes.some((a) => LAYOUT.includes(a))) return;
+    graph.forEachNode((id) => {
+      if (!indexed.has(id)) throw new Error(`Sigma: node "${id}" can't be repaint`);
+    });
+  });
+  graph.on('eachEdgeAttributesUpdated', ({ hints }) => {
+    if (hints?.attributes?.some((a: string) => a === 'zIndex' || a === 'type')) return;
+    graph.forEachEdge((id) => {
+      if (!indexed.has(id)) throw new Error(`Sigma: edge "${id}" can't be repaint`);
+    });
+  });
+  return {
+    process() {
+      indexed.clear();
+      graph.forEachNode((id) => indexed.add(id));
+      graph.forEachEdge((id) => indexed.add(id));
+    },
+  };
+}
+
+describe('the model under a live renderer', () => {
+  // GraphScreen's pass on new data: sync, lay out what is new, filter.
+  function show(graph: GraphModel, data: GraphData): void {
+    if (syncGraphModel(graph, data, {})) layoutGraphModel(graph, 5);
+    applyGraphFilters(graph, DEFAULT_GRAPH_FILTERS);
+  }
+
+  it('takes a new root, a new node limit or an expansion before the renderer has drawn the old one', () => {
+    const graph = createGraphModel();
+    show(graph, sample());
+    const renderer = sigmaLike(graph);
+    renderer.process();
+
+    // A new root: the screen clears the model, then the answer arrives.
+    graph.clear();
+    const other = graphDataOf(graphResult('task:r2', [graphNode('task:r2'), graphNode('task:r3')], [graphEdge('task:r2', 'task:r3')]));
+    expect(() => show(graph, other)).not.toThrow();
+    renderer.process();
+
+    // A bigger limit or an expansion: new nodes join the ones already drawn.
+    const grown = graphDataOf(
+      graphResult('task:r2', [graphNode('task:r2'), graphNode('task:r3'), graphNode('task:r4')], [
+        graphEdge('task:r2', 'task:r3'),
+        graphEdge('task:r3', 'task:r4'),
+      ]),
+    );
+    expect(() => show(graph, grown)).not.toThrow();
+    // A filter change alone still hides what it should.
+    applyGraphFilters(graph, { ...DEFAULT_GRAPH_FILTERS, nodeTypes: ['memory'] });
+    expect(graph.getNodeAttribute('task:r4', 'hidden')).toBe(true);
   });
 });
 

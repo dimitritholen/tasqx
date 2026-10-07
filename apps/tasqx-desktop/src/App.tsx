@@ -26,7 +26,7 @@ import {
 } from './screens';
 import { ConnectionPanel, ConnectionPill, UNKNOWN_SOCKET } from './screens/ConnectionPanel';
 import { CARDS, openFilter } from './screens/DashboardScreen';
-import { Pill } from './ui/primitives';
+import { Pill, ScreenBoundary } from './ui/primitives';
 
 /** Only Settings reads `connection`; the rest ignore the prop. */
 const SCREEN_VIEWS: Record<Screen, ComponentType<{ connection?: ReactNode }>> = {
@@ -141,7 +141,10 @@ function ConnectedApp() {
           )
         }
       >
-        <View connection={<ConnectionPanel />} />
+        {/* Keyed on the screen, so leaving a broken one leaves its error behind. */}
+        <ScreenBoundary key={route.screen}>
+          <View connection={<ConnectionPanel />} />
+        </ScreenBoundary>
       </AppShell>
     </div>
   );
