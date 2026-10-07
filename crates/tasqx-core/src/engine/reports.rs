@@ -469,6 +469,8 @@ impl Engine {
             /// denominator.
             criteriaed: i64,
             unproven: Vec<i64>,
+            /// D205: how many of `unproven` had a check marked failed.
+            unproven_failed: i64,
             tokens_in: i64,
             tokens_out: i64,
             tokens_cache_read: i64,
@@ -529,6 +531,7 @@ impl Engine {
                 overrun: Vec::new(),
                 criteriaed: 0,
                 unproven: Vec::new(),
+                unproven_failed: 0,
                 tokens_in: 0,
                 tokens_out: 0,
                 tokens_cache_read: 0,
@@ -579,11 +582,16 @@ impl Engine {
             // what gives the counted-not-blocked ruling its teeth — a
             // maintainer sees the pattern here, rather than an agent hitting
             // one refusal at a time.
-            if let Some((total, open)) = open_checks.get(&t.id).copied() {
+            // D205: proven means every check PASSED — a failed one is as
+            // unproven as an open one, and counted apart as `failed`.
+            if let Some((total, open, failed)) = open_checks.get(&t.id).copied() {
                 if total > 0 {
                     agg.criteriaed += 1;
-                    if open > 0 {
+                    if open + failed > 0 {
                         agg.unproven.push(t.short_id);
+                    }
+                    if failed > 0 {
+                        agg.unproven_failed += 1;
                     }
                 }
             }
@@ -748,6 +756,7 @@ impl Engine {
                         "n": agg.criteriaed,
                         "rate": rate(agg.unproven.len() as i64, agg.criteriaed),
                         "refs": agg.unproven,
+                        "failed": agg.unproven_failed,
                     }),
                 );
             }
@@ -888,23 +897,28 @@ impl Engine {
         Ok(out)
     }
 
-    /// Per task, `(criteria, still open)` — the two numbers `unproven` needs
-    /// (D138).
+    /// Per task, `(criteria, still open, failed)` — the numbers `unproven`
+    /// needs (D138, D205).
     ///
     /// One grouped statement rather than a set of ids like
     /// [`Self::annotated_task_ids`], because this metric asks two questions of
     /// the same rows: whether the task had criteria at all (its denominator)
-    /// and whether any went unmarked (its count). A task absent from the map
+    /// and whether any went unmarked or failed (its count). A task absent from the map
     /// has no criteria and is in neither.
-    fn open_check_counts(&self) -> Result<HashMap<String, (i64, i64)>, ApiError> {
+    fn open_check_counts(&self) -> Result<HashMap<String, (i64, i64, i64)>, ApiError> {
         let mut stmt = self.conn().prepare(
-            "SELECT task_id, COUNT(*), SUM(CASE WHEN state = 'open' THEN 1 ELSE 0 END) \
+            "SELECT task_id, COUNT(*), SUM(CASE WHEN state = 'open' THEN 1 ELSE 0 END), \
+             SUM(CASE WHEN state = 'failed' THEN 1 ELSE 0 END) \
              FROM checks GROUP BY task_id",
         )?;
         let rows = stmt.query_map([], |r| {
             Ok((
                 r.get::<_, String>(0)?,
-                (r.get::<_, i64>(1)?, r.get::<_, i64>(2)?),
+                (
+                    r.get::<_, i64>(1)?,
+                    r.get::<_, i64>(2)?,
+                    r.get::<_, i64>(3)?,
+                ),
             ))
         })?;
         let mut out = HashMap::new();

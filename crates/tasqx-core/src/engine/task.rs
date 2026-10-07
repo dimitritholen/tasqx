@@ -1023,21 +1023,32 @@ impl Engine {
         // `unproven` metric, where a maintainer sees the pattern instead of an
         // agent hitting one wall at a time.
         //
-        // Silent when nothing is open, including when there are no criteria at
-        // all: a hint on the good path teaches the reader to stop reading
+        // Silent when every check passed, including when there are no criteria
+        // at all: a hint on the good path teaches the reader to stop reading
         // hints, and every completion that exists today must keep answering
         // exactly as it did.
-        let still_open: i64 = self.conn.query_row(
-            "SELECT COUNT(*) FROM checks WHERE task_id = ?1 AND state = 'open'",
+        //
+        // D205: a FAILED check is unproven too, and named apart from the open
+        // ones — "nobody looked" and "it was looked at and failed" are
+        // different news. The CLI prints the first clause, so both counts
+        // live there.
+        let (failed, still_open): (i64, i64) = self.conn.query_row(
+            "SELECT COALESCE(SUM(state = 'failed'), 0), COALESCE(SUM(state = 'open'), 0) \
+             FROM checks WHERE task_id = ?1",
             params![task.id],
-            |r| r.get(0),
+            |r| Ok((r.get(0)?, r.get(1)?)),
         )?;
-        if still_open > 0 {
+        if failed > 0 || still_open > 0 {
+            let noun = |n: i64| if n == 1 { "check" } else { "checks" };
+            let what = match (failed, still_open) {
+                (0, o) => format!("{o} acceptance {} still open", noun(o)),
+                (f, 0) => format!("{f} acceptance {} failed", noun(f)),
+                (f, o) => format!("{f} acceptance {} failed and {o} still open", noun(f)),
+            };
             out["checks_hint"] = json!(format!(
-                "completed with {still_open} acceptance {} still open; nothing was blocked, \
-                 and `report.outcomes` counts this as an unproven completion. Pass \
-                 checks_passed (with evidence) on completion, or check.set them first.",
-                if still_open == 1 { "check" } else { "checks" }
+                "completed with {what}; nothing was blocked, and `report.outcomes` counts this \
+                 as an unproven completion. Pass checks_passed (with evidence) on completion, \
+                 or check.set them first."
             ));
         }
         // D139: an overrun is named where the caller will see it, and named
