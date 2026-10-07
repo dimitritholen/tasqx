@@ -1403,6 +1403,7 @@ pub fn undone(ctx: &Ctx, result: &Value, task: &Value, titles: &Titles, now: Tim
         "dependency.remove" => "undep",
         "annotation.add" => "annotate",
         "annotation.update" => "annotate --edit",
+        "annotation.move" => "annotate --move",
         "adjust_tracked" => "adjust",
         other => other,
     };
@@ -1470,6 +1471,15 @@ pub fn undone(ctx: &Ctx, result: &Value, task: &Value, titles: &Titles, now: Tim
         "annotation.update" => {
             card.lead
                 .push(Fact::changed(ctx, "card.strong", "previous text back"));
+            card.context = Context::NONE;
+        }
+        "annotation.move" => {
+            let back = restored.get("task").and_then(Value::as_i64).unwrap_or(0);
+            card.lead.push(Fact::changed(
+                ctx,
+                "card.strong",
+                &format!("note back on #{back}"),
+            ));
             card.context = Context::NONE;
         }
         _ => {

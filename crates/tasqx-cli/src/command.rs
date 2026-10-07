@@ -651,12 +651,15 @@ pub(super) enum Command {
     /// else, because that is the only position from which its inverses are exact
     /// rather than plausible (see `engine/undo.rs`); a `<ref>` here would look
     /// like a courtesy and would silently reach past whatever happened
-    /// elsewhere. Six operations are undoable and every other one refuses by
+    /// elsewhere. Seven operations are undoable and every other one refuses by
     /// name, saying what does take it back.
     #[command(alias = "u", after_help = crate::cmddoc::after_help("undo"))]
     Undo,
-    /// Annotate a task (maps to annotation.add), or correct one note in place
-    /// with `--edit <annotation-id>` (maps to annotation.update, D165).
+    /// Annotate a task (maps to annotation.add), correct one note in place
+    /// with `--edit <annotation>` (maps to annotation.update, D165), or move it
+    /// to another task with `--move <annotation> --to <task>` (maps to
+    /// annotation.move, D211). A note is named by its full id, a unique prefix
+    /// of 8+ characters, or the `[n]` position `tasqx show` prints.
     #[command(alias = "note", after_help = crate::cmddoc::after_help("annotate"))]
     Annotate {
         /// short_id or UUID.
@@ -664,8 +667,21 @@ pub(super) enum Command {
         r#ref: String,
         /// Replace the body of this annotation instead of adding one; its id,
         /// timestamp and position are kept.
-        #[arg(long, value_name = "ANNOTATION_ID")]
+        #[arg(long, value_name = "ANNOTATION")]
         edit: Option<String>,
+        /// Move this annotation to the task named by `--to` instead of adding
+        /// one; its id, text and timestamp are kept (maps to annotation.move,
+        /// D211).
+        #[arg(
+            long = "move",
+            value_name = "ANNOTATION",
+            requires = "to",
+            conflicts_with_all = ["edit", "text"]
+        )]
+        move_: Option<String>,
+        /// The task `--move` sends the annotation to: short_id or UUID.
+        #[arg(long, value_name = "TASK", requires = "move_", add = crate::complete::candidates::task_ids())]
+        to: Option<String>,
         /// The annotation text; `-`, or nothing on a pipe, reads it from
         /// stdin; nothing on a terminal opens $VISUAL/$EDITOR.
         text: Vec<String>,
@@ -681,7 +697,8 @@ pub(super) enum Command {
         /// short_id or UUID.
         #[arg(add = crate::complete::candidates::task_ids())]
         r#ref: String,
-        /// The annotation's id, as `tasqx show <ref>` reports it.
+        /// The annotation: its full id, a unique prefix of 8+ characters, or the
+        /// `[n]` position `tasqx show <ref>` prints.
         annotation_id: String,
     },
     /// Attach one or more tags to a task (maps to tag.add).

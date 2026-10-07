@@ -507,7 +507,7 @@ pub const COMMAND_REF: &[CmdDoc] = &[
         ],
         notes: &[
             "It takes no ref, and that is the design: only the NEWEST event can be reversed exactly, because nothing has happened since to have read or overwritten what the inverse puts back.",
-            "Six operations are undoable — `stop`, `untag`, `undep`, `annotate`, `annotate --edit` and `adjust`. Every other one exits 5 naming itself and the verb that does take it back (`done` -> `tasqx reopen`, `modify` -> `tasqx show` then a second `modify`).",
+            "Seven operations are undoable — `stop`, `untag`, `undep`, `annotate`, `annotate --edit`, `annotate --move` and `adjust`. Every other one exits 5 naming itself and the verb that does take it back (`done` -> `tasqx reopen`, `modify` -> `tasqx show` then a second `modify`).",
             "Undo APPENDS: the event it reverses stays in the log and a new `undo` event lands behind it, so `tasqx chart` and the audit trail read `X happened, then it was undone`.",
             "There is no redo, so `tasqx undo` twice in a row exits 5: the second one would find the first undo as the newest event and the pair would toggle forever.",
             "It reverses the newest RECORDED event, which is not always the last command you typed. A command that changed nothing records nothing — `tasqx undep 1 2` where no such edge exists, or `tasqx start` on a task already running — so `undo` reaches past it to the previous change. That is why the answer names what it undid: read it before assuming it hit what you were aiming at.",
@@ -519,9 +519,9 @@ pub const COMMAND_REF: &[CmdDoc] = &[
     CmdDoc {
         verb: "annotate",
         aliases: &["note"],
-        method: "annotation.add + annotation.update",
-        summary: "Attach a timestamped note to a task.",
-        usage: "tasqx annotate <ref> [--edit <annotation-id>] [<text…>]",
+        method: "annotation.add + annotation.update + annotation.move",
+        summary: "Attach a timestamped note to a task, correct one, or move it.",
+        usage: "tasqx annotate <ref> [--edit <annotation>] [--move <annotation> --to <task>] [<text…>]",
         examples: &[ex_norun_plain("tasqx annotate 1 Called the plumber, waiting on a quote")],
         notes: &[
             "A long or multi-line note: `tasqx annotate <ref> -` reads the whole of stdin, \
@@ -530,9 +530,15 @@ pub const COMMAND_REF: &[CmdDoc] = &[
              or unchanged file stores nothing. Empty stdin is refused. A note that is just `-` \
              can no longer be written as an argument. `--edit` takes the same forms, the editor \
              pre-filled with the note's current text.",
-            "Wrote something you shouldn't have? `tasqx unannotate <ref> <annotation-id>` \
+            "A note is named by its full id, a unique prefix of 8+ characters, or the `[n]` \
+             position `tasqx show` prints beside it, oldest first (D211). A prefix shared by \
+             two notes exits 5 and lists them; notes written within about a minute share \
+             their first eight characters, so the position is the short way.",
+            "Wrote something you shouldn't have? `tasqx unannotate <ref> <annotation>` \
              scrubs it — there is no other way back.",
-            "Wrote something wrong? `--edit <annotation-id>` replaces that note's text in \
+            "Put it on the wrong task? `--move <annotation> --to <task>` sends the note \
+             there with its id, text and timestamp (D211), and `tasqx undo` puts it back.",
+            "Wrote something wrong? `--edit <annotation>` replaces that note's text in \
              place (D165): its id, timestamp and position stay, so a corrected first note \
              is still the card's Description, and `tasqx undo` puts the old text back.",
         ],
@@ -543,8 +549,8 @@ pub const COMMAND_REF: &[CmdDoc] = &[
         verb: "unannotate",
         aliases: &[],
         method: "annotation.remove",
-        summary: "Permanently scrub one annotation's text, by id.",
-        usage: "tasqx unannotate <ref> <annotation-id>",
+        summary: "Permanently scrub one annotation's text.",
+        usage: "tasqx unannotate <ref> <annotation>",
         examples: &[ex_norun_plain(
             "tasqx unannotate 1 018f2f7e-...",
         )],
@@ -554,9 +560,8 @@ pub const COMMAND_REF: &[CmdDoc] = &[
              a note by mistake. This also redacts the original `annotate` event's own body, \
              so `tasqx chart` (`event.list`) and `tasqx export` stop showing it too — not \
              only `tasqx show`.",
-            "The annotation's id is not printed by `tasqx show` — read it from `tasqx show \
-             <ref> --json` (the `annotations[].id` field) or a prior `tasqx annotate` \
-             response.",
+            "Name the note by the `[n]` position `tasqx show <ref>` prints, a unique id \
+             prefix of 8+ characters, or its full id (`annotations[].id` in `--json`).",
             "`tasqx undo` does NOT cover this: the body is already gone from the log by the \
              time the removal event exists, so there is nothing left to restore.",
             "An unknown id, or one already removed, exits 4 (not_found) rather than answering \

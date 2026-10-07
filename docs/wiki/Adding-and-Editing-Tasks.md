@@ -177,10 +177,16 @@ On a terminal, a bare `tasqx annotate 42` opens `$VISUAL` or `$EDITOR` (else
 `vi`) on a temporary file. Saving an empty or unchanged file stores nothing, and
 so does empty stdin. A note that is only `-` can't be written as an argument.
 
+`tasqx show` numbers the notes, oldest first, with a dim `[n]` in front of
+each. That number, a unique prefix of at least eight characters of the note's
+id, or the full id names a note anywhere a note is named. Notes written within
+about a minute share their first eight characters, so a prefix is often
+ambiguous (exit 5, listing the candidates); the number is the short way.
+
 To correct a note instead of adding another, name it with `--edit`:
 
 ```console
-tasqx annotate 42 --edit 018f2f7e-1234-7abc-9def-0123456789ab Plumber quoted 400, booked for Friday
+tasqx annotate 42 --edit 2 Plumber quoted 400, booked for Friday
 ```
 
 The text is replaced in place: the note keeps its id, its timestamp and its
@@ -189,12 +195,21 @@ and search finds the new text rather than the old. `tasqx undo` puts the old
 text back. `--edit` takes the same stdin and editor forms; the editor opens on
 the note's current text.
 
-## tasqx unannotate
-
-Permanently scrub one annotation's text, by id:
+Put a note on the wrong task? Move it instead of retyping it:
 
 ```console
-tasqx unannotate 42 018f2f7e-1234-7abc-9def-0123456789ab
+tasqx annotate 42 --move 2 --to 57
+```
+
+The note keeps its id, text and timestamp and lands on #57 in its place by
+age; search finds it there. `tasqx undo` puts it back on #42.
+
+## tasqx unannotate
+
+Permanently scrub one annotation's text:
+
+```console
+tasqx unannotate 42 2
 ```
 
 This is a **hard delete**, not a hide: the text is overwritten in the store,
@@ -204,8 +219,8 @@ behind is a tombstone (the id and when it was removed), for audit, with no
 text in it. The tombstone is not hidden away: `tasqx show` and `task.get` both
 list it, and the box card's Notes row counts it.
 
-The annotation's id isn't printed by `tasqx show` — read it from `tasqx show
-42 --json` (each row under `annotations[].id`) or from a prior `tasqx
-annotate` response. `tasqx undo` does **not** cover this: by the time the
+Name the note by the `[n]` position `tasqx show` prints, a unique id prefix of
+eight or more characters, or its full id (`annotations[].id` in `--json`).
+`tasqx undo` does **not** cover this: by the time the
 removal is recorded, there is nothing left in the log to restore. An unknown
 id, or one already removed, exits 4 rather than silently doing nothing.

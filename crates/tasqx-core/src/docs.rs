@@ -358,7 +358,7 @@ pub const ANNOTATION_ROW: &[FieldDoc] = &[
     f(
         "id",
         "string",
-        "The note's uuid — what `annotation.remove` takes.",
+        "The note's uuid — what `annotation.remove` takes, as does a unique prefix of 8+ characters or its 1-based position on the task (D211).",
     ),
     f(
         "body",
@@ -731,6 +731,31 @@ pub const R_ANNOTATION_UPDATE: &[FieldDoc] = &[
         "The note as it now stands: the same id and `created`, the new body (D165).",
     ),
     f("_rev", "integer", "The task's revision counter after the edit. Send it back as `expected_rev` to make the next change conditional."),
+];
+
+/// The task a moved note landed on.
+pub const MOVED_TO_ROW: &[FieldDoc] = &[
+    f("short_id", "integer", "The destination task's short id."),
+    f("title", "string", "The destination task's title."),
+];
+
+/// `annotation.move`'s result.
+pub const R_ANNOTATION_MOVE: &[FieldDoc] = &[
+    f(
+        "short_id",
+        "integer",
+        "The short id of the task the note was on — the `ref` you sent.",
+    ),
+    f(
+        "annotation",
+        "object",
+        "The note as it now stands: the same id, body and `created` (D211).",
+    ),
+    f(
+        "to",
+        "object",
+        "The task it is on now: `{short_id, title}`.",
+    ),
 ];
 
 /// `check.add`'s result.
@@ -1678,6 +1703,11 @@ pub fn result_shape(method: &str) -> &'static [(&'static str, &'static [FieldDoc
         "annotation.update" => &[
             ("result", R_ANNOTATION_UPDATE),
             ("result.annotation", ANNOTATION_ROW),
+        ],
+        "annotation.move" => &[
+            ("result", R_ANNOTATION_MOVE),
+            ("result.annotation", ANNOTATION_ROW),
+            ("result.to", MOVED_TO_ROW),
         ],
         "check.add" => &[("result", R_CHECK_ADD), ("result.check", TASK_CHECK)],
         "check.set" => &[("result", R_CHECK_SET)],
