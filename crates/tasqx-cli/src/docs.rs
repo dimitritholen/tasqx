@@ -1479,6 +1479,8 @@ fn page_filters() -> String {
             &["<code>-api</code>", "Tasks <em>not</em> tagged <code>api</code>."],
             &["<code>project:work.tasqx</code>", "Exact project match."],
             &["<code>status:pending</code>", "Exact status: <code>backlog</code>, <code>pending</code>, <code>active</code>, <code>done</code>, <code>cancelled</code>."],
+            &["<code>status:any</code>", "Every status, <code>done</code> and <code>cancelled</code> included; also spelled <code>status:all</code>. Overrides a default that hides closed tasks."],
+            &["<code>weekly review</code>", "Free text: a bare word is a case-insensitive substring of the title, and several words must all appear. Quote a phrase to match it as one — <code>\"memory explorer\"</code>. <code>title:review</code> and <code>title:\"weekly planning\"</code> are the explicit spelling; <code>%</code> and <code>_</code> are ordinary characters."],
             &["<code>@working</code>", "Status pending or active, <em>and</em> not blocked. The default filter."],
             &["<code>@blocked</code>", "Open, with at least one dependency that is not yet done or cancelled. Also spelled <code>+blocked</code> or <code>status:blocked</code>."],
             &["<code>due.before:&lt;date&gt;</code>", "Due strictly before that instant. Takes any date <code>due:</code> takes — <code>tomorrow</code>, <code>friday</code>, <code>2026-07-25</code>, <code>eom</code>, <code>\"in 3 days\"</code>, or a full RFC3339 instant."],

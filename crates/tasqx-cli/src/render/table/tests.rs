@@ -347,8 +347,8 @@ fn task_table_project_and_due_columns_hold_their_width_in_cells() {
 }
 
 /// #228.16: the table used to print a tag bare (`cardtag`), the one
-/// spelling `list`'s own filter grammar rejects (`unknown filter token
-/// "cardtag"`) — copying what the tool just printed into the tool's own
+/// spelling `list`'s own filter grammar reads as a title word (`cardtag`
+/// matches titles, D210) — copying what the tool just printed into the tool's own
 /// query language was an error. `+tag` is what `tag.add`/`modify` already
 /// echo and the only spelling the filter parses.
 #[test]

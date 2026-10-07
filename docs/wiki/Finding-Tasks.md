@@ -127,6 +127,15 @@ Everything that lists tasks (`list`, `agenda`, `pick`, `watch`, `report`,
 | `-api` | Does NOT have a tag |
 | `due.before:friday` | Due before a date |
 | `due.after:monday` | Due after a date |
+| `weekly review` | Title contains every word, any case |
+| `'"memory explorer"'` | Title contains the phrase |
+| `title:review` | The same, spelled as a key |
+| `status:any` | Every status, done and cancelled too (`status:all` is the same) |
+
+A bare word is a title search, so `tasqx list weekly review` finds "Weekly
+planning review". A word that looks like a token but is not one — `remind:x`,
+`due.before:` with no value — is still refused. `%` and `_` in a word are plain
+characters.
 
 Combine with `and`, `or` and parentheses:
 
@@ -142,5 +151,6 @@ tasqx list 'project:"Home Renovation"'
 ```
 
 tasqx never guesses where a quoted value was supposed to end. If the shell
-eats your quotes, the filter is refused with the correct spelling in the error
-message — better than silently returning the wrong rows.
+eats your quotes, `project:Home Renovation` is the project `Home` plus the title
+word `Renovation`; a project that does not exist is refused by name, which is
+the signal to quote.
