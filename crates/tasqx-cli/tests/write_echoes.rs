@@ -921,6 +921,7 @@ fn bare_chart_draws_throughput() {
     let bare = st.plain(&["chart"]);
     assert_eq!(bare, st.plain(&["chart", "throughput"]));
     assert!(!bare.contains("Usage:"), "{bare}");
+}
 
 /// D215: `undo` reaches `done`, `cancel`, `tag` and `modify`, and the line says
 /// exactly what it reverted.
