@@ -325,7 +325,7 @@ fn unknown_filter_token_is_rejected_rather_than_widening_the_result() {
     e.task_add(&json!({ "title": "one" })).unwrap();
     e.task_add(&json!({ "title": "two" })).unwrap();
 
-    for bogus in ["staus:pending", "totally_unknown_token"] {
+    for bogus in ["staus:pending", "unknown:token"] {
         let err = e.task_list(&json!({ "filter": bogus })).expect_err(bogus);
         assert_eq!(
             err.code,
@@ -4853,4 +4853,43 @@ fn config_read_failure_aborts_task_add() {
         .expect("event count");
     assert_eq!(tasks, 0, "the failed read must abort the task write");
     assert_eq!(events, 0, "the failed read must abort its event too");
+}
+
+/// D210 / #1119: the filter reaches the title through `task.list`, so an MCP or
+/// API caller gets the same bare-word, phrase and `status:any` reading.
+#[test]
+fn task_list_filters_on_title_words_and_status_any() {
+    let e = engine();
+    e.task_add(&json!({ "title": "Weekly planning review" }))
+        .unwrap();
+    e.task_add(&json!({ "title": "Memory explorer polish" }))
+        .unwrap();
+    let done = e
+        .task_add(&json!({ "title": "Memory chore 100%" }))
+        .unwrap();
+    e.task_done(&json!({ "ref": done["short_id"].clone() }))
+        .unwrap();
+
+    let titles = |filter: &str| -> Vec<String> {
+        let r = e.task_list(&json!({ "filter": filter })).unwrap();
+        r["tasks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|t| t["title"].as_str().unwrap().to_string())
+            .collect()
+    };
+    assert_eq!(titles("weekly REVIEW"), ["Weekly planning review"]);
+    assert_eq!(titles("\"memory explorer\""), ["Memory explorer polish"]);
+    assert_eq!(
+        titles("title:\"explorer polish\""),
+        ["Memory explorer polish"]
+    );
+    assert_eq!(titles("memory status:any").len(), 2);
+    assert_eq!(titles("100% status:all"), ["Memory chore 100%"]);
+    assert_eq!(titles("1_0 status:any").len(), 0, "_ is not a wildcard");
+    let err = e
+        .task_list(&json!({ "filter": "due.before:" }))
+        .unwrap_err();
+    assert_eq!(err.code, ErrorCode::BadRequest);
 }

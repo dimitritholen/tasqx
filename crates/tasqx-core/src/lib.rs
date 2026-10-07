@@ -455,9 +455,9 @@ mod doc_gate_tests {
     /// guards can honestly claim: whether the place a survivor was recorded
     /// against still exists. An earlier version sliced the function body out
     /// and asserted the mutated operator still appeared in it — which sounds
-    /// stronger and is not. Rewriting `spacing_hint`'s `||` into an iterator
-    /// chain, the likeliest shape of actually fixing tasqx #48, left the guard
-    /// green: the function has an unrelated `||` two lines up, and the check
+    /// stronger and is not. Rewriting a survivor's `||` into an iterator
+    /// chain, the likeliest shape of actually fixing it, left the guard
+    /// green: the function had an unrelated `||` two lines up, and the check
     /// could not tell them apart. A guard that survives the change it exists to
     /// notice is worse than no guard, so it is gone rather than weakened.
     fn defines_fn(src: &str, name: &str) -> bool {
@@ -518,8 +518,8 @@ mod doc_gate_tests {
     /// A survivor is recorded as a place in the code, and that place must still
     /// exist.
     ///
-    /// The sweep's one missed mutant is `spacing_hint`'s `||` in filter.rs
-    /// (tasqx #48). If that function is renamed, moved, deleted or dropped out
+    /// A missed mutant, when the note lists one, is recorded against a
+    /// function. If that function is renamed, moved, deleted or dropped out
     /// of `examine_globs`, this fails and the whole note has to be re-derived —
     /// which is roughly the only moment anybody would think to do it. It is why
     /// the note records a FUNCTION rather than the `file:line:col`

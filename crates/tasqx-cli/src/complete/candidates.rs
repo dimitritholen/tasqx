@@ -640,8 +640,8 @@ pub(crate) fn filter_words() -> ArgValueCompleter {
 /// and treats the whole tail as a filter otherwise, so at the first word BOTH
 /// vocabularies are legal — `tasqx report project` and `tasqx report +api` are
 /// each valid and mean different things. At every later word only filter grammar
-/// is: `tasqx report project status` exits 2 with `unknown filter token
-/// "status"`. Measured against the built binary, both spellings.
+/// is: `tasqx report project status` reads `status` as a title term (D210), not
+/// an axis. Measured against the built binary, both spellings.
 ///
 /// # The residual over-offer, named rather than papered over
 ///
@@ -653,10 +653,9 @@ pub(crate) fn filter_words() -> ArgValueCompleter {
 ///
 /// That is an over-offer and it is the lesser of the two available failures:
 ///
-///  * choosing the candidate produces `unknown filter token "status"` on stderr
-///    at exit 2, which is LOUD. Nothing is silently misfiled, nothing is
-///    silently narrowed, and core's own message names the offending token and
-///    lists the shapes that would have worked.
+///  * choosing the candidate used to produce `unknown filter token "status"` at
+///    exit 2. Since D210 a bare word is a title term, so the report runs,
+///    narrowed to titles containing it.
 ///  * withholding the axes entirely to avoid it would leave `tasqx report <TAB>`
 ///    — the primary spelling, and a closed compile-time vocabulary the tool
 ///    knows exactly — answering with filter tokens only. That is an under-offer
@@ -766,6 +765,8 @@ fn filter_candidates(typed: &str) -> Vec<CompletionCandidate> {
         // entirely, which is the shape `a_date_bound_offers_nothing_because_its
         // _vocabulary_is_open` was re-pointed at once that was measured.
         Vocabulary::Date => Vec::new(),
+        // Title text is the user's own words; the store holds no list to offer.
+        Vocabulary::Text => Vec::new(),
     }
 }
 
@@ -1826,8 +1827,8 @@ mod tests {
         assert_eq!(at(0, "pro"), ["project", "project:", "proj:"]);
 
         // Past the first word an axis is no longer legal — `tasqx report project
-        // status` exits 2 with `unknown filter token "status"`, measured — so the
-        // menu is filter grammar only.
+        // status` reads `status` as a title term (D210) — so the menu is filter
+        // grammar only.
         let later = at(1, "");
         for axis in tasqx_core::engine::SUMMARY_GROUP_BY {
             assert!(
