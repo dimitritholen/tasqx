@@ -251,7 +251,7 @@ pub const COMMAND_REF: &[CmdDoc] = &[
     CmdDoc {
         verb: "next",
         aliases: &[],
-        method: "task.list",
+        method: "task.next",
         summary: "The one highest-urgency unblocked task.",
         usage: "tasqx next [filter…] [--card [--ascii]]",
         examples: &[
