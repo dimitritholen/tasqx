@@ -94,12 +94,12 @@ fn full_protocol_sequence() {
     }));
     assert!(note.is_none(), "notifications must not produce a response");
 
-    // 3. tools/list — all 32 tools present, each with an inputSchema.
+    // 3. tools/list — all 33 tools present, each with an inputSchema.
     let listed = server
         .handle_message(&json!({ "jsonrpc": "2.0", "id": 2, "method": "tools/list" }))
         .expect("tools/list is a request");
     let tools = listed["result"]["tools"].as_array().expect("tools array");
-    assert_eq!(tools.len(), 32, "expected 32 tools");
+    assert_eq!(tools.len(), 33, "expected 33 tools");
     let names: Vec<&str> = tools.iter().map(|t| t["name"].as_str().unwrap()).collect();
     for expected in [
         "tasqx_list_tasks",
@@ -122,6 +122,7 @@ fn full_protocol_sequence() {
         "tasqx_annotate_task",
         "tasqx_remove_annotation",
         "tasqx_update_annotation",
+        "tasqx_move_annotation",
         "tasqx_add_tokens",
         "tasqx_add_dependency",
         "tasqx_remove_dependency",
@@ -3655,6 +3656,10 @@ fn the_read_only_refusal_names_the_flag_that_fixes_it() {
 /// Measured beside every tool above: 32 tools, 35,434 bytes, so the cap moved
 /// from 35,072 to 35,584.
 ///
+/// D211 added `tasqx_move_annotation` and widened `annotation_id` on the two
+/// tools beside it. Measured beside every tool above: 33 tools, 36,392 bytes,
+/// so the cap moved from 35,584 to 36,608.
+///
 /// The floor is not zero. With every `description` key removed from the roster
 /// the same serialization is 11,597 bytes of schema skeleton — property names,
 /// `type`, the closed `enum` lists D30 renders from the engine's own consts,
@@ -3665,7 +3670,7 @@ fn the_read_only_refusal_names_the_flag_that_fixes_it() {
 fn the_whole_tool_roster_stays_inside_its_per_prompt_budget() {
     const MAX_DESCRIPTION: usize = 800;
     const MAX_ENTRY: usize = 3_072;
-    const MAX_ROSTER: usize = 35_584;
+    const MAX_ROSTER: usize = 36_608;
 
     let engine = engine();
     let server = McpServer::new(&engine, Scope::Write);
@@ -4265,6 +4270,39 @@ fn an_mcp_stale_rev_on_update_annotation_names_get_task_and_expected_rev() {
         !text.contains("tasqx show") && !text.contains("--expected-rev"),
         "the MCP remedy still names the CLI: {text}"
     );
+}
+
+/// D211: `tasqx_move_annotation` moves a note by position, keeps its id, and is
+/// refused to a read-only session.
+#[test]
+fn tasqx_move_annotation_moves_a_note_by_position_and_needs_write_scope() {
+    let engine = engine();
+    engine.task_add(&json!({ "title": "wrong" })).expect("add");
+    engine.task_add(&json!({ "title": "right" })).expect("add");
+    let note = engine
+        .annotation_add(&json!({ "ref": 1, "body": "misfiled" }))
+        .expect("note")["annotation"]["id"]
+        .clone();
+    let server = McpServer::new(&engine, Scope::Write);
+    let r = call(
+        &server,
+        1,
+        "tasqx_move_annotation",
+        json!({ "ref": 1, "annotation_id": "1", "to": 2 }),
+    );
+    assert!(!is_error(&r), "{r}");
+    assert_eq!(tool_text(&r)["annotation"]["id"], note, "{r}");
+    let got = engine.task_get(&json!({ "ref": 2 })).expect("get");
+    assert_eq!(got["annotations"][0]["body"], "misfiled");
+
+    let read = McpServer::new(&engine, Scope::Read);
+    let denied = call(
+        &read,
+        2,
+        "tasqx_move_annotation",
+        json!({ "ref": 2, "annotation_id": "1", "to": 1 }),
+    );
+    assert!(is_error(&denied), "{denied}");
 }
 
 /// D167: a count that arrives after completion had no MCP door — `token.add`

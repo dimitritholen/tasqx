@@ -355,11 +355,11 @@ impl Engine {
     /// had.
     pub fn annotation_remove(&self, p: &Value) -> Result<Value, ApiError> {
         let _ = ref_param(p)?;
-        let annotation_id = req_str(p, "annotation_id")?;
 
         let ts = now();
         let tx = self.begin_mutation()?;
         let task = self.resolve_ref_on(&tx, p)?;
+        let annotation_id = annotation_id_on(&tx, &task, p)?;
 
         let existing: Option<Option<String>> = tx
             .query_row(
@@ -412,7 +412,7 @@ impl Engine {
             ));
         }
 
-        scrub_annotation(&tx, &task.id, &annotation_id, &ts)?;
+        scrub_annotation(&tx, &annotation_id, &ts)?;
         tx.execute(
             "UPDATE tasks SET rev=?1, modified=?2 WHERE id=?3",
             params![task.rev + 1, ts, task.id],
@@ -454,12 +454,12 @@ impl Engine {
     /// A body identical to the stored one changes nothing and records nothing.
     pub fn annotation_update(&self, p: &Value) -> Result<Value, ApiError> {
         let _ = ref_param(p)?;
-        let annotation_id = req_str(p, "annotation_id")?;
         let body = req_str(p, "body")?;
         let expected_rev = opt_i64(p, "expected_rev")?;
 
         let tx = self.begin_mutation()?;
         let task = self.resolve_ref_on(&tx, p)?;
+        let annotation_id = annotation_id_on(&tx, &task, p)?;
         if let Some(exp) = expected_rev {
             if exp != task.rev {
                 return Err(super::task::stale_rev(exp, &task));
@@ -521,6 +521,90 @@ impl Engine {
             "short_id": task.short_id,
             "annotation": { "id": annotation_id, "body": body, "created": created },
             "_rev": rev,
+        }))
+    }
+
+    // ---- annotation.move ------------------------------------------------------
+
+    /// `annotation.move` — put one note on another task (D211). Params: `ref`
+    /// (the task it is on now), `annotation_id`, `to` (the task it goes to).
+    ///
+    /// The note keeps its id, body and `created` stamp: only `task_id`
+    /// changes. Its position follows its `created` order on the new task, not
+    /// the instant of the move. Both tasks' `_rev` and `modified` move.
+    ///
+    /// One `annotation.move` event is recorded, on the destination, and it
+    /// carries ids only — never the body — so `annotation.remove`'s scrub has
+    /// nothing in it to redact. `undo` puts the note back on the task it came
+    /// from. Moving to the task the note is already on, or to a task that does
+    /// not exist, is refused.
+    pub fn annotation_move(&self, p: &Value) -> Result<Value, ApiError> {
+        let _ = ref_param(p)?;
+        let to = p
+            .get("to")
+            .ok_or_else(|| ApiError::bad_request("missing required field: to"))?;
+        let tx = self.begin_mutation()?;
+        let from = self.resolve_ref_on(&tx, p)?;
+        let dest = self.resolve_ref_value_on(&tx, to)?;
+        let annotation_id = annotation_id_on(&tx, &from, p)?;
+        if from.id == dest.id {
+            return Err(ApiError::conflict(format!(
+                "the annotation is already on #{} — name another task in `to`; nothing was moved.",
+                from.short_id
+            )));
+        }
+        let (body, created, removed): (String, String, Option<String>) = tx
+            .query_row(
+                "SELECT body, created, removed FROM annotations WHERE id = ?1 AND task_id = ?2",
+                params![annotation_id, from.id],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .optional()?
+            .ok_or_else(|| {
+                ApiError::not_found(
+                    format!(
+                        "#{} has no annotation with id {annotation_id} — check the id \
+                         `task.get` (or `tasqx show {} --json`) reports for it; nothing was moved.",
+                        from.short_id, from.short_id
+                    ),
+                    None,
+                )
+            })?;
+        if removed.is_some() {
+            return Err(ApiError::not_found(
+                format!(
+                    "annotation {annotation_id} on #{} was removed — its text is gone, so \
+                     there is nothing to move.",
+                    from.short_id
+                ),
+                None,
+            ));
+        }
+
+        let ts = now();
+        tx.execute(
+            "UPDATE annotations SET task_id = ?1 WHERE id = ?2",
+            params![dest.id, annotation_id],
+        )?;
+        for t in [&from, &dest] {
+            tx.execute(
+                "UPDATE tasks SET rev=?1, modified=?2 WHERE id=?3",
+                params![t.rev + 1, ts, t.id],
+            )?;
+        }
+        insert_event(
+            &tx,
+            Entity::Task,
+            &dest.id,
+            "annotation.move",
+            &json!({ "id": annotation_id, "from": from.id, "to": dest.id }),
+        )?;
+        tx.commit()?;
+
+        Ok(json!({
+            "short_id": from.short_id,
+            "annotation": { "id": annotation_id, "body": body, "created": created },
+            "to": { "short_id": dest.short_id, "title": dest.title },
         }))
     }
 
@@ -667,9 +751,10 @@ impl Engine {
 /// reads this payload's `body` at all (it re-reads `annotations.body` fresh,
 /// and by this point `annotation.remove` is the newest event, which refuses
 /// `undo` by name — see D54/D113(3) — so the redacted payload is never even a
-/// candidate for restoration). A task can carry more than one
-/// `annotation.add` event, so this scans by task and matches on the payload's
-/// own `id`, tolerantly (a malformed payload is skipped, never a hard failure
+/// candidate for restoration). A note can carry more than one
+/// `annotation.add` event, and after `annotation.move` (D211) they sit on the
+/// task it came from, so this scans every task's by a cheap `instr` on the
+/// payload and then matches the payload's own `id`, tolerantly (a malformed payload is skipped, never a hard failure
 /// — matching how event payloads are read elsewhere, `commands.rs`).
 ///
 /// D165: every `annotation.update` event for the note is redacted by the same
@@ -677,7 +762,6 @@ impl Engine {
 /// the latter is what makes the edit undoable).
 pub(super) fn scrub_annotation(
     tx: &rusqlite::Transaction,
-    task_id: &str,
     annotation_id: &str,
     ts: &str,
 ) -> Result<(), ApiError> {
@@ -687,9 +771,9 @@ pub(super) fn scrub_annotation(
     )?;
     let mut stmt = tx.prepare(
         "SELECT id, op, payload FROM events \
-         WHERE op IN ('annotation.add', 'annotation.update') AND entity_id = ?1",
+         WHERE op IN ('annotation.add', 'annotation.update') AND instr(payload, ?1) > 0",
     )?;
-    let rows = stmt.query_map(params![task_id], |r| {
+    let rows = stmt.query_map(params![annotation_id], |r| {
         Ok((
             r.get::<_, String>(0)?,
             r.get::<_, String>(1)?,
@@ -827,6 +911,95 @@ fn first_words(body: &str) -> String {
     match words.len() {
         0..=6 => words.join(" "),
         _ => format!("{} …", words[..6].join(" ")),
+    }
+}
+
+/// The shortest id prefix `annotation_id_on` accepts (D211). Shorter hex is
+/// refused rather than guessed at: a position is the short form.
+const MIN_ANNOTATION_PREFIX: usize = 8;
+
+/// Resolve the `annotation_id` param (D211) to a full annotation id on `task`.
+///
+/// Three spellings: the full id, a unique prefix of at least
+/// [`MIN_ANNOTATION_PREFIX`] hex characters, or a 1-based position among the
+/// task's live notes, oldest first, as `tasqx show` numbers them (a JSON
+/// integer or a string of fewer than eight digits). Anything else is returned
+/// as given, so the caller's own not-found message (and the "already removed"
+/// one, which needs the tombstone row) still speaks for it.
+///
+/// UUIDv7 ids lead with a millisecond clock, so two notes written within about
+/// a minute share their first eight characters; the conflict lists the
+/// candidates with their positions for exactly that case.
+fn annotation_id_on(conn: &Connection, task: &Task, p: &Value) -> Result<String, ApiError> {
+    let given = match p.get("annotation_id") {
+        Some(Value::Number(n)) => n.to_string(),
+        _ => req_str(p, "annotation_id")?,
+    };
+    let is_position =
+        given.len() < MIN_ANNOTATION_PREFIX && given.bytes().all(|b| b.is_ascii_digit());
+    let mut live = conn.prepare(
+        "SELECT id, body FROM annotations WHERE task_id = ?1 AND removed IS NULL ORDER BY id",
+    )?;
+    let live: Vec<(String, String)> = live
+        .query_map(params![task.id], |r| Ok((r.get(0)?, r.get(1)?)))?
+        .collect::<Result<_, _>>()?;
+    if is_position {
+        let n: usize = given.parse().unwrap_or(0);
+        if n == 0 {
+            return Err(ApiError::bad_request(
+                "an annotation position is 1-based, as `tasqx show` numbers the notes",
+            ));
+        }
+        return live.get(n - 1).map(|(id, _)| id.clone()).ok_or_else(|| {
+            ApiError::not_found(
+                format!(
+                    "#{} has no annotation at position {n}; it has {} — nothing was changed.",
+                    task.short_id,
+                    live.len()
+                ),
+                None,
+            )
+        });
+    }
+    let hexish = given.bytes().all(|b| b.is_ascii_hexdigit() || b == b'-');
+    if !hexish || given.len() >= 36 {
+        return Ok(given);
+    }
+    if given.len() < MIN_ANNOTATION_PREFIX {
+        return Err(ApiError::bad_request(format!(
+            "an annotation id prefix needs at least {MIN_ANNOTATION_PREFIX} characters (got {}); \
+             use the full id or the note's position on #{}",
+            given.len(),
+            task.short_id
+        )));
+    }
+    // Removed notes count too, so a prefix of a scrubbed note reaches the
+    // "already removed" answer instead of reading as a typo.
+    let mut all = conn.prepare(
+        "SELECT id FROM annotations WHERE task_id = ?1 AND substr(id, 1, ?2) = ?3 ORDER BY id",
+    )?;
+    let hits: Vec<String> = all
+        .query_map(params![task.id, given.len() as i64, given], |r| r.get(0))?
+        .collect::<Result<_, _>>()?;
+    match hits.as_slice() {
+        [] => Ok(given),
+        [one] => Ok(one.clone()),
+        many => {
+            let listed: Vec<String> = many
+                .iter()
+                .map(|id| match live.iter().position(|(l, _)| l == id) {
+                    Some(i) => format!("[{}] {id} \"{}\"", i + 1, first_words(&live[i].1)),
+                    None => format!("{id} (removed)"),
+                })
+                .collect();
+            Err(ApiError::conflict(format!(
+                "{given} is the start of {} annotations on #{}: {} — name one by its full id \
+                 or its position.",
+                many.len(),
+                task.short_id,
+                listed.join(", ")
+            )))
+        }
     }
 }
 

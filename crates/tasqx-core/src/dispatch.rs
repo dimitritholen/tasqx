@@ -167,6 +167,8 @@ pub const PARAMS: &[(&str, &[&str], bool)] = &[
     // reads this table already has (`memory.get`, `memory.remove`) — naming it
     // `annotation_id` says which child row a `ref`-scoped call means.
     ("annotation.remove", &["ref", "annotation_id"], false),
+    // D211: `to` is the task ref the note goes to; `ref` is the task it is on.
+    ("annotation.move", &["ref", "annotation_id", "to"], false),
     // D165: `expected_rev` is the TASK's rev — annotations carry none of
     // their own, and every write to a note already bumps the task's.
     (
@@ -417,6 +419,7 @@ pub fn dispatch(engine: &Engine, method: &str, params: &Value) -> Result<Value, 
         "annotation.add" => engine.annotation_add(params),
         "annotation.remove" => engine.annotation_remove(params),
         "annotation.update" => engine.annotation_update(params),
+        "annotation.move" => engine.annotation_move(params),
         "token.add" => engine.token_add(params),
         "token.remove" => engine.token_remove(params),
         "tokens.recompute" => engine.token_recompute(params),
