@@ -162,6 +162,10 @@ fn task_effects(ev: &LoggedEvent, by_id: &HashMap<&str, &LoggedEvent>) -> Vec<(S
                 .into_iter()
                 .map(|(k, _)| (k, false))
                 .collect(),
+            // D215: an undone `tag.add` takes off the tags it attached.
+            Some("tag.add") => strings(&p["restored"]["removed"])
+                .map(|t| (tag_key(t), true))
+                .collect(),
             _ => Vec::new(),
         },
         _ => Vec::new(),
@@ -260,6 +264,31 @@ mod tests {
             "2026-09-03T00:00:00Z",
         ));
         assert!(task_ledger(&log).removal(&[tag_key("x")]).is_none());
+    }
+
+    /// D215: undoing a `tag.add` takes off the tags it attached, which is a
+    /// removal at the undo's own place in the order.
+    #[test]
+    fn an_undone_tag_add_is_a_removal() {
+        let log = [
+            ev(
+                "1",
+                "tag.add",
+                json!({ "tags": ["x"], "added": ["x"] }),
+                "2026-09-02T00:00:00Z",
+            ),
+            ev(
+                "2",
+                "undo",
+                json!({
+                    "reverted": "1",
+                    "reverted_op": "tag.add",
+                    "restored": { "removed": ["x"] },
+                }),
+                "2026-09-03T00:00:00Z",
+            ),
+        ];
+        assert!(task_ledger(&log).removal(&[tag_key("x")]).is_some());
     }
 
     #[test]

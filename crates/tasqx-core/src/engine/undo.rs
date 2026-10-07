@@ -10,7 +10,7 @@
 //! meant to be gone.
 //!
 //! **2. Only a closed, explicit set of operations is undoable** —
-//! [`UNDOABLE_OPS`], five of them. Everything else refuses BY NAME and says what
+//! [`UNDOABLE_OPS`]. Everything else refuses BY NAME and says what
 //! taking it back would actually have required, from [`NOT_UNDOABLE`]. Guessing
 //! an inverse is how an undo silently corrupts a store: most of the ops here
 //! record what the caller ASKED for, not what changed, and the two differ
@@ -19,8 +19,9 @@
 //! **3. A compound effect is undone atomically or not at all.** Completing a
 //! recurring task spawns the next occurrence and `task.done` can record a token
 //! measurement in the same transaction; undoing the completion while leaving
-//! either behind is a store nobody asked for. `done` is therefore refused
-//! outright rather than supported for the simple case — see [`NOT_UNDOABLE`].
+//! either behind is a store nobody asked for. D215 therefore undoes a
+//! completion together with its untouched spawn, and refuses when the spawn was
+//! touched or a measurement was recorded, naming which.
 //!
 //! # Two decisions this file makes, and why
 //!
@@ -89,7 +90,7 @@ use super::*;
 
 /// The operations `event.revert` will undo, and the only ones it ever will.
 ///
-/// Membership is not a matter of taste. Each of these five is *exactly*
+/// Membership is not a matter of taste. Each of these is *exactly*
 /// invertible from its own event payload plus the state the store is in when
 /// undo runs, with nothing left to infer:
 ///
@@ -102,6 +103,21 @@ use super::*;
 ///    everyone reading the published page, which `-D rustdoc::private_intra_doc_links`
 ///    rejects. `storage::open_read_only` records the same trade for the same
 ///    reason — the span, not an `#[allow]`.)
+///  * **`done`** (D215) — the payload carries `from`, the status the completion
+///    left, `completed` and `interval_started`, which together give the
+///    interval it closed to the second, and `checks_before`, what each proven
+///    criterion held. A recurring task's spawned instance is removed with it
+///    when nothing has touched that instance; a token measurement recorded in
+///    the same call is not something undo can retract, so that case refuses.
+///    The spawn's `add` is the newest event then, so undo reads past it to the
+///    `done` it belongs to.
+///  * **`cancel`** (D215) — `from` and `interval` (the seconds folded into the
+///    total) are in the payload.
+///  * **`modify`** (D215) — the payload carries `before`, the value of every
+///    column the call wrote. An event from before that was recorded refuses.
+///  * **`tag.add`** (D215) — the payload carries `added`, the tags the call
+///    really attached, as distinct from the ones it asked for. An event from
+///    before that was recorded refuses.
 ///  * **`tag.remove`** — D52 makes the removal all-or-nothing behind a
 ///    pre-check, so every tag the payload names was demonstrably attached before
 ///    the call and was demonstrably detached by it. Re-attaching exactly those
@@ -128,8 +144,12 @@ use super::*;
 /// (tests/engine.rs) forces every op the engine can write into this list or into
 /// [`NOT_UNDOABLE`], so the choice is always made deliberately — but it cannot
 /// check that a listed inverse is *correct*.
-pub const UNDOABLE_OPS: [&str; 7] = [
+pub const UNDOABLE_OPS: [&str; 11] = [
     "stop",
+    "done",
+    "cancel",
+    "modify",
+    "tag.add",
     "tag.remove",
     "dependency.remove",
     "annotation.add",
@@ -166,17 +186,6 @@ pub const NOT_UNDOABLE: &[(&str, &str)] = &[
          `tasqx stop <ref>` closes the interval you just opened.",
     ),
     (
-        "done",
-        "Completing a task can also spawn a recurrence and record a token measurement in the \
-         same transaction; `tasqx reopen <ref>` is the sanctioned way back.",
-    ),
-    (
-        "cancel",
-        "Cancelling folds the open interval into tracked time without recording where it \
-         started, so undo could restore the status or the clock, never both; `tasqx reopen \
-         <ref>` brings it back as pending.",
-    ),
-    (
         "reopen",
         "Reopening clears `completed` without recording the instant it cleared; `tasqx done \
          <ref>` completes it again with a real one.",
@@ -195,16 +204,6 @@ pub const NOT_UNDOABLE: &[(&str, &str)] = &[
         "check.remove",
         "The row is gone and the event carries only its id, not the body, state or position it \
          held; `tasqx check add` writes the criterion again, at the end.",
-    ),
-    (
-        "modify",
-        "A `modify` event records only the values that were SET, never what they replaced; \
-         `tasqx show <ref>` then a second `modify` (with `--expected-rev`) is the way back.",
-    ),
-    (
-        "tag.add",
-        "Attaching a tag is idempotent, so the event cannot tell a tag it attached from one \
-         already there; `tasqx untag <ref> <tag>` removes exactly the one you name.",
     ),
     (
         "tag.normalize",
@@ -254,8 +253,14 @@ pub const NOT_UNDOABLE: &[(&str, &str)] = &[
     ),
     (
         "archive",
-        "Archiving is deliberately one-way and there is no `project.unarchive`; restoring a \
-         saved export via `store.import` is the way back — a data restore, not an undo.",
+        "Putting a project back is `project.unarchive`, and the archive may also have cleared \
+         the store's default project, which the log does not restore; `tasqx unarchive <name>` \
+         brings the project back, `tasqx use <name>` re-aims the default.",
+    ),
+    (
+        "unarchive",
+        "Archiving a project again is its own decision with its own report of the open work it \
+         leaves; `tasqx archive <name>` does it.",
     ),
     (
         "import",
@@ -363,12 +368,38 @@ impl Engine {
                 },
             )
             .optional()?;
-        let Some((event_id, entity_id, op, payload, event_ts)) = newest else {
+        let Some((mut event_id, mut entity_id, mut op, mut payload, mut event_ts)) = newest else {
             return Err(ApiError::not_found(
                 "there is nothing to undo — this store's event log is empty",
                 None,
             ));
         };
+
+        // D215: completing a recurring task writes `done` and then the next
+        // instance's `add`, so the newest event is that `add`. When the event
+        // before it is the `done` of the task it was spawned from, the pair is
+        // one completion and undo takes it back as one.
+        let mut spawn: Option<String> = None;
+        if op == "add" {
+            let spawned_from = payload
+                .as_deref()
+                .and_then(|s| serde_json::from_str::<Value>(s).ok())
+                .and_then(|v| v["spawned_from"].as_str().map(String::from));
+            if let Some(from) = spawned_from {
+                let prior: Option<(String, String, String, Option<String>, String)> = tx
+                    .query_row(
+                        "SELECT id, entity_id, op, payload, ts FROM events \
+                         ORDER BY rowid DESC LIMIT 1 OFFSET 1",
+                        [],
+                        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
+                    )
+                    .optional()?;
+                if let Some(p) = prior.filter(|p| p.2 == "done" && p.1 == from) {
+                    spawn = Some(entity_id);
+                    (event_id, entity_id, op, payload, event_ts) = p;
+                }
+            }
+        }
 
         if !UNDOABLE_OPS.contains(&op.as_str()) {
             return Err(not_undoable(&op, &event_ts));
@@ -391,6 +422,10 @@ impl Engine {
 
         let restored = match op.as_str() {
             "stop" => revert_stop(&tx, &task, &payload, &event_ts)?,
+            "done" => revert_done(&tx, &task, &payload, spawn.as_deref())?,
+            "cancel" => revert_cancel(&tx, &task, &payload, &event_ts)?,
+            "modify" => revert_modify(&tx, &task, &payload)?,
+            "tag.add" => revert_tag_add(&tx, &task, &payload)?,
             "tag.remove" => revert_tag_remove(&tx, &task, &payload)?,
             "dependency.remove" => revert_dependency_remove(&tx, &task, &payload)?,
             "annotation.add" => revert_annotation_add(&tx, &task, &payload)?,
@@ -556,6 +591,329 @@ fn revert_stop(
         "tracked": tracked,
         "interval_started": started,
     }))
+}
+
+/// Refuse to reopen an interval while another task is running (D6): nothing can
+/// have started since, so a running task means the store was changed outside
+/// the log.
+fn require_no_other_active(tx: &Transaction, task: &Task) -> Result<(), ApiError> {
+    let other: Option<i64> = tx
+        .query_row(
+            "SELECT short_id FROM tasks WHERE status = 'active' AND id != ?1",
+            params![task.id],
+            |r| r.get(0),
+        )
+        .optional()?;
+    match other {
+        Some(n) => Err(ApiError::conflict(format!(
+            "#{n} is running, and only one task can be (D6), so #{} cannot be put back to \
+             active. Nothing was changed; `tasqx stop {n}` first.",
+            task.short_id
+        ))),
+        None => Ok(()),
+    }
+}
+
+/// What a status the log names puts back: the status, and for a running task
+/// the reopened interval (`interval_started`, the seconds `elapsed` it had
+/// folded into the total). Shared by `done` and `cancel`.
+fn put_back_status(
+    tx: &Transaction,
+    task: &Task,
+    from: &str,
+    started: Option<&str>,
+    elapsed: i64,
+) -> Result<Value, ApiError> {
+    let from = Status::parse(from)
+        .filter(|s| matches!(s, Status::Backlog | Status::Pending | Status::Active))
+        .ok_or_else(|| {
+            ApiError::conflict(format!(
+                "this event names `{from}` as the status to go back to, which is not an open \
+                 one. Nothing was changed."
+            ))
+        })?;
+    if from != Status::Active {
+        tx.execute(
+            "UPDATE tasks SET status=?1, completed=NULL, delivered_annotation_id=NULL \
+             WHERE id=?2",
+            params![from.as_str(), task.id],
+        )?;
+        return Ok(json!({ "status": from.as_str() }));
+    }
+    let started = started.ok_or_else(|| {
+        ApiError::conflict(
+            "this event closed a running task but does not say when its interval started, so \
+             undo cannot reopen it. Nothing was changed; `tasqx start <ref>` opens a fresh one.",
+        )
+    })?;
+    if task.tracked_seconds < elapsed {
+        return Err(ApiError::conflict(format!(
+            "#{} has {}s of tracked time but this event folded in {elapsed}s, so taking the \
+             interval back would leave a negative total. Nothing was undone.",
+            task.short_id, task.tracked_seconds
+        )));
+    }
+    require_no_other_active(tx, task)?;
+    tx.execute(
+        "UPDATE tasks SET status='active', completed=NULL, delivered_annotation_id=NULL, \
+         active_since=?1, tracked_seconds=?2 WHERE id=?3",
+        params![started, task.tracked_seconds - elapsed, task.id],
+    )?;
+    Ok(json!({
+        "status": "active",
+        "tracked": iso_duration(elapsed),
+        "interval_started": started,
+    }))
+}
+
+/// Reopen what a `task.done` closed (D215): the status it left, the interval it
+/// folded in, the criteria it proved, and the next instance it spawned.
+///
+/// Refuses when the completion recorded a token measurement (evidence of spend
+/// undo does not retract, rule 3) or when the spawned instance was touched.
+fn revert_done(
+    tx: &Transaction,
+    task: &Task,
+    payload: &Value,
+    spawn: Option<&str>,
+) -> Result<Value, ApiError> {
+    if task.status != Status::Done {
+        return Err(ApiError::conflict(format!(
+            "#{} is {} — `undo` reopens the task `done` completed, and something has changed it \
+             since. Nothing was undone.",
+            task.short_id,
+            task.status.as_str()
+        )));
+    }
+    if !payload["tokens"].is_null() {
+        return Err(ApiError::conflict(format!(
+            "this completion of #{} also recorded a token measurement, and undo does not retract \
+             one (a measurement is the only record of what a turn cost). Nothing was changed; \
+             `tasqx reopen {}` reopens the task and `token.remove` over the API retracts the \
+             measurement.",
+            task.short_id, task.short_id
+        )));
+    }
+    let started = payload["interval_started"].as_str();
+    let from = payload["from"].as_str().unwrap_or(if started.is_some() {
+        "active"
+    } else {
+        "pending"
+    });
+    let completed = payload["completed"].as_str();
+    let elapsed = seconds_between(&started.map(str::to_string), completed.unwrap_or(""));
+
+    // The spawned instance goes first so a refusal leaves everything alone.
+    let removed = spawn.map(|id| remove_untouched_spawn(tx, id)).transpose()?;
+    let mut restored = put_back_status(tx, task, from, started, elapsed)?;
+
+    if let Some(before) = payload["checks_before"].as_array() {
+        for c in before {
+            tx.execute(
+                "UPDATE checks SET state=?1, evidence=?2, modified=?3 WHERE id=?4",
+                params![
+                    c["state"].as_str(),
+                    c["evidence"].as_str(),
+                    now(),
+                    c["id"].as_str()
+                ],
+            )?;
+        }
+        restored["checks"] = json!(before.len());
+    }
+    if let Some(short) = removed {
+        restored["removed_spawn"] = json!(short);
+    }
+    Ok(restored)
+}
+
+/// Delete the next instance a completion spawned, if nothing has touched it:
+/// one event (its own `add`), revision 1, no dependency edge either way.
+/// Returns its short_id; the counter is never lowered (D4).
+fn remove_untouched_spawn(tx: &Transaction, id: &str) -> Result<i64, ApiError> {
+    let (short, rev): (i64, i64) = tx.query_row(
+        "SELECT short_id, rev FROM tasks WHERE id = ?1",
+        params![id],
+        |r| Ok((r.get(0)?, r.get(1)?)),
+    )?;
+    let events: i64 = tx.query_row(
+        "SELECT COUNT(*) FROM events WHERE entity_id = ?1",
+        params![id],
+        |r| r.get(0),
+    )?;
+    let edges: i64 = tx.query_row(
+        "SELECT COUNT(*) FROM dependencies WHERE task_id = ?1 OR depends_on_id = ?1",
+        params![id],
+        |r| r.get(0),
+    )?;
+    if rev != 1 || events != 1 || edges != 0 {
+        return Err(ApiError::conflict(format!(
+            "completing this task spawned #{short}, and #{short} has been touched since, so \
+             removing it would lose work. Nothing was changed; `tasqx reopen <ref>` reopens the \
+             completed task and leaves #{short} alone."
+        )));
+    }
+    tx.execute("DELETE FROM annotations WHERE task_id = ?1", params![id])?;
+    tx.execute("DELETE FROM checks WHERE task_id = ?1", params![id])?;
+    tx.execute("DELETE FROM task_tags WHERE task_id = ?1", params![id])?;
+    tx.execute("DELETE FROM tasks WHERE id = ?1", params![id])?;
+    Ok(short)
+}
+
+/// Put back the status a `task.cancel` left (D215), reopening the interval it
+/// folded in when the task was running.
+fn revert_cancel(
+    tx: &Transaction,
+    task: &Task,
+    payload: &Value,
+    event_ts: &str,
+) -> Result<Value, ApiError> {
+    if task.status != Status::Cancelled {
+        return Err(ApiError::conflict(format!(
+            "#{} is {} — `undo` reopens the task `cancel` closed, and something has changed it \
+             since. Nothing was undone.",
+            task.short_id,
+            task.status.as_str()
+        )));
+    }
+    let from = payload["from"].as_str().ok_or_else(|| {
+        ApiError::conflict(
+            "this `cancel` event does not say which status it left. Nothing was changed; \
+             `tasqx reopen <ref>` brings the task back as pending.",
+        )
+    })?;
+    let started = payload["interval_started"].as_str();
+    // Events from before `interval` was recorded: the event's own instant, up
+    // to a second off (see `revert_stop`).
+    let elapsed = payload["interval"]
+        .as_str()
+        .and_then(duration_secs)
+        .unwrap_or_else(|| seconds_between(&started.map(str::to_string), event_ts));
+    put_back_status(tx, task, from, started, elapsed)
+}
+
+/// The task columns a `modify` event's `before` may name.
+const MODIFY_BEFORE_COLUMNS: [&str; 14] = [
+    "title",
+    "priority",
+    "project",
+    "due",
+    "scheduled",
+    "wait",
+    "estimate",
+    "recurrence",
+    "remind",
+    "status",
+    "budget_tokens",
+    "active_since",
+    "tracked_seconds",
+    "tracked_adjustment_seconds",
+];
+
+/// Write back every value a `task.modify` replaced (D215), from the event's
+/// `before` object. An event written before that was recorded refuses.
+fn revert_modify(tx: &Transaction, task: &Task, payload: &Value) -> Result<Value, ApiError> {
+    let before = payload["before"].as_object().ok_or_else(|| {
+        ApiError::conflict(format!(
+            "this `modify` event was written before tasqx recorded the values it replaced, \
+                 so the log has no `before` to restore for #{}. Nothing was changed; \
+                 `tasqx show {}` then a second `modify` (with `--expected-rev`) is the way back.",
+            task.short_id, task.short_id
+        ))
+    })?;
+    if let Some(bad) = before
+        .keys()
+        .find(|k| !MODIFY_BEFORE_COLUMNS.contains(&k.as_str()))
+    {
+        return Err(ApiError::conflict(format!(
+            "this `modify` event's `before` names `{bad}`, which undo does not restore. Nothing \
+             was changed."
+        )));
+    }
+    if let Some(status) = payload["before"]["status"].as_str() {
+        if task.status != Status::Cancelled {
+            return Err(ApiError::conflict(format!(
+                "#{} is {} — this `modify` cancelled it and something has changed it since. \
+                 Nothing was undone.",
+                task.short_id,
+                task.status.as_str()
+            )));
+        }
+        if status == "active" {
+            require_no_other_active(tx, task)?;
+        }
+    }
+    if let Some(name) = payload["before"]["project"].as_str() {
+        require_live_project(tx, name)?;
+    }
+    for (col, v) in before {
+        let sql = format!("UPDATE tasks SET {col} = ?1 WHERE id = ?2");
+        match v {
+            Value::Null => tx.execute(&sql, params![Option::<String>::None, task.id])?,
+            Value::String(s) => tx.execute(&sql, params![s, task.id])?,
+            Value::Number(n) if n.is_i64() => tx.execute(&sql, params![n.as_i64(), task.id])?,
+            other => {
+                return Err(ApiError::conflict(format!(
+                    "this `modify` event's `before.{col}` is {other}, which is not a value a \
+                     column holds. Nothing was changed."
+                )))
+            }
+        };
+    }
+    // Urgency reads priority, due and the creation instant; recompute it from
+    // the restored row rather than trusting the stored figure.
+    let (priority, due, created): (Option<String>, Option<String>, String) = tx.query_row(
+        "SELECT priority, due, created FROM tasks WHERE id = ?1",
+        params![task.id],
+        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+    )?;
+    let urg = urgency::score_at(
+        priority.as_deref().and_then(Priority::parse),
+        due.as_deref(),
+        &created,
+        crate::clock::now(),
+    );
+    tx.execute(
+        "UPDATE tasks SET urgency=?1 WHERE id=?2",
+        params![urg, task.id],
+    )?;
+    Ok(json!({ "fields": before }))
+}
+
+/// Take off the tags a `tag.add` attached (D215): the payload's `added`, not
+/// its `tags` — a tag the task already carried is not this call's to remove.
+fn revert_tag_add(tx: &Transaction, task: &Task, payload: &Value) -> Result<Value, ApiError> {
+    let added = payload["added"].as_array().ok_or_else(|| {
+        ApiError::conflict(format!(
+            "this `tag.add` event was written before tasqx recorded which tags it really \
+                 attached, so undo cannot tell them from tags #{} already carried. Nothing was \
+                 changed; `tasqx untag {} <tag>` removes exactly the one you name.",
+            task.short_id, task.short_id
+        ))
+    })?;
+    let tags = normalize_tags(
+        added
+            .iter()
+            .filter_map(Value::as_str)
+            .map(str::to_string)
+            .collect(),
+    )?;
+    let present = task_tags(tx, &task.id)?;
+    if let Some(gone) = tags.iter().find(|t| !present.contains(t)) {
+        return Err(ApiError::conflict(format!(
+            "#{} no longer carries `{gone}` — the tag this event attached has been removed by \
+             something other than the log. Nothing was changed.",
+            task.short_id
+        )));
+    }
+    for tag in &tags {
+        tx.execute(
+            "DELETE FROM task_tags WHERE task_id = ?1 \
+             AND tag_id = (SELECT id FROM tags WHERE name = ?2)",
+            params![task.id, tag],
+        )?;
+    }
+    Ok(json!({ "removed": tags }))
 }
 
 /// Re-attach the tags a `tag.remove` detached.

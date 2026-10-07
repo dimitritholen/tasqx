@@ -26,6 +26,7 @@ Commands:
   undep        Remove a dependency (maps to dependency.remove)
   use          Set the default project — where a bare `tasqx add` lands (maps to project.use)
   archive      Retire a project — out of rotation, tasks untouched (maps to project.archive)
+  unarchive    Put an archived project back into rotation (maps to project.unarchive)
   projects     List projects (maps to project.list)
   report       Grouped summary report (maps to report.summary), or a self-contained HTML review with `--html` (DESIGN.md §8)
   chart        Native terminal charts from the event log (DESIGN.md §8)

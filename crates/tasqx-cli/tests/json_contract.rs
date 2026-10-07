@@ -179,6 +179,7 @@ fn cases(tmp: &str) -> Vec<(Case, Vec<String>)> {
         // question here is only whether the verb honours `--json`.
         c("init", &["init", "guardretired"]),
         c("archive", &["archive", "guardretired"]),
+        c("unarchive", &["unarchive", "guardretired"]),
         c("done", &["done", "1"]),
         c("cancel", &["cancel", "2"]),
         c("reopen", &["reopen", "2"]),

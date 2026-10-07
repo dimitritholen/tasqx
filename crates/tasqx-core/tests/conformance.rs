@@ -632,6 +632,12 @@ const R_PROJECT_ARCHIVE: Shape = &[&[
     req("open_overdue", Ty::Int),
 ]];
 
+const R_PROJECT_UNARCHIVE: Shape = &[&[
+    req("name", Ty::Str),
+    req("archived", Ty::Bool),
+    req("open_tasks", Ty::Int),
+]];
+
 const R_TASK_ADD: Shape = &[&[
     req("id", Ty::Str),
     req("short_id", Ty::Int),
@@ -1746,6 +1752,18 @@ fn cases() -> Vec<Case> {
                 json!({ "name": "work" })
             },
             R_PROJECT_ARCHIVE,
+        ),
+        case(
+            "project.unarchive",
+            "an archived project comes back (D215)",
+            |e| {
+                e.project_create(&json!({ "name": "work" }))
+                    .expect("create");
+                e.project_archive(&json!({ "name": "work" }))
+                    .expect("archive");
+                json!({ "name": "work" })
+            },
+            R_PROJECT_UNARCHIVE,
         ),
         case(
             "task.add",

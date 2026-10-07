@@ -40,6 +40,7 @@ EXAMPLES
 
 NOTE  The single highest-urgency unblocked task — the "what now" button.
       A filter narrows `@working` rather than replacing it: `tasqx next project:work` still skips blocked and backlog tasks in that project, unlike `tasqx list project:work` which shows every status once a filter is given.
+      Tasks in an archived project are left out (D215) unless the filter names the project: `tasqx next project:old` reaches an archived `old`. `tasqx unarchive old` puts the whole project back.
       `--card` prints the picked task as a fixed 72-column box-drawn card meant to be pasted into a document (a chat, a PR); `--ascii` draws its borders with `+ - |`. The default screen is unchanged (D146).
 
 See also: list · why · start        Full manual: tasqx manual

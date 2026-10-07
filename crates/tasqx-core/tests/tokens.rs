@@ -671,7 +671,7 @@ fn a_plain_start_and_done_carry_no_correlation_keys() {
     // running task names the interval it closed.
     assert_eq!(
         done.as_object().unwrap().keys().collect::<Vec<_>>(),
-        ["completed", "interval_started"],
+        ["completed", "from", "interval_started"],
         "no correlation given, no new keys: {done}"
     );
 }

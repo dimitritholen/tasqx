@@ -99,7 +99,15 @@ fn touches(ev: &LoggedEvent, group: &str) -> bool {
     match ev.op.as_str() {
         "add" => true,
         "start" | "stop" | "done" | "cancel" | "reopen" => group == "status",
-        "undo" => group == "status" && ev.payload["reverted_op"] == "stop",
+        // D215: an undone `done` or `cancel` writes the status group back like
+        // an undone `stop`; an undone `modify` writes the groups it restored.
+        "undo" => match ev.payload["reverted_op"].as_str() {
+            Some("stop" | "done" | "cancel") => group == "status",
+            Some("modify") => ev.payload["restored"]["fields"]
+                .as_object()
+                .is_some_and(|f| f.keys().any(|k| group_of(k) == Some(group))),
+            _ => false,
+        },
         "modify" => ev
             .payload
             .as_object()
@@ -304,7 +312,7 @@ fn count<'a>(logs: &[&[&'a LoggedEvent]], running: Option<Timestamp>) -> Counted
                 others.insert(&ev.id, (d, d));
             }
             "undo" => match ev.payload["reverted_op"].as_str() {
-                Some("stop") => {
+                Some("stop" | "done" | "cancel") => {
                     let reverted = ev.payload["reverted"].as_str();
                     match reverted.and_then(|id| t.closed_by.get(id)).copied() {
                         Some(since) => {

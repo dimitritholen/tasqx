@@ -374,6 +374,20 @@ impl Filter {
         constrains_status(&self.root)
     }
 
+    /// Whether `@working` appears anywhere in this filter, `Or` branches
+    /// included (D215: the working set leaves out an archived project's tasks
+    /// unless the filter names the project).
+    pub fn mentions_working(&self) -> bool {
+        fn walk(e: &Node) -> bool {
+            match e {
+                Node::And(v) | Node::Or(v) => v.iter().any(walk),
+                Node::Pred(Pred::Working) => true,
+                Node::Pred(_) | Node::AnyStatus | Node::Title(_) => false,
+            }
+        }
+        walk(&self.root)
+    }
+
     /// Every `project:`/`proj:` value this filter names, duplicates included,
     /// in the order they appear in the tree.
     ///

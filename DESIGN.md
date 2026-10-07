@@ -244,7 +244,7 @@ CLI exit codes map to these (`0` ok, `2` bad_request, `4` not_found, `5` conflic
 |---|---|
 | `task` | `add`, `get`, `brief` (D136), `list`, `modify`, `start`, `stop`, `done`, `cancel`, `reopen` |
 | `tag` | `add`, `remove` |
-| `project` | `create`, `list`, `use`, `archive` |
+| `project` | `create`, `list`, `use`, `archive`, `unarchive` (D215) |
 | `annotation` | `add`, `remove` (D113) |
 | `dependency` | `add`, `remove` |
 | `memory` | `add`, `search`, `remove`, `import` (D41) |
@@ -407,11 +407,12 @@ tasqx [GLOBAL-FLAGS] [VERB] [REF...] [ARGS / FILTER] [--flags]
 | `start`/`stop` | `s` / `st` | **Not yet built:** a bare `start`/`stop` resuming `@last`/`@active` — both require an explicit `<REF>` today (audit-2026-09 #155). |
 | `modify` | `mod`, `m`, `edit` | `tasqx modify 42 due:mon !high est:4h` — sugar compiles to a `set` map; same NL dates as `add`. Unset with `--clear <field>`; recurrence is just another field (D13). |
 | `use` | — | `tasqx use work` — sets the default project a bare `add` inherits. Validated at the edge: unknown → exit 4, archived → exit 5 (D21/D22). |
+| `unarchive` | — | `tasqx unarchive old` (D215) — puts an archived project back into rotation; not archived → exit 5, unknown → exit 4. |
 | `archive` | — | `tasqx archive old` — takes a project out of rotation; the tasks are untouched and `projects --all` still lists it. Unknown → exit 4, already archived → exit 5. Archiving the *current default* clears the default, and the printed line says which of the two happened (D22). |
 | `tag`/`untag` | — | `tasqx tag 42 blocking` / `tasqx untag 42 blocking`. A tag is written the same way as in `add`/`modify` sugar — `+api` and `api` name one tag — and untagging a tag the task does not have is exit 4 that removes nothing (D52). The bare-ref form `tasqx 42 +blocking` is **not** built: it needs the fuzzy-ref dispatch below, which is not built either. |
 | `pick` | `p`, `fzf` | `tasqx pick [filter]` — the task browser (**D124**): `list`'s rows on a full screen, `/` for a fuzzy search (subsequence, per field, a term found whole ranking first), enter to read a task's `show` card, and one key with an effect: `s` **starts** the task under the cursor. Leaving without starting one exits 0 — a browser you close is not a failed run (**D128**) — while a filter matching nothing still exits 4, having started nothing either way. It needs a terminal on stdin *and* stdout, so it refuses in a pipe (exit 2) rather than being composable — see D55 for why that killed the "print the ref" form the mockup drew. |
 | `agenda` | `ag`, `cal` | `tasqx agenda [filter] [--days N]` — `list` ordered by time and grouped by day. Each task sits on the EARLIER of its `due` and `scheduled`; overdue first, always; 14 days ahead by default. Tasks with neither date, and tasks past the horizon, are counted under the table rather than dropped (D53). |
-| `undo` | `u` | Reverses the newest event by appending a compensating one — the log is never rewritten. Seven operations are undoable (`stop`, `untag`, `undep`, `annotate`, `annotate --edit`, `annotate --move`, `adjust`); every other one exits 5 naming itself and the verb that does take it back. No ref, and no redo (D54). |
+| `undo` | `u` | Reverses the newest event by appending a compensating one — the log is never rewritten. Eleven operations are undoable (`done`, `cancel`, `modify`, `tag`, `stop`, `untag`, `undep`, `annotate`, `annotate --edit`, `annotate --move`, `adjust`; D215); every other one exits 5 naming itself and the verb that does take it back. No ref, and no redo (D54). |
 
 **Fuzzy verb matching:** `tasqx stat` → *"did you mean `start`? [Y/n]"* on ambiguity, silent auto-correct on a unique prefix. A sub-millisecond Levenshtein pass over the clap subcommand table — no network.
 
@@ -422,6 +423,7 @@ tasqx [GLOBAL-FLAGS] [VERB] [REF...] [ARGS / FILTER] [--flags]
 | `tasqx init <name>` | `project.create` | Claims the default project only when the store has none (D21). Empty/whitespace name → exit 2 (D23). |
 | `tasqx use <project>` | `project.use` | Sets the default project — where a bare `add` lands. Must exist and not be archived (D21/D22). |
 | `tasqx projects` | `project.list` | `*` marks the default project; `--all` is the only way to see an archived one. |
+| `tasqx unarchive <project>` | `project.unarchive` | Puts an archived project back into rotation (D215). Not archived → `conflict` (exit 5). |
 | `tasqx archive <project>` | `project.archive` | Retires a project. Tasks untouched; archiving the default clears the default and the line says so (D22). Already archived → `conflict` (exit 5), because a second archive changes nothing. No `unarchive` verb and no method behind one — `store.import` writes the flag, so restoring an export is the way back. |
 | `tasqx add "…" +t project:p due:…` | `task.add` | Inline sugar parsed client-side into `params`. `project:` must be one `init` created: unknown → exit 4, archived → exit 5 (D23). |
 | `tasqx` / `tasqx ls <filter>` | `task.list` | Bare = `filter:"@working" sort:-urgency`. |
@@ -648,9 +650,9 @@ $ tasqx undo
 ▌ undid untag   +blocking +release +api   M ▄▄▃▁ 7.2   work.tasqx
 ```
 `event.revert` appends the inverse of the **newest** event — the reversed event stays in the log, so
-`tasqx chart` reads "the tag came off, then that was undone". Seven operations are undoable; every
-other one exits 5 naming itself and what does take it back (`done` → `tasqx reopen`, `modify` →
-`tasqx show` then a second `modify`). There is no redo, and no ref to aim it with: only the newest
+`tasqx chart` reads "the tag came off, then that was undone". Eleven operations are undoable
+(D215); every other one exits 5 naming itself and what does take it back (`start` → `tasqx stop`,
+`archive` → `tasqx unarchive`). There is no redo, and no ref to aim it with: only the newest
 event can be reversed exactly, because nothing has happened since to have overwritten what the
 inverse puts back. D54.
 
@@ -692,7 +694,7 @@ events      = ["task.done"]                  # may subscribe to these notificati
 |---|---|
 | `task.read` | `task.list`, `task.get`, `report.summary` |
 | `task.write` | `task.add/modify/done/start/stop`, `tag.add` |
-| `project.write` | `project.create`, `project.archive` |
+| `project.write` | `project.create`, `project.archive`, `project.unarchive` |
 | `events:<name>` | subscribe to that daemon push only |
 | `exec` | may be launched as a hook (§6b) |
 
@@ -4729,3 +4731,13 @@ Every number is computed in Rust and rendered into the markup once for the whole
 **Decision.** `datetime::parse_when` accepts `next monday` … `next sunday` as that weekday in the **following Monday-to-Sunday week**, and `next week` as that week's Monday (midnight UTC, like any day reference; a trailing time still applies). On a Wednesday, `friday` is in two days and `next friday` in nine. `this <weekday>` and `last <weekday>` stay refused. The rest of the batch, each small: a clock printed in a `modify`/`add` echo (`due`, `sched`, `wait`, `remind`) is tagged ` UTC` while stored values are untouched; `check add` takes a body that begins with `--` without a separator (`argv::prepass` hides, after the ref, any dash-led word `check add` does not declare, so `--json` stays a flag wherever it stands); `check add|set|rm` echo the one criterion touched, by the position `check set` takes, and the passed tally, and `show` numbers each criterion by that position; `list`'s summary line leads `running` and `blocked` with the rail glyph they explain (`*`/`▶`, `B`/`⊘`); bare `chart` draws `throughput`; a duration inside an error message is `10m 29s`, not `PT10M29S`; a memory page made only of meaning hits under 0.45 similarity says the matches are weak (human output only).
 
 **Why.** D79's (#137) refusal rested on "next Friday" having no consensus reading, and it removed a silent alias. The aliasing is still the thing to avoid, so the accepted reading is the one that is never the bare weekday: the calendar week after this one, which is also how `end of week` is already defined (ISO, Sunday ends it). Taskwarrior has no `next` prefix; its `sonw` (start of next week) is the model for `next week`. A user who means seven days from now still has `in 1 week`/`7d`. The UTC tag follows D132: every clock on screen is UTC, and an echo is where a user in another zone first reads one back.
+
+### D215 — `undo` reaches `done`, `cancel`, `tag` and `modify`, `project.unarchive` exists, and an archived project's tasks leave the working set (task #1129; extends D54, D22 and D89)
+
+**Decision.** (1) `event.revert` undoes four more operations, from the event payload, each as its own `undo` event and each answering what it put back. **`done`** goes back to the status the completion left (`from`, recorded now; an older event is read as active when it names `interval_started`, else pending); a running task's interval reopens and `completed` minus `interval_started` comes back off the total; criteria the completion proved go back to what they held (`checks_before`, recorded now). Completing a recurring task writes `done` and then the next instance's `add`, so the newest event is that `add`: when the event before it is the `done` of the task it was spawned from, undo reads the pair as one completion and removes the instance, **only while it is untouched** (revision 1, no event but its own `add`, no dependency edge); otherwise it refuses, naming the instance (`#N`), and changes nothing. A completion that recorded a token measurement refuses, because undo does not retract a measurement. **`cancel`** goes back to `from` (an active task's interval reopens from `interval_started` and the new `interval` seconds). **`tag.add`** removes `added`, the tags the call really attached (recorded now), not `tags`, the ones it asked for. **`task.modify`** writes back `before`, the value of every column the call wrote (recorded now, a new key on the payload beside the `set` keys; a `tracked` correction and the cancellation of a running task record the columns they write beyond `set`), then recomputes urgency. An event from before these keys existed refuses with a message saying what it lacks; nothing is guessed. A restore that would need a second running task (D6) or an archived project refuses. (2) `project.unarchive` / `tasqx unarchive <name>`: the mirror of `project.archive`; unknown is `not_found`, a project that is not archived is `conflict` (the same unfalsifiable-write rule as D22), the result is `{name, archived: false, open_tasks}` and it writes an `unarchive` event. It does not re-point the default an archive cleared. Like `project.archive` it has no MCP tool (the roster's exclusion list gives the reason). `undo` does not reverse an `archive` or an `unarchive`. (3) `task.list` leaves out of any filter that mentions `@working` the pending or active unblocked tasks of an archived project, unless the filter names that project (`project:old`). `tasqx next`, `@working` and the dashboard's working set all read through it. `list` without `@working`, `report`, `agenda`, `chart` and exports are unchanged.
+
+**Why.** `done` was the commonest mistake `undo` could not take back, and its refusal sent the user to `reopen`, which cannot remove a spawned instance or restore a running interval. D54 refused `done`, `cancel`, `modify` and `tag.add` because their events recorded the request, not the change; the fix is to record the change. That is additive to the payloads (a new key each), so no reader of `done`, `cancel`, `modify` or `tag.add` events changes meaning, and the merge code reads `touches`/`task_effects` as before except that an undone `done` or `cancel` closes the same interval an undone `stop` does. D89 said an archived project's tasks stay live in `list`, `agenda` and `report` and left `next` open; the product owner's ruling is that the working set is "what to do next", so this is a design change and not a bug fix: archiving is still a shelf for reads, and a project out of rotation is out of the next-task answer too. Naming the project in the filter is the escape, so a project can still be worked from.
+
+**Limits.** An `@working` anywhere in a filter, including an `or` branch, applies the exclusion to the working tasks it matches, so `@working or +x` also hides a pending `+x` task in an archived project. Narrowing it to the `@working` branch would need a new field on the public `MatchCtx` (a semver break), so it is documented instead (wiki Projects) and left for the next minor (#815). `store.import --merge` accounting for tracked time reads an undone `done` or `cancel` as it reads an undone `stop`; an undone `modify` of `tracked` or of a cancellation is not replayed by the merge's time count. Removing the spawned instance leaves its `add` event in the log with no task behind it, and the short id is never reused (D4).
+
+**Where:** `crates/tasqx-core/src/engine/undo.rs` (`revert_done`, `revert_cancel`, `revert_modify`, `revert_tag_add`, `remove_untouched_spawn`), `engine/task.rs` (`task_done`, `task_cancel`, `task_modify`, `task_list`), `engine/projects.rs` (`project_unarchive`), `filter.rs` (`Filter::mentions_working`), `crates/tasqx-cli/src/render/echo.rs` (`undone`, `project_unarchived`).

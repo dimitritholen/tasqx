@@ -282,8 +282,8 @@ impl Engine {
         // this method was the single exception to.
         //
         // Nothing is welded shut by the refusal: the project is already in the
-        // state the caller asked for, and there is no `unarchive` to reach past
-        // (`store.import` writes the flag, which is the documented way back).
+        // state the caller asked for, and `project.unarchive` (D215) is the way
+        // back from it.
         if already != 0 {
             return Err(ApiError::conflict(format!(
                 "project is already archived: {name} (`tasqx projects --all` lists it; \
@@ -367,6 +367,57 @@ impl Engine {
             "open_tasks": open_tasks,
             "open_overdue": open_overdue,
         }))
+    }
+
+    // ---- project.unarchive ---------------------------------------------------
+
+    /// `project.unarchive` (D215) — put an archived project back into rotation
+    /// by `name`. The mirror of [`Engine::project_archive`]: a project that is
+    /// not archived is a `conflict` (the same unfalsifiable-write rule, D22), an
+    /// unknown name is `not_found`. It does not re-point the default project an
+    /// archive may have cleared; `use` does that.
+    pub fn project_unarchive(&self, p: &Value) -> Result<Value, ApiError> {
+        let name = req_str_lookup(p, "name")?;
+
+        let tx = self.begin_mutation()?;
+        let row: Option<(String, i64)> = tx
+            .query_row(
+                "SELECT id, archived FROM projects WHERE name = ?1",
+                params![name],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .optional()?;
+        let (id, archived) = row.ok_or_else(|| {
+            ApiError::not_found(
+                unknown_project_message(&name),
+                Some(json!({ "name": name })),
+            )
+        })?;
+        if archived == 0 {
+            return Err(ApiError::conflict(format!(
+                "project is not archived: {name} (unarchiving it would change nothing)"
+            )));
+        }
+        tx.execute(
+            "UPDATE projects SET archived = 0 WHERE id = ?1",
+            params![id],
+        )?;
+        let open = Status::sql_in_list(Status::is_open);
+        let open_tasks: i64 = tx.query_row(
+            &format!("SELECT COUNT(*) FROM tasks WHERE project = ?1 AND status IN ({open})"),
+            params![name],
+            |r| r.get(0),
+        )?;
+        insert_event(
+            &tx,
+            Entity::Project,
+            &id,
+            "unarchive",
+            &json!({ "name": name, "open_tasks": open_tasks }),
+        )?;
+        tx.commit()?;
+
+        Ok(json!({ "name": name, "archived": false, "open_tasks": open_tasks }))
     }
 }
 

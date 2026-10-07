@@ -59,6 +59,26 @@ Things to know before you archive:
 - If you archive the project that *is* your default, the default is cleared:
   a bare `tasqx add` then has no home until you run `tasqx use` again. The
   command tells you when this happened.
-- There is no `unarchive` command. The way back is a data restore: a saved
-  [`tasqx export`](Import-and-Export.md) contains the project's state, and
-  importing it puts things back the way they were.
+- Tasks in an archived project are left out of `tasqx next` and of the
+  `@working` set — the dashboard's working list included — because those answer
+  "what should I do now". Name the project and they come back:
+  `tasqx next project:kitchen-remodel`. `list`, `report` and `agenda` still
+  show them. The rule applies to any filter that mentions `@working`, so
+  `@working or +x` also hides a pending `+x` task in an archived project; leave
+  `@working` out of the filter to see it.
+- `tasqx unarchive` is the way back. `tasqx undo` does not reverse an archive,
+  because archiving the default project also cleared the default, which the
+  log does not restore.
+
+## tasqx unarchive
+
+Put an archived project back into rotation.
+
+```console
+tasqx unarchive kitchen-remodel
+```
+
+- The project's tasks never left, so nothing else is restored; the line says
+  how many open tasks are back in `next`.
+- A project that is not archived exits 5, an unknown name exits 4.
+- It does not point the default project back at it. `tasqx use` does that.

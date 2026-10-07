@@ -3816,28 +3816,28 @@ fn undo_reverses_the_last_change_and_refuses_the_operations_it_cannot() {
 
     // An operation outside the closed set refuses BY NAME and points at the
     // verb that does take it back — exit 5, and the store untouched.
-    ok(&["done", "1"]);
+    ok(&["start", "1"]);
     let refused = run(&["undo"]);
     assert_eq!(
         refused.status.code(),
         Some(5),
-        "completing a task is not undoable; stdout was {}",
+        "starting a task is not undoable; stdout was {}",
         String::from_utf8_lossy(&refused.stdout)
     );
     let stderr = String::from_utf8_lossy(&refused.stderr);
     assert!(
-        stderr.contains("`done`") && stderr.contains("tasqx reopen"),
+        stderr.contains("`start`") && stderr.contains("tasqx stop"),
         "the refusal must name the op and the way back: {stderr}"
     );
     let shown = ok(&["--json", "show", "1"]);
     assert!(
-        shown.contains(r#""status": "done""#) || shown.contains(r#""status":"done""#),
+        shown.contains(r#""status": "active""#) || shown.contains(r#""status":"active""#),
         "a refused undo must leave the task exactly as it was: {shown}"
     );
 
     // The alias DESIGN promised. A verb whose alias never routes is the shape
     // that let `tag`/`untag` sit in the spec unbuilt.
-    ok(&["reopen", "1"]);
+    ok(&["stop", "1"]);
     ok(&["annotate", "1", "wrong task"]);
     let aliased = ok(&["u"]);
     assert!(
@@ -4063,6 +4063,68 @@ fn archive_retires_a_project_and_says_when_it_cleared_the_default() {
         "a second archive changes nothing and must not exit 0; stdout was {}",
         String::from_utf8_lossy(&again.stdout)
     );
+}
+
+/// D215 at the terminal: `unarchive` is the way back from `archive`, an archived
+/// project's tasks stay out of `next` until it is, and naming the project in the
+/// filter reaches them anyway.
+#[test]
+fn unarchive_puts_a_project_back_and_next_skips_it_while_archived() {
+    let dir = fresh_config_dir("unarchiveverb");
+    let run = |args: &[&str]| {
+        bin("unarchiveverb", &dir)
+            .args(args)
+            .output()
+            .expect("run tasqx")
+    };
+    let ok = |args: &[&str]| -> String {
+        let out = run(args);
+        assert!(
+            out.status.success(),
+            "{args:?} failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        String::from_utf8_lossy(&out.stdout).to_string()
+    };
+
+    ok(&["init", "work"]);
+    ok(&["init", "old"]);
+    ok(&[
+        "add",
+        "shelved thing",
+        "--project",
+        "old",
+        "--priority",
+        "H",
+    ]);
+    ok(&["add", "live thing", "--project", "work"]);
+    ok(&["archive", "old"]);
+
+    let next = ok(&["next"]);
+    assert!(next.contains("live thing"), "{next}");
+    assert!(!next.contains("shelved thing"), "{next}");
+    let named = ok(&["next", "project:old"]);
+    assert!(
+        named.contains("shelved thing"),
+        "naming it reaches it: {named}"
+    );
+
+    let line = ok(&["unarchive", "old"]);
+    assert!(
+        line.contains("old") && line.contains("unarchived"),
+        "must name the project and what happened: {line}"
+    );
+    assert!(
+        line.contains("1 open task is back in `next`"),
+        "and what that puts back in front of next: {line}"
+    );
+    let next = ok(&["next"]);
+    assert!(next.contains("shelved thing"), "back in rotation: {next}");
+
+    let again = run(&["unarchive", "old"]);
+    assert_eq!(again.status.code(), Some(5), "not archived is a conflict");
+    let unknown = run(&["unarchive", "nope"]);
+    assert_eq!(unknown.status.code(), Some(4), "unknown is not_found");
 }
 
 /// The #53 review's first finding, at the terminal: `tasqx archive old` twice

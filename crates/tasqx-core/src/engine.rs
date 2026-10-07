@@ -1225,6 +1225,22 @@ fn update_column(
     Ok(())
 }
 
+/// One column of a task row as JSON, for the before-values `task.modify`
+/// records (D215). `col` is a name this crate wrote, never caller text.
+fn column_json(tx: &rusqlite::Transaction, id: &str, col: &str) -> Result<Value, ApiError> {
+    use rusqlite::types::Value as Sql;
+    let v: Sql = tx.query_row(
+        &format!("SELECT {col} FROM tasks WHERE id = ?1"),
+        params![id],
+        |r| r.get(0),
+    )?;
+    Ok(match v {
+        Sql::Integer(n) => json!(n),
+        Sql::Text(s) => json!(s),
+        _ => Value::Null,
+    })
+}
+
 /// Render a task as the canonical full JSON object used by `task.list`.
 ///
 /// Not the export shape: `store_export` builds its own §3 object, so fields
@@ -1892,6 +1908,7 @@ mod tests {
             "project_create",
             "project_use",
             "project_archive",
+            "project_unarchive",
             "task_add",
             "task_start",
             "task_stop",

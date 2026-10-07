@@ -1446,6 +1446,10 @@ pub fn undone(ctx: &Ctx, result: &Value, task: &Value, titles: &Titles, now: Tim
         "annotation.update" => "annotate --edit",
         "annotation.move" => "annotate --move",
         "adjust_tracked" => "adjust",
+        "done" => "done",
+        "cancel" => "cancel",
+        "modify" => "modify",
+        "tag.add" => "tag",
         other => other,
     };
     let mut card = Card::new(task, outcome(ctx, &format!("undid {}", san(verb))));
@@ -1522,6 +1526,77 @@ pub fn undone(ctx: &Ctx, result: &Value, task: &Value, titles: &Titles, now: Tim
                 &format!("note back on #{back}"),
             ));
             card.context = Context::NONE;
+        }
+        "done" | "cancel" => {
+            // The rail says which status it is back in; the line says what the
+            // undo took with it (D215): the spawned next instance, the proofs.
+            let status = s(&restored, "status");
+            card.lead.push(Fact::changed(
+                ctx,
+                "card.strong",
+                &format!("back to {}", san(&status)),
+            ));
+            if let Some(n) = restored.get("removed_spawn").and_then(Value::as_i64) {
+                card.lead.push(Fact::changed(
+                    ctx,
+                    "warn",
+                    &format!("removed the next instance #{n}"),
+                ));
+            }
+            if let Some(n) = restored.get("checks").and_then(Value::as_i64) {
+                let word = if n == 1 { "check" } else { "checks" };
+                card.lead.push(Fact::changed(
+                    ctx,
+                    "card.strong",
+                    &format!("{n} {word} reopened"),
+                ));
+            }
+        }
+        "tag.add" => {
+            let off = tag_list(&restored, "removed");
+            let text = if off.is_empty() {
+                "no tag had been added".to_string()
+            } else {
+                format!("{} taken off", plus(&off))
+            };
+            card.lead.push(Fact::changed(ctx, "card.strong", &text));
+            card.context.tags = false;
+        }
+        "modify" => {
+            // Every field it put back, with the value it holds again: what was
+            // set is gone from the task, so the line is the only record.
+            let fields = restored.get("fields").and_then(Value::as_object);
+            let shown: Vec<(String, String)> = fields
+                .into_iter()
+                .flatten()
+                .filter(|(k, _)| {
+                    !matches!(k.as_str(), "active_since" | "tracked_adjustment_seconds")
+                })
+                .map(|(k, v)| {
+                    let key = if k == "tracked_seconds" {
+                        "tracked"
+                    } else {
+                        k.as_str()
+                    };
+                    let value = match v {
+                        Value::Null => "cleared".to_string(),
+                        Value::String(t) => san(t),
+                        other if k == "tracked_seconds" => format!("{other}s"),
+                        other => other.to_string(),
+                    };
+                    (key.to_string(), value)
+                })
+                .collect();
+            let names: Vec<&str> = shown.iter().map(|(k, _)| k.as_str()).collect();
+            card.lead.push(Fact::changed(
+                ctx,
+                "card.strong",
+                &format!("restored {}", names.join(", ")),
+            ));
+            for (k, v) in &shown {
+                card.detail
+                    .push((Fact::detail(ctx, &format!("{k} is {v} again")), Give::Cut));
+            }
         }
         _ => {
             card.lead.push(Fact::new(
@@ -1699,6 +1774,33 @@ pub fn project_archived(ctx: &Ctx, result: &Value) -> String {
         fixed.push(Fact::role(ctx, "card.label", "default unchanged"));
     }
     if open > 0 {
+        droppable.push(Fact::role(
+            ctx,
+            "card.label",
+            &format!("tasqx list project:{name}"),
+        ));
+    }
+    record(ctx, Some(&name), fixed, droppable)
+}
+
+/// `tasqx unarchive` (D215): back in rotation, and how much open work that
+/// puts back in front of `next`. It does not re-point the default an archive may
+/// have cleared, so the line does not claim anything about it.
+pub fn project_unarchived(ctx: &Ctx, result: &Value) -> String {
+    let name = s(result, "name");
+    let open = result
+        .get("open_tasks")
+        .and_then(Value::as_i64)
+        .unwrap_or(0);
+    let mut fixed = vec![outcome(ctx, "unarchived")];
+    let mut droppable = Vec::new();
+    if open > 0 {
+        let text = if open == 1 {
+            "1 open task is back in `next`".to_string()
+        } else {
+            format!("{open} open tasks are back in `next`")
+        };
+        fixed.push(Fact::role(ctx, "card.label", &text));
         droppable.push(Fact::role(
             ctx,
             "card.label",

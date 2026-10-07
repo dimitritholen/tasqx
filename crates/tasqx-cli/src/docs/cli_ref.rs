@@ -134,6 +134,11 @@ const NO_SCREEN: &[(&str, &str)] = &[
          and the manifest records one.",
     ),
     (
+        "unarchive",
+        "it needs a project that is already archived, and the manifest runs each row \
+         against a fresh copy of the demo store.",
+    ),
+    (
         "unannotate",
         "it takes the id of one annotation, which is a UUID out of the store it is run \
          against.",
