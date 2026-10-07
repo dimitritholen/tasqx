@@ -1443,6 +1443,11 @@ tasqx mcp serve --scope write</code></pre></div>
 them (and learn what that unblocked), start and stop timers, tag, annotate,
 wire up dependencies, create projects, and search and store
 <a href="#wiki-memory">memory</a>.</p>
+<p><code>mcp serve</code> works on the store itself, not through a running daemon, so it
+ignores <code>$TASQX_SOCK</code> (and says so on stderr). That does not hide an agent's
+writes from <code>tasqx watch</code> or the desktop app: a running daemon notices changes
+made by other processes on its store, so they show up live, within about half
+a second.</p>
 <p>Thirty-two tools, one verb each. Nine reads: <code>list_tasks</code>, <code>get_task</code>,
 <code>brief_task</code>, <code>summary</code>, <code>outcomes</code>, <code>list_projects</code>, <code>search_memory</code>,
 <code>get_memory</code>, <code>list_memory</code>.

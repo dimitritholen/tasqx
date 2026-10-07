@@ -62,6 +62,12 @@ them (and learn what that unblocked), start and stop timers, tag, annotate,
 wire up dependencies, create projects, and search and store
 [memory](Memory.md).
 
+`mcp serve` works on the store itself, not through a running daemon, so it
+ignores `$TASQX_SOCK` (and says so on stderr). That does not hide an agent's
+writes from `tasqx watch` or the desktop app: a running daemon notices changes
+made by other processes on its store, so they show up live, within about half
+a second.
+
 Thirty-two tools, one verb each. Nine reads: `list_tasks`, `get_task`,
 `brief_task`, `summary`, `outcomes`, `list_projects`, `search_memory`,
 `get_memory`, `list_memory`.
