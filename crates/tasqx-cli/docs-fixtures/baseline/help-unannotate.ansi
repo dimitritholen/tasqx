@@ -9,7 +9,7 @@ Arguments:
           short_id or UUID
 
   <ANNOTATION_ID>
-          The annotation's id, as `tasqx show <ref>` reports it
+          The annotation: its full id, a unique prefix of 8+ characters, or the `[n]` position `tasqx show <ref>` prints
 
 Options:
       --json
@@ -34,7 +34,7 @@ EXAMPLES
   tasqx unannotate 1 018f2f7e-...
 
 NOTE  A HARD delete (D113): the text is overwritten in the store, not merely hidden — use it to take back a secret, a customer name, or a wrong root cause pasted into a note by mistake. This also redacts the original `annotate` event's own body, so `tasqx chart` (`event.list`) and `tasqx export` stop showing it too — not only `tasqx show`.
-      The annotation's id is not printed by `tasqx show` — read it from `tasqx show <ref> --json` (the `annotations[].id` field) or a prior `tasqx annotate` response.
+      Name the note by the `[n]` position `tasqx show <ref>` prints, a unique id prefix of 8+ characters, or its full id (`annotations[].id` in `--json`).
       `tasqx undo` does NOT cover this: the body is already gone from the log by the time the removal event exists, so there is nothing left to restore.
       An unknown id, or one already removed, exits 4 (not_found) rather than answering ok for nothing.
 

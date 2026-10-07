@@ -18,7 +18,7 @@ Commands:
   cancel       Cancel a task (maps to task.cancel)
   reopen       Reopen a done/cancelled task (maps to task.reopen)
   undo         Undo the last thing this store recorded (maps to event.revert)
-  annotate     Annotate a task (maps to annotation.add), or correct one note in place with `--edit <annotation-id>` (maps to annotation.update, D165)
+  annotate     Annotate a task (maps to annotation.add), correct one note in place with `--edit <annotation>` (maps to annotation.update, D165), or move it to another task with `--move <annotation> --to <task>` (maps to annotation.move, D211). A note is named by its full id, a unique prefix of 8+ characters, or the `[n]` position `tasqx show` prints
   unannotate   Permanently scrub one annotation's text by id (maps to annotation.remove)
   tag          Attach one or more tags to a task (maps to tag.add)
   untag        Remove one or more tags from a task (maps to tag.remove)

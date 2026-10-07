@@ -32,8 +32,8 @@
   cancel       Cancel a task.
   reopen       Reopen a completed or cancelled task.
   undo         Take back the last thing this store recorded.
-  annotate     Attach a timestamped note to a task.
-  unannotate   Permanently scrub one annotation's text, by id.
+  annotate     Attach a timestamped note to a task, correct one, or move it.
+  unannotate   Permanently scrub one annotation's text.
   tag          Attach tags to a task.
   untag        Remove tags from a task.
   dep          Make one task depend on another.

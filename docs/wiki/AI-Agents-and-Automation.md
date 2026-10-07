@@ -68,12 +68,12 @@ writes from `tasqx watch` or the desktop app: a running daemon notices changes
 made by other processes on its store, so they show up live, within about half
 a second.
 
-Thirty-two tools, one verb each. Nine reads: `list_tasks`, `get_task`,
+Thirty-three tools, one verb each. Nine reads: `list_tasks`, `get_task`,
 `brief_task`, `summary`, `outcomes`, `list_projects`, `search_memory`,
 `get_memory`, `list_memory`.
-Twenty-three writes: `add_task`, `modify_task`, `complete_task`, `reopen_task`,
+Twenty-four writes: `add_task`, `modify_task`, `complete_task`, `reopen_task`,
 `cancel_task`, `start_timer`, `stop_timer`, `adjust_tracked`, `tag_task`, `untag_task`,
-`annotate_task`, `update_annotation`, `remove_annotation`, `add_tokens`, `add_check`, `set_check`,
+`annotate_task`, `update_annotation`, `move_annotation`, `remove_annotation`, `add_tokens`, `add_check`, `set_check`,
 `remove_check`, `add_dependency`, `remove_dependency`, `add_memory`,
 `update_memory`, `remove_memory`, `create_project` (all prefixed `tasqx_`).
 
