@@ -4,6 +4,7 @@ import type { ReactNode } from 'react';
 import { ApiError, defaultSocket, useConnection } from '../api';
 import type { Capabilities, ConnectionStatus } from '../api';
 import { isTauri } from '../platform';
+import { UI_LOCALE } from '../state/relative';
 import { Button, Pill, cx } from '../ui/primitives';
 import type { Status } from '../ui/primitives';
 
@@ -98,7 +99,7 @@ export function ConnectionPanel() {
           <span>
             {state.nextRetryAt === null
               ? `stopped after attempt ${state.attempt}`
-              : `attempt ${state.attempt}, next at ${new Date(state.nextRetryAt).toLocaleTimeString()}`}
+              : `attempt ${state.attempt}, next at ${new Date(state.nextRetryAt).toLocaleTimeString(UI_LOCALE)}`}
           </span>
         </Row>
       )}

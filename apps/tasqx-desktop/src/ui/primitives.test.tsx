@@ -110,6 +110,8 @@ test('a screen that throws shows what broke and a retry, not a blank window', as
   );
   expect(screen.getByRole('alert')).toHaveTextContent('This screen stopped working');
   expect(screen.getByRole('alert')).toHaveTextContent("can't be repaint");
+  // The same ErrorState every screen uses: the error's name leads, in mono.
+  expect(screen.getByText('Error')).toHaveClass('mono');
   broken = false;
   await userEvent.click(screen.getByRole('button', { name: 'Retry' }));
   expect(screen.getByText('drawn')).toBeInTheDocument();

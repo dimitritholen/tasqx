@@ -75,7 +75,7 @@ function Checks({ checks }: { checks: Check[] }) {
       <ul className="check-list">
         {checks.map((check) => (
           <li key={check.id} className="check">
-            <span className="mono" aria-label={check.state}>
+            <span className="mono check-glyph" aria-label={check.state}>
               {CHECK_GLYPH[check.state]}
             </span>
             <span>
@@ -174,7 +174,7 @@ export function TaskInspector() {
         ))}
       </dl>
 
-      <Links label="Blocked by" ids={task.depends_on} names={task.unmet_blockers} />
+      <Links label="Blocked by" ids={task.unmet_blockers.map((blocker) => blocker.short_id)} names={task.unmet_blockers} />
       <Links label="Blocks" ids={task.blocks} names={[]} />
       <Checks checks={task.checks} />
       <Annotations task={task} onOlder={() => void store.loadOlderAnnotations()} busy={loading} />

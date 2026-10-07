@@ -142,10 +142,10 @@ export class ScreenBoundary extends Component<{ children: ReactNode }, { error: 
     if (error === null) return this.props.children;
     return (
       <div className="screen" role="alert">
-        <EmptyState
+        <ErrorState
           title="This screen stopped working"
-          message={error.message}
-          action={<Button onClick={() => this.setState({ error: null })}>Retry</Button>}
+          error={{ code: error.name, message: error.message }}
+          onRetry={() => this.setState({ error: null })}
         />
       </div>
     );

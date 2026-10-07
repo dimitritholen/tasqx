@@ -71,8 +71,8 @@ describe('GraphScreen', () => {
     expect(it.transport.calls.find((call) => call.method === 'graph.query')?.params).toEqual({
       root: 1,
       depth: 2,
-      max_nodes: 250,
-      max_edges: 750,
+      max_nodes: 100,
+      max_edges: 300,
       include_inferred: false,
     });
     // jsdom has no WebGL: the accessible list is the view, and it says why.
@@ -94,7 +94,7 @@ describe('GraphScreen', () => {
       '#/graph?root=1',
     );
     const status = await screen.findByText(/^Truncated:/);
-    expect(status).toHaveTextContent('12 more nodes and 30 more edges were cut by the 250-node limit');
+    expect(status).toHaveTextContent('12 more nodes and 30 more edges were cut by the 100-node limit');
 
     fireEvent.change(screen.getByLabelText('Max nodes'), { target: { value: '1000' } });
     await waitFor(() => expect(it.transport.countOf('graph.query')).toBe(2));
@@ -317,7 +317,7 @@ describe('GraphScreen', () => {
     await waitFor(() => expect(storage.text).toContain('Around #1'));
     expect(JSON.parse(storage.text ?? '')).toMatchObject({
       schema: 1,
-      views: [{ name: 'Around #1', project: 'tasqx', request: { root: 1, depth: 2, maxNodes: 250 } }],
+      views: [{ name: 'Around #1', project: 'tasqx', request: { root: 1, depth: 2, maxNodes: 100 } }],
     });
   });
 });

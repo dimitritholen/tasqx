@@ -7,7 +7,7 @@ test('the banner alerts with the next retry time and the attempt count', () => {
   const at = new Date('2026-09-19T14:05:09Z').getTime();
   render(<OfflineBanner nextRetryAt={at} attempt={3} onStop={vi.fn()} onRetryNow={vi.fn()} />);
   const alert = screen.getByRole('alert');
-  expect(alert).toHaveTextContent(`Offline — retrying at ${new Date(at).toLocaleTimeString()} (attempt 3)`);
+  expect(alert).toHaveTextContent(`Offline — retrying at ${new Date(at).toLocaleTimeString('en')} (attempt 3)`);
 });
 
 test('without a scheduled retry it says retries are stopped', () => {

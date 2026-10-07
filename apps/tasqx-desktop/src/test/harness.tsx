@@ -76,6 +76,8 @@ export function harness(script: Script, hash = '#/dashboard'): Harness {
   const controller = new ConnectionController({
     transport,
     loadBaseline: (client) => loadBaseline(client, store),
+    // A probe every half second would show up in every test that reads `calls`.
+    heartbeatMs: 0,
   });
   return { transport, store, controller, user: userEvent.setup() };
 }

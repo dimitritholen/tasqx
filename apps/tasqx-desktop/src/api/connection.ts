@@ -1,5 +1,5 @@
 import { ApiClient } from './client';
-import { isGapEvent, isTaskChangedEvent, type EventFrame } from './envelope';
+import { ApiError, isGapEvent, isTaskChangedEvent, type EventFrame } from './envelope';
 import type { Transport } from './transport';
 
 export type ConnectionStatus = 'disconnected' | 'connecting' | 'synchronizing' | 'live';
@@ -28,6 +28,8 @@ export interface ConnectionDeps {
   now?: () => number;
   setTimeout?: (fn: () => void, ms: number) => TimerHandle;
   clearTimeout?: (handle: TimerHandle) => void;
+  /** Probe interval while live; 0 turns the heartbeat off (screen tests count calls). */
+  heartbeatMs?: number;
 }
 
 /** Exactly the ladder in DESIGN.md D160: 0, 250, 500, 1s, 2s, 4s, 8s, then 15s. */
@@ -36,6 +38,13 @@ const RETRY_CEILING = 15000;
 
 /** How long the UI stays non-live before it says so. */
 const OFFLINE_AFTER_MS = 1000;
+
+/**
+ * While live, ask the daemon something tiny this often (twice a second, on a local socket). A stopping daemon
+ * keeps idle connections open while it drains (up to ~6 s) but answers every
+ * request `unavailable`, so the heartbeat is how an idle client learns of it.
+ */
+const DEFAULT_HEARTBEAT_MS = 500;
 
 const MAX_RESYNC_REASONS = 20;
 
@@ -92,6 +101,7 @@ export class ConnectionController {
   private readonly transport: Transport;
   private readonly loadBaseline: (client: ApiClient) => Promise<void>;
   private readonly now: () => number;
+  private readonly heartbeatMs: number;
   private readonly setTimer: (fn: () => void, ms: number) => TimerHandle;
   private readonly clearTimer: (handle: TimerHandle) => void;
 
@@ -102,6 +112,7 @@ export class ConnectionController {
   private generation = 0;
   private retryTimer: TimerHandle | null = null;
   private offlineTimer: TimerHandle | null = null;
+  private heartbeatTimer: TimerHandle | null = null;
   private buffer: EventFrame[] = [];
   private buffering = false;
 
@@ -109,6 +120,7 @@ export class ConnectionController {
     this.transport = deps.transport;
     this.loadBaseline = deps.loadBaseline ?? defaultLoadBaseline;
     this.now = deps.now ?? (() => Date.now());
+    this.heartbeatMs = deps.heartbeatMs ?? DEFAULT_HEARTBEAT_MS;
     this.setTimer = deps.setTimeout ?? ((fn, ms) => setTimeout(fn, ms));
     this.clearTimer = deps.clearTimeout ?? ((handle) => clearTimeout(handle));
     this.client = new ApiClient(this.transport);
@@ -149,6 +161,7 @@ export class ConnectionController {
     this.generation += 1;
     this.clearRetryTimer();
     this.clearOfflineTimer();
+    this.clearHeartbeat();
     this.buffering = false;
     this.buffer = [];
     this.set({ status: 'disconnected', stale: true, stopped: true, nextRetryAt: null });
@@ -180,6 +193,7 @@ export class ConnectionController {
 
   /** Load the baseline with events buffered, then go live and replay them. */
   private async synchronize(generation: number): Promise<void> {
+    this.clearHeartbeat();
     this.buffering = true;
     this.buffer = [];
     this.set({ status: 'synchronizing', stale: true });
@@ -195,9 +209,40 @@ export class ConnectionController {
       offline: false,
       offlineSince: null,
     });
+    this.armHeartbeat(generation);
     const buffered = this.buffer;
     this.buffer = [];
     for (const event of buffered) this.emit(event);
+  }
+
+  /** One probe per heartbeat while live, re-armed only after the last one settled. */
+  private armHeartbeat(generation: number): void {
+    if (this.heartbeatMs <= 0) return;
+    this.clearHeartbeat();
+    this.heartbeatTimer = this.setTimer(() => {
+      this.heartbeatTimer = null;
+      this.client.request('core.capabilities').then(
+        () => {
+          if (generation === this.generation) this.armHeartbeat(generation);
+        },
+        (err: unknown) => {
+          if (generation !== this.generation) return;
+          if (err instanceof ApiError && err.code === 'unavailable') {
+            // The daemon said so itself: no grace period before the banner.
+            this.set({ offline: true, offlineSince: this.now() });
+            this.fail('daemon is shutting down');
+          } else {
+            this.armHeartbeat(generation);
+          }
+        },
+      );
+    }, this.heartbeatMs);
+  }
+
+  private clearHeartbeat(): void {
+    if (this.heartbeatTimer === null) return;
+    this.clearTimer(this.heartbeatTimer);
+    this.heartbeatTimer = null;
   }
 
   /**
@@ -227,6 +272,7 @@ export class ConnectionController {
 
   private scheduleRetry(): void {
     this.generation += 1;
+    this.clearHeartbeat();
     this.buffering = false;
     this.buffer = [];
     this.clearRetryTimer();

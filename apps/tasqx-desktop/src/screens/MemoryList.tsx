@@ -6,6 +6,7 @@ import type { MemoryResultRow } from '../state/memory';
 import { useStore } from '../state/store';
 import { EmptyState, ErrorState, Pill, Skeleton } from '../ui/primitives';
 import { Dash } from './TaskTable';
+import { useListEntry } from './useListEntry';
 
 /**
  * The Memory Explorer's list: `memory.search`/`.list` rows, flattened to one
@@ -61,6 +62,8 @@ export function MemoryList({
   const selection = state.memorySelection;
   const index = data.length === 0 ? -1 : Math.min(focused, data.length - 1);
   const skeleton = error === null && loading && data.length === 0;
+
+  useListEntry(rowRefs, () => data.findIndex(isSelected));
 
   function select(row: MemoryResultRow | undefined): void {
     if (row === undefined) return;
