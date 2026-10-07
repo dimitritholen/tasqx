@@ -1247,3 +1247,53 @@ fn task_table_and_next_surface_the_running_task() {
              {next_out:?}"
     );
 }
+
+/// #1126: a page the engine cut (D110's 100 rows) said "100 tasks" and gave no
+/// hint that more matched. Cut, the head says "100 of 150 tasks" and a footer
+/// names the flags `list` really has; uncut, the output is what it always was.
+fn page_of(n: i64, total: i64) -> Value {
+    let tasks: Vec<Value> = (1..=n)
+        .map(|i| task_json(i, &format!("task {i}"), "work", "", &[]))
+        .collect();
+    let next = if total > n { json!(n) } else { Value::Null };
+    json!({ "tasks": tasks, "count": n, "total": total, "next_offset": next })
+}
+
+#[test]
+fn a_cut_list_says_so_in_the_head_and_names_the_flags_for_the_rest() {
+    let ctx = Ctx::new(theme::default_theme(), Caps::PLAIN);
+    let result = page_of(100, 150);
+    let out = task_table_filtered(&ctx, &result, crate::clock::now(), Some("+work"));
+    assert!(
+        out.lines().next().unwrap().contains("100 of 150 tasks"),
+        "{out}"
+    );
+    let foot = cut_footer(&ctx, &result, Some("+work"), &[]);
+    assert_eq!(
+        foot,
+        "50 more match. Next page: tasqx list +work --offset 100 · all of them: --limit 150\n"
+    );
+    let sorted = cut_footer(
+        &ctx,
+        &result,
+        Some("a b"),
+        &["due".into(), "-urgency".into()],
+    );
+    assert!(
+        sorted.contains("tasqx list 'a b' --sort due,-urgency --offset 100"),
+        "{sorted}"
+    );
+}
+
+#[test]
+fn an_uncut_list_is_unchanged_and_has_no_footer() {
+    let ctx = Ctx::new(theme::default_theme(), Caps::PLAIN);
+    let result = page_of(50, 50);
+    let out = task_table_filtered(&ctx, &result, crate::clock::now(), Some("+work"));
+    let head = out.lines().next().unwrap();
+    assert!(
+        head.contains("50 tasks") && !head.contains(" of "),
+        "{head}"
+    );
+    assert_eq!(cut_footer(&ctx, &result, Some("+work"), &[]), "");
+}

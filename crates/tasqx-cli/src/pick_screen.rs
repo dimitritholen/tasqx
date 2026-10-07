@@ -174,7 +174,8 @@ pub(crate) fn merge_pages(pages: &[Value]) -> Value {
         .filter(|t| seen.insert(t["short_id"].as_i64()))
         .collect();
     let count = tasks.len();
-    json!({ "tasks": tasks, "count": count })
+    // `store_empty` rides along: the agenda's getting-started hint reads it.
+    json!({ "tasks": tasks, "count": count, "store_empty": pages.first().map_or(Value::Null, |p| p["store_empty"].clone()) })
 }
 
 /// The `task.list` answer, as the rows the screen draws.

@@ -673,18 +673,28 @@ pub(crate) fn plural_tasks(n: i64) -> String {
 /// Only non-zero facts are printed. A line that says `0 overdue · 0 blocked`
 /// trains the reader to skip it, and then it is not there on the day it says
 /// something.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn table_summary(
     ctx: &Ctx,
     tasks: &[&Value],
     rows: &[TaskRow],
     count: i64,
+    total: i64,
     label: Option<&str>,
     now: Timestamp,
     day_grouped: bool,
 ) -> String {
     // Collected as (role, plain text) and painted at the END: the line has to
     // be MEASURED before it is emitted, and an SGR escape is not a cell.
-    let mut parts: Vec<(&str, String)> = vec![("card.strong", plural_tasks(count))];
+    let mut parts: Vec<(&str, String)> = vec![(
+        "card.strong",
+        // #1126: a page the engine cut says "100 of 192 tasks", not "100".
+        if total > count {
+            format!("{count} of {}", plural_tasks(total))
+        } else {
+            plural_tasks(count)
+        },
+    )];
     if count > rows.len() as i64 {
         parts.push(("muted", format!("{} shown", rows.len())));
     }
@@ -742,6 +752,55 @@ pub(crate) fn table_summary(
         parts.push(("muted", format!("{blocked} blocked")));
     }
     summary_line(ctx, label, parts)
+}
+
+/// Where the next page starts when the engine cut this `task.list` answer at
+/// its `limit` (D110), `None` for a complete one.
+fn cut_at(result: &Value) -> Option<u64> {
+    result.get("next_offset").and_then(Value::as_u64)
+}
+
+/// `word` as one shell word: bare when it is plainly safe, else single-quoted.
+fn shell_word(word: &str) -> String {
+    if !word.is_empty()
+        && word
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || "@:._+-/,=".contains(c))
+    {
+        word.to_string()
+    } else {
+        format!("'{}'", word.replace('\'', "'\\''"))
+    }
+}
+
+/// The line under a cut `list` (#1126): how many more matched and the flags
+/// that reach them. Empty for a complete answer, so an uncut list is
+/// byte-for-byte what it was. `sort` rides along because `--offset` pages the
+/// order the rows were sorted in, and a footer that dropped it would hand over
+/// the wrong second page.
+pub fn cut_footer(ctx: &Ctx, result: &Value, filter: Option<&str>, sort: &[String]) -> String {
+    let Some(next) = cut_at(result) else {
+        return String::new();
+    };
+    let total = result.get("total").and_then(Value::as_u64).unwrap_or(next);
+    let mut cmd = String::from("tasqx list");
+    if let Some(f) = filter {
+        cmd.push(' ');
+        cmd.push_str(&shell_word(f));
+    }
+    if !sort.is_empty() && sort != ["-urgency"] {
+        cmd.push_str(&format!(" --sort {}", shell_word(&sort.join(","))));
+    }
+    let all = total.min(tasqx_core::engine::task::MAX_TASK_LIST_LIMIT);
+    prose(
+        ctx,
+        Some("muted"),
+        &format!(
+            "{} more match. Next page: {cmd} --offset {next} · all of them: --limit {all}",
+            total.saturating_sub(next)
+        ),
+        "",
+    )
 }
 
 /// Render a `task.list` result as an aligned, themed table.
@@ -806,7 +865,15 @@ pub fn task_table_filtered(
     // header/rule/rule/trailer shape cost four, so `serve::watch_repaint`'s
     // row budget gains one.
     let mut out = String::new();
-    out.push_str(&table_summary(ctx, &refs, &rows, count, filter, now, false));
+    let total = result.get("total").and_then(Value::as_i64).unwrap_or(count);
+    let total = if cut_at(result).is_some() {
+        total
+    } else {
+        count
+    };
+    out.push_str(&table_summary(
+        ctx, &refs, &rows, count, total, filter, now, false,
+    ));
     out.push('\n');
     out.push('\n');
     out.push_str(&ctx.paint("table.label", &header_line(&c, "DUE")));
