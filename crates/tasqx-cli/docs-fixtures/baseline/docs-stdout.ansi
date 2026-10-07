@@ -942,7 +942,10 @@ whole thing in single quotes to protect it from your shell:</p>
 <p>tasqx never guesses where a quoted value was supposed to end. If the shell
 eats your quotes, <code>project:Home Renovation</code> is the project <code>Home</code> plus the title
 word <code>Renovation</code>; a project that does not exist is refused by name, which is
-the signal to quote.</p>
+the signal to quote. <code>+needs paint</code> is the tag <code>needs</code> plus the word <code>paint</code>;
+when that matches nothing, <code>list</code> prints a <code>hint:</code> line naming <code>+"needs paint"</code>.
+<code>report</code> takes one axis, as its first word, and refuses <code>report project priority</code>;
+write <code>title:priority</code> to match that word in titles.</p>
 <div class="pagenav"><a class="prev" href="#wiki-adding-and-editing-tasks"><span class="pn-k">Previous</span><span class="pn-l">Adding and Editing Tasks</span></a><a class="next" href="#wiki-working-on-tasks"><span class="pn-k">Next</span><span class="pn-l">Working on Tasks</span></a></div></section><section class="page" id="wiki-working-on-tasks"><h2>Working on Tasks</h2><p>The lifecycle: start, stop, done — with cancel, reopen, pick and undo around
 it. Nothing here destroys data; every change is recorded and reversible.</p>
 <h3 id="wiki-working-on-tasks--tasqx-brief">tasqx brief</h3>

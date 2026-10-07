@@ -153,4 +153,7 @@ tasqx list 'project:"Home Renovation"'
 tasqx never guesses where a quoted value was supposed to end. If the shell
 eats your quotes, `project:Home Renovation` is the project `Home` plus the title
 word `Renovation`; a project that does not exist is refused by name, which is
-the signal to quote.
+the signal to quote. `+needs paint` is the tag `needs` plus the word `paint`;
+when that matches nothing, `list` prints a `hint:` line naming `+"needs paint"`.
+`report` takes one axis, as its first word, and refuses `report project priority`;
+write `title:priority` to match that word in titles.

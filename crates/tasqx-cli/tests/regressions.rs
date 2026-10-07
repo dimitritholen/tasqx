@@ -1208,6 +1208,10 @@ fn a_shell_quoted_filter_value_reaches_the_parser_whole() {
         !String::from_utf8_lossy(&out.stdout).contains("painted"),
         "`+needs paint` must not select the spaced tag"
     );
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains(r#"+"needs paint""#),
+        "an empty `+needs paint` must hint the quoted spelling on stderr: {out:?}"
+    );
     // The project form is still refused: `Home` is no project.
     let out = run(&["list", "project:Home Renovation"]);
     assert_eq!(out.status.code(), Some(4), "{out:?}");
@@ -2311,6 +2315,23 @@ fn one_filter_selects_one_set_of_rows_in_every_spelling() {
         assert_eq!(
             api["ok"], false,
             "{joined:?} must be refused on the API too: {api}"
+        );
+    }
+    // The stripped TAG form no longer errors (D210: `paint` is a title term),
+    // but it must still not select the spaced-tag row, in either argv spelling,
+    // and it says so on stderr.
+    for out in [
+        run(&["list", "+needs", "paint"]),
+        run(&["list", "+needs paint"]),
+    ] {
+        assert_eq!(out.status.code(), Some(0), "{out:?}");
+        assert!(
+            !String::from_utf8_lossy(&out.stdout).contains("painted"),
+            "the stripped tag form must not select the spaced tag: {out:?}"
+        );
+        assert!(
+            String::from_utf8_lossy(&out.stderr).contains(r#"+"needs paint""#),
+            "and it must hint the quoted spelling: {out:?}"
         );
     }
 

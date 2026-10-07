@@ -653,9 +653,9 @@ pub(crate) fn filter_words() -> ArgValueCompleter {
 ///
 /// That is an over-offer and it is the lesser of the two available failures:
 ///
-///  * choosing the candidate used to produce `unknown filter token "status"` at
-///    exit 2. Since D210 a bare word is a title term, so the report runs,
-///    narrowed to titles containing it.
+///  * choosing the candidate produces a refusal on stderr, because `report`
+///    rejects an axis word past the first (D210: a bare word is otherwise a
+///    title term), naming `title:status` for the other meaning.
 ///  * withholding the axes entirely to avoid it would leave `tasqx report <TAB>`
 ///    — the primary spelling, and a closed compile-time vocabulary the tool
 ///    knows exactly — answering with filter tokens only. That is an under-offer
