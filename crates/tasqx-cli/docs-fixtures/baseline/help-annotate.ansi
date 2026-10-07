@@ -4,7 +4,7 @@ Usage: tasqx annotate [OPTIONS] <REF> [TEXT]...
 
 Arguments:
   <REF>      short_id or UUID
-  [TEXT]...  The annotation text
+  [TEXT]...  The annotation text; `-`, or nothing on a pipe, reads it from stdin; nothing on a terminal opens $VISUAL/$EDITOR
 
 Options:
       --edit <ANNOTATION_ID>  Replace the body of this annotation instead of adding one; its id, timestamp and position are kept
@@ -18,7 +18,8 @@ Options:
 EXAMPLES
   tasqx annotate 1 Called the plumber, waiting on a quote
 
-NOTE  Wrote something you shouldn't have? `tasqx unannotate <ref> <annotation-id>` scrubs it — there is no other way back.
+NOTE  A long or multi-line note: `tasqx annotate <ref> -` reads the whole of stdin, verbatim (D206); so does a bare `tasqx annotate <ref>` when stdin is a pipe. On a terminal a bare `annotate <ref>` opens `$VISUAL` or `$EDITOR` (else `vi`); an empty or unchanged file stores nothing. Empty stdin is refused. A note that is just `-` can no longer be written as an argument. `--edit` takes the same forms, the editor pre-filled with the note's current text.
+      Wrote something you shouldn't have? `tasqx unannotate <ref> <annotation-id>` scrubs it — there is no other way back.
       Wrote something wrong? `--edit <annotation-id>` replaces that note's text in place (D165): its id, timestamp and position stay, so a corrected first note is still the card's Description, and `tasqx undo` puts the old text back.
 
 See also: show · modify · unannotate        Full manual: tasqx manual
