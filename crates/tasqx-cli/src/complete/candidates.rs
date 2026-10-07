@@ -765,8 +765,6 @@ fn filter_candidates(typed: &str) -> Vec<CompletionCandidate> {
         // entirely, which is the shape `a_date_bound_offers_nothing_because_its
         // _vocabulary_is_open` was re-pointed at once that was measured.
         Vocabulary::Date => Vec::new(),
-        // Title text is the user's own words; the store holds no list to offer.
-        Vocabulary::Text => Vec::new(),
     }
 }
 
