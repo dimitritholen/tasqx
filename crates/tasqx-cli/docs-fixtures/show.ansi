@@ -14,9 +14,9 @@
 [1;38;2;191;97;106m▌[0m [2;38;2;76;86;106m[ ][0m The rate-limit ceiling is stated with its real number
 [1;38;2;191;97;106m▌[0m [2;38;2;76;86;106m[ ][0m Reviewed by whoever ships 3.0
 [1;38;2;191;97;106m▌[0m
-[1;38;2;191;97;106m▌[0m [38;2;138;138;138m·[0m Ruling: the guide ships WITH the 3.0 release, not after it. A migration note that lands a week
-[1;38;2;191;97;106m▌[0m   late is a support ticket that already happened.
-[1;38;2;191;97;106m▌[0m [38;2;138;138;138m·[0m Blocked until the rate limit lands: the guide has to state the real ceiling, and quoting a
-[1;38;2;191;97;106m▌[0m   number that then changes is worse than waiting.
-[1;38;2;191;97;106m▌[0m [38;2;138;138;138m·[0m Scope: the 2.x → 3.0 rename table, the auth change, and a worked example per SDK. Not the
-[1;38;2;191;97;106m▌[0m   reference — that generates itself.
+[1;38;2;191;97;106m▌[0m [38;2;138;138;138m[1][0m Ruling: the guide ships WITH the 3.0 release, not after it. A migration note that lands a week
+[1;38;2;191;97;106m▌[0m     late is a support ticket that already happened.
+[1;38;2;191;97;106m▌[0m [38;2;138;138;138m[2][0m Blocked until the rate limit lands: the guide has to state the real ceiling, and quoting a
+[1;38;2;191;97;106m▌[0m     number that then changes is worse than waiting.
+[1;38;2;191;97;106m▌[0m [38;2;138;138;138m[3][0m Scope: the 2.x → 3.0 rename table, the auth change, and a worked example per SDK. Not the
+[1;38;2;191;97;106m▌[0m     reference — that generates itself.
