@@ -665,7 +665,8 @@ pub(super) enum Command {
         /// timestamp and position are kept.
         #[arg(long, value_name = "ANNOTATION_ID")]
         edit: Option<String>,
-        /// The annotation text.
+        /// The annotation text; `-`, or nothing on a pipe, reads it from
+        /// stdin; nothing on a terminal opens $VISUAL/$EDITOR.
         text: Vec<String>,
     },
     /// Permanently scrub one annotation's text by id (maps to

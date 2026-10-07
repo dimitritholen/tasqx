@@ -792,6 +792,99 @@ pub(crate) fn run_undo(be: &mut Backend, ctx: &Ctx) -> CmdOutcome {
     Ok((result, text))
 }
 
+/// All of stdin, verbatim (as `import -` reads it); empty or blank is refused
+/// so a closed pipe never stores a blank note.
+fn stdin_body() -> Result<String, tasqx_core::ApiError> {
+    let mut s = String::new();
+    std::io::stdin()
+        .read_to_string(&mut s)
+        .map_err(|e| tasqx_core::ApiError::bad_request(format!("cannot read stdin: {e}")))?;
+    if s.trim().is_empty() {
+        return Err(tasqx_core::ApiError::bad_request(
+            "stdin is empty: no note stored",
+        ));
+    }
+    Ok(s)
+}
+
+/// `$VISUAL`, else `$EDITOR`, else `vi`.
+fn editor_command() -> String {
+    ["VISUAL", "EDITOR"]
+        .iter()
+        .filter_map(|v| std::env::var(v).ok())
+        .find(|v| !v.trim().is_empty())
+        .unwrap_or_else(|| "vi".to_string())
+}
+
+/// The current text of annotation `id` on `task`, to pre-fill the editor.
+fn annotation_body(be: &mut Backend, task: &str, id: &str) -> Result<String, tasqx_core::ApiError> {
+    let t = be.call("task.get", &json!({ "ref": task }))?;
+    t.get("annotations")
+        .and_then(Value::as_array)
+        .and_then(|a| a.iter().find(|n| n["id"] == id))
+        .and_then(|n| n["body"].as_str())
+        .map(str::to_string)
+        .ok_or_else(|| tasqx_core::ApiError::bad_request(format!("no annotation {id} on {task}")))
+}
+
+/// Open `editor` (a command line, split on spaces so `code -w` works) on a temp
+/// file holding `initial`; the saved text is the body. An empty or unchanged
+/// file aborts.
+// ponytail: no quoting in `editor`; an editor path with spaces needs a wrapper script.
+fn editor_body(editor: &str, initial: &str) -> Result<String, tasqx_core::ApiError> {
+    use tasqx_core::ApiError;
+    let path = std::env::temp_dir().join(format!("tasqx-note-{}.md", std::process::id()));
+    std::fs::write(&path, initial)
+        .map_err(|e| ApiError::bad_request(format!("cannot write {}: {e}", path.display())))?;
+    let mut parts = editor.split_whitespace();
+    let status = std::process::Command::new(parts.next().unwrap_or("vi"))
+        .args(parts)
+        .arg(&path)
+        .status();
+    let edited = std::fs::read_to_string(&path);
+    let _ = std::fs::remove_file(&path);
+    let status = status.map_err(|e| ApiError::bad_request(format!("cannot run {editor}: {e}")))?;
+    if !status.success() {
+        return Err(ApiError::bad_request(format!(
+            "{editor} failed ({status}): no note stored"
+        )));
+    }
+    let body =
+        edited.map_err(|e| ApiError::bad_request(format!("cannot read the note back: {e}")))?;
+    if body.trim().is_empty() || body == initial {
+        return Err(ApiError::bad_request(
+            "note empty or unchanged: nothing stored",
+        ));
+    }
+    Ok(body)
+}
+
+#[cfg(all(test, unix))]
+mod editor_body_tests {
+    use super::editor_body;
+
+    /// A fake editor: a script that writes `body` to the file it is given.
+    fn fake(tag: &str, body: &str) -> String {
+        use std::os::unix::fs::PermissionsExt;
+        let p = std::env::temp_dir().join(format!("tasqx-fakeed-{tag}-{}.sh", std::process::id()));
+        std::fs::write(&p, format!("#!/bin/sh\nprintf '%s' '{body}' > \"$1\"\n")).unwrap();
+        std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
+        p.display().to_string()
+    }
+
+    #[test]
+    fn what_the_editor_saves_is_the_body() {
+        assert_eq!(editor_body(&fake("a", "line one"), "").unwrap(), "line one");
+    }
+
+    #[test]
+    fn an_empty_or_unchanged_file_stores_nothing() {
+        assert!(editor_body(&fake("b", ""), "").is_err());
+        assert!(editor_body(&fake("c", "same"), "same").is_err());
+        assert!(editor_body("/nonexistent-editor", "").is_err());
+    }
+}
+
 /// `tasqx annotate` — add a note, or with `--edit <id>` correct one in place
 /// (`annotation.update`, D165).
 pub(crate) fn run_annotate(
@@ -801,7 +894,20 @@ pub(crate) fn run_annotate(
     edit: Option<String>,
     text: Vec<String>,
 ) -> CmdOutcome {
-    let body = text.join(" ");
+    // #1114: `-` and a bare verb on a pipe read stdin; a bare verb on a
+    // terminal opens the editor (on the note's current text under `--edit`).
+    let body = match text.as_slice() {
+        [dash] if dash == "-" => stdin_body()?,
+        [] if !std::io::stdin().is_terminal() => stdin_body()?,
+        [] => {
+            let initial = match &edit {
+                Some(id) => annotation_body(be, &r#ref, id)?,
+                None => String::new(),
+            };
+            editor_body(&editor_command(), &initial)?
+        }
+        _ => text.join(" "),
+    };
     let (result, word) = match edit {
         Some(id) => (
             be.call(
