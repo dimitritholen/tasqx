@@ -576,12 +576,31 @@ pub(crate) fn burndown_members(
     // wholesale. Reconstructing backwards from the snapshot status closes it on
     // its cancel date instead — and keeping the filter would now DELETE the task
     // from the days it was genuinely open, which is a different wrong answer.
-    let mut params = json!({ "fields": ["id", "status", "created"] });
+    //
+    // Every page, not the first (#1111): a `task.list` naming no `limit` gets
+    // D110's default page of 100, and a done task past it was out of scope, so
+    // its completion vanished from every chart. `next_offset` walks to the end
+    // however large the store grows past `MAX_TASK_LIST_LIMIT`.
+    let mut params = json!({
+        "fields": ["id", "status", "created"],
+        "limit": tasqx_core::engine::task::MAX_TASK_LIST_LIMIT,
+        "offset": 0,
+    });
     if let Some(f) = filter {
         params["filter"] = Value::String(f);
     }
-    let listed = dispatch(engine, "task.list", &params)?;
-    Ok((chart::members_of(&listed), label))
+    let mut members = Vec::new();
+    loop {
+        let listed = dispatch(engine, "task.list", &params)?;
+        members.extend(chart::members_of(&listed));
+        match listed["next_offset"].as_u64() {
+            Some(next) if next > params["offset"].as_u64().unwrap_or(0) => {
+                params["offset"] = json!(next);
+            }
+            _ => break,
+        }
+    }
+    Ok((members, label))
 }
 
 #[cfg(test)]
