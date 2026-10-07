@@ -2201,9 +2201,9 @@ fn a_report_group_by_is_offered_where_it_is_legal() {
     );
 
     // The residual over-offer, pinned as measured: `arg_index` is 0 for the
-    // second word too, so the axes appear there. Choosing one used to fail
-    // loudly (`unknown filter token`, exit 2); since D210 the word is a title
-    // term, so it runs and narrows the report to titles containing it.
+    // second word too, so the axes appear there. Choosing one is a LOUD
+    // failure (D210: `report` refuses an axis word in the filter, naming
+    // `title:`), which is why it is the accepted side of the trade.
     let second = complete_bash_in(&db, &socket, 3, &["tasqx", "report", "project", "pri"]);
     assert!(
         second.iter().any(|c| c == "priority"),
@@ -2217,8 +2217,9 @@ fn a_report_group_by_is_offered_where_it_is_legal() {
         .output()
         .expect("run report with an axis in the filter tail");
     assert!(
-        refused.status.success(),
-        "a trailing axis word is a title term (D210); got {:?} stderr {:?}",
+        !refused.status.success()
+            && String::from_utf8_lossy(&refused.stderr).contains("title:priority"),
+        "the over-offered candidate must fail LOUDLY, naming title:; got {:?} stderr {:?}",
         refused.status.code(),
         String::from_utf8_lossy(&refused.stderr)
     );

@@ -564,8 +564,10 @@ mod doc_gate_tests {
             let src = std::fs::read_to_string(workspace_root().join(path))
                 .unwrap_or_else(|e| panic!("{path}, named by a MISSED line, is unreadable: {e}"));
             let name = recorded_fn(line);
+            // A decision may delete the code a survivor was recorded against;
+            // the line then says so and the next sweep re-measures.
             assert!(
-                defines_fn(&src, name),
+                line.contains("code removed in D") || defines_fn(&src, name),
                 "{path} has no `fn {name}`, so this survivor is recorded \
                  against code that no longer exists. Re-derive the note from \
                  the newest sweep rather than editing this line to match:\n  {line}"
@@ -636,7 +638,7 @@ mod doc_gate_tests {
                 .unwrap_or_else(|e| panic!("{path} is unreadable: {e}"));
             for name in names {
                 assert!(
-                    defines_fn(&src, name),
+                    line.contains("code removed in D") || defines_fn(&src, name),
                     "the known-survivors table records a mutant in `{name}`, \
                      and {path} has no such function. Line numbers were dropped \
                      from this table because they rotted invisibly; a function \

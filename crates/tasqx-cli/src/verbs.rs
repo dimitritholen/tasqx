@@ -386,6 +386,11 @@ pub(crate) fn run_list(
         params["fields"] = json!(fields);
     }
     let result = be.call("task.list", &params)?;
+    if result["count"] == 0 {
+        if let Some(hint) = spaced_tag_hint(&filter_str) {
+            eprintln!("hint: {hint}");
+        }
+    }
     // Finding #4 (audit-2026-09): an empty result said only "No tasks.",
     // giving no way to tell "nothing pending" from "this filter excludes
     // everything" — the same distinction D55 already drew for `pick`.
@@ -410,6 +415,29 @@ pub(crate) fn open_statuses_filter() -> String {
         .map(|s| format!("status:{}", s.as_str()))
         .collect::<Vec<_>>()
         .join(" or ")
+}
+
+/// D210: `+needs paint` with the quotes eaten is the tag `needs` AND the title
+/// word `paint`. When such a filter matched nothing, name the quoted spelling.
+/// A hint on stderr and never an error: the filter is valid as parsed.
+pub(crate) fn spaced_tag_hint(filter: &str) -> Option<String> {
+    let words = tasqx_core::filter::split_words(filter, "filter").ok()?;
+    words.windows(2).find_map(|w| {
+        let (tag, next) = (&w[0], &w[1]);
+        let bare = |x: &tasqx_core::filter::Word| !x.quoted && !x.text.contains(':');
+        let sigil = tag.text.starts_with(['+', '-']) && tag.text.len() > 1 && bare(tag);
+        let word = bare(next)
+            && !next.text.starts_with(['+', '-', '@', '(', ')'])
+            && !["and", "or"].contains(&next.text.to_lowercase().as_str());
+        (sigil && word).then(|| {
+            let (sign, name) = tag.text.split_at(1);
+            format!(
+                "`{} {}` is the tag {} AND the title word {:?}; for a tag containing a space \
+                 write {sign}\"{name} {}\"",
+                tag.text, next.text, tag.text, next.text, next.text
+            )
+        })
+    })
 }
 
 /// `tasqx agenda` — the same question `list` asks, ordered by time.
@@ -1170,6 +1198,18 @@ pub(crate) fn report_params(
                 tasqx_core::engine::SUMMARY_GROUP_BY.join(", ")
             )));
         }
+    }
+    // D210: a bare word is a title term, so a SECOND axis name in the filter
+    // (`report project priority`) would quietly narrow the report to titles
+    // containing it. The axis is only legal as the first word; refuse the rest.
+    if let Some(w) = rest
+        .iter()
+        .find(|w| tasqx_core::engine::SUMMARY_GROUP_BY.contains(&w.as_str()))
+    {
+        return Err(ApiError::bad_request(format!(
+            "{w:?} is a group_by axis, and a report groups by one axis, as the first word; \
+             to match titles containing {w:?} write title:{w}"
+        )));
     }
     // Same reasoning as `group_by` above, and the same constant pattern:
     // `SUMMARY_METRICS` exists to stop the CLI keeping a private second copy of
