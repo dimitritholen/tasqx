@@ -520,9 +520,15 @@ pub const COMMAND_REF: &[CmdDoc] = &[
         aliases: &["note"],
         method: "annotation.add + annotation.update",
         summary: "Attach a timestamped note to a task.",
-        usage: "tasqx annotate <ref> [--edit <annotation-id>] <text…>",
+        usage: "tasqx annotate <ref> [--edit <annotation-id>] [<text…>]",
         examples: &[ex_norun_plain("tasqx annotate 1 Called the plumber, waiting on a quote")],
         notes: &[
+            "A long or multi-line note: `tasqx annotate <ref> -` reads the whole of stdin, \
+             verbatim (D206); so does a bare `tasqx annotate <ref>` when stdin is a pipe. On a \
+             terminal a bare `annotate <ref>` opens `$VISUAL` or `$EDITOR` (else `vi`); an empty \
+             or unchanged file stores nothing. Empty stdin is refused. A note that is just `-` \
+             can no longer be written as an argument. `--edit` takes the same forms, the editor \
+             pre-filled with the note's current text.",
             "Wrote something you shouldn't have? `tasqx unannotate <ref> <annotation-id>` \
              scrubs it — there is no other way back.",
             "Wrote something wrong? `--edit <annotation-id>` replaces that note's text in \
