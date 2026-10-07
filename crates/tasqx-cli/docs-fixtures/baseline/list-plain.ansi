@@ -1,4 +1,4 @@
-@working   14 tasks - 1 overdue - 1 due today - #48 running
+@working   14 tasks - 1 overdue - 1 due today - * #48 running
 
     ID     URG  TASK                                           PROJECT  DUE             TAGS
     47  H 18.1  Renew the TLS certificate for api.example.dev  infra    2d ago          +ops

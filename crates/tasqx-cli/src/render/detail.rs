@@ -96,6 +96,32 @@ pub(crate) fn status_cell(ctx: &Ctx, result: &Value) -> String {
     }
 }
 
+/// #1124: a check is named by its 1-based position in `check set <ref> <n>`, so
+/// `show` prints that position ahead of the marker (`2 [ ] body`), padded to the
+/// widest so the markers line up; its evidence line is indented past the same
+/// column.
+struct CheckNumbers(usize);
+
+impl CheckNumbers {
+    fn new(rows: &[DetailRow]) -> Self {
+        let total = rows
+            .iter()
+            .filter(|r| matches!(r.field, DetailField::Check) && !r.label.trim().is_empty())
+            .count();
+        CheckNumbers(total.to_string().len())
+    }
+
+    /// The text ahead of a check row's marker: its number, or blanks under it
+    /// for an evidence line. `at` counts the numbered rows so far.
+    fn lead(&self, label: &str, at: &mut usize) -> String {
+        if label.trim().is_empty() {
+            return " ".repeat(self.0 + 1);
+        }
+        *at += 1;
+        format!("{:>w$} ", at, w = self.0)
+    }
+}
+
 pub fn task_detail(ctx: &Ctx, result: &Value, now: Timestamp) -> String {
     // The card is the interactive rendering (D76); everything below it is the
     // byte-stable plain layout every pipe, script and docs example reads.
@@ -106,8 +132,11 @@ pub fn task_detail(ctx: &Ctx, result: &Value, now: Timestamp) -> String {
     let mut out = String::new();
     out.push_str(&ctx.paint("header", &format!("#{sid}  {}", s(result, "title"))));
     out.push('\n');
+    let rows = detail_rows(ctx, result, now);
+    let numbers = CheckNumbers::new(&rows);
     let mut at = annotation_base(result);
-    for row in detail_rows(ctx, result, now) {
+    let mut check_at = 0;
+    for row in rows {
         if matches!(row.field, DetailField::Annotation) {
             at += 1;
             out.push_str(&format!(
@@ -126,7 +155,12 @@ pub fn task_detail(ctx: &Ctx, result: &Value, now: Timestamp) -> String {
                 "[!]" => "danger",
                 _ => "muted",
             };
-            out.push_str(&format!("  {} {}\n", ctx.paint(role, row.label), row.value));
+            let lead = numbers.lead(row.label, &mut check_at);
+            out.push_str(&format!(
+                "  {lead}{} {}\n",
+                ctx.paint(role, row.label),
+                row.value
+            ));
             continue;
         }
         // The plain layout's emphasis map over the SAME row set the card
@@ -944,7 +978,9 @@ pub(crate) fn task_detail_card(ctx: &Ctx, result: &Value, now: Timestamp) -> Str
     let mut cells: Vec<MetaCell> = Vec::new();
     let mut annotations: Vec<String> = Vec::new();
     let mut checks: Vec<(&'static str, String)> = Vec::new();
-    for r in detail_rows(ctx, result, now) {
+    let all_rows = detail_rows(ctx, result, now);
+    let numbers = CheckNumbers::new(&all_rows);
+    for r in all_rows {
         let (role, prepainted): (Option<&'static str>, bool) = match r.field {
             DetailField::Annotation => {
                 annotations.push(r.value);
@@ -1089,9 +1125,11 @@ pub(crate) fn task_detail_card(ctx: &Ctx, result: &Value, now: Timestamp) -> Str
     // paints it, a long one wrapped under itself and its evidence under it.
     if !checks.is_empty() {
         push(&mut out, String::new());
-        let cw = avail.saturating_sub(4).max(10);
+        let cw = avail.saturating_sub(4 + numbers.0 + 1).max(10);
+        let mut at = 0;
         for (mark, body) in &checks {
             let evidence = mark.trim().is_empty();
+            let lead = numbers.lead(mark, &mut at);
             // Each source line wraps on its own, as the plain layout keeps
             // them, and an empty one is still a row so its marker shows.
             let lines = body.split('\n').flat_map(|l| {
@@ -1109,9 +1147,9 @@ pub(crate) fn task_detail_card(ctx: &Ctx, result: &Value, now: Timestamp) -> Str
                         "[!]" => "danger",
                         _ => "muted",
                     };
-                    push(&mut out, format!("{} {line}", ctx.paint(role, mark)));
+                    push(&mut out, format!("{lead}{} {line}", ctx.paint(role, mark)));
                 } else {
-                    push(&mut out, format!("    {line}"));
+                    push(&mut out, format!("{}    {line}", " ".repeat(numbers.0 + 1)));
                 }
             }
         }

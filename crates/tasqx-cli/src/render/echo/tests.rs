@@ -62,7 +62,7 @@ fn set(pairs: &[(&str, Value)]) -> serde_json::Map<String, Value> {
 fn context_drops_whole_from_the_right_and_the_change_never_does() {
     let t = task();
     let wide = modified(&unicode(120), &t, &set(&[("due", json!("x"))]), &[], now());
-    let narrow = modified(&unicode(40), &t, &set(&[("due", json!("x"))]), &[], now());
+    let narrow = modified(&unicode(44), &t, &set(&[("due", json!("x"))]), &[], now());
     let line = |out: &str| out.lines().nth(1).unwrap().to_string();
     assert!(line(&wide).contains("rev 3"), "{wide}");
     assert!(
@@ -73,7 +73,7 @@ fn context_drops_whole_from_the_right_and_the_change_never_does() {
     // gives way instead (review round 1; it used to be the first to go).
     assert!(line(&narrow).contains("rev 3"), "rev went: {narrow}");
     for l in narrow.lines() {
-        assert!(width(l) <= 40, "{} cells: {l:?}", width(l));
+        assert!(width(l) <= 44, "{} cells: {l:?}", width(l));
     }
     // A change wider than the terminal: it continues on the rail and none of
     // it goes. (The one-field change above fits once the context has gone,
@@ -1040,7 +1040,7 @@ fn plain_modify_names_what_it_set() {
     );
     let l = out.lines().nth(1).unwrap();
     assert!(
-        l.starts_with("modified   set priority H, due tomorrow 17:00, tags +bug +urgent"),
+        l.starts_with("modified   set priority H, due tomorrow 17:00 UTC, tags +bug +urgent"),
         "{out}"
     );
 }
@@ -1066,7 +1066,7 @@ fn a_tracked_total_is_not_rounded_into_its_estimate() {
 #[test]
 fn modify_keeps_rev_on_a_narrow_terminal() {
     let out = modified(
-        &unicode(40),
+        &unicode(44),
         &task(),
         &set(&[("due", json!("x"))]),
         &[],
@@ -1074,7 +1074,7 @@ fn modify_keeps_rev_on_a_narrow_terminal() {
     );
     assert!(out.lines().nth(1).unwrap().contains("rev 3"), "{out}");
     for l in out.lines() {
-        assert!(width(l) <= 40, "{} cells: {l:?}", width(l));
+        assert!(width(l) <= 44, "{} cells: {l:?}", width(l));
     }
 }
 
@@ -1747,4 +1747,46 @@ fn tag_result_sanitizes_control_bytes_in_a_tag_name() {
         !out.contains(''),
         "bell byte reached the terminal: {out:?}"
     );
+}
+
+/// #1124: the store and every screen speak UTC, so a clock in an echo says so;
+/// a CEST user reading `tomorrow 17:00` would otherwise take it for local time.
+/// A day with no clock needs no tag.
+#[test]
+fn a_clock_in_a_date_echo_carries_its_zone() {
+    let mut t = task();
+    t["remind"] = json!("2026-09-12T09:00:00Z");
+    t["scheduled"] = json!("2026-09-12T00:00:00Z");
+    let all = set(&[
+        ("due", json!("x")),
+        ("remind", json!("x")),
+        ("scheduled", json!("x")),
+    ]);
+    for ctx in [unicode(120), plain(120)] {
+        let out = modified(&ctx, &t, &all, &[], now());
+        assert!(out.contains("due tomorrow 17:00 UTC"), "{out}");
+        assert!(out.contains("remind tomorrow 09:00 UTC"), "{out}");
+        assert!(out.contains("sched tomorrow"), "{out}");
+        assert!(!out.contains("sched tomorrow UTC"), "{out}");
+    }
+}
+
+/// #1124: `check add` / `check set` answer with the one criterion they touched
+/// and the tally, not the whole task's card.
+#[test]
+fn a_check_write_echoes_the_one_check_and_the_tally() {
+    let mut t = task();
+    t["checks"] = json!([
+        { "id": "a", "body": "first", "state": "passed", "evidence": "proof" },
+        { "id": "b", "body": "second one", "state": "failed", "evidence": null },
+        { "id": "c", "body": "third", "state": "open", "evidence": null },
+    ]);
+    for ctx in [unicode(100), plain(100)] {
+        let out = check_changed(&ctx, "check failed", &t, "b", now());
+        assert!(out.contains("check failed"), "{out}");
+        assert!(out.contains("2 [!] second one"), "{out}");
+        assert!(out.contains("1/3 passed"), "{out}");
+        assert!(!out.contains("first") && !out.contains("third"), "{out}");
+        assert!(!out.contains("proof"), "{out}");
+    }
 }

@@ -1,6 +1,6 @@
 Native terminal charts from the event log (DESIGN.md §8)
 
-Usage: tasqx chart [OPTIONS] <COMMAND>
+Usage: tasqx chart [OPTIONS] [COMMAND]
 
 Commands:
   throughput  Tasks added vs done per ISO week (from the events table)

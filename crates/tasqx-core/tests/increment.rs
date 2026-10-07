@@ -4893,3 +4893,20 @@ fn task_list_filters_on_title_words_and_status_any() {
         .unwrap_err();
     assert_eq!(err.code, ErrorCode::BadRequest);
 }
+
+/// #1124: a duration inside an error is spelled the way a person says it
+/// (`10m 29s`), not as the stored ISO text (`PT10M29S`).
+#[test]
+fn an_adjust_refusal_spells_the_banked_time_for_a_person() {
+    let e = engine();
+    e.project_create(&json!({ "name": "work.x" })).unwrap();
+    let sid = e.task_add(&json!({ "title": "t" })).unwrap()["short_id"].clone();
+    e.task_adjust_tracked(&json!({ "ref": sid, "delta": "10m29s", "reason": "seed" }))
+        .unwrap();
+    let err = e
+        .task_adjust_tracked(&json!({ "ref": sid, "delta": "-1h", "reason": "too much" }))
+        .unwrap_err();
+    assert_eq!(err.code, ErrorCode::BadRequest);
+    assert!(err.message.contains("10m 29s"), "{}", err.message);
+    assert!(!err.message.contains("PT10M29S"), "{}", err.message);
+}

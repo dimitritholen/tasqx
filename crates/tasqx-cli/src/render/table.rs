@@ -658,6 +658,20 @@ pub(crate) fn plural_tasks(n: i64) -> String {
     }
 }
 
+/// What [`table_summary`] counts and says: the rows on screen, the store's
+/// answer (`count`, and `total` when the engine cut a page), the filter or
+/// horizon to echo, the clock, and whether the view groups rows by day.
+#[derive(Clone, Copy)]
+pub(crate) struct Summary<'a> {
+    pub(crate) tasks: &'a [&'a Value],
+    pub(crate) rows: &'a [TaskRow],
+    pub(crate) count: i64,
+    pub(crate) total: i64,
+    pub(crate) label: Option<&'a str>,
+    pub(crate) now: Timestamp,
+    pub(crate) day_grouped: bool,
+}
+
 /// The line a table opens with: what was asked for, and what the answer holds
 /// beyond its own size.
 ///
@@ -673,17 +687,16 @@ pub(crate) fn plural_tasks(n: i64) -> String {
 /// Only non-zero facts are printed. A line that says `0 overdue · 0 blocked`
 /// trains the reader to skip it, and then it is not there on the day it says
 /// something.
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn table_summary(
-    ctx: &Ctx,
-    tasks: &[&Value],
-    rows: &[TaskRow],
-    count: i64,
-    total: i64,
-    label: Option<&str>,
-    now: Timestamp,
-    day_grouped: bool,
-) -> String {
+pub(crate) fn table_summary(ctx: &Ctx, sum: &Summary) -> String {
+    let Summary {
+        tasks,
+        rows,
+        count,
+        total,
+        label,
+        now,
+        day_grouped,
+    } = *sum;
     // Collected as (role, plain text) and painted at the END: the line has to
     // be MEASURED before it is emitted, and an SGR escape is not a cell.
     let mut parts: Vec<(&str, String)> = vec![(
@@ -741,7 +754,13 @@ pub(crate) fn table_summary(
         })
         .collect();
     if !running.is_empty() {
-        parts.push(("timer.active", format!("{} running", running.join(" "))));
+        // The rail glyph leads, so the `*` down the left edge is explained
+        // here rather than left as a mark with no key (#1124).
+        let glyph = if ctx.caps.unicode { "▶" } else { "*" };
+        parts.push((
+            "timer.active",
+            format!("{glyph} {} running", running.join(" ")),
+        ));
     }
 
     let blocked = tasks
@@ -749,7 +768,8 @@ pub(crate) fn table_summary(
         .filter(|t| t.get("blocked").and_then(Value::as_bool).unwrap_or(false))
         .count();
     if blocked > 0 {
-        parts.push(("muted", format!("{blocked} blocked")));
+        let glyph = if ctx.caps.unicode { "⊘" } else { "B" };
+        parts.push(("muted", format!("{glyph} {blocked} blocked")));
     }
     summary_line(ctx, label, parts)
 }
@@ -872,7 +892,16 @@ pub fn task_table_filtered(
         count
     };
     out.push_str(&table_summary(
-        ctx, &refs, &rows, count, total, filter, now, false,
+        ctx,
+        &Summary {
+            tasks: &refs,
+            rows: &rows,
+            count,
+            total,
+            label: filter,
+            now,
+            day_grouped: false,
+        },
     ));
     out.push('\n');
     out.push('\n');

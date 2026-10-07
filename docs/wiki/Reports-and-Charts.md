@@ -91,7 +91,8 @@ in flight. Group and filter as usual (`tasqx report --outcomes project`,
 
 ## tasqx chart
 
-Charts drawn right in the terminal, from the event log.
+Charts drawn right in the terminal, from the event log. A bare `tasqx chart`
+draws `throughput`.
 
 | Command | What it does |
 |---|---|

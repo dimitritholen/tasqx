@@ -4,7 +4,7 @@ Usage: tasqx check add [OPTIONS] <REF> [BODY]...
 
 Arguments:
   <REF>      short_id or UUID
-  [BODY]...  The criterion, in your own words
+  [BODY]...  The criterion, in your own words. May begin with `--`
 
 Options:
       --json             Print the raw JSON API result instead of the human table

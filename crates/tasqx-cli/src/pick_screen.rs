@@ -147,13 +147,29 @@ pub(crate) fn candidates_in_pages(
     filter: &str,
     page: u64,
 ) -> Result<Value, ApiError> {
+    let pages = task_list_pages(
+        |p| be.call("task.list", p),
+        json!({ "filter": filter, "sort": ["-urgency"], "limit": page }),
+    )?;
+    Ok(merge_pages(&pages))
+}
+
+/// Every `task.list` page for `base` (its `filter`, `sort`, `fields`, `limit`),
+/// in order: `call` is how one page is read (a backend, an in-process
+/// engine), and `base` carries no `offset` of its own. The ONE pager, so a
+/// page that stops short of `next_offset` cannot be written a fourth way
+/// (#1111, #1112, #1124).
+///
+/// A page that does not advance the offset ends the walk rather than looping.
+pub(crate) fn task_list_pages(
+    mut call: impl FnMut(&Value) -> Result<Value, ApiError>,
+    mut base: Value,
+) -> Result<Vec<Value>, ApiError> {
     let mut pages: Vec<Value> = Vec::new();
     let mut offset = 0u64;
     loop {
-        let listed = be.call(
-            "task.list",
-            &json!({ "filter": filter, "sort": ["-urgency"], "limit": page, "offset": offset }),
-        )?;
+        base["offset"] = json!(offset);
+        let listed = call(&base)?;
         let next = listed["next_offset"].as_u64();
         pages.push(listed);
         match next {
@@ -161,7 +177,7 @@ pub(crate) fn candidates_in_pages(
             _ => break,
         }
     }
-    Ok(merge_pages(&pages))
+    Ok(pages)
 }
 
 /// `task.list` pages as one answer, each task once, in the order it first
@@ -285,4 +301,36 @@ pub(crate) fn pick_result(short_id: i64, title: &str, mut answer: Value) -> Valu
         obj.insert("started".to_string(), json!(!already));
     }
     answer
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// #1124: the one pager hands each page the base params plus its own
+    /// `offset`, follows `next_offset` to the end, and stops on a page that
+    /// does not advance rather than looping.
+    #[test]
+    fn the_pager_walks_next_offset_and_stops_when_it_does_not_advance() {
+        let mut seen: Vec<Value> = Vec::new();
+        let pages = task_list_pages(
+            |p| {
+                seen.push(p.clone());
+                Ok(match p["offset"].as_u64().unwrap() {
+                    0 => json!({ "tasks": [1], "next_offset": 2 }),
+                    2 => json!({ "tasks": [2], "next_offset": 2 }),
+                    _ => unreachable!("a stalled page must end the walk"),
+                })
+            },
+            json!({ "filter": "@working", "limit": 2 }),
+        )
+        .unwrap();
+        assert_eq!(pages.len(), 2);
+        assert_eq!(
+            seen[0],
+            json!({ "filter": "@working", "limit": 2, "offset": 0 })
+        );
+        assert_eq!(seen[1]["offset"], 2);
+        assert_eq!(seen[1]["filter"], "@working");
+    }
 }

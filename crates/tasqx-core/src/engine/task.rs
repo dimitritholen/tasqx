@@ -841,7 +841,7 @@ impl Engine {
             return Err(ApiError::bad_request(format!(
                 "#{} has {} of tracked time banked, so {raw} would take it below zero",
                 task.short_id,
-                iso_duration(task.tracked_seconds)
+                crate::util::human_duration(task.tracked_seconds)
             )));
         }
         let adjustment = task.tracked_adjustment_seconds.saturating_add(delta);

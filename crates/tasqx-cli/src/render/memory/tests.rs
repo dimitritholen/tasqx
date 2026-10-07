@@ -724,3 +724,36 @@ fn a_stale_mark_survives_the_source_column_giving_way() {
         assert!(!after.contains("stale"), "at {cols} cols: {out}");
     }
 }
+
+/// #1124: a page of nothing but low-similarity meaning hits says the matches
+/// are weak, so a reader does not take the nearest passage for an answer. A page
+/// the words found, or one with a close meaning hit, says nothing of the kind.
+#[test]
+fn a_page_of_only_weak_meaning_hits_says_so() {
+    let hit = |title: &str, via: &str, sim: f64| {
+        json!({ "id": "01a0903c-bff0-76a2-9bcb-5428786a56c4", "kind": "doc",
+                "title": title, "source": "", "snippet": format!("{title} passage"),
+                "via": via, "similarity": sim })
+    };
+    let page = |hits: Vec<Value>| {
+        json!({ "count": hits.len(), "total": hits.len(), "hits": hits, "relaxed": false,
+                "matched": "\"login\"", "semantic": { "model": "m", "min_similarity": 0.3 } })
+    };
+    let ctx = Ctx::new(theme::default_theme(), Caps::PLAIN);
+    let say = |hits: Vec<Value>| memory_hits(&ctx, &page(hits), "login", false, None);
+
+    let weak = say(vec![hit("a", "semantic", 0.33), hit("b", "semantic", 0.41)]);
+    assert!(weak.contains("matches are weak"), "{weak}");
+    assert!(
+        weak.contains("0.41"),
+        "the best similarity is named: {weak}"
+    );
+
+    for strong in [
+        say(vec![hit("a", "semantic", 0.33), hit("b", "semantic", 0.62)]),
+        say(vec![hit("a", "semantic", 0.33), hit("b", "lexical", 0.1)]),
+        say(vec![hit("a", "both", 0.33)]),
+    ] {
+        assert!(!strong.contains("matches are weak"), "{strong}");
+    }
+}

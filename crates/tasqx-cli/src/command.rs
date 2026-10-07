@@ -924,8 +924,9 @@ pub(super) enum Command {
     /// Native terminal charts from the event log (DESIGN.md §8).
     #[command(after_help = crate::cmddoc::after_help("chart"))]
     Chart {
+        /// Which chart; bare `chart` draws `throughput`.
         #[command(subcommand)]
-        kind: ChartKind,
+        kind: Option<ChartKind>,
     },
     /// Theme tools: list built-ins or preview a theme's roles (DESIGN.md §8).
     #[command(after_help = crate::cmddoc::after_help("theme"))]
@@ -1399,7 +1400,7 @@ pub(super) enum CheckAction {
         /// short_id or UUID.
         #[arg(add = crate::complete::candidates::task_ids())]
         r#ref: String,
-        /// The criterion, in your own words.
+        /// The criterion, in your own words. May begin with `--`.
         body: Vec<String>,
     },
     /// Mark a criterion passed or failed, with the evidence for it.
