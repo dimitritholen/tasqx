@@ -2,10 +2,11 @@ import { useEffect } from 'react';
 
 import { useConnection, useRefresh } from '../api';
 import type { EventRow } from '../api/types';
+import { COMPLETED_FILTER } from '../api/baseline';
 import { navigate, useRoute } from '../shell/router';
 import { relativeTime } from '../state/relative';
 import { selectCards, selectRowById, useStore } from '../state/store';
-import type { Cards, DashboardState } from '../state/store';
+import type { DashboardState } from '../state/store';
 import { EmptyState, ErrorState, Panel, Skeleton } from '../ui/primitives';
 import { routeStateOf, useRouteSync } from './route';
 import { TaskTable } from './TaskTable';
@@ -28,13 +29,8 @@ export const CARDS: { id: CardId; label: string; filter: string }[] = [
   { id: 'active', label: 'Active', filter: 'status:active' },
   { id: 'overdue', label: 'Overdue', filter: 'due.before:now @working' },
   { id: 'blocked', label: 'Blocked', filter: '@blocked' },
-  { id: 'completed', label: 'Recently completed', filter: 'status:done' },
+  { id: 'completed', label: 'Completed, last 7 days', filter: COMPLETED_FILTER },
 ];
-
-/** "Recently completed" is the five rows the baseline read, not a group count. */
-function cardValue(cards: Cards, id: CardId): number {
-  return id === 'completed' ? cards.recentlyCompleted.length : cards[id];
-}
 
 export function openFilter(filter: string): void {
   navigate({ screen: 'tasks', query: { filter } });
@@ -59,7 +55,7 @@ function SummaryCards() {
           onClick={() => openFilter(card.filter)}
         >
           <span className="card-value">
-            {loading ? <Skeleton width="3ch" /> : cardValue(cards, card.id)}
+            {loading ? <Skeleton width="3ch" /> : cards[card.id]}
           </span>
           <span className="card-label muted">{card.label}</span>
         </button>

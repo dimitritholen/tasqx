@@ -20,14 +20,8 @@ export const PAGE_SIZE = 50;
 
 /** The card totals `report.summary` cannot give, as their own bounded reads. */
 export const BLOCKED_FILTER = '@blocked';
-export const COMPLETED_FILTER = 'status:done';
-export const COMPLETED_LIMIT = 5;
-/**
- * `completed` is not one of the engine's sort keys (dispatch refuses it), so
- * the newest completions are read as the newest changes: completing a task IS
- * its last change unless someone edits it afterwards.
- */
-export const COMPLETED_SORT = ['-modified'];
+/** The card counts this window and opens it: the count is the read's `total`. */
+export const COMPLETED_FILTER = 'completed.after:-7d';
 
 /** The one page request shape, so the baseline and a refresh cannot diverge. */
 export function pageParams(route: RouteState): Record<string, unknown> {
@@ -73,10 +67,10 @@ export async function loadBaseline(client: ApiClient, store: DashboardStore): Pr
     });
     const completed = await client.request<TaskListResult>('task.list', {
       filter: COMPLETED_FILTER,
-      sort: COMPLETED_SORT,
-      limit: COMPLETED_LIMIT,
+      limit: 1,
+      fields: ['short_id'],
     });
-    store.setSummary({ report, blocked: blocked.total, recentlyCompleted: completed.tasks });
+    store.setSummary({ report, blocked: blocked.total, completed: completed.total });
   });
   if (route.sel !== null) await store.selectTask(route.sel);
 }

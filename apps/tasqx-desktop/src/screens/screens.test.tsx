@@ -2,19 +2,11 @@ import { render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 
 import { reloadTheme } from '../shell/theme';
-import { ReportsScreen, SettingsScreen } from './index';
+import { SettingsScreen } from './index';
 
 beforeEach(() => {
   localStorage.clear();
   reloadTheme();
-});
-
-// Dashboard, Tasks, Projects, Memory and Graph read the store and are covered
-// by their own tests; Reports is still waiting for the data behind it.
-test.each([[ReportsScreen, 'Reports']])('%# a screen without data yet has a heading and a not-connected state', (Screen, title) => {
-  render(<Screen />);
-  expect(screen.getByRole('heading', { name: title, level: 1 })).toBeInTheDocument();
-  expect(screen.getByRole('status')).toHaveTextContent('Not connected');
 });
 
 test('settings changes the theme and disables density', async () => {

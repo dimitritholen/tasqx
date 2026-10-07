@@ -75,7 +75,7 @@ export interface TaskPage {
 export interface SummaryData {
   report: Summary | null;
   blocked: number;
-  recentlyCompleted: TaskRow[];
+  completed: number;
 }
 
 /** The Memory Explorer's results, whichever of `memory.search`/`.list` answered. */
@@ -147,7 +147,7 @@ function initialState(): DashboardState {
     projects: idle<Project[]>([]),
     tasks: idle<TaskRow[]>([]),
     taskPage: { total: 0, offset: 0, next_offset: null, store_empty: false },
-    summary: idle<SummaryData>({ report: null, blocked: 0, recentlyCompleted: [] }),
+    summary: idle<SummaryData>({ report: null, blocked: 0, completed: 0 }),
     selected: idle<TaskDetail | null>(null),
     activity: idle<EventRow[]>([]),
     memoryResults: idle<MemoryResults>({ rows: [], matched: null, storeEmpty: false, filters: DEFAULT_MEMORY_FILTERS }),
@@ -659,7 +659,7 @@ export interface Cards {
   active: number;
   overdue: number;
   blocked: number;
-  recentlyCompleted: TaskRow[];
+  completed: number;
 }
 
 function groupCount(summary: Summary | null, status: string): number {
@@ -667,13 +667,13 @@ function groupCount(summary: Summary | null, status: string): number {
 }
 
 export function selectCards(state: DashboardState): Cards {
-  const { report, blocked, recentlyCompleted } = state.summary.data;
+  const { report, blocked, completed } = state.summary.data;
   return {
     open: groupCount(report, 'pending') + groupCount(report, 'backlog'),
     active: groupCount(report, 'active'),
     overdue: (report?.groups ?? []).reduce((sum, group) => sum + (group.overdue ?? 0), 0),
     blocked,
-    recentlyCompleted,
+    completed,
   };
 }
 

@@ -10,29 +10,9 @@ export { GraphScreen } from './GraphScreen';
 export { MemoryInspector } from './MemoryInspector';
 export { MemoryScreen } from './MemoryScreen';
 export { ProjectsScreen } from './ProjectsScreen';
+export { ReportsScreen } from './ReportsScreen';
 export { TaskInspector } from './TaskInspector';
 export { TasksScreen } from './TasksScreen';
-
-/** The screens still waiting for their data: a heading and what is coming. */
-function Placeholder({ title, lede, empty }: { title: string; lede: string; empty: string }) {
-  return (
-    <div className="screen">
-      <h1>{title}</h1>
-      <p className="screen-lede">{lede}</p>
-      <EmptyState title="Not connected" message={empty} />
-    </div>
-  );
-}
-
-export function ReportsScreen() {
-  return (
-    <Placeholder
-      title="Reports"
-      lede="Throughput, estimates and time spent."
-      empty="Connect to the tasqx daemon to build a report."
-    />
-  );
-}
 
 /** `connection` is the real connection panel once the API client is wired in. */
 export function SettingsScreen({ connection }: { connection?: ReactNode }) {

@@ -28,8 +28,8 @@ const PAGE = [taskRow({ short_id: 1 }), taskRow({ short_id: 2 })];
 /** One `task.list` script that answers the page and both card totals. */
 function listByFilter(params: Record<string, unknown>): unknown {
   if (params['filter'] === '@blocked') return taskList([], { total: 4 });
-  if (params['filter'] === 'status:done') {
-    return taskList([taskRow({ short_id: 9, status: 'done' })]);
+  if (params['filter'] === 'completed.after:-7d') {
+    return taskList([taskRow({ short_id: 9, status: 'done' })], { total: 918 });
   }
   return taskList(PAGE, { total: 312, next_offset: 50 });
 }
@@ -85,7 +85,7 @@ describe('loadBaseline', () => {
     expect(page?.params).toEqual({ filter: '@working', sort: ['-urgency'], limit: PAGE_SIZE, offset: 0 });
     expect(report?.params).toEqual({ group_by: 'status', metrics: ['count', 'overdue'] });
     expect(blocked?.params).toEqual({ filter: '@blocked', limit: 1, fields: ['short_id'] });
-    expect(completed?.params).toEqual({ filter: 'status:done', sort: ['-modified'], limit: 5 });
+    expect(completed?.params).toEqual({ filter: 'completed.after:-7d', limit: 1, fields: ['short_id'] });
 
     const state = store.getState();
     expect(state.tasks.data.map((row) => row.short_id)).toEqual([1, 2]);
@@ -140,7 +140,7 @@ describe('loadBaseline', () => {
     const { transport, store, controller } = make(
       happyScript({
         'task.list': (params: Record<string, unknown>) =>
-          params['filter'] === 'status:done'
+          params['filter'] === 'completed.after:-7d'
             ? fails('internal', 'sqlite: database is locked')
             : listByFilter(params),
       }),
