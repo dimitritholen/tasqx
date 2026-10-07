@@ -68,13 +68,6 @@ impl WeekBucket {
     pub fn label(&self) -> String {
         format!("W{:02}", self.iso_week)
     }
-    /// The Monday this ISO week starts on — an axis label a reader can place
-    /// on a calendar, where `label()`'s `W37` is the bucket key.
-    pub fn start(&self) -> Option<Date> {
-        jiff::civil::ISOWeekDate::new(self.iso_year, self.iso_week, jiff::civil::Weekday::Monday)
-            .ok()
-            .map(|w| w.date())
-    }
     pub fn net(&self) -> i64 {
         self.added as i64 - self.done as i64
     }
@@ -697,7 +690,7 @@ pub struct RemainingPoint {
 
 /// Whether a lifecycle event leaves the task open or closed.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Lifecycle {
+pub(crate) enum Lifecycle {
     Open,
     Closed,
 }
@@ -809,12 +802,35 @@ pub fn burndown(
     days_n: usize,
     anchor: Date,
 ) -> Vec<RemainingPoint> {
-    use std::collections::HashMap;
     let days_n = days_n.max(1);
 
-    let ids: std::collections::HashSet<&str> = members.iter().map(|m| m.id.as_str()).collect();
+    let moves = lifecycle_moves(result, members);
 
-    // Each member's close/reopen events, ascending. Births are deliberately
+    let start = anchor.saturating_sub(((days_n - 1) as i64).days());
+    let mut out = Vec::with_capacity(days_n);
+    let mut d = start;
+    for _ in 0..days_n {
+        let remaining = members
+            .iter()
+            .filter(|m| open_on(m, d, moves.get(m.id.as_str()).map(Vec::as_slice)))
+            .count() as u32;
+        out.push(RemainingPoint { date: d, remaining });
+        d = d.saturating_add(1i64.days());
+    }
+    out
+}
+
+/// Each member's close/reopen events, ascending — the replay [`open_on`]
+/// reads. Split out of [`burndown`] so the HTML report asks the same question
+/// per task and per day (D212) rather than keeping a second replay.
+pub(crate) fn lifecycle_moves<'a>(
+    result: &Value,
+    members: &'a [Member],
+) -> std::collections::HashMap<&'a str, Vec<(Timestamp, Lifecycle)>> {
+    use std::collections::{HashMap, HashSet};
+    let ids: HashSet<&str> = members.iter().map(|m| m.id.as_str()).collect();
+
+    // Births are deliberately
     // absent — `Member::created` carries existence.
     let mut moves: HashMap<&str, Vec<(Timestamp, Lifecycle)>> = HashMap::new();
     for ev in events_of(result) {
@@ -846,23 +862,11 @@ pub fn burndown(
     for v in moves.values_mut() {
         v.sort_by_key(|(at, _)| *at);
     }
-
-    let start = anchor.saturating_sub(((days_n - 1) as i64).days());
-    let mut out = Vec::with_capacity(days_n);
-    let mut d = start;
-    for _ in 0..days_n {
-        let remaining = members
-            .iter()
-            .filter(|m| open_on(m, d, moves.get(m.id.as_str()).map(Vec::as_slice)))
-            .count() as u32;
-        out.push(RemainingPoint { date: d, remaining });
-        d = d.saturating_add(1i64.days());
-    }
-    out
+    moves
 }
 
 /// Whether `m` was open at the end of day `d`.
-fn open_on(m: &Member, d: Date, moves: Option<&[(Timestamp, Lifecycle)]>) -> bool {
+pub(crate) fn open_on(m: &Member, d: Date, moves: Option<&[(Timestamp, Lifecycle)]>) -> bool {
     if m.created > d {
         return false;
     }

@@ -804,7 +804,8 @@ off-by-default `notify-os` build feature."
 
         Topic::Reports => {
             "  tasqx report [group_by]\tcounts, optionally grouped (project | status | priority)
-  tasqx report --html\tone self-contained HTML file
+  tasqx report --html\tone self-contained HTML review of a period
+  tasqx report --html --with-notes\tthe same, with annotation bodies in the file
   tasqx chart throughput\tcompletions over time
   tasqx chart heatmap\tactivity calendar
   tasqx chart burndown\tremaining work over time

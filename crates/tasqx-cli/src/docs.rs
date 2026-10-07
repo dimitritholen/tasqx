@@ -2370,14 +2370,16 @@ fn page_themes() -> String {
         "Wrote self-contained HTML report → review.html",
     ));
     s.push_str(&p(
-        "Without <code>--out</code> it writes to stdout. The page reads in decision order — an \
-         assessment line, what needs attention (in progress, overdue, due within 7 days), what is \
-         actionable now, then weekly throughput, the open backlog, token spend, the per-project \
-         table, completed this week and top tags — and every panel is a pure read of the core API. \
-         A search box and clickable project and tag chips filter the task lists in place, the table \
-         sorts by any column, and every task id opens a detail panel with its dates, dependencies \
-         and newest annotations. One small inline script does that; the page renders fully \
-         without it.",
+        "Without <code>--out</code> it writes to stdout. The page leads with what changed in the \
+         period — done, added, net backlog, blocked and overdue, each against the period before — \
+         then a standup (done yesterday, in progress, blocked and by what, the next five and why), \
+         a per-project grid, a net-flow chart and the outcomes <code>report --outcomes</code> \
+         counts. The period is the 7 days ending today; <code>--since</code> and \
+         <code>--until</code> choose another. Clicking a project scopes every section to it, a \
+         search covers every task in scope, and a task opens in an overlay with its dependencies \
+         by title. Annotation bodies stay out of the file unless you pass \
+         <code>--with-notes</code>; a filter naming one project makes a page about that project \
+         alone. One small inline script does the clicking; the page reads fully without it.",
     ));
     s.push_str(&note(
         "Both HTML surfaces hold the same line: no CDN, no web fonts, no remote images, no \
