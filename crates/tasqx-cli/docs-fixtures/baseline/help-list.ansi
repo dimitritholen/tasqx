@@ -25,7 +25,7 @@ Options:
           Skip this many matching rows before `--limit` is applied. Maps to `task.list`'s `offset`
 
       --socket <SOCKET>
-          Local socket / named-pipe address of a tasqx daemon. Overrides $TASQX_SOCK. When a daemon is reachable, one-shot commands route through it (single writer); otherwise they run in-process. Also selects the address for `daemon` and `watch`
+          Local socket / named-pipe address of a tasqx daemon. Overrides $TASQX_SOCK. When a daemon is reachable, one-shot commands route through it (single writer); otherwise they run in-process. A set $TASQX_DB naming a different store than that daemon's is refused. Also selects the address for `daemon` and `watch`
 
       --fields <FIELDS>
           Return only these task fields (repeatable, or comma-separated) — see `tasqx docs` for the valid names. Maps to `task.list`'s `fields`; an unknown name is refused by the engine, same as above
