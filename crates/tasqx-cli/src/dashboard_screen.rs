@@ -196,7 +196,23 @@ pub(crate) fn dashboard_data(
     use jiff::ToSpan;
     const EVENT_LIMIT: usize = 100_000;
 
-    let tasks = be.call("task.list", &json!({}))?;
+    // `task.list` answers one page (100 rows) when no `limit` is named, and the
+    // header counts and every panel are drawn from these rows, so walk the
+    // pages: a store past one page opened on "5 open · 0 active" (#1112).
+    use tasqx_core::engine::task::MAX_TASK_LIST_LIMIT;
+    let mut tasks = be.call("task.list", &json!({ "limit": MAX_TASK_LIST_LIMIT }))?;
+    while let Some(next) = tasks["next_offset"].as_u64() {
+        let mut page = be.call(
+            "task.list",
+            &json!({ "limit": MAX_TASK_LIST_LIMIT, "offset": next }),
+        )?;
+        if let (Some(all), Some(more)) =
+            (tasks["tasks"].as_array_mut(), page["tasks"].as_array_mut())
+        {
+            all.append(more);
+        }
+        tasks["next_offset"] = page["next_offset"].take();
+    }
     let summary = be.call(
         "report.summary",
         &json!({
@@ -606,6 +622,37 @@ pub(crate) fn burndown_members(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #1112: the header counted the first page of `task.list {}` (the engine
+    /// answers 100 rows when no `limit` is named), so a store past one page
+    /// opened on "5 open · 0 active". The counts must be the store's, the same
+    /// ones `report status` answers.
+    #[test]
+    fn header_counts_match_report_status_past_one_page() {
+        let mut be = Backend::Local(tasqx_core::Engine::open_in_memory().expect("store"));
+        for i in 0..250 {
+            be.call("task.add", &json!({ "title": format!("task {i}") }))
+                .unwrap();
+        }
+        be.call("task.start", &json!({ "ref": "1" })).unwrap();
+        let dash = dashboard_data(&mut be, 7, crate::clock::now(), chart::today()).unwrap();
+
+        let status = be
+            .call("report.summary", &json!({ "group_by": "status" }))
+            .unwrap();
+        let groups = status["groups"].as_array().unwrap();
+        let count = |keep: &dyn Fn(&str) -> bool| -> usize {
+            groups
+                .iter()
+                .filter(|g| keep(g["status"].as_str().unwrap()))
+                .map(|g| g["count"].as_u64().unwrap() as usize)
+                .sum()
+        };
+        assert_eq!(dash.status.open, count(&render::status_is_open));
+        assert_eq!(dash.status.active, count(&|s| s == "active"));
+        assert_eq!(dash.status.open, 250);
+        assert_eq!(dash.status.active, 1);
+    }
 
     /// What `run_pick` hands back when `s` started a task — `pick_result`'s
     /// body. `short_id` is the load-bearing field here: it is what says the
