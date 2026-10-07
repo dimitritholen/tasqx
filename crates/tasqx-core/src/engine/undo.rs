@@ -114,6 +114,10 @@ use super::*;
 ///  * **`annotation.update`** (D165) — the payload carries the body the edit
 ///    replaced as `previous`, and the edit touched nothing but that body (and
 ///    the task's `rev`, which undo bumps anyway).
+///  * **`annotation.move`** (D211) — the payload carries the note's `id` and the
+///    task it left (`from`), and the move touched nothing but that note's
+///    `task_id` (and both tasks' `rev`, which undo bumps anyway). The event is
+///    recorded on the destination, so `task` here is where the note is now.
 ///  * **`adjust_tracked`** (D166) — the payload carries `delta_seconds`, the
 ///    exact figure added to both `tracked_seconds` and
 ///    `tracked_adjustment_seconds`, so subtracting it restores both to the
@@ -124,12 +128,13 @@ use super::*;
 /// (tests/engine.rs) forces every op the engine can write into this list or into
 /// [`NOT_UNDOABLE`], so the choice is always made deliberately — but it cannot
 /// check that a listed inverse is *correct*.
-pub const UNDOABLE_OPS: [&str; 6] = [
+pub const UNDOABLE_OPS: [&str; 7] = [
     "stop",
     "tag.remove",
     "dependency.remove",
     "annotation.add",
     "annotation.update",
+    "annotation.move",
     "adjust_tracked",
 ];
 
@@ -390,6 +395,7 @@ impl Engine {
             "dependency.remove" => revert_dependency_remove(&tx, &task, &payload)?,
             "annotation.add" => revert_annotation_add(&tx, &task, &payload)?,
             "annotation.update" => revert_annotation_update(&tx, &task, &payload)?,
+            "annotation.move" => revert_annotation_move(&tx, &task, &payload)?,
             "adjust_tracked" => revert_adjust_tracked(&tx, &task, &payload)?,
             // Unreachable while this match covers UNDOABLE_OPS, and an error
             // rather than a fallthrough precisely so that if the two ever drift
@@ -762,6 +768,43 @@ fn revert_annotation_update(
         )));
     }
     Ok(json!({ "annotation_id": id }))
+}
+
+/// Put a moved note back on the task it left (D211).
+///
+/// Refuses when the note is no longer on the task the move sent it to —
+/// removed, or moved again outside the log — because moving whatever is there
+/// would act on a state this event never saw. The source task's `rev` moves
+/// with it, as the destination's does in the caller.
+fn revert_annotation_move(
+    tx: &Transaction,
+    task: &Task,
+    payload: &Value,
+) -> Result<Value, ApiError> {
+    let field = |key: &str| payload.get(key).and_then(Value::as_str);
+    let (Some(id), Some(from)) = (field("id"), field("from")) else {
+        return Err(ApiError::conflict(
+            "this `annotation.move` event does not carry the note's `id` and the task it left. \
+             Nothing was changed.",
+        ));
+    };
+    let changed = tx.execute(
+        "UPDATE annotations SET task_id = ?1 WHERE id = ?2 AND task_id = ?3 AND removed IS NULL",
+        params![from, id, task.id],
+    )?;
+    if changed == 0 {
+        return Err(ApiError::conflict(format!(
+            "the note recorded under id {id} is no longer on #{}, so moving it back would act \
+             on something the log does not account for. Nothing was changed.",
+            task.short_id
+        )));
+    }
+    let origin: i64 = tx.query_row(
+        "UPDATE tasks SET rev = rev + 1, modified = ?2 WHERE id = ?1 RETURNING short_id",
+        params![from, now()],
+        |r| r.get(0),
+    )?;
+    Ok(json!({ "annotation_id": id, "task": origin }))
 }
 
 /// Take back a `task.adjust_tracked`: subtract the payload's `delta_seconds`

@@ -213,6 +213,11 @@ want to act on:
   position stay, so a corrected first note is still the card's Description,
   and memory search stops finding the old sentence. `tasqx undo` puts the
   previous text back.
+- **`tasqx_move_annotation` moves a note to another task.** For a note written
+  on the wrong task: the id, text and timestamp are kept, search follows, and
+  `tasqx undo` puts it back. `tasqx_update_annotation` and
+  `tasqx_remove_annotation` take the note's full id, a unique prefix of eight or
+  more characters, or its 1-based position on the task.
 
 The server's `instructions` block is the short version of how to work, so a
 fresh install already nudges the agent to search before deciding and to write
