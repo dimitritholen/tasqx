@@ -864,7 +864,9 @@ fn annotation_body(be: &mut Backend, task: &str, id: &str) -> Result<String, tas
             });
             let first = hit.next();
             let exact = first.filter(|(_, n)| n["id"] == id);
-            exact.or(first.filter(|_| hit.next().is_none())).map(|(_, n)| n)
+            exact
+                .or(first.filter(|_| hit.next().is_none()))
+                .map(|(_, n)| n)
         })
         .and_then(|n| n["body"].as_str())
         .map(str::to_string)
