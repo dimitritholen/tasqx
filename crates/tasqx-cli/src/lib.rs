@@ -2549,6 +2549,33 @@ mod tests {
         assert_eq!(p["filter"], "+api");
     }
 
+    /// D210: a bare word is a title term, so an axis name past the first word
+    /// (`report project priority`, `report status project`) must be refused
+    /// with the `title:` spelling rather than silently narrowing to titles.
+    #[test]
+    fn a_second_axis_word_is_refused_not_read_as_a_title_term() {
+        for args in [
+            ["project", "priority"],
+            ["status", "project"],
+            ["+api", "status"],
+        ] {
+            let args = args.map(String::from);
+            let err = report_params(&args, false, None, None, now_ts())
+                .err()
+                .unwrap_or_else(|| panic!("{args:?} must be refused"));
+            assert!(
+                err.message.contains("title:"),
+                "{args:?}: must name title: {}",
+                err.message
+            );
+        }
+        // Spelled as a title term it is fine, and so is a non-axis word.
+        for args in [["project", "title:priority"], ["project", "weekly"]] {
+            let args = args.map(String::from);
+            assert!(report_params(&args, false, None, None, now_ts()).is_ok());
+        }
+    }
+
     /// Finding #11 (audit-2026-09): `tasqx report tags` fell through to the
     /// filter parser and answered with the filter DSL's whole error, which
     /// never mentions grouping at all — leaving the reader unsure whether
