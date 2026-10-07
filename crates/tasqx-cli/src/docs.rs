@@ -1645,7 +1645,7 @@ fn page_scheduling() -> String {
         &[
             &["Absolute", "<code>2026-07-20</code>, <code>2026-07-20T17:00</code>, <code>\"2026-07-20 17:00\"</code>, any RFC3339"],
             &["Relative words", "<code>today</code>, <code>tomorrow</code>, <code>yesterday</code>, <code>now</code>"],
-            &["Weekdays", "<code>monday</code>…<code>sunday</code>, <code>mon</code>…<code>sun</code> — <code>this</code>/<code>next</code>/<code>last</code> are refused rather than guessed"],
+            &["Weekdays", "<code>monday</code>…<code>sunday</code>, <code>mon</code>…<code>sun</code> — the next one after today. <code>\"next friday\"</code> is that day in the following Monday-to-Sunday week, <code>\"next week\"</code> that week's Monday; <code>this</code>/<code>last</code> are refused rather than guessed"],
             &["Long offsets", "<code>\"in 3 days\"</code>, <code>\"in 2 weeks\"</code>, <code>\"in 1 month\"</code>"],
             &["Short offsets", "<code>3d</code>, <code>2w</code>, <code>1mo</code>, <code>1y</code> — signed: <code>+3d</code>, <code>-1d</code>"],
             &["Boundaries", "<code>eom</code> / <code>\"end of month\"</code>, <code>eow</code> / <code>\"end of week\"</code> (ISO week ends Sunday)"],

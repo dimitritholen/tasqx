@@ -655,9 +655,9 @@ fn the_card_prints_checks_and_notes_below_the_facts_one_per_line() {
             .collect();
         let rev = body.iter().position(|l| l.starts_with("rev")).unwrap();
         for needle in [
-            "[x] Every renamed symbol has a row in the table",
-            "[ ] ok",
-            "[!] tests",
+            "1 [x] Every renamed symbol has a row in the table",
+            "2 [ ] ok",
+            "3 [!] tests",
             "the proof",
             "[1] a note",
         ] {
@@ -672,11 +672,11 @@ fn the_card_prints_checks_and_notes_below_the_facts_one_per_line() {
         // plain layout does, and an empty one still shows its marker.
         let second = body.iter().position(|l| *l == "second");
         assert!(
-            second.is_some_and(|i| body[i - 1] == "[ ] first"),
+            second.is_some_and(|i| body[i - 1] == "4 [ ] first"),
             "a multi-line check body lost its break at {cols} cols:\n{out}"
         );
         assert!(
-            body.iter().filter(|l| l.trim_end() == "[ ]").count() == 1,
+            body.iter().filter(|l| l.trim_end() == "5 [ ]").count() == 1,
             "an empty check lost its marker at {cols} cols:\n{out}"
         );
     }
@@ -953,4 +953,29 @@ fn a_brief_memory_hit_says_when_meaning_or_some_words_found_it() {
     // word: no hit of it is marked partial (#838 review).
     assert_eq!(line("Retry budget").trim(), "Retry budget", "{out}");
     assert_eq!(line("Retry path").trim(), "Retry path", "{out}");
+}
+
+/// #1124: `check set <ref> <n>` names a check by its 1-based position, so `show`
+/// prints the position ahead of each marker, in both layouts.
+#[test]
+fn show_numbers_each_check_by_the_position_check_set_takes() {
+    let t = json!({
+        "short_id": 1, "title": "t", "status": "pending", "_rev": 1,
+        "created": "2026-09-01T10:00:00Z", "modified": "2026-09-02T10:00:00Z",
+        "checks": [
+            { "body": "first", "state": "passed", "evidence": "the proof" },
+            { "body": "second", "state": "open", "evidence": null },
+        ],
+    });
+    for caps in [Caps::PLAIN, card_caps()] {
+        let ctx = Ctx::new(theme::default_theme(), caps).with_cols(80);
+        let out = task_detail(&ctx, &t, crate::clock::now());
+        assert!(out.contains("1 [x] first"), "{out}");
+        assert!(out.contains("2 [ ] second"), "{out}");
+        let proof = out.lines().find(|l| l.contains("the proof")).unwrap();
+        assert!(
+            !proof.contains(['1', '2']),
+            "evidence is not numbered: {out}"
+        );
+    }
 }

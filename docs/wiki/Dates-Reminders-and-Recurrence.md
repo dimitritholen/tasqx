@@ -14,7 +14,11 @@ in 3 days           eom                 at 6pm
 -1d                 2026-09-15          2026-09-15T17:00
 ```
 
-`eom` is end of month. `-1d` is yesterday. A bare time that has already passed
+`eom` is end of month. `-1d` is yesterday. A bare weekday is the next one
+after today, so on a Wednesday `friday` is in two days. `next friday` is that
+weekday in the following Monday-to-Sunday week (nine days out), and
+`next week` is that week's Monday; `this friday` and `last friday` are
+refused rather than guessed. A bare time that has already passed
 today rolls to tomorrow. Full RFC3339 works when you want to be exact.
 
 ## The four date fields

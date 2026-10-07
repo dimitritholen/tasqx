@@ -839,8 +839,10 @@ fn the_summary_names_what_the_rows_do_not_show_at_a_glance() {
         "3 tasks",
         "1 overdue",
         "1 due today",
-        "#2 running",
-        "1 blocked",
+        // #1124: each carries its rail glyph, so the `*` and `B` down the
+        // left edge are explained on the line above them.
+        "* #2 running",
+        "B 1 blocked",
     ] {
         assert!(summary.contains(want), "{want:?} missing from {summary:?}");
     }

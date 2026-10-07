@@ -723,15 +723,24 @@ fn check_named(r#ref: &str, check_id: &str) -> Value {
 
 /// `tasqx check add|set|rm` (D138) — acceptance criteria on a task.
 pub(crate) fn run_check(be: &mut Backend, ctx: &Ctx, action: &CheckAction) -> CmdOutcome {
-    let (method, params) = match action {
+    let (method, params, word) = match action {
         CheckAction::Add { r#ref, body } => {
-            let body = body.join(" ");
+            // `argv::prepass` hid the dashes of a body that opens like a flag.
+            let body = body
+                .iter()
+                .map(|t| crate::argv::unescaped(t))
+                .collect::<Vec<_>>()
+                .join(" ");
             if body.trim().is_empty() {
                 return Err(ApiError::bad_request(
                     "a check needs a criterion — what has to be true for this task to be done?",
                 ));
             }
-            ("check.add", json!({ "ref": r#ref, "body": body }))
+            (
+                "check.add",
+                json!({ "ref": r#ref, "body": body }),
+                "check added",
+            )
         }
         CheckAction::Set {
             r#ref,
@@ -744,15 +753,29 @@ pub(crate) fn run_check(be: &mut Backend, ctx: &Ctx, action: &CheckAction) -> Cm
             if let Some(e) = evidence {
                 p["evidence"] = Value::String(e.clone());
             }
-            ("check.set", p)
+            let word = match state.as_str() {
+                "passed" => "check passed",
+                "failed" => "check failed",
+                _ => "check reopened",
+            };
+            ("check.set", p, word)
         }
-        CheckAction::Remove { r#ref, check_id } => ("check.remove", check_named(r#ref, check_id)),
+        CheckAction::Remove { r#ref, check_id } => (
+            "check.remove",
+            check_named(r#ref, check_id),
+            "check removed",
+        ),
     };
     let result = be.call(method, &params)?;
-    // The echo is the task's card (D126), like every other write on a task:
-    // a criterion only means anything beside the work it qualifies.
+    // The echo is the card (D126) of the one criterion touched and the tally
+    // (#1124); `show` has the whole list.
     let task = read_back(be, &result).unwrap_or_else(|| result.clone());
-    let text = render::task_detail(ctx, &task, crate::clock::now());
+    let id = result
+        .pointer("/check/id")
+        .or_else(|| result.get("check_id"))
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    let text = render::check_changed(ctx, word, &task, id, crate::clock::now());
     Ok((result, text))
 }
 
@@ -2312,8 +2335,14 @@ pub(crate) fn run_why(
 /// renderer and the JSON. The series is the answer; the sparkline is one way of
 /// looking at it, and a script that wants the numbers should not have to parse
 /// block glyphs back into integers to get them.
-pub(crate) fn run_chart(engine: &Engine, ctx: &Ctx, kind: ChartKind) -> CmdOutcome {
+pub(crate) fn run_chart(engine: &Engine, ctx: &Ctx, kind: Option<ChartKind>) -> CmdOutcome {
     let anchor = chart::today();
+    // Bare `chart` is throughput over the whole store: the chart the other two
+    // are variations of (#1124).
+    let kind = kind.unwrap_or(ChartKind::Throughput {
+        filter: Vec::new(),
+        weeks: None,
+    });
     Ok(match kind {
         ChartKind::Throughput { filter, weeks } => {
             let weeks = chart::default_weeks(false, weeks);

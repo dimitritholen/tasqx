@@ -591,22 +591,12 @@ pub(crate) fn burndown_members(
     let mut params = json!({
         "fields": ["id", "status", "created"],
         "limit": tasqx_core::engine::task::MAX_TASK_LIST_LIMIT,
-        "offset": 0,
     });
     if let Some(f) = filter {
         params["filter"] = Value::String(f);
     }
-    let mut members = Vec::new();
-    loop {
-        let listed = dispatch(engine, "task.list", &params)?;
-        members.extend(chart::members_of(&listed));
-        match listed["next_offset"].as_u64() {
-            Some(next) if next > params["offset"].as_u64().unwrap_or(0) => {
-                params["offset"] = json!(next);
-            }
-            _ => break,
-        }
-    }
+    let pages = crate::pick_screen::task_list_pages(|p| dispatch(engine, "task.list", p), params)?;
+    let members = pages.iter().flat_map(chart::members_of).collect();
     Ok((members, label))
 }
 

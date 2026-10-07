@@ -370,13 +370,15 @@ pub fn agenda_text(ctx: &Ctx, a: &Agenda) -> String {
 
         out.push_str(&table_summary(
             ctx,
-            &refs,
-            &rows,
-            a.entries.len() as i64,
-            a.entries.len() as i64,
-            Some(&horizon),
-            a.at_start_of_today(),
-            true,
+            &Summary {
+                tasks: &refs,
+                rows: &rows,
+                count: a.entries.len() as i64,
+                total: a.entries.len() as i64,
+                label: Some(&horizon),
+                now: a.at_start_of_today(),
+                day_grouped: true,
+            },
         ));
         out.push('\n');
         out.push('\n');

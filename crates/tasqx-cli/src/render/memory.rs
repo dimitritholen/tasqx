@@ -155,6 +155,10 @@ pub fn memory_table(ctx: &Ctx, result: &Value, now: Timestamp) -> String {
     out
 }
 
+/// Below this similarity a page of meaning-only hits is called weak (#1124). The
+/// engine's own floor is 0.30 (`MEMORY_MIN_SIMILARITY`); this sits above it.
+const WEAK_SIMILARITY: f64 = 0.45;
+
 /// `tasqx memory search`: one record per hit (D125(a)).
 ///
 /// The head line is the title, where it came from, and the handle that opens
@@ -386,6 +390,28 @@ pub fn memory_hits(
             format!(
                 "{} marks a hit found by meaning alone, not by its words, with its similarity",
                 meaning_mark(ctx)
+            ),
+        ));
+    }
+    // #1124: static embeddings relate unrelated text a little (the floor is
+    // 0.30), so a page that meaning alone filled, every hit under
+    // `WEAK_SIMILARITY`, is the store's nearest guess rather than an answer.
+    // Human output only: `--json` carries the similarities themselves.
+    let meaning_sims: Vec<f64> = hits
+        .iter()
+        .filter(|h| h.get("via").and_then(Value::as_str) == Some("semantic"))
+        .filter_map(|h| h.get("similarity").and_then(Value::as_f64))
+        .collect();
+    if !hits.is_empty()
+        && meaning_sims.len() == hits.len()
+        && meaning_sims.iter().all(|&v| v < WEAK_SIMILARITY)
+    {
+        let best = meaning_sims.iter().copied().fold(0.0_f64, f64::max);
+        notes.push((
+            None,
+            format!(
+                "matches are weak: the closest is {best:.2} in meaning and none shares your \
+                 words, so read them as hints"
             ),
         ));
     }

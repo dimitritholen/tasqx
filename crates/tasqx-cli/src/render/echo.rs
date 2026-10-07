@@ -324,11 +324,24 @@ fn project_fact(ctx: &Ctx, task: &Value, changed: bool) -> Option<Fact> {
     })
 }
 
+/// [`due_cell`] for a write's echo: a clock it prints is tagged ` UTC`, because
+/// every stored instant is UTC and a reader in another zone would take
+/// `tomorrow 17:00` for their own clock (#1124). A day with no clock is
+/// unchanged. The stored value is not touched.
+fn echo_cell(at: Timestamp, now: Timestamp) -> String {
+    let cell = due_cell(at, now);
+    if cell.contains(':') {
+        format!("{cell} UTC")
+    } else {
+        cell
+    }
+}
+
 /// `due Fri`, in `overdue` when an open task is past it, as its row in
 /// `list` is.
 fn due_fact(ctx: &Ctx, task: &Value, now: Timestamp, changed: bool) -> Option<Fact> {
     let due = field_ts(task, "due")?;
-    let cell = due_cell(due, now);
+    let cell = echo_cell(due, now);
     let late = overdue_at(due, now) && status_is_open(&s(task, "status"));
     let plain = format!("due {cell}");
     // A changed fact is bold whole, label and all; an unchanged one keeps
@@ -1123,7 +1136,7 @@ pub fn modified(
     }
     for (k, what) in [("scheduled", "sched"), ("wait", "wait")] {
         if let Some(at) = has(k).then(|| field_ts(task, k)).flatten() {
-            let text = format!("{what} {}", due_cell(at, now));
+            let text = format!("{what} {}", echo_cell(at, now));
             change.push((vec![Fact::changed(ctx, "card.strong", &text)], text));
         }
     }
@@ -1138,7 +1151,7 @@ pub fn modified(
         let r = s(task, "remind");
         let when = r
             .parse::<Timestamp>()
-            .map_or(r.clone(), |at| due_cell(at, now));
+            .map_or(r.clone(), |at| echo_cell(at, now));
         let text = format!("remind {when}");
         change.push((vec![Fact::changed(ctx, "card.strong", &text)], text));
     }
@@ -1287,6 +1300,34 @@ fn blocker_title(task: &Value, id: i64) -> Option<String> {
         .and_then(|a| a.iter().find(|b| sid(b) == id))
         .map(|b| s(b, "title"))
         .filter(|t| !t.is_empty())
+}
+
+/// `tasqx check add|set|rm` (#1124): the one criterion the write touched, by the
+/// position `check set` takes, and how many are passed. The whole task's card
+/// was an echo of everything but the thing that changed; `show` has the rest.
+/// `id` is the touched check; one that is gone (`check rm`) has no line.
+pub fn check_changed(ctx: &Ctx, word: &str, task: &Value, id: &str, now: Timestamp) -> String {
+    let checks = task
+        .get("checks")
+        .and_then(Value::as_array)
+        .map_or(&[][..], Vec::as_slice);
+    let passed = checks.iter().filter(|c| s(c, "state") == "passed").count();
+    let mut card = Card::new(task, outcome(ctx, word));
+    if let Some((i, c)) = checks.iter().enumerate().find(|(_, c)| s(c, "id") == id) {
+        let mark = match s(c, "state").as_str() {
+            "passed" => "[x]",
+            "failed" => "[!]",
+            _ => "[ ]",
+        };
+        card.words = Some(format!("{} {mark} {}", i + 1, san(&s(c, "body"))));
+    }
+    card.lead.push(Fact::role(
+        ctx,
+        "card.label",
+        &format!("{passed}/{} passed", checks.len()),
+    ));
+    card.context = Context::NONE;
+    draw(ctx, card, now)
 }
 
 /// `tasqx dep` / `tasqx undep`. `dep` says what the task waits on now; an

@@ -125,6 +125,23 @@ pub fn iso_duration(seconds: i64) -> String {
     out
 }
 
+/// A whole number of seconds as a person says it: `10m 29s`, `1h 52m`, `2h`,
+/// `0s`. For a duration inside a message a human reads; stored values and the
+/// JSON API keep [`iso_duration`] (#1124).
+pub(crate) fn human_duration(seconds: i64) -> String {
+    let s = seconds.max(0);
+    let parts: Vec<String> = [(s / 3600, "h"), (s % 3600 / 60, "m"), (s % 60, "s")]
+        .into_iter()
+        .filter(|(n, _)| *n > 0)
+        .map(|(n, u)| format!("{n}{u}"))
+        .collect();
+    if parts.is_empty() {
+        "0s".to_string()
+    } else {
+        parts.join(" ")
+    }
+}
+
 /// [`iso_duration`] with a sign: `-PT2H25M` below zero, the unsigned
 /// spelling otherwise. For a correction (`tracked_adjustment`, D166), which
 /// can go either way; a total is never negative and keeps [`iso_duration`].
@@ -414,6 +431,20 @@ pub fn opt_str_array(p: &Value, key: &str) -> Result<Vec<String>, ApiError> {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn human_duration_drops_empty_units() {
+        for (secs, want) in [
+            (0, "0s"),
+            (-5, "0s"),
+            (629, "10m 29s"),
+            (6720, "1h 52m"),
+            (7200, "2h"),
+            (3601, "1h 1s"),
+        ] {
+            assert_eq!(human_duration(secs), want);
+        }
+    }
 
     /// D32's drift guard, and the reason this is one decision rather than a
     /// fourteenth fix: every hole in the family had the same *syntax*, so the

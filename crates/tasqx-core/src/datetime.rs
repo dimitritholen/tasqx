@@ -30,11 +30,10 @@
 //!    aliasing it to midnight (as it used to) meant it could never see a task
 //!    due earlier the same day (#144);
 //!  * weekdays — `monday`..`sunday` / `mon`..`sun` (the next such weekday; today
-//!    resolves to +7). `this`/`last` are refused, and so is a leading `next`
-//!    (#137): it used to be a silent synonym for the bare weekday — tested, but
-//!    documented nowhere a user would read it — which is worse than refusing,
-//!    because "next friday" reads to most people as a DIFFERENT day than
-//!    "friday", not the same one;
+//!    resolves to +7). `next <weekday>` is that weekday **in the following ISO
+//!    week** (Monday to Sunday), and `next week` is that week's Monday (D214):
+//!    on a Wednesday `friday` is in two days and `next friday` in nine. `this`
+//!    and `last` are refused;
 //!  * offsets — `in 3 days`, `in 2 weeks`, `in 1 month`, and the short `3d`,
 //!    `2w`, `1mo`, `1y`, each optionally signed (`+3d`, `-1d` = yesterday);
 //!  * `eod` / `end of day`, `eom` / `end of month`, `eow` / `end of week` (ISO
@@ -181,7 +180,7 @@ pub fn parse_when(input: &str, now: Timestamp) -> Result<String, ApiError> {
 ///
 /// The unit note is deliberate: `"in 3 days"` reads as a general "in N <unit>"
 /// grammar, but the offsets here are day-scale and larger only (days, weeks,
-/// months, years) — `"in 1 hour"` and `"next week"` are refused by this same
+/// months, years) — `"in 1 hour"` is refused by this same
 /// grammar, and without saying so the refusal reads as a bug rather than a
 /// boundary (audit #231.3). Hour/minute offsets are `remind`'s and `est`'s
 /// grammar (`parse_duration`), not this one.
@@ -294,9 +293,8 @@ fn is_period_end(tokens: &[&str]) -> bool {
 ///
 /// `now` is deliberately absent: it is a full instant, not a `Date`, and is
 /// handled by its own early return in [`parse_when`] before this
-/// function is ever called (#144). `next <weekday>` is absent too — it used to
-/// alias the bare weekday here and is refused now, on the same terms as
-/// `this`/`last` below (#137).
+/// function is ever called (#144). `next <weekday>` and `next week` name the
+/// following ISO week (D214); `this`/`last` stay refused (#137).
 fn resolve_date(tokens: &[&str], today: Date) -> Option<Date> {
     match tokens {
         ["today"] => Some(today),
@@ -310,6 +308,8 @@ fn resolve_date(tokens: &[&str], today: Date) -> Option<Date> {
         ["end", "of", "week"] => Some(end_of_week(today)),
         ["eoy"] => Some(today.last_of_year()),
         ["end", "of", "year"] => Some(today.last_of_year()),
+        ["next", "week"] => Some(next_week_day(today, Weekday::Monday)),
+        ["next", w] => weekday(w).map(|w| next_week_day(today, w)),
         // `in N <unit>`
         ["in", n, unit] => {
             let n: i64 = n.parse().ok()?;
@@ -555,6 +555,15 @@ fn next_weekday(today: Date, target: Weekday) -> Date {
         delta = 7;
     }
     today.checked_add(Span::new().days(delta)).unwrap_or(today)
+}
+
+/// `target` in the ISO week (Monday to Sunday) after the one `today` is in.
+fn next_week_day(today: Date, target: Weekday) -> Date {
+    let cur = today.weekday().to_monday_one_offset() as i64;
+    let tgt = target.to_monday_one_offset() as i64;
+    today
+        .checked_add(Span::new().days(7 - cur + tgt))
+        .unwrap_or(today)
 }
 
 /// Map a weekday name (full or 3-letter) to a `Weekday`.
@@ -818,25 +827,19 @@ mod tests {
         assert_eq!(p("friday 17:00"), "2026-07-17T17:00:00Z");
     }
 
-    /// #137: `next friday` used to be a silent synonym for the bare weekday —
-    /// tested (right here, until now) but documented nowhere a user would
-    /// read it, and it disagreed with `due:next banana` proving the `next`
-    /// token WAS being inspected: only the weekday branch swallowed it. A
-    /// wrong date typed with confidence is worse than a refusal, so `next`
-    /// now joins `this`/`last` on the refused side, for every weekday.
+    /// D214 (supersedes the #137 refusal): `next <weekday>` is that weekday in the
+    /// following ISO week, so it is never the bare weekday (#137's silent
+    /// alias); `this`/`last` stay refused. `now()` is Wednesday 2026-07-15.
     #[test]
-    fn next_weekday_is_refused_like_this_and_last() {
-        for bad in [
-            "next friday",
-            "next monday",
-            "next wed",
-            "this friday",
-            "last friday",
-        ] {
-            assert!(
-                parse_when(bad, now()).is_err(),
-                "{bad:?} must be refused, not silently aliased to the bare weekday"
-            );
+    fn next_weekday_is_the_following_calendar_week() {
+        assert_eq!(p("next monday"), "2026-07-20T00:00:00Z");
+        assert_eq!(p("next friday"), "2026-07-24T00:00:00Z");
+        assert_eq!(p("next wed"), "2026-07-22T00:00:00Z");
+        assert_eq!(p("next sunday"), "2026-07-26T00:00:00Z");
+        assert_eq!(p("next week"), "2026-07-20T00:00:00Z");
+        assert_eq!(p("next friday 17:00"), "2026-07-24T17:00:00Z");
+        for bad in ["this friday", "last friday", "next banana"] {
+            assert!(parse_when(bad, now()).is_err(), "{bad:?} must be refused");
         }
     }
 
@@ -906,12 +909,12 @@ mod tests {
 
     /// The hint on a refused date used to read as a general "in N <unit>"
     /// grammar ("try e.g. ... \"in 3 days\" ...") while only day-scale units
-    /// actually parse — `"in 1 hour"` and `"next week"` are refused by the same
+    /// actually parse — `"in 1 hour"` and `"this week"` are refused by the same
     /// grammar `"in 3 days"` is offered as an example of, which reads as a bug
     /// rather than a documented boundary (audit #231.3). The hint must say so.
     #[test]
     fn unparseable_hint_names_the_unit_boundary() {
-        for bad in ["in 1 hour", "in 2 hours", "next week"] {
+        for bad in ["in 1 hour", "in 2 hours", "this week"] {
             let err = parse_when(bad, now()).expect_err("must be refused");
             assert!(
                 err.message.contains("day/week/month/year"),

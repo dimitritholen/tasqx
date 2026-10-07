@@ -90,6 +90,9 @@ pub fn prepass<I: IntoIterator<Item = OsString>>(raw: I) -> Prepass {
             filter_command: false,
         };
     };
+    if name == "check" {
+        escape_check_body(&cmd, &mut argv, i);
+    }
     if !FILTER_COMMANDS.contains(&name.as_str()) {
         return Prepass {
             argv,
@@ -148,6 +151,61 @@ pub fn prepass<I: IntoIterator<Item = OsString>>(raw: I) -> Prepass {
     Prepass {
         argv,
         filter_command: true,
+    }
+}
+
+/// `check add <ref> --since 2026-01 …`: a criterion is a sentence, and one often
+/// opens like a flag (#1124). After the ref, a dash-led token that `check add`
+/// does not declare (its own flags and the globals, `--json` among them) is
+/// criterion text, so its first dash is hidden behind [`ESCAPED_DASH`] and
+/// `run_check` restores it. A declared flag stays clap's wherever it stands,
+/// and everything after a literal `--` is already positional.
+fn escape_check_body(cmd: &clap::Command, argv: &mut [OsString], at: usize) {
+    let Some(add) = cmd
+        .find_subcommand("check")
+        .and_then(|c| c.find_subcommand("add"))
+    else {
+        return;
+    };
+    if argv.get(at + 1).and_then(|t| t.to_str()) != Some("add") {
+        return;
+    }
+    let mut positionals = 0;
+    let mut j = at + 2;
+    while j < argv.len() {
+        let Some(tok) = argv[j].to_str().map(str::to_string) else {
+            positionals += 1;
+            j += 1;
+            continue;
+        };
+        if tok == "--" {
+            break;
+        }
+        if let Some(long) = tok.strip_prefix("--") {
+            let flag = long.split('=').next().unwrap_or(long);
+            let declared = add.get_arguments().any(|a| {
+                a.get_long() == Some(flag) || a.get_all_aliases().is_some_and(|v| v.contains(&flag))
+            });
+            if declared {
+                if !long.contains('=') && long_value_follows(add, long) {
+                    j += 1;
+                }
+            } else if positionals > 0 {
+                argv[j] = OsString::from(format!("{ESCAPED_DASH}{}", &tok[1..]));
+            }
+        } else if is_tag_exclusion(&tok) {
+            match declared_short(add, &tok) {
+                Some(c) if short_takes_value(add, c) => j += 1,
+                Some(_) => {}
+                None if positionals > 0 => {
+                    argv[j] = OsString::from(format!("{ESCAPED_DASH}{}", &tok[1..]));
+                }
+                None => {}
+            }
+        } else {
+            positionals += 1;
+        }
+        j += 1;
     }
 }
 
@@ -622,5 +680,55 @@ mod tests {
         let mut v = vec![format!("{ESCAPED_DASH}needs"), "+home".to_string()];
         unescape(&mut v);
         assert_eq!(v, ["-needs", "+home"]);
+    }
+
+    /// #1124: after the ref, a dash-led token `check add` does not declare is
+    /// criterion text and is hidden from clap; a declared flag (`--json`, a
+    /// `--theme` value) and everything before the ref are left alone.
+    #[test]
+    fn check_add_hides_a_body_that_opens_like_a_flag() {
+        let run = |args: &[&str]| -> Vec<String> {
+            let raw = args.iter().map(OsString::from);
+            prepass(raw)
+                .argv
+                .iter()
+                .map(|t| t.to_string_lossy().into_owned())
+                .collect()
+        };
+        let hidden = |t: &str| format!("{ESCAPED_DASH}{}", &t[1..]);
+        assert_eq!(
+            run(&["tasqx", "check", "add", "1", "--since", "x", "--json"]),
+            [
+                "tasqx",
+                "check",
+                "add",
+                "1",
+                hidden("--since").as_str(),
+                "x",
+                "--json"
+            ]
+        );
+        assert_eq!(
+            run(&["tasqx", "check", "add", "--theme", "nord", "1", "-5", "pts"]),
+            [
+                "tasqx",
+                "check",
+                "add",
+                "--theme",
+                "nord",
+                "1",
+                hidden("-5").as_str(),
+                "pts"
+            ]
+        );
+        // Before the ref, and on every other verb, a stray flag is clap's.
+        assert_eq!(
+            run(&["tasqx", "check", "add", "--bogus", "1"]),
+            ["tasqx", "check", "add", "--bogus", "1"]
+        );
+        assert_eq!(
+            run(&["tasqx", "check", "set", "1", "1", "--bogus"]),
+            ["tasqx", "check", "set", "1", "1", "--bogus"]
+        );
     }
 }

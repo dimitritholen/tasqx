@@ -911,13 +911,15 @@ fn draw_list(
         let tasks: Vec<&Value> = app.rows.iter().map(|r| &r.task).collect();
         let summary = render::table_summary(
             &app.ctx_at(w.saturating_sub(lead_w + 1)),
-            &tasks,
-            &app.table,
-            app.rows.len() as i64,
-            app.rows.len() as i64,
-            Some(&app.filter),
-            app.now,
-            false,
+            &render::Summary {
+                tasks: &tasks,
+                rows: &app.table,
+                count: app.rows.len() as i64,
+                total: app.rows.len() as i64,
+                label: Some(&app.filter),
+                now: app.now,
+                day_grouped: false,
+            },
         );
         head.extend(tui::painted_line(&summary).spans);
     }

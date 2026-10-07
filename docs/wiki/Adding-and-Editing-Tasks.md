@@ -73,9 +73,16 @@ tasqx check set 42 <id> passed --evidence "cargo test: 0 failed"
 tasqx check rm 42 <id>
 ```
 
-`<id>` is the check's id from `tasqx show`, or its position in that list
-counting from 1: `tasqx check set 42 2 failed` marks the second one. A
-mistyped id is refused with the task's real checks listed.
+`tasqx show` numbers each check (`2 [ ] the notes name every breaking
+change`). `<id>` is that position, counting from 1 — `tasqx check set 42 2
+failed` marks the second one — or the check's full id. A mistyped id is
+refused with the task's real checks listed.
+
+`check add`, `check set` and `check rm` answer with the one check they
+touched and how many have passed, not the whole task; `tasqx show` has the
+rest. A criterion may begin with `--` (`tasqx check add 42 --since 2026-01 is
+honoured`): after the task, a dash-led word that is not one of `check add`'s
+own flags (`--json`, `--no-daemon`, …) is part of the criterion.
 
 **tasqx never runs a check.** The criterion is a claim and the evidence is a
 citation — both are stored exactly as you typed them and neither is

@@ -3090,11 +3090,11 @@ mod tests {
         let (result, _) = run_chart(
             &e,
             &ctx,
-            ChartKind::Burndown {
+            Some(ChartKind::Burndown {
                 filter: vec!["project:ledger".to_string()],
                 project: None,
                 days: Some(1),
-            },
+            }),
         )
         .expect("chart ran");
         let last = result["series"].as_array().unwrap().last().unwrap();

@@ -880,3 +880,33 @@ fn annotate_move_and_to_require_each_other() {
         assert!(!out.status.success(), "{args:?} should be refused");
     }
 }
+
+/// #1124: a criterion that begins with `--` (`--since 2026-01`) is a sentence,
+/// not a flag: `check add` takes it without a `--` separator, and the echo names
+/// only that check and the tally.
+#[test]
+fn check_add_takes_a_body_that_begins_with_dashes() {
+    let st = Store::new("check-dashes");
+    st.plain(&["init", "work"]);
+    st.plain(&["add", "Checked task", "--project", "work"]);
+    let out = st.plain(&["check", "add", "1", "--since", "2026-01", "is", "honoured"]);
+    assert!(out.contains("1 [ ] --since 2026-01 is honoured"), "{out}");
+    assert!(out.contains("0/1 passed"), "{out}");
+    let shown = st.plain(&["show", "1"]);
+    assert!(
+        shown.contains("1 [ ] --since 2026-01 is honoured"),
+        "{shown}"
+    );
+}
+
+/// #1124: a bare `tasqx chart` draws the throughput chart, the one the other
+/// two are variations of, instead of printing a help page and exiting 2.
+#[test]
+fn bare_chart_draws_throughput() {
+    let st = Store::new("bare-chart");
+    st.plain(&["init", "work"]);
+    st.plain(&["add", "Charted", "--project", "work"]);
+    let bare = st.plain(&["chart"]);
+    assert_eq!(bare, st.plain(&["chart", "throughput"]));
+    assert!(!bare.contains("Usage:"), "{bare}");
+}
