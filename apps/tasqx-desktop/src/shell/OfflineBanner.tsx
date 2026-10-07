@@ -1,3 +1,4 @@
+import { UI_LOCALE } from '../state/relative';
 import { Button } from '../ui/primitives';
 
 /**
@@ -20,7 +21,7 @@ export function OfflineBanner({
       ? attempt === 0
         ? 'connecting'
         : 'not retrying'
-      : `retrying at ${new Date(nextRetryAt).toLocaleTimeString()}`;
+      : `retrying at ${new Date(nextRetryAt).toLocaleTimeString(UI_LOCALE)}`;
   return (
     <div className="offline-banner" role="alert">
       <span className="offline-banner-text">{`Offline — ${when} (attempt ${attempt})`}</span>

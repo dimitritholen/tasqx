@@ -245,6 +245,39 @@ describe('ConnectionController', () => {
     expect(controller.getState()).toMatchObject({ offline: false, offlineSince: null });
   });
 
+  it('goes offline within a heartbeat when the daemon answers that it is shutting down', async () => {
+    const { transport, controller } = make();
+    await controller.start();
+    expect(controller.getState().status).toBe('live');
+
+    await vi.advanceTimersByTimeAsync(1000);
+    const frame = transport.sentFrames().at(-1) as { id: string; method: string };
+    expect(frame.method).toBe('core.capabilities');
+    transport.failConnect = 'daemon is draining';
+    transport.pushLine(
+      JSON.stringify({
+        tasqx: '1',
+        id: frame.id,
+        ok: false,
+        error: { code: 'unavailable', message: 'daemon is shutting down; the request was not applied' },
+      }),
+    );
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(controller.getState()).toMatchObject({ status: 'disconnected', offline: true });
+  });
+
+  it('stays live while the heartbeat is answered', async () => {
+    const { transport, controller } = make();
+    await controller.start();
+    for (let beat = 0; beat < 3; beat += 1) {
+      await vi.advanceTimersByTimeAsync(1000);
+      const frame = transport.sentFrames().at(-1) as { id: string };
+      transport.pushLine(JSON.stringify({ tasqx: '1', id: frame.id, ok: true, result: {} }));
+    }
+    expect(controller.getState()).toMatchObject({ status: 'live', offline: false });
+  });
+
   it('retries on demand without losing its place in the ladder', async () => {
     const { transport, controller } = make();
     transport.failConnect = 'no daemon';

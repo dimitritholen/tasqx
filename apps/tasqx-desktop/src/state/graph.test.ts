@@ -51,8 +51,8 @@ describe('graph.query params', () => {
     expect(graphQueryParams({ ...DEFAULT_GRAPH_REQUEST, root: 42 })).toEqual({
       root: 42,
       depth: 2,
-      max_nodes: 250,
-      max_edges: 750,
+      max_nodes: 100,
+      max_edges: 300,
       include_inferred: false,
     });
   });

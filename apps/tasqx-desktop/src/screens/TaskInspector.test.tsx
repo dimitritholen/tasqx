@@ -59,6 +59,8 @@ describe('TaskInspector', () => {
     const blockedBy = within(panel).getByRole('region', { name: 'Blocked by' });
     expect(within(blockedBy).getByRole('button', { name: '#1' })).toHaveAttribute('title', 'Wire the client');
     expect(within(panel).getByRole('region', { name: 'Blocks' })).toHaveTextContent('#9');
+    // #5 is in depends_on but already done: it is not blocking anything.
+    expect(within(blockedBy).queryByRole('button', { name: '#5' })).toBeNull();
 
     // Clicking a blocker opens that task rather than navigating away.
     await it.user.click(within(blockedBy).getByRole('button', { name: '#1' }));

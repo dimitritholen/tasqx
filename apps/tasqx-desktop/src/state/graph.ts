@@ -11,15 +11,15 @@ import type { GraphEdgeRow, GraphNodeRow, GraphNodeType, GraphQueryResult } from
  * tests and the 1,000-node performance test — only the WebGL draw is not.
  */
 
-/** `graph.query`'s own bounds: depth 0–4 (default 2), nodes 1–1000 (default 250). */
+/** `graph.query`'s own bounds: depth 0–4 (default 2), nodes 1–1000 (the API defaults to 250; the screen asks for 100, as 250 is a hairball). */
 export const GRAPH_DEFAULT_DEPTH = 2;
 export const GRAPH_MAX_DEPTH = 4;
-export const GRAPH_DEFAULT_NODES = 250;
+export const GRAPH_DEFAULT_NODES = 100;
 export const GRAPH_MAX_NODES = 1000;
-export const GRAPH_NODE_LIMITS = [250, 500, 1000] as const;
+export const GRAPH_NODE_LIMITS = [100, 250, 500, 1000] as const;
 
 /**
- * Edges asked for per node: 3 × 250 is the API's own 750 default, and 3 ×
+ * Edges asked for per node: 3 × 100 is the screen default, and 3 ×
  * 1000 stays inside its 5,000 ceiling.
  */
 export function maxEdgesFor(maxNodes: number): number {

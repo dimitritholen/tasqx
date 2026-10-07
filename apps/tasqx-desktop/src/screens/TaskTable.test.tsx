@@ -103,6 +103,19 @@ describe('TaskTable', () => {
     expect(it.store.getState().selected.data?.title).toBe('Third');
   });
 
+  it('j from outside the list lands on the selected row, and typing a j does not', async () => {
+    const it = await live(baselineScript(PAGE), '#/tasks?sel=3');
+
+    await it.user.keyboard('j');
+    expect(screen.getAllByRole('row')[3]).toHaveFocus();
+
+    act(() => (document.activeElement as HTMLElement).blur());
+    await it.user.click(screen.getByLabelText('Filter'));
+    await it.user.keyboard('j');
+    expect(screen.getByLabelText('Filter')).toHaveFocus();
+    expect(screen.getByLabelText('Filter')).toHaveValue('@workingj');
+  });
+
   it('selects on click and reads that one task, once', async () => {
     const it = await live(baselineScript(PAGE, { 'task.get': taskDetail({ short_id: 2, title: 'Second' }) }));
     it.transport.clearCalls();

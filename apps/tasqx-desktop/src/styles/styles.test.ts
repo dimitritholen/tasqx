@@ -83,3 +83,13 @@ test('every length on a screen sits on the 4px grid', () => {
   expect(lengths.length).toBeGreaterThan(0);
   for (const px of lengths) expect(px % 4).toBe(0);
 });
+
+test('the task grid fits the centre column of a 1440px window with the inspector open', () => {
+  // 1440 - 240 sidebar - 360 inspector leaves ~800px; a wider minimum scrolls the Blockers column away.
+  const minWidth = /\.task-grid\s*\{[^}]*min-width:\s*(\d+)px/.exec(screens);
+  expect(Number(minWidth?.[1])).toBeLessThanOrEqual(800);
+});
+
+test('a check marker never wraps onto two lines', () => {
+  expect(screens).toMatch(/\.check-glyph\s*\{[^}]*white-space:\s*nowrap/);
+});

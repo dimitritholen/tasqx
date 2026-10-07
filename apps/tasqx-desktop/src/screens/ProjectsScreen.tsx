@@ -1,4 +1,8 @@
+import { useEffect, useState } from 'react';
+
 import { useConnection, useRefresh } from '../api';
+import type { ApiClient } from '../api';
+import type { Summary } from '../api/types';
 import { navigate } from '../shell/router';
 import { useStore } from '../state/store';
 import { EmptyState, ErrorState, Pill, Skeleton } from '../ui/primitives';
@@ -9,11 +13,40 @@ import { EmptyState, ErrorState, Pill, Skeleton } from '../ui/primitives';
  * its own.
  */
 
+/** Done and not-cancelled task counts per project: `report.summary` can group by one key at a time. */
+async function readCounts(client: ApiClient): Promise<Map<string, { open: number; done: number }>> {
+  const tally = (summary: Summary) =>
+    new Map(summary.groups.flatMap((group) => (group.project === undefined ? [] : [[group.project, group.count] as const])));
+  const [all, done] = await Promise.all([
+    client.request<Summary>('report.summary', { group_by: 'project' }),
+    client.request<Summary>('report.summary', { group_by: 'project', filter: 'status:done' }),
+  ]);
+  const totals = tally(all);
+  const finished = tally(done);
+  return new Map(
+    [...totals].map(([name, total]) => [name, { open: total - (finished.get(name) ?? 0), done: finished.get(name) ?? 0 }]),
+  );
+}
+
 export function ProjectsScreen() {
   const { state } = useStore();
-  const { state: connection } = useConnection();
+  const { state: connection, client } = useConnection();
   const refresh = useRefresh();
   const { data: projects, loading, error } = state.projects;
+  const [counts, setCounts] = useState<Map<string, { open: number; done: number }>>(new Map());
+  const live = connection.status === 'live';
+
+  useEffect(() => {
+    if (!live) return;
+    let current = true;
+    // Counts are a nicety: a failed read leaves the rows as they were.
+    readCounts(client)
+      .then((next) => current && setCounts(next))
+      .catch(() => undefined);
+    return () => {
+      current = false;
+    };
+  }, [client, live, projects]);
 
   function body() {
     if (error !== null) return <ErrorState title="Could not load projects" error={error} onRetry={refresh} />;
@@ -53,6 +86,9 @@ export function ProjectsScreen() {
             >
               <span className="project-name">{item.name}</span>
               {item.description !== null && <span className="project-description muted">{item.description}</span>}
+              <span className="project-counts muted mono">
+                {counts.get(item.name)?.open ?? 0} open · {counts.get(item.name)?.done ?? 0} done
+              </span>
               {item.default && <span className="muted">default</span>}
               {item.archived && <Pill status="waiting">archived</Pill>}
             </button>

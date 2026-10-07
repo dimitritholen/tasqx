@@ -9,6 +9,7 @@ import { cx, EmptyState, ErrorState, Pill, Skeleton } from '../ui/primitives';
 import type { Status } from '../ui/primitives';
 import { setSelection, setSort, sortKeyOf, toggleSort } from './route';
 import type { SortKey } from './route';
+import { useListEntry } from './useListEntry';
 
 /**
  * The one task table: the dashboard's working set and the Tasks page are the
@@ -169,6 +170,8 @@ export function TaskTable({ label }: { label: string }) {
   const term = sort[0] ?? '';
   const index = rows.length === 0 ? -1 : Math.min(focused, rows.length - 1);
   const skeleton = error === null && loading && rows.length === 0;
+
+  useListEntry(rowRefs, () => rows.findIndex((row) => row.short_id === sel));
 
   function select(row: TaskRow | undefined): void {
     if (row !== undefined) setSelection(row.short_id);

@@ -28,14 +28,16 @@ const UNITS: readonly [Intl.RelativeTimeFormatUnit, number][] = [
   ['second', 1000],
 ];
 
+/** The UI is English only; the operating system's locale must not leak in. */
+export const UI_LOCALE = 'en';
+
 const formatters = new Map<string, Intl.RelativeTimeFormat>();
 
-function formatter(locale: string | undefined): Intl.RelativeTimeFormat {
-  const key = locale ?? '';
-  const cached = formatters.get(key);
+function formatter(locale: string): Intl.RelativeTimeFormat {
+  const cached = formatters.get(locale);
   if (cached !== undefined) return cached;
   const made = new Intl.RelativeTimeFormat(locale, { numeric: 'auto', style: 'narrow' });
-  formatters.set(key, made);
+  formatters.set(locale, made);
   return made;
 }
 
@@ -71,7 +73,7 @@ export function formatDuration(iso: string): string {
 export function relativeTime(
   iso: string | null,
   now: number = Date.now(),
-  locale?: string,
+  locale: string = UI_LOCALE,
 ): RelativeTime {
   if (iso === null) return { relative: NO_DATE, absolute: '' };
   const at = new Date(iso);

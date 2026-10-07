@@ -48,6 +48,17 @@ describe('relativeTime', () => {
   });
 });
 
+describe('relativeTime locale', () => {
+  it('formats with the UI language, not the operating system locale', async () => {
+    vi.resetModules();
+    const spy = vi.spyOn(Intl, 'RelativeTimeFormat');
+    const fresh = await import('./relative');
+    fresh.relativeTime('2026-09-12T12:00:00.000Z', NOW);
+    expect(spy).toHaveBeenCalledWith('en', expect.anything());
+    spy.mockRestore();
+  });
+});
+
 describe('formatDuration', () => {
   it('reads an ISO-8601 duration as one token per non-zero unit', () => {
     expect(formatDuration('PT6H')).toBe('6h');

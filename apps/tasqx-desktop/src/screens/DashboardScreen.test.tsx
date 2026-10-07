@@ -1,7 +1,7 @@
 import { screen, waitFor, within } from '@testing-library/react';
 
 import type { EventRow } from '../api/types';
-import { baselineScript, COMPLETED_TOTAL, harness, live, mount } from '../test/harness';
+import { baselineScript, COMPLETED_TOTAL, harness, live, mount, SUMMARY } from '../test/harness';
 import { project, taskList, taskRow } from '../test/scripted';
 
 const PAGE = taskList([taskRow({ short_id: 1 }), taskRow({ short_id: 2 })], { total: 2 });
@@ -132,6 +132,21 @@ describe('ProjectsScreen', () => {
 
     await it.user.click(rows[0] as HTMLElement);
     await waitFor(() => expect(window.location.hash).toBe('#/tasks?filter=project%3Atasqx'));
+  });
+
+  it('shows each project’s open and done counts from report.summary grouped by project', async () => {
+    const byProject = (params: Record<string, unknown>) =>
+      params['group_by'] === 'project'
+        ? {
+            ...SUMMARY,
+            groups: params['filter'] === 'status:done' ? [{ project: 'tasqx', count: 2 }] : [{ project: 'tasqx', count: 7 }],
+          }
+        : SUMMARY;
+    await live(baselineScript(PAGE, { 'project.list': PROJECTS, 'report.summary': byProject }), '#/projects');
+
+    await waitFor(() => expect(screen.getByRole('button', { name: /tasqx/ })).toHaveTextContent('5 open'));
+    expect(screen.getByRole('button', { name: /tasqx/ })).toHaveTextContent('2 done');
+    expect(screen.getByRole('button', { name: /old/ })).toHaveTextContent('0 open');
   });
 
   it('says it is not connected rather than that there are no projects', () => {
