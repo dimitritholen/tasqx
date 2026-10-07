@@ -68,8 +68,10 @@ tasqx memory search blue-green
 - The answer includes the query that actually ran, so "no hits" is
   distinguishable from "nothing stored about this".
 - A doc hit whose origin file has changed since it was imported (or last
-  refreshed) is marked `stale`, so you can tell a ruling that is behind its
-  file from one that still matches it.
+  refreshed) carries the word `stale` on its line, in `memory search` and in
+  the FROM MEMORY section of `brief`, so you can tell a ruling that is behind
+  its file from one that still matches it. `--json` has it as `"stale": true`.
+  `memory list` and `memory show` do not check the file.
 
 ## tasqx memory show
 

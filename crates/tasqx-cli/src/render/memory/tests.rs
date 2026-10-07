@@ -694,3 +694,33 @@ fn a_semantic_miss_when_the_index_was_unavailable_says_so() {
         "{out}"
     );
 }
+
+/// #1121: a stale doc hit says so wherever the line is fitted. The word rode
+/// the SOURCE cell, so it went with the source the moment the terminal was
+/// too narrow for it, which is when a reader has the least else to go on.
+#[test]
+fn a_stale_mark_survives_the_source_column_giving_way() {
+    let hit = |title: &str, stale: bool| {
+        json!({ "id": "01a0903d-243b-7842-8f5c-184005a2d8f2", "kind": "doc",
+                "title": title, "source": "docs/ci/build-time.md", "stale": stale,
+                "snippet": "Blocked on the release of the new runner image" })
+    };
+    for cols in [80, 30] {
+        let ctx = Ctx::new(theme::default_theme(), Caps::PLAIN).with_cols(cols);
+        let out = memory_hits(
+            &ctx,
+            &json!({ "count": 2, "total": 2, "hits": [
+                hit("Cut build time under five minutes", true),
+                hit("release-process", false),
+            ] }),
+            "release",
+            false,
+            None,
+        );
+        let marked = out.lines().filter(|l| l.contains("stale")).count();
+        assert_eq!(marked, 1, "at {cols} cols: {out}");
+        let (before, after) = out.split_once("release-process").unwrap();
+        assert!(before.contains("stale"), "at {cols} cols: {out}");
+        assert!(!after.contains("stale"), "at {cols} cols: {out}");
+    }
+}
