@@ -5,13 +5,17 @@ story, and the "way back" for anything archived.
 
 ## tasqx export
 
-Dump tasks as canonical JSON to stdout.
+Dump tasks as canonical JSON to stdout, or to a file with `--out`.
 
 - `tasqx export project:work > work.json`: any filter narrows it
+- `tasqx export --out backup.json`: writes the same document to a file,
+  replacing it whole, so an export that fails halfway leaves the previous
+  backup as it was, and prints where it went and what it left out
 
 ```console
 tasqx export > backup.json
 tasqx export project:work > work.json
+tasqx export --out backup.json
 ```
 
 - The document carries projects, your memory docs, the graph's links and your
@@ -23,7 +27,9 @@ tasqx export project:work > work.json
   (`tasqx link`) is kept only when *both* of its ends are in the document, and
   the rest are counted under `dropped_links` for the same reason.
 - **An unfiltered export carries every project, every memory doc, every link
-  and the whole event log** — the full backup. The one link it leaves out is
+  and the event log** — the full backup. What it leaves out is what you
+  removed, and each kind is counted (see [Checking a restore](#checking-a-restore)).
+  The one link it leaves out is
   one pointing at an annotation you removed: a removed annotation is not in the
   document, so the edge to it is dropped and counted under `dropped_links` like
   any other. Any *other* filter scopes those
@@ -152,6 +158,44 @@ dependency chain, the survivor's edge that would close the loop is dropped and
 the note names it. Completing a task again after reopening it does not spawn a
 second next occurrence for the same date.
 
+## Checking a restore
+
+A store exported and imported into an empty one comes back with every task,
+project, memory doc, link, check, tag, dependency, timer and note, and the
+event history behind them. Counted straight from the database, three numbers
+still differ, on purpose, and `tasqx export --out` names each one under the
+path it wrote (`--json` gives the counts as fields):
+
+```text
+Wrote 240 tasks → /home/me/backup.json
+Left out: 3 removed notes, 12 events earlier imports logged about themselves
+```
+
+- `removed_annotations`: notes you removed. Removing a note scrubs its text
+  and keeps an empty row; that row stays behind, and the record of the
+  removal travels in the event log.
+- `dropped_events`: on an unfiltered export, the history of a memory doc you
+  removed, apart from the removal itself, because it names the title the
+  removal took away. This one is also in the document.
+- `skipped_events`: the entries an earlier import wrote about itself.
+
+The import adds entries of its own, one per task, project and doc it brought
+in, reported as `events_logged` beside `events_imported`. So the store's event
+log is the document's `events` plus `dropped_events` and `skipped_events`, and
+the restored one holds `events_imported` plus `events_logged`.
+
+The simplest check is to export the restored store and compare: the document
+is the same, apart from `dropped_events` and each task's `urgency`, which is
+scored when the export runs.
+
+```console
+tasqx export --out before.json
+tasqx import before.json
+tasqx export --out after.json
+```
+
+Run the import and the second export against the new store.
+
 ## Merging two machines
 
 Each machine exports, and each imports the other's document. Rehearse with
@@ -210,7 +254,7 @@ untouched.
 A dated backup, in one line:
 
 ```console
-tasqx export > "backup-$(date +%F).json"
+tasqx export --out "backup-$(date +%F).json"
 ```
 
 The store itself is a single SQLite file (`tasqx config store` prints its

@@ -751,3 +751,38 @@ fn the_import_verb_merge_unions_both_sides_and_previews_with_dry_run() {
         "both sides' notes must survive, once each"
     );
 }
+
+/// #1116: `export` only ever wrote to stdout, so a backup was whatever the
+/// shell's redirect made of it — a failed export still truncated yesterday's
+/// file. `--out` writes the same document, replaces the file whole, and
+/// answers with where it went and what the document left out.
+#[test]
+fn export_out_writes_the_document_to_a_file_and_replaces_it_whole() {
+    let (dir, a) = store("out", "a");
+    seed(&dir, &a);
+    let path = dir.join("backup.json");
+    std::fs::write(&path, "yesterday's backup, longer than nothing").expect("old file");
+    let p = path.to_str().expect("utf8 path");
+
+    let said = ok(&dir, &a, &["export", "--out", p]);
+    assert!(said.contains(p), "the human line names the file: {said}");
+    let written: Value =
+        serde_json::from_str(&std::fs::read_to_string(&path).expect("read")).expect("JSON");
+    let stdout: Value = serde_json::from_str(&ok(&dir, &a, &["export"])).expect("JSON");
+    assert_eq!(written["tasks"], stdout["tasks"], "the same document");
+    assert_eq!(written["projects"], stdout["projects"]);
+
+    let answer: Value =
+        serde_json::from_str(&ok(&dir, &a, &["--json", "export", "--out", p])).expect("JSON");
+    assert_eq!(answer["path"], json!(p), "{answer}");
+    assert_eq!(answer["tasks"], json!(2), "{answer}");
+    for key in ["dropped_events", "skipped_events", "removed_annotations"] {
+        assert!(answer[key].is_i64(), "{key} missing: {answer}");
+    }
+    let debris: Vec<_> = std::fs::read_dir(&dir)
+        .expect("list")
+        .filter_map(Result::ok)
+        .filter(|e| e.file_name().to_string_lossy().contains("backup.json."))
+        .collect();
+    assert!(debris.is_empty(), "no temp file left beside it: {debris:?}");
+}

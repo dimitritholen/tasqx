@@ -1121,7 +1121,8 @@ fn execute(cli: Cli) -> Exit {
         Some(Command::Export {
             filter,
             include_unscoped,
-        }) => run_export(&mut backend, &filter, include_unscoped),
+            out,
+        }) => run_export(&mut backend, &filter, include_unscoped, out),
         Some(Command::Import {
             file,
             dry_run,

@@ -20,15 +20,9 @@ impl Engine {
     pub fn store_export(&self, p: &Value) -> Result<Value, ApiError> {
         // D201: the document to a file, for a store too big for the daemon's
         // 1 MiB frame. The rest of the params are the inline export's.
-        if let Some(out) = opt_str(p, "out_path")? {
-            let out = absolute_param("out_path", &out)?;
-            let mut inner = p.clone();
-            if let Some(o) = inner.as_object_mut() {
-                o.remove("out_path");
-            }
-            let doc = self.store_export(&inner)?;
-            return write_export_file(&out, &doc);
-        }
+        let out_path = opt_str(p, "out_path")?
+            .map(|out| absolute_param("out_path", &out))
+            .transpose()?;
         // One instant for the whole export: the filter's relative dates, every
         // row's wait/schedule release and every recomputed urgency agree about
         // what time it is.
@@ -199,13 +193,29 @@ impl Engine {
             }
             _ => false,
         };
-        let (events, dropped_events) = self.export_events(
+        let (events, dropped_events, skipped_events) = self.export_events(
             &present,
             &doc_ids,
             &project_ids,
             &link_ids,
             &removal_travels,
         )?;
+
+        // #1116: a removed note's tombstone (D113) never travels — its body is
+        // already scrubbed and the `annotation.remove` event that says it went
+        // does — but a restore holding fewer annotation rows than the store
+        // it came from has to be able to say why, so they are counted.
+        let removed_annotations = {
+            let mut stmt = self
+                .conn
+                .prepare("SELECT task_id FROM annotations WHERE removed IS NOT NULL")?;
+            let owners = stmt.query_map([], |r| r.get::<_, String>(0))?;
+            let mut n = 0i64;
+            for owner in owners {
+                n += i64::from(present.contains(owner?.as_str()));
+            }
+            n
+        };
 
         // D171 review finding: `default_project` names the STORE's default
         // regardless of `filter`, so a filtered export whose scope drops that
@@ -227,7 +237,7 @@ impl Engine {
             }
         };
 
-        Ok(json!({
+        let document = json!({
             "tasks": out,
             "dropped_dependencies": dropped,
             // D37/D171: every project row this document needs. Always ALL of
@@ -269,7 +279,21 @@ impl Engine {
             // store's `config` table, never in config.toml). `null` when there
             // is none, or when a filtered export did not carry it (above).
             "default_project": default_project,
-        }))
+        });
+        let Some(out) = out_path else {
+            return Ok(document);
+        };
+        // #1116/D207: what the document leaves out that no `dropped_*` key
+        // counts, in the answer and never in the document: `skipped_events`
+        // grows with every import and `removed_annotations` differs between
+        // two stores holding the same live rows, so either inside would break
+        // D12's identical round trip and keep two synced stores (D201) from
+        // ever looking converged. `skipped_events` is the bookkeeping
+        // `export_events` skipped: events + dropped_events + it = the log.
+        let mut summary = write_export_file(&out, &document)?;
+        summary["skipped_events"] = json!(skipped_events);
+        summary["removed_annotations"] = json!(removed_annotations);
+        Ok(summary)
     }
 
     /// How many child rows one task holds across the four tables `merge`
@@ -725,8 +749,9 @@ impl Engine {
     /// unfiltered export every id set already names everything, so nothing
     /// here is trimmed — the same "no restriction" shape `needed_projects`
     /// itself follows. Returns the kept rows and how many were dropped by
-    /// this scoping (the `import`/`via` exclusion below is separate
-    /// bookkeeping noise, never counted as a drop).
+    /// this scoping, then how many the `import`/`via` exclusion below left
+    /// out — bookkeeping, never counted as a drop, but counted (#1116) so a
+    /// restore's event totals reconcile.
     ///
     /// The `import`/`via` exclusion is what keeps D12's round trip byte-
     /// identical now that events ARE carried: `store.import` mints a fresh
@@ -753,7 +778,7 @@ impl Engine {
         project_ids: &HashSet<&str>,
         link_ids: &HashSet<&str>,
         removal_travels: &dyn Fn(Entity, &str, &Value) -> bool,
-    ) -> Result<(Vec<Value>, i64), ApiError> {
+    ) -> Result<(Vec<Value>, i64, i64), ApiError> {
         let mut stmt = self.conn.prepare(
             "SELECT id, entity, entity_id, op, payload, ts, actor FROM events ORDER BY id",
         )?;
@@ -769,7 +794,7 @@ impl Engine {
             ))
         })?;
         let mut out = Vec::new();
-        let mut dropped = 0i64;
+        let (mut dropped, mut skipped) = (0i64, 0i64);
         for r in rows {
             let (id, entity, entity_id, op, payload, ts, actor) = r?;
             let payload: Value = payload
@@ -808,6 +833,7 @@ impl Engine {
             let via_store_import =
                 matches!(payload.get("via"), Some(Value::String(s)) if s == "store.import");
             if op == "import" || (op == "memory.add" && via_store_import) {
+                skipped += 1;
                 continue;
             }
             out.push(json!({
@@ -820,7 +846,7 @@ impl Engine {
                 "actor": actor,
             }));
         }
-        Ok((out, dropped))
+        Ok((out, dropped, skipped))
     }
 
     /// Every project row, name-ordered, in the canonical §3 shape. D37.
@@ -1056,6 +1082,12 @@ impl Engine {
         // never its id.
         let mut remap: HashMap<(NodeType, String), String> = HashMap::new();
         let tx = self.begin_mutation()?;
+        // #1116: what the log held before, so the rows this import writes
+        // about ITSELF can be told from the ones it carried in.
+        let event_count = |tx: &rusqlite::Transaction| -> Result<i64, ApiError> {
+            Ok(tx.query_row("SELECT COUNT(*) FROM events", [], |r| r.get(0))?)
+        };
+        let events_before = event_count(&tx)?;
 
         // Pass 0: projects, before any task, so a task's `project` can be checked
         // against the document's own records rather than against whatever the
@@ -2605,6 +2637,11 @@ impl Engine {
         // D191: two stores that both completed one recurring occurrence each
         // spawned its successor; fold every pair of copies into one.
         let deduplicated = recur_dedupe::fold_duplicate_occurrences(&tx, &payload_task_events)?;
+        // #1116: the import's own record of itself — an `import` per task and
+        // project, a `memory.add` per doc, whatever a fold logged — which
+        // `store.export` never carries, so a restore's log is the document's
+        // `events` plus exactly this many.
+        let events_logged = event_count(&tx)? - events_before - events_imported;
         // D184: the whole import above ran for real, inside this one
         // transaction; `dry_run` only decides whether it is kept. A rollback
         // undoes every row this call wrote AND every event it inserted, so
@@ -2634,6 +2671,7 @@ impl Engine {
             "docs_imported": docs_imported,
             "docs_declared": docs_declared,
             "events_imported": events_imported,
+            "events_logged": events_logged,
             // D181: how many of the document's links this store now holds —
             // including one it already held under another id, which is the
             // same edge stated twice, not a second one.
@@ -6573,6 +6611,106 @@ mod tests {
             restored_ops.contains(&json!("done")),
             "a restored store must still be able to answer `chart heatmap`'s question: {restored_ops:?}"
         );
+    }
+
+    /// #1116/D207: a restore that cannot be checked is a restore nobody can
+    /// trust. Exporting a real store and importing it into a fresh one gave
+    /// back fewer annotations and MORE events, beside an unfiltered export
+    /// reporting `dropped_events: 6` — every difference intended, none of
+    /// them stated. Pinned here: everything that travels comes back exactly
+    /// (the restored store exports the same document), and every row that
+    /// does not is counted on the side that left it out.
+    #[test]
+    fn a_round_trip_restores_everything_and_counts_what_it_leaves_out() {
+        let e = Engine::open_in_memory().expect("open");
+        e.project_create(&json!({ "name": "work", "description": "the job" }))
+            .expect("project");
+        let a = e
+            .task_add(&json!({ "title": "A", "project": "work", "tags": ["x"] }))
+            .expect("add A");
+        let b = e.task_add(&json!({ "title": "B" })).expect("add B");
+        let (a_sid, b_sid) = (a["short_id"].clone(), b["short_id"].clone());
+        e.dependency_add(&json!({ "ref": a_sid, "depends_on": b_sid }))
+            .expect("dep");
+        e.check_add(&json!({ "ref": a_sid, "body": "it works" }))
+            .expect("check");
+        let kept = e
+            .annotation_add(&json!({ "ref": a_sid, "body": "first draft" }))
+            .expect("note")["annotation"]["id"]
+            .clone();
+        e.annotation_update(&json!({ "ref": a_sid, "annotation_id": kept, "body": "edited" }))
+            .expect("edit");
+        let gone = e
+            .annotation_add(&json!({ "ref": a_sid, "body": "a mistake" }))
+            .expect("note")["annotation"]["id"]
+            .clone();
+        e.annotation_remove(&json!({ "ref": a_sid, "annotation_id": gone }))
+            .expect("remove");
+        e.task_start(&json!({ "ref": b_sid })).expect("timer");
+        let r = e
+            .task_add(&json!({ "title": "R", "recurrence": "every week" }))
+            .expect("recurring");
+        e.task_done(&json!({ "ref": r["short_id"].clone() }))
+            .expect("done spawns the next");
+        e.memory_add(&json!({ "title": "kept doc", "body": "k", "project": "work" }))
+            .expect("doc");
+        let removed_doc = e
+            .memory_add(&json!({ "title": "gone doc", "body": "g" }))
+            .expect("doc")["id"]
+            .clone();
+        e.memory_remove(&json!({ "id": removed_doc }))
+            .expect("remove doc");
+
+        let dir = file_dir("round-trip");
+        let doc = e.store_export(&json!({})).expect("export");
+        // The tombstone of the removed note, and the `memory.add` naming the
+        // removed doc's title (D197: only its removal travels), are left out
+        // — and counted: the second in the document, both in `out_path`'s
+        // answer, which is not the document and so may count what changes.
+        assert_eq!(doc["dropped_events"], json!(1), "{doc}");
+        let answer = |e: &Engine, name: &str| {
+            let out = dir.join(name);
+            e.store_export(&json!({ "out_path": out.to_str().unwrap() }))
+                .expect("export to a file")
+        };
+        let first = answer(&e, "first.json");
+        assert_eq!(first["removed_annotations"], json!(1), "{first}");
+        assert_eq!(first["dropped_events"], json!(1), "{first}");
+        assert_eq!(first["skipped_events"], json!(0), "{first}");
+        for key in ["removed_annotations", "skipped_events"] {
+            assert!(doc.get(key).is_none(), "{key} would break D12's identity");
+        }
+
+        let fresh = Engine::open_in_memory().expect("open fresh");
+        let imported = fresh.store_import(&doc).expect("import");
+        let events = doc["events"].as_array().expect("events").len() as i64;
+        assert_eq!(imported["events_imported"], json!(events), "{imported}");
+        // One `import` per task and per project, one `memory.add` per doc:
+        // the restore's own record of itself, on top of what it carried in.
+        let logged = doc["tasks"].as_array().unwrap().len()
+            + doc["projects"].as_array().unwrap().len()
+            + doc["docs"].as_array().unwrap().len();
+        assert_eq!(imported["events_logged"], json!(logged), "{imported}");
+
+        let again = fresh.store_export(&json!({})).expect("re-export");
+        // `urgency` is scored at the instant of each export, not stored.
+        let unscored = |d: &Value| {
+            let mut tasks = d["tasks"].clone();
+            for t in tasks.as_array_mut().unwrap() {
+                t.as_object_mut().unwrap().remove("urgency");
+            }
+            tasks
+        };
+        assert_eq!(unscored(&doc), unscored(&again), "tasks did not round-trip");
+        for key in ["projects", "docs", "links", "events", "default_project"] {
+            assert_eq!(doc[key], again[key], "{key} did not round-trip");
+        }
+        // The second hop leaves out exactly what the import logged, and has
+        // no tombstone or removed doc of its own to leave out.
+        let second = answer(&fresh, "second.json");
+        assert_eq!(second["skipped_events"], json!(logged), "{second}");
+        assert_eq!(second["removed_annotations"], json!(0), "{second}");
+        assert_eq!(second["dropped_events"], json!(0), "{second}");
     }
 
     /// #179: a document with no `docs` section at all (a pre-D41 export, or a

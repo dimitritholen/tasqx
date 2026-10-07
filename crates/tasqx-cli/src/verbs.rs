@@ -1761,6 +1761,7 @@ pub(crate) fn run_export(
     be: &mut Backend,
     filter: &[String],
     include_unscoped: bool,
+    out: Option<String>,
 ) -> CmdOutcome {
     let mut params = json!({});
     if !filter.is_empty() {
@@ -1769,7 +1770,41 @@ pub(crate) fn run_export(
     if include_unscoped {
         params["include_unscoped"] = Value::Bool(true);
     }
-    let result = be.call("store.export", &params)?;
+    // #1116: `--out` goes through the core's `out_path` (D201), because only
+    // that answer carries what the document leaves out beside it (D207). It
+    // never overwrites, so it writes a scratch sibling of the target, which is
+    // read back here and written over the target whole.
+    let scratch = match &out {
+        Some(path) => {
+            let target = std::path::absolute(path).map_err(|e| {
+                tasqx_core::ApiError::bad_request(format!("cannot resolve {path}: {e}"))
+            })?;
+            let dir = target.parent().unwrap_or(std::path::Path::new("/"));
+            std::fs::create_dir_all(dir).map_err(|e| {
+                tasqx_core::ApiError::bad_request(format!("cannot create {}: {e}", dir.display()))
+            })?;
+            let name = target.file_name().unwrap_or_default().to_string_lossy();
+            let tmp = dir.join(format!(".{name}.export-{}", std::process::id()));
+            let _ = std::fs::remove_file(&tmp);
+            params["out_path"] = Value::String(tmp.to_string_lossy().into_owned());
+            Some((target, tmp))
+        }
+        None => None,
+    };
+    let answer = be.call("store.export", &params)?;
+    let result = match &scratch {
+        Some((_, tmp)) => {
+            let read = std::fs::read(tmp);
+            let _ = std::fs::remove_file(tmp);
+            let bytes = read.map_err(|e| {
+                tasqx_core::ApiError::internal(format!("cannot read {}: {e}", tmp.display()))
+            })?;
+            serde_json::from_slice(&bytes).map_err(|e| {
+                tasqx_core::ApiError::internal(format!("the export is not JSON: {e}"))
+            })?
+        }
+        None => answer.clone(),
+    };
     // A filter selects a subset, so edges pointing out of it are trimmed to keep
     // the document self-contained. Warn on stderr, never stdout: stdout IS the
     // JSON and a note there would corrupt every pipe.
@@ -1798,7 +1833,45 @@ pub(crate) fn run_export(
         "{}\n",
         serde_json::to_string_pretty(&result).unwrap_or_default()
     );
-    Ok((result, text))
+    let Some((target, _)) = scratch else {
+        return Ok((result, text));
+    };
+    // The same pretty bytes stdout prints, so `--out` and `>` write one file.
+    crate::complete::install::write_atomically(&target, &text)?;
+    // `report --out`'s answer — where the file landed and how big it is —
+    // beside the core's counts of what the document left out.
+    let mut summary = answer;
+    if let Some(o) = summary.as_object_mut() {
+        o.remove("out_path");
+    }
+    let path = target.to_string_lossy().into_owned();
+    summary["path"] = json!(path);
+    summary["bytes"] = json!(text.len());
+    let tasks = summary["tasks"].as_i64().unwrap_or(0);
+    let mut text = format!("Wrote {tasks} tasks → {path}\n");
+    // What a restore will not get back, named so its smaller counts are not
+    // read as a loss (D207). Only the non-zero ones.
+    let left_out: Vec<String> = [
+        ("removed_annotations", "removed notes"),
+        (
+            "dropped_events",
+            "events of what this export does not carry",
+        ),
+        (
+            "skipped_events",
+            "events earlier imports logged about themselves",
+        ),
+    ]
+    .into_iter()
+    .filter_map(|(key, what)| {
+        let n = summary[key].as_i64().unwrap_or(0);
+        (n > 0).then(|| format!("{n} {what}"))
+    })
+    .collect();
+    if !left_out.is_empty() {
+        text.push_str(&format!("Left out: {}\n", left_out.join(", ")));
+    }
+    Ok((summary, text))
 }
 
 pub(crate) fn run_import(
