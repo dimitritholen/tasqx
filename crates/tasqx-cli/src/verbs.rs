@@ -389,7 +389,9 @@ pub(crate) fn run_list(
     // Finding #4 (audit-2026-09): an empty result said only "No tasks.",
     // giving no way to tell "nothing pending" from "this filter excludes
     // everything" — the same distinction D55 already drew for `pick`.
-    let text = render::task_table_filtered(ctx, &result, crate::clock::now(), Some(&filter_str));
+    let mut text =
+        render::task_table_filtered(ctx, &result, crate::clock::now(), Some(&filter_str));
+    text.push_str(&render::cut_footer(ctx, &result, Some(&filter_str), sort));
     Ok((result, text))
 }
 
@@ -484,8 +486,10 @@ pub(crate) fn run_agenda(
         (false, false) => format!("({asked}) and ({})", open_statuses_filter()),
     };
 
-    let params = json!({ "filter": filter_str, "sort": ["-urgency"] });
-    let result = be.call("task.list", &params)?;
+    // Every page, not task.list's default 100 (D110): an agenda has no
+    // --limit/--offset to reach the rest with, and a horizon that silently
+    // stopped at the hundredth task would be the lie #1126 is about.
+    let result = crate::pick_screen::candidates_in_pages(be, &filter_str, 10_000)?;
 
     let a = render::agenda_select(&result, days.unwrap_or(AGENDA_DEFAULT_DAYS), now);
     let text = render::agenda_text(ctx, &a);
