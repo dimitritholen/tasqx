@@ -373,6 +373,7 @@ pub fn agenda_text(ctx: &Ctx, a: &Agenda) -> String {
             &refs,
             &rows,
             a.entries.len() as i64,
+            a.entries.len() as i64,
             Some(&horizon),
             a.at_start_of_today(),
             true,

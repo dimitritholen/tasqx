@@ -17,6 +17,11 @@ out).
 | `tasqx list project:work +api` | Narrowed |
 | `tasqx list due.before:friday` | Deadline pressure only |
 
+A list shows at most 100 rows. When more match, the head says so (`100 of 192
+tasks`) and a last line gives the command for the rest: `--offset 100` for the
+next page, `--limit 192` for all of them (`--limit` tops out at 10,000).
+`tasqx agenda` reads every match, so it is never cut.
+
 A bare `tasqx` in a pipe or script does the same thing; on an interactive
 terminal it opens the [dashboard](Dashboard-and-Live-View.md) instead.
 

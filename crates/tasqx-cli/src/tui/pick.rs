@@ -914,6 +914,7 @@ fn draw_list(
             &tasks,
             &app.table,
             app.rows.len() as i64,
+            app.rows.len() as i64,
             Some(&app.filter),
             app.now,
             false,
