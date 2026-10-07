@@ -166,6 +166,17 @@ Annotations show up in `tasqx show`, and they're searchable: the
 [memory system](Memory.md) indexes them alongside your knowledge documents, so
 "what did we decide about the plumber" is one `tasqx memory search` away.
 
+For a long or multi-line note, give the text on stdin. `-` reads all of stdin,
+as does a bare `annotate` when stdin is a pipe:
+
+```console
+tasqx annotate 42 - < decision.md
+```
+
+On a terminal, a bare `tasqx annotate 42` opens `$VISUAL` or `$EDITOR` (else
+`vi`) on a temporary file. Saving an empty or unchanged file stores nothing, and
+so does empty stdin. A note that is only `-` can't be written as an argument.
+
 To correct a note instead of adding another, name it with `--edit`:
 
 ```console
@@ -175,7 +186,8 @@ tasqx annotate 42 --edit 018f2f7e-1234-7abc-9def-0123456789ab Plumber quoted 400
 The text is replaced in place: the note keeps its id, its timestamp and its
 place in the history, so the first note is still the box card's Description,
 and search finds the new text rather than the old. `tasqx undo` puts the old
-text back.
+text back. `--edit` takes the same stdin and editor forms; the editor opens on
+the note's current text.
 
 ## tasqx unannotate
 

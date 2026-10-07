@@ -4635,3 +4635,9 @@ D179's older-spelling scan is narrowed to match. A leading `./` no longer defeat
 **MCP ordering.** The MCP result is serialized from a `serde_json` map without `preserve_order`, so keys go out sorted: `checks_hint` already precedes `tokens_hint` (only `budget_hint` sorts ahead of it). A test pins that order in the sent text; enabling `preserve_order` would have to keep it.
 
 **Not chosen: freezing check states on the `done` event.** The count reads the checks as they are now, as D138's did; a check re-marked after completion changes the figure. Recording the states at completion is a payload addition worth making only if re-marking after `done` turns out to be common.
+
+### D206 — `annotate` reads its note from stdin (`-`, or nothing on a pipe) or from `$VISUAL`/`$EDITOR` (nothing on a terminal), `--edit` included (task #1114; amends D165)
+
+`tasqx annotate <ref> -` reads the whole of stdin, verbatim, as the body (as `import -` reads it; no trailing newline is trimmed); a bare `annotate <ref>` does the same when stdin is not a terminal, and on a terminal opens `$VISUAL`, else `$EDITOR`, else `vi` on a temporary file. Empty or blank stdin, and an editor file left empty or unchanged, are refused (exit 2) with nothing stored. `annotate --edit <annotation-id>` takes the same three forms, the editor pre-filled with the note's current text. A note that is a single `-` can no longer be written as an argument.
+
+Why: `annotate <ref> -` stored a literal `-` and exited 0, and a pipe with no body failed as "missing body", so a long markdown note could only travel as one quoted argument, and notes are the main record of decisions. `-` meaning stdin is the convention `import -` already set (#228.15).
