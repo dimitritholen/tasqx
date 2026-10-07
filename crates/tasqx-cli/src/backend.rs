@@ -126,7 +126,16 @@ pub(crate) fn default_socket() -> String {
 /// the captured image, so a line here would land in the picture. The other half
 /// of the rule is `clock::refuse_to_serve_a_pin`, which stops `tasqx daemon`
 /// and `tasqx watch` from starting on a pinned clock at all.
-pub(crate) fn open_backend(socket_flag: Option<&str>, no_daemon: bool) -> Result<Backend, String> {
+///
+/// **An explicit `$TASQX_DB` is never overridden by a daemon on another store
+/// (D204).** A daemon whose store is the same file routes as ever; one on a
+/// different file, found only on the default socket, is passed over silently
+/// and the command runs in-process against `$TASQX_DB`; one the operator named
+/// (`--socket`, `$TASQX_SOCK`) is a contradiction and is refused.
+pub(crate) fn open_backend(
+    socket_flag: Option<&str>,
+    no_daemon: bool,
+) -> Result<Backend, ApiError> {
     let no_daemon = no_daemon || crate::clock::pin().is_some();
     if !no_daemon {
         // Explicit, not resolved: a note about "no daemon at <addr>" is only
@@ -136,11 +145,35 @@ pub(crate) fn open_backend(socket_flag: Option<&str>, no_daemon: bool) -> Result
         let explicit =
             socket_flag.is_some() || std::env::var("TASQX_SOCK").is_ok_and(|v| !v.is_empty());
         let target = resolve_socket(socket_flag);
-        if let Some(conn) = daemon::try_connect(&target) {
-            return Ok(Backend::Remote {
-                conn,
+        if let Some(mut conn) = daemon::try_connect(&target) {
+            let Some((db, daemon_store)) = tasqx_db_elsewhere(&mut conn) else {
+                return Ok(Backend::Remote {
+                    conn,
+                    socket: target,
+                });
+            };
+            if explicit {
+                let named = if socket_flag.is_some() {
+                    "--socket"
+                } else {
+                    "$TASQX_SOCK"
+                };
+                let serves = daemon_store.as_deref().map_or(
+                    "a store it cannot name (it predates D74)".to_string(),
+                    |s| s.to_string(),
+                );
+                return Err(ApiError::bad_request(format!(
+                    "$TASQX_DB names {db}, but the daemon at {target} ({named}) serves {serves}; \
+                     refusing to guess which store you meant. Unset $TASQX_DB to use the \
+                     daemon's store, or pass --no-daemon (or drop {named}) to use {db} \
+                     in-process (DESIGN.md D204)"
+                )));
+            }
+            let _ = BYPASSED.set(Bypassed {
                 socket: target,
+                store: daemon_store,
             });
+            return Ok(Backend::Local(open_engine().map_err(ApiError::internal)?));
         }
         // Finding #14 (audit-2026-09): an explicitly named `--socket` that
         // turns out unreachable used to fall back to in-process silently, exit
@@ -170,7 +203,40 @@ pub(crate) fn open_backend(socket_flag: Option<&str>, no_daemon: bool) -> Result
             eprintln!("tasqx: note: no daemon at {target}; running in-process against $TASQX_DB");
         }
     }
-    Ok(Backend::Local(open_engine()?))
+    Ok(Backend::Local(open_engine().map_err(ApiError::internal)?))
+}
+
+/// A daemon on the default socket this process did not route through, because
+/// `$TASQX_DB` names another store (D204). Set at most once, by
+/// [`open_backend`], so `config store` reports the decision that was made
+/// rather than re-deriving it.
+pub(crate) struct Bypassed {
+    pub(crate) socket: String,
+    pub(crate) store: Option<String>,
+}
+
+pub(crate) static BYPASSED: std::sync::OnceLock<Bypassed> = std::sync::OnceLock::new();
+
+/// `$TASQX_DB` when it is set and names a different file than the store this
+/// daemon answers from, with the daemon's store (`core.capabilities.store`,
+/// D74). `None` means routing through the daemon honours the variable: it is
+/// unset, or it names the daemon's own file. A daemon that cannot name its
+/// store cannot prove they agree, so it counts as elsewhere — the one shared
+/// decision every routed verb and the completion callback go through (D204).
+pub(crate) fn tasqx_db_elsewhere(conn: &mut daemon::Conn) -> Option<(String, Option<String>)> {
+    let db = std::env::var("TASQX_DB").ok().filter(|v| !v.is_empty())?;
+    let store = conn
+        .request("core.capabilities", &json!({}))
+        .ok()
+        .and_then(|env| {
+            env.pointer("/result/store")
+                .and_then(Value::as_str)
+                .map(str::to_string)
+        });
+    if store.as_deref().is_some_and(|s| same_store(s, &db)) {
+        return None;
+    }
+    Some((db, store))
 }
 
 /// Where an idle-retired daemon leaves its note (D74): beside `config.toml`,
@@ -273,9 +339,17 @@ pub(crate) fn open_engine_at(db: Option<&str>) -> Result<Engine, String> {
 /// client cannot know the daemon's file" without touching what D47 actually
 /// forbade. `None` here means an older daemon that predates the field, and the
 /// answer degrades to naming the socket alone rather than inventing a path.
+///
+/// `routing` says which D204 branch applied: `daemon` (no `$TASQX_DB`),
+/// `daemon_same_store` (`$TASQX_DB` names the daemon's file), `local`, or
+/// `local_tasqx_db_differs` (a default-socket daemon on another store was
+/// passed over, named in `bypassed_daemon`). The refusal branch never gets
+/// here — it exits before any command runs.
 pub(crate) fn store_location(
     remote_socket: Option<&str>,
     daemon_store: Option<&str>,
+    tasqx_db_set: bool,
+    bypassed: Option<&Bypassed>,
     path: Result<PathBuf, String>,
 ) -> (Value, String) {
     if let Some(socket) = remote_socket {
@@ -283,24 +357,46 @@ pub(crate) fn store_location(
             Some(store) => format!("the daemon owns the store: {store}"),
             None => "the daemon owns the store; it predates D74 and cannot name it".to_string(),
         };
+        let (routing, why) = if tasqx_db_set {
+            ("daemon_same_store", "$TASQX_DB names this same store.")
+        } else {
+            (
+                "daemon",
+                "Pass --no-daemon to work on another store in-process instead.",
+            )
+        };
         return (
             json!({
                 "backend": "daemon",
+                "routing": routing,
                 "socket": socket,
                 "store": daemon_store.map(str::to_string),
             }),
-            format!(
-                "daemon at {socket}\n  {owns}\n  $TASQX_DB is NOT in effect here. \
-                 Pass --no-daemon to work on your own store instead.\n"
-            ),
+            format!("daemon at {socket}\n  {owns}\n  {why}\n"),
         );
     }
     match path {
         Ok(p) => {
             let p = p.to_string_lossy().into_owned();
+            let Some(b) = bypassed else {
+                return (
+                    json!({ "backend": "local", "routing": "local", "path": p }),
+                    format!("{p}\n  in-process; this file is the store.\n"),
+                );
+            };
+            let serves = b.store.as_deref().unwrap_or("a store it cannot name");
             (
-                json!({ "backend": "local", "path": p }),
-                format!("{p}\n  in-process; this file is the store.\n"),
+                json!({
+                    "backend": "local",
+                    "routing": "local_tasqx_db_differs",
+                    "path": p,
+                    "bypassed_daemon": { "socket": b.socket, "store": b.store },
+                }),
+                format!(
+                    "{p}\n  in-process; this file is the store. $TASQX_DB names it, so the \
+                     daemon at {} (serving {serves}) was not used.\n",
+                    b.socket
+                ),
             )
         }
         // A path this process could not resolve is a fact, not an omission: it

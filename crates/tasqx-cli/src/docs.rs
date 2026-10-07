@@ -1922,6 +1922,13 @@ fn page_daemon() -> String {
          immediately rather than hanging. <code>--no-daemon</code> forces the in-process path.",
     ));
     s.push_str(&p(
+        "<code>$TASQX_DB</code> always wins over a daemon on another store. Naming the file the \
+         daemon serves, commands route through it as usual. Naming a different file, a daemon \
+         found on the default socket is passed over and the command runs in-process against \
+         <code>$TASQX_DB</code>; a daemon named by <code>--socket</code> or \
+         <code>$TASQX_SOCK</code> is refused with exit 2, naming both files (D204).",
+    ));
+    s.push_str(&p(
         "Four surfaces never route through a daemon: <code>api</code>, <code>mcp serve</code>, \
          <code>chart</code> and <code>report --html</code> open the store in-process, always. \
          They refuse an explicit <code>--socket</code> rather than ignore it (D73), because a \
