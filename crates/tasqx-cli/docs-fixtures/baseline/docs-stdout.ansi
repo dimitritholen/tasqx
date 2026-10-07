@@ -1306,8 +1306,10 @@ query shares its words.</li>
 <li>The answer includes the query that actually ran, so "no hits" is
 distinguishable from "nothing stored about this".</li>
 <li>A doc hit whose origin file has changed since it was imported (or last
-refreshed) is marked <code>stale</code>, so you can tell a ruling that is behind its
-file from one that still matches it.</li>
+refreshed) carries the word <code>stale</code> on its line, in <code>memory search</code> and in
+the FROM MEMORY section of <code>brief</code>, so you can tell a ruling that is behind
+its file from one that still matches it. <code>--json</code> has it as <code>"stale": true</code>.
+<code>memory list</code> and <code>memory show</code> do not check the file.</li>
 </ul>
 <h3 id="wiki-memory--tasqx-memory-show">tasqx memory show</h3>
 <p>Read one document whole, by the id a search hit gave you.</p>
