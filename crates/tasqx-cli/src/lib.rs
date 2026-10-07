@@ -3160,6 +3160,48 @@ mod tests {
         );
     }
 
+    /// #1111: the chart scope is EVERY task, not `task.list`'s default page.
+    ///
+    /// `burndown_members` named no `limit`, so D110's default of 100 rows cut
+    /// the membership, and every done event of a task past the page fell out of
+    /// scope: a 1100-task store charted W40 as 0 done with 100 completions in
+    /// it. More tasks than the page, all closed today, must all be counted.
+    #[test]
+    fn the_chart_scope_is_every_task_not_one_page() {
+        let e = Engine::open_in_memory().unwrap();
+        let open = 10;
+        let n = tasqx_core::engine::task::DEFAULT_TASK_LIST_LIMIT as usize + 50;
+        for i in 0..n {
+            e.task_add(&json!({ "title": format!("t{i}") })).unwrap();
+        }
+        for i in 1..=n - open {
+            e.task_done(&json!({ "ref": i.to_string() })).unwrap();
+        }
+
+        let anchor = chart::today();
+        let (members, _) = burndown_members(&e, &[]).expect("scope resolved");
+        assert_eq!(members.len(), n, "every task is a member, not one page");
+
+        let events = events_since(&e, anchor, 5 * 7 + 7).unwrap();
+        let done: u32 = chart::throughput(&events, &members, 4, anchor)
+            .iter()
+            .map(|b| b.done)
+            .sum();
+        assert_eq!(
+            done as usize,
+            n - open,
+            "throughput counts every completion"
+        );
+
+        let events = events_since(&e, anchor, 31).unwrap();
+        let series = chart::burndown(&events, &members, 30, anchor);
+        assert_eq!(
+            series.last().map(|p| p.remaining as usize),
+            Some(open),
+            "burndown ends on the open count"
+        );
+    }
+
     /// Regression: clap reads a leading `-` as a flag, so `--remind -1h` parsed
     /// as an unknown `-1` and the command was rejected — breaking the single most
     /// common reminder form. Guarded by `allow_hyphen_values` on the arg.
