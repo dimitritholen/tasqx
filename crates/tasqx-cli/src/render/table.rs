@@ -599,7 +599,7 @@ pub(crate) fn task_row(t: &Value, now: Timestamp, unicode: bool) -> TaskRow {
         overdue: field_ts(t, "due").is_some_and(|d| overdue_at(d, now))
             && status_is_open(&s(t, "status")),
         // #228.16: rendered bare (`cardtag`), the one filter spelling that
-        // does not parse (`tasqx list cardtag` -> "unknown filter token") is
+        // is not the tag filter (`tasqx list cardtag` matches TITLES, D210) is
         // exactly the text this table just printed. `+tag` is what `modify`'s
         // echo already renders and the only spelling `list`'s own filter
         // grammar accepts, so the table matches it rather than adding a third

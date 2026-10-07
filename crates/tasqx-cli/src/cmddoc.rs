@@ -212,7 +212,8 @@ pub const COMMAND_REF: &[CmdDoc] = &[
         ],
         notes: &[
             "Bare `tasqx` is `tasqx list` over the working set.",
-            "A value containing a space is double-quoted, and the quotes must reach tasqx: `tasqx list 'project:\"Home Renovation\"'`. Nothing is guessed back together, so the shell-stripped form is refused rather than answered wrongly.",
+            "A value containing a space is double-quoted, and the quotes must reach tasqx: `tasqx list 'project:\"Home Renovation\"'`. Nothing is guessed back together: a shell-stripped `project:Home Renovation` is the project `Home` plus a title word.",
+            "A bare word matches the title, case-insensitively, and several must all appear: `tasqx list weekly review`. Quote a phrase to match it as one, `tasqx list '\"memory explorer\"'`, or spell it `title:review`. `status:any` (or `status:all`) lists every status, done and cancelled included.",
             "`--sort`, `--limit`, `--offset` and `--fields` map straight onto `task.list`'s own params (`core.capabilities` names all five) — `tasqx list --sort due --limit 20 --fields short_id,title,due`. An unknown sort key or field name is refused, naming the valid set.",
             "The piped table (no TTY) is a fixed 100 cells wide; on a terminal it sizes to `$COLUMNS` (clamped 40–160) or the terminal's own width, whichever it can read. Widen a truncated title with `COLUMNS=200 tasqx list` or narrow the row with `--fields`.",
         ],

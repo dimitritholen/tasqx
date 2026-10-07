@@ -635,7 +635,7 @@ fn build_tool_specs() -> Vec<ToolSpec> {
                 "properties": {
                     "filter": {
                         "type": "string",
-                        "description": "Filter DSL, e.g. \"status:pending +api\". \"@working\" is the actionable set. Omit it (or send \"\") for every task."
+                        "description": "Filter DSL, e.g. \"status:pending +api\". \"@working\" is the actionable set. Bare words match the title (\"memory explorer\" as a phrase); \"status:any\" is every status. Omit it (or send \"\") for every task."
                     },
                     // No `enum` here: a key may carry a `-` prefix, which a
                     // plain enum of the bare names would forbid. The valid set

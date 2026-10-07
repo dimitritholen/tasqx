@@ -433,12 +433,14 @@ fn the_shell_stripped_spelling_writes_but_does_not_read() {
     let err = String::from_utf8_lossy(&out.stderr);
     assert_eq!(
         out.status.code(),
-        Some(2),
+        Some(4),
         "the read side must refuse rather than guess: {err}"
     );
+    // D210: the stray `Renovation` is a title term now, so what refuses is the
+    // project the first word names; it exists nowhere.
     assert!(
-        err.contains(r#"project:"Home Renovation""#),
-        "the refusal must name the quoted form: {err}"
+        err.contains("no project named Home"),
+        "the refusal must name the project it could not find: {err}"
     );
 
     // And the spelling both sides accept really does select the row, so the

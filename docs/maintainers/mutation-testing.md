@@ -118,19 +118,17 @@ run's log, wall clock and all — the same line appears in the comment on the
 `mutants` job in `.github/workflows/ci.yml`, and a test compares the two.
 
 ```text
-203 mutants tested in 53m: 1 missed, 184 caught, 14 unviable, 4 timeouts
+202 mutants tested in 53m: 0 missed, 184 caught, 14 unviable, 4 timeouts
 ```
 
 `types.rs` and `urgency.rs` are clean, and so is every real gap the first sweep
 found.
 
-The one missed mutant was a real gap, not an equivalent one — `spacing_hint`,
-tasqx #48. It has since been closed by two tests (see "Gaps this sweep closed"),
-so the `1 missed` above is now history rather than a standing state; the figures
-are deliberately left as the run printed them, because re-typing a count nobody
-re-measured is exactly what the paragraph above this one warns against. The
-table below keeps its row: the survivor is what the next sweep has to come back
-clean on, and deleting the row would delete the only record of why. The two
+The run printed 203 mutants and one missed, a real gap in `spacing_hint`
+(tasqx #48), later closed by two tests. D210 then deleted `spacing_hint` (a bare
+word is a title term, so no stray word is hinted), and its mutant with it: the
+line above is the run's with that one mutant taken out, not a re-measurement,
+and the next sweep replaces it. The two
 equivalent mutants are suppressed via `exclude_re` in `.cargo/mutants.toml` —
 legitimate only because they are provably unkillable, not merely hard to test.
 Anything that is merely hard to test belongs in this table, not in the config.
@@ -151,7 +149,6 @@ in `tasqx-core`'s `lib.rs` — checked against the source by a test.
 
 | Location | Mutation | Verdict |
 | --- | --- | --- |
-| `filter.rs` `spacing_hint` | `\|\|` → `&&` on the suppression guard | **MISSED by this sweep, CLOSED since (tasqx #48).** The hint is withheld from any token that opens a predicate of its own; under `&&` both halves would have to hold at once, so the suppression never fired again and `project:Home @wroking` was answered with "did you mean `project:"Home @wroking"`?" — advice to quote a typo into the project name. Nothing paired a value predicate with a following token that BOTH opens a predicate and fails to parse. Now `a_token_opening_a_value_predicate_is_never_hinted_as_a_split_value` and `a_mistyped_at_keyword_is_never_hinted_as_a_split_value` do, one per disjunct; each was verified to redden under the `&&` mutation, and under deletion of its own disjunct alone. |
 | `filter.rs` `parse_and` | `and` keyword guard → `false` | Equivalent. Without the guard an explicit `and` falls through to `parse_term`, matches no predicate prefix, and becomes `Pred::Always` — the identity of the enclosing `And`. `eval`'s `.all()` is unchanged, and `constrains_status`'s `.any()` reads `Pred::Always` as false either way. |
 | `remind.rs` `spec_to_string` | `<` → `<=` | Equivalent. The two operators differ only at `secs == 0`, and that is exactly the input where `sign` is never read: the next lines compute `n = secs.abs()` and return the literal `"+0s"` before `sign` reaches any `format!`. |
 | `filter.rs` `parse_or`, `parse_and`, `parse_term` | `pos += 1` → `-=` / `*=` | Uninteresting, and reported as TIMEOUT rather than MISSED. The parser's cursor stops advancing and it loops forever. Non-termination is loud and immediately diagnosable, unlike every other finding here — a test for it would be a hang with a stopwatch. Worth knowing that loop termination rests entirely on monotonic `pos` advance. |
@@ -179,7 +176,7 @@ existing.
 The second sweep — the one whose figures are quoted above — found one more, and
 it is now closed too:
 
-- **`filter.rs` `spacing_hint`, the `||` in the suppression guard.** Two
+- **`filter.rs` `spacing_hint` (deleted by D210), the `||` in the suppression guard.** Two
   disjuncts, neither separately exercised: a token opening a VALUE predicate,
   and a token opening an `@` keyword. Under `&&` the guard could never fire, and
   the tool began advising users to quote a failing predicate into a project

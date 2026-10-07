@@ -300,8 +300,12 @@ jobs:
   # finding, since it says `examine_globs` covered none of that day's merges
   # (tasqx #50 weighs what to do about the scope).
   #
-  #   203 mutants tested in 53m: 1 missed, 184 caught, 14 unviable, 4 timeouts
-  #   MISSED crates/tasqx-core/src/filter.rs `spacing_hint`: replace || with && — tasqx #48
+  #   202 mutants tested in 53m: 0 missed, 184 caught, 14 unviable, 4 timeouts
+  #
+  # The run printed 203 and 1 missed: the one survivor was in `spacing_hint`,
+  # which D210 deleted (a bare word is a title term now, so no stray word is
+  # hinted). Its mutant went with it, so the line is adjusted by that one, not
+  # re-measured; the next sweep replaces it.
   #
   # The survivor is recorded by FUNCTION, not by the `file:line:col` cargo-
   # mutants prints, because `a_surviving_mutant_is_recorded_where_it_still_lives`

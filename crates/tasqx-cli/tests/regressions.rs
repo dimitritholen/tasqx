@@ -1197,28 +1197,20 @@ fn a_shell_quoted_filter_value_reaches_the_parser_whole() {
         "the literal form names the project: {s}"
     );
 
-    // N1a: the shell-STRIPPED form is no longer guessed back into one value.
-    // The re-quoting heuristic that did so could not tell a spaced value from a
-    // whole expression passed as one argument, and answered `list "+api or
-    // +web"` with a confident `No tasks.`. Refusing is the decision; the hint
-    // is what makes refusing good, so both halves are pinned.
-    for (form, hint) in [
-        ("+needs paint", r#"+"needs paint""#),
-        ("project:Home Renovation", r#"project:"Home Renovation""#),
-    ] {
-        let out = run(&["list", form]);
-        assert_eq!(
-            out.status.code(),
-            Some(2),
-            "{form:?} must be refused, not answered: {out:?}"
-        );
-        let err = String::from_utf8_lossy(&out.stderr);
-        assert!(
-            err.contains(hint),
-            "{form:?} must teach the literal spelling, got: {err}"
-        );
-        assert!(err.contains("quote"), "{form:?} must say why: {err}");
-    }
+    // N1a: the shell-STRIPPED form is still not guessed back into one value. The
+    // re-quoting heuristic could not tell a spaced value from a whole expression
+    // passed as one argument. Since D210 the stray word is a title term, so the
+    // stripped form is answered as the first word AND a title term: no row here
+    // is tagged `needs`, so it selects nothing.
+    let out = run(&["list", "+needs paint"]);
+    assert_eq!(out.status.code(), Some(0), "{out:?}");
+    assert!(
+        !String::from_utf8_lossy(&out.stdout).contains("painted"),
+        "`+needs paint` must not select the spaced tag"
+    );
+    // The project form is still refused: `Home` is no project.
+    let out = run(&["list", "project:Home Renovation"]);
+    assert_eq!(out.status.code(), Some(4), "{out:?}");
     // And the reading the heuristic used to lose now works, which is the point:
     // an element that opens with a prefix and continues into an EXPRESSION was
     // read as one tag literally named `api or +nosuch`, and answered "No tasks."
@@ -2294,36 +2286,31 @@ fn one_filter_selects_one_set_of_rows_in_every_spelling() {
         );
     }
 
-    // The case that must FAIL, in every spelling, for the same reason: N1a
-    // deleted the heuristic that guessed `project:Home` + `Renovation` back
-    // into one value, because the guess was also a valid reading of a whole
-    // expression and it answered the wrong one silently.
-    let stripped: [&[&str]; 2] = [&["project:Home", "Renovation"], &["+needs", "paint"]];
-    for words in stripped {
+    // The stripped spelling is not guessed back into one value, in any spelling
+    // (N1a: the guess was also a valid reading of a whole expression). Since
+    // D210 the stray word is a title term, so `project:Home Renovation` is the
+    // project `Home` AND a title term, and `Home` is no project: the existing
+    // unknown-project refusal (exit 4) is what stops it, on every door.
+    for words in [&["project:Home", "Renovation"][..]] {
         let joined = words.join(" ");
         let mut argv = vec!["list"];
         argv.extend_from_slice(words);
         for out in [run(&argv), run(&["list", &joined])] {
             assert_eq!(
                 out.status.code(),
-                Some(2),
+                Some(4),
                 "{joined:?} must be refused, not answered"
             );
             let err = String::from_utf8_lossy(&out.stderr);
             assert!(
-                err.contains("did you mean"),
-                "{joined:?} must teach the fix: {err}"
+                err.contains("no project named Home"),
+                "{joined:?} must name the project it could not find: {err}"
             );
         }
         let api = via_api(&joined);
         assert_eq!(
             api["ok"], false,
             "{joined:?} must be refused on the API too: {api}"
-        );
-        let msg = api["error"]["message"].as_str().unwrap_or_default();
-        assert!(
-            msg.contains("did you mean"),
-            "{joined:?}: the API gets the same hint: {msg}"
         );
     }
 
@@ -6511,4 +6498,44 @@ fn raw_takes_mode_lexical_and_refuses_a_mode_with_meaning() {
         let err = String::from_utf8_lossy(&out.stderr);
         assert!(err.contains("mode: lexical"), "{mode}: {err}");
     }
+}
+
+/// D210 / #1119: `tasqx list foo bar` was `unknown filter token`; a bare word is
+/// now a case-insensitive title substring, several are ANDed, a quoted phrase is
+/// one substring, and `status:any` lifts the status restriction.
+#[test]
+fn list_matches_title_words_and_status_any_sees_closed_tasks() {
+    let dir = std::env::temp_dir().join(format!("tasqx-reg-title-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).expect("config dir");
+    let tag = "title-terms";
+    let _ = std::fs::remove_file(db_path(tag));
+    let run = |args: &[&str]| {
+        let out = bin(tag, &dir).args(args).output().expect("run tasqx");
+        assert_eq!(out.status.code(), Some(0), "{args:?}: {out:?}");
+        String::from_utf8_lossy(&out.stdout).into_owned()
+    };
+    run(&["add", "Weekly planning review"]);
+    run(&["add", "Memory explorer polish"]);
+    run(&["add", "Review memory"]);
+    run(&["add", "Old closed chore"]);
+    run(&["done", "4"]);
+
+    let s = run(&["list", "weekly", "REVIEW"]);
+    assert!(s.contains("Weekly planning review"), "{s}");
+    assert!(!s.contains("Memory explorer"), "{s}");
+    let s = run(&["list", "memory explorer"]);
+    assert!(s.contains("Memory explorer polish"), "{s}");
+    assert!(
+        !s.contains("Review memory"),
+        "one phrase, not two words: {s}"
+    );
+    let s = run(&["list", "title:CHORE"]);
+    assert!(
+        s.contains("Old closed chore"),
+        "title: is the explicit key: {s}"
+    );
+    let s = run(&["list", "chore", "status:any"]);
+    assert!(s.contains("Old closed chore"), "status:any sees done: {s}");
+    let s = run(&["list", "chore", "status:all"]);
+    assert!(s.contains("Old closed chore"), "status:all too: {s}");
 }
