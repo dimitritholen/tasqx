@@ -668,3 +668,38 @@
   white-space: nowrap;
   text-overflow: ellipsis;
 }
+
+/* --- Reports --- */
+.report-controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-3);
+  margin-bottom: var(--space-3);
+}
+
+.report-table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.report-table th,
+.report-table td {
+  padding: var(--space-2);
+  border-bottom: var(--border-width) solid var(--color-border);
+  text-align: right;
+}
+
+.report-table th:first-child,
+.report-table td:first-child {
+  text-align: left;
+}
+
+.report-table th {
+  color: var(--color-muted);
+  font-size: var(--text-secondary);
+  font-weight: inherit;
+}
+
+.report-table tfoot td {
+  font-weight: 600;
+}

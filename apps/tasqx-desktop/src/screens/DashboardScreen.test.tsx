@@ -1,7 +1,7 @@
 import { screen, waitFor, within } from '@testing-library/react';
 
 import type { EventRow } from '../api/types';
-import { baselineScript, harness, live, mount } from '../test/harness';
+import { baselineScript, COMPLETED_TOTAL, harness, live, mount } from '../test/harness';
 import { project, taskList, taskRow } from '../test/scripted';
 
 const PAGE = taskList([taskRow({ short_id: 1 }), taskRow({ short_id: 2 })], { total: 2 });
@@ -29,7 +29,16 @@ describe('DashboardScreen', () => {
     expect(card('Active')).toHaveTextContent('1');
     expect(card('Overdue')).toHaveTextContent('3');
     expect(card('Blocked')).toHaveTextContent('2');
-    expect(card('Recently completed')).toHaveTextContent('1');
+    // The tile is the window's count (task.list `total`), not the rows read.
+    expect(card('Completed, last 7 days')).toHaveTextContent(String(COMPLETED_TOTAL));
+  });
+
+  it('opens the completed tile on the same window it counted', async () => {
+    const it = await live(baselineScript(PAGE));
+
+    await it.user.click(card('Completed, last 7 days'));
+
+    await waitFor(() => expect(it.store.getRoute().filter).toBe('completed.after:-7d'));
   });
 
   it('walks from a card into Tasks on that filter', async () => {

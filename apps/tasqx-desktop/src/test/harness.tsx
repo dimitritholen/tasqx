@@ -41,7 +41,8 @@ export const SUMMARY: Summary = {
 
 /** What the two extra card reads answer, so the cards have known numbers. */
 export const BLOCKED_TOTAL = 2;
-export const COMPLETED_ROWS = [taskRow({ short_id: 99, status: 'done' })];
+/** More completions in the window than the one row the read carries back. */
+export const COMPLETED_TOTAL = 918;
 
 /** The five baseline reads, answered from one page. Override any of them. */
 export function baselineScript(page: TaskListResult, overrides: Script = {}): Script {
@@ -49,7 +50,7 @@ export function baselineScript(page: TaskListResult, overrides: Script = {}): Sc
     'project.list': { count: 0, store_empty: false, projects: [] },
     'task.list': (params: Record<string, unknown>) => {
       if (params['filter'] === BLOCKED_FILTER) return taskList([], { total: BLOCKED_TOTAL });
-      if (params['filter'] === COMPLETED_FILTER) return taskList(COMPLETED_ROWS);
+      if (params['filter'] === COMPLETED_FILTER) return taskList([taskRow({ short_id: 99, status: 'done' })], { total: COMPLETED_TOTAL });
       return page;
     },
     'report.summary': SUMMARY,

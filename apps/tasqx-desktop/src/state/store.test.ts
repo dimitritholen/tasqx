@@ -165,7 +165,7 @@ describe('DashboardStore', () => {
         store_empty: false,
       },
       blocked: 6,
-      recentlyCompleted: [taskRow({ short_id: 9, status: 'done' })],
+      completed: 918,
     });
 
     expect(selectCards(store.getState())).toMatchObject({
@@ -173,8 +173,8 @@ describe('DashboardStore', () => {
       active: 3,
       overdue: 3,
       blocked: 6,
+      completed: 918,
     });
-    expect(selectCards(store.getState()).recentlyCompleted).toHaveLength(1);
   });
 
   it('reads zeroes off an empty summary rather than throwing', () => {
@@ -183,7 +183,7 @@ describe('DashboardStore', () => {
       active: 0,
       overdue: 0,
       blocked: 0,
-      recentlyCompleted: [],
+      completed: 0,
     });
   });
 });

@@ -79,7 +79,7 @@ describe('the command palette and the refresh key', () => {
     const commands = screen.getAllByRole('option').map((option) => option.textContent ?? '');
 
     expect(commands).toContain('RefreshR');
-    for (const label of ['Open', 'Active', 'Overdue', 'Blocked', 'Recently completed']) {
+    for (const label of ['Open', 'Active', 'Overdue', 'Blocked', 'Completed, last 7 days']) {
       expect(commands.some((command) => command.startsWith(`Tasks: ${label}`))).toBe(true);
     }
   });
