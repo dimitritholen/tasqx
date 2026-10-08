@@ -169,6 +169,29 @@ pub(super) fn measurement_from_row(row: &Row, base: usize) -> rusqlite::Result<V
 pub(super) const TOKEN_COLS: &str = "id, tool, source, model, input_tokens, output_tokens, \
      cache_read_tokens, cache_creation_tokens, confidence, created, total_tokens";
 
+/// The `otlp_samples` column list the INSERT in `otlp_ingest` and the SELECT
+/// in `otlp_samples_for_session` share, kept in step with
+/// [`usage_sample_from_row`] the way [`TOKEN_COLS`] pairs with
+/// [`measurement_from_row`].
+const OTLP_COLS: &str = "id, session_id, tool, ts, model, input_tokens, output_tokens, \
+     cache_read_tokens, cache_creation_tokens, created";
+
+/// Map an [`OTLP_COLS`] row into the emitting tool and its usage sample.
+fn usage_sample_from_row(row: &Row) -> rusqlite::Result<(String, crate::tokens::UsageSample)> {
+    Ok((
+        row.get::<_, String>(2)?,
+        crate::tokens::UsageSample {
+            id: None,
+            ts: row.get::<_, String>(3)?,
+            model: row.get::<_, Option<String>>(4)?,
+            input_tokens: row.get::<_, i64>(5)?.max(0) as u64,
+            output_tokens: row.get::<_, i64>(6)?.max(0) as u64,
+            cache_read_tokens: row.get::<_, i64>(7)?.max(0) as u64,
+            cache_creation_tokens: row.get::<_, i64>(8)?.max(0) as u64,
+        },
+    ))
+}
+
 /// One stored log-parse measurement row, as [`Engine::token_recompute`] reads
 /// it back for the before/after report and the unchanged check. Carries its
 /// own `id` (#220) so the `channel_conflict` and `downgraded` write arms —
@@ -183,6 +206,22 @@ struct StoredLogParse {
     cache_read: i64,
     cache_creation: i64,
     confidence: String,
+}
+
+impl StoredLogParse {
+    /// Map a [`TOKEN_COLS`] row starting at column `base`, the way
+    /// [`measurement_from_row`] does.
+    fn from_row(row: &Row, base: usize) -> rusqlite::Result<Self> {
+        Ok(Self {
+            id: row.get(base)?,
+            tool: row.get(base + 1)?,
+            input: row.get(base + 4)?,
+            output: row.get(base + 5)?,
+            cache_read: row.get(base + 6)?,
+            cache_creation: row.get(base + 7)?,
+            confidence: row.get(base + 8)?,
+        })
+    }
 }
 
 /// The previous state of every row a `channel_conflict` or `downgraded` write
@@ -452,33 +491,24 @@ impl Engine {
         // turned out to hold nothing — records no row, so there is nothing
         // for a self-report to conflict with.
         if usage.source == SOURCE_SELF_REPORT && has_attributed_event(&tx, &task.id)? {
-            if let Some((
-                existing_source,
-                existing_confidence,
-                input,
-                output,
-                cache_read,
-                cache_creation,
-            )) = tx
+            if let Some(existing) = tx
                 .query_row(
-                    "SELECT source, confidence, input_tokens, output_tokens, cache_read_tokens, \
-                     cache_creation_tokens FROM token_usage \
-                     WHERE task_id = ?1 AND source != ?2 ORDER BY id LIMIT 1",
+                    &format!(
+                        "SELECT {TOKEN_COLS} FROM token_usage \
+                         WHERE task_id = ?1 AND source != ?2 ORDER BY id LIMIT 1"
+                    ),
                     params![task.id, SOURCE_SELF_REPORT],
-                    |r| {
-                        Ok((
-                            r.get::<_, String>(0)?,
-                            r.get::<_, String>(1)?,
-                            r.get::<_, i64>(2)?,
-                            r.get::<_, i64>(3)?,
-                            r.get::<_, i64>(4)?,
-                            r.get::<_, i64>(5)?,
-                        ))
-                    },
+                    |r| measurement_from_row(r, 0),
                 )
                 .optional()?
             {
-                if existing_confidence != CONFIDENCE_HIGH {
+                let existing_source = existing["source"].as_str().unwrap_or_default();
+                let (input, output) = (&existing["input_tokens"], &existing["output_tokens"]);
+                let (cache_read, cache_creation) = (
+                    &existing["cache_read_tokens"],
+                    &existing["cache_creation_tokens"],
+                );
+                if existing["confidence"] != CONFIDENCE_HIGH {
                     return Err(ApiError::conflict(format!(
                         "task already carries a {existing_source} measurement from the \
                          automated attribution pipeline ({input} in / {output} out / \
@@ -765,9 +795,10 @@ impl Engine {
             );
             let id = Uuid::new_v5(&Uuid::NAMESPACE_URL, natural_key.as_bytes()).to_string();
             let rows = tx.execute(
-                "INSERT OR IGNORE INTO otlp_samples (id, session_id, tool, ts, model, \
-                 input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, created) \
-                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)",
+                &format!(
+                    "INSERT OR IGNORE INTO otlp_samples ({OTLP_COLS}) \
+                     VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)"
+                ),
                 params![
                     id,
                     s.session_id,
@@ -809,24 +840,10 @@ impl Engine {
         if session_id.is_empty() {
             return Ok((Vec::new(), None));
         }
-        let mut stmt = self.conn.prepare(
-            "SELECT tool, ts, model, input_tokens, output_tokens, cache_read_tokens, \
-             cache_creation_tokens FROM otlp_samples WHERE session_id = ?1 ORDER BY ts, id",
-        )?;
-        let rows = stmt.query_map(params![session_id], |r| {
-            Ok((
-                r.get::<_, String>(0)?,
-                crate::tokens::UsageSample {
-                    id: None,
-                    ts: r.get::<_, String>(1)?,
-                    model: r.get::<_, Option<String>>(2)?,
-                    input_tokens: r.get::<_, i64>(3)?.max(0) as u64,
-                    output_tokens: r.get::<_, i64>(4)?.max(0) as u64,
-                    cache_read_tokens: r.get::<_, i64>(5)?.max(0) as u64,
-                    cache_creation_tokens: r.get::<_, i64>(6)?.max(0) as u64,
-                },
-            ))
-        })?;
+        let mut stmt = self.conn.prepare(&format!(
+            "SELECT {OTLP_COLS} FROM otlp_samples WHERE session_id = ?1 ORDER BY ts, id"
+        ))?;
+        let rows = stmt.query_map(params![session_id], usage_sample_from_row)?;
         let mut samples = Vec::new();
         let mut tool = None;
         for r in rows {
@@ -1007,24 +1024,12 @@ impl Engine {
         // the UUIDv7 that is creation order, never by the `created` text (D142).
         let mut stored: HashMap<String, Vec<StoredLogParse>> = HashMap::new();
         {
-            let mut stmt = self.conn.prepare(
-                "SELECT task_id, id, tool, input_tokens, output_tokens, cache_read_tokens, \
-                 cache_creation_tokens, confidence FROM token_usage \
-                 WHERE source = ?1 ORDER BY id",
-            )?;
+            let mut stmt = self.conn.prepare(&format!(
+                "SELECT task_id, {TOKEN_COLS} FROM token_usage \
+                     WHERE source = ?1 ORDER BY id"
+            ))?;
             let rows = stmt.query_map(params![SOURCE_LOG_PARSE], |r| {
-                Ok((
-                    r.get::<_, String>(0)?,
-                    StoredLogParse {
-                        id: r.get(1)?,
-                        tool: r.get(2)?,
-                        input: r.get(3)?,
-                        output: r.get(4)?,
-                        cache_read: r.get(5)?,
-                        cache_creation: r.get(6)?,
-                        confidence: r.get(7)?,
-                    },
-                ))
+                Ok((r.get::<_, String>(0)?, StoredLogParse::from_row(r, 1)?))
             })?;
             for r in rows {
                 let (task_id, row) = r?;
@@ -1844,5 +1849,45 @@ mod tests {
         assert_eq!(after["received"], 2);
         assert_eq!(after["attributed"], 1);
         assert_eq!(after["orphaned"], 1);
+    }
+
+    /// `usage_sample_from_row` reads `OTLP_COLS` by position; every field gets
+    /// a distinct value so any two columns swapped fail here, not only the
+    /// cache pair the end-to-end test pins.
+    #[test]
+    fn otlp_samples_for_session_maps_every_column_to_its_own_field() {
+        use crate::otlp::OtlpSample;
+        use crate::tokens::UsageSample;
+        let e = crate::Engine::open_in_memory().unwrap();
+        e.otlp_ingest(&[OtlpSample {
+            tool: "tool-x".into(),
+            session_id: Some("sess-cols".into()),
+            sample: UsageSample {
+                id: None,
+                ts: "2026-07-25T10:15:00Z".into(),
+                model: Some("model-y".into()),
+                input_tokens: 5,
+                output_tokens: 9,
+                cache_read_tokens: 7,
+                cache_creation_tokens: 11,
+            },
+        }])
+        .unwrap();
+        let (samples, tool) = e.otlp_samples_for_session("sess-cols").unwrap();
+        assert_eq!(tool.as_deref(), Some("tool-x"));
+        let [s] = samples.as_slice() else {
+            panic!("one sample expected, got {samples:?}")
+        };
+        assert_eq!(s.ts, "2026-07-25T10:15:00Z");
+        assert_eq!(s.model.as_deref(), Some("model-y"));
+        assert_eq!(
+            (
+                s.input_tokens,
+                s.output_tokens,
+                s.cache_read_tokens,
+                s.cache_creation_tokens
+            ),
+            (5, 9, 7, 11)
+        );
     }
 }

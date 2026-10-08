@@ -312,7 +312,7 @@ fn a_self_report_after_a_non_high_attribution_is_still_refused() {
     e.token_attribute(&json!({
         "ref": sid, "source": "log-parse", "tool": "claude-code", "confidence": "medium",
         "samples": 1, "input_tokens": 7000, "output_tokens": 3000,
-        "cache_read_tokens": 111_111,
+        "cache_read_tokens": 111_111, "cache_creation_tokens": 4242,
     }))
     .unwrap();
     assert_eq!(count(&e, "SELECT COUNT(*) FROM token_usage"), 1);
@@ -325,6 +325,14 @@ fn a_self_report_after_a_non_high_attribution_is_still_refused() {
         .unwrap_err();
     assert_eq!(err.code, ErrorCode::Conflict);
     assert!(err.message.contains("log-parse"), "{}", err.message);
+    // Four distinct counts, so a column read into the wrong slot of the
+    // refusal text fails here.
+    assert!(
+        err.message
+            .contains("(7000 in / 3000 out / 111111 cacheR / 4242 cacheW tokens)"),
+        "{}",
+        err.message
+    );
 
     // The refusal wrote nothing: the ledger is not doubled.
     assert_eq!(count(&e, "SELECT COUNT(*) FROM token_usage"), 1);
@@ -2525,6 +2533,43 @@ fn recompute_channel_conflict_event_records_the_removed_measurement() {
     assert_eq!(measurements[0]["id"], measurement_id, "{v}");
     assert_eq!(measurements[0]["input_tokens"], 1000, "{v}");
     assert_eq!(measurements[0]["output_tokens"], 2000, "{v}");
+}
+
+/// The recompute's stored-row read maps `tool` and all four buckets too;
+/// four distinct counts so a swapped column shows in the removal event.
+#[test]
+fn recompute_channel_conflict_event_records_all_four_buckets_and_the_tool() {
+    let e = engine();
+    let t = e.task_add(&json!({ "title": "t" })).unwrap()["short_id"].clone();
+    e.task_done(&json!({ "ref": t, "client": "claude-code",
+                 "transcript_path": "/no/such/transcript.jsonl" }))
+        .unwrap();
+    e.token_attribute(&json!({
+        "ref": t, "source": "log-parse", "tool": "tool-z", "confidence": "medium",
+        "samples": 1, "input_tokens": 5, "output_tokens": 9,
+        "cache_read_tokens": 7, "cache_creation_tokens": 11,
+    }))
+    .unwrap();
+    seed_self_report_row(&e, &task_uuid(&e, &t), "claude-code", 111, 222);
+
+    dispatch(&e, "tokens.recompute", &json!({ "dry_run": false })).unwrap();
+
+    let payload: String = e
+        .conn()
+        .query_row(
+            "SELECT payload FROM events WHERE op = 'tokens.attributed' ORDER BY rowid DESC LIMIT 1",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let v: serde_json::Value = serde_json::from_str(&payload).unwrap();
+    let m = &v["measurements"][0];
+    assert_eq!(m["tool"], "tool-z", "{v}");
+    assert_eq!(m["confidence"], "medium", "{v}");
+    assert_eq!(m["input_tokens"], 5, "{v}");
+    assert_eq!(m["output_tokens"], 9, "{v}");
+    assert_eq!(m["cache_read_tokens"], 7, "{v}");
+    assert_eq!(m["cache_creation_tokens"], 11, "{v}");
 }
 
 /// Task #81's shape: a reopen + re-complete banked the same window twice, so
