@@ -2086,18 +2086,23 @@ impl Engine {
             .query_map([], |r| r.get(0))?
             .collect::<Result<_, _>>()?;
         let from_dir = workdir.and_then(|dir| {
+            // `git_toplevel` takes a FILE and starts at its parent: `_` is a
+            // placeholder so the search starts at `dir` itself.
             let top = crate::memory_doc::git_toplevel(&dir.join("_"));
             let main = top.as_deref().map(crate::memory_doc::repo_dir);
-            let hit = (if top.is_some() {
+            let candidates = if top.is_some() {
                 [top.as_deref(), main.as_deref()]
             } else {
                 [Some(dir), None]
-            })
-            .into_iter()
-            .flatten()
-            .filter_map(|a| a.file_name()?.to_str())
-            .find(|n| names.contains(*n))
-            .map(|n| (n.to_string(), "working directory"));
+            };
+            // Bound before the block ends: the iterator's temporary borrows
+            // `top`/`main`, which drop first (E0597) as a tail expression.
+            let hit = candidates
+                .into_iter()
+                .flatten()
+                .filter_map(|a| a.file_name()?.to_str())
+                .find(|n| names.contains(*n))
+                .map(|n| (n.to_string(), "working directory"));
             hit
         });
         // PR #48 review: a default naming a project this same query just
