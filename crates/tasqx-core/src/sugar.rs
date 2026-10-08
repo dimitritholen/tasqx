@@ -44,14 +44,17 @@ pub enum ValueKey {
     Estimate,
 }
 
-/// Sugar keys that take a *value*, longest-first so `estimate:` is tested before
-/// `est:` and `project:` before `proj:`. Used to spot an argv element the shell
+/// Sugar keys that take a *value*, listed longest-first (`estimate:` before
+/// `est:`, `project:` before `proj:`). Used to spot an argv element the shell
 /// already quoted for us, and — via [`split_key`] — to dispatch the CLI's parse loop,
 /// so the two cannot disagree about what counts as sugar (D30).
 ///
-/// Longest-first is not cosmetic: it is the ONLY thing that stops `estimate:x`
-/// being read as the estimate `imate:x`, and it is load-bearing again now that a
-/// declined key must not fall through to its own shorter alias. See [`split_key`].
+/// The order is a courtesy, not the mechanism: every spelling ends in `:` and no
+/// spelling is a prefix of another (`est:` does not open `estimate:`), so at
+/// most one entry can match a token and `split_key` cannot depend on the order.
+/// That prefix-freeness is the invariant, pinned by
+/// `no_value_key_is_a_prefix_of_another`; add a spelling that breaks it and the
+/// order becomes load-bearing, so the test fails first.
 pub const VALUE_KEYS: [(&str, ValueKey); 12] = [
     ("scheduled:", ValueKey::Scheduled),
     ("estimate:", ValueKey::Estimate),
@@ -155,6 +158,16 @@ pub fn title_sugar_warning(title: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn no_value_key_is_a_prefix_of_another() {
+        for (a, _) in VALUE_KEYS {
+            assert!(a.ends_with(':'), "{a} must end in a colon");
+            for (b, _) in VALUE_KEYS {
+                assert!(a == b || !b.starts_with(a), "{a} is a prefix of {b}");
+            }
+        }
+    }
 
     #[test]
     fn names_the_sugar_words_and_nothing_else() {

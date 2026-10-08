@@ -1423,6 +1423,34 @@ mod tests {
         }
     }
 
+    /// The environment layer of the escape hatch: `TASQX_DASHBOARD` alone
+    /// switches the screen off, beats the file, and is read only because the
+    /// setting registers it as its `env`. (The piped-stdout CLI case in
+    /// `bare_invocation.rs` cannot see this: a pipe prints the table anyway.)
+    #[test]
+    fn the_escape_hatch_is_read_from_the_environment() {
+        let var = |v: &'static str| move |n: &str| (n == "TASQX_DASHBOARD").then(|| v.to_string());
+        for off in ["0", "false", "no", "NO"] {
+            assert!(
+                !dashboard_enabled_in(None, var(off)),
+                "TASQX_DASHBOARD={off} must switch the screen off"
+            );
+        }
+        assert!(
+            !dashboard_enabled_in(Some("true"), var("0")),
+            "the environment must beat the file"
+        );
+        assert!(
+            dashboard_enabled_in(Some("false"), var("1")),
+            "and a truthy environment must beat an off file"
+        );
+        assert!(dashboard_enabled_in(None, |_| None), "unset reads as on");
+        assert!(
+            dashboard_enabled_in(None, var("   ")),
+            "blank reads as unset"
+        );
+    }
+
     /// Both halves of the argv escape pair, over the SAME registry.
     ///
     /// `argv::FILTER_COMMANDS` decides which commands get their `-tag` tokens
