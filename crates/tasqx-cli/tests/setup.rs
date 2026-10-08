@@ -26,6 +26,7 @@ fn bin(dir: &Path) -> Command {
     // has installed must not change what a case sees. Cases that want other
     // CLIs, or none, replace it.
     std::fs::create_dir_all(dir.join("nopath")).unwrap();
+    #[cfg(unix)]
     stub_claude(&dir.join("nopath"));
     let mut c = Command::new(env!("CARGO_BIN_EXE_tasqx"));
     c.env("PATH", dir.join("nopath"))
@@ -37,16 +38,15 @@ fn bin(dir: &Path) -> Command {
     c
 }
 
-/// A `claude` that does nothing, so the tool counts as on PATH.
+/// A `claude` that does nothing, so the tool counts as on PATH. Unix only:
+/// on Windows `on_path` wants a `claude.exe`, which a script cannot be.
+#[cfg(unix)]
 fn stub_claude(bin_dir: &Path) {
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let f = bin_dir.join("claude");
-        if !f.exists() {
-            std::fs::write(&f, "#!/bin/sh\nexit 0\n").unwrap();
-            std::fs::set_permissions(&f, std::fs::Permissions::from_mode(0o755)).unwrap();
-        }
+    use std::os::unix::fs::PermissionsExt;
+    let f = bin_dir.join("claude");
+    if !f.exists() {
+        std::fs::write(&f, "#!/bin/sh\nexit 0\n").unwrap();
+        std::fs::set_permissions(&f, std::fs::Permissions::from_mode(0o755)).unwrap();
     }
 }
 
@@ -160,6 +160,7 @@ fn a_dangling_skill_symlink_differs_and_is_kept() {
 
 /// No flags and no terminal: the list, exit 0, and never a screen, a hang or
 /// a store.
+#[cfg(unix)]
 #[test]
 fn piped_with_no_flags_prints_the_list_and_opens_no_store() {
     let dir = scratch("piped");
@@ -175,6 +176,7 @@ fn piped_with_no_flags_prints_the_list_and_opens_no_store() {
     );
 }
 
+#[cfg(unix)]
 #[test]
 fn list_reads_the_mcp_registration_from_claude_json() {
     let dir = scratch("mcpjson");
@@ -224,6 +226,7 @@ fn list_reads_the_mcp_registration_from_claude_json() {
     }
 }
 
+#[cfg(unix)]
 #[test]
 fn json_list_is_a_document() {
     let dir = scratch("json");
