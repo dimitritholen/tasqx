@@ -1515,7 +1515,7 @@ struct Param<'a> {
     /// The value assumed when it is omitted, when there is one to state.
     default: Option<&'a str>,
     /// Trusted markup, like every other description in this file.
-    html_desc: &'a str,
+    html_desc: std::borrow::Cow<'a, str>,
 }
 
 /// A parameter list: one addressable row per parameter.
@@ -4061,14 +4061,14 @@ mod tests {
                     ty: "string",
                     required: true,
                     default: None,
-                    html_desc: "A <code>filter</code> expression.",
+                    html_desc: "A <code>filter</code> expression.".into(),
                 },
                 Param {
                     name: "limit",
                     ty: "integer",
                     required: false,
                     default: Some("50"),
-                    html_desc: "How many rows.",
+                    html_desc: "How many rows.".into(),
                 },
             ],
         );
@@ -4095,7 +4095,7 @@ mod tests {
                 ty: "<img>",
                 required: false,
                 default: Some("\"quoted\""),
-                html_desc: "safe",
+                html_desc: "safe".into(),
             }],
         );
         assert!(!html.contains("<script>"), "raw markup survived: {html}");
@@ -4117,7 +4117,7 @@ mod tests {
                 ty: "string",
                 required: true,
                 default: None,
-                html_desc: "A filter expression.",
+                html_desc: "A filter expression.".into(),
             }],
         );
         let fields = field_list(&[("head one".to_string(), "desc one".to_string())]);

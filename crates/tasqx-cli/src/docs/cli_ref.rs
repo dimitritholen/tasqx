@@ -264,7 +264,7 @@ fn global_flags() -> String {
             // is absent, and that behaviour is what the description states.
             required: false,
             default: None,
-            html_desc: effect,
+            html_desc: (*effect).into(),
         })
         .collect();
     s.push_str(&param_table("global-flags", &rows));
@@ -558,7 +558,7 @@ fn param_rows(section: &str, args: &[&Arg]) -> String {
             ty,
             required: *required,
             default: default.as_deref(),
-            html_desc: desc,
+            html_desc: desc.as_str().into(),
         })
         .collect();
     param_table(section, &rows)

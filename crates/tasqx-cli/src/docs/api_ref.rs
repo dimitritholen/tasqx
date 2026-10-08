@@ -30,6 +30,7 @@
 //! per-method reference took the rest of the page.
 
 use serde_json::Value;
+use std::borrow::Cow;
 
 use super::{
     capabilities_snippet, field_list, h3, lead, note, p, page_close, page_open, param_table,
@@ -365,7 +366,7 @@ fn required_params(method: &str) -> Vec<&'static str> {
 pub(super) fn param_doc(
     method: &str,
     name: &str,
-) -> (&'static str, Option<&'static str>, &'static str) {
+) -> (&'static str, Option<&'static str>, Cow<'static, str>) {
     if let Some((_, _, ty, default, desc)) = PARAM_DOCS
         .iter()
         .find(|(m, param, ..)| *m == method && *param == name)
@@ -375,13 +376,13 @@ pub(super) fn param_doc(
         } else {
             Some(*default)
         };
-        return (ty, default, desc);
+        return (ty, default, Cow::Borrowed(*desc));
     }
     if let Some(prop) = described_property(method, name) {
         return (
             schema_badge(prop),
             None,
-            describe_cached(prop["description"].as_str().unwrap_or_default()),
+            Cow::Owned(describe(prop["description"].as_str().unwrap_or_default())),
         );
     }
     panic!(
@@ -773,17 +774,6 @@ pub(super) fn describe(text: &str) -> String {
         out.push_str("</code>");
     }
     out
-}
-
-/// [`describe`] for a `&'static str` that must stay `&'static` — the parameter table
-/// takes borrowed descriptions, and the MCP schemas are built once and live for
-/// the process, so the rendered form can be leaked into the same lifetime
-/// rather than threading owned strings through every row.
-///
-/// The leak is bounded by the schemas: one allocation per parameter per
-/// generated page, in a process that generates one page and exits.
-fn describe_cached(text: &str) -> &'static str {
-    Box::leak(describe(text).into_boxed_str())
 }
 
 // ============================================================================

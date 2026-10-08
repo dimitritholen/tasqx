@@ -327,7 +327,7 @@ fn arguments(tool: &'static tasqx_core::mcp::ToolDoc) -> Vec<Param<'static>> {
                 ty,
                 required: required.contains(&name.as_str()),
                 default: None,
-                html_desc: Box::leak(desc.into_boxed_str()),
+                html_desc: desc.into(),
             }
         })
         .collect()
