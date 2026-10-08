@@ -44,6 +44,18 @@ describe('isOverdue', () => {
 });
 
 describe('TaskTable', () => {
+  it('shows no blockers as a dash after a re-read row brings an empty edge list', async () => {
+    const it = await live(baselineScript(PAGE));
+    const blockersOf = (index: number): HTMLElement =>
+      within(screen.getAllByRole('row')[index] as HTMLElement).getAllByRole('gridcell')[8] as HTMLElement;
+
+    act(() => it.store.patchRow(taskDetail({ short_id: 1, depends_on: [] })));
+    expect(blockersOf(1)).toHaveTextContent(/^—$/);
+
+    act(() => it.store.patchRow(taskDetail({ short_id: 2, depends_on: [7, 9], blocked: true })));
+    expect(blockersOf(2)).toHaveTextContent(/^2$/);
+  });
+
   it('renders one page of rows as a grid that counts the whole result', async () => {
     await live(baselineScript(PAGE));
 

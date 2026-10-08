@@ -135,7 +135,8 @@ function Tags({ tags }: { tags: string[] }) {
  * until the row is opened in the inspector, which does know the names.
  */
 function Blockers({ row }: { row: TaskRow }) {
-  if (row.depends_on !== undefined) {
+  // A re-read row (task.get) carries the edge list; an empty one is no blockers, not "0".
+  if (row.depends_on !== undefined && row.depends_on.length > 0) {
     return <span className={cx('mono', row.blocked && 'cell-danger')}>{row.depends_on.length}</span>;
   }
   return row.blocked ? <span className="cell-danger">blocked</span> : <Dash />;
