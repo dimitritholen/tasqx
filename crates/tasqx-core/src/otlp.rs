@@ -11,7 +11,7 @@
 //! ## Deliberately runtime-free (DESIGN §2)
 //! OTLP-over-gRPC would drag in tonic + tokio, contradicting the daemon's
 //! tokio-free design. OTLP-over-HTTP with a JSON payload needs neither: this is
-//! a hand-rolled, minimal HTTP/1.1 POST reader (request line, headers,
+//! a hand-rolled, minimal HTTP/1.1 POST reader ([`crate::http`]: request line, headers,
 //! `Content-Length` body) over a blocking `TcpStream`, capped like the daemon's
 //! frame reader so a client can never make it buffer unbounded input. No `http`
 //! crate, no async.
@@ -64,7 +64,7 @@
 //! processes on the machine. Do not expose the port beyond loopback.
 
 use std::collections::HashSet;
-use std::io::{self, BufRead, Read, Write};
+use std::io;
 use std::net::{Ipv4Addr, TcpListener, TcpStream};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, LazyLock, Mutex};
@@ -74,31 +74,16 @@ use std::time::{Duration, Instant};
 use serde_json::{json, Value};
 
 use crate::engine::Engine;
+use crate::http::{
+    prepare_stream, read_http_request, write_response, DeadlineReader, HttpError, HttpRequest,
+    REQUEST_DEADLINE,
+};
 use crate::tokens::UsageSample;
 
 /// Hard cap on an OTLP request body, mirroring `daemon::MAX_FRAME_BYTES`: a
 /// client that declares a huge `Content-Length` (or streams forever) must never
 /// make the receiver allocate without bound. Real OTLP exports are a few KiB.
 const MAX_BODY_BYTES: usize = 1 << 20;
-
-/// Cap on the header block (request line + headers). Well past any real exporter,
-/// small enough that a client dribbling headers cannot grow memory unbounded.
-const MAX_HEADER_BYTES: usize = 64 * 1024;
-
-/// Per-read/write socket timeout. OTLP posts are small and local; a peer that
-/// goes fully idle mid-request must not pin the single receiver thread. This is a
-/// PER-READ timeout — it resets on every byte received — so on its own it only
-/// catches a *fully* idle peer, not a slow-drip one; [`REQUEST_DEADLINE`] bounds
-/// the latter.
-const IO_TIMEOUT: Duration = Duration::from_secs(5);
-
-/// Whole-request deadline from the moment a connection is accepted. Unlike
-/// [`IO_TIMEOUT`] (which resets on every byte and so is defeated by a peer
-/// dribbling one byte just inside the timeout — a slowloris), this is a hard
-/// ceiling on the total time one peer may hold the single receiver thread,
-/// regardless of how it paces its bytes. Generous for a legitimate local export
-/// (a few KiB, sub-millisecond over loopback) yet fatal to a hostile drip.
-const REQUEST_DEADLINE: Duration = Duration::from_secs(10);
 
 /// Nonblocking-accept step, matching the attribution/reminder loops' 50 ms
 /// shutdown-responsiveness discipline.
@@ -207,33 +192,7 @@ fn accept_loop(
 /// Handle one connection: read the request, ingest any samples, write the
 /// response. Blocking with a deadline; any transport error just drops the peer.
 fn handle_connection(stream: TcpStream, engine: &Arc<Mutex<Engine>>) {
-    // [`accept_loop`]'s listener is nonblocking so it can poll the shutdown
-    // flag, and an ACCEPTED socket inherits that flag on more platforms than
-    // it does not: BSD-derived kernels (macOS) hand it down, and so does
-    // Windows, whose accept() copies the listening socket's properties.
-    // Linux is the exception, which is exactly why this was invisible for so
-    // long — the one platform that does NOT inherit is the one the suite ran
-    // on.
-    //
-    // This is NOT a redundant call. On a nonblocking stream the two SO_*
-    // timeouts below are silently no-ops, and every read that outruns the
-    // bytes already sitting in the receive buffer returns WouldBlock. Neither
-    // reader distinguishes that from a real failure: `read_line_capped` maps
-    // it to `HttpError::Io`, which makes us return with NO response at all,
-    // and `read_exact` on the body maps it to `HttpError::BadRequest`, which
-    // answers a perfectly valid export with 400. Any export whose bytes do
-    // not all land before the first read — a body past one loopback segment
-    // (MAX_BODY_BYTES is 1 MiB, so this is well inside the supported range),
-    // or an exporter that writes headers and body separately — is therefore
-    // dropped or refused, and the exporter retry-storms.
-    //
-    // `daemon::handle_conn` carries the same workaround for the same reason
-    // (see daemon.rs, "BSD-derived kernels"); this is the second accept loop
-    // and it needed it too. Restore the blocking contract explicitly instead
-    // of assuming the platform did.
-    let _ = stream.set_nonblocking(false);
-    let _ = stream.set_read_timeout(Some(IO_TIMEOUT));
-    let _ = stream.set_write_timeout(Some(IO_TIMEOUT));
+    prepare_stream(&stream);
 
     // `&TcpStream` implements both Read and Write, so the reader borrows the
     // stream immutably and the response write below takes a second shared borrow.
@@ -242,7 +201,7 @@ fn handle_connection(stream: TcpStream, engine: &Arc<Mutex<Engine>>) {
     // `IO_TIMEOUT` alone cannot catch).
     let (status, body) = {
         let mut reader = io::BufReader::new(DeadlineReader::new(&stream, REQUEST_DEADLINE));
-        match read_http_request(&mut reader, MAX_BODY_BYTES) {
+        match read_http_request(&mut reader, MAX_BODY_BYTES, &["POST"]) {
             Ok(req) => dispatch(&req, engine),
             Err(HttpError::MethodNotAllowed) => (405, "method not allowed".to_string()),
             Err(HttpError::PayloadTooLarge) => (413, "payload too large".to_string()),
@@ -251,7 +210,12 @@ fn handle_connection(stream: TcpStream, engine: &Arc<Mutex<Engine>>) {
             Err(HttpError::Io) => return,
         }
     };
-    write_response(&stream, status, &body);
+    write_response(
+        &stream,
+        status,
+        &[("Content-Type", "application/json"), ("Allow", "POST")],
+        body.as_bytes(),
+    );
 }
 
 /// Route one parsed request. Only POST reaches here (non-POST is rejected in
@@ -346,191 +310,6 @@ fn log_rejected_content_type_once(content_type: &str) {
              (set OTEL_EXPORTER_OTLP_PROTOCOL=http/json)"
         );
     }
-}
-
-/// Write a minimal HTTP/1.1 response and close. Best-effort: a write error means
-/// the peer already left.
-fn write_response(mut stream: &TcpStream, status: u16, body: &str) {
-    let reason = match status {
-        200 => "OK",
-        400 => "Bad Request",
-        404 => "Not Found",
-        405 => "Method Not Allowed",
-        413 => "Payload Too Large",
-        415 => "Unsupported Media Type",
-        _ => "Error",
-    };
-    // `Connection: close` keeps the hand-rolled reader single-shot per socket;
-    // `Allow: POST` is required on a 405 and harmless elsewhere.
-    let response = format!(
-        "HTTP/1.1 {status} {reason}\r\n\
-         Content-Type: application/json\r\n\
-         Content-Length: {}\r\n\
-         Allow: POST\r\n\
-         Connection: close\r\n\r\n{body}",
-        body.len()
-    );
-    let _ = stream.write_all(response.as_bytes());
-    let _ = stream.flush();
-}
-
-/// A `Read` adapter that fails once a whole-request deadline passes. The socket's
-/// [`IO_TIMEOUT`] is a *per-read* timeout: it resets on every byte, so a peer
-/// dribbling one byte just inside it makes progress forever while holding the
-/// single receiver thread (slowloris). Checking a fixed deadline on each read
-/// turns that steady drip into a bounded one — the next read after the deadline
-/// returns `TimedOut`, which the parser treats as a dropped connection.
-struct DeadlineReader<R> {
-    inner: R,
-    deadline: Instant,
-}
-
-impl<R> DeadlineReader<R> {
-    fn new(inner: R, budget: Duration) -> Self {
-        DeadlineReader {
-            inner,
-            deadline: Instant::now() + budget,
-        }
-    }
-}
-
-impl<R: Read> Read for DeadlineReader<R> {
-    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-        if Instant::now() >= self.deadline {
-            return Err(io::Error::new(
-                io::ErrorKind::TimedOut,
-                "OTLP request deadline exceeded",
-            ));
-        }
-        self.inner.read(buf)
-    }
-}
-
-// ---- HTTP/1.1 request parsing (hand-rolled, no `http` crate) -----------------
-
-/// A parsed HTTP request: method, request-target, the declared content type
-/// (lowercased, parameters like `; charset=…` stripped), and the raw body.
-#[derive(Debug, PartialEq, Eq)]
-struct HttpRequest {
-    method: String,
-    path: String,
-    content_type: Option<String>,
-    body: Vec<u8>,
-}
-
-/// Why a request could not be turned into an [`HttpRequest`]. Each maps to a
-/// status code; `Io` means the transport failed and there is nothing to answer.
-#[derive(Debug)]
-enum HttpError {
-    /// 400 — unparseable request line/headers, or a short body.
-    BadRequest,
-    /// 405 — parsed, but the method is not POST.
-    MethodNotAllowed,
-    /// 413 — declared `Content-Length` exceeds the cap.
-    PayloadTooLarge,
-    /// The socket closed/timed out mid-request; drop without responding (the
-    /// specific transport error is not worth surfacing for a normal disconnect).
-    Io,
-}
-
-/// Read one HTTP/1.1 request: the request line, the header block up to the blank
-/// line, then exactly `Content-Length` body bytes. Bounded in both the header
-/// block ([`MAX_HEADER_BYTES`]) and the body (`max_body`) so no single request
-/// can exhaust memory. Reader-based so a test drives it with an in-memory buffer.
-fn read_http_request<R: BufRead>(
-    reader: &mut R,
-    max_body: usize,
-) -> Result<HttpRequest, HttpError> {
-    let mut header_bytes = 0usize;
-
-    // Request line: exactly three whitespace-separated tokens (METHOD TARGET VER).
-    let mut request_line = String::new();
-    read_line_capped(reader, &mut request_line, &mut header_bytes)?;
-    let mut parts = request_line.split_whitespace();
-    let method = parts.next().ok_or(HttpError::BadRequest)?.to_string();
-    let path = parts.next().ok_or(HttpError::BadRequest)?.to_string();
-    // Require the HTTP-version token so a bare "POST" line is rejected as malformed.
-    parts.next().ok_or(HttpError::BadRequest)?;
-
-    // Headers until the blank line; we only care about Content-Length and
-    // Content-Type (#236.6 — the latter only to give a better error message,
-    // never to reject a body it would otherwise have accepted).
-    let mut content_length: Option<usize> = None;
-    let mut content_type: Option<String> = None;
-    loop {
-        let mut line = String::new();
-        read_line_capped(reader, &mut line, &mut header_bytes)?;
-        let trimmed = line.trim_end_matches(['\r', '\n']);
-        if trimmed.is_empty() {
-            break;
-        }
-        if let Some((name, value)) = trimmed.split_once(':') {
-            if name.trim().eq_ignore_ascii_case("content-length") {
-                let n: usize = value.trim().parse().map_err(|_| HttpError::BadRequest)?;
-                content_length = Some(n);
-            } else if name.trim().eq_ignore_ascii_case("content-type") {
-                // Strip a `; charset=…`-style parameter and normalize case, so
-                // `application/x-protobuf; charset=utf-8` still matches.
-                let base = value.split(';').next().unwrap_or(value).trim();
-                content_type = Some(base.to_ascii_lowercase());
-            }
-        }
-        // A header line with no colon is tolerated (skipped), not fatal.
-    }
-
-    // Method last: a well-formed non-POST is a clean 405, not a 400.
-    if !method.eq_ignore_ascii_case("POST") {
-        return Err(HttpError::MethodNotAllowed);
-    }
-
-    let len = content_length.ok_or(HttpError::BadRequest)?;
-    if len > max_body {
-        return Err(HttpError::PayloadTooLarge);
-    }
-    let mut body = vec![0u8; len];
-    reader
-        .read_exact(&mut body)
-        // A client that declared more than it sent is a bad request, not an
-        // internal fault.
-        .map_err(|_| HttpError::BadRequest)?;
-
-    Ok(HttpRequest {
-        method,
-        path,
-        content_type,
-        body,
-    })
-}
-
-/// Read one line into `out`, charging its bytes against the header budget.
-/// Empty read is EOF (the peer closed); overrunning the budget is a bad request.
-///
-/// The read is bounded to the remaining header budget (`+1`, so a line that would
-/// overrun is detected rather than truncated). This matters: `BufRead::read_line`
-/// appends the ENTIRE line to `out` before returning, so without the bound a peer
-/// streaming a newline-less line could grow `out` without limit — the budget
-/// check below would only fire *after* the whole line was already in memory. The
-/// `Take` makes the allocation itself bounded by [`MAX_HEADER_BYTES`].
-fn read_line_capped<R: BufRead>(
-    reader: &mut R,
-    out: &mut String,
-    total: &mut usize,
-) -> Result<(), HttpError> {
-    out.clear();
-    let remaining = MAX_HEADER_BYTES.saturating_sub(*total);
-    let n = reader
-        .by_ref()
-        .take(remaining as u64 + 1)
-        .read_line(out)
-        .map_err(|_| HttpError::Io)?;
-    if n == 0 {
-        return Err(HttpError::Io);
-    }
-    *total += n;
-    if *total > MAX_HEADER_BYTES {
-        return Err(HttpError::BadRequest);
-    }
-    Ok(())
 }
 
 // ---- OTLP/HTTP JSON -> UsageSample (pure, per-tool) -------------------------
@@ -783,77 +562,7 @@ fn nanos_to_rfc3339(nanos: i128) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::Cursor;
-
-    // ---- HTTP frame parser ----
-
-    fn parse(bytes: &[u8], max_body: usize) -> Result<HttpRequest, HttpError> {
-        read_http_request(&mut Cursor::new(bytes.to_vec()), max_body)
-    }
-
-    #[test]
-    fn valid_post_yields_method_path_and_body() {
-        let raw = b"POST /v1/logs HTTP/1.1\r\nHost: x\r\nContent-Length: 5\r\n\r\nhello";
-        let req = parse(raw, MAX_BODY_BYTES).expect("well-formed POST parses");
-        assert_eq!(req.method, "POST");
-        assert_eq!(req.path, "/v1/logs");
-        assert_eq!(req.body, b"hello");
-    }
-
-    #[test]
-    fn oversized_body_is_rejected_before_reading_it() {
-        // Declares far more than the (tiny) cap: refused on the header alone,
-        // without allocating or reading the body.
-        let raw = b"POST /v1/logs HTTP/1.1\r\nContent-Length: 100000\r\n\r\n";
-        let err = parse(raw, 16).expect_err("over the cap");
-        assert!(matches!(err, HttpError::PayloadTooLarge), "{err:?}");
-    }
-
-    #[test]
-    fn malformed_request_line_is_a_bad_request() {
-        // A single-token request line has no method/target/version split.
-        let raw = b"GARBAGE\r\n\r\n";
-        let err = parse(raw, MAX_BODY_BYTES).expect_err("malformed");
-        assert!(matches!(err, HttpError::BadRequest), "{err:?}");
-    }
-
-    #[test]
-    fn a_non_post_method_is_405_not_400() {
-        let raw = b"GET /v1/logs HTTP/1.1\r\nContent-Length: 0\r\n\r\n";
-        let err = parse(raw, MAX_BODY_BYTES).expect_err("GET is not accepted");
-        assert!(matches!(err, HttpError::MethodNotAllowed), "{err:?}");
-    }
-
-    #[test]
-    fn an_unterminated_header_line_is_capped_not_buffered_unbounded() {
-        // A header value with no CRLF terminator, far larger than the header cap.
-        // `read_line` would otherwise append the whole line before any size check;
-        // the `Take` bound must refuse it on the budget instead.
-        let mut raw = b"POST /v1/logs HTTP/1.1\r\nX: ".to_vec();
-        raw.extend(std::iter::repeat_n(b'A', MAX_HEADER_BYTES + 4096));
-        let err = parse(&raw, MAX_BODY_BYTES).expect_err("over the header cap");
-        assert!(matches!(err, HttpError::BadRequest), "{err:?}");
-    }
-
-    #[test]
-    fn deadline_reader_fails_the_read_once_the_budget_is_spent() {
-        // A zero budget means the deadline equals construction time; the monotonic
-        // clock has advanced by the time `read` runs, so the first read fails
-        // rather than dribbling forever (the slowloris defense).
-        let data = b"hello world";
-        let mut reader = DeadlineReader::new(&data[..], Duration::from_millis(0));
-        let mut buf = [0u8; 4];
-        let err = reader.read(&mut buf).expect_err("past deadline fails");
-        assert_eq!(err.kind(), io::ErrorKind::TimedOut, "{err:?}");
-    }
-
-    #[test]
-    fn a_short_body_is_a_bad_request_not_a_panic() {
-        // Content-Length promises 10 bytes; only 3 are sent.
-        let raw = b"POST /v1/logs HTTP/1.1\r\nContent-Length: 10\r\n\r\nabc";
-        let err = parse(raw, MAX_BODY_BYTES).expect_err("body underrun");
-        assert!(matches!(err, HttpError::BadRequest), "{err:?}");
-    }
+    use std::io::Write;
 
     // ---- OTLP JSON -> UsageSample, per tool ----
 
@@ -1034,6 +743,7 @@ mod tests {
             path: "/v1/logs".to_string(),
             body: serde_json::to_vec(doc).unwrap(),
             content_type: None,
+            headers: Vec::new(),
         };
         let (status, body) = dispatch(&req, &engine);
         assert_eq!(status, 200, "a dropped record is still a 200, per OTLP");
@@ -1084,6 +794,7 @@ mod tests {
             path: "/v1/logs".to_string(),
             content_type: Some("application/x-protobuf".to_string()),
             body: b"{}".to_vec(),
+            headers: Vec::new(),
         };
         let (status, body) = dispatch(&req, &engine);
         assert_eq!(status, 415, "a declared protobuf body must be refused");
@@ -1105,6 +816,7 @@ mod tests {
             path: "/v1/logs".to_string(),
             content_type: Some("application/json".to_string()),
             body: b"{}".to_vec(),
+            headers: Vec::new(),
         };
         let (status, _) = dispatch(&req, &engine);
         assert_eq!(status, 200, "a JSON declaration must parse as always");
