@@ -32,4 +32,4 @@ sha2 = "0.10.9"
 [dev-dependencies]
 # The version is required, not decoration: deny.toml refuses a wildcard, and a
 # bare path dependency is one. scripts/bump-version.sh moves it with the rest.
-tasqx-core = { path = "../tasqx-core", version = "0.14.0", features = ["conformance"] }
+tasqx-core = { path = "../tasqx-core", version = "0.15.0", features = ["conformance"] }
