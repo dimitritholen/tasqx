@@ -1,12 +1,12 @@
-import { act, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 
 import { App } from './App';
 import { ConnectionController, FakeTransport } from './api';
 import { reloadLayout } from './shell/layout';
 import { navigate } from './shell/router';
 import { reloadTheme } from './shell/theme';
-import { baselineScript, live } from './test/harness';
-import { taskList, taskRow } from './test/scripted';
+import { baselineScript, harness, live, mount } from './test/harness';
+import { EDIT_CAPABILITIES, taskDetail, taskList, taskRow } from './test/scripted';
 
 beforeEach(() => {
   localStorage.clear();
@@ -103,5 +103,74 @@ describe('the command palette and the refresh key', () => {
 
     await it.user.click(screen.getByRole('button', { name: 'Refresh' }));
     await waitFor(() => expect(it.transport.countOf('project.list')).toBe(2));
+  });
+});
+
+describe('losing the daemon mid-edit (D160 reconnect)', () => {
+  const PAGE = taskList([taskRow({ short_id: 2 })], { total: 1 });
+
+  async function tick(ms: number): Promise<void> {
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(ms);
+    });
+  }
+
+  it('shows the banner after 1 s with the next retry, stops on Stop, and comes back with route, filter, selection and draft intact', async () => {
+    vi.useFakeTimers();
+    try {
+      const it = harness(
+        baselineScript(PAGE, {
+          'core.capabilities': EDIT_CAPABILITIES,
+          'task.get': taskDetail({ short_id: 2, title: 'Server title', _rev: 3 }),
+        }),
+        '#/tasks?filter=project%3Atasqx&sel=2',
+      );
+      mount(it);
+      await act(async () => {
+        await it.controller.start();
+      });
+      await tick(0);
+      act(() => {
+        it.store.editTask(2);
+        it.store.setDraftValue(2, 'title', 'Typed while connected');
+      });
+      const hash = window.location.hash;
+
+      it.transport.failConnect = 'daemon down';
+      act(() => it.transport.pushClose('daemon restarted'));
+      await tick(999);
+      expect(screen.queryByText(/^Offline/)).toBeNull();
+      expect(screen.getByText('stale')).toHaveClass('pill');
+      await tick(1);
+      const banner = screen.getByText(/^Offline/).closest('[role="alert"]') as HTMLElement;
+      expect(banner).toHaveTextContent(/retrying at .+ \(attempt \d+\)/);
+
+      // Stop: no more attempts, however long it is left.
+      act(() => fireEvent.click(within(banner).getByRole('button', { name: 'Stop' })));
+      await tick(0);
+      const connects = it.transport.connects;
+      await tick(60_000);
+      expect(it.transport.connects).toBe(connects);
+      expect(banner).toHaveTextContent('not retrying');
+
+      it.transport.failConnect = null;
+      it.transport.clearCalls();
+      const subscribesBefore = it.transport.sentFrames().filter((frame) => frame['method'] === 'subscribe').length;
+      act(() => fireEvent.click(within(banner).getByRole('button', { name: 'Retry now' })));
+      await tick(0);
+
+      expect(it.controller.getState()).toMatchObject({ status: 'live', stale: false, offline: false });
+      expect(it.transport.sentFrames().filter((frame) => frame['method'] === 'subscribe')).toHaveLength(subscribesBefore + 1);
+      for (const method of ['core.capabilities', 'project.list', 'task.list', 'report.summary', 'task.get']) {
+        expect(it.transport.methods).toContain(method);
+      }
+      expect(it.transport.calls.find((call) => call.method === 'task.list')?.params).toMatchObject({ filter: 'project:tasqx' });
+      expect(window.location.hash).toBe(hash);
+      const inspector = screen.getByRole('complementary', { name: 'Inspector' });
+      expect(within(inspector).getByLabelText('Title')).toHaveValue('Typed while connected');
+      expect(screen.queryByText(/^Offline/)).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
