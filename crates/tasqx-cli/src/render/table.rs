@@ -1139,18 +1139,8 @@ pub(crate) fn tail_fit(text: &str, cells: usize, unicode: bool) -> String {
     }
     let dots = if unicode { "…" } else { "..." };
     let keep = cells.saturating_sub(width(dots));
-    let mut tail: Vec<char> = Vec::new();
-    let mut used = 0;
-    for c in text.chars().rev() {
-        let cw = width(&c.to_string());
-        if used + cw > keep {
-            break;
-        }
-        used += cw;
-        tail.push(c);
-    }
-    tail.reverse();
-    format!("{dots}{}", tail.into_iter().collect::<String>())
+    let (tail, _) = unicode_truncate::UnicodeTruncateStr::unicode_truncate_start(text, keep);
+    format!("{dots}{tail}")
 }
 
 /// Gauges in `text` whose glyphs disagree with what this renderer draws at the
