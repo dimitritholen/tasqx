@@ -1031,6 +1031,19 @@ fn truncate_uses_ascii_ellipsis_without_unicode() {
     assert_eq!(ascii.chars().count(), 10);
 }
 
+/// `tail_fit` keeps the END of a string: whole, cut with the ellipsis standing
+/// for the front, and never past the budget — wide characters included.
+#[test]
+fn tail_fit_keeps_the_end_within_the_budget() {
+    assert_eq!(tail_fit("/a/b", 10, true), "/a/b");
+    assert_eq!(tail_fit("/home/me/projects/tasqx", 8, true), "…s/tasqx");
+    assert_eq!(tail_fit("/home/me/projects/tasqx", 8, false), "...tasqx");
+    // A two-cell character that straddles the budget is dropped whole.
+    assert_eq!(tail_fit("a中文b", 4, true), "…文b");
+    assert_eq!(tail_fit("a中文b", 3, true), "…b");
+    assert_eq!(tail_fit("abc", 0, true), "…");
+}
+
 /// One phrasing per op in the core's closed set, selected by the reverted op
 /// rather than by sniffing which keys `restored` happens to carry — and a
 /// fallback that still prints the payload, because an op this build has no

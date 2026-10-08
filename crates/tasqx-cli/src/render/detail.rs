@@ -852,7 +852,7 @@ pub(crate) fn detail_rows(ctx: &Ctx, result: &Value, now: Timestamp) -> Vec<Deta
 /// less than one that runs over.
 ///
 /// `summary_line` ranks its parts in the order they print, which makes this
-/// "drop from the right". `fit_facts` ranks `next`'s and `add`'s facts by what
+/// "drop from the right". `next`'s facts are ranked by what
 /// the reader loses without each, which is not where each prints: the first
 /// version took facts left to right, and a long project name pushed the
 /// deadline off `next`'s line. A second version skipped a fact that did not
@@ -872,23 +872,6 @@ pub(crate) fn keep_ranked(widths: &[usize], ranks: &[u8], sep: usize, budget: us
         used += need;
     }
     keep
-}
-
-/// A line of facts, three cells apart, fitted to `avail` cells by
-/// [`keep_ranked`]. Each fact is `(rank, plain text for measuring, painted
-/// text)` and is taken whole or not at all. `add`'s echo and `next` both fit
-/// their facts here and rank the facts they share the same way (urgency,
-/// deadline, then project and tags), which is how they cannot drift apart.
-pub(crate) fn fit_facts(facts: Vec<(u8, String, String)>, avail: usize) -> String {
-    let widths: Vec<usize> = facts.iter().map(|(_, plain, _)| width(plain)).collect();
-    let ranks: Vec<u8> = facts.iter().map(|(rank, _, _)| *rank).collect();
-    let keep = keep_ranked(&widths, &ranks, 3, avail);
-    facts
-        .into_iter()
-        .zip(keep)
-        .filter_map(|((_, _, painted), k)| k.then_some(painted))
-        .collect::<Vec<_>>()
-        .join("   ")
 }
 
 // The `show` card: the status-colored left rail (the C variant that

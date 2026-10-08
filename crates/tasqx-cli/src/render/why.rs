@@ -42,7 +42,7 @@ pub fn next_task(ctx: &Ctx, result: &Value, now: Timestamp) -> String {
     let label = "next  ";
     let pad = " ".repeat(width(label) + 2);
     // Fitted to the terminal (#346): the title is cut where the width ends,
-    // as `add`'s echo cuts it, and the facts go through `fit_facts`.
+    // as `add`'s echo cuts it, and the facts go through `keep_ranked`.
     let id = format!("#{sid}");
     let title = truncate(
         &s(t, "title"),
@@ -63,7 +63,7 @@ pub fn next_task(ctx: &Ctx, result: &Value, now: Timestamp) -> String {
         _ => "muted",
     };
     let ramp = ctx.theme.ramp_style(urgency_scale(urg));
-    // Ranked by what the reader loses without each (`fit_facts`): the
+    // Ranked by what the reader loses without each (`keep_ranked`): the
     // urgency cell and the deadline say why this task, the running timer what
     // state it is in (the command line below says so too), the project and
     // the tags only where it lives.
@@ -123,10 +123,17 @@ pub fn next_task(ctx: &Ctx, result: &Value, now: Timestamp) -> String {
             facts.push((4, joined.clone(), ctx.paint("tag", &joined)));
         }
     }
-    out.push_str(&format!(
-        "{pad}{}\n",
-        fit_facts(facts, ctx.cols.saturating_sub(width(&pad)))
-    ));
+    // Each fact is `(rank, plain text for measuring, painted text)`, taken
+    // whole or not at all, three cells apart.
+    let widths: Vec<usize> = facts.iter().map(|(_, plain, _)| width(plain)).collect();
+    let ranks: Vec<u8> = facts.iter().map(|(rank, _, _)| *rank).collect();
+    let keep = keep_ranked(&widths, &ranks, 3, ctx.cols.saturating_sub(width(&pad)));
+    let line: Vec<String> = facts
+        .into_iter()
+        .zip(keep)
+        .filter_map(|((_, _, painted), k)| k.then_some(painted))
+        .collect();
+    out.push_str(&format!("{pad}{}\n", line.join("   ")));
     let start = if s(t, "status") == "active" {
         format!("tasqx done {sid}")
     } else {
