@@ -2995,7 +2995,9 @@ impl Engine {
     /// read. Params: `ref`, `memory_limit?` (default
     /// [`BRIEF_MEMORY_LIMIT`], five — not
     /// `memory.search`'s ten, because this query is derived rather than asked
-    /// (D154); an explicit value of any size is honoured).
+    /// (D154); an explicit value of any size is honoured), and
+    /// `annotations_limit?`, `annotations_offset?`, `max_body_bytes?`, which
+    /// page and cap the task half exactly as on `task.get` (D220).
     ///
     /// Three parts and no new data: the task exactly as [`Engine::task_get`]
     /// returns it, the dependency neighbourhood with each prerequisite's
@@ -3026,18 +3028,23 @@ impl Engine {
 
         // The task half is `task.get`'s own result, not a reshaping of it: a
         // caller that can read one can read the other, and D49's renderer can
-        // be pointed straight at it. `annotations_limit` is deliberately not
-        // forwarded — the brief is what you read BEFORE starting, so the
-        // task's own history is the part least worth truncating, and the
-        // transport's byte budget (D66) is where a too-large answer is cut.
-        //
-        // `max_body_bytes` IS forwarded (D148), and the difference is the
-        // reason: a page limit drops whole notes, while the cap keeps every
-        // note and cuts inside the longest one, with a marker naming the call
-        // that reads it whole. Threaded by hand because this params object is
-        // built here rather than being the caller's — a brief's `ref` may be a
-        // UUID and is resolved to a short_id above.
+        // be pointed straight at it. So it takes `task.get`'s page and body
+        // cap (D148, D220), each absent meaning what it means there — the
+        // whole history, every body whole. The page is what gives the
+        // transport's budget a lever on a long history; before it, the memory
+        // page was the only one and an oversized brief went out whole.
+        // Threaded by hand because this params object is built here rather
+        // than being the caller's — a brief's `ref` may be a UUID and is
+        // resolved to a short_id above.
+        // Spelled out per key rather than looped: D33's drift guard reads the
+        // literal `opt_u64(p, "...")` calls to know what this method accepts.
         let mut detail_params = json!({ "ref": task.short_id });
+        if let Some(n) = opt_u64(p, "annotations_limit")? {
+            detail_params["annotations_limit"] = json!(n);
+        }
+        if let Some(n) = opt_u64(p, "annotations_offset")? {
+            detail_params["annotations_offset"] = json!(n);
+        }
         if let Some(cap) = opt_u64(p, "max_body_bytes")? {
             detail_params["max_body_bytes"] = json!(cap);
         }

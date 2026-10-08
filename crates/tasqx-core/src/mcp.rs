@@ -785,6 +785,20 @@ fn build_tool_specs() -> Vec<ToolSpec> {
                              default false, and visible only in the `include_json` block. \
                              LOWER `rank` is the better match and hits arrive sorted best-first."
                     },
+                    "annotations_limit": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "description": format!(
+                            "The task's most-recent annotations, as on tasqx_get_task; \
+                             default {ANNOTATION_PAGE}. Over budget, memory is cut first, \
+                             then this page (D220)."
+                        )
+                    },
+                    "annotations_offset": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "description": "Annotations to skip from the newest, as on tasqx_get_task."
+                    },
                     "max_body_bytes": max_body_bytes_schema(),
                     "include_json": {
                         "type": "boolean",
@@ -2474,7 +2488,9 @@ impl<'e> McpServer<'e> {
             },
         };
 
-        if spec.method == "task.get" {
+        // D220: the brief's task half is `task.get`'s result and takes the
+        // same page, so the bisection over it has a ceiling to start from.
+        if spec.method == "task.get" || spec.method == "task.brief" {
             if let Some(obj) = args.as_object_mut() {
                 if !obj.contains_key("annotations_limit") {
                     obj.insert("annotations_limit".to_string(), json!(ANNOTATION_PAGE));
@@ -3040,26 +3056,35 @@ impl<'e> McpServer<'e> {
         close(&best.unwrap_or(view))
     }
 
-    /// Fit a `task.brief` response to [`RESPONSE_BUDGET_BYTES`] (D136).
+    /// Fit a `task.brief` response to [`RESPONSE_BUDGET_BYTES`] (D136, D220).
     ///
-    /// D66's three steps, one method over: both blocks if they fit, then the
-    /// rendered view alone, then the largest `memory_limit` that fits, found by
+    /// D66's steps, one method over: both blocks if they fit, then the rendered
+    /// view alone, then the largest `memory_limit` that fits, then — with no
+    /// memory left — the largest annotation page that fits, each found by
     /// bisection rather than by halving. Under D151's default there is no JSON
     /// block to spend, so the first step is skipped and the view alone is what
-    /// is measured — `include_json` says which. The lever is the memory page and
-    /// nothing else — the task half and the neighbourhood are what the caller
-    /// asked for, and a brief that cut the prerequisite's outcome to make room
-    /// for a search hit would have dropped the more valuable half.
+    /// is measured — `include_json` says which.
     ///
-    /// A caller that named its own `memory_limit` is answered exactly as asked,
-    /// however large: a request second-guessed is a caller who can never ask
-    /// for a big page on purpose. That exemption is this method's own and no
-    /// longer `fit_to_budget`'s — D148 removed the `annotations_limit` one,
-    /// because a task's annotations are the caller's own prose and can be
-    /// arbitrarily large, while a memory page is
-    /// [`BRIEF_MEMORY_LIMIT`](crate::engine::BRIEF_MEMORY_LIMIT) bounded
-    /// snippets. The task half arrives with its bodies already capped, which is
-    /// where a brief's unbounded bytes actually came from.
+    /// Memory goes before history because the brief is read BEFORE starting:
+    /// a search hit is a snippet of something stored elsewhere, while the
+    /// task's own notes are what the work is. The neighbourhood is never cut —
+    /// a brief that dropped the prerequisite's outcome for room would have
+    /// dropped the more valuable half.
+    ///
+    /// A caller that named its own `memory_limit` keeps that page: a request
+    /// second-guessed is a caller who can never ask for a big page on purpose.
+    /// It is not an exemption from the budget (D220). The memory page was the
+    /// only lever once, so the exemption sent an oversized brief whole, and
+    /// so did a brief whose TASK half was the overflow — a long history left
+    /// the bisection nothing to pull. The annotation page is that second
+    /// lever, and the caller's own page is its ceiling, as on `task.get`
+    /// (D148).
+    ///
+    /// The floor is the smallest candidate, never the first: zero memory hits
+    /// and zero annotations, a brief that still carries the task, its
+    /// Description and Delivered notes and what its prerequisites decided. If
+    /// even that does not fit, the caller raised `max_body_bytes` themselves,
+    /// which is the escape D148 documents.
     ///
     /// `render` is the caller's chosen view (D146), for `fit_to_budget`'s
     /// reason: the lever and the measurement are the same whichever way the
@@ -3077,7 +3102,7 @@ impl<'e> McpServer<'e> {
         // caller asked for was dropped (D72, D151).
         let finish = |view: &str| {
             if include_json {
-                view_only_text(view)
+                brief_view_only_text(view)
             } else {
                 view.to_string()
             }
@@ -3085,13 +3110,10 @@ impl<'e> McpServer<'e> {
         let fits = |view: &str| finish(view).len() <= RESPONSE_BUDGET_BYTES;
         let close = |view: &str| tool_ok_text(&finish(view));
 
-        let named_own_limit = args.get("memory_limit").is_some_and(|v| !v.is_null());
         let view = render(&first);
-        if named_own_limit || view.len() + json_len(&first) <= RESPONSE_BUDGET_BYTES {
-            // The exemption and the fitting answer both come out here, and
-            // both honour the caller's block count: two blocks when asked for,
-            // the bare view otherwise — with no notice either way, since
-            // nothing was dropped.
+        if view.len() + json_len(&first) <= RESPONSE_BUDGET_BYTES {
+            // Fits whole: two blocks when asked for, the bare view otherwise —
+            // with no notice either way, since nothing was dropped.
             return if include_json {
                 tool_ok_with_view(view, &first)
             } else {
@@ -3102,43 +3124,63 @@ impl<'e> McpServer<'e> {
             return close(&view);
         }
 
-        let mut view = view;
-        let mut lo = 0u64;
-        // The ceiling is the page this bisection is shrinking, and it only
-        // ever runs for a caller who named no `memory_limit` (the one that did
-        // returned above) — so the page in hand is the default, five since
-        // D154. Bisecting from ten would spend two dispatches measuring pages
-        // the engine was never asked for.
-        let mut hi = crate::engine::BRIEF_MEMORY_LIMIT;
-        let mut best: Option<String> = None;
-        while lo <= hi {
-            let mid = lo + (hi - lo) / 2;
-            let mut retry = args.clone();
-            match retry.as_object_mut() {
-                Some(obj) => obj.insert("memory_limit".to_string(), json!(mid)),
-                None => break,
-            };
-            let Ok(candidate) = dispatch(self.engine, "task.brief", &retry) else {
-                break;
-            };
-            let rendered = render(&candidate);
-            if fits(&rendered) {
-                best = Some(rendered);
-                lo = mid + 1;
-            } else {
-                // The floor is ZERO hits, not one: unlike an annotation page,
-                // dropping memory entirely still leaves a useful brief — the
-                // task and what its prerequisites decided. If even that does
-                // not fit, the task itself is past the budget and there is no
-                // lever here that would help.
-                if mid == 0 {
-                    view = rendered;
-                    break;
+        // The largest value of `key` in `0..=hi` whose brief fits, or the
+        // rendered floor when none does. Bisection for `fit_to_budget`'s
+        // reason: a size per row extrapolated from a few is wrong exactly when
+        // bodies vary, and a measured yes/no per candidate never is.
+        let largest_fitting =
+            |base: &Value, key: &str, hi: u64| -> Result<String, Option<String>> {
+                let (mut lo, mut hi) = (0u64, hi);
+                let mut best = None;
+                while lo <= hi {
+                    let mid = lo + (hi - lo) / 2;
+                    let mut retry = base.clone();
+                    match retry.as_object_mut() {
+                        Some(obj) => obj.insert(key.to_string(), json!(mid)),
+                        None => break,
+                    };
+                    let Ok(candidate) = dispatch(self.engine, "task.brief", &retry) else {
+                        break;
+                    };
+                    let rendered = render(&candidate);
+                    if fits(&rendered) {
+                        best = Some(rendered);
+                        lo = mid + 1;
+                    } else if mid == 0 {
+                        return best.ok_or(Some(rendered));
+                    } else {
+                        hi = mid - 1;
+                    }
                 }
-                hi = mid - 1;
+                best.ok_or(None)
+            };
+
+        let mut base = args.clone();
+        let named_own_limit = args.get("memory_limit").is_some_and(|v| !v.is_null());
+        if !named_own_limit {
+            // The ceiling is the page this bisection is shrinking: the
+            // default, five since D154, because a caller who named one is not
+            // on this branch. Bisecting from ten would spend two dispatches
+            // measuring pages the engine was never asked for.
+            match largest_fitting(&base, "memory_limit", crate::engine::BRIEF_MEMORY_LIMIT) {
+                Ok(best) => return close(&best),
+                Err(_) => {
+                    if let Some(obj) = base.as_object_mut() {
+                        obj.insert("memory_limit".to_string(), json!(0));
+                    }
+                }
             }
         }
-        close(&best.unwrap_or(view))
+        // `prepare_args` always inserts a page, so the fallback is for a call
+        // that never went through it.
+        let page = args
+            .get("annotations_limit")
+            .and_then(Value::as_u64)
+            .unwrap_or(ANNOTATION_PAGE);
+        match largest_fitting(&base, "annotations_limit", page) {
+            Ok(best) => close(&best),
+            Err(floor) => close(&floor.unwrap_or(view)),
+        }
     }
 
     /// Fit a `task.list` response to [`RESPONSE_BUDGET_BYTES`] by re-cutting
@@ -3411,6 +3453,21 @@ fn view_only_text(view: &str) -> String {
          The budget applies to every answer, whatever `annotations_limit` you name; the \
          rendered view alone is the default, and `include_json: true` is what spends the \
          budget on this duplicate before it spends it on history. A body longer than \
+         `max_body_bytes` (default 16384) is cut IN THIS RESPONSE ONLY, marked with its real \
+         size and the call that reads it whole._\n"
+    )
+}
+
+/// [`view_only_text`] for a brief (D220): the same omission, with the levers a
+/// brief's budget actually pulls. The `task.get` sentence named only the
+/// annotation page, while a brief spends its memory page first.
+fn brief_view_only_text(view: &str) -> String {
+    format!(
+        "{view}\n_Machine-readable JSON omitted: you asked for both blocks and together they \
+         exceeded this tool's response budget, so the budget spent the JSON first. The \
+         rendered view above is the same brief. Past the budget the memory page is cut \
+         first (unless you named `memory_limit`), then the task's annotation page, whose \
+         heading names the `annotations_offset` that reads the rest. A body longer than \
          `max_body_bytes` (default 16384) is cut IN THIS RESPONSE ONLY, marked with its real \
          size and the call that reads it whole._\n"
     )

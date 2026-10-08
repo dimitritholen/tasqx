@@ -74,6 +74,45 @@ fn the_brief_carries_the_task_in_the_shape_task_get_returns() {
     });
 }
 
+/// D220: the task half pages exactly as `task.get` does, so a long history has
+/// a smaller answer to ask for. The page is `task.get`'s own under the same
+/// two arguments — newest first, `annotations_total` and the next offset
+/// naming the rest — and absent arguments still mean the whole history.
+#[test]
+fn the_task_half_takes_task_gets_annotation_page() {
+    let e = engine();
+    let a = add(&e, "Ship the release notes", json!({}));
+    for i in 0..5 {
+        call(
+            &e,
+            "annotation.add",
+            json!({ "ref": a, "body": format!("note {i}") }),
+        )
+        .expect("annotate");
+    }
+
+    let page = json!({ "ref": a, "annotations_limit": 2, "annotations_offset": 1 });
+    let out = call(&e, "task.brief", page.clone()).expect("a paged brief");
+    let got = call(&e, "task.get", page).expect("task.get");
+    assert_eq!(out["task"], got, "the same page `task.get` answers");
+    let bodies: Vec<&str> = out["task"]["annotations"]
+        .as_array()
+        .expect("annotations")
+        .iter()
+        .map(|n| n["body"].as_str().unwrap_or_default())
+        .collect();
+    assert_eq!(bodies, ["note 2", "note 3"], "one back from the newest");
+    assert_eq!(out["task"]["annotations_total"], 5);
+    assert_eq!(out["task"]["annotations_next_offset"], 3);
+
+    let whole = brief(&e, a);
+    assert_eq!(
+        whole["task"]["annotations"].as_array().map(Vec::len),
+        Some(5)
+    );
+    assert_eq!(whole["task"]["annotations_next_offset"], Value::Null);
+}
+
 // ---- the neighbourhood ----------------------------------------------------
 
 #[test]

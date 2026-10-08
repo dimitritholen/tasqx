@@ -3348,6 +3348,95 @@ fn a_view_only_brief_is_still_bounded() {
     );
 }
 
+/// D220: a brief whose TASK half is the overflow — twenty 2 KB notes and no
+/// memory to spend — used to leave the bisection with no lever and send the
+/// whole 40 KB anyway. The annotation page is the second lever: the answer
+/// fits, and the view names the `annotations_offset` that reads the rest.
+fn long_history(engine: &Engine) {
+    engine
+        .task_add(&json!({ "title": "a long history" }))
+        .expect("add");
+    for i in 0..20 {
+        engine
+            .annotation_add(
+                &json!({ "ref": 1, "body": format!("note {i:02} {}", "x".repeat(2_040)) }),
+            )
+            .expect("annotate");
+    }
+}
+
+#[test]
+fn a_long_history_brief_is_cut_to_the_annotation_page_that_fits() {
+    let engine = engine();
+    long_history(&engine);
+    let server = McpServer::new(&engine, Scope::Read);
+
+    // Unnamed, and with a caller-named memory page: naming `memory_limit` is
+    // not an exemption from the history's budget.
+    for (id, args) in [
+        (1, json!({ "ref": 1 })),
+        (2, json!({ "ref": 1, "memory_limit": 5 })),
+    ] {
+        let out = call(&server, id, "tasqx_brief_task", args);
+        assert!(!is_error(&out), "{out}");
+        let view = out["result"]["content"][0]["text"]
+            .as_str()
+            .expect("the view");
+        assert!(
+            view.len() <= 24_576,
+            "the brief is {} bytes: the annotation page is the lever",
+            view.len()
+        );
+        let shown = view.matches("note ").count();
+        assert!((1..20).contains(&shown), "cut to what fits, got {shown}");
+        assert!(view.contains("note 19 "), "the page is the newest notes");
+        assert!(
+            view.contains(&format!("`annotations_offset: {shown}`")),
+            "the view names the call that reads the rest:\n{}",
+            &view[..view.len().min(600)]
+        );
+    }
+
+    // And that call works: the brief takes the offset `tasqx_get_task` does.
+    let older = call(
+        &server,
+        3,
+        "tasqx_brief_task",
+        json!({ "ref": 1, "annotations_offset": 15, "annotations_limit": 5 }),
+    );
+    assert!(!is_error(&older), "{older}");
+    let view = older["result"]["content"][0]["text"]
+        .as_str()
+        .expect("view");
+    assert!(view.contains("note 00 ") && view.contains("note 04 "));
+    assert!(!view.contains("note 05 "), "only the page asked for");
+}
+
+/// The notice for a dropped JSON block names the BRIEF's levers, not
+/// `task.get`'s alone, and is counted inside the budget.
+#[test]
+fn a_brief_that_drops_its_json_block_says_which_levers_it_has() {
+    let engine = engine();
+    long_history(&engine);
+    let server = McpServer::new(&engine, Scope::Read);
+
+    let out = call(
+        &server,
+        1,
+        "tasqx_brief_task",
+        json!({ "ref": 1, "include_json": true }),
+    );
+    let blocks = out["result"]["content"].as_array().expect("blocks");
+    assert_eq!(blocks.len(), 1, "the JSON went first");
+    let text = blocks[0]["text"].as_str().expect("text");
+    assert!(text.len() <= 24_576, "{} bytes", text.len());
+    assert!(
+        text.contains("Machine-readable JSON omitted") && text.contains("`memory_limit`"),
+        "the brief's own notice:\n{}",
+        &text[text.len().saturating_sub(900)..]
+    );
+}
+
 /// The argument is consumed by the transport, never forwarded.
 ///
 /// `check_params` refuses any key the method does not accept, so a forwarded
@@ -3736,6 +3825,10 @@ fn the_read_only_refusal_names_the_flag_that_fixes_it() {
 /// `tasqx_add_task`. Measured beside every tool above: 34 tools, 37,947 bytes,
 /// so the cap moved from 36,608 to 38,016.
 ///
+/// D220 added `annotations_limit` and `annotations_offset` to
+/// `tasqx_brief_task`. Measured beside every tool above: 34 tools, 38,268
+/// bytes, so the cap moved from 38,016 to 38,272.
+///
 /// The floor is not zero. With every `description` key removed from the roster
 /// the same serialization is 11,597 bytes of schema skeleton — property names,
 /// `type`, the closed `enum` lists D30 renders from the engine's own consts,
@@ -3746,7 +3839,7 @@ fn the_read_only_refusal_names_the_flag_that_fixes_it() {
 fn the_whole_tool_roster_stays_inside_its_per_prompt_budget() {
     const MAX_DESCRIPTION: usize = 800;
     const MAX_ENTRY: usize = 3_072;
-    const MAX_ROSTER: usize = 38_016;
+    const MAX_ROSTER: usize = 38_272;
 
     let engine = engine();
     let server = McpServer::new(&engine, Scope::Write);

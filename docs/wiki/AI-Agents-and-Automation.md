@@ -185,6 +185,11 @@ paying for it:
 - `tasqx_brief_task` holds half its memory page for knowledge docs (from
   `memory add` / `memory import`), so a ruling is not buried under a
   project's own, more numerous, task annotations.
+- `tasqx_brief_task` pages the task's annotations the way `tasqx_get_task`
+  does: the newest 20 by default, `annotations_limit` and
+  `annotations_offset` to choose another page. A brief over the response
+  budget drops memory hits first, then older annotations, and the view names
+  the `annotations_offset` that reads the rest.
 
 ### Why the tool descriptions are short
 
