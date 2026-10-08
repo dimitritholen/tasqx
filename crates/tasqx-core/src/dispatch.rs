@@ -485,7 +485,7 @@ pub fn handle_envelope(engine: &Engine, input: &str) -> Value {
         Ok(r) => r,
         Err(e) => {
             return error_envelope(
-                Value::Null,
+                peek_envelope_id(input),
                 &ApiError::bad_request(format!("malformed request envelope: {e}")),
             )
         }
@@ -533,9 +533,12 @@ fn success_envelope(id: Value, result: Value) -> Value {
 /// the same "no correlation available" fact `handle_envelope` already
 /// answers for a malformed envelope.
 pub fn peek_envelope_id(input: &str) -> Value {
-    serde_json::from_str::<ApiRequest>(input)
+    // Read `id` off the raw JSON, not through `ApiRequest`: an envelope that
+    // fails validation (no `method`) still carries the id a multiplexed caller
+    // needs to correlate its refusal.
+    serde_json::from_str::<Value>(input)
         .ok()
-        .and_then(|r| r.id)
+        .and_then(|v| v.get("id").cloned())
         .unwrap_or(Value::Null)
 }
 
