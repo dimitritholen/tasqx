@@ -862,7 +862,10 @@ mod tests {
     /// `mono` screen does not dim what `list` prints plain.
     #[test]
     fn no_color_drops_dim_on_a_screen_too() {
-        let s = Style::fg(Rgb::new(1, 2, 3)).dim().bold();
+        let s = Style {
+            dim: true,
+            ..Style::fg(Rgb::new(1, 2, 3)).bold()
+        };
         let none = rt_style(s, &caps(ColorDepth::None, true));
         assert!(!none.add_modifier.contains(Modifier::DIM), "{none:?}");
         assert!(none.add_modifier.contains(Modifier::BOLD));

@@ -449,17 +449,6 @@ impl Style {
         self.bold = true;
         self
     }
-    // Part of the Style builder API; exercised by the degradation tests.
-    #[allow(dead_code)]
-    pub fn dim(mut self) -> Self {
-        self.dim = true;
-        self
-    }
-    #[allow(dead_code)]
-    pub fn underline(mut self) -> Self {
-        self.underline = true;
-        self
-    }
 
     /// Wrap `text` in the SGR escapes this style + capability level imply.
     /// - `ansi=false` → returns `text` untouched (zero escapes).
@@ -647,319 +636,171 @@ fn spec(fg: &str) -> StyleSpec {
 }
 fn spec_b(fg: &str) -> StyleSpec {
     StyleSpec {
-        fg: Some(fg.to_string()),
         bold: Some(true),
-        ..Default::default()
+        ..spec(fg)
     }
 }
 fn spec_d(fg: &str) -> StyleSpec {
     StyleSpec {
-        fg: Some(fg.to_string()),
+        dim: Some(true),
+        ..spec(fg)
+    }
+}
+/// The colourless counterparts `mono` is made of: emphasis with no hue.
+fn only_bold() -> StyleSpec {
+    StyleSpec {
+        bold: Some(true),
+        ..Default::default()
+    }
+}
+fn only_dim() -> StyleSpec {
+    StyleSpec {
         dim: Some(true),
         ..Default::default()
     }
 }
 
+/// The five anchors every built-in sets, then the three hexes the colored
+/// built-ins differ in beyond them: `project`, `tag` and `timer.active`.
+struct Palette {
+    bg: &'static str,
+    fg: &'static str,
+    accent: &'static str,
+    warn: &'static str,
+    danger: &'static str,
+    muted: &'static str,
+    project: &'static str,
+    tag: &'static str,
+    timer: &'static str,
+}
+
+/// The four colored built-ins: one role list over a palette row. The ramp is
+/// always the shared grey, then the palette's own `warn` and `danger` (D119).
+fn colored(name: &str, p: &Palette) -> Theme {
+    build(
+        name,
+        &[
+            ("bg", p.bg),
+            ("fg", p.fg),
+            ("accent", p.accent),
+            ("warn", p.warn),
+            ("danger", p.danger),
+            ("muted", p.muted),
+        ],
+        &[
+            ("header", spec_b("accent")),
+            ("project", spec_d(p.project)),
+            ("tag", spec(p.tag)),
+            ("priority.H", spec_b("danger")),
+            ("priority.M", spec("warn")),
+            ("priority.L", spec_d("muted")),
+            ("overdue", spec_b("danger")),
+            ("timer.active", spec(p.timer)),
+            ("muted", spec_d("muted")),
+            ("danger", spec_b("danger")),
+            ("warn", spec("warn")),
+            ("accent", spec("accent")),
+            ("table.label", spec("#8a8a8a")),
+            ("chart.ideal", spec_d("#8a8a8a")),
+            ("card.frame", spec("#585858")),
+            ("card.label", spec("#8a8a8a")),
+            ("card.strong", only_bold()),
+        ],
+        &["#8a8a8a", p.warn, p.danger],
+    )
+}
+
 /// Return a built-in theme by name, or None.
 pub fn builtin(name: &str) -> Option<Theme> {
-    let t = match name {
-        "nord" => build(
-            "nord",
-            &[
-                ("bg", "#2e3440"),
-                ("fg", "#d8dee9"),
-                ("accent", "#88c0d0"),
-                ("warn", "#ebcb8b"),
-                ("danger", "#bf616a"),
-                ("muted", "#4c566a"),
-            ],
-            &[
-                ("header", spec_b("accent")),
-                ("project", spec_d("#81a1c1")),
-                ("tag", spec("#b48ead")),
-                ("priority.H", spec_b("danger")),
-                ("priority.M", spec("warn")),
-                ("priority.L", spec_d("muted")),
-                (
-                    "overdue",
-                    StyleSpec {
-                        fg: Some("danger".into()),
-                        bold: Some(true),
-                        ..Default::default()
-                    },
-                ),
-                ("timer.active", spec("#a3be8c")),
-                ("muted", spec_d("muted")),
-                ("danger", spec_b("danger")),
-                ("warn", spec("warn")),
-                ("accent", spec("accent")),
-                ("table.label", spec("#8a8a8a")),
-                ("chart.ideal", spec_d("#8a8a8a")),
-                ("card.frame", spec("#585858")),
-                ("card.label", spec("#8a8a8a")),
-                (
-                    "card.strong",
-                    StyleSpec {
-                        bold: Some(true),
-                        ..Default::default()
-                    },
-                ),
-            ],
-            &["#8a8a8a", "#ebcb8b", "#bf616a"],
-        ),
-        "gruvbox" => build(
-            "gruvbox",
-            &[
-                ("bg", "#282828"),
-                ("fg", "#ebdbb2"),
-                ("accent", "#83a598"),
-                ("warn", "#fabd2f"),
-                ("danger", "#fb4934"),
-                ("muted", "#928374"),
-            ],
-            &[
-                ("header", spec_b("accent")),
-                ("project", spec_d("#83a598")),
-                ("tag", spec("#d3869b")),
-                ("priority.H", spec_b("danger")),
-                ("priority.M", spec("warn")),
-                ("priority.L", spec_d("muted")),
-                (
-                    "overdue",
-                    StyleSpec {
-                        fg: Some("danger".into()),
-                        bold: Some(true),
-                        ..Default::default()
-                    },
-                ),
-                ("timer.active", spec("#b8bb26")),
-                ("muted", spec_d("muted")),
-                ("danger", spec_b("danger")),
-                ("warn", spec("warn")),
-                ("accent", spec("accent")),
-                ("table.label", spec("#8a8a8a")),
-                ("chart.ideal", spec_d("#8a8a8a")),
-                ("card.frame", spec("#585858")),
-                ("card.label", spec("#8a8a8a")),
-                (
-                    "card.strong",
-                    StyleSpec {
-                        bold: Some(true),
-                        ..Default::default()
-                    },
-                ),
-            ],
-            &["#8a8a8a", "#fabd2f", "#fb4934"],
-        ),
-        "dracula" => build(
-            "dracula",
-            &[
-                ("bg", "#282a36"),
-                ("fg", "#f8f8f2"),
-                ("accent", "#8be9fd"),
-                ("warn", "#f1fa8c"),
-                ("danger", "#ff5555"),
-                ("muted", "#6272a4"),
-            ],
-            &[
-                ("header", spec_b("accent")),
-                ("project", spec_d("#bd93f9")),
-                ("tag", spec("#ff79c6")),
-                ("priority.H", spec_b("danger")),
-                ("priority.M", spec("warn")),
-                ("priority.L", spec_d("muted")),
-                (
-                    "overdue",
-                    StyleSpec {
-                        fg: Some("danger".into()),
-                        bold: Some(true),
-                        ..Default::default()
-                    },
-                ),
-                ("timer.active", spec("#50fa7b")),
-                ("muted", spec_d("muted")),
-                ("danger", spec_b("danger")),
-                ("warn", spec("warn")),
-                ("accent", spec("accent")),
-                ("table.label", spec("#8a8a8a")),
-                ("chart.ideal", spec_d("#8a8a8a")),
-                ("card.frame", spec("#585858")),
-                ("card.label", spec("#8a8a8a")),
-                (
-                    "card.strong",
-                    StyleSpec {
-                        bold: Some(true),
-                        ..Default::default()
-                    },
-                ),
-            ],
-            &["#8a8a8a", "#f1fa8c", "#ff5555"],
-        ),
-        "solarized" => build(
-            "solarized",
-            &[
-                ("bg", "#002b36"),
-                ("fg", "#839496"),
-                ("accent", "#268bd2"),
-                ("warn", "#b58900"),
-                ("danger", "#dc322f"),
-                ("muted", "#586e75"),
-            ],
-            &[
-                ("header", spec_b("accent")),
-                ("project", spec_d("#268bd2")),
-                ("tag", spec("#6c71c4")),
-                ("priority.H", spec_b("danger")),
-                ("priority.M", spec("warn")),
-                ("priority.L", spec_d("muted")),
-                (
-                    "overdue",
-                    StyleSpec {
-                        fg: Some("danger".into()),
-                        bold: Some(true),
-                        ..Default::default()
-                    },
-                ),
-                ("timer.active", spec("#859900")),
-                ("muted", spec_d("muted")),
-                ("danger", spec_b("danger")),
-                ("warn", spec("warn")),
-                ("accent", spec("accent")),
-                ("table.label", spec("#8a8a8a")),
-                ("chart.ideal", spec_d("#8a8a8a")),
-                ("card.frame", spec("#585858")),
-                ("card.label", spec("#8a8a8a")),
-                (
-                    "card.strong",
-                    StyleSpec {
-                        bold: Some(true),
-                        ..Default::default()
-                    },
-                ),
-            ],
-            &["#8a8a8a", "#b58900", "#dc322f"],
-        ),
+    let p = match name {
+        "nord" => Palette {
+            bg: "#2e3440",
+            fg: "#d8dee9",
+            accent: "#88c0d0",
+            warn: "#ebcb8b",
+            danger: "#bf616a",
+            muted: "#4c566a",
+            project: "#81a1c1",
+            tag: "#b48ead",
+            timer: "#a3be8c",
+        },
+        "gruvbox" => Palette {
+            bg: "#282828",
+            fg: "#ebdbb2",
+            accent: "#83a598",
+            warn: "#fabd2f",
+            danger: "#fb4934",
+            muted: "#928374",
+            project: "#83a598",
+            tag: "#d3869b",
+            timer: "#b8bb26",
+        },
+        "dracula" => Palette {
+            bg: "#282a36",
+            fg: "#f8f8f2",
+            accent: "#8be9fd",
+            warn: "#f1fa8c",
+            danger: "#ff5555",
+            muted: "#6272a4",
+            project: "#bd93f9",
+            tag: "#ff79c6",
+            timer: "#50fa7b",
+        },
+        "solarized" => Palette {
+            bg: "#002b36",
+            fg: "#839496",
+            accent: "#268bd2",
+            warn: "#b58900",
+            danger: "#dc322f",
+            muted: "#586e75",
+            project: "#268bd2",
+            tag: "#6c71c4",
+            timer: "#859900",
+        },
         // mono: no color anywhere — meaning is carried by bold/dim/underline
         // only, so it is correct even on a NO_COLOR or 16-color terminal.
-        "mono" => build(
-            "mono",
-            &[
-                ("bg", "#000000"),
-                ("fg", "#ffffff"),
-                ("accent", "#ffffff"),
-                ("warn", "#ffffff"),
-                ("danger", "#ffffff"),
-                ("muted", "#808080"),
-            ],
-            &[
-                (
-                    "header",
-                    StyleSpec {
-                        bold: Some(true),
-                        ..Default::default()
-                    },
-                ),
-                (
-                    "project",
-                    StyleSpec {
-                        dim: Some(true),
-                        ..Default::default()
-                    },
-                ),
-                ("tag", StyleSpec::default()),
-                (
-                    "priority.H",
-                    StyleSpec {
-                        bold: Some(true),
-                        ..Default::default()
-                    },
-                ),
-                ("priority.M", StyleSpec::default()),
-                (
-                    "priority.L",
-                    StyleSpec {
-                        dim: Some(true),
-                        ..Default::default()
-                    },
-                ),
-                (
-                    "overdue",
-                    StyleSpec {
-                        bold: Some(true),
-                        underline: Some(true),
-                        ..Default::default()
-                    },
-                ),
-                (
-                    "timer.active",
-                    StyleSpec {
-                        bold: Some(true),
-                        ..Default::default()
-                    },
-                ),
-                (
-                    "muted",
-                    StyleSpec {
-                        dim: Some(true),
-                        ..Default::default()
-                    },
-                ),
-                (
-                    "danger",
-                    StyleSpec {
-                        bold: Some(true),
-                        ..Default::default()
-                    },
-                ),
-                ("warn", StyleSpec::default()),
-                (
-                    "accent",
-                    StyleSpec {
-                        bold: Some(true),
-                        ..Default::default()
-                    },
-                ),
-                (
-                    "table.label",
-                    StyleSpec {
-                        dim: Some(true),
-                        ..Default::default()
-                    },
-                ),
-                (
-                    "chart.ideal",
-                    StyleSpec {
-                        dim: Some(true),
-                        ..Default::default()
-                    },
-                ),
-                (
-                    "card.frame",
-                    StyleSpec {
-                        dim: Some(true),
-                        ..Default::default()
-                    },
-                ),
-                (
-                    "card.label",
-                    StyleSpec {
-                        dim: Some(true),
-                        ..Default::default()
-                    },
-                ),
-                (
-                    "card.strong",
-                    StyleSpec {
-                        bold: Some(true),
-                        ..Default::default()
-                    },
-                ),
-            ],
-            &[],
-        ),
+        "mono" => {
+            return Some(build(
+                "mono",
+                &[
+                    ("bg", "#000000"),
+                    ("fg", "#ffffff"),
+                    ("accent", "#ffffff"),
+                    ("warn", "#ffffff"),
+                    ("danger", "#ffffff"),
+                    ("muted", "#808080"),
+                ],
+                &[
+                    ("header", only_bold()),
+                    ("project", only_dim()),
+                    ("tag", StyleSpec::default()),
+                    ("priority.H", only_bold()),
+                    ("priority.M", StyleSpec::default()),
+                    ("priority.L", only_dim()),
+                    (
+                        "overdue",
+                        StyleSpec {
+                            underline: Some(true),
+                            ..only_bold()
+                        },
+                    ),
+                    ("timer.active", only_bold()),
+                    ("muted", only_dim()),
+                    ("danger", only_bold()),
+                    ("warn", StyleSpec::default()),
+                    ("accent", only_bold()),
+                    ("table.label", only_dim()),
+                    ("chart.ideal", only_dim()),
+                    ("card.frame", only_dim()),
+                    ("card.label", only_dim()),
+                    ("card.strong", only_bold()),
+                ],
+                &[],
+            ));
+        }
         _ => return None,
     };
-    Some(t)
+    Some(colored(name, &p))
 }
 
 /// Every built-in theme name, in a stable order (for `theme list`).
@@ -1601,14 +1442,20 @@ mod tests {
     /// two named ones.
     #[test]
     fn no_color_drops_dim_along_with_color() {
-        let s = Style::default().dim();
+        let s = Style {
+            dim: true,
+            ..Default::default()
+        };
         let out = s.paint("x", &caps(ColorDepth::None, true));
         assert_eq!(out, "x", "dim must not survive NO_COLOR: {out:?}");
     }
 
     #[test]
     fn plain_emits_zero_ansi() {
-        let s = Style::fg(Rgb::new(0xbf, 0x61, 0x6a)).bold().underline();
+        let s = Style {
+            underline: true,
+            ..Style::fg(Rgb::new(0xbf, 0x61, 0x6a)).bold()
+        };
         let out = s.paint("hello", &Caps::PLAIN);
         assert_eq!(out, "hello");
         assert!(!out.contains('\x1b'));
