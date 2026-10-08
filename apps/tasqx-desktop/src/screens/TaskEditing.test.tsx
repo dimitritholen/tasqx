@@ -155,6 +155,20 @@ describe('editing a task', () => {
     expect(modifies(it)).toEqual([]);
   });
 
+  it('an external start while editing keeps the draft and raises the conflict panel', async () => {
+    const { script, server } = daemon();
+    const it = await live(script, '#/tasks?sel=2');
+
+    await editTitle(it, 'Build it');
+    server.task = { ...DETAIL, priority: 'L', _rev: 8 };
+    it.transport.pushEvent({ op: 'start', entity: 'task', entity_id: 'uuid-2', short_id: 2, _rev: 8 });
+
+    const alert = await within(form()).findByRole('alert');
+    expect(alert).toHaveTextContent('Changed elsewhere since you started editing (rev 7 → 8)');
+    expect(within(form()).getByLabelText('Title')).toHaveValue('Build it');
+    expect(modifies(it)).toEqual([]);
+  });
+
   it('a deleted task keeps the draft, offers no retry, and Discard lets it go', async () => {
     const { script, server } = daemon({
       'task.modify': () => {
