@@ -158,16 +158,11 @@ fn a_bare_tasqx_with_json_still_returns_the_task_list_result() {
     );
 }
 
-/// The escape hatch works, and works from the environment.
+/// With the dashboard off, a bare `tasqx` prints the table and draws nothing.
 ///
-/// **This case is vacuously green today** — `TASQX_DASHBOARD` names a setting
-/// D58 rules and that is not built yet, so the binary currently ignores it and
-/// prints the table for the ordinary reason. It is written now, ahead of the
-/// setting, because it is the case a CI image needs in one line, and because a
-/// guard added after the feature is a guard nobody watched fail. It starts
-/// biting the moment `dashboard.enabled` is read: from then on, an
-/// implementation that consults the config file but not the env var fails here
-/// rather than in somebody's pipeline.
+/// Stdout here is a pipe, so the table prints whether or not `TASQX_DASHBOARD`
+/// is read; this pins the off-path output only. The environment layer itself is
+/// pinned by `the_escape_hatch_is_read_from_the_environment` in `lib.rs`.
 #[test]
 fn the_dashboard_can_be_switched_off_from_the_environment() {
     let (cfg, db) = scratch("envoff");

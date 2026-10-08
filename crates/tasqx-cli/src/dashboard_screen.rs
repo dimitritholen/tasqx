@@ -115,8 +115,16 @@ pub(crate) fn dashboard_enabled() -> bool {
 /// testable without mutating process-global env, which cargo's parallel test
 /// threads make racy.
 pub(crate) fn dashboard_enabled_with(file: Option<&str>) -> bool {
+    dashboard_enabled_in(file, |name| std::env::var(name).ok())
+}
+
+/// [`dashboard_enabled_with`] over an explicit environment lookup.
+pub(crate) fn dashboard_enabled_in(
+    file: Option<&str>,
+    env: impl Fn(&str) -> Option<String>,
+) -> bool {
     let s = config::find("dashboard.enabled").expect("dashboard.enabled is registered");
-    let (v, _) = config::resolve(s, None, file);
+    let (v, _) = config::resolve_with(s, None, file, env);
     // The env layer arrives verbatim — `resolve` does not coerce it — so the
     // three spellings a shell user reaches for are matched here rather than
     // leaving `TASQX_DASHBOARD=0` reading as "on". The file layer is already

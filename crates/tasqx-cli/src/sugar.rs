@@ -457,8 +457,8 @@ pub(crate) enum Partial<'a> {
 ///
 /// So the empty value is accepted here and nowhere else. Everything else is the
 /// same judgement, read out of the same table: the key is resolved ONCE by first
-/// prefix match against [`VALUE_KEYS`] (longest-first, so `estimate:` is not
-/// read as the estimate `imate:`), and `::` is still a Rust path rather than a
+/// prefix match against [`VALUE_KEYS`] (no spelling there prefixes another, so
+/// the first match is the only one), and `::` is still a Rust path rather than a
 /// key — `project::config<TAB>` must not offer projects any more than
 /// `add "see project::config"` may set one.
 ///

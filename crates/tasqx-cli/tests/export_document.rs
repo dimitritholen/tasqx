@@ -278,11 +278,11 @@ fn the_store_export_method_carries_projects_the_default_and_archived_state() {
     );
 }
 
-/// N3b: a payload that DEFINES its projects and then names one it did not define
-/// is an incoherent document, and minting the task anyway rebuilds the ghost
-/// bucket D23 closed for `task.add` ("a typo lost the task silently").
+/// N3b through the `import` VERB, which used to forward only the `tasks` array
+/// and would therefore have dropped the very section that makes the refusal
+/// possible. The rule itself is pinned in `tasqx-core/tests/store_import.rs`.
 #[test]
-fn an_import_refuses_a_task_whose_project_the_document_does_not_define() {
+fn the_import_verb_refuses_a_task_whose_project_the_document_does_not_define() {
     let (dir, db) = store("undefined", "a");
     ok(&dir, &db, &["init", "work"]);
 
@@ -295,42 +295,14 @@ fn an_import_refuses_a_task_whose_project_the_document_does_not_define() {
             "project": "wrok",
         }],
     });
-
-    let r = api(&dir, &db, "store.import", payload.clone());
-    assert_eq!(
-        r["ok"],
-        json!(false),
-        "an undefined project must be refused: {r}"
-    );
-    let msg = r["error"]["message"].as_str().unwrap_or_default();
-    assert!(
-        msg.contains("wrok"),
-        "the error must name the offending project: {msg}"
-    );
-    assert!(
-        msg.contains("019f6a0f-99df-7000-8000-0000000000aa"),
-        "and the task to edit: {msg}"
-    );
-
-    // Nothing at all was written: one transaction, so a refusal is total.
-    let list: Value = serde_json::from_str(&ok(&dir, &db, &["list", "--json"])).expect("list");
-    assert_eq!(
-        list["count"],
-        json!(0),
-        "a refused import must write nothing: {list}"
-    );
-
-    // The same document through the `import` VERB, which used to forward only
-    // the `tasks` array and would therefore have dropped the very section that
-    // makes this refusal possible.
     let path = dir.join("bad.json");
     std::fs::write(&path, payload.to_string()).expect("write payload");
     let (code, _, se) = run(&dir, &db, &["import", path.to_str().expect("utf8 path")]);
-    assert_eq!(code, 2, "the verb must refuse it too: {se}");
+    assert_eq!(code, 2, "the verb must refuse it: {se}");
     assert!(se.contains("wrok"), "naming the project: {se}");
 }
 
-/// The compatibility half: a document written by a tasqx that had no `projects`
+/// The compatibility half, through the verb (the engine rule is in `tasqx-core/tests/store_import.rs`): a document written by a tasqx that had no `projects`
 /// section at all. It must still import — and it must not leave the store in the
 /// ghost state, so the project it names is minted rather than refused.
 #[test]
@@ -367,51 +339,6 @@ fn a_document_with_no_projects_section_still_imports_and_mints_what_it_names() {
     // a name `add` accepts, which is the whole point of minting it.
     let (code, _, se) = run(&dir, &db, &["add", "x", "--project", "archief"]);
     assert_eq!(code, 0, "the minted project must be usable: {se}");
-
-    // And the same payload over the METHOD, in its object spelling.
-    let (_, b) = store("legacy", "b");
-    let r = api(&dir, &b, "store.import", json!({ "tasks": legacy }));
-    assert_eq!(r["ok"], json!(true), "{r}");
-    assert_eq!(
-        r["result"]["projects_created"],
-        json!(["archief"]),
-        "minting must be reported: {r}"
-    );
-}
-
-/// D21's rule — nothing silently steals the default — applied to import, which
-/// is the only write that can carry someone else's default in its payload.
-#[test]
-fn an_import_never_steals_a_default_the_destination_already_has() {
-    let (dir, a) = store("default", "a");
-    let (_, b) = store("default", "b");
-    seed(&dir, &a);
-
-    // b already has its own default before the import arrives.
-    ok(&dir, &b, &["init", "eigen"]);
-    let ex = api(&dir, &a, "store.export", json!({}));
-    let imp = api(&dir, &b, "store.import", ex["result"].clone());
-    assert_eq!(imp["ok"], json!(true), "{imp}");
-    assert_eq!(
-        imp["result"]["default_project"],
-        json!("eigen"),
-        "the result must state the default that stands: {imp}"
-    );
-
-    let caps = api(&dir, &b, "core.capabilities", json!({}));
-    assert_eq!(
-        caps["result"]["default_project"],
-        json!("eigen"),
-        "an import must not redirect where a bare `add` lands"
-    );
-    // A store with no default takes the document's, since there is nothing to steal.
-    let (_, c) = store("default", "c");
-    let imp = api(&dir, &c, "store.import", ex["result"].clone());
-    assert_eq!(
-        imp["result"]["default_project"],
-        json!("prive.klussen"),
-        "{imp}"
-    );
 }
 
 /// #179: a document whose `docs` section moved under a key the importer does

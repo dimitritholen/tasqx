@@ -328,11 +328,22 @@ fn pick(v: Option<&str>) -> Option<&str> {
 /// `flag` is the CLI value; `file` is the value read from `config.toml`. The
 /// env layer is read here rather than passed in, so a caller cannot forget it.
 pub fn resolve(s: &Setting, flag: Option<&str>, file: Option<&str>) -> (String, Source) {
+    resolve_with(s, flag, file, |name| std::env::var(name).ok())
+}
+
+/// [`resolve`] over an explicit environment lookup, so the env layer is
+/// testable without mutating process-global env under cargo's parallel threads.
+pub fn resolve_with(
+    s: &Setting,
+    flag: Option<&str>,
+    file: Option<&str>,
+    env: impl Fn(&str) -> Option<String>,
+) -> (String, Source) {
     if let Some(v) = pick(flag) {
         return (v.to_string(), Source::Flag);
     }
     if let Some(name) = s.env {
-        if let Ok(raw) = std::env::var(name) {
+        if let Some(raw) = env(name) {
             if let Some(v) = pick(Some(&raw)) {
                 return (v.to_string(), Source::Env);
             }
