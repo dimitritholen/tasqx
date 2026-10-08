@@ -5,6 +5,7 @@ import { formatDuration, relativeTime } from '../state/relative';
 import { useStore } from '../state/store';
 import { Button, EmptyState, ErrorState, Skeleton } from '../ui/primitives';
 import { setSelection } from './route';
+import { CheckToggle, QuickAdds, TaskActions, TaskEditor } from './TaskEditing';
 import { isOverdue, PriorityPill, StatusPill, UrgencyMeter, When } from './TaskTable';
 
 /**
@@ -67,7 +68,7 @@ function Links({ label, ids, names }: { label: string; ids: number[]; names: Blo
   );
 }
 
-function Checks({ checks }: { checks: Check[] }) {
+function Checks({ taskRef, checks }: { taskRef: number; checks: Check[] }) {
   if (checks.length === 0) return null;
   return (
     <section className="inspector-section" aria-labelledby="inspector-checks">
@@ -75,9 +76,7 @@ function Checks({ checks }: { checks: Check[] }) {
       <ul className="check-list">
         {checks.map((check) => (
           <li key={check.id} className="check">
-            <span className="mono check-glyph" aria-label={check.state}>
-              {CHECK_GLYPH[check.state]}
-            </span>
+            <CheckToggle taskRef={taskRef} check={check} glyph={CHECK_GLYPH[check.state]} />
             <span>
               {check.body}
               {check.evidence !== null && <span className="check-evidence muted">{check.evidence}</span>}
@@ -149,6 +148,12 @@ export function TaskInspector() {
   if (sel === null) {
     return <EmptyState title="Nothing selected" message="Pick a row to see its details here." />;
   }
+  // A draft outlives a failed read, a reconnect and a deleted task: only the
+  // user lets it go.
+  const draft = state.drafts[sel];
+  if (draft !== undefined) {
+    return <TaskEditor draft={draft} server={!draft.gone && task?.short_id === sel ? task : null} />;
+  }
   if (error !== null) {
     return <ErrorState title={`Could not load #${sel}`} error={error} onRetry={() => void store.selectTask(sel)} />;
   }
@@ -166,6 +171,8 @@ export function TaskInspector() {
         </div>
       </header>
 
+      <TaskActions task={task} />
+
       <dl className="inspector-fields">
         {FIELDS.map((field) => (
           <Row label={field.label} key={field.label}>
@@ -176,7 +183,8 @@ export function TaskInspector() {
 
       <Links label="Blocked by" ids={task.unmet_blockers.map((blocker) => blocker.short_id)} names={task.unmet_blockers} />
       <Links label="Blocks" ids={task.blocks} names={[]} />
-      <Checks checks={task.checks} />
+      <Checks taskRef={task.short_id} checks={task.checks} />
+      <QuickAdds task={task} />
       <Annotations task={task} onOlder={() => void store.loadOlderAnnotations()} busy={loading} />
     </div>
   );

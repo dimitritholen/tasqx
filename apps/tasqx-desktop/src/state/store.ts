@@ -28,6 +28,7 @@ import {
   type MemoryResultRow,
 } from './memory';
 import { graphDataOf, graphQueryParams, mergeGraphData, promoteInGraphData } from './graph';
+import { draftChanges, newDraft, type EditField, type TaskDraft } from './edit';
 import type { GraphData, GraphPins, GraphRequest } from './graph';
 
 /**
@@ -124,6 +125,8 @@ export interface DashboardState {
   graphPins: GraphPins;
   /** A node to centre the camera on; `seq` makes a repeat focus a new request. */
   graphFocus: { id: string; seq: number } | null;
+  /** Task edits in progress, by short id; nothing but the user drops one. */
+  drafts: Record<number, TaskDraft>;
 }
 
 /** The slices a call can be in flight on. */
@@ -158,6 +161,7 @@ function initialState(): DashboardState {
     graphSelection: null,
     graphPins: {},
     graphFocus: null,
+    drafts: {},
   };
 }
 
@@ -307,6 +311,89 @@ export class DashboardStore {
     const detail = await taskGet(client, shortId);
     this.patchRow(detail);
     if (intoSelection && this.state.route.sel === shortId) this.setSelected(detail);
+  }
+
+  /** Open an editor on the selected task, as last read; an existing draft is kept. */
+  editTask(shortId: number): void {
+    const task = this.state.selected.data;
+    if (task === null || task.short_id !== shortId || this.state.drafts[shortId] !== undefined) return;
+    this.setDraft(shortId, newDraft(task));
+  }
+
+  setDraftValue(shortId: number, field: EditField, value: string): void {
+    const draft = this.state.drafts[shortId];
+    if (draft !== undefined) this.setDraft(shortId, { ...draft, values: { ...draft.values, [field]: value } });
+  }
+
+  discardDraft(shortId: number): void {
+    const drafts = { ...this.state.drafts };
+    delete drafts[shortId];
+    this.set({ drafts });
+  }
+
+  /** Reload: let the draft go and show the server's copy. */
+  async reloadDraft(shortId: number): Promise<void> {
+    this.discardDraft(shortId);
+    await this.refetchTask(shortId, true).catch((err: unknown) => this.fail('selected', err));
+  }
+
+  /**
+   * `task.modify` with the fields the user moved and, where the daemon takes
+   * it, `expected_rev` — the draft's own base unless the user chose to write
+   * over the revision the conflict showed them. Only a success drops the
+   * draft and moves the task (re-read, never patched from the draft); any
+   * refusal keeps every keystroke and records the daemon's words.
+   */
+  async saveDraft(shortId: number, overRev?: number): Promise<void> {
+    const draft = this.state.drafts[shortId];
+    if (draft === undefined || draft.saving) return;
+    const set = draftChanges(draft);
+    if (Object.keys(set).length === 0) {
+      this.discardDraft(shortId);
+      return;
+    }
+    this.setDraft(shortId, { ...draft, saving: true, error: null });
+    try {
+      const client = this.requireClient();
+      await client.request('task.modify', {
+        ref: shortId,
+        set,
+        ...(client.supportsParam('task.modify', 'expected_rev') ? { expected_rev: overRev ?? draft.baseRev } : {}),
+      });
+    } catch (err) {
+      const error = toApiError(err);
+      const current = this.state.drafts[shortId];
+      if (current === undefined) return;
+      this.setDraft(shortId, {
+        ...current,
+        saving: false,
+        error,
+        conflict: current.conflict || error.code === 'conflict',
+        gone: error.code === 'not_found',
+      });
+      // Show what the server holds now, or learn that it holds nothing.
+      if (error.code === 'conflict' || error.code === 'not_found') {
+        await this.refetchTask(shortId, true).catch((refetch: unknown) => this.fail('selected', refetch));
+      }
+      return;
+    }
+    this.discardDraft(shortId);
+    await this.refetchTask(shortId, true).catch((err: unknown) => this.fail('selected', err));
+  }
+
+  /**
+   * One write that takes no `expected_rev` (start, stop, done, reopen, a
+   * check, a note, a blocker), then a re-read of the task. Throws what the
+   * daemon said so the caller can show it verbatim.
+   */
+  async taskAction(shortId: number, method: string, params: Record<string, unknown> = {}): Promise<void> {
+    await this.requireClient().request(method, { ref: shortId, ...params });
+    await this.refetchTask(shortId, true);
+  }
+
+  /** `task.add`; the caller selects the new task, events bring it onto the page. */
+  createTask(fields: Record<string, string>): Promise<{ short_id: number }> {
+    return this.requireClient().request<{ short_id: number }>('task.add', fields);
   }
 
   /** The dashboard's activity panel, loaded on mount rather than in the baseline. */
@@ -617,6 +704,15 @@ export class DashboardStore {
     } catch {
       return [];
     }
+  }
+
+  private requireClient(): ApiClient {
+    if (this.client === null) throw new ApiError('transport_unavailable', 'transport unavailable: not connected');
+    return this.client;
+  }
+
+  private setDraft(shortId: number, draft: TaskDraft): void {
+    this.set({ drafts: { ...this.state.drafts, [shortId]: draft } });
   }
 
   private setSlice<K extends SliceKey>(key: K, patch: Partial<DashboardState[K]>): void {

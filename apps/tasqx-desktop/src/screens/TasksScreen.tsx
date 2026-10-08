@@ -6,6 +6,7 @@ import type { Binding } from '../shell/shortcuts';
 import { useStore } from '../state/store';
 import { Button, Field } from '../ui/primitives';
 import { routeStateOf, setFilter, setPage, setSort, SORT_KEYS, useRouteSync } from './route';
+import { NewTaskForm, useSupports } from './TaskEditing';
 import { TaskTable } from './TaskTable';
 
 /**
@@ -61,6 +62,8 @@ export function TasksScreen() {
 
   const { state } = useStore();
   const { taskPage, tasks } = state;
+  const supports = useSupports();
+  const [creating, setCreating] = useState(false);
 
   const page = target.page;
   const atStart = page === 0;
@@ -86,7 +89,15 @@ export function TasksScreen() {
 
   return (
     <div className="screen screen-wide">
-      <h1>Tasks</h1>
+      <div className="screen-heading">
+        <h1>Tasks</h1>
+        {supports('task.add') && !creating && (
+          <Button size="sm" variant="primary" onClick={() => setCreating(true)}>
+            New task
+          </Button>
+        )}
+      </div>
+      {creating && <NewTaskForm onClose={() => setCreating(false)} />}
       <div className="filter-bar">
         <FilterField
           key={target.filter}
