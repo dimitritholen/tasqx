@@ -1060,6 +1060,20 @@ pub const COMMAND_REF: &[CmdDoc] = &[
         topic: Topic::Daemon,
     },
     CmdDoc {
+        verb: "board",
+        aliases: &[],
+        method: "task.list + task.get + push",
+        summary: "Live read-only kanban in your browser.",
+        usage: "tasqx board [--port PORT] [--no-open]",
+        examples: &[ex_norun("tasqx board", "open the board; needs a running daemon")],
+        notes: &[
+            "Serves one page on 127.0.0.1 only, behind a secret token and an Origin check, and repaints from the daemon's pushes. It writes nothing. Single-user and local: behind a reverse proxy, authentication is the proxy's job.",
+            "`--port` or `board.port` fixes the port and keeps the token between runs, so a bookmark survives; otherwise a free port and a new token each run.",
+        ],
+        see_also: &["watch", "daemon"],
+        topic: Topic::Daemon,
+    },
+    CmdDoc {
         verb: "mcp",
         aliases: &[],
         method: "(subset)",

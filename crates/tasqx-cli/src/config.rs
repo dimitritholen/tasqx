@@ -267,6 +267,17 @@ pub const SETTINGS: &[Setting] = &[
         summary: "TCP port the OTLP receiver binds on 127.0.0.1 (OTLP/HTTP convention: 4318).",
     },
     Setting {
+        key: "board.port",
+        home: Home::Toml,
+        kind: Kind::Uint,
+        default: "0",
+        env: None,
+        flag: Some("--port"),
+        choices: Choices::Free,
+        summary: "TCP port `tasqx board` binds on 127.0.0.1; unset (0) takes a free port each run. \
+                  A fixed port also keeps the board's token between runs, so a bookmark survives.",
+    },
+    Setting {
         key: "daemon.idle_timeout",
         home: Home::Toml,
         kind: Kind::Minutes,

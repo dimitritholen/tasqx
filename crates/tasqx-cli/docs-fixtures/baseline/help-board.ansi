@@ -1,0 +1,38 @@
+Open a live, read-only kanban of your tasks in the browser.
+
+Serves one self-contained page on 127.0.0.1 behind a secret token, and updates it from the daemon's pushes. Needs a running daemon. Writes nothing.
+
+Usage: tasqx board [OPTIONS]
+
+Options:
+      --json
+          Print the raw JSON API result instead of the human table
+
+      --port <PORT>
+          Port to bind on 127.0.0.1 (default: `board.port`, else a free one)
+
+      --no-open
+          Print the URL but do not launch a browser
+
+      --theme <THEME>
+          Theme name (built-in nord|gruvbox|dracula|solarized|mono, or a user file). Overrides $TASQX_THEME and the config file (DESIGN.md §8)
+
+      --socket <SOCKET>
+          Local socket / named-pipe address of a tasqx daemon. Overrides $TASQX_SOCK. When a daemon is reachable, one-shot commands route through it (single writer); otherwise they run in-process. A set $TASQX_DB naming a different store than that daemon's is refused. Also selects the address for `daemon` and `watch`
+
+      --no-daemon
+          Never route through a daemon; always run one-shot in-process (the pre-daemon behaviour). Escape hatch for scripts
+
+  -h, --help
+          Print help (see a summary with '-h')
+
+  -V, --version
+          Print version
+
+EXAMPLES
+  tasqx board    # open the board; needs a running daemon
+
+NOTE  Serves one page on 127.0.0.1 only, behind a secret token and an Origin check, and repaints from the daemon's pushes. It writes nothing. Single-user and local: behind a reverse proxy, authentication is the proxy's job.
+      `--port` or `board.port` fixes the port and keeps the token between runs, so a bookmark survives; otherwise a free port and a new token each run.
+
+See also: watch · daemon        Full manual: tasqx manual

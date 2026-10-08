@@ -9,7 +9,8 @@ pipe in its own way. `tasqx pick`, `tasqx dashboard` and `tasqx config edit`
 refuse one outright rather than write escape codes into it.
 `tasqx memory list` prints its one-line-per-doc table instead, and
 `tasqx watch` prints each update as it arrives rather than repainting a screen
-— it needs a running daemon either way.
+— it needs a running daemon either way. `tasqx board` is the same live view in
+a browser.
 
 | Command | What it opens |
 |---|---|
@@ -79,3 +80,51 @@ follows. Ctrl-C stops it.
 
 Leave it open on a second monitor while an agent works through your backlog —
 you see every task start, complete and unblock as it happens.
+
+## tasqx board
+
+The same live view in a browser: a kanban with a column per state, updating as
+tasks change, for the moments a terminal is not where you want to look.
+
+| Command | What it does |
+|---|---|
+| `tasqx board` | Print the board's URL and open it in your browser |
+| `tasqx board --no-open` | Print the URL only |
+| `tasqx board --port 8123` | Serve on a fixed port (or set `board.port`) |
+
+Like `watch`, `board` needs a running
+[daemon](AI-Agents-and-Automation.md#tasqx-daemon). Ctrl-C stops it.
+
+The columns are the states tasqx already derives, each headed by the filter
+that fills it: **Backlog** `status:backlog`, **Blocked** `@blocked`, **Ready**
+`@working`, **Active** `status:active` (one at a time) and **Done**
+`completed.after:-7d`. Inside a column cards are ordered by urgency, on the
+same scale and in the same three bands as `tasqx list`; a `▶` marks the running
+task and `⊘` a blocked one. A card opens (click, or Enter) into its checks,
+blocked-by list and opening note. The search box filters by title, tag, project
+and id, and the lanes menu groups a column by project or by priority. The page
+follows your terminal theme, light or dark by your system setting, and shows
+**daemon · offline** if the connection drops.
+
+Keys: `j`/`k` move between cards, `h`/`l` between columns, Enter opens, `/`
+searches, Esc closes.
+
+The board only reads. It cannot change a task, and a request that tries is
+refused by the server, not just hidden by the page.
+
+**Who can reach it.** The board binds `127.0.0.1` and nothing else, so it is
+never reachable from another machine. On a shared computer another user could
+still connect to a loopback port, so the page is also behind a random secret
+token: the URL `tasqx board` prints carries it once, the browser trades it for
+a cookie, and every other request without that cookie is refused. Requests
+from another website, or under a hostname other than `127.0.0.1` or
+`localhost`, are refused too, which is what stops a web page you are browsing
+from reading your backlog through your own browser. The board is single-user
+and local. Put it behind a reverse proxy and authentication is the proxy's job.
+
+Without a fixed port, each run takes a free port and a fresh token. With one
+(`--port`, or `board.port` in the config) the token is kept in a file next to
+`config.toml`, readable only by you, so a bookmark of the printed URL keeps
+working after a restart.
+
+The page is one self-contained file: nothing is fetched from the internet.

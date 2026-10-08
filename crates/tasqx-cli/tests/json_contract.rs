@@ -407,8 +407,8 @@ fn theme_set_and_config_set_agree_under_json() {
 /// The reason is also what `--json` prints on stderr when it reaches a
 /// carve-out, so each one is driven through the binary and its note checked
 /// word for word. `daemon` is the one left out: it serves until interrupted.
-/// The rest end on their own here — EOF on stdin, or `watch` refusing
-/// `--no-daemon`. None of them can reach the real store, daemon or config:
+/// The rest end on their own here — EOF on stdin, or `watch` and `board`
+/// refusing `--no-daemon`. None of them can reach the real store, daemon or config:
 /// `TASQX_DB` and `TASQX_CONFIG_DIR` point at scratch, `watch` refuses before
 /// it resolves a socket, and an ambient `TASQX_SOCK` is removed so `api` and
 /// `mcp serve` never probe a developer's daemon for their mismatch note.
@@ -426,6 +426,7 @@ fn every_carve_out_states_its_reason() {
         ("api", &["api"]),
         ("mcp", &["mcp", "serve"]),
         ("watch", &["watch"]),
+        ("board", &["board"]),
         ("manual", &["manual"]),
     ];
     let mut names: Vec<&str> = driven.iter().map(|(n, _)| *n).chain(["daemon"]).collect();

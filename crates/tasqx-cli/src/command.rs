@@ -1139,6 +1139,20 @@ pub(super) enum Command {
         #[arg(add = crate::complete::candidates::filter_words())]
         filter: Vec<String>,
     },
+    /// Open a live, read-only kanban of your tasks in the browser.
+    ///
+    /// Serves one self-contained page on 127.0.0.1 behind a secret token, and
+    /// updates it from the daemon's pushes. Needs a running daemon. Writes
+    /// nothing.
+    #[command(after_help = crate::cmddoc::after_help("board"))]
+    Board {
+        /// Port to bind on 127.0.0.1 (default: `board.port`, else a free one).
+        #[arg(long, value_name = "PORT", value_parser = clap::value_parser!(u16).range(1..))]
+        port: Option<u16>,
+        /// Print the URL but do not launch a browser.
+        #[arg(long)]
+        no_open: bool,
+    },
     /// Bundled MCP server (DESIGN.md §7, §12-D7).
     #[command(after_help = crate::cmddoc::after_help("mcp"))]
     Mcp {

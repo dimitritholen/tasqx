@@ -1837,7 +1837,7 @@ fn array_at<'a>(payload: &'a Value, key: &str) -> &'a [Value] {
 /// (`timer.active`) come from the active theme, moved just far enough to clear
 /// WCAG AA against the ground they sit on (#163); the neutrals are the page's
 /// own on light and derived from the theme's `bg`/`fg`/`muted` on dark.
-fn palette(theme: &Theme) -> String {
+pub(crate) fn palette(theme: &Theme) -> String {
     let color = |name: &str, fallback: Rgb| theme.palette_color(name).unwrap_or(fallback);
     let accent = color("accent", Rgb::new(0x88, 0xc0, 0xd0));
     let warn = color("warn", Rgb::new(0xeb, 0xcb, 0x8b));
