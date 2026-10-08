@@ -761,7 +761,7 @@ fn burndown_body(dash: &Dashboard, ctx: &PanelCtx) -> Vec<Line<'static>> {
             (" ".repeat(gutter), spine)
         };
         let mut spans = vec![Span::styled(format!("{label}{mark}"), s.muted)];
-        for (is_ideal, part) in split_line(row, g.ideal) {
+        for (is_ideal, part) in chart::split_runs(row.iter().copied(), g.ideal) {
             spans.push(Span::styled(
                 part,
                 if is_ideal { s.chart_ideal } else { s.accent },
@@ -788,23 +788,6 @@ fn burndown_body(dash: &Dashboard, ctx: &PanelCtx) -> Vec<Line<'static>> {
         )));
     }
     out
-}
-
-/// Split a plotted row into runs of ideal-line cells and runs of everything
-/// else, so the reference and the data can be painted apart. The mirror of
-/// `chart::split_ideal`, which does the same for the ANSI path; they are two
-/// because a `Span` and an escape sequence are not the same object, not
-/// because the rule differs.
-fn split_line(row: &[char], ideal: char) -> Vec<(bool, String)> {
-    let mut runs: Vec<(bool, String)> = Vec::new();
-    for &c in row {
-        let is_ideal = c == ideal;
-        match runs.last_mut() {
-            Some((flag, text)) if *flag == is_ideal => text.push(c),
-            _ => runs.push((is_ideal, c.to_string())),
-        }
-    }
-    runs
 }
 
 fn tokens_body(dash: &Dashboard, ctx: &PanelCtx) -> Vec<Line<'static>> {

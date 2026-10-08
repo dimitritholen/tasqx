@@ -1185,11 +1185,10 @@ pub fn render_burndown_sized(
         } else {
             (" ".repeat(gutter), spine)
         };
-        let line: String = row.iter().collect();
         // The ideal is a reference and recedes; the line is the data and does
         // not. Painting them apart is what lets one row carry both without the
         // reader having to work out which is which.
-        let painted: String = split_ideal(&line, g.ideal)
+        let painted: String = split_runs(row.iter().copied(), g.ideal)
             .into_iter()
             .map(|(is_ideal, part)| {
                 if is_ideal {
@@ -1231,10 +1230,13 @@ pub fn render_burndown_sized(
 
 /// Split a plotted row into runs of ideal-line cells and runs of everything
 /// else, so the two can be painted in different roles without measuring
-/// anything twice.
-fn split_ideal(line: &str, ideal: char) -> Vec<(bool, String)> {
+/// anything twice. The printed chart and the dashboard panel both call it.
+pub(crate) fn split_runs(
+    chars: impl IntoIterator<Item = char>,
+    ideal: char,
+) -> Vec<(bool, String)> {
     let mut runs: Vec<(bool, String)> = Vec::new();
-    for c in line.chars() {
+    for c in chars {
         let is_ideal = c == ideal;
         match runs.last_mut() {
             Some((flag, text)) if *flag == is_ideal => text.push(c),
@@ -1312,6 +1314,30 @@ pub fn default_weeks(is_year: bool, weeks: Option<usize>) -> usize {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    /// Both heatmaps break a row with `split_runs`: empty, one run, a run per
+    /// flip, and wide chars as single cells.
+    #[test]
+    fn split_runs_groups_ideal_and_other_cells() {
+        let runs = |s: &str| split_runs(s.chars(), '·');
+        let t = |s: &str| s.to_string();
+        assert_eq!(runs(""), vec![]);
+        assert_eq!(runs("···"), vec![(true, t("···"))]);
+        assert_eq!(runs("abc"), vec![(false, t("abc"))]);
+        assert_eq!(
+            runs("··ab·c"),
+            vec![
+                (true, t("··")),
+                (false, t("ab")),
+                (true, t("·")),
+                (false, t("c"))
+            ]
+        );
+        assert_eq!(
+            runs("·あ·"),
+            vec![(true, t("·")), (false, t("あ")), (true, t("·"))]
+        );
+    }
 
     fn ev(op: &str, ts: &str, id: &str) -> Value {
         json!({ "op": op, "ts": ts, "entity": "task", "entity_id": id })
