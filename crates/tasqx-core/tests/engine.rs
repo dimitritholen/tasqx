@@ -2225,6 +2225,45 @@ fn undo_of_an_annotation_add_refuses_when_the_note_is_already_gone() {
     assert_eq!(count(&e, "SELECT COUNT(*) FROM events"), events_before);
 }
 
+/// An op this build has never heard of (a store written by a newer tasqx, D12)
+/// must refuse by name and say it is unknown, not be given a guessed inverse.
+/// No in-repo call writes such an op, so the event is seeded directly.
+#[test]
+fn undo_refuses_an_op_this_build_has_never_heard_of() {
+    let e = engine();
+    undo_fixture(&e);
+    e.conn()
+        .execute(
+            "INSERT INTO events (id, entity, entity_id, op, payload, ts, actor) \
+             SELECT 'zzz-future', 'task', id, 'task.teleport', '{}', '2030-01-01T00:00:00Z', 'user' \
+             FROM tasks WHERE title = 'Ship v1'",
+            [],
+        )
+        .expect("seed an event from a newer tasqx");
+    let events_before = count(&e, "SELECT COUNT(*) FROM events");
+
+    let err = e
+        .event_revert()
+        .expect_err("an unknown op must refuse, not guess an inverse");
+
+    assert_eq!(err.code, ErrorCode::Conflict, "{}", err.message);
+    assert!(
+        err.message.contains("`task.teleport`"),
+        "the refusal must name the op it will not reverse: {}",
+        err.message
+    );
+    assert!(
+        err.message.contains("never seen"),
+        "the refusal must say the op is unknown to this build: {}",
+        err.message
+    );
+    assert_eq!(
+        count(&e, "SELECT COUNT(*) FROM events"),
+        events_before,
+        "a refused undo wrote an event"
+    );
+}
+
 /// #422: the newest event is the row written last, not the row whose id sorts
 /// highest — and on any store that has ever seen a `store.import` those are two
 /// different rows.
