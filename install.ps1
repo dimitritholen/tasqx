@@ -29,7 +29,6 @@
 param(
     [switch]$DryRun,
     [switch]$Uninstall,
-    [switch]$Completions,
     [switch]$Help
 )
 
@@ -55,10 +54,10 @@ function Write-Err {
 
 # Symmetric with Write-Err, and it exists for the functions below that print a
 # line AND return a value. Write-Output puts its argument on the calling
-# function's own pipeline, so `if (Invoke-CompletionUninstall ...)` would test
+# function's own pipeline, so `if (Remove-CompletionBlock ...)` would test
 # an array of [the message, the status] and the message would never reach the
-# terminal at all. Observed exactly that: -Completions ran, edited the profile,
-# and printed nothing.
+# terminal at all. Observed exactly that: the old -Completions edited the
+# profile and printed nothing.
 function Write-Out {
     param([string]$Text)
     [Console]::Out.WriteLine($Text)
@@ -90,15 +89,18 @@ Usage
 
 Parameters
   -DryRun        Print what the other switches would do, and change nothing.
-                 It wins over -Uninstall and -Completions rather than racing
-                 them.
-  -Uninstall     Remove an installed tasqx.
-  -Completions   Install shell completions only.
+                 It wins over -Uninstall rather than racing it.
+  -Uninstall     Remove an installed tasqx, and the completion block an older
+                 tasqx added to `$PROFILE.
   -Help          Print this text.
+
+Tab completion
+  tasqx completions powershell   prints the one line to add to `$PROFILE.
+  This script never adds it.
 
 Environment
   iex binds no parameters, so every switch has an equivalent variable:
-  TASQX_DRY_RUN, TASQX_UNINSTALL, TASQX_COMPLETIONS, TASQX_HELP.
+  TASQX_DRY_RUN, TASQX_UNINSTALL, TASQX_HELP.
   A switch variable counts as set unless it is empty, 0, false, no or off.
 
   TASQX_VERSION  Release tag to install, with or without the leading v.
@@ -677,53 +679,86 @@ function Add-SessionPathEntry {
     $env:Path = Get-PathTextWith -Current $current -Entry $Entry
 }
 
-# ---- completions -----------------------------------------------------------
+# ---- the completion block ---------------------------------------------------
 #
-# `tasqx completions --install -y` refuses on every Windows machine, and the
-# refusal is right: target_path returns Target::OnlyTheHostKnows
-# (crates/tasqx-cli/src/complete/install.rs:459-465) because $PROFILE is a
-# PowerShell variable rather than an environment variable, and its value
-# differs between Windows PowerShell, PowerShell 7 and the ISE. Only a running
-# PowerShell can expand it, which is what this script is. The refusal text
-# names the working form, and it is the form used below.
+# Until D223 the binary added a marked block to $PROFILE
+# (`tasqx completions powershell --install`) and took it out again. It no
+# longer can, and the blocks it wrote are still in people's profiles, each one
+# running `tasqx` at every PowerShell start. So -Uninstall cuts the block itself,
+# with the rules the binary used:
 #
-# -y is not optional either: install.rs:994 withholds consent when stdin is not
-# a terminal, and under `irm | iex` stdin is the script.
-
-function Invoke-CompletionInstall {
-    param([string]$Exe, [string]$ProfilePath)
-    Write-Out "running: $Exe completions powershell --install --profile $ProfilePath -y"
-    $output = & $Exe completions powershell --install --profile $ProfilePath -y 2>&1
-    $code = $LASTEXITCODE
-    foreach ($line in @($output)) { Write-Out "  $line" }
-    if ($code -ne 0) {
-        # A warning, and exit 0 at the call site. The binary is installed and
-        # works; Tab completion is the thing that did not happen, and failing
-        # the whole run here would report a broken install that is not broken.
-        Write-Err "warning: could not install PowerShell completions (exit $code)."
-        Write-Err "  Run it yourself with: $Exe completions powershell --install --profile `$PROFILE"
+#  * the markers are the exact lines --install wrote, matched as WHOLE lines
+#    after trimming (case-sensitive, -ceq), never as a substring;
+#  * every complete begin..end block is cut, markers included, and nothing else:
+#    an end marker with no begin above it is ordinary text and stays;
+#  * a begin marker never closed refuses and leaves the file untouched, because
+#    deleting to the end of the file would take whatever the user added below;
+#  * no block, no write;
+#  * a file that is not UTF-8, or holds a NUL byte (5.1 wrote profiles as
+#    UTF-16), is not the text this edits, and is left alone.
+#
+# Every other byte survives: each line keeps its own terminator, and a UTF-8
+# BOM decodes to U+FEFF and encodes back to the same three bytes. The file is
+# written in place rather than replaced, so a linked profile stays linked and
+# keeps its ACL; the original is copied aside first and the copy only removed
+# once the write succeeded.
+#
+# Never fails the uninstall: a block it could not cut is a warning.
+function Remove-CompletionBlock {
+    param([string]$Path)
+    if ($Path.Length -eq 0 -or -not (Test-Path -LiteralPath $Path -PathType Leaf)) { return $false }
+    try {
+        $bytes = [IO.File]::ReadAllBytes($Path)
+    } catch {
+        Write-Err "warning: could not read $Path to remove its tasqx completion block; it was left unchanged."
         return $false
     }
-    return $true
-}
+    if ([Array]::IndexOf($bytes, [byte]0) -ge 0) { return $false }
+    try {
+        $text = (New-Object Text.UTF8Encoding($false, $true)).GetString($bytes)
+    } catch {
+        return $false
+    }
 
-# Exit 4 is `not_found`, which here means "there was no block", and that is the
-# ordinary case on an uninstall. It is not an error and it is not reported: D33
-# makes the CLI refuse to answer ok when it changed nothing, and this caller is
-# the one that asked whether there was anything to change.
-function Invoke-CompletionUninstall {
-    param([string]$Exe, [string]$ProfilePath)
-    $output = & $Exe completions powershell --uninstall --profile $ProfilePath -y 2>&1
-    $code = $LASTEXITCODE
-    if ($code -eq 0) {
-        Write-Out "removed the tasqx completion block from $ProfilePath"
-        return $true
+    $begin = '# >>> tasqx completions >>>'
+    $end = '# <<< tasqx completions <<<'
+    $kept = New-Object Text.StringBuilder
+    $lineNo = 0
+    $openAt = 0
+    $cut = 0
+    foreach ($m in [regex]::Matches($text, '[^\n]*\n|[^\n]+$')) {
+        $lineNo++
+        $line = $m.Value.Trim()
+        if ($openAt -eq 0 -and $line -ceq $begin) { $openAt = $lineNo; continue }
+        if ($openAt -gt 0) {
+            if ($line -ceq $end) { $openAt = 0; $cut++ }
+            continue
+        }
+        [void]$kept.Append($m.Value)
     }
-    if ($code -ne 4) {
-        Write-Err "warning: could not remove the completion block from $ProfilePath (exit $code)."
-        foreach ($line in @($output)) { Write-Err "  $line" }
+    if ($openAt -gt 0) {
+        Write-Err "warning: line $openAt of $Path opens a tasqx completion block that is never closed;"
+        Write-Err '  the file was left unchanged. Remove that block by hand.'
+        return $false
     }
-    return $false
+    if ($cut -eq 0) { return $false }
+
+    $backup = "$Path.tasqx-uninstall.bak"
+    try {
+        Copy-Item -LiteralPath $Path -Destination $backup -Force -ErrorAction Stop
+    } catch {
+        Write-Err "warning: could not back up $Path, so its tasqx completion block was left in place."
+        return $false
+    }
+    try {
+        [IO.File]::WriteAllBytes($Path, (New-Object Text.UTF8Encoding($false)).GetBytes($kept.ToString()))
+    } catch {
+        Write-Err "warning: writing $Path failed; the original is kept at $backup."
+        return $false
+    }
+    Remove-Item -LiteralPath $backup -Force -ErrorAction SilentlyContinue
+    Write-Out "removed the tasqx completion block from $Path"
+    return $true
 }
 
 # ---- where the binary lives ------------------------------------------------
@@ -786,11 +821,10 @@ function Show-RipwireHint {
     }
 }
 
-# The three things the install did, undone in the one order that works.
+# The things the install did, undone.
 #
-# The completion block goes first because removing it means RUNNING the binary,
-# and step 2 deletes the binary. Reversing those two leaves a block in the
-# user's profile that nothing on the machine can now take out.
+# The completion block goes first, and even when there is no binary: a profile
+# line that runs a tasqx which is gone errors at every PowerShell start.
 #
 # The store is never touched. TASQX_DB and the tasks in it are the user's data,
 # not installer state, and an uninstaller that removes a task database because
@@ -801,10 +835,8 @@ function Invoke-Uninstall {
 
     $changed = $false
 
-    # 1. the completion block, while there is still a binary to run.
-    if ((Test-Path -LiteralPath $BinaryPath) -and $ProfilePath.Length -gt 0) {
-        if (Invoke-CompletionUninstall -Exe $BinaryPath -ProfilePath $ProfilePath) { $changed = $true }
-    }
+    # 1. the completion block an older tasqx wrote.
+    if (Remove-CompletionBlock -Path $ProfilePath) { $changed = $true }
 
     # 2. the binary.
     if (Test-Path -LiteralPath $BinaryPath) {
@@ -870,7 +902,7 @@ function Invoke-Uninstall {
 # the user PATH. A dry run that uninstalls is worse than no dry run, because the
 # person who typed it chose it in order to be safe.
 #
-# The binary is deliberately never RUN here, and the registry is only read:
+# Nothing is run or written here, and the registry is only read:
 # Get-RawUserPath opens HKCU\Environment read-only, which is what makes naming
 # the PATH entry honest instead of guessed.
 #
@@ -891,7 +923,21 @@ function Show-UninstallDryRun {
     }
 
     if ($ProfilePath.Length -gt 0) {
-        Write-Output ('  ' + 'completions'.PadRight(13) + "the tasqx block in $ProfilePath, if it has one")
+        # Read, never cut: the file is only read here, and a begin marker is
+        # enough to name it, as install.sh's dry run does.
+        $hasBlock = $false
+        if (Test-Path -LiteralPath $ProfilePath -PathType Leaf) {
+            try {
+                foreach ($line in [IO.File]::ReadAllLines($ProfilePath)) {
+                    if ($line.Trim() -ceq '# >>> tasqx completions >>>') { $hasBlock = $true; break }
+                }
+            } catch { $hasBlock = $false }
+        }
+        if ($hasBlock) {
+            Write-Output ('  ' + 'completions'.PadRight(13) + "the tasqx block in $ProfilePath would be cut")
+        } else {
+            Write-Output ('  ' + 'completions'.PadRight(13) + "no tasqx block in $ProfilePath, so it would not be touched")
+        }
     } else {
         Write-Output ('  ' + 'completions'.PadRight(13) + 'this host reports no $PROFILE path, so no file would be edited')
     }
@@ -920,7 +966,6 @@ function Invoke-Main {
     param(
         [switch]$DryRun,
         [switch]$Uninstall,
-        [switch]$Completions,
         [switch]$Help
     )
 
@@ -929,10 +974,9 @@ function Invoke-Main {
         exit 0
     }
 
-    # Read BEFORE the two action branches below, and that placement is the whole
-    # of the fix: while it was computed further down, -Uninstall and
-    # -Completions had both already done their work by the time anything asked
-    # whether this was a dry run.
+    # Read BEFORE the action branch below, and that placement is the whole of
+    # the fix: while it was computed further down, -Uninstall had already done
+    # its work by the time anything asked whether this was a dry run.
     $dry = $DryRun -or (Test-EnvSwitch 'TASQX_DRY_RUN')
 
     # $PROFILE is expanded HERE, by the PowerShell that is running this script,
@@ -940,9 +984,9 @@ function Invoke-Main {
     $profilePath = ''
     if ($null -ne $PROFILE) { $profilePath = ([string]$PROFILE).Trim() }
 
-    # Both of these need the destination, and neither needs the platform
-    # mapping or a release tag: uninstalling on a machine tasqx publishes no
-    # build for still has to work.
+    # This needs the destination, and neither the platform mapping nor a
+    # release tag: uninstalling on a machine tasqx publishes no build for still
+    # has to work.
     if ($Uninstall -or (Test-EnvSwitch 'TASQX_UNINSTALL')) {
         $dir = Resolve-InstallDirectory
         if ($dir.Length -eq 0) {
@@ -955,43 +999,6 @@ function Invoke-Main {
             exit 0
         }
         Invoke-Uninstall -InstallDir $dir -BinaryPath (Join-Path $dir 'tasqx.exe') -ProfilePath $profilePath
-    }
-
-    # Completions only, per -Help. The bare one-liner never edits a profile:
-    # D57 built this feature to ask before writing, and an installer that adds
-    # a block to $PROFILE unasked breaks that promise.
-    if ($Completions -or (Test-EnvSwitch 'TASQX_COMPLETIONS')) {
-        $dir = Resolve-InstallDirectory
-        $exe = ''
-        if ($dir.Length -gt 0 -and (Test-Path -LiteralPath (Join-Path $dir 'tasqx.exe'))) {
-            $exe = Join-Path $dir 'tasqx.exe'
-        } else {
-            $found = @(Get-Command tasqx -CommandType Application -ErrorAction SilentlyContinue) | Select-Object -First 1
-            if ($null -ne $found) { $exe = [string]$found.Source }
-        }
-        # Every failure below is a warning and exit 0. Nothing here can leave
-        # an install broken, because nothing here installs anything.
-        if ($exe.Length -eq 0) {
-            Write-Err 'warning: no tasqx binary to ask for the completion line.'
-            Write-Err '  Install tasqx first, then run this again with -Completions.'
-            exit 0
-        }
-        if ($profilePath.Length -eq 0) {
-            Write-Err 'warning: this PowerShell host reports no $PROFILE path, so there is no file to edit.'
-            Write-Err "  Name one yourself: $exe completions powershell --install --profile <PATH>"
-            exit 0
-        }
-        # Last, after the two warnings above, so a dry run reports the same
-        # refusals a real run would rather than a plan that could not happen.
-        if ($dry) {
-            $emDash = [char]0x2014
-            Write-Output "tasqx installer (dry run $emDash nothing will be written)"
-            Write-Output ('  ' + 'completions'.PadRight(13) + "would run: $exe completions powershell --install --profile $profilePath -y")
-            Write-Output ('  ' + 'profile'.PadRight(13) + "$profilePath is not edited by this run")
-            exit 0
-        }
-        Invoke-CompletionInstall -Exe $exe -ProfilePath $profilePath | Out-Null
-        exit 0
     }
 
     $arch = Get-HostArchitecture
@@ -1193,4 +1200,4 @@ if ($args.Count -gt 0) {
     exit 2
 }
 
-Invoke-Main -DryRun:$DryRun -Uninstall:$Uninstall -Completions:$Completions -Help:$Help
+Invoke-Main -DryRun:$DryRun -Uninstall:$Uninstall -Help:$Help

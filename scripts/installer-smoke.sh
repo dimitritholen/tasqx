@@ -27,9 +27,11 @@
 #                              an installer that reports success having
 #                              verified nothing is worse than one that never
 #                              claimed to verify
-#   * completions, no shell  — `--completions` where no shell can be identified
-#                              must warn and still exit 0, because the binary is
-#                              already installed by then
+#   * uninstall cuts block   — `--uninstall` removes the completion block an
+#                              older tasqx wrote (D223), byte for byte, and
+#                              leaves every other byte, link and mode alone
+#   * dry-run uninstall      — `--dry-run --uninstall` names the block it would
+#                              cut and leaves the file's bytes alone
 #   * ripwire hint           — a PATH without `ripwire` (D178/#795) prints the
 #                              same install-it-from-here sentence setup.rs does,
 #                              after an install that otherwise succeeded
@@ -45,10 +47,6 @@
 #
 # Also not covered: install.ps1. It is driven by the Windows leg of the CI
 # installers job, because a PowerShell script wants a PowerShell host.
-#
-# And the last case cannot run at all on a host whose /bin/sh is bash, macOS
-# included — see the comment above it. It says so on its own line when that
-# happens rather than passing; a green run there has one case fewer in it.
 #
 # SAFETY. This never touches the caller's installation, PATH, dotfiles or store.
 # Every run happens inside one `mktemp -d` with a `trap` cleanup, with
@@ -135,8 +133,8 @@ tmp=$(mktemp -d "${TMPDIR:-/tmp}/tasqx-installer-smoke.XXXXXX")
 trap 'rm -rf "$tmp"' EXIT
 mkdir -p "$tmp/home"
 
-# HOME is redirected before anything runs, not per case: `--completions` writes
-# to a shell startup file under $HOME, and the one outcome this script must never
+# HOME is redirected before anything runs, not per case: `--uninstall` edits
+# shell startup files under $HOME, and the one outcome this script must never
 # have is editing the dotfiles of the person running it.
 export HOME="$tmp/home"
 export TASQX_DB="$tmp/tasks.db"
@@ -165,46 +163,11 @@ sandbox_path() {
   printf '%s\n' "$dir"
 }
 
-# Everything install.sh reaches for on a full install, minus the hashers and
-# minus `ps`, both of which the cases below add back or leave out deliberately.
-# `gzip` is in the list because `tar xzf` shells out to it rather than
-# decompressing itself: without it tar reports "gzip: Cannot exec", the install
-# fails, and the case below would blame the completion step for it.
-#
-# `dash` and `ash` are in it for probe_sh_without_shell_var, which needs a
-# candidate to find before it can pick one.
-base_tools=(sh dash ash uname mktemp chmod grep awk sed tr rm cat mkdir cp mv tar gzip gunzip find wc dirname basename curl wget)
-
-# The name of a POSIX sh inside $1 that arrives with $SHELL EMPTY, or "" if this
-# host has none.
-#
-# MEASURED, never assumed from the operating system, because the answer is a
-# property of the shell binary: bash calls getpwuid at startup and binds $SHELL
-# to the login shell out of the passwd entry whenever the environment does not
-# already carry one, and macOS ships bash as /bin/sh. Verified rather than read
-# off the manual — invoked through a symlink named `sh`, bash still reports
-# `SHELL=[/bin/bash]`, so the value comes from the passwd database and not from
-# argv[0]. That is also why install.sh's `sh | dash | ash` guard does not catch
-# it: the name it sees is a real shell.
-#
-# dash and ash leave it empty, which is the ordinary `curl … | sh` case on every
-# Debian, Ubuntu and Alpine host.
-probe_sh_without_shell_var() {
-  local sandbox=$1 home=$2 probe candidate out
-  probe="$tmp/probe-shell-var.sh"
-  cat > "$probe" <<'PROBE'
-printf 'SHELL=[%s]\n' "${SHELL:-}"
-PROBE
-  for candidate in sh dash ash; do
-    [ -x "$sandbox/$candidate" ] || continue
-    out=$(env -i PATH="$sandbox" HOME="$home" "$sandbox/$candidate" "$probe" 2>&1) || continue
-    if [ "$out" = "SHELL=[]" ]; then
-      printf '%s\n' "$candidate"
-      return 0
-    fi
-  done
-  printf '%s\n' ""
-}
+# Everything install.sh reaches for on a full install, minus the hashers, which
+# the cases below add back deliberately. `gzip` is in the list because `tar xzf`
+# shells out to it rather than decompressing itself: without it tar reports
+# "gzip: Cannot exec" and the install fails for a reason no case is about.
+base_tools=(sh uname mktemp chmod grep awk sed tr rm cat mkdir cp mv tar gzip gunzip find wc dirname basename curl wget)
 
 # ---- case: the dry-run contract ---------------------------------------------
 #
@@ -299,8 +262,12 @@ case_truncated_pipe() {
   size=$(wc -c < "$install_sh")
   cut=$((size * 60 / 100))
   out=$(head -c "$cut" "$install_sh" | TASQX_INSTALL="$dest" sh 2>&1) && code=0 || code=$?
-  if [ "$code" -eq 0 ]; then
-    fail "$name: a script cut off at ${cut} of ${size} bytes exited 0"
+  # Exit 0 is only possible when the cut lands between two functions or in a
+  # comment: the prefix then parses whole, defines functions and calls none. It
+  # is acceptable only in silence, since a prefix that ran anything says so.
+  if [ "$code" -eq 0 ] && [ -n "$out" ]; then
+    fail "$name: a script cut off at ${cut} of ${size} bytes exited 0 and printed:
+$(printf '%s\n' "$out" | sed 's/^/      /')"
     return
   fi
   if [ -e "$dest/tasqx" ]; then
@@ -349,69 +316,130 @@ $(printf '%s\n' "$out" | sed 's/^/      /')"
   pass "$name"
 }
 
-# ---- case: --completions where no shell can be identified --------------------
+# ---- case: --uninstall cuts the old completion block -------------------------
 #
-# `--completions` runs AFTER the binary is in place and reported, so every
-# failure in it is a warning and an exit 0: the install succeeded, and the only
-# thing that did not happen is a convenience one command adds.
-#
-# The environment is emptied AND `ps` is off PATH, because install.sh falls back
-# to the parent process name when $SHELL is empty — and the parent here is this
-# bash script, which would answer "bash" and send the case down the success path
-# instead. A container image with no procps and no $SHELL is the population
-# install.sh's own comment names for that fallback, and it is the one this case
-# reproduces.
-#
-# WHICH sh RUNS IT IS PART OF THE CASE, and this is the correction a macOS runner
-# made to an earlier version that ran `sh` and assumed the rest. An empty
-# environment is not enough: bash binds $SHELL from the passwd entry on the way
-# up, so on a host whose /bin/sh is bash — every Mac — install.sh arrived with
-# $SHELL=/bin/bash, identified a shell, wrote the block, and this case failed
-# holding the evidence that install.sh had behaved correctly. So the shell is
-# probed for rather than named, and where no shell on the host leaves $SHELL
-# empty the case reports NOT COVERED.
-#
-# It skips rather than adapting because the only remaining way to create the
-# condition is to set $SHELL in this harness, and that is the one fix this case
-# forbids: it would turn the run green while proving nothing about a real user.
-case_completions_without_shell() {
-  local name="--completions with no shell to set up" dest="$tmp/nocomp/bin"
-  local home="$tmp/nocomp/home" sandbox posix_sh out code
-  if [ -z "$fetcher" ] || [ -z "$hasher" ] || ! have tar; then
-    skip "$name" "a real install is needed first, and curl/wget, a hasher or tar is missing"
-    return
-  fi
-  mkdir -p "$home"
-  sandbox=$(sandbox_path noshell "${base_tools[@]}" sha256sum shasum openssl)
-  posix_sh=$(probe_sh_without_shell_var "$sandbox" "$home")
-  if [ -z "$posix_sh" ]; then
-    skip "$name" "every POSIX sh on this host arrives with \$SHELL already populated — bash binds it from the passwd entry, and this host's /bin/sh is bash. The condition cannot be created without setting \$SHELL, which is the one fix this case forbids"
-    return
-  fi
-  say "  driving install.sh with '$posix_sh', which leaves \$SHELL empty"
-  out=$(env -i PATH="$sandbox" HOME="$home" TASQX_DB="$tmp/nocomp/tasks.db" \
-    TASQX_VERSION="$PINNED_TAG" TASQX_INSTALL="$dest" \
-    "$sandbox/$posix_sh" "$install_sh" --completions 2>&1) && code=0 || code=$?
+# D223: tasqx no longer edits startup files, so the uninstaller removes the
+# block an older `tasqx completions --install` wrote. What is asserted is BYTES,
+# against a file built by hand: every line outside the block survives — a stray
+# end marker, a line that only mentions the marker, CRLF, a missing final
+# newline, a symlinked dotfile and its mode — and a begin marker never closed
+# leaves its file exactly as it was. No download: the cut runs before the
+# binary is looked at, so a placeholder binary is enough.
+case_uninstall_cuts_block() {
+  local name="--uninstall cuts the completion block" base="$tmp/cutblock"
+  local home="$base/home" dest="$base/bin" out code begin end block
+  local fish="$home/.config/fish/completions/tasqx.fish" mode
+  begin='# >>> tasqx completions >>>'
+  end='# <<< tasqx completions <<<'
+  block="$begin
+# Added by \`tasqx completions --install\`. Remove it with
+# \`tasqx completions --uninstall\`, or just delete these five lines.
+source <(TASQX_COMPLETE=bash tasqx)
+$end
+"
+  mkdir -p "$home/.elvish" "$(dirname "$fish")" "$base/dots" "$dest"
+  printf 'echo placeholder\n' > "$dest/tasqx"
+  chmod +x "$dest/tasqx"
+
+  # bash: a symlink into a "dotfiles repo", mode 600, block indented between
+  # user lines, a line that merely quotes the marker, a stray end marker, and
+  # no final newline.
+  printf 'export A=1\n  %secho "%s"\n%s\nlast line' "$block" "$begin" "$end" > "$base/dots/bashrc"
+  printf 'export A=1\necho "%s"\n%s\nlast line' "$begin" "$end" > "$base/bashrc.want"
+  chmod 600 "$base/dots/bashrc"
+  ln -s "$base/dots/bashrc" "$home/.bashrc"
+  # zsh: CRLF throughout, so the markers carry a trailing \r.
+  printf 'a\r\n%s\r\n# x\r\n%s\r\nb\r\n' "$begin" "$end" > "$home/.zshrc"
+  printf 'a\r\nb\r\n' > "$base/zshrc.want"
+  # elvish: never closed, so untouched.
+  printf 'keep\n%s\nnot ours to guess\n' "$begin" > "$home/.elvish/rc.elv"
+  cp "$home/.elvish/rc.elv" "$base/elv.want"
+  # fish: the file was only ever the block.
+  printf '%s' "$block" > "$fish"
+
+  out=$(HOME="$home" TASQX_INSTALL="$dest" XDG_CONFIG_HOME="" sh "$install_sh" --uninstall 2>&1) && code=0 || code=$?
   if [ "$code" -ne 0 ]; then
-    fail "$name: exited $code; a completion it could not switch on must not fail the install:
+    fail "$name: --uninstall exited $code:
 $(printf '%s\n' "$out" | sed 's/^/      /')"
     return
   fi
-  if [ ! -x "$dest/tasqx" ]; then
-    fail "$name: no binary at $dest/tasqx, so this case never reached the completion step:
+  if ! cmp -s "$base/dots/bashrc" "$base/bashrc.want"; then
+    fail "$name: ~/.bashrc is not the file minus its block:
+$(od -c "$base/dots/bashrc" | sed 's/^/      /')"
+    return
+  fi
+  if [ ! -L "$home/.bashrc" ]; then
+    fail "$name: the symlinked ~/.bashrc was replaced by a regular file"
+    return
+  fi
+  mode=$(find "$base/dots/bashrc" -perm 600)
+  if [ -z "$mode" ]; then
+    fail "$name: ~/.bashrc's mode is no longer 600"
+    return
+  fi
+  if ! cmp -s "$home/.zshrc" "$base/zshrc.want"; then
+    fail "$name: the CRLF ~/.zshrc is not the file minus its block:
+$(od -c "$home/.zshrc" | sed 's/^/      /')"
+    return
+  fi
+  if ! cmp -s "$home/.elvish/rc.elv" "$base/elv.want"; then
+    fail "$name: an unclosed block's file was changed"
+    return
+  fi
+  if ! printf '%s\n' "$out" | grep -q 'never closed'; then
+    fail "$name: no warning about the unclosed block in:
 $(printf '%s\n' "$out" | sed 's/^/      /')"
     return
   fi
-  if ! printf '%s\n' "$out" | grep -q 'cannot tell which shell to set up'; then
-    fail "$name: exited 0 without warning that it could not tell which shell to set up:
+  if [ -s "$fish" ]; then
+    fail "$name: the fish file still holds bytes:
+$(od -c "$fish" | sed 's/^/      /')"
+    return
+  fi
+  if [ -e "$dest/tasqx" ]; then
+    fail "$name: the binary was not removed"
+    return
+  fi
+  if [ -n "$(find "$home" "$base/dots" -name '*.tasqx-uninstall*' 2>/dev/null)" ]; then
+    fail "$name: a temp or backup file was left behind:
+$(find "$home" "$base/dots" -name '*.tasqx-uninstall*' | sed 's/^/      /')"
+    return
+  fi
+  pass "$name"
+}
+
+# ---- case: --dry-run --uninstall cuts nothing ---------------------------------
+#
+# The dry run's whole promise is "removes nothing", and since D223 an uninstall
+# edits startup files. So a marked block is seeded and the BYTES are compared
+# after the dry run, along with the binary still being there, and the dry run
+# must name the file it would cut rather than staying quiet about it.
+case_dry_run_uninstall_cuts_nothing() {
+  local name="--dry-run --uninstall cuts nothing" base="$tmp/drycut"
+  local home="$base/home" dest="$base/bin" out code
+  mkdir -p "$home" "$dest"
+  printf 'echo placeholder\n' > "$dest/tasqx"
+  printf 'export A=1\n# >>> tasqx completions >>>\nsource <(TASQX_COMPLETE=bash tasqx)\n# <<< tasqx completions <<<\nlast\n' > "$home/.bashrc"
+  cp "$home/.bashrc" "$base/bashrc.want"
+
+  out=$(HOME="$home" TASQX_INSTALL="$dest" XDG_CONFIG_HOME="" sh "$install_sh" --dry-run --uninstall 2>&1) && code=0 || code=$?
+  if [ "$code" -ne 0 ]; then
+    fail "$name: exited $code:
 $(printf '%s\n' "$out" | sed 's/^/      /')"
     return
   fi
-  # The other half of the promise: a step that could not decide which startup
-  # file to edit must not have edited one.
-  if [ -n "$(find "$home" -type f 2>/dev/null)" ]; then
-    fail "$name: it wrote into the home directory it could not identify a shell for:
-$(find "$home" -type f | sed 's/^/      /')"
+  if ! cmp -s "$home/.bashrc" "$base/bashrc.want"; then
+    fail "$name: the dry run changed ~/.bashrc:
+$(od -c "$home/.bashrc" | sed 's/^/      /')"
+    return
+  fi
+  if [ ! -e "$dest/tasqx" ]; then
+    fail "$name: the dry run removed the binary"
+    return
+  fi
+  if ! printf '%s\n' "$out" | grep -q "the tasqx block in $home/.bashrc would be cut"; then
+    fail "$name: the dry run does not name the block it would cut:
+$(printf '%s\n' "$out" | sed 's/^/      /')"
     return
   fi
   pass "$name"
@@ -453,7 +481,8 @@ case_dry_run
 case_real_install
 case_truncated_pipe
 case_no_hasher
-case_completions_without_shell
+case_uninstall_cuts_block
+case_dry_run_uninstall_cuts_nothing
 case_ripwire_hint
 
 say ""
