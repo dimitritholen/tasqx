@@ -1068,8 +1068,9 @@ pub const GRAPH_EDGE: &[FieldDoc] = &[
 
 /// `graph.query`'s result.
 pub const R_GRAPH_QUERY: &[FieldDoc] = &[
-    f("root", "string", "The node the projection is anchored at, resolved to its stable `<type>:<uuid>` id."),
-    f("depth", "integer", "How many hops were walked — the `depth` that was asked for, or 2."),
+    n("root", "string", "The node the projection is anchored at, resolved to its stable `<type>:<uuid>` id. Null on a whole-store `select`, which has no anchor."),
+    f("depth", "integer", "How many hops were walked — the `depth` that was asked for, or 2. Always 0 on a whole-store `select`, which walks nothing."),
+    n("select", "string", "The whole-store set that was asked for (`blocked` or `orphans`), or null on a walk from a `root`."),
     f("nodes", "array", "The nodes, ordered by depth, then kind, then id. Deterministic: the same call twice is the same list."),
     f("edges", "array", "The edges, ordered by relation, then `from`, then `to`. Only edges with both endpoints among the nodes above."),
     f("node_count", "integer", "How many nodes came back — the length of `nodes`, always present so a caller need not count."),

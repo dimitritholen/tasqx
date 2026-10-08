@@ -1012,11 +1012,33 @@ const GRAPH_EDGE: &[Field] = &[
 /// The counts and the omitted figures are always present, including on an
 /// untruncated answer: a client cannot tell a graph that ends from one that was
 /// cut unless both answers carry the same keys.
+///
+/// `root` is null and `select` a string on a whole-store select; the other way
+/// round on a walk (task #809).
 const R_GRAPH_QUERY: Shape = &[&[
-    req("root", Ty::Str),
+    nul("root", Ty::Str),
     req("depth", Ty::Int),
+    nul("select", Ty::Str),
     req_of("nodes", Ty::Array, &[GRAPH_NODE]),
     req_of("edges", Ty::Array, &[GRAPH_EDGE]),
+    req("node_count", Ty::Int),
+    req("edge_count", Ty::Int),
+    req("truncated", Ty::Bool),
+    req("omitted_nodes", Ty::Int),
+    req("omitted_edges", Ty::Int),
+    req("include_inferred", Ty::Bool),
+]];
+
+/// `select: "orphans"`'s answer: [`R_GRAPH_QUERY`] with an `edges` array that is
+/// always empty, because an orphan has no edge — so its row shape has no row to
+/// check, and the case would otherwise trip the guard against an empty frozen
+/// array.
+const R_GRAPH_ORPHANS: Shape = &[&[
+    nul("root", Ty::Str),
+    req("depth", Ty::Int),
+    nul("select", Ty::Str),
+    req_of("nodes", Ty::Array, &[GRAPH_NODE]),
+    req("edges", Ty::Array),
     req("node_count", Ty::Int),
     req("edge_count", Ty::Int),
     req("truncated", Ty::Bool),
@@ -2286,6 +2308,29 @@ fn cases() -> Vec<Case> {
                 })
             },
             R_GRAPH_QUERY,
+        ),
+        // The whole-store mode: `root` is null and `select` is a string, the
+        // two fields a walk fills the other way round.
+        case(
+            "graph.query",
+            "select blocked: the open tasks with an unmet blocker, root null",
+            |e| {
+                plain_task(e);
+                plain_task(e);
+                e.dependency_add(&json!({ "ref": 1, "depends_on": 2 }))
+                    .expect("dependency");
+                json!({ "root": null, "select": "blocked" })
+            },
+            R_GRAPH_QUERY,
+        ),
+        case(
+            "graph.query",
+            "select orphans: the nodes no edge touches, root left out",
+            |e| {
+                plain_task(e);
+                json!({ "select": "orphans" })
+            },
+            R_GRAPH_ORPHANS,
         ),
         case(
             "memory.add",

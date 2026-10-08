@@ -229,6 +229,7 @@ pub const PARAMS: &[(&str, &[&str], bool)] = &[
         "graph.query",
         &[
             "root",
+            "select",
             "depth",
             "node_types",
             "relation_types",

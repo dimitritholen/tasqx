@@ -64,7 +64,10 @@ function viewOf(value: unknown): GraphView | null {
   const { project, name, request, filters, pins, camera } = value;
   if (typeof name !== 'string' || name.trim() === '') return null;
   if (project !== null && typeof project !== 'string') return null;
-  if (!isRecord(request) || (typeof request['root'] !== 'string' && typeof request['root'] !== 'number')) return null;
+  if (!isRecord(request)) return null;
+  const select = request['select'] === 'blocked' || request['select'] === 'orphans' ? request['select'] : null;
+  // A view that asks a whole-store question has no root; any other needs one.
+  if (typeof request['root'] !== 'string' && typeof request['root'] !== 'number' && select === null) return null;
   if (typeof request['depth'] !== 'number' || typeof request['maxNodes'] !== 'number') return null;
   if (!isRecord(pins) || (filters !== undefined && !isRecord(filters))) return null;
   if (camera !== null && camera !== undefined && !isRecord(camera)) return null;
@@ -72,7 +75,8 @@ function viewOf(value: unknown): GraphView | null {
     project,
     name,
     request: {
-      root: request['root'],
+      root: typeof request['root'] === 'string' || typeof request['root'] === 'number' ? request['root'] : null,
+      select,
       depth: request['depth'],
       maxNodes: request['maxNodes'],
       includeInferred: request['includeInferred'] === true,

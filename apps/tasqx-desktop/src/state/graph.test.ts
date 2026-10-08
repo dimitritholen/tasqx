@@ -6,12 +6,14 @@ import {
   DEFAULT_GRAPH_FILTERS,
   DEFAULT_GRAPH_REQUEST,
   GRAPH_MAX_NODES,
+  GRAPH_PRESETS,
   graphDataOf,
   graphQueryParams,
   layoutGraphModel,
   mergeGraphData,
   parseRootRef,
   promoteInGraphData,
+  requestKey,
   resolvePresetFilters,
   searchNodes,
   syncGraphModel,
@@ -60,6 +62,23 @@ describe('graph.query params', () => {
   it('may ask for up to 1000 nodes, within the 5000-edge ceiling, and passes tag and relations', () => {
     const params = graphQueryParams({ ...DEFAULT_GRAPH_REQUEST, root: 'task:x', maxNodes: 1000, tag: 'ui', relations: ['references'] });
     expect(params).toMatchObject({ max_nodes: 1000, max_edges: 3000, tags: ['ui'], relation_types: ['references'] });
+  });
+});
+
+describe('graph.query whole-store params', () => {
+  it('sends a null root and the select, and no depth', () => {
+    expect(graphQueryParams({ ...DEFAULT_GRAPH_REQUEST, root: null, select: 'blocked' })).toEqual({
+      root: null,
+      select: 'blocked',
+      max_nodes: 100,
+      max_edges: 300,
+      include_inferred: false,
+    });
+  });
+
+  it('tells a select from a walk in the request key', () => {
+    const walk = { ...DEFAULT_GRAPH_REQUEST, root: 1 };
+    expect(requestKey({ ...walk, select: 'orphans', root: null })).not.toBe(requestKey(walk));
   });
 });
 
@@ -245,6 +264,12 @@ describe('roots and presets', () => {
     ['', null],
   ])('reads %j as root %j', (text, root) => {
     expect(parseRootRef(text)).toBe(root);
+  });
+
+  it('offers Blocked work and Orphans as whole-store selects, and every other preset as a walk', () => {
+    const selects = Object.fromEntries(GRAPH_PRESETS.map((preset) => [preset.id, preset.request.select]));
+    expect(selects).toMatchObject({ blocked: 'blocked', orphans: 'orphans', around: null, recent: null });
+    expect(GRAPH_PRESETS.filter((preset) => preset.request.select === null)).toHaveLength(5);
   });
 
   it('resolves "recently changed" against today', () => {

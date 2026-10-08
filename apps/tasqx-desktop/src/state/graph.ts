@@ -26,9 +26,15 @@ export function maxEdgesFor(maxNodes: number): number {
   return Math.min(5000, maxNodes * 3);
 }
 
+/** `graph.query`'s whole-store sets: open tasks with unmet blockers, and nodes no edge touches. */
+export type GraphSelect = 'blocked' | 'orphans';
+
 /** What the screen asks the server for. `tag` is the one filter only the server can apply. */
 export interface GraphRequest {
-  root: string | number;
+  /** The node the walk starts from; null when `select` names a whole-store set instead. */
+  root: string | number | null;
+  /** A whole-store set (D160's `select`): the walk has no root and no depth. */
+  select: GraphSelect | null;
   depth: number;
   maxNodes: number;
   includeInferred: boolean;
@@ -38,6 +44,7 @@ export interface GraphRequest {
 }
 
 export const DEFAULT_GRAPH_REQUEST: Omit<GraphRequest, 'root'> = {
+  select: null,
   depth: GRAPH_DEFAULT_DEPTH,
   maxNodes: GRAPH_DEFAULT_NODES,
   includeInferred: false,
@@ -48,8 +55,11 @@ export const DEFAULT_GRAPH_REQUEST: Omit<GraphRequest, 'root'> = {
 /** The `graph.query` params for a request, with every optional key omitted when unset. */
 export function graphQueryParams(request: GraphRequest): Record<string, unknown> {
   return {
-    root: request.root,
-    depth: request.depth,
+    // A select is a different question from a walk: `root` is null and `depth`
+    // is refused with it, so neither is sent as a number.
+    ...(request.select !== null
+      ? { root: null, select: request.select }
+      : { root: request.root, depth: request.depth }),
     max_nodes: request.maxNodes,
     max_edges: maxEdgesFor(request.maxNodes),
     include_inferred: request.includeInferred,
@@ -60,13 +70,14 @@ export function graphQueryParams(request: GraphRequest): Record<string, unknown>
 
 /** Two requests are the same question when this is equal, whatever their key order. */
 export function requestKey(request: GraphRequest): string {
-  const { root, depth, maxNodes, includeInferred, tag, relations } = request;
-  return JSON.stringify([root, depth, maxNodes, includeInferred, tag, relations]);
+  const { root, select, depth, maxNodes, includeInferred, tag, relations } = request;
+  return JSON.stringify([root, select, depth, maxNodes, includeInferred, tag, relations]);
 }
 
 /** The loaded neighbourhood: every node and edge seen so far, and what the caps cut. */
 export interface GraphData {
-  root: string;
+  /** Null on a whole-store select. */
+  root: string | null;
   nodes: GraphNodeRow[];
   edges: GraphEdgeRow[];
   truncated: boolean;
@@ -379,27 +390,27 @@ export interface GraphPreset {
 }
 
 /**
- * The PRD's focused presets that one bounded `graph.query` can answer. Blocked
- * work and Orphans need a whole-store scan the projection deliberately does
- * not offer, so they are not faked here.
+ * The PRD's focused presets. Blocked work and Orphans are `graph.query`'s
+ * whole-store `select` (no root); every other preset walks from a root and so
+ * says `select: null`, which is what takes the view back off a select.
  */
 export const GRAPH_PRESETS: GraphPreset[] = [
   {
     id: 'around',
     name: 'Around this node',
-    request: { depth: 2, includeInferred: false, relations: [] },
+    request: { select: null, depth: 2, includeInferred: false, relations: [] },
     filters: DEFAULT_GRAPH_FILTERS,
   },
   {
     id: 'related',
     name: 'Around this node, with inferred links',
-    request: { depth: 2, includeInferred: true, relations: [] },
+    request: { select: null, depth: 2, includeInferred: true, relations: [] },
     filters: { ...DEFAULT_GRAPH_FILTERS, minConfidence: 0.3 },
   },
   {
     id: 'project-map',
     name: 'Project knowledge map',
-    request: { depth: 2, includeInferred: false, relations: [] },
+    request: { select: null, depth: 2, includeInferred: false, relations: [] },
     filters: { ...DEFAULT_GRAPH_FILTERS, nodeTypes: ['project', 'task', 'memory'] },
     rootAt: 'project',
   },
@@ -407,6 +418,7 @@ export const GRAPH_PRESETS: GraphPreset[] = [
     id: 'decisions',
     name: 'Decision map',
     request: {
+      select: null,
       depth: 3,
       includeInferred: false,
       relations: ['implements_decision', 'supersedes', 'references', 'contradicts', 'derived_from', 'has_annotation'],
@@ -416,8 +428,20 @@ export const GRAPH_PRESETS: GraphPreset[] = [
   {
     id: 'recent',
     name: 'Recently changed (7 days)',
-    request: { depth: 2, includeInferred: false, relations: [] },
+    request: { select: null, depth: 2, includeInferred: false, relations: [] },
     filters: { ...DEFAULT_GRAPH_FILTERS, modifiedAfter: '@7d' },
+  },
+  {
+    id: 'blocked',
+    name: 'Blocked work',
+    request: { select: 'blocked', includeInferred: false, relations: [] },
+    filters: DEFAULT_GRAPH_FILTERS,
+  },
+  {
+    id: 'orphans',
+    name: 'Orphans',
+    request: { select: 'orphans', includeInferred: false, relations: [] },
+    filters: DEFAULT_GRAPH_FILTERS,
   },
 ];
 

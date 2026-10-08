@@ -102,6 +102,7 @@ export const GRAPH_CAPABILITIES: Capabilities = {
     ...MEMORY_CAPABILITIES.params,
     'graph.query': [
       'root',
+      'select',
       'depth',
       'node_types',
       'relation_types',
@@ -360,13 +361,14 @@ export function graphEdge(from: string, to: string, overrides: Partial<GraphEdge
 
 /** A `graph.query` answer around `root`, with its counts filled in. */
 export function graphResult(
-  root: string,
+  root: string | null,
   nodes: GraphNodeRow[],
   edges: GraphEdgeRow[],
   overrides: Partial<GraphQueryResult> = {},
 ): GraphQueryResult {
   return {
     root,
+    select: null,
     depth: 2,
     nodes,
     edges,

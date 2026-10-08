@@ -131,6 +131,54 @@ describe('GraphScreen', () => {
     expect(it.transport.calls.find((call) => call.method === 'graph.query')?.params['root']).toBe('memory:d1');
   });
 
+  it('answers the Blocked work and Orphans presets with one root-less graph.query each', async () => {
+    const blocked = graphResult(null, RESULT.nodes, RESULT.edges.slice(0, 1), { depth: 0, select: 'blocked' });
+    const it = await live(graphScript(), '#/graph?root=1');
+    await waitFor(() => expect(it.transport.countOf('graph.query')).toBe(1));
+    it.transport.script['graph.query'] = blocked;
+
+    fireEvent.change(screen.getByLabelText('View'), { target: { value: 'preset:blocked' } });
+    await waitFor(() => expect(it.transport.countOf('graph.query')).toBe(2));
+    expect(it.transport.calls.filter((call) => call.method === 'graph.query')[1]?.params).toEqual({
+      root: null,
+      select: 'blocked',
+      max_nodes: 100,
+      max_edges: 300,
+      include_inferred: false,
+    });
+    await waitFor(() => expect(screen.getByLabelText('Depth')).toBeDisabled());
+    expect(within(nodeGrid()).getByText('Ship the graph')).toBeInTheDocument();
+
+    fireEvent.change(screen.getByLabelText('View'), { target: { value: 'preset:orphans' } });
+    await waitFor(() => expect(it.transport.countOf('graph.query')).toBe(3));
+    expect(it.transport.calls.filter((call) => call.method === 'graph.query')[2]?.params).toMatchObject({
+      root: null,
+      select: 'orphans',
+    });
+
+    // A walk preset takes the view off the select again.
+    fireEvent.change(screen.getByLabelText('View'), { target: { value: 'preset:around' } });
+    await waitFor(() => expect(it.transport.countOf('graph.query')).toBe(4));
+    expect(it.transport.calls.filter((call) => call.method === 'graph.query')[3]?.params).toMatchObject({
+      root: 1,
+      depth: 2,
+    });
+  });
+
+  it('hides the whole-store presets from a daemon that does not accept select', async () => {
+    const old = {
+      ...GRAPH_CAPABILITIES,
+      params: {
+        ...GRAPH_CAPABILITIES.params,
+        'graph.query': (GRAPH_CAPABILITIES.params['graph.query'] ?? []).filter((key) => key !== 'select'),
+      },
+    };
+    await live(graphScript({ 'core.capabilities': old }), '#/graph?root=1');
+    await screen.findByRole('option', { name: 'Recently changed (7 days)' });
+    expect(screen.queryByRole('option', { name: 'Blocked work' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('option', { name: 'Orphans' })).not.toBeInTheDocument();
+  });
+
   it('filters node kinds and status on screen without asking again', async () => {
     const it = await live(graphScript(), '#/graph?root=1');
     await waitFor(() => expect(within(nodeGrid()).getByText('Graph ruling')).toBeInTheDocument());

@@ -2293,7 +2293,7 @@ impl Engine {
     /// already was.
     ///
     /// Enum-derived, never caller text — see `Status::sql_in_list`.
-    fn unmet_blocker_source() -> String {
+    pub(super) fn unmet_blocker_source() -> String {
         let terminal = Status::sql_in_list(Status::is_terminal);
         format!(
             "FROM dependencies d \

@@ -1130,7 +1130,14 @@ const PARAM_DOCS: &[(&str, &str, &str, &str, &str)] = &[
         "root",
         "integer or string",
         "",
-        "The node the projection is anchored at, in `link.add`'s reference grammar: a task short id (`42`), a bare uuid, or `task:`/`memory:`/`annotation:`/`project:` plus an id. It is returned resolved as `<type>:<uuid>`, and it is kept whatever the filters below say — a projection with no anchor in it has nothing to project from.",
+        "The node the projection is anchored at (required unless `select` is given), in `link.add`'s reference grammar: a task short id (`42`), a bare uuid, or `task:`/`memory:`/`annotation:`/`project:` plus an id. It is returned resolved as `<type>:<uuid>`, and it is kept whatever the filters below say — a projection with no anchor in it has nothing to project from.",
+    ),
+    (
+        "graph.query",
+        "select",
+        "string",
+        "",
+        "A whole-store question instead of a walk: send `\"root\": null` (or leave `root` out) and name the set. `blocked` is every open task with an unmet blocker, those blockers, and the `depends_on` edges between them, with the waiting tasks first; `orphans` is every task, memory document and project with no edge of a relation the walk crosses (a note is never one), and draws no edges. Naming a `root` as well, or a `depth`, is refused, and so is any other value, with the list. `node_types`, `relation_types`, `project`, `status`, `tags`, the dates, `include_inferred` and the two caps apply as they do to a walk, with one exception: `search_match` needs a root and is never added. The answer is capped like any other (`truncated`, `omitted_nodes`), but the scan reads every blocked task or every id first, so on a very large store narrow it with a filter.",
     ),
     (
         "graph.query",
