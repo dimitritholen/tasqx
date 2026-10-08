@@ -16,7 +16,7 @@ describe('parseTaskRef', () => {
 describe('rowFromHit / rowFromListRow', () => {
   it('flattens a search hit, with the annotation’s owning task parsed out', () => {
     const row = rowFromHit(memoryHit({ id: 'a1', kind: 'annotation', title: 'Task 5', source: 'task:#5', snippet: 'noted' }));
-    expect(row).toMatchObject({ id: 'a1', kind: 'annotation', excerpt: 'noted', modified: null, taskRef: 5 });
+    expect(row).toMatchObject({ id: 'a1', kind: 'annotation', excerpt: 'noted', modified: '2026-09-01T00:00:00.000Z', taskRef: 5 });
   });
 
   it('flattens a browse row, which always carries a modified date and no task ref', () => {
@@ -49,8 +49,14 @@ describe('applyMemoryFilters', () => {
     ]);
   });
 
-  it('never hides a search hit for a date range, since a hit carries no modified date', () => {
-    expect(applyMemoryFilters([hit], { ...DEFAULT_MEMORY_FILTERS, modifiedAfter: '2026-09-15' })).toEqual([hit]);
-    expect(applyMemoryFilters([hit], { ...DEFAULT_MEMORY_FILTERS, modifiedBefore: '2020-01-01' })).toEqual([hit]);
+  it('applies a date range to a search hit through its own modified date', () => {
+    expect(applyMemoryFilters([hit], { ...DEFAULT_MEMORY_FILTERS, modifiedAfter: '2026-09-15' })).toEqual([]);
+    expect(applyMemoryFilters([hit], { ...DEFAULT_MEMORY_FILTERS, modifiedBefore: '2020-01-01' })).toEqual([]);
+    expect(applyMemoryFilters([hit], { ...DEFAULT_MEMORY_FILTERS, modifiedAfter: '2026-08-31' })).toEqual([hit]);
+  });
+
+  it('leaves in a hit from a daemon that sends no modified date', () => {
+    const undated = rowFromHit({ ...memoryHit({ id: 'a2', kind: 'annotation' }), modified: undefined });
+    expect(applyMemoryFilters([undated], { ...DEFAULT_MEMORY_FILTERS, modifiedAfter: '2026-09-15' })).toEqual([undated]);
   });
 });

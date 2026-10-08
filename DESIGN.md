@@ -4769,3 +4769,11 @@ Every number is computed in Rust and rendered into the markup once for the whole
 **Why.** D157 took the nearest of the workdir and *all* its ancestors. GitHub Actions checks this repo out at `/home/runner/work/tasqx/tasqx`, the demo store has a project named `home`, and so `initialize` answered with `home`'s rulings on ubuntu and the default project's on a Mac (found by #740's CI failure). Any project named `home`, `work`, `projects`, `src` or `Users` took over every session beneath such a directory. The ancestor walk existed for task worktrees (`worktrees/<repo>/<id>-<slug>`), whose basename never carries the project; `repo_dir` answers that case from git itself instead of from the path. The workdir's own name is skipped inside a repo for the same reason: `<repo>/src` must not be claimed by a project called `src`. Outside a repo there is no toplevel, so the workdir's own name is the only evidence left and a bare ancestor is still not trusted.
 
 **Where:** `crates/tasqx-core/src/engine/memory.rs` (`session_rulings`), `crates/tasqx-core/tests/mcp.rs` (`a_project_named_after_an_ancestor_directory_does_not_take_over_the_session`).
+
+### D219 — A `memory.search` hit carries `modified`, so the Memory Explorer's date filter applies to search results (task #807; extends D160's dating of a node)
+
+**Decision.** Every `memory.search` hit, doc or annotation, carries `modified`, always set: a doc's `modified`, an annotation's `created`: annotations carry no modified time, so an edit does not move it (the same rule `graph.query` uses for a node). The field is additive on the frozen hit shape. The desktop Memory Explorer's modified-date range applies to search hits through it; a hit from a daemon that predates the field is left in rather than hidden. Related items stay on `link.list`.
+
+**Why.** A hit had no date, so the date filter could only narrow `memory.list` browse rows and the UI had to label the fields "Browsing only". One date rule across the graph and search keeps a note and a doc dated the same way on every surface.
+
+**Where:** `crates/tasqx-core/src/engine/memory.rs` (`hit_row`, `lexical_rows`, `semantic_only_row`), `crates/tasqx-core/src/docs.rs` (`MEMORY_HIT_ROW`), `apps/tasqx-desktop/src/state/memory.ts` (`rowFromHit`, `applyMemoryFilters`).

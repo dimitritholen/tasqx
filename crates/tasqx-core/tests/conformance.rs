@@ -570,6 +570,10 @@ const MEMORY_HIT_ROW: &[Field] = &[
     // imported — null on an annotation hit and on a doc `memory.add` wrote,
     // which has no origin file to compare against.
     nul("stale", Ty::Bool),
+    // #807/D219: when the entry last changed — a doc's `modified`, an
+    // annotation's `created` (an edit does not move it). Always set; the desktop date filter
+    // reads it.
+    req("modified", Ty::Str),
     // D196: which list found the hit (`lexical`, `semantic`, `both`), its
     // best chunk's cosine (null with no vector or no semantic side), and the
     // fused score `rank` is the negation of.

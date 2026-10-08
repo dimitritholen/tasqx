@@ -222,8 +222,8 @@ describe('DashboardStore memory', () => {
     const { rows, matched } = store.getState().memoryResults.data;
     expect(matched).toBe('"backup"');
     expect(rows).toEqual([
-      expect.objectContaining({ id: 'd1', kind: 'doc', standing: true, modified: null }),
-      expect.objectContaining({ id: 'a1', kind: 'annotation', taskRef: 5, modified: null }),
+      expect.objectContaining({ id: 'd1', kind: 'doc', standing: true, modified: '2026-09-01T00:00:00.000Z' }),
+      expect.objectContaining({ id: 'a1', kind: 'annotation', taskRef: 5, modified: '2026-09-01T00:00:00.000Z' }),
     ]);
   });
 

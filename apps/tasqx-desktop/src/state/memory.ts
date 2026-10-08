@@ -2,7 +2,7 @@ import type { MemoryHit, MemoryListRow } from '../api/types';
 
 /**
  * The Memory Explorer's own shapes: `memory.search` and `memory.list` answer
- * two different rows (a hit has a rank and no `modified`; a list row has
+ * two different rows (a hit has a rank; a list row has
  * `modified` and no `kind`), so both are flattened into one `MemoryResultRow`
  * the screen renders without caring which endpoint answered it. Everything
  * `memory.search` cannot filter for server-side (kind, standing, a date
@@ -65,7 +65,7 @@ export function rowFromHit(hit: MemoryHit): MemoryResultRow {
     excerpt: hit.snippet,
     project: hit.project,
     standing: hit.standing,
-    modified: null,
+    modified: hit.modified ?? null,
     taskRef: hit.kind === 'annotation' ? parseTaskRef(hit.source) : null,
   };
 }
@@ -86,9 +86,9 @@ export function rowFromListRow(row: MemoryListRow): MemoryResultRow {
 
 /**
  * The filters `memory.search`/`memory.list` cannot apply themselves: kind,
- * standing, and a modified-date range. A search hit carries no `modified`
- * (docs.rs) — an unknown date is never treated as "out of range", it is left
- * in, so a date filter narrows browsing without hiding every search result.
+ * standing, and a modified-date range. A search hit carries `modified` since
+ * D219 (a doc's modified, an annotation's created, which an edit does not move); a row with no date at all
+ * (a daemon older than that) is left in rather than treated as "out of range".
  */
 export function applyMemoryFilters(rows: MemoryResultRow[], filters: MemoryFilters): MemoryResultRow[] {
   return rows.filter((row) => {

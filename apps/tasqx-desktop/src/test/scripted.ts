@@ -246,6 +246,7 @@ export function memoryHit(overrides: Partial<MemoryHit> & { id: string; kind: Me
     standing: overrides.kind === 'annotation' ? null : false,
     project: null,
     stale: null,
+    modified: '2026-09-01T00:00:00.000Z',
     ...overrides,
   };
 }

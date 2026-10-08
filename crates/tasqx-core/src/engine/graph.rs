@@ -1166,8 +1166,9 @@ impl Engine {
                     summary: Some(owner.clone()),
                     project: None,
                     status: None,
-                    // A note is never edited, so `created` is the only date it
-                    // has and the one the date window reads.
+                    // Annotations carry no modified time, so `created` is the
+                    // only date a note has and the one the date window reads;
+                    // an edit does not move it.
                     modified: r.get(3)?,
                     short_id: None,
                     task: Some(owner),
