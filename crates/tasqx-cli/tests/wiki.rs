@@ -556,6 +556,8 @@ fn wiki_and_guides() -> Vec<(String, String)> {
 struct Code {
     /// 1-based line in the page.
     line: usize,
+    /// Which fenced block of the page it is in (0 for an inline span).
+    block: usize,
     text: String,
     /// `Some(info string)` for a line of a fenced block, `None` for an inline
     /// code span.
@@ -574,11 +576,15 @@ struct Code {
 fn code_in(text: &str) -> Vec<Code> {
     let mut out = Vec::new();
     let mut fence: Option<String> = None;
+    let mut block = 0;
     for (i, raw) in text.lines().enumerate() {
         let line = i + 1;
         if let Some(info) = raw.trim_start().strip_prefix("```") {
             fence = match fence {
-                None => Some(info.trim().to_string()),
+                None => {
+                    block += 1;
+                    Some(info.trim().to_string())
+                }
                 Some(_) => None,
             };
             continue;
@@ -586,6 +592,7 @@ fn code_in(text: &str) -> Vec<Code> {
         if let Some(info) = &fence {
             out.push(Code {
                 line,
+                block,
                 text: raw.to_string(),
                 fence: Some(info.clone()),
             });
@@ -596,6 +603,7 @@ fn code_in(text: &str) -> Vec<Code> {
         for span in raw.split('`').skip(1).step_by(2) {
             out.push(Code {
                 line,
+                block: 0,
                 text: span.to_string(),
                 fence: None,
             });
@@ -766,10 +774,21 @@ fn doc_commands() -> Vec<(String, String, Vec<String>, bool)> {
     let mut out = Vec::new();
     for (page, text) in wiki_and_guides() {
         let code = code_in(&text);
+        // A block with a `$ ` prompt is a session: only the prompted lines are
+        // commands, and the rest is what they printed — which may itself open
+        // with `tasqx` (`tasqx daemon: listening on …`).
+        let sessions: std::collections::HashSet<usize> = code
+            .iter()
+            .filter(|c| c.block > 0 && c.text.trim_start().starts_with("$ "))
+            .map(|c| c.block)
+            .collect();
         let mut i = 0;
         while i < code.len() {
             let c = &code[i];
             i += 1;
+            if sessions.contains(&c.block) && !c.text.trim_start().starts_with("$ ") {
+                continue;
+            }
             let shell = match &c.fence {
                 Some(info) => matches!(info.as_str(), "console" | "sh" | "bash" | "shell"),
                 None => false,
@@ -892,6 +911,10 @@ const NOT_NAMES: &[(&str, &str)] = &[
         "an event kind the D172 migration records, not a method",
     ),
     ("tokens.css", "a file name in a memory-search example"),
+    (
+        "task.changed",
+        "the notification a daemon pushes to `watch` and every subscriber, not a method",
+    ),
 ];
 
 /// Every API method, MCP tool and config key named in a code span or a fenced

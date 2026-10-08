@@ -62,35 +62,140 @@ const SITE: &[(&str, &str, &str, &str)] = &[
         "Filter grammar",
         include_str!("../../../../docs/site/filters.md"),
     ),
+];
+
+/// Site pages that were folded into a wiki page (#699), so the sidebar lists one
+/// page per topic: `(old page id, wiki file it joined)`.
+///
+/// The old ids are **frozen** like every page id: each is rendered as an empty
+/// anchor at the top of the page it joined, and the stylesheet's
+/// `.page:has(:target)` shows that page for a link to it. The sidebar lists the
+/// wiki page alone.
+const MERGED_PAGES: &[(&str, &str)] = &[
+    ("scheduling", "Dates-Reminders-and-Recurrence.md"),
+    ("reminders", "Dates-Reminders-and-Recurrence.md"),
+    ("daemon", "Dashboard-and-Live-View.md"),
+    ("data", "Import-and-Export.md"),
+    ("themes", "Settings-and-Themes.md"),
+];
+
+/// The `#h-…` heading ids of those pages, frozen by D226:
+/// `(old id, wiki file, slug of the heading that now carries it)`.
+///
+/// A heading whose slug appears here also carries the old id, as an empty
+/// anchor inside it, so a shared link scrolls to the same words it always did.
+const MERGED_HEADINGS: &[(&str, &str, &str)] = &[
     (
-        "scheduling.md",
-        "using",
-        "Scheduling &amp; recurrence",
-        include_str!("../../../../docs/site/scheduling.md"),
+        "h-the-four-date-fields",
+        "Dates-Reminders-and-Recurrence.md",
+        "the-four-date-fields",
     ),
     (
-        "reminders.md",
-        "using",
-        "Reminders",
-        include_str!("../../../../docs/site/reminders.md"),
+        "h-what-you-can-write",
+        "Dates-Reminders-and-Recurrence.md",
+        "what-you-can-write",
     ),
     (
-        "daemon.md",
-        "using",
-        "Daemon &amp; watch",
-        include_str!("../../../../docs/site/daemon.md"),
+        "h-the-rules-that-resolve-ambiguity",
+        "Dates-Reminders-and-Recurrence.md",
+        "the-rules-that-resolve-ambiguity",
     ),
     (
-        "data.md",
-        "using",
-        "Export &amp; import",
-        include_str!("../../../../docs/site/data.md"),
+        "h-a-leading-hyphen-needs-no-escaping",
+        "Dates-Reminders-and-Recurrence.md",
+        "a-leading-hyphen-needs-no-escaping",
     ),
     (
-        "themes.md",
-        "using",
-        "Themes &amp; reports",
-        include_str!("../../../../docs/site/themes.md"),
+        "h-estimates",
+        "Dates-Reminders-and-Recurrence.md",
+        "estimates",
+    ),
+    (
+        "h-recurrence",
+        "Dates-Reminders-and-Recurrence.md",
+        "recurrence",
+    ),
+    (
+        "h-missed-occurrences-collapse",
+        "Dates-Reminders-and-Recurrence.md",
+        "missed-occurrences-collapse",
+    ),
+    (
+        "h-month-end--precisely",
+        "Dates-Reminders-and-Recurrence.md",
+        "month-end--precisely",
+    ),
+    (
+        "h-the-two-forms",
+        "Dates-Reminders-and-Recurrence.md",
+        "the-two-forms",
+    ),
+    (
+        "h-who-delivers-them",
+        "Dates-Reminders-and-Recurrence.md",
+        "who-delivers-them",
+    ),
+    (
+        "h-it-fires-exactly-once",
+        "Dates-Reminders-and-Recurrence.md",
+        "it-fires-exactly-once",
+    ),
+    (
+        "h-delivery-never-fails",
+        "Dates-Reminders-and-Recurrence.md",
+        "delivery-never-fails",
+    ),
+    (
+        "h-firing-one-by-hand",
+        "Dates-Reminders-and-Recurrence.md",
+        "firing-one-by-hand",
+    ),
+    (
+        "h-one-shot-or-daemon-",
+        "Dashboard-and-Live-View.md",
+        "one-shot-or-daemon-",
+    ),
+    (
+        "h-socket-addresses",
+        "Dashboard-and-Live-View.md",
+        "socket-addresses",
+    ),
+    ("h-running-it", "Dashboard-and-Live-View.md", "running-it"),
+    ("h-watch", "Dashboard-and-Live-View.md", "tasqx-watch"),
+    ("h-export", "Import-and-Export.md", "tasqx-export"),
+    (
+        "h-filtered-exports-and-dependency-edges",
+        "Import-and-Export.md",
+        "filtered-exports-and-dependency-edges",
+    ),
+    (
+        "h-what-a-document-carries",
+        "Import-and-Export.md",
+        "what-a-document-carries",
+    ),
+    ("h-import", "Import-and-Export.md", "tasqx-import"),
+    (
+        "h-a-field-the-schema-does-not-name-is-rejected",
+        "Import-and-Export.md",
+        "a-field-the-schema-does-not-name-is-rejected",
+    ),
+    (
+        "h-a-dangling-edge-is-rejected--not-repaired",
+        "Import-and-Export.md",
+        "a-dangling-edge-is-rejected--not-repaired",
+    ),
+    ("h-recipes", "Import-and-Export.md", "recipes"),
+    ("h-themes", "Settings-and-Themes.md", "themes"),
+    (
+        "h-reports",
+        "Reports-and-Charts.md",
+        "grouping-and-what-counts",
+    ),
+    ("h-charts", "Reports-and-Charts.md", "chart-samples"),
+    (
+        "h-the-html-report",
+        "Reports-and-Charts.md",
+        "the-html-report",
     ),
 ];
 
@@ -256,7 +361,11 @@ fn build() -> Vec<MdPage> {
     for (section, prefix, table) in [("using", "wiki", WIKI), ("guides", "guide", GUIDES)] {
         for (file, src) in table {
             let id = page_id(prefix, file);
-            let (title, body) = render(&id, file, src, &ids);
+            let (title, mut body) = render(&id, file, src, &ids);
+            // A page that absorbed site pages answers to their old ids.
+            for (old, _) in MERGED_PAGES.iter().filter(|(_, f)| *f == *file) {
+                body.insert_str(0, &format!("<span id=\"{old}\"></span>"));
+            }
             out.push(MdPage {
                 id,
                 section,
@@ -404,6 +513,15 @@ fn render(
                     // pages may both have a "tasqx why" heading.
                     let anchor = unique(anchor, &out);
                     out.push(html(format!("<{tag} id=\"{anchor}\">")));
+                    // The `#h-…` ids this heading inherited from a site page
+                    // that merged into this one: empty anchors, same place.
+                    let slug = super::slug(&text);
+                    for (old, ..) in MERGED_HEADINGS
+                        .iter()
+                        .filter(|(_, f, s)| *f == file && *s == slug)
+                    {
+                        out.push(html(format!("<span id=\"{old}\"></span>")));
+                    }
                     heading_tags.push(tag);
                 }
             }
@@ -875,8 +993,10 @@ mod tests {
             })
             .collect();
         // Floor: an empty listing must not read as "everything is embedded".
+        // `docs/site` keeps only the pages with no wiki twin (#699).
+        let floor = if which == "site" { 3 } else { 7 };
         assert!(
-            names.len() >= 7,
+            names.len() >= floor,
             "docs/{which} holds only {} markdown files — where did the rest go?",
             names.len()
         );

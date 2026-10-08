@@ -159,7 +159,7 @@ $ tasqx done 1
 |---|---|
 | Know every verb and flag | [Commands](#commands) |
 | Ask precise questions of your store | [Filter grammar](filters.md) |
-| Say "friday" or "every 3 days" | [Scheduling & recurrence](scheduling.md) |
-| Be told about a task before it is late | [Reminders](reminders.md) |
+| Say "friday" or "every 3 days" | [Dates & recurrence](Dates-Reminders-and-Recurrence.md) |
+| Be told about a task before it is late | [Reminders](Dates-Reminders-and-Recurrence.md#reminders) |
 | Give an AI agent access | [MCP](#mcp) |
 | Script tasqx from another language | [JSON API](#api) |
