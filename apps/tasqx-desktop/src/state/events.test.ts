@@ -73,7 +73,7 @@ describe('attachEvents', () => {
   it('refetches a page row once when the event is newer (apply)', async () => {
     const { transport, store, detach } = await live();
 
-    transport.pushEvent({ entity: 'task', op: 'update', short_id: 2, _rev: 6 });
+    transport.pushEvent({ entity: 'task', op: 'start', short_id: 2, _rev: 6 });
     await settle();
 
     expect(transport.methods).toEqual(['task.get']);
@@ -85,7 +85,7 @@ describe('attachEvents', () => {
   it('ignores an event the page already has', async () => {
     const { transport, store, detach } = await live();
 
-    transport.pushEvent({ entity: 'task', op: 'update', short_id: 1, _rev: 5 });
+    transport.pushEvent({ entity: 'task', op: 'start', short_id: 1, _rev: 5 });
     await settle();
 
     expect(transport.methods).toEqual([]);
@@ -116,7 +116,7 @@ describe('attachEvents', () => {
     store.setSelected(taskDetail({ short_id: 1, title: 'As selected' }));
     transport.clearCalls();
 
-    transport.pushEvent({ entity: 'task', op: 'update', short_id: 1, _rev: 6 });
+    transport.pushEvent({ entity: 'task', op: 'start', short_id: 1, _rev: 6 });
     await settle();
 
     expect(transport.countOf('task.get')).toBe(1);
@@ -177,7 +177,7 @@ describe('attachEvents', () => {
     // it was on is re-read instead of keeping a row nobody can verify.
     const { transport, detach } = await live({ 'task.get': fails('not_found', 'no task 1') });
 
-    transport.pushEvent({ entity: 'task', op: 'update', short_id: 1, _rev: 6 });
+    transport.pushEvent({ entity: 'task', op: 'start', short_id: 1, _rev: 6 });
     await vi.advanceTimersByTimeAsync(REFRESH_DEBOUNCE_MS);
 
     expect(transport.methods).toEqual(['task.get', 'task.list', 'report.summary']);
@@ -200,7 +200,7 @@ describe('attachEvents', () => {
     const { transport, detach } = await live();
     detach();
 
-    transport.pushEvent({ entity: 'task', op: 'update', short_id: 2, _rev: 6 });
+    transport.pushEvent({ entity: 'task', op: 'start', short_id: 2, _rev: 6 });
     await vi.advanceTimersByTimeAsync(REFRESH_DEBOUNCE_MS);
 
     expect(transport.methods).toEqual([]);

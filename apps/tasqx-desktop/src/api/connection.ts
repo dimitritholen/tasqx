@@ -55,6 +55,21 @@ const MAX_RESYNC_REASONS = 20;
  */
 const APPLY_OPS = new Set(['add', 'update', 'start', 'stop', 'annotate']);
 
+/**
+ * Every `op` the daemon writes to `events` (the `insert_event` calls in
+ * crates/tasqx-core/src/engine). An op outside it means the stream speaks a
+ * vocabulary this build cannot interpret, so the view is rebuilt from the
+ * baseline rather than patched (D160).
+ * ponytail: hand-kept copy; a new daemon op costs one resync per event until it is added here.
+ */
+export const KNOWN_OPS = new Set([
+  'add', 'adjust_tracked', 'annotation.add', 'annotation.move', 'annotation.remove', 'annotation.update',
+  'archive', 'cancel', 'check.add', 'check.remove', 'check.set', 'create', 'dependency.add',
+  'dependency.remove', 'done', 'import', 'link.add', 'link.remove', 'memory.add', 'memory.remove',
+  'memory.update', 'modify', 'reminded', 'reopen', 'start', 'stop', 'store.import', 'tag.add',
+  'tag.normalize', 'tag.remove', 'token.add', 'token.remove', 'tokens.attributed', 'unarchive', 'undo', 'use',
+]);
+
 export function retryDelay(attempt: number): number {
   return RETRY_LADDER[attempt] ?? RETRY_CEILING;
 }
@@ -307,7 +322,11 @@ export class ConnectionController {
       this.resync(`unknown event ${event.event}`);
       return;
     }
-    const { entity_id: key, _rev: rev } = event.data;
+    const { entity_id: key, _rev: rev, op } = event.data;
+    if (!KNOWN_OPS.has(op)) {
+      this.resync(`unknown operation ${op}`);
+      return;
+    }
     if (key !== undefined && typeof rev === 'number') {
       const seen = this.revs.get(key);
       if (seen !== undefined && rev < seen) {
