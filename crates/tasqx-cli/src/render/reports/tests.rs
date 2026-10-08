@@ -565,6 +565,44 @@ fn report_marks_a_low_confidence_group() {
     );
 }
 
+/// #92: the TOTAL row folds the groups' `tokens_confidence` to the WORST, in
+/// either group order. Every group row here is graded differently from the
+/// total (a lone high group stays silent, a lone low one is marked), so only
+/// the cross-group fold can produce the TOTAL marker asserted.
+#[test]
+fn report_total_row_carries_the_worst_group_confidence_in_either_order() {
+    let ctx = Ctx::new(theme::default_theme(), Caps::PLAIN);
+    let group = |name: &str, confidence: &str| {
+        json!({ "project": name, "count": 1, "est_total": "PT1H", "overdue": 0,
+                "tracked_total": "PT2H", "tokens_in": 100, "tokens_out": 0,
+                "tokens_cache_read": 0, "tokens_cache_creation": 0,
+                "tokens_confidence": confidence })
+    };
+    for (grades, want) in [
+        (["high", "medium"], "~medium"),
+        (["medium", "high"], "~medium"),
+        (["low", "high"], "~low"),
+        (["high", "low"], "~low"),
+        (["medium", "low"], "~low"),
+        (["low", "medium"], "~low"),
+    ] {
+        let out = report(
+            &ctx,
+            &json!({ "groups": [group("A", grades[0]), group("B", grades[1])] }),
+            "project",
+            None,
+        );
+        let total = out
+            .lines()
+            .find(|l| l.trim_start().starts_with("TOTAL"))
+            .unwrap_or_else(|| panic!("no TOTAL row: {out}"));
+        assert!(
+            total.contains(want),
+            "{grades:?}: TOTAL should read {want}: {total:?}"
+        );
+    }
+}
+
 /// A group with no measurement must read as "nothing to report", not as a
 /// bucket that spent zero — the difference between an unmeasured project and
 /// a free one.

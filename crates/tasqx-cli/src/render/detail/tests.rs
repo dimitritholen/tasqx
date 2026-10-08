@@ -551,6 +551,38 @@ fn show_marks_a_low_confidence_token_measurement() {
     );
 }
 
+/// #92: with several measurements the tokens line carries the WORST
+/// confidence, whatever order they arrive in. The earlier tests only ever
+/// saw one measurement, which no fold direction can get wrong.
+#[test]
+fn show_marks_the_worst_of_several_token_measurements_in_either_order() {
+    let ctx = Ctx::new(theme::default_theme(), Caps::PLAIN);
+    let measure = |confidence: &str| {
+        json!({"input_tokens": 10, "output_tokens": 0,
+               "cache_read_tokens": 0, "cache_creation_tokens": 0,
+               "confidence": confidence})
+    };
+    for (grades, want) in [
+        (["high", "medium"], "[medium confidence]"),
+        (["medium", "high"], "[medium confidence]"),
+        (["low", "high"], "[low confidence]"),
+        (["high", "low"], "[low confidence]"),
+        (["medium", "low"], "[low confidence]"),
+        (["low", "medium"], "[low confidence]"),
+    ] {
+        let t = json!({
+            "short_id": 1, "title": "t", "status": "pending", "urgency": 1.0,
+            "tokens": [measure(grades[0]), measure(grades[1])],
+        });
+        let out = task_detail(&ctx, &t, crate::clock::now());
+        let line = out
+            .lines()
+            .find(|l| l.contains("tokens"))
+            .expect("tokens row");
+        assert!(line.contains(want), "{grades:?}: want {want}: {line:?}");
+    }
+}
+
 /// A high-confidence-only task must NOT get a confidence marker at all —
 /// the whole point is that the flag distinguishes the two.
 #[test]

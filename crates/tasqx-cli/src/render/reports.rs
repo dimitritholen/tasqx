@@ -519,12 +519,8 @@ pub fn report(
             *total_bucket.entry(bkey).or_insert(0) += n;
         }
         if let Some(c) = confidence {
-            let worse = total_confidence.is_none_or(|cur| {
-                tasqx_core::tokens::confidence_rank(c) < tasqx_core::tokens::confidence_rank(cur)
-            });
-            if worse {
-                total_confidence = Some(c);
-            }
+            total_confidence =
+                tasqx_core::tokens::worst_confidence(total_confidence.into_iter().chain([c]));
         }
 
         let mut cells = vec![

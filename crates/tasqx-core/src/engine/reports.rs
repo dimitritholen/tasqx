@@ -262,16 +262,10 @@ impl Engine {
                 agg.tokens_unsplit = agg.tokens_unsplit.saturating_add(bucket("total_tokens"));
                 let str_field = |name: &str| m.get(name).and_then(Value::as_str);
                 if let Some(c) = str_field("confidence") {
-                    let is_worse = match agg.tokens_confidence.as_deref() {
-                        Some(existing) => {
-                            crate::tokens::confidence_rank(c)
-                                < crate::tokens::confidence_rank(existing)
-                        }
-                        None => true,
-                    };
-                    if is_worse {
-                        agg.tokens_confidence = Some(c.to_string());
-                    }
+                    agg.tokens_confidence = crate::tokens::worst_confidence(
+                        agg.tokens_confidence.as_deref().into_iter().chain([c]),
+                    )
+                    .map(str::to_string);
                 }
             }
             // Shared with the filter DSL's `due.before:now` (#148) so this
@@ -648,16 +642,10 @@ impl Engine {
                 // it cannot tell "absent" from "wrong type".
                 let str_field = |name: &str| m.get(name).and_then(Value::as_str);
                 if let Some(c) = str_field("confidence") {
-                    let is_worse = match agg.confidence.as_deref() {
-                        Some(existing) => {
-                            crate::tokens::confidence_rank(c)
-                                < crate::tokens::confidence_rank(existing)
-                        }
-                        None => true,
-                    };
-                    if is_worse {
-                        agg.confidence = Some(c.to_string());
-                    }
+                    agg.confidence = crate::tokens::worst_confidence(
+                        agg.confidence.as_deref().into_iter().chain([c]),
+                    )
+                    .map(str::to_string);
                 }
             }
             if contributed {

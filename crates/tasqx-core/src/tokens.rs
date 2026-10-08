@@ -114,6 +114,13 @@ pub fn confidence_rank(confidence: &str) -> u8 {
     }
 }
 
+/// The WORST of a set of confidence grades by [`confidence_rank`], or `None`
+/// for an empty set. Of equal ranks the first seen wins, so a grade this module
+/// cannot name (ranked with [`CONFIDENCE_LOW`]) is kept as written.
+pub fn worst_confidence<'a>(grades: impl IntoIterator<Item = &'a str>) -> Option<&'a str> {
+    grades.into_iter().min_by_key(|c| confidence_rank(c))
+}
+
 /// Refuse a `confidence` outside [`TOKEN_CONFIDENCE`], same contract as
 /// [`require_source`].
 pub fn require_confidence(value: &str) -> Result<(), ApiError> {
@@ -277,6 +284,18 @@ mod tests {
     /// alongside [`CONFIDENCE_LOW`], never
     /// above it — the "unknown must not be silently treated as trustworthy"
     /// half of the contract.
+    #[test]
+    fn worst_confidence_is_the_lowest_grade_in_either_order() {
+        assert_eq!(worst_confidence(["high", "medium"]), Some("medium"));
+        assert_eq!(worst_confidence(["medium", "high"]), Some("medium"));
+        assert_eq!(worst_confidence(["low", "high"]), Some("low"));
+        assert_eq!(worst_confidence(["high", "low", "medium"]), Some("low"));
+        assert_eq!(worst_confidence([]), None);
+        // An unrecognised grade ranks with low, and the first of equals wins.
+        assert_eq!(worst_confidence(["high", "bogus"]), Some("bogus"));
+        assert_eq!(worst_confidence(["low", "bogus"]), Some("low"));
+    }
+
     #[test]
     fn confidence_rank_orders_high_above_medium_above_low() {
         assert!(
