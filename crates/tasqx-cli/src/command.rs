@@ -1139,11 +1139,12 @@ pub(super) enum Command {
         #[arg(add = crate::complete::candidates::filter_words())]
         filter: Vec<String>,
     },
-    /// Open a live, read-only kanban of your tasks in the browser.
+    /// Open a live kanban of your tasks in the browser; drag a card to change it.
     ///
     /// Serves one self-contained page on 127.0.0.1 behind a secret token, and
-    /// updates it from the daemon's pushes. Needs a running daemon. Writes
-    /// nothing.
+    /// updates it from the daemon's pushes. Needs a running daemon. A drag
+    /// starts, stops, completes, reopens or cancels a task, or sets its
+    /// priority; `--scope read` serves the same board with every write refused.
     #[command(after_help = crate::cmddoc::after_help("board"))]
     Board {
         /// Port to bind on 127.0.0.1 (default: `board.port`, else a free one).
@@ -1152,6 +1153,10 @@ pub(super) enum Command {
         /// Print the URL but do not launch a browser.
         #[arg(long)]
         no_open: bool,
+        /// `write` lets a drag change tasks; `read` refuses every write
+        /// server-side (a wall screen or a standup display).
+        #[arg(long, default_value = "write", value_parser = ["read", "write"])]
+        scope: String,
     },
     /// Bundled MCP server (DESIGN.md §7, §12-D7).
     #[command(after_help = crate::cmddoc::after_help("mcp"))]

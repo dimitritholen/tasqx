@@ -84,13 +84,14 @@ you see every task start, complete and unblock as it happens.
 ## tasqx board
 
 The same live view in a browser: a kanban with a column per state, updating as
-tasks change, for the moments a terminal is not where you want to look.
+tasks change, where you move a task by dragging its card.
 
 | Command | What it does |
 |---|---|
 | `tasqx board` | Print the board's URL and open it in your browser |
 | `tasqx board --no-open` | Print the URL only |
 | `tasqx board --port 8123` | Serve on a fixed port (or set `board.port`) |
+| `tasqx board --scope read` | Serve the same board with every change refused |
 
 Like `watch`, `board` needs a running
 [daemon](AI-Agents-and-Automation.md#tasqx-daemon). Ctrl-C stops it.
@@ -107,10 +108,42 @@ follows your terminal theme, light or dark by your system setting, and shows
 **daemon · offline** if the connection drops.
 
 Keys: `j`/`k` move between cards, `h`/`l` between columns, Enter opens, `/`
-searches, Esc closes.
+searches, Esc closes, `s` starts the focused card and `d` completes it.
 
-The board only reads. It cannot change a task, and a request that tries is
-refused by the server, not just hidden by the page.
+**Moving a task.** Drag a card to another column and the board sends the same
+command you would type:
+
+| Drop on | From | What runs |
+|---|---|---|
+| Active | any | `tasqx start` (the running task stops, as it always does) |
+| Done | any | `tasqx done` |
+| Ready | Active | `tasqx stop` |
+| Ready | Done | `tasqx reopen` |
+| Ready | Backlog | clears its wait and scheduled dates |
+| Backlog | Ready | waits a week (change the date with `tasqx modify`) |
+| Blocked | — | refused: a task is blocked by its dependencies, not by a drag |
+
+While you drag, a tray appears under the card: drop on **H**, **M** or **L**
+to set the priority, **clear** to remove it, or **cancel** to cancel the task.
+Within a column cards stay ordered by urgency; there is no manual order to drag
+into. Every drag has a button in the card's panel (click it, or Enter), which
+is also how you move a task on a touch screen.
+
+A message at the bottom says what happened in the command's own words — which
+task a start stopped and after how long, which tasks a completion unblocked —
+with **Undo** for a stop, completion, cancel or priority/date change. Undo is
+`tasqx undo` with one extra condition: it only takes back your drag if nothing
+has been written since, so it can never undo someone else's change. A start or
+reopen is undone by dragging the card back.
+
+If something else changed the task after the board drew it — you, in a
+terminal, or an agent — the drop is refused, nothing is written, and the board
+says "another session changed it" and shows the task as it now is. Every change
+the board makes is recorded with `board` as its actor, so `tasqx api
+event.list` tells a drag apart from a command or an agent.
+
+`--scope read` serves the board for a wall screen or a standup: no drag, no
+buttons, and the server refuses any change that is sent anyway.
 
 **Who can reach it.** The board binds `127.0.0.1` and nothing else, so it is
 never reachable from another machine. On a shared computer another user could
@@ -119,7 +152,9 @@ token: the URL `tasqx board` prints carries it once, the browser trades it for
 a cookie, and every other request without that cookie is refused. Requests
 from another website, or under a hostname other than `127.0.0.1` or
 `localhost`, are refused too, which is what stops a web page you are browsing
-from reading your backlog through your own browser. The board is single-user
+from reading or changing your backlog through your own browser. The server
+forwards only the handful of commands a drag needs, each carrying the revision
+the card was drawn at. The board is single-user
 and local. Put it behind a reverse proxy and authentication is the proxy's job.
 
 Without a fixed port, each run takes a free port and a fresh token. With one

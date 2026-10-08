@@ -1,6 +1,6 @@
-Open a live, read-only kanban of your tasks in the browser.
+Open a live kanban of your tasks in the browser; drag a card to change it.
 
-Serves one self-contained page on 127.0.0.1 behind a secret token, and updates it from the daemon's pushes. Needs a running daemon. Writes nothing.
+Serves one self-contained page on 127.0.0.1 behind a secret token, and updates it from the daemon's pushes. Needs a running daemon. A drag starts, stops, completes, reopens or cancels a task, or sets its priority; `--scope read` serves the same board with every write refused.
 
 Usage: tasqx board [OPTIONS]
 
@@ -17,6 +17,12 @@ Options:
       --theme <THEME>
           Theme name (built-in nord|gruvbox|dracula|solarized|mono, or a user file). Overrides $TASQX_THEME and the config file (DESIGN.md §8)
 
+      --scope <SCOPE>
+          `write` lets a drag change tasks; `read` refuses every write server-side (a wall screen or a standup display)
+          
+          [default: write]
+          [possible values: read, write]
+
       --socket <SOCKET>
           Local socket / named-pipe address of a tasqx daemon. Overrides $TASQX_SOCK. When a daemon is reachable, one-shot commands route through it (single writer); otherwise they run in-process. A set $TASQX_DB naming a different store than that daemon's is refused. Also selects the address for `daemon` and `watch`
 
@@ -31,8 +37,10 @@ Options:
 
 EXAMPLES
   tasqx board    # open the board; needs a running daemon
+  tasqx board --scope read    # a wall screen: every change refused
 
-NOTE  Serves one page on 127.0.0.1 only, behind a secret token and an Origin check, and repaints from the daemon's pushes. It writes nothing. Single-user and local: behind a reverse proxy, authentication is the proxy's job.
+NOTE  Serves one page on 127.0.0.1 only, behind a secret token and an Origin check, and repaints from the daemon's pushes. Single-user and local: behind a reverse proxy, authentication is the proxy's job.
+      A drag sends the verb you would type (start, stop, done, reopen, cancel, or a priority, wait or scheduled change) with the card's revision, so a task changed elsewhere since is refused rather than overwritten. Events record `board` as the actor. --scope read refuses every write server-side.
       `--port` or `board.port` fixes the port and keeps the token between runs, so a bookmark survives; otherwise a free port and a new token each run.
 
 See also: watch · daemon        Full manual: tasqx manual

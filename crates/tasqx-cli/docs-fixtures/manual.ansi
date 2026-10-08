@@ -56,7 +56,7 @@
   api          One JSON envelope in on stdin → one out on stdout.
   daemon       Long-lived single-writer server.
   watch        Live-updating task view.
-  board        Live read-only kanban in your browser.
+  board        Live kanban in your browser: drag a card to change the task.
   mcp          Serve MCP over stdio with an operator-selected scope.
   docs         Open the exhaustive browser guide (self-contained HTML).
   about        Who made tasqx, where to find it, and what build this is.

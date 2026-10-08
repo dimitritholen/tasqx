@@ -709,9 +709,21 @@ fn execute(cli: Cli) -> Exit {
     }
 
     // `board` is socket-only like `watch`: it serves a page until interrupted.
-    if let Some(Command::Board { port, no_open }) = &cli.command {
+    if let Some(Command::Board {
+        port,
+        no_open,
+        scope,
+    }) = &cli.command
+    {
         let exit = Exit::self_framed("board", cli.json);
-        run_board(cli.socket.as_deref(), cli.no_daemon, *port, *no_open, &ctx);
+        run_board(
+            cli.socket.as_deref(),
+            cli.no_daemon,
+            *port,
+            *no_open,
+            scope == "write",
+            &ctx,
+        );
         return exit;
     }
 
