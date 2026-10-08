@@ -471,21 +471,6 @@ mod tests {
         // reason the list is spelled out there rather than globbed
         // (`include_str!` needs a literal path, and it is also what makes each
         // file a rebuild dependency, so the scan can never read a stale copy).
-        // KNOWN, PRE-EXISTING, OUT OF SCOPE FOR #736: `engine/undo.rs` was
-        // never scanned by this test before `engine_sources!` (#736 part A)
-        // closed the file-list gap — it used to be absent from the list
-        // above — and closing it surfaces five raw reads this test bans.
-        // Fixing those is a behavior-adjacent change, not a de-bloat, so they
-        // are grandfathered here by `(file, key)` rather than silently
-        // dropped from the scan again: a SIXTH raw read anywhere, including a
-        // new one in `undo.rs`, still fails this test.
-        const KNOWN_HOLES: [(&str, &str); 5] = [
-            ("engine/undo.rs", "\"tracked\""),
-            ("engine/undo.rs", "\"tags\""),
-            ("engine/undo.rs", "\"depends_on\""),
-            ("engine/undo.rs", "\"id\""),
-            ("engine/undo.rs", "\"delta_seconds\""),
-        ];
 
         let mut holes = Vec::new();
         for (file, source) in crate::engine::engine_sources!() {
@@ -505,9 +490,7 @@ mod tests {
                     continue;
                 };
                 let (key, after) = (&rest[..close], &rest[close + 1..]);
-                if (after.starts_with(".and_then(") || after.starts_with(".as_"))
-                    && !KNOWN_HOLES.contains(&(file, key))
-                {
+                if after.starts_with(".and_then(") || after.starts_with(".as_") {
                     holes.push(format!(
                         "{file}: .get({key}){}",
                         &after[..after.len().min(24)]
