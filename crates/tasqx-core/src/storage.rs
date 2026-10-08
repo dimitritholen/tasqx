@@ -1023,9 +1023,9 @@ fn add_dependency_foreign_keys_if_missing(conn: &Connection) -> Result<(), ApiEr
 /// Add `col` to `table` when it isn't there yet — the additive-migration
 /// primitive for stores created by an older build. SQLite has no
 /// `ADD COLUMN IF NOT EXISTS`, so the column list is checked first. Returns
-/// whether it actually added the column, so a caller that needs to backfill
-/// the new column exactly once (D135's `docs.search_body`) can gate on that
-/// instead of re-deriving "is this a fresh store" some other way.
+/// whether it added the column. No caller gates on that today: D135's
+/// `docs.search_body` backfill selects the rows still at the default (`''`)
+/// on every open, so it needs no signal that the column is new.
 fn add_column_if_missing(
     conn: &Connection,
     table: &str,

@@ -38,14 +38,15 @@ pub const MEMORY_SCOPES: [&str; 3] = ["all", "docs", "annotations"];
 /// quoted phrase (embedded `"` doubled per FTS5's own escape rule), joined by
 /// implicit AND. Callers who *want* the operator grammar pass `raw:true` and
 /// own the syntax errors.
-fn phrase_escape(query: &str) -> Result<String, ApiError> {
-    let terms: Vec<String> = query.split_whitespace().map(phrase).collect();
-    if terms.is_empty() {
-        return Err(ApiError::bad_request(
-            "`query` must contain at least one word",
-        ));
-    }
-    Ok(terms.join(" "))
+///
+/// Infallible: its one caller has the query from `req_str`, which refuses
+/// blank and whitespace-only strings, so there is always a word to quote.
+fn phrase_escape(query: &str) -> String {
+    query
+        .split_whitespace()
+        .map(phrase)
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 /// One word as an FTS5 phrase — the single escaping rule [`phrase_escape`]
@@ -1355,7 +1356,7 @@ impl Engine {
                         .collect::<Vec<_>>()
                         .join(" ")
                 } else {
-                    phrase_escape(&query)?
+                    phrase_escape(&query)
                 };
                 let all = self.lexical_list(&window, expr, raw, cap(ALL_WORDS_DEPTH))?;
                 let any = match f.any_word {
