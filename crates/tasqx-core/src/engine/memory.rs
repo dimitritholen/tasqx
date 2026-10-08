@@ -2066,11 +2066,13 @@ impl Engine {
     /// inferred project, its standing docs plus the unscoped standing ones,
     /// and the project's own non-standing docs as topical fill.
     ///
-    /// The project is the first of `workdir`'s own name, its git toplevel's
-    /// name, and the main checkout's name (`repo_dir`, for a linked task
-    /// worktree whose basename is `<id>-<slug>`) that is a non-archived
-    /// project — else the store's default project, else none. Never a bare
-    /// ancestor (#810): `/home/runner/work/<repo>` must not be claimed by a
+    /// Inside a git repo the project is the first of the git toplevel's name
+    /// and the main checkout's name (`repo_dir`, for a linked task worktree
+    /// whose basename is `<id>-<slug>`) that is a non-archived project; the
+    /// workdir's own name is not consulted, so `<repo>/src` is not claimed by
+    /// a project called `src`. Outside any repo it is the workdir's own name.
+    /// Else the store's default project, else none. Never a bare ancestor
+    /// (D218, #810): `/home/runner/work/<repo>` must not be claimed by a
     /// project called `home` or `work`.
     /// Not a dispatched method: its one reader is the MCP handshake.
     pub fn session_rulings(
@@ -2086,12 +2088,16 @@ impl Engine {
         let from_dir = workdir.and_then(|dir| {
             let top = crate::memory_doc::git_toplevel(&dir.join("_"));
             let main = top.as_deref().map(crate::memory_doc::repo_dir);
-            let hit = [Some(dir), top.as_deref(), main.as_deref()]
-                .into_iter()
-                .flatten()
-                .filter_map(|a| a.file_name()?.to_str())
-                .find(|n| names.contains(*n))
-                .map(|n| (n.to_string(), "working directory"));
+            let hit = (if top.is_some() {
+                [top.as_deref(), main.as_deref()]
+            } else {
+                [Some(dir), None]
+            })
+            .into_iter()
+            .flatten()
+            .filter_map(|a| a.file_name()?.to_str())
+            .find(|n| names.contains(*n))
+            .map(|n| (n.to_string(), "working directory"));
             hit
         });
         // PR #48 review: a default naming a project this same query just
