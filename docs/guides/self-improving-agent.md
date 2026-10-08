@@ -14,7 +14,25 @@ roughly 56,000 tokens, fourteen completions in thirty-six hours cost about
 wrote were never read back by anything. The hook script and its settings.json
 entry are gone.
 
-What replaced it is a skill, `retro`, that runs once per session — on
+What carries the retrospective now is `tasqx_complete_task` itself: on a
+write-scope connection its result has a `retro` block (about 1 KB) with the six
+questions, the routing rules and a retraction step, so any MCP client runs the
+retro with no hook and no skill installed. A task that went straight through
+answers it in one line (`straight through, nothing to record`) and stops. Pass
+`include_retro: false` to leave the block out; a read-scope connection cannot
+complete tasks and never receives it. The first question is whether the user
+corrected you: each correction becomes a `standing: true` memory doc, and the
+write-scope instructions tell the agent to store it the moment it lands. The
+last step is new: before adding a ruling, search memory for a doc on the same
+subject and, if the new one supersedes it, remove the old one with
+`tasqx_remove_memory`, so two contradictory docs never stand side by side.
+
+The block is the mechanism. The `retro` skill described below is an optional
+Claude Code convenience on top of it: it runs once per session, on request, a
+fresh agent over a bundle of evidence per task, for the sessions whose tasks
+earned a closer look.
+
+The optional skill, `retro`, runs once per session — on
 request, not on every completion — over whichever of the session's completed
 tasks actually earned a closer look.
 
@@ -117,8 +135,9 @@ shown up twice.
 
 The skill needs nothing but the `tasqx_*` tools and an agent that can be
 handed an evidence bundle, so it works the same way in any MCP client — the
-only Claude Code-specific piece was the retired hook, and nothing replaces
-it. A client without a skills mechanism can still run the same procedure: put
+only Claude Code-specific piece was the retired hook, and the in-band `retro`
+block replaced it. A client without a skills mechanism needs nothing more: the
+block arrives with every completion. To run the longer procedure instead, put
 the five questions, the scope gate and the routing rules from
 [`.claude/skills/retro/SKILL.md`](../../.claude/skills/retro/SKILL.md) into
 the agent's system prompt, next to the block from

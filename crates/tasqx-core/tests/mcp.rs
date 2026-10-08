@@ -3864,6 +3864,11 @@ fn the_read_only_refusal_names_the_flag_that_fixes_it() {
 /// `tasqx_brief_task`. Measured beside every tool above: 34 tools, 38,268
 /// bytes, so the cap moved from 38,016 to 38,272.
 ///
+/// D222 added `include_retro` to `tasqx_complete_task` (and dropped a sentence
+/// from its `force` description to keep that entry under the 3,072-byte
+/// per-tool cap). Measured beside every tool above: 34 tools, 38,310 bytes,
+/// so the cap moved from 38,272 to 38,400.
+///
 /// The floor is not zero. With every `description` key removed from the roster
 /// the same serialization is 11,597 bytes of schema skeleton — property names,
 /// `type`, the closed `enum` lists D30 renders from the engine's own consts,
@@ -3874,7 +3879,7 @@ fn the_read_only_refusal_names_the_flag_that_fixes_it() {
 fn the_whole_tool_roster_stays_inside_its_per_prompt_budget() {
     const MAX_DESCRIPTION: usize = 800;
     const MAX_ENTRY: usize = 3_072;
-    const MAX_ROSTER: usize = 38_272;
+    const MAX_ROSTER: usize = 38_400;
 
     let engine = engine();
     let server = McpServer::new(&engine, Scope::Write);
@@ -4662,6 +4667,97 @@ fn include_memory_false_drops_the_block_and_leaves_the_rest_unchanged() {
             "`{key}` must agree: {via_mcp} vs {via_api}"
         );
     }
+}
+
+/// `tasqx_complete_task` on a write-scope connection carries the retrospective
+/// in-band (D222): the six questions, the routing and the retraction step.
+#[test]
+fn complete_task_carries_the_retro_block_on_write_scope() {
+    let engine = engine();
+    engine
+        .task_add(&json!({ "title": "ship it" }))
+        .expect("task");
+    let server = McpServer::new(&engine, Scope::Write);
+
+    let done = tool_json(&call(
+        &server,
+        1,
+        "tasqx_complete_task",
+        json!({ "ref": 1 }),
+    ));
+    assert_eq!(done["status"], json!("done"), "{done}");
+    let retro = done["retro"].as_str().expect("a retro block");
+    for needle in [
+        "correct or redirect",
+        "standing:true",
+        "Goal vs delivered",
+        "Rework",
+        "discovery",
+        "redo",
+        "procedure",
+        "straight through, nothing to record",
+        "skill candidate:",
+        "hook candidate",
+        "tasqx_remove_memory",
+    ] {
+        assert!(retro.contains(needle), "retro lacks `{needle}`: {retro}");
+    }
+    assert!(
+        retro.len() <= 1_536,
+        "retro is paid per completion: {}",
+        retro.len()
+    );
+}
+
+/// `include_retro: false` answers `task.done`'s own frozen key set.
+#[test]
+fn include_retro_false_drops_the_block() {
+    let engine = engine();
+    engine
+        .task_add(&json!({ "title": "ship it" }))
+        .expect("task");
+    let server = McpServer::new(&engine, Scope::Write);
+
+    let done = tool_json(&call(
+        &server,
+        1,
+        "tasqx_complete_task",
+        json!({ "ref": 1, "include_retro": false }),
+    ));
+    assert_eq!(done["status"], json!("done"), "{done}");
+    assert!(done.get("retro").is_none(), "{done}");
+
+    let direct = Engine::open_in_memory().expect("open in-memory store");
+    direct
+        .task_add(&json!({ "title": "ship it" }))
+        .expect("task");
+    let api = direct.task_done(&json!({ "ref": 1 })).expect("task.done");
+    let mut mcp_keys: Vec<&String> = done.as_object().unwrap().keys().collect();
+    let mut api_keys: Vec<&String> = api.as_object().unwrap().keys().collect();
+    mcp_keys.sort();
+    api_keys.sort();
+    assert_eq!(mcp_keys, api_keys);
+}
+
+/// A read-scope connection cannot complete a task at all, so no retro reaches it.
+#[test]
+fn read_scope_gets_no_retro_block() {
+    let engine = engine();
+    engine
+        .task_add(&json!({ "title": "ship it" }))
+        .expect("task");
+    let server = McpServer::new(&engine, Scope::Read);
+
+    let response = call(&server, 1, "tasqx_complete_task", json!({ "ref": 1 }));
+    assert!(!response.to_string().contains("Retro"), "{response}");
+}
+
+/// The write-scope instructions tell an agent to store a correction when it
+/// lands (D222); the read-scope text names no write tool.
+#[test]
+fn write_instructions_say_to_store_a_correction_the_moment_it_lands() {
+    assert!(instructions_of(Scope::Write).contains("the moment it lands"));
+    assert!(!instructions_of(Scope::Read).contains("the moment it lands"));
 }
 
 /// `tasqx_add_task` carries a tiny `rulings` addendum: the standing docs of

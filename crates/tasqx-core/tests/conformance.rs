@@ -3602,6 +3602,12 @@ fn every_mcp_tool_hands_back_the_frozen_result_of_its_method() {
                     obj.insert("include_memory".to_string(), json!(false));
                 }
             }
+            // D222: likewise `tasqx_complete_task` gains a `retro` block by default.
+            if tool == "tasqx_complete_task" {
+                if let Some(obj) = params.as_object_mut() {
+                    obj.insert("include_retro".to_string(), json!(false));
+                }
+            }
             let response = server
                 .handle_message(&json!({
                     "jsonrpc": "2.0",
