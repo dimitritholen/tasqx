@@ -262,6 +262,24 @@ pub(crate) fn join_cells(cells: Vec<String>) -> String {
     cells.join(&" ".repeat(GAP)).trim_end().to_string()
 }
 
+/// One table line: each `(role, text)` cell fitted to its column width, the
+/// dropped columns (width 0) left out, through [`join_cells`] like every other
+/// line of the table.
+pub(crate) fn row_cells<S: AsRef<str>>(
+    ctx: &Ctx,
+    widths: &[usize],
+    cells: &[(Option<&str>, S)],
+) -> String {
+    join_cells(
+        cells
+            .iter()
+            .zip(widths)
+            .filter(|(_, w)| **w > 0)
+            .map(|((role, text), w)| cell(ctx, *role, text.as_ref(), *w))
+            .collect(),
+    )
+}
+
 /// The header line for a fitted table. `when_label` must be the same string the
 /// widths were fitted with — see [`TaskCols::fit`].
 pub(crate) fn header_line(c: &TaskCols, when_label: &str) -> String {

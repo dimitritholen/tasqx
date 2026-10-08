@@ -113,16 +113,7 @@ pub fn memory_table(ctx: &Ctx, result: &Value, now: Timestamp) -> String {
         ],
         ctx.cols,
     );
-    let line = |cells: [(Option<&str>, &str); 4]| {
-        join_cells(
-            cells
-                .iter()
-                .zip(&w)
-                .filter(|(_, w)| **w > 0)
-                .map(|((role, text), w)| cell(ctx, *role, text, *w))
-                .collect(),
-        )
-    };
+    let line = |cells: [(Option<&str>, &str); 4]| row_cells(ctx, &w, &cells);
 
     let shown = docs.len() as u64;
     let mut parts = vec![(
@@ -300,18 +291,15 @@ pub fn memory_hits(
                     ],
                     ctx.cols,
                 );
-                out.push_str(&join_cells(
-                    [
+                out.push_str(&row_cells(
+                    ctx,
+                    &w,
+                    &[
                         (None, r.title.as_str()),
                         (Some("muted"), r.source.as_str()),
                         (Some("muted"), stale),
                         (Some("muted"), r.handle.as_str()),
-                    ]
-                    .iter()
-                    .zip(&w)
-                    .filter(|(_, w)| **w > 0)
-                    .map(|((role, text), w)| cell(ctx, *role, text, *w))
-                    .collect(),
+                    ],
                 ));
                 out.push('\n');
             } else {

@@ -84,16 +84,7 @@ pub fn project_table(ctx: &Ctx, result: &Value) -> String {
         ],
         ctx.cols.saturating_sub(rail.width()),
     );
-    let row = |cells: [(Option<&str>, &str); 3]| {
-        join_cells(
-            cells
-                .iter()
-                .zip(&w)
-                .filter(|(_, w)| **w > 0)
-                .map(|((role, text), w)| cell(ctx, *role, text, *w))
-                .collect(),
-        )
-    };
+    let row = |cells: [(Option<&str>, &str); 3]| row_cells(ctx, &w, &cells);
 
     let mut out = format!(
         "{}{}",
