@@ -76,7 +76,7 @@ select{background:var(--sunken);border:1px solid var(--line-strong);border-radiu
 .conn{font-size:13px;color:var(--muted)}.conn.on{color:var(--good)}.conn.off{color:var(--danger);font-weight:600}
 .err{margin:0;padding:8px clamp(12px,2vw,24px);background:var(--danger);color:var(--on-accent)}
 .cols{display:grid;grid-template-columns:repeat(5,minmax(210px,1fr));gap:12px;padding:12px clamp(12px,2vw,24px);overflow-x:auto;align-items:start}
-.col{background:var(--sunken);border:1px solid var(--line);border-radius:8px;min-width:0}
+.col{background:var(--bg);border:1px solid var(--line);border-radius:8px;min-width:0}
 .col>header{padding:10px 12px 6px;border-bottom:1px solid var(--line)}
 .col h2{margin:0;font-size:14px;display:flex;justify-content:space-between;gap:8px}
 .col .n{color:var(--muted);font-variant-numeric:tabular-nums}
@@ -322,5 +322,171 @@ mod tests {
         assert!(doc.contains("color-scheme:light") && doc.contains("color-scheme:dark"));
         assert!(doc.contains("prefers-reduced-motion:reduce"));
         assert!(doc.contains(":focus-visible"));
+    }
+
+    // ---- check 2: columns sorted by urgency, in D119's three bands ----
+
+    /// The page asks the engine for urgency order (`-urgency`, the sort `list`
+    /// uses), and its three bands and gauge sit on the scale the terminal's
+    /// `urgency_scale` and `Theme::ramp_band` use: bands at half and all of
+    /// `DUE_WEIGHT`, the gauge full at `DUE_WEIGHT`.
+    #[test]
+    fn urgency_is_sorted_and_banded_on_the_d119_scale() {
+        use tasqx_core::urgency::DUE_WEIGHT;
+        assert!(SCRIPT.contains(r#"sort:["-urgency"]"#));
+        let (warn, danger) = (DUE_WEIGHT / 2.0, DUE_WEIGHT);
+        let band =
+            format!(r#"function band(u){{return u>={danger}?"danger":u>={warn}?"warn":""}}"#);
+        assert!(
+            SCRIPT.contains(&band),
+            "band thresholds drifted from DUE_WEIGHT"
+        );
+        assert!(
+            SCRIPT.contains(&format!("u/{DUE_WEIGHT}*100")),
+            "gauge scale drifted"
+        );
+        // The same three bands as the terminal ramp, at every half point.
+        let theme = crate::theme::builtin("nord").unwrap();
+        for step in 0..=40 {
+            let u = f64::from(step) * 0.5;
+            let rust = theme.ramp_band(crate::render::urgency_scale(u));
+            let quiet = theme.ramp_band(0.0);
+            let js = if u >= danger {
+                2
+            } else if u >= warn {
+                1
+            } else {
+                0
+            };
+            let want = [quiet, theme.ramp_band(0.5), theme.ramp_band(1.0)][js];
+            assert_eq!(rust, want, "urgency {u}");
+        }
+    }
+
+    // ---- check 5: keyboard, focus, contrast, reduced motion ----
+
+    /// Every action has a keyboard path: cards are focusable and open on Enter,
+    /// `j`/`k`/`h`/`l` move, `/` searches, Esc closes, and the search box, lane
+    /// menu and close control are native elements a keyboard already reaches.
+    #[test]
+    fn every_action_has_a_keyboard_path() {
+        for key in [
+            r#"e.key==="j""#,
+            r#"e.key==="k""#,
+            r#"e.key==="h""#,
+            r#"e.key==="l""#,
+            r#"e.key==="Enter""#,
+            r#"e.key==="Escape""#,
+            r#"e.key==="/""#,
+        ] {
+            assert!(SCRIPT.contains(key), "no handler for {key}");
+        }
+        assert!(SCRIPT.contains("li.tabIndex=0"), "cards must be focusable");
+        for native in [
+            "<input id=\"q\"",
+            "<select id=\"lanes\"",
+            "<button id=\"pclose\"",
+            "<a class=\"skip\"",
+        ] {
+            assert!(BODY.contains(native), "missing {native}");
+        }
+        assert!(
+            SCRIPT.contains("$(\"pclose\").focus()") && SCRIPT.contains("k.focus()"),
+            "focus moves into the panel and back to the card"
+        );
+    }
+
+    /// Focus is drawn, never removed: a visible outline on `:focus-visible`,
+    /// and no rule anywhere that turns outlines off.
+    #[test]
+    fn focus_is_visible_and_never_removed() {
+        assert!(CSS.contains(":focus-visible{outline:3px solid var(--accent)"));
+        assert!(!CSS.contains("outline:none") && !CSS.contains("outline:0"));
+    }
+
+    /// Reduced motion: transitions exist only under `no-preference`, and the
+    /// `reduce` block switches animation, transition and smooth scrolling off.
+    #[test]
+    fn motion_is_off_when_the_user_asks() {
+        assert!(CSS.contains("@media (prefers-reduced-motion:no-preference){.card{transition"));
+        assert!(CSS.contains("@media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important;scroll-behavior:auto!important}}"));
+        let outside = CSS.replace(
+            "@media (prefers-reduced-motion:no-preference){.card{transition:border-color .15s}}",
+            "",
+        );
+        assert!(
+            !outside
+                .replace("transition:none!important", "")
+                .contains("transition:"),
+            "a transition outside the no-preference block"
+        );
+    }
+
+    /// The colour of a token in one scheme's block; a `color-mix` against
+    /// white or black (the dark palette's neutrals) is resolved in sRGB.
+    fn resolve(block: &str, name: &str) -> crate::theme::Rgb {
+        use crate::theme::Rgb;
+        let at = block.find(name).unwrap_or_else(|| panic!("{name} missing"));
+        let rest = &block[at + name.len()..];
+        let val = rest[..rest
+            .find(";--")
+            .or_else(|| rest.find(";color-scheme"))
+            .unwrap_or(rest.len())]
+            .trim();
+        if let Some(mix) = val.strip_prefix("color-mix(in srgb,") {
+            let mut parts = mix.trim_end_matches(')').split(',');
+            let (a, pct) = parts.next().unwrap().split_once(' ').unwrap();
+            let b = parts.next().unwrap();
+            let p = pct.trim_end_matches('%').parse::<f64>().unwrap() / 100.0;
+            let (a, b) = (Rgb::parse_hex(a).unwrap(), Rgb::parse_hex(b).unwrap());
+            let m = |x: u8, y: u8| (f64::from(x) * p + f64::from(y) * (1.0 - p)).round() as u8;
+            Rgb::new(m(a.r, b.r), m(a.g, b.g), m(a.b, b.b))
+        } else {
+            Rgb::parse_hex(val).unwrap_or_else(|| panic!("{name}: {val:?}"))
+        }
+    }
+
+    /// AA for every text pair the board's CSS uses (4.5:1) and 3:1 for its non-text marks, in both
+    /// schemes of every built-in theme. `html::palette` guarantees the role
+    /// colours; this covers the neutrals and the on-accent pairs the board adds.
+    #[test]
+    fn every_text_pair_the_board_uses_clears_aa_in_both_schemes() {
+        for name in crate::theme::BUILTINS {
+            let doc = page(&crate::theme::builtin(name).unwrap());
+            let light = &doc[doc.find(":root{--bg:").unwrap()..];
+            let light = &light[..light.find('}').unwrap()];
+            let dark = &doc[doc.find("[data-theme=\"dark\"]{").unwrap()..];
+            let dark = &dark[..dark.find('}').unwrap()];
+            for (scheme, block) in [("light", light), ("dark", dark)] {
+                let c = |n: &str| resolve(block, n);
+                let grounds = [c("--bg:"), c("--surface:"), c("--sunken:")];
+                // Text: body and secondary text on every ground; the status
+                // colours only ever sit on the header bar and cards (surface).
+                // (`--muted` never sits on `--sunken`: that ground is the search
+                // box and lane menu, which carry body text only.)
+                for text in ["--fg:", "--muted:"] {
+                    let n = if text == "--fg:" { 3 } else { 2 };
+                    for (g, ground) in ["bg", "surface", "sunken"].iter().zip(grounds).take(n) {
+                        let r = crate::html::contrast_ratio(c(text), ground);
+                        assert!(r >= 4.5, "{name} {scheme} {text} on {g}: {r:.2}:1");
+                    }
+                }
+                for text in ["--good:", "--danger:"] {
+                    let r = crate::html::contrast_ratio(c(text), grounds[1]);
+                    assert!(r >= 4.5, "{name} {scheme} {text} on surface: {r:.2}:1");
+                }
+                // Non-text (focus ring, card edge, gauge fill): 3:1.
+                for mark in ["--accent:", "--warn:", "--danger:"] {
+                    for ground in [grounds[1], grounds[2]] {
+                        let r = crate::html::contrast_ratio(c(mark), ground);
+                        assert!(r >= 3.0, "{name} {scheme} {mark} mark: {r:.2}:1");
+                    }
+                }
+                for ground in ["--accent:", "--danger:"] {
+                    let r = crate::html::contrast_ratio(c("--on-accent:"), c(ground));
+                    assert!(r >= 4.5, "{name} {scheme} on-accent on {ground}: {r:.2}:1");
+                }
+            }
+        }
     }
 }

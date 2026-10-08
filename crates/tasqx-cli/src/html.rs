@@ -2200,7 +2200,7 @@ fn relative_luminance(c: Rgb) -> f64 {
 }
 
 /// WCAG contrast ratio between two colors, order-independent, in `[1.0, 21.0]`.
-fn contrast_ratio(a: Rgb, b: Rgb) -> f64 {
+pub(crate) fn contrast_ratio(a: Rgb, b: Rgb) -> f64 {
     let (la, lb) = (relative_luminance(a), relative_luminance(b));
     let (hi, lo) = if la >= lb { (la, lb) } else { (lb, la) };
     (hi + 0.05) / (lo + 0.05)
