@@ -34,9 +34,7 @@ fn pages() -> Vec<(String, String)> {
                 .expect("a file has a name")
                 .to_string_lossy()
                 .into_owned();
-            let text = fs::read_to_string(&p)
-                .unwrap_or_else(|e| panic!("{} is readable: {e}", p.display()));
-            (name, text)
+            (name, read_text(&p))
         })
         .collect();
     pages.sort();
@@ -61,10 +59,32 @@ fn pages() -> Vec<(String, String)> {
 fn pages_and_readme() -> Vec<(String, String)> {
     let mut all = pages();
     let readme = wiki_dir().join("../../README.md");
-    let text = fs::read_to_string(&readme)
-        .unwrap_or_else(|e| panic!("{} is readable: {e}", readme.display()));
-    all.push(("README.md".to_string(), text));
+    all.push(("README.md".to_string(), read_text(&readme)));
     all
+}
+
+/// A docs file's text with CRLF line endings turned into LF.
+///
+/// A Windows checkout under `core.autocrlf=true` hands the tests CRLF, and
+/// [`chunks`] splits on `"\n\n"`, which `"\r\n\r\n"` never matches: a page
+/// becomes one chunk per bullet run, kilobytes long, and the retired-panel
+/// guard read a `DUE` column header in a `watch` capture as a panel named in
+/// a `[dashboard]` bullet. Every reader goes through here so the checks see
+/// the same text on every platform.
+fn read_text(p: &Path) -> String {
+    fs::read_to_string(p)
+        .unwrap_or_else(|e| panic!("{} is readable: {e}", p.display()))
+        .replace("\r\n", "\n")
+}
+
+/// A CRLF checkout of a page chunks exactly like the LF one.
+#[test]
+fn a_crlf_page_chunks_like_its_lf_original() {
+    let lf = read_text(&wiki_dir().join("Dashboard-and-Live-View.md"));
+    assert!(!lf.contains('\r'), "the LF page already carries a CR");
+    let crlf = Path::new(env!("CARGO_TARGET_TMPDIR")).join("wiki-crlf-Dashboard.md");
+    fs::write(&crlf, lf.replace('\n', "\r\n")).expect("scratch file is writable");
+    assert_eq!(chunks(&read_text(&crlf)), chunks(&lf));
 }
 
 /// Every CLI verb must have a heading in the wiki.
@@ -543,9 +563,7 @@ fn wiki_and_guides() -> Vec<(String, String)> {
     );
     for p in guides {
         let name = p.file_name().expect("a file has a name").to_string_lossy();
-        let text =
-            fs::read_to_string(&p).unwrap_or_else(|e| panic!("{} is readable: {e}", p.display()));
-        all.push((format!("guides/{name}"), text));
+        all.push((format!("guides/{name}"), read_text(&p)));
     }
     all
 }
