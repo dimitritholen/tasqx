@@ -1203,41 +1203,19 @@ pub(super) enum Command {
         /// A command (e.g. `init`), an alias, or a topic slug (e.g. `filters`).
         topic: Option<String>,
     },
-    /// Print — or install — the line that turns on Tab completion for tasqx.
+    /// Print the line that turns on Tab completion for tasqx.
     ///
-    /// With no flags it writes one line to stdout, so
-    /// `tasqx completions bash >> ~/.bashrc` works. `--install` edits the
-    /// shell's own startup file for you, inside a marked block it can take back
-    /// out again, and asks before writing anything.
+    /// It writes one line to stdout, so `tasqx completions bash >> ~/.bashrc`
+    /// works.
     #[command(after_help = crate::cmddoc::after_help("completions"))]
     Completions {
         /// Which shell (bash, elvish, fish, powershell, zsh). Detected from
         /// $SHELL when omitted; on Windows nothing sets $SHELL, so name it.
-        // Deliberately NOT a `value_parser` over the five names, although that
-        // is the shorter spelling. clap's rejection would read `invalid value
-        // 'cmd' for '[SHELL]'`, and `complete::install::NON_GOALS` exists
-        // precisely because "unknown shell cmd" is the wrong answer: cmd.exe
-        // cannot be completed by any program, ever, and a user who is told it
-        // is merely unknown goes looking for a newer tasqx. The refusal is
-        // owned by `resolve_shell`, which can say so.
-        #[arg(add = crate::complete::install::shells())]
+        // Not a `value_parser` over the five names: `pwsh` and `/usr/bin/zsh`
+        // must resolve through clap's own alias set, the way `$TASQX_COMPLETE`
+        // does (`complete::activation::resolve_shell`).
+        #[arg(add = crate::complete::activation::shells())]
         shell: Option<String>,
-        /// Add the activation line to the shell's startup file (asks first).
-        #[arg(long)]
-        install: bool,
-        /// Take the block a previous --install added back out again.
-        #[arg(long, conflicts_with = "install")]
-        uninstall: bool,
-        /// The file to edit instead of the shell's default startup file.
-        /// Required for PowerShell: run it as `--profile $PROFILE` and let
-        /// PowerShell expand the path it alone knows.
-        #[arg(long, value_name = "PATH", value_hint = ValueHint::FilePath)]
-        profile: Option<String>,
-        /// Confirm the edit on the command line. Required when stdin is not a
-        /// terminal — a pipeline has nobody to ask, and this feature will not
-        /// edit a startup file on a guess.
-        #[arg(long, short = 'y')]
-        yes: bool,
     },
     /// Install the Claude Code integration: the MCP server and the bundled skills.
     ///

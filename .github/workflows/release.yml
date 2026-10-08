@@ -124,22 +124,21 @@ jobs:
           for shell in bash elvish fish powershell zsh; do
             "$BIN" completions "$shell" > "completions/tasqx.$shell"
           done
-          # No table of destinations here on purpose: install.rs already holds
-          # one, per shell, and a second copy in a release script is the drift
-          # D30 rules against. Point at the command that reads the real one.
+          # No table of destinations here on purpose: complete/activation.rs
+          # already holds one, per shell, and a second copy in a release script
+          # is the drift D30 rules against. Point at the command that reads it.
           cat > completions/README.md <<'EOF'
           # Tab completion
 
-          One line per shell. The command that knows where each of them goes —
-          and that will put it there, after showing you the block and asking —
-          is:
+          One line per shell. Add the line for your shell to the file your
+          shell reads at startup, for example:
 
-              tasqx completions --install
+              tasqx completions bash >> ~/.bashrc
 
-          Run `tasqx completions <shell>` to print the line for any shell
-          without installing it, and `tasqx manual completion` for the rest:
-          what a Tab press reads, why the variable is `TASQX_COMPLETE`, and
-          which shells are gaps rather than oversights.
+          `tasqx completions <shell> --json` names that file for every shell
+          but PowerShell, whose `$PROFILE` only PowerShell can expand. `tasqx
+          manual completion` has the rest: what a Tab press reads and why the
+          variable is `TASQX_COMPLETE`.
           EOF
 
       # Archive name: tasqx-<tag>-<target>.{tar.gz,zip}. The version comes from

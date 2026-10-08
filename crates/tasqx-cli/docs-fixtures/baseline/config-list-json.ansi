@@ -81,14 +81,6 @@
       "value": "0"
     },
     {
-      "default": "true",
-      "home": "config.toml",
-      "key": "completion.hint",
-      "source": "default",
-      "summary": "Mention `tasqx completions --install` once, on a terminal, when Tab completion does not look switched on (D57).",
-      "value": "true"
-    },
-    {
       "default": "",
       "home": "store",
       "key": "default_project",

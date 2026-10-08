@@ -243,8 +243,9 @@ tasqx done <ref>
 
 ## Install details
 
-Brew switches Tab completion on for you; anywhere else, `tasqx completions --install`
-does. Flags, checksums and what the scripts promise are in the
+Brew switches Tab completion on for you; anywhere else, add the line
+`tasqx completions <shell>` prints to your shell's startup file
+([Shell Completion](docs/wiki/Shell-Completion.md)). Flags, checksums and what the scripts promise are in the
 [install fine print](docs/wiki/Getting-Started.md#install-fine-print).
 
 Prebuilt binaries are on the [Releases page](https://github.com/dimitritholen/tasqx/releases).

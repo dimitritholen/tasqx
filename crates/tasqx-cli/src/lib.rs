@@ -503,7 +503,6 @@ pub fn run() {
 
     // Read before `cli` is moved into `execute`, which consumes it by value.
     let json = cli.json;
-    let occasion = hint_occasion(&cli);
 
     // THE terminal. Every command reaches exactly this point, whether it was
     // dispatched early or fell through to the bottom match, which is what makes
@@ -525,15 +524,6 @@ pub fn run() {
                 for note in notes {
                     eprintln!("{note}");
                 }
-            }
-            // D57, and it sits HERE for the same reason the JSON terminal does:
-            // one place every command passes through. Only on the success arm —
-            // `Exit::Out(Err)` exits above, and a nudge printed under an error
-            // message competes with the thing the user is actually reading —
-            // and never for `SelfFramed`, whose members own stdout (a protocol),
-            // never return (`daemon`, `watch`), or are prose the user asked for.
-            if let Some(occasion) = occasion {
-                complete::hint::offer(occasion, json);
             }
         }
         Exit::Out(Err(e)) => {
@@ -559,22 +549,6 @@ pub fn run() {
             }
             exit(e.exit_code());
         }
-    }
-}
-
-/// Which D57 occasion this invocation is, or `None` for the commands that must
-/// never carry the note.
-///
-/// `completions` is the exclusion that is not about output at all: a user
-/// running the verb is already holding the answer the note would give them, and
-/// on `--uninstall` the note would contradict what they just deliberately did.
-/// `init` is [`complete::hint::Occasion::Setup`] — the one moment a user is
-/// reading setup output — and everything else is ordinary.
-fn hint_occasion(cli: &Cli) -> Option<complete::hint::Occasion> {
-    match &cli.command {
-        Some(Command::Completions { .. }) => None,
-        Some(Command::Init { .. }) => Some(complete::hint::Occasion::Setup),
-        _ => Some(complete::hint::Occasion::Ordinary),
     }
 }
 
@@ -733,23 +707,9 @@ fn execute(cli: Cli) -> Exit {
     // It reports failures LOUDLY, on stderr, with a non-zero exit — the
     // ordinary `CmdOutcome` contract, and the deliberate opposite of the
     // silence `complete::intercept` keeps on the Tab path. `complete.rs`'s
-    // module doc names this verb as the exemption; `complete/install.rs` writes
-    // out why.
-    if let Some(Command::Completions {
-        shell,
-        install,
-        uninstall,
-        profile,
-        yes,
-    }) = &cli.command
-    {
-        return Exit::Out(complete::install::run(
-            shell.clone(),
-            *install,
-            *uninstall,
-            profile.clone(),
-            *yes,
-        ));
+    // module doc names this verb as the exemption.
+    if let Some(Command::Completions { shell }) = &cli.command {
+        return Exit::Out(complete::activation::run(shell.as_deref()));
     }
 
     // Build the render context: resolve the active theme (flag > env > config >
@@ -940,11 +900,10 @@ fn execute(cli: Cli) -> Exit {
     // this test however unattended it is.
     //
     // `Exit::SelfFramed` rather than a `CmdOutcome`, and it is not decoration:
-    // `hint_occasion` classifies a bare run as `Occasion::Ordinary`, and `run()`
-    // prints the D57 completion note on the `Exit::Out(Ok)` arm — AFTER
-    // `execute` returns. A dashboard handed back as an ordinary outcome would
-    // leave the alternate screen and then write a rendered table and a
-    // completion nudge into the scrollback of a user who had just pressed `q`.
+    // `run()` prints an ordinary outcome's render on the `Exit::Out(Ok)` arm —
+    // AFTER `execute` returns. A dashboard handed back as one would leave the
+    // alternate screen and then write a rendered table into the scrollback of a
+    // user who had just pressed `q`.
     //
     // Constructed directly rather than through `Exit::self_framed`, whose job is
     // to make a command that accepts `--json` and ignores it impossible. That

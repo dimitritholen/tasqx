@@ -7,19 +7,15 @@ the capture sugar (`+tag`, `project:x`, `!high`) and the whole filter grammar.
 
 ## tasqx completions
 
-Completion isn't on after install (no install route can turn it on for you —
-only a package manager could). One command fixes that:
+Completion isn't on after install unless Homebrew installed tasqx. Turn it
+on by adding one line to your shell's startup file. `tasqx completions <shell>`
+prints that line, so for bash this is the whole setup:
 
 ```console
-tasqx completions --install
+tasqx completions bash >> ~/.bashrc
 ```
 
-This detects your shell from `$SHELL`, shows you the exact block it would add
-to your startup file, and asks before writing. Run twice it leaves one block;
-`--uninstall` restores the file byte for byte.
-
-Prefer doing it by hand? `tasqx completions <shell>` prints the one line, and
-this is where each line belongs.
+tasqx never edits the file itself. This is where each line belongs.
 
 bash, in `~/.bashrc`:
 
@@ -57,12 +53,11 @@ $env:TASQX_COMPLETE = "powershell"; tasqx | Out-String | Invoke-Expression; Remo
 `command not found: compdef` and registers nothing. oh-my-zsh and prezto run
 `compinit` for you; a hand-written `.zshrc` may not.
 
-**Windows:** no Windows shell sets `$SHELL`, so name the shell. For
-PowerShell, also pass the profile path and let the shell expand it —
-`$PROFILE` is a PowerShell variable tasqx refuses to guess:
+**Windows:** no Windows shell sets `$SHELL`, so name the shell, and let
+PowerShell expand its own profile path:
 
 ```console
-tasqx completions powershell --install --profile $PROFILE
+tasqx completions powershell >> $PROFILE
 ```
 
 And PowerShell must be *allowed* to run your profile at all: a stock Windows
@@ -70,10 +65,9 @@ client ships with execution policy `Restricted`, which silently never runs it.
 `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned` is the minimum that
 does.
 
-**cmd.exe** can't be completed by any program (that's cmd, not tasqx).
+**cmd.exe** can't be completed by any program (that's cmd, not tasqx), and
 **nushell** completes external commands through its own mechanism that tasqx
-can't activate yet. Asking for either gets a straight answer instead of
-"unknown shell".
+can't activate yet.
 
 ## How it behaves
 

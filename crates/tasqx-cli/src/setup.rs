@@ -210,7 +210,7 @@ fn install(item: &Item, home: &Path, force: bool) -> Outcome {
         ),
         (Some(body), _) => {
             let path = skill_path(home, item.name);
-            match crate::complete::install::write_atomically(&path, body) {
+            match crate::verbs::write_atomically(&path, body) {
                 Ok(()) if st == Status::Differs => ok("updated"),
                 Ok(()) => ok("installed"),
                 Err(e) => Outcome {
