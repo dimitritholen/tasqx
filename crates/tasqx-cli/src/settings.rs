@@ -406,16 +406,7 @@ pub(crate) fn run_theme(ctx: &Ctx, action: &ThemeAction) -> CmdOutcome {
                 ],
                 ctx.cols.saturating_sub(rail.width()),
             );
-            let line = |cells: [(Option<&str>, &str); 3]| {
-                render::join_cells(
-                    cells
-                        .iter()
-                        .zip(&w)
-                        .filter(|(_, w)| **w > 0)
-                        .map(|((role, text), w)| render::cell(ctx, *role, text, *w))
-                        .collect(),
-                )
-            };
+            let line = |cells: [(Option<&str>, &str); 3]| render::row_cells(ctx, &w, &cells);
             let mut text = format!(
                 "{}{}\n",
                 rail.cell(ctx, false),
@@ -564,16 +555,7 @@ pub(crate) fn run_theme(ctx: &Ctx, action: &ThemeAction) -> CmdOutcome {
                 ],
                 preview.cols,
             );
-            let line = |cells: [(Option<&str>, &str); 4]| {
-                render::join_cells(
-                    cells
-                        .iter()
-                        .zip(&w)
-                        .filter(|(_, w)| **w > 0)
-                        .map(|((role, text), w)| render::cell(&preview, *role, text, *w))
-                        .collect(),
-                )
-            };
+            let line = |cells: [(Option<&str>, &str); 4]| render::row_cells(&preview, &w, &cells);
             text.push_str(&preview.paint(
                 "table.label",
                 &line([
@@ -1246,16 +1228,7 @@ pub(crate) fn render_config_table(ctx: &Ctx, rows: &[Value]) -> String {
         ],
         ctx.cols,
     );
-    let line = |cells: [(Option<&str>, String); 3]| {
-        render::join_cells(
-            cells
-                .iter()
-                .zip(&w)
-                .filter(|(_, w)| **w > 0)
-                .map(|((role, text), w)| render::cell(ctx, *role, text, *w))
-                .collect(),
-        )
-    };
+    let line = |cells: [(Option<&str>, String); 3]| render::row_cells(ctx, &w, &cells);
 
     let mut out = ctx.paint(
         "table.label",
