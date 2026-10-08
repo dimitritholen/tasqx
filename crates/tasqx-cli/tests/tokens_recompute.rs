@@ -500,22 +500,38 @@ fn a_daemon_routed_recompute_surfaces_the_in_process_refusal_verbatim() {
         let engine = tasqx_core::Engine::open(&db).expect("open scratch daemon store");
         tasqx_core::daemon::serve(engine, &sk, sd).expect("serve scratch daemon");
     });
-    let deadline = std::time::Instant::now() + Duration::from_secs(20);
+    // Wait for one of the two things that can happen, not for a wall-clock
+    // budget: the socket accepts, or the server thread ends (it only ends by
+    // panicking before `shutdown` is set). The old 20 s deadline was the one
+    // wall-clock assertion here, so a slow-but-healthy `Engine::open` under
+    // parallel load could fail it, and a daemon that died early sat out the
+    // whole budget and then reported "never became connectable" instead of
+    // its own panic (#1140).
     loop {
         if let Some(c) = tasqx_core::daemon::try_connect(&sock) {
             drop(c);
             break;
         }
-        assert!(
-            std::time::Instant::now() < deadline,
-            "scratch daemon never became connectable"
-        );
+        if server.is_finished() {
+            match server.join() {
+                Err(panic) => std::panic::resume_unwind(panic),
+                Ok(()) => panic!("scratch daemon returned before it was connectable"),
+            }
+        }
         std::thread::sleep(Duration::from_millis(10));
     }
 
     // Deliberately WITHOUT `--no-daemon`: `TASQX_SOCK` routes the command to
-    // the scratch daemon, which must refuse it before dispatch.
+    // the scratch daemon, which must refuse it before dispatch. The `env`
+    // calls override an ambient `TASQX_CONFIG_DIR`/`TASQX_SOCK`; the removals
+    // keep the developer's shell out of the routing decision (#1140): an
+    // ambient `TASQX_DB` names a store the scratch daemon does not serve, so
+    // D204 refuses with its own message instead of the daemon's, and an
+    // ambient `TASQX_NOW` pin routes in-process (`open_backend`), which would
+    // run the recompute against the platform default store.
     let out = Command::new(env!("CARGO_BIN_EXE_tasqx"))
+        .env_remove("TASQX_DB")
+        .env_remove("TASQX_NOW")
         .env("TASQX_CONFIG_DIR", &dir)
         .env("TASQX_SOCK", &sock)
         .args(["tokens", "recompute"])

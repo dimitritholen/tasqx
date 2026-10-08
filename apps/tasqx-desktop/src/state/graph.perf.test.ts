@@ -18,7 +18,16 @@ import {
  * can ask for (1,000 nodes) with 2,500 edges, a fifth of them inferred.
  *
  * Budgets, each the best of three runs so one GC pause on a shared CI runner
- * cannot fail it:
+ * cannot fail it, and each on CPU time rather than wall time (#1140): wall time
+ * on a busy machine measures the scheduler, not this code. With every core
+ * busy (eight parallel runs of this file plus a `yes` per core) the best-of-3
+ * layout's wall time ran past its 1,000 ms budget while its CPU time stayed
+ * near its quiet figure, well inside it: the code had not changed, the
+ * machine had.
+ * On an idle machine the two agree (the work is single-threaded JS; the CPU
+ * figure also counts V8's GC helper threads, so it reads slightly high), so
+ * the budgets mean what they did. Re-derive the figures by logging both
+ * `performance.now()` and `process.cpuUsage()` deltas in `bestOf`.
  *   - model build + one filter pass: 100 ms — what a load costs before the
  *     layout;
  *   - a filter change alone: 16 ms, one frame — the interaction the user
@@ -68,12 +77,14 @@ function representative(): { nodes: GraphNodeRow[]; edges: GraphEdgeRow[] } {
   return { nodes, edges };
 }
 
+/** The least CPU time, in ms, any of `runs` calls of `work` took (see above for why CPU, not wall). */
 function bestOf(runs: number, work: () => void): number {
   let best = Number.POSITIVE_INFINITY;
   for (let run = 0; run < runs; run += 1) {
-    const start = performance.now();
+    const start = process.cpuUsage();
     work();
-    best = Math.min(best, performance.now() - start);
+    const spent = process.cpuUsage(start);
+    best = Math.min(best, (spent.user + spent.system) / 1000);
   }
   return best;
 }
