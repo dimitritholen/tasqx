@@ -756,33 +756,9 @@ fn pump(sh: &Shared) -> Result<(), ApiError> {
 ///
 /// The log backend is the default on purpose: `serve` is what tests and CI call,
 /// and neither should ever grow an OS-notification dependency. A caller that
-/// wants native toasts opts in explicitly via [`serve_with_notifier`].
+/// wants native toasts opts in through [`DaemonOptions::notifier`] and [`serve_with_options`].
 pub fn serve(engine: Engine, socket: &str, shutdown: Arc<AtomicBool>) -> io::Result<()> {
     serve_with_options(engine, socket, shutdown, DaemonOptions::default())
-}
-
-/// [`serve`], with the reminder [`Notifier`] injected — the seam the CLI used to
-/// call to honour `[notify] enabled` (§9) and tests use to observe delivery
-/// without an OS transport. Retained as a thin wrapper over
-/// [`serve_with_options`]; token attribution stays off on this path.
-pub fn serve_with_notifier(
-    engine: Engine,
-    socket: &str,
-    shutdown: Arc<AtomicBool>,
-    notifier: Arc<dyn Notifier>,
-) -> io::Result<()> {
-    serve_with_options(
-        engine,
-        socket,
-        shutdown,
-        DaemonOptions {
-            notifier,
-            tokens_enabled: false,
-            otlp_port: None,
-            idle_timeout: None,
-            retired_marker: None,
-        },
-    )
 }
 
 /// Optional daemon behaviours bundled into one struct so the entry point keeps a

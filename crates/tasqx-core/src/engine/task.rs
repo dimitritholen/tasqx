@@ -2160,7 +2160,7 @@ impl Engine {
                 continue;
             }
             let ctx = MatchCtx::from(&snapshot);
-            if filter.matches_titled(&ctx, &snapshot.task.title) {
+            if filter.matches(&ctx) {
                 let totals = if want_tokens {
                     tokens::measurement_totals(&snapshot.tokens)
                 } else {

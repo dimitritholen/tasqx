@@ -1570,7 +1570,7 @@ fn attribution_does_not_run_when_the_opt_in_is_off() {
 
 /// A fatal store fault inside the attribution thread must stop the daemon and
 /// name **that** component — the supervision contract for the third background
-/// thread, which no other test reaches (`serve`/`serve_with_notifier` leave
+/// thread, which no other test reaches (`serve` leaves
 /// `tokens_enabled` false, so the thread is never even spawned).
 ///
 /// Two things make this deterministic:
