@@ -1789,7 +1789,7 @@ tasks.</li>
 <li>A filtered export that cuts across a dependency (one task in, its
 prerequisite out) drops that edge and <em>says so</em> in the answer
 (<code>dropped_dependencies</code>), rather than exporting a broken reference. A link
-(<code>tasqx link</code>) is kept only when <em>both</em> of its ends are in the document, and
+(<code>link.add</code> in the API) is kept only when <em>both</em> of its ends are in the document, and
 the rest are counted under <code>dropped_links</code> for the same reason.</li>
 <li><strong>An unfiltered export carries every project, every memory doc, every link
 and the event log</strong> — the full backup. What it leaves out is what you
@@ -1901,8 +1901,8 @@ second next occurrence for the same date.</p>
 <p>A store exported and imported into an empty one comes back with every task,
 project, memory doc, link, check, tag, dependency, timer and note, and the
 event history behind them. Counted straight from the database, three numbers
-still differ, on purpose, and <code>tasqx export --out</code> names each one under the
-path it wrote (<code>--json</code> gives the counts as fields):</p>
+still differ, on purpose, and <code>tasqx export --out backup.json</code> names each one
+under the path it wrote (<code>--json</code> gives the counts as fields):</p>
 <pre class="plain" data-lang="text"><code>Wrote 240 tasks → /home/me/backup.json
 Left out: 3 removed notes, 12 events earlier imports logged about themselves</code></pre>
 <ul>
@@ -2617,7 +2617,7 @@ per-request figures.</p>
 <tr><td data-label="Channel" headers="guide-token-accounting-tbl0-h0">Log-parse</td><td data-label="Earns" headers="guide-token-accounting-tbl0-h1"><code>medium</code></td><td data-label="When" headers="guide-token-accounting-tbl0-h2">An explicit path to a file with no per-session anchor (Gemini, Copilot)</td></tr>
 <tr><td data-label="Channel" headers="guide-token-accounting-tbl0-h0">Log-parse</td><td data-label="Earns" headers="guide-token-accounting-tbl0-h1"><code>low</code></td><td data-label="When" headers="guide-token-accounting-tbl0-h2">No path: the transcript was found by scanning and matched on time overlap alone</td></tr>
 <tr><td data-label="Channel" headers="guide-token-accounting-tbl0-h0">Log-parse</td><td data-label="Earns" headers="guide-token-accounting-tbl0-h1"><code>low</code></td><td data-label="When" headers="guide-token-accounting-tbl0-h2"><code>tokens recompute</code> found the transcript gone, so it kept the counts and lowered the grade</td></tr>
-<tr><td data-label="Channel" headers="guide-token-accounting-tbl0-h0">Self-report</td><td data-label="Earns" headers="guide-token-accounting-tbl0-h1"><code>medium</code></td><td data-label="When" headers="guide-token-accounting-tbl0-h2">Every report on <code>done</code>, <code>tasqx_add_tokens</code> and <code>tokens add</code>; <code>tasqx api token.add</code> also accepts <code>low</code></td></tr>
+<tr><td data-label="Channel" headers="guide-token-accounting-tbl0-h0">Self-report</td><td data-label="Earns" headers="guide-token-accounting-tbl0-h1"><code>medium</code></td><td data-label="When" headers="guide-token-accounting-tbl0-h2">Every report on <code>done</code>, <code>tasqx_add_tokens</code> and <code>tokens add</code>; <code>token.add</code> through <code>tasqx api</code> also accepts <code>low</code></td></tr>
 </tbody></table></div>
 <p>A self-report is <code>medium</code> and can never be <code>high</code>. Only the agent knows which
 task the spend served, so self-report is the primary channel. But nothing

@@ -24,7 +24,7 @@ tasqx export --out backup.json
 - A filtered export that cuts across a dependency (one task in, its
   prerequisite out) drops that edge and *says so* in the answer
   (`dropped_dependencies`), rather than exporting a broken reference. A link
-  (`tasqx link`) is kept only when *both* of its ends are in the document, and
+  (`link.add` in the API) is kept only when *both* of its ends are in the document, and
   the rest are counted under `dropped_links` for the same reason.
 - **An unfiltered export carries every project, every memory doc, every link
   and the event log** — the full backup. What it leaves out is what you
@@ -163,8 +163,8 @@ second next occurrence for the same date.
 A store exported and imported into an empty one comes back with every task,
 project, memory doc, link, check, tag, dependency, timer and note, and the
 event history behind them. Counted straight from the database, three numbers
-still differ, on purpose, and `tasqx export --out` names each one under the
-path it wrote (`--json` gives the counts as fields):
+still differ, on purpose, and `tasqx export --out backup.json` names each one
+under the path it wrote (`--json` gives the counts as fields):
 
 ```text
 Wrote 240 tasks → /home/me/backup.json

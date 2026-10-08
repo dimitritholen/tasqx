@@ -291,6 +291,44 @@ pub fn memory_subcommand_names() -> Vec<String> {
         .collect()
 }
 
+/// Parse `argv` (program name first) exactly as [`run`] does, and execute
+/// nothing: the docs drift gate (`tests/wiki.rs`, #705) runs every `tasqx …`
+/// line in the wiki and the guides through it.
+///
+/// The same `argv::prepass` and `cli_command` the binary uses, so a renamed
+/// verb or flag fails here the day it fails for a reader. `-h`/`--version`
+/// count as parsing. `add`/`modify` words then go through the sugar parser in
+/// the `Modify` context for both verbs: `add` only warns on a word shaped like
+/// an unknown `key:value`, and a doc that shows a retired key must fail, not
+/// warn. A sugar refusal comes back as a `ValueValidation` clap error so the
+/// caller judges one error type.
+pub fn parse_argv(argv: &[String]) -> Result<(), clap::Error> {
+    use clap::FromArgMatches;
+    let pre = argv::prepass(argv.iter().map(std::ffi::OsString::from));
+    let cli = match cli_command()
+        .try_get_matches_from(pre.argv)
+        .and_then(|m| Cli::from_arg_matches(&m))
+    {
+        Ok(cli) => cli,
+        Err(e) if matches!(e.kind(), ErrorKind::DisplayHelp | ErrorKind::DisplayVersion) => {
+            return Ok(())
+        }
+        Err(e) => return Err(e),
+    };
+    let words = match cli.command {
+        Some(Command::Add { title, .. }) => title,
+        Some(Command::Modify { rest, .. }) => rest,
+        _ => return Ok(()),
+    };
+    sugar::parse_add(
+        &words,
+        sugar::AddFlags::default(),
+        sugar::ParseContext::Modify,
+    )
+    .map(|_| ())
+    .map_err(|e| clap::Error::raw(ErrorKind::ValueValidation, e.message))
+}
+
 /// How a command leaves [`execute`].
 ///
 /// This exists to make the `--json` bypass unrepresentable. Before it, `run()`
