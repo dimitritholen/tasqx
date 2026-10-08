@@ -714,10 +714,11 @@ pub(crate) fn detail_rows(ctx: &Ctx, result: &Value, now: Timestamp) -> Vec<Deta
             // needs to know before budgeting against this total. Silent when
             // every measurement is `high`: a marker on the common case would
             // train the reader to stop noticing it.
-            let worst_confidence = tokens
-                .iter()
-                .filter_map(|m| m.get("confidence").and_then(Value::as_str))
-                .min_by_key(|c| tasqx_core::tokens::confidence_rank(c));
+            let worst_confidence = tasqx_core::tokens::worst_confidence(
+                tokens
+                    .iter()
+                    .filter_map(|m| m.get("confidence").and_then(Value::as_str)),
+            );
             let confidence_suffix = match worst_confidence {
                 Some(c) if c != tasqx_core::tokens::CONFIDENCE_HIGH => format!(" [{c} confidence]"),
                 _ => String::new(),
