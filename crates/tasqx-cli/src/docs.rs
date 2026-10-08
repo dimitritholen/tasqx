@@ -8,12 +8,12 @@
 //! properties. Every string that could contain markup goes through [`html::esc`] —
 //! the one escaper both surfaces share.
 //!
-//! **Multi-page without a server.** The guide is eleven pages, each a `<section>`
-//! with a stable `id`. The inline script shows one at a time and drives
-//! `location.hash`, so every page is cross-linkable (`docs.html#filters`) and the
-//! back button works. With JavaScript off, the `:target` CSS fallback still selects
-//! a page and, absent any hash, the page simply renders as one long scrollable
-//! document — the content is never *hidden behind* the script.
+//! **Multi-page without a server.** The guide is many pages, each a `<section>`
+//! with a stable `id`. The stylesheet shows one at a time with `:target` —
+//! the page the hash names, or the one holding the heading it names, or the
+//! first page when it names neither — so every page is cross-linkable
+//! (`docs.html#filters`) and the back button works, with no script involved:
+//! the content is never *hidden behind* the script.
 //!
 //! **The doc-drift guard lives here, not in prose.** [`VERBS`], [`METHODS`], and
 //! [`DOCUMENTED_CLEAR_FIELDS`] are the lists the page renders *from*, and the
@@ -1031,30 +1031,17 @@ pub fn generate() -> String {
 // Chrome
 // ============================================================================
 
-/// The top bar: the drawer toggle, the brand, the version, and the theme
-/// switch.
+/// The top bar: the drawer toggle, the brand and the version.
 ///
-/// The three theme buttons are a *stored preference*, not a style: the CSS
-/// still follows `prefers-color-scheme` on its own, and `Auto` is the absence
-/// of the `data-theme` attribute rather than a third palette. So a reader who
-/// never touches the switch — or who has JavaScript off, or a browser that
-/// refuses `localStorage` — gets exactly the behaviour this page has always
-/// had.
+/// Light or dark is the reader's system preference (`prefers-color-scheme` in
+/// [`css`]), with no switch of its own to remember a second answer.
 fn header() -> String {
-    let mut themer = String::new();
-    for (mode, label) in [("light", "Light"), ("dark", "Dark"), ("system", "Auto")] {
-        themer.push_str(&format!(
-            "<button class=\"themebtn\" type=\"button\" data-theme-set=\"{mode}\" \
-             aria-pressed=\"false\">{label}</button>"
-        ));
-    }
     format!(
         "<header class=\"top\">\
            <button id=\"navtoggle\" type=\"button\" aria-label=\"Toggle navigation\" \
              aria-expanded=\"false\">Menu</button>\
            <div class=\"brand\">tasqx <span class=\"muted\">user guide</span></div>\
            <div class=\"ver muted\">v{}</div>\
-           <div class=\"themer\" role=\"group\" aria-label=\"Colour theme\">{themer}</div>\
          </header>",
         esc(env!("CARGO_PKG_VERSION"))
     )
@@ -1680,10 +1667,10 @@ const LIGHT_VARS: &str = r#"color-scheme: light;
 --pill-opt: #5a6474; --pill-opt-bg: #eef0f3;
 "#;
 
-/// The dark palette. Used three times — as the `prefers-color-scheme` answer,
-/// and as the explicit `[data-theme="dark"]` override — from one place, because
-/// a palette maintained in three copies is a palette that disagrees with itself
-/// the first time a token is added.
+/// The dark palette. Used twice — as the `prefers-color-scheme` answer, and as
+/// [`screen_page`]'s terminal backdrop — from one place, because a palette
+/// maintained in two copies is a palette that disagrees with itself the first
+/// time a token is added.
 const DARK_VARS: &str = r#"color-scheme: dark;
 --accent: #88c0d0; --accent2: #81a1c1; --warn: #ebcb8b; --danger: #bf616a;
 --bg: #22262e; --fg: #d8dee9; --muted: #8b93a3; --card: #2b3039; --line: #3a4150;
@@ -1702,9 +1689,9 @@ const DARK_VARS: &str = r#"color-scheme: dark;
 /// reader who has raised their browser's font size gets a bigger guide.
 const RULES: &str = r##"
 * { box-sizing: border-box; }
-/* No `scroll-behavior: smooth`: every jump here is a page switch or an anchor
-   the script also has to reason about, and an animated scroll means the hash
-   target and the scroll position disagree for a third of a second. */
+/* No `scroll-behavior: smooth`: every jump here is a page switch, and an
+   animated scroll means the hash target and the scroll position disagree for a
+   third of a second. */
 html { scroll-margin-top: 4.5rem; }
 body { margin: 0; background: var(--bg); color: var(--fg);
   font-family: ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
@@ -1728,13 +1715,6 @@ header.top { position: sticky; top: 0; z-index: 40; height: 3.25rem;
 #navtoggle { display: none; background: var(--card); color: var(--fg);
   border: 1px solid var(--line); border-radius: 8px; padding: 0.3rem 0.65rem;
   font: inherit; font-size: 0.8rem; cursor: pointer; }
-.themer { display: flex; gap: 0.1rem; padding: 0.15rem;
-  background: var(--card); border: 1px solid var(--line); border-radius: 999px; }
-.themebtn { background: transparent; border: 0; border-radius: 999px; color: var(--muted);
-  font: inherit; font-size: 0.7rem; font-weight: 600; letter-spacing: 0.01em;
-  padding: 0.16rem 0.5rem; cursor: pointer; }
-.themebtn:hover { color: var(--fg); }
-.themebtn.active { background: var(--bg); color: var(--fg); box-shadow: 0 1px 2px var(--shadow); }
 
 /* ---- layout ---- */
 .shell { display: flex; align-items: flex-start; gap: 2.5rem;
@@ -1759,20 +1739,21 @@ nav a { display: block; padding: 0.26rem 0.7rem; border-radius: 7px;
   color: var(--fg); font-size: 0.855rem; border-left: 2px solid transparent; }
 nav a:hover { background: var(--hover); text-decoration: none; }
 nav a.off { display: none; }
-nav a.active { background: var(--hover); border-left-color: var(--accent);
-  color: var(--accent); font-weight: 600; }
 .navhits { margin: 0 0 1rem; padding: 0.3rem 0; border-bottom: 1px solid var(--line); }
 .navhits a.hit { padding: 0.3rem 0.7rem; font-size: 0.82rem; }
 .navhits a.hit:hover { background: var(--hover); }
 .hit-x { display: block; font-size: 0.68rem; color: var(--muted); }
 .nohits { padding: 0.3rem 0.7rem; font-size: 0.8rem; color: var(--muted); }
 
-/* ---- pages: JS shows one; without JS everything renders ---- */
-.js .page { display: none; }
-.js .page.active { display: block; animation: fade 0.18s ease-out; }
+/* ---- pages: the hash picks one, and no script is involved ----
+   A page shows when the hash names it or anything inside it (a heading, a
+   parameter row); with no such hash, the first page shows. */
+.page { display: none; }
+.page:target, .page:has(:target), main:not(:has(:target)) > .page:first-child {
+  display: block; animation: fade 0.18s ease-out; }
 @keyframes fade { from { opacity: 0; transform: translateY(3px); } to { opacity: 1; } }
 @media (prefers-reduced-motion: reduce) {
-  .js .page.active { animation: none; }
+  .page { animation: none !important; }
 }
 
 /* ---- type: prose keeps a measure, the reference grid does not ---- */
@@ -1930,7 +1911,6 @@ footer { max-width: 78rem; margin: 0 auto; padding: 1.5rem 1.5rem 3rem;
   header.top { padding: 0 1.1rem; gap: 0.7rem; }
   #navtoggle { display: block; }
   .ver { display: none; }
-  .themer { margin-left: auto; }
   nav { position: fixed; top: 3.25rem; left: 0; right: 0; bottom: 0; z-index: 30;
     flex: none; width: 100%; max-height: none; display: none;
     background: var(--rail); border-bottom: 1px solid var(--line);
@@ -1969,39 +1949,46 @@ footer { max-width: 78rem; margin: 0 auto; padding: 1.5rem 1.5rem 3rem;
 }
 
 /* ---- and on a small phone, the top bar sheds what it can spare ----
-   At 320px the bar is Menu + brand + a three-way theme switch, and the brand
-   was the only part that could shrink: it wrapped to three lines and spilled
-   out of the fixed 3.25rem the sticky offsets below it are measured from. The
-   subtitle goes instead. The switch keeps its three labels, because a single
-   cycling button costs the reader a guess at what the next press does. */
+   At 320px the brand was the only part of the bar that could shrink: it
+   wrapped to three lines and spilled out of the fixed 3.25rem the sticky
+   offsets below it are measured from. The subtitle goes instead. */
 @media (max-width: 30rem) {
   .shell { padding: 0 1rem; }
   header.top { padding: 0 1rem; gap: 0.6rem; }
   .brand .muted { display: none; }
-  .themebtn { padding: 0.16rem 0.42rem; }
 }
 "##;
 
 fn css() -> String {
     // A system-font stack: no web font can be requested, so none can be missing.
     //
-    // Three palettes from two blocks: `:root` is light, the media query is the
-    // reader's system preference, and `[data-theme]` — set only by the header's
-    // switch — overrides both. The media query stays the default on purpose, so
-    // "Auto" is the absence of an override rather than a mode of its own.
+    // Two palettes: `:root` is light, and the media query is the reader's
+    // system preference.
     let mut s = String::new();
     s.push_str(":root {\n");
     s.push_str(LIGHT_VARS);
     s.push_str("}\n@media (prefers-color-scheme: dark) {\n:root {\n");
     s.push_str(DARK_VARS);
     s.push_str("}\n}\n");
-    s.push_str("html[data-theme=\"light\"] {\n");
-    s.push_str(LIGHT_VARS);
-    s.push_str("}\n");
-    s.push_str("html[data-theme=\"dark\"] {\n");
-    s.push_str(DARK_VARS);
-    s.push_str("}\n");
     s.push_str(RULES);
+    // The sidebar marks the page on screen: the one the hash is in, or the
+    // first one when it is in none. One selector per page, because CSS cannot
+    // compare a link's `data-page` to the id of whatever is targeted.
+    let first = &PAGES[0].id;
+    let mut on: Vec<String> = vec![format!(
+        "body:not(:has(main :target)) nav a[data-page=\"{first}\"]"
+    )];
+    on.extend(PAGES.iter().map(|p| {
+        format!(
+            "body:has(#{id}:target, #{id} :target) nav a[data-page=\"{id}\"]",
+            id = p.id
+        )
+    }));
+    s.push_str(&on.join(",\n"));
+    s.push_str(
+        " {\n  background: var(--hover); border-left-color: var(--accent);\n  \
+         color: var(--accent); font-weight: 600; }\n",
+    );
     // The JSON blocks the API reference renders carry their own four colours
     // and a height cap; they live beside the code that emits the spans (#647).
     s.push_str(api_ref::CSS);
@@ -2043,23 +2030,19 @@ pub(crate) fn screen_page(name: &str) -> Option<String> {
 }
 
 // ============================================================================
-// Inline JS — client-side page switching, no framework, no external anything
+// Inline JS — search, tabs, copy buttons, the drawer; no framework, no fetch
 // ============================================================================
 
-/// Written defensively: if anything here throws, the `js` class is never added
-/// and the document degrades to one long readable page rather than a blank one.
-///
-/// Navigation is driven by `location.hash` and the `hashchange` event, and NOT
-/// by `history.pushState`. That is load-bearing, not stylistic: this file is
-/// opened over `file://`, whose origin is `null`, and `pushState` throws a
-/// SecurityError there. Letting each `<a>` do its ordinary default thing sets
-/// the hash, fires `hashchange`, and gives us real history entries — so the
-/// back button and deep links work on the exact transport `tasqx docs` uses.
+/// Not the page switch: that is the stylesheet's `:target`, so a page, a deep
+/// link and the back button work with the script off or broken. Navigation
+/// never touches `history.pushState` — this file is opened over `file://`,
+/// whose origin is `null`, and `pushState` throws a SecurityError there. Each
+/// `<a>` does its ordinary default thing and sets the hash.
 ///
 /// `localStorage` is reached through `readStore`/`writeStore` and nothing else.
 /// On a `file://` document with a null origin, or under a privacy setting that
 /// refuses storage, merely *touching* `window.localStorage` throws — so a
-/// remembered theme must never be able to take the page down with it.
+/// remembered tab must never be able to take the page down with it.
 ///
 /// The search index is the document: `querySelectorAll` over the headings and
 /// parameter rows already in the file. There is nothing to build, nothing to
@@ -2068,18 +2051,12 @@ const SCRIPT: &str = r##"(function () {
   function list(sel, root) {
     return Array.prototype.slice.call((root || document).querySelectorAll(sel));
   }
-  var pages = list('.page');
-  if (!pages.length) { return; }
   var navEl = document.getElementById('nav');
   var tree = document.getElementById('navtree');
   var hits = document.getElementById('navhits');
   var queryBox = document.getElementById('navq');
   var navLinks = list('nav a[data-page]');
-  var THEME_KEY = 'tasqx-docs-theme';
   var TAB_KEY = 'tasqx-docs-tab';
-
-  // Only hide pages once we know we can show them again.
-  document.documentElement.classList.add('js');
 
   function readStore(k) {
     try { return window.localStorage.getItem(k); } catch (e) { return null; }
@@ -2087,24 +2064,6 @@ const SCRIPT: &str = r##"(function () {
   function writeStore(k, v) {
     try { window.localStorage.setItem(k, v); } catch (e) { /* storage refused */ }
   }
-
-  // ---- theme: light / dark / system ---------------------------------------
-  var themeBtns = list('.themebtn');
-  function applyTheme(mode) {
-    var root = document.documentElement;
-    if (mode === 'light' || mode === 'dark') {
-      root.setAttribute('data-theme', mode);
-    } else {
-      root.removeAttribute('data-theme');
-      mode = 'system';
-    }
-    themeBtns.forEach(function (b) {
-      var on = b.getAttribute('data-theme-set') === mode;
-      b.classList.toggle('active', on);
-      b.setAttribute('aria-pressed', on ? 'true' : 'false');
-    });
-  }
-  applyTheme(readStore(THEME_KEY) || 'system');
 
   // ---- code tabs -----------------------------------------------------------
   function applyTab(box, label) {
@@ -2131,35 +2090,6 @@ const SCRIPT: &str = r##"(function () {
       if (wanted && !wanted.querySelector('.soon')) { applyTab(box, storedTab); }
     });
   }
-
-  // ---- one page at a time, driven by the hash ------------------------------
-  function pageFor(id) {
-    var direct = null;
-    pages.forEach(function (p) { if (p.id === id) { direct = p; } });
-    if (direct) { return { page: direct, target: null }; }
-    var el = id ? document.getElementById(id) : null;
-    var owner = el && el.closest ? el.closest('.page') : null;
-    return { page: owner, target: owner ? el : null };
-  }
-  function show(id) {
-    pages.forEach(function (p) { p.classList.toggle('active', p.id === id); });
-    navLinks.forEach(function (a) {
-      a.classList.toggle('active', a.getAttribute('data-page') === id);
-    });
-    if (navEl) { navEl.classList.remove('open'); }
-  }
-  function go(hash) {
-    var hit = pageFor(hash);
-    var page = hit.page || pages[0];
-    show(page.id);
-    // A heading or a parameter row inside a page that was hidden a moment ago:
-    // reveal the page first, then scroll, or the browser measures nothing.
-    if (hit.target) { hit.target.scrollIntoView(); } else { window.scrollTo(0, 0); }
-  }
-
-  // The browser sets the hash for us; we only react. Nav links, prev/next,
-  // search hits and cross-references inside prose therefore all take one path.
-  window.addEventListener('hashchange', function () { go(location.hash.slice(1)); });
 
   // ---- sidebar search ------------------------------------------------------
   // No index: the document is the index. Sidebar entries filter by label, and a
@@ -2232,12 +2162,6 @@ const SCRIPT: &str = r##"(function () {
     var t = e.target;
     if (!t || !t.classList) { return; }
 
-    if (t.classList.contains('themebtn')) {
-      var mode = t.getAttribute('data-theme-set');
-      applyTheme(mode);
-      writeStore(THEME_KEY, mode);
-      return;
-    }
     if (t.classList.contains('tab')) {
       var box = t.closest ? t.closest('.tabs') : null;
       var label = t.getAttribute('data-tab');
@@ -2253,8 +2177,8 @@ const SCRIPT: &str = r##"(function () {
       }
       return;
     }
-    // Clicking the page you are already on fires no hashchange; close the
-    // drawer anyway so the tap is not a no-op.
+    // Following a link closes the drawer, so the page it opens is not
+    // under it.
     var link = t.closest ? t.closest('a[href^="#"]') : null;
     if (link && navEl) { navEl.classList.remove('open'); }
   });
@@ -2294,8 +2218,6 @@ const SCRIPT: &str = r##"(function () {
       fallback();
     }
   }
-
-  go(location.hash.slice(1) || pages[0].id);
 }());"##;
 
 #[cfg(test)]
@@ -3494,9 +3416,46 @@ mod tests {
             "replaceState throws on file:// for the same reason"
         );
         assert!(
-            doc.contains("addEventListener('hashchange'"),
-            "navigation must be driven by hashchange, the only mechanism that works on file://"
+            !doc.contains("addEventListener('hashchange'"),
+            "the page switch is the stylesheet's `:target`; a script reacting to the hash \
+             is a second router"
         );
+    }
+
+    /// The hash picks the page with no script at all: the page it names, the
+    /// page holding what it names, or the first page when it names neither —
+    /// and the sidebar marks the same page by the same rule.
+    #[test]
+    fn the_stylesheet_switches_pages_on_the_hash() {
+        let doc = generate();
+        assert!(
+            doc.contains(".page { display: none; }"),
+            "every page shows at once"
+        );
+        assert!(
+            doc.contains(
+                ".page:target, .page:has(:target), main:not(:has(:target)) > .page:first-child {"
+            ),
+            "a hash, a heading's hash or no hash leaves no page showing"
+        );
+        assert!(
+            !doc.contains(".js "),
+            "a rule still waits on a class only the script used to set"
+        );
+        for pg in PAGES.iter() {
+            assert!(
+                doc.contains(&format!(
+                    "body:has(#{id}:target, #{id} :target) nav a[data-page=\"{id}\"]",
+                    id = pg.id
+                )),
+                "the sidebar never marks `{}` as the page on screen",
+                pg.id
+            );
+        }
+        assert!(doc.contains(&format!(
+            "body:not(:has(main :target)) nav a[data-page=\"{}\"]",
+            PAGES[0].id
+        )));
     }
 
     /// Both colour schemes, same as the report.
@@ -4342,35 +4301,16 @@ mod tests {
         assert!(seen.len() > 20, "suspiciously few ids: {}", seen.len());
     }
 
-    /// The theme switch offers three modes and the stylesheet answers all
-    /// three — two overrides plus the system default it must not replace.
+    /// Light or dark is the reader's system preference and nothing else: one
+    /// palette per scheme, and no stored override to emit a third copy of a
+    /// palette for.
     #[test]
-    fn the_theme_switch_and_the_stylesheet_agree_on_three_modes() {
+    fn the_palette_follows_the_system_scheme_alone() {
         let doc = generate();
-        for mode in ["light", "dark", "system"] {
-            assert!(
-                doc.contains(&format!("data-theme-set=\"{mode}\"")),
-                "no `{mode}` button in the top bar"
-            );
-        }
-        assert!(
-            doc.contains("html[data-theme=\"light\"] {"),
-            "no light override"
-        );
-        assert!(
-            doc.contains("html[data-theme=\"dark\"] {"),
-            "no dark override"
-        );
-        assert!(
-            doc.contains("@media (prefers-color-scheme: dark)"),
-            "`system` has nothing to fall back to"
-        );
-        // Auto is the ABSENCE of the attribute, not a third palette: the
-        // script must be able to take the override off again.
-        assert!(
-            doc.contains("removeAttribute('data-theme')"),
-            "`system` cannot be returned to"
-        );
+        assert!(doc.contains("@media (prefers-color-scheme: dark)"));
+        assert!(!doc.contains("data-theme"), "a theme override is back");
+        assert_eq!(doc.matches("color-scheme: dark;").count(), 1);
+        assert_eq!(doc.matches("color-scheme: light;").count(), 1);
     }
 
     /// Every reach for `localStorage` is inside a `try`.
@@ -4473,11 +4413,6 @@ mod tests {
             small.contains(".brand .muted { display: none; }"),
             "the bar keeps its subtitle where there is no room for it"
         );
-        // The switch itself stays: it is the only way to overrule the system
-        // palette, and it must not be what gets dropped.
-        for mode in ["light", "dark", "system"] {
-            assert!(doc.contains(&format!("data-theme-set=\"{mode}\"")));
-        }
     }
 
     /// Under 60rem the sidebar is a drawer, and the button that opens it is

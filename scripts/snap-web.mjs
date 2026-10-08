@@ -60,7 +60,7 @@ const WIDTHS = [
 const THEMES = ["light", "dark"];
 const MAX_VIEWPORTS = 4;
 // The site's page-switch fade is `animation: fade 0.18s ease-out`
-// (crates/tasqx-cli/src/docs.rs, `.js .page.active`). Waiting comfortably
+// (crates/tasqx-cli/src/docs.rs, the `.page:target` rule). Waiting comfortably
 // past it avoids a half-transparent shot.
 const FADE_MS = 400;
 
@@ -261,8 +261,8 @@ async function main() {
         cdp.on("Runtime.exceptionThrown", onStartupException);
 
         // The site is one HTML file: every `.page` section is already in the
-        // DOM, and a click on a nav link (or setting `location.hash`) toggles
-        // which one is visible (`SCRIPT`'s `go`/`show`, docs.rs). So this loads
+        // DOM, and a click on a nav link (or setting `location.hash`) changes
+        // which one is visible (the stylesheet's `:target`, docs.rs). So this loads
         // the file exactly once and then switches pages the same way a reader
         // does — by changing the hash — never re-navigating Chrome, which
         // would not even fire a fresh `Page.loadEventFired` for a same-document
@@ -460,8 +460,8 @@ async function evalJs(cdp, expression, { awaitPromise = false } = {}) {
 }
 
 // Switches the visible page the same way a reader clicking a nav link does:
-// set `location.hash`, which the site's own `hashchange` listener (SCRIPT's
-// `go`/`show`) reacts to by toggling `.page.active`. No `Page.navigate` here —
+// set `location.hash`, which the site's stylesheet answers through `:target`.
+// No `Page.navigate` here —
 // a same-document hash change does not fire `Page.loadEventFired` again, so
 // waiting on that event would hang.
 async function gotoHash(cdp, id) {
@@ -480,16 +480,13 @@ async function gotoHash(cdp, id) {
     );
 }
 
-// Forces the theme the same way the site's own switch does: click the header
-// button (crates/tasqx-cli/src/docs.rs::header, `.themebtn[data-theme-set]`)
-// so the page runs its own click handler — the same `applyTheme` +
-// `localStorage` write a reader triggers — rather than poking the
-// `data-theme` attribute from outside.
+// Forces the theme the way a reader's system does: the site follows
+// `prefers-color-scheme` and nothing else (crates/tasqx-cli/src/docs.rs::css),
+// so the media feature is emulated rather than any attribute set.
 async function setTheme(cdp, mode) {
-    await evalJs(
-        cdp,
-        `document.querySelector('.themebtn[data-theme-set="${mode}"]').click()`,
-    );
+    await cdp.send("Emulation.setEmulatedMedia", {
+        features: [{ name: "prefers-color-scheme", value: mode }],
+    });
 }
 
 async function screenshot(cdp, path, clip) {
