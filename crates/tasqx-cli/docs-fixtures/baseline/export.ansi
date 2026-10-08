@@ -1,0 +1,4821 @@
+{
+  "default_project": "website",
+  "docs": [
+    {
+      "_rev": 0,
+      "body": "# Pricing page\nThree tiers, annual billing shown first. The release of v2 waits for legal to sign off the new terms.",
+      "created": "2026-09-09T09:15:00Z",
+      "id": "0787b26d-9e2e-4be5-ab66-ec953102fad3",
+      "modified": "2026-09-14T09:15:00Z",
+      "origin_mtime": null,
+      "origin_path": null,
+      "origin_size": null,
+      "project": "website",
+      "source": "notes/pricing.md",
+      "standing": false,
+      "title": "pricing-page-decisions"
+    },
+    {
+      "_rev": 0,
+      "body": "Dr. Visser, Tuesdays and Thursdays, book two weeks ahead.",
+      "created": "2026-08-08T09:15:00Z",
+      "id": "091eb5ff-05d5-4cb2-ba2f-0afdc77f7935",
+      "modified": "2026-08-13T09:15:00Z",
+      "origin_mtime": null,
+      "origin_path": null,
+      "origin_size": null,
+      "project": null,
+      "source": null,
+      "standing": false,
+      "title": "dentist"
+    },
+    {
+      "_rev": 0,
+      "body": "The handover happens Friday at 16:00. Walk the open incidents, the error budget and anything paged twice in the week, then rotate the pager.",
+      "created": "2026-08-29T09:15:00Z",
+      "id": "1bce1a9b-5134-4ab7-8665-34cd79fe0c5f",
+      "modified": "2026-09-03T09:15:00Z",
+      "origin_mtime": null,
+      "origin_path": null,
+      "origin_size": null,
+      "project": "infra",
+      "source": null,
+      "standing": false,
+      "title": "on-call-handover"
+    },
+    {
+      "_rev": 0,
+      "body": "The refresh race happens when two requests see an expired token at once. Serialise refresh behind one lock and retry the losing request.",
+      "created": "2026-08-22T09:15:00Z",
+      "id": "b3bd4390-2124-42ac-829d-f542ecde8a07",
+      "modified": "2026-08-27T09:15:00Z",
+      "origin_mtime": null,
+      "origin_path": null,
+      "origin_size": null,
+      "project": "mobile",
+      "source": null,
+      "standing": false,
+      "title": "android-token-refresh"
+    },
+    {
+      "_rev": 0,
+      "body": "---\ndescription: How an SDK release is cut, tagged and announced\n---\nCut the release branch on Monday, tag after the canary has run for a day, and announce in the changelog feed once the packages are live.",
+      "created": "2026-09-05T09:15:00Z",
+      "id": "eb864f1e-e68a-4d96-af89-597bd0d2d52e",
+      "modified": "2026-09-10T09:15:00Z",
+      "origin_mtime": null,
+      "origin_path": null,
+      "origin_size": null,
+      "project": "api",
+      "source": "docs/release.md",
+      "standing": false,
+      "title": "release-process"
+    }
+  ],
+  "dropped_dependencies": 0,
+  "dropped_docs": 0,
+  "dropped_events": 0,
+  "dropped_links": 0,
+  "dropped_projects": 0,
+  "events": [
+    {
+      "actor": "user",
+      "entity": "task",
+      "entity_id": "693cc50d-3372-469f-bf65-d54d92af698d",
+      "id": "014378ff-80d0-44b2-9d41-7ead8930fbcd",
+      "op": "add",
+      "payload": {
+        "priority": null,
+        "project": "mobile",
+        "recurrence": null,
+        "status": "pending",
+        "tags": [
+          "bug",
+          "ci"
+        ],
+        "title": "Investigate flaky checkout test"
+      },
+      "ts": "2026-09-08T10:00:00Z"
+    },
+    {
+      "actor": "user",
+      "entity": "task",
+      "entity_id": "d4ea65d0-03d7-4684-9f85-58a628518867",
+      "id": "019ef90d-02c0-762e-9c99-19f28afe332d",
+      "op": "start",
+      "payload": {
+        "interval_started": "2026-06-24T09:54:00Z"
+      },
+      "ts": "2026-06-24T09:54:00Z"
+    },
+    {
+      "actor": "user",
+      "entity": "task",
+      "entity_id": "d4ea65d0-03d7-4684-9f85-58a628518867",
+      "id": "019ef963-fc60-7b8f-a2ef-6a80db54e659",
+      "op": "stop",
+      "payload": {
+        "tracked": "PT1H35M"
+      },
+      "ts": "2026-06-24T11:29:00Z"
+    },
+    {
+      "actor": "user",
+      "entity": "task",
+      "entity_id": "d4ea65d0-03d7-4684-9f85-58a628518867",
+      "id": "019ef99a-eae0-77e5-a372-959988b48922",
+      "op": "start",
+      "payload": {
+        "interval_started": "2026-06-24T12:29:00Z"
+      },
+      "ts": "2026-06-24T12:29:00Z"
+    },
+    {
+      "actor": "user",
+      "entity": "task",
+      "entity_id": "d4ea65d0-03d7-4684-9f85-58a628518867",
+      "id": "019ef9f1-e480-79ec-b757-01be87951cb5",
+      "op": "stop",
+      "payload": {
+        "tracked": "PT1H35M"
+      },
+      "ts": "2026-06-24T14:04:00Z"
+    },
+    {
+      "actor": "user",
+      "entity": "task",
+      "entity_id": "d4ea65d0-03d7-4684-9f85-58a628518867",
+      "id": "019ef9f6-7860-719d-9d24-8e6f344acadf",
+      "op": "done",
+      "payload": {
+        "completed": "2026-06-24T14:09:00Z"
+      },
+      "ts": "2026-06-24T14:09:00Z"
+    },
+    {
+      "actor": "user",
+      "entity": "task",
+      "entity_id": "5387f613-76c4-48ae-8732-1cc007b37e14",
+      "id": "019efe37-0840-7e5e-a715-dfe558fc0a18",
+      "op": "done",
+      "payload": {
+        "completed": "2026-06-25T09:58:00Z"
+      },
+      "ts": "2026-06-25T09:58:00Z"
+    },
+    {
+      "actor": "user",
+      "entity": "task",
+      "entity_id": "15c1d2df-a996-4aef-812d-0ea67ff12229",
+      "id": "019f0d95-f800-77d8-b1d6-e349ec3a74cd",
+      "op": "done",
+      "payload": {
+        "completed": "2026-06-28T09:36:00Z"
+      },
+      "ts": "2026-06-28T09:36:00Z"
+    },
+    {
+      "actor": "user",
+      "entity": "task",
+      "entity_id": "4105cca7-b533-42fc-954c-d2aad7185dda",
+      "id": "019f130a-25e0-7041-b470-53deca393bf1",
+      "op": "start",
+      "payload": {
+        "interval_started": "2026-06-29T11:01:00Z"
+      },
+      "ts": "2026-06-29T11:01:00Z"
+    },
+    {
+      "actor": "user",
+      "entity": "task",
+      "entity_id": "4105cca7-b533-42fc-954c-d2aad7185dda",
+      "id": "019f138a-5260-70c4-a71c-82fb335d8671",
+      "op": "stop",
+      "payload": {
+        "tracked": "PT2H20M"
+      },
+      "ts": "2026-06-29T13:21:00Z"
+    },
+    {
+      "actor": "user",
+      "entity": "task",
+      "entity_id": "4105cca7-b533-42fc-954c-d2aad7185dda",
+      "id": "019f138e-e640-7b14-abef-fb9bf0f1d8db",
+      "op": "done",
+      "payload": {
+        "completed": "2026-06-29T13:26:00Z"
+      },
+      "ts": "2026-06-29T13:26:00Z"
+    },
+    {
+      "actor": "user",
+      "entity": "task",
+      "entity_id": "1b98fbe4-6680-4a11-9ba1-192ec42b7170",
+      "id": "019f1da9-43a0-7eb0-91e4-f83433706a35",
+      "op": "done",
+      "payload": {
+        "completed": "2026-07-01T12:31:00Z",
+        "model": "claude-opus-5",
+        "tokens": {
+          "cache_creation_tokens": 109000,
+          "cache_read_tokens": 108000,
+          "confidence": "medium",
+          "created": "2026-07-01T12:31:00Z",
+          "id": "81744e12-b467-4b8a-9d8b-86945c7fb02d",
+          "input_tokens": 240000,
+          "model": "claude-opus-5",
+          "output_tokens": 31000,
+          "source": "self-report",
+          "tool": "claude-code"
+        },
+        "tool": "claude-code"
+      },
+      "ts": "2026-07-01T12:31:00Z"
+    },
+    {
+      "actor": "user",
+      "entity": "task",
+      "entity_id": "ed52a241-35b0-4a54-b6a8-0bdf0023b682",
+      "id": "019f2759-6d80-7f88-bfa3-601380b68be5",
+      "op": "start",
+      "payload": {
+        "interval_started": "2026-07-03T09:40:00Z"
+      },
+      "ts": "2026-07-03T09:40:00Z"
+    },
+    {
+      "actor": "user",
+      "entity": "task",
+      "entity_id": "ed52a241-35b0-4a54-b6a8-0bdf0023b682",
+      "id": "019f27d9-9a00-7d87-b062-c81ed53c269b",
+      "op": "stop",
+      "payload": {
+        "tracked": "PT2H20M"
+      },
+      "ts": "2026-07-03T12:00:00Z"
+    },
+    {
+      "actor": "user",
+      "entity": "task",
+      "entity_id": "ed52a241-35b0-4a54-b6a8-0bdf0023b682",
+      "id": "019f27de-2de0-77ef-8216-68aaa2792e75",
+      "op": "done",
+      "payload": {
+        "completed": "2026-07-03T12:05:00Z"
+      },
+      "ts": "2026-07-03T12:05:00Z"
+    },
+    {
+      "actor": "user",
+      "entity": "task",
+      "entity_id": "32d03fdd-a123-4501-90f5-380e12b2a414",
+      "id": "019f47c3-c480-7718-ac28-69b63433b58e",
+      "op": "done",
+      "payload": {
+        "completed": "2026-07-09T16:44:00Z"
+      },
+      "ts": "2026-07-09T16:44:00Z"
+    },
+    {
+      "actor": "user",
+      "entity": "task",
+      "entity_id": "ec3fbf4d-c20e-4164-a8f9-18d8f6cdb2f8",
+      "id": "019f4cbe-2e80-746c-9862-11cbac45a7a5",
+      "op": "done",
+      "payload": {
+        "completed": "2026-07-10T15:56:00Z"
+      },
+      "ts": "2026-07-10T15:56:00Z"
+    },
+    {
+      "actor": "user",
+      "entity": "task",
+      "entity_id": "ae9ca08b-2d7c-4048-bca0-7386cc099a1e",
+      "id": "019f5ab4-6680-7a76-b376-b549a24e3cd3",
+      "op": "start",
+      "payload": {
+        "interval_started": "2026-07-13T09:00:00Z"
+      },
+      "ts": "2026-07-13T09:00:00Z"
+    },
+    {
+      "actor": "user",
+      "entity": "task",
+      "entity_id": "ae9ca08b-2d7c-4048-bca0-7386cc099a1e",
+      "id": "019f5aef-e8e0-7e67-b344-f557d8219c9d",
+      "op": "stop",
+      "payload": {
+        "tracked": "PT1H5M"
+      },
+      "ts": "2026-07-13T10:05:00Z"
+    },
+    {
+      "actor": "user",
+      "entity": "task",
+      "entity_id": "ae9ca08b-2d7c-4048-bca0-7386cc099a1e",
+      "id": "019f5af4-7cc0-7364-9f87-044699d68911",
+      "op": "done",
+      "payload": {
+        "completed": "2026-07-13T10:10:00Z"
+      },
+      "ts": "2026-07-13T10:10:00Z"
+    },
+    {
+      "actor": "user",
+      "entity": "task",
+      "entity_id": "623d8eb7-a4ca-43b2-ab52-b08d21870f0b",
+      "id": "019f6138-7dc0-7c0c-b436-21bb686fcb68",
+      "op": "done",
+      "payload": {
+        "completed": "2026-07-14T15:22:00Z",
+        "model": "claude-opus-5",
+        "tokens": {
+          "cache_creation_tokens": 154000,
+          "cache_read_tokens": 2546000,
+          "confidence": "medium",
+          "created": "2026-07-14T15:22:00Z",
+          "id": "1844ebd1-2a42-46e7-9ad8-e8b131f3c57c",
+          "input_tokens": 174000,
+          "model": "claude-opus-5",
+          "output_tokens": 19000,
+          "source": "self-report",
+          "tool": "claude-code"
+        },
+        "tool": "claude-code"
+      },
+      "ts": "2026-07-14T15:22:00Z"
+    },
+    {
+      "actor": "user",
+      "entity": "task",
+      "entity_id": "97bdd982-cdac-4046-b990-3b72f88ece64",
+      "id": "019f654e-0600-75b7-a4a7-c5b952ddc9ac",
+      "op": "start",
+      "payload": {
+        "interval_started": "2026-07-15T10:24:00Z"
+      },
+      "ts": "2026-07-15T10:24:00Z"
+    },
+    {
+      "actor": "user",
+      "entity": "task",
+      "entity_id": "97bdd982-cdac-4046-b990-3b72f88ece64",
+      "id": "019f6577-38e0-7465-9787-2ca2cd3c9d6e",
+      "op": "stop",
+      "payload": {
+        "tracked": "PT45M"
+      },
+      "ts": "2026-07-15T11:09:00Z"
+    },
+    {
+      "actor": "user",
+      "entity": "task",
+      "entity_id": "97bdd982-cdac-4046-b990-3b72f88ece64",
+      "id": "019f657b-ccc0-73f2-8ad7-64c483372f2a",
+      "op": "done",
+      "payload": {
+        "completed": "2026-07-15T11:14:00Z"
+      },
+      "ts": "2026-07-15T11:14:00Z"
+    },
+    {
+      "actor": "user",
+      "entity": "task",
+      "entity_id": "93b3a3d9-a44f-476a-9a1d-e24edab871d5",
+      "id": "019f6a01-f120-7fd0-a0f4-8d2f87c52404",
+      "op": "start",
+      "payload": {
+        "interval_started": "2026-07-16T08:19:00Z"
+      },
+      "ts": "2026-07-16T08:19:00Z"
+    },
+    {
+      "actor": "user",
+      "entity": "task",
+      "entity_id": "93b3a3d9-a44f-476a-9a1d-e24edab871d5",
+      "id": "019f6a2f-b7e0-720c-a030-3f4505f3b66c",
+      "op": "cancel",
+      "payload": {
+        "from": "active"
+      },
+      "ts": "2026-07-16T09:09:00Z"
+    },
+    {
+      "actor": "user",
+      "entity": "task",
+      "entity_id": "d48dd9f3-5436-4c21-9c3e-cb54c5cefdd8",
+      "id": "019f759d-be60-7119-b0e1-f52d997fb916",
+      "op": "start",
+      "payload": {
+        "interval_started": "2026-07-18T14:25:00Z"
+      },
+      "ts": "2026-07-18T14:25:00Z"
+    },
+    {
+      "actor": "user",
+      "entity": "task",
+      "entity_id": "d48dd9f3-5436-4c21-9c3e-cb54c5cefdd8",
+      "id": "019f75d0-1900-774a-bb90-eed495a951a0",
+      "op": "stop",
+      "payload": {
+        "tracked": "PT55M"
+      },
+      "ts": "2026-07-18T15:20:00Z"
+    },
+    {
+      "actor": "user",
+      "entity": "task",
+      "entity_id": "d48dd9f3-5436-4c21-9c3e-cb54c5cefdd8",
+      "id": "019f75d4-ace0-71d6-a78d-f63ef088bed0",
+      "op": "done",
+      "payload": {
+        "completed": "2026-07-18T15:25:00Z"
+      },
+      "ts": "2026-07-18T15:25:00Z"
+    },
+    {
+      "actor": "user",
+      "entity": "task",
+      "entity_id": "5e617f8e-99ed-4ce7-83f8-670d3e361858",
+      "id": "019f7958-a380-78f8-872a-386fbe33c26c",
+      "op": "start",
+      "payload": {
+        "interval_started": "2026-07-19T07:48:00Z"
+      },
+      "ts": "2026-07-19T07:48:00Z"
+    },
+    {
+      "actor": "user",
+      "entity": "task",
+      "entity_id": "5e617f8e-99ed-4ce7-83f8-670d3e361858",
+      "id": "019f79d8-d000-77d7-af0d-3b89d08c5c0a",
+      "op": "stop",
+      "payload": {
+        "tracked": "PT2H20M"
+      },
+      "ts": "2026-07-19T10:08:00Z"
+    },
+    {
+      "actor": "user",
+      "entity": "task",
+      "entity_id": "5e617f8e-99ed-4ce7-83f8-670d3e361858",
+      "id": "019f79dd-63e0-7e93-9dc4-2276e94ae4a7",
+      "op": "done",
+      "payload": {
+        "completed": "2026-07-19T10:13:00Z",
+        "model": "claude-opus-5",
+        "tokens": {
+          "cache_creation_tokens": 177000,
+          "cache_read_tokens": 1354000,
+          "confidence": "medium",
+          "created": "2026-07-19T10:13:00Z",
+          "id": "7805ec94-4d3b-4462-977a-dfd3cc1e0437",
+          "input_tokens": 43000,
+          "model": "claude-opus-5",
+          "output_tokens": 2000,
+          "source": "self-report",
+          "tool": "claude-code"
+        },
+        "tool": "claude-code"
+      },
+      "ts": "2026-07-19T10:13:00Z"
+    },
+    {
+      "actor": "user",
+      "entity": "task",
+      "entity_id": "62d74145-ddd4-4054-a2bf-b8e0931719fd",
+      "id": "019f7e5f-dec0-71d6-85e1-b9523b6b6092",
+      "op": "start",
+      "payload": {
+        "interval_started": "2026-07-20T07:14:00Z"
+      },
+      "ts": "2026-07-20T07:14:00Z"
+    },
+    {
+      "actor": "user",
+      "entity": "task",
+      "entity_id": "62d74145-ddd4-4054-a2bf-b8e0931719fd",
+      "id": "019f7eb9-2250-7c82-aa85-1bb4f61fe913",
+      "op": "stop",
+      "payload": {
+        "tracked": "PT1H37M"
+      },
+      "ts": "2026-07-20T08:51:30Z"
+    },
+    {
+      "actor": "user",
+      "entity": "task",
+      "entity_id": "62d74145-ddd4-4054-a2bf-b8e0931719fd",
+      "id": "019f7ef0-10d0-7382-bd96-97445b0b09cf",
+      "op": "start",
+      "payload": {
+        "interval_started": "2026-07-20T09:51:30Z"
+      },
+      "ts": "2026-07-20T09:51:30Z"
+    },
+    {
+      "actor": "user",
+      "entity": "task",
+      "entity_id": "62d74145-ddd4-4054-a2bf-b8e0931719fd",
+      "id": "019f7f49-5460-7cb0-9fbf-cb0ae717a666",
+      "op": "stop",
+      "payload": {
+        "tracked": "PT1H37M"
+      },
+      "ts": "2026-07-20T11:29:00Z"
+    },
+    {
+      "actor": "user",
+      "entity": "task",
+      "entity_id": "62d74145-ddd4-4054-a2bf-b8e0931719fd",
+      "id": "019f7f4d-e840-7357-82b6-53e419d22b97",
+      "op": "done",
+      "payload": {
+        "completed": "2026-07-20T11:34:00Z",
+        "model": "claude-opus-5",
+        "tokens": {
+          "cache_creation_tokens": 42000,
+          "cache_read_tokens": 508000,
+          "confidence": "medium",
+          "created": "2026-07-20T11:34:00Z",
+          "id": "1e9eca4f-b385-4a64-b695-80ffa46b7f17",
+          "input_tokens": 37000,
+          "model": "claude-opus-5",
+          "output_tokens": 24000,
+          "source": "self-report",
+          "tool": "claude-code"
+        },
+        "tool": "claude-code"
+      },
+      "ts": "2026-07-20T11:34:00Z"
+    },
+    {
+      "actor": "user",
+      "entity": "task",
+      "entity_id": "2891dd3c-3096-46c8-b9b3-38eb3fdf2348",
+      "id": "019f7f4d-e840-7ae6-a537-437fc3015f9f",
+      "op": "done",
+      "payload": {
+        "completed": "2026-07-20T11:34:00Z"
+      },
+      "ts": "2026-07-20T11:34:00Z"
+    },
+    {
+      "actor": "user",
+      "entity": "task",
+      "entity_id": "14186ebf-9a81-47e9-bb86-2eace1d7300f",
+      "id": "019f8515-6640-76cc-b192-d0d741b2bb99",
+      "op": "done",
+      "payload": {
+        "completed": "2026-07-21T14:30:00Z"
+      },
+      "ts": "2026-07-21T14:30:00Z"
+    },
+    {
+      "actor": "user",
+      "entity": "task",
+      "entity_id": "14186ebf-9a81-47e9-bb86-2eace1d7300f",
+      "id": "019f85ba-31c0-72e4-8cea-bec78138093c",
+      "op": "reopen",
+      "payload": {
+        "from": "done"
+      },
+      "ts": "2026-07-21T17:30:00Z"
+    },
+    {
+      "actor": "user",
+      "entity": "task",
+      "entity_id": "14186ebf-9a81-47e9-bb86-2eace1d7300f",
+      "id": "019f8aa9-9f40-7cae-bd21-a9561ba9a6b5",
+      "op": "done",
+      "payload": {
+        "completed": "2026-07-22T16:30:00Z",
+        "model": "claude-opus-5",
+        "tokens": {
+          "cache_creation_tokens": 184000,
+          "cache_read_tokens": 713000,
+          "confidence": "medium",
+          "created": "2026-07-22T16:30:00Z",
+          "id": "4693bb1f-403a-490b-8230-d4e81933f5a3",
+          "input_tokens": 22000,
+          "model": "claude-opus-5",
+          "output_tokens": 17000,
+          "source": "self-report",
+          "tool": "claude-code"
+        },
+        "tool": "claude-code"
+      },
+      "ts": "2026-07-22T16:30:00Z"
+    },
+    {
+      "actor": "user",
+      "entity": "task",
+      "entity_id": "fa285a0d-b869-435c-ade2-6c2e2ce933e1",
+      "id": "019f8dee-6a00-7a6a-8200-74248a5d63c3",
+      "op": "done",
+      "payload": {
+        "completed": "2026-07-23T07:44:00Z"
+      },
+      "ts": "2026-07-23T07:44:00Z"
+    },
+    {
+      "actor": "user",
+      "entity": "task",
+      "entity_id": "64409ddb-b45f-41c3-bd65-693b3d0840fb",
+      "id": "019f8e84-8f80-7a2d-a7d0-c0a431b0f869",
+      "op": "start",
+      "payload": {
+        "interval_started": "2026-07-23T10:28:00Z"
+      },
+      "ts": "2026-07-23T10:28:00Z"
+    },
+    {
+      "actor": "user",
+      "entity": "task",
+      "entity_id": "fa285a0d-b869-435c-ade2-6c2e2ce933e1",
+      "id": "019f8e93-3580-7167-854a-f08cf7963e48",
+      "op": "reopen",
+      "payload": {
+        "from": "done"
+      },
+      "ts": "2026-07-23T10:44:00Z"
+    },
+    {
+      "actor": "user",
+      "entity": "task",
+      "entity_id": "64409ddb-b45f-41c3-bd65-693b3d0840fb",
+      "id": "019f8ec0-11e0-78b9-afe1-76640307784d",
+      "op": "cancel",
+      "payload": {
+        "from": "active"
+      },
+      "ts": "2026-07-23T11:33:00Z"
+    },
+    {
+      "actor": "user",
+      "entity": "task",
+      "entity_id": "fa285a0d-b869-435c-ade2-6c2e2ce933e1",
+      "id": "019f93b9-9180-7cd0-9741-cca6e7d83cb6",
+      "op": "done",
+      "payload": {
+        "completed": "2026-07-24T10:44:00Z"
+      },
+      "ts": "2026-07-24T10:44:00Z"
+    },
+    {
+      "actor": "user",
+      "entity": "task",
+      "entity_id": "365fdcd6-47bc-4548-92fa-d8029d42f670",
+      "id": "019fa821-9140-72ec-8b8c-90f1f4916c21",
+      "op": "done",
+      "payload": {
+        "completed": "2026-07-28T09:50:00Z",
+        "model": "claude-opus-5",
+        "tokens": {
+          "cache_creation_tokens": 146000,
+          "cache_read_tokens": 1618000,
+          "confidence": "medium",
+          "created": "2026-07-28T09:50:00Z",
+          "id": "db0d5869-2b4b-4f2c-b856-80d178c55d1f",
+          "input_tokens": 334000,
+          "model": "claude-opus-5",
+          "output_tokens": 10000,
+          "source": "self-report",
+          "tool": "claude-code"
+        },
+        "tool": "claude-code"
+      },
+      "ts": "2026-07-28T09:50:00Z"
+    },
+    {
+      "actor": "user",
+      "entity": "task",
+      "entity_id": "0beddb07-0f7a-4443-bfc2-a9087219c1da",
+      "id": "019fae31-62e0-7c75-8abd-7a2f7eda7522",
+      "op": "done",
+      "payload": {
+        "completed": "2026-07-29T14:05:00Z"
+      },
+      "ts": "2026-07-29T14:05:00Z"
+    },
+    {
+      "actor": "user",
+      "entity": "task",
+      "entity_id": "7349dbc4-e414-48aa-a36e-ba1f5cb58b8e",
+      "id": "019fb03b-3ca0-77b5-bbb5-c9e74926f077",
+      "op": "start",
+      "payload": {
+        "interval_started": "2026-07-29T23:35:00Z"
+      },
+      "ts": "2026-07-29T23:35:00Z"
+    },
+    {
+      "actor": "user",
+      "entity": "task",
+      "entity_id": "7349dbc4-e414-48aa-a36e-ba1f5cb58b8e",
+      "id": "019fb12d-da00-7df2-8f86-6186450eb763",
+      "op": "stop",
+      "payload": {
+        "tracked": "PT4H25M"
+      },
+      "ts": "2026-07-30T04:00:00Z"
+    },
+    {
+      "actor": "user",
+      "entity": "task",
+      "entity_id": "7349dbc4-e414-48aa-a36e-ba1f5cb58b8e",
+      "id": "019fb164-c880-790b-a608-88b586d9a0d3",
+      "op": "start",
+      "payload": {
+        "interval_started": "2026-07-30T05:00:00Z"
+      },
+      "ts": "2026-07-30T05:00:00Z"
+    },
+    {
+      "actor": "user",
+      "entity": "task",
+      "entity_id": "7349dbc4-e414-48aa-a36e-ba1f5cb58b8e",
+      "id": "019fb257-65e0-77c8-9d96-58534ff916f1",
+      "op": "stop",
+      "payload": {
+        "tracked": "PT4H25M"
+      },
+      "ts": "2026-07-30T09:25:00Z"
+    },
+    {
+      "actor": "user",
+      "entity": "task",
+      "entity_id": "7349dbc4-e414-48aa-a36e-ba1f5cb58b8e",
+      "id": "019fb25b-f9c0-78d0-abb3-3fb57e99b910",
+      "op": "done",
+      "payload": {
+        "completed": "2026-07-30T09:30:00Z"
+      },
+      "ts": "2026-07-30T09:30:00Z"
+    },
+    {
+      "actor": "user",
+      "entity": "task",
+      "entity_id": "ec7038c9-08fb-49a0-9702-16fc23edcb04",
+      "id": "019fb827-2140-7773-a9e1-374e4895526b",
+      "op": "done",
+      "payload": {
+        "completed": "2026-07-31T12:30:00Z",
+        "model": "claude-opus-5",
+        "tokens": {
+          "cache_creation_tokens": 113000,
+          "cache_read_tokens": 1687000,
+          "confidence": "medium",
+          "created": "2026-07-31T12:30:00Z",
+          "id": "0af33cc2-95f7-42c5-beb9-d0abc5c1c59f",
+          "input_tokens": 68000,
+          "model": "claude-opus-5",
+          "output_tokens": 21000,
+          "source": "self-report",
+          "tool": "claude-code"
+        },
+        "tool": "claude-code"
+      },
+      "ts": "2026-07-31T12:30:00Z"
+    },
+    {
+      "actor": "user",
+      "entity": "task",
+      "entity_id": "13284c79-a2dc-4d24-992e-f43805713dc6",
+      "id": "019fbddf-f940-73d4-af30-31e2c130620a",
+      "op": "start",
+      "payload": {
+        "interval_started": "2026-08-01T15:10:00Z"
+      },
+      "ts": "2026-08-01T15:10:00Z"
+    },
+    {
+      "actor": "user",
+      "entity": "task",
+      "entity_id": "13284c79-a2dc-4d24-992e-f43805713dc6",
+      "id": "019fbe20-0f80-70ad-a5c5-51f80d83bd85",
+      "op": "stop",
+      "payload": {
+        "tracked": "PT1H10M"
+      },
+      "ts": "2026-08-01T16:20:00Z"
+    },
+    {
+      "actor": "user",
+      "entity": "task",
+      "entity_id": "13284c79-a2dc-4d24-992e-f43805713dc6",
+      "id": "019fbe24-a360-78a7-a816-1d1ba20bcd9c",
+      "op": "done",
+      "payload": {
+        "completed": "2026-08-01T16:25:00Z",
+        "model": "claude-opus-5",
+        "tokens": {
+          "cache_creation_tokens": 50000,
+          "cache_read_tokens": 2082000,
+          "confidence": "medium",
+          "created": "2026-08-01T16:25:00Z",
+          "id": "51b9b419-f1c7-44cc-b91a-dc4dfd1ffe87",
+          "input_tokens": 211000,
+          "model": "claude-opus-5",
+          "output_tokens": 28000,
+          "source": "self-report",
+          "tool": "claude-code"
+        },
+        "tool": "claude-code"
+      },
+      "ts": "2026-08-01T16:25:00Z"
+    },
+    {
+      "actor": "user",
+      "entity": "task",
+      "entity_id": "5e268fa0-8bcc-47cd-b3fd-c19413446df8",
+      "id": "019fcd1b-3460-77d2-8c2e-f6d412d12d30",
+      "op": "done",
+      "payload": {
+        "completed": "2026-08-04T14:09:00Z"
+      },
+      "ts": "2026-08-04T14:09:00Z"
+    },
+    {
+      "actor": "user",
+      "entity": "task",
+      "entity_id": "57740511-ea3d-4be7-b6a0-0758cb138653",
+      "id": "019fd2a2-9c20-7168-b921-8af2403c7afd",
+      "op": "done",
+      "payload": {
+        "completed": "2026-08-05T15:55:00Z",
+        "model": "claude-opus-5",
+        "tokens": {
+          "cache_creation_tokens": 44000,
+          "cache_read_tokens": 1358000,
+          "confidence": "medium",
+          "created": "2026-08-05T15:55:00Z",
+          "id": "e8d33780-b905-479f-8f67-329feff0fd26",
+          "input_tokens": 22000,
+          "model": "claude-opus-5",
+          "output_tokens": 39000,
+          "source": "self-report",
+          "tool": "claude-code"
+        },
+        "tool": "claude-code"
+      },
+      "ts": "2026-08-05T15:55:00Z"
+    },
+    {
+      "actor": "user",
+      "entity": "task",
+      "entity_id": "07bfc096-ca60-4e28-b1b9-ab7c6aca8c4a",
+      "id": "019feb77-1dc0-7a93-a4f5-133977e5cf1e",
+      "op": "done",
+      "payload": {
+        "completed": "2026-08-10T11:38:00Z"
+      },
+      "ts": "2026-08-10T11:38:00Z"
+    },
+    {
+      "actor": "user",
+      "entity": "task",
+      "entity_id": "127eeabe-9bde-4398-832f-bce3952a71b2",
+      "id": "019ff59d-6200-7ce6-9d76-c09bb4d7072c",
+      "op": "done",
+      "payload": {
+        "completed": "2026-08-12T10:56:00Z",
+        "model": "claude-opus-5",
+        "tokens": {
+          "cache_creation_tokens": 176000,
+          "cache_read_tokens": 319000,
+          "confidence": "medium",
+          "created": "2026-08-12T10:56:00Z",
+          "id": "5b507fdc-0d53-45d2-9c72-f57f3422dc67",
+          "input_tokens": 337000,
+          "model": "claude-opus-5",
+          "output_tokens": 11000,
+          "source": "self-report",
+          "tool": "claude-code"
+        },
+        "tool": "claude-code"
+      },
+      "ts": "2026-08-12T10:56:00Z"
+    },
+    {
+      "actor": "user",
+      "entity": "task",
+      "entity_id": "ef2b1ae5-6370-403f-9484-b3dbba6bc77c",
+      "id": "019ffbfa-1b20-7fd3-a79c-003c87318ae1",
+      "op": "done",
+      "payload": {
+        "completed": "2026-08-13T16:35:00Z",
+        "model": "claude-opus-5",
+        "tokens": {
+          "cache_creation_tokens": 12000,
+          "cache_read_tokens": 2440000,
+          "confidence": "medium",
+          "created": "2026-08-13T16:35:00Z",
+          "id": "431ae9a9-99de-4a2f-b49f-265f6abec276",
+          "input_tokens": 291000,
+          "model": "claude-opus-5",
+          "output_tokens": 34000,
+          "source": "self-report",
+          "tool": "claude-code"
+        },
+        "tool": "claude-code"
+      },
+      "ts": "2026-08-13T16:35:00Z"
+    },
+    {
+      "actor": "user",
+      "entity": "task",
+      "entity_id": "83b852d7-c00d-463d-84c9-55f11572c073",
+      "id": "01a00fd6-f1e0-7024-9f9f-656382ae1988",
+      "op": "start",
+      "payload": {
+        "interval_started": "2026-08-17T13:09:00Z"
+      },
+      "ts": "2026-08-17T13:09:00Z"
+    },
+    {
+      "actor": "user",
+      "entity": "task",
+      "entity_id": "83b852d7-c00d-463d-84c9-55f11572c073",
+      "id": "01a01009-4c80-738c-b29e-5b83b7baf0a6",
+      "op": "cancel",
+      "payload": {
+        "from": "active"
+      },
+      "ts": "2026-08-17T14:04:00Z"
+    },
+    {
+      "actor": "user",
+      "entity": "task",
+      "entity_id": "c7aa8cf3-7f4b-4052-9ce6-06fdb2c60fdd",
+      "id": "01a014f8-ba00-7b1b-bfea-cb061ad9c6d8",
+      "op": "start",
+      "payload": {
+        "interval_started": "2026-08-18T13:04:00Z"
+      },
+      "ts": "2026-08-18T13:04:00Z"
+    },
+    {
+      "actor": "user",
+      "entity": "task",
+      "entity_id": "c7aa8cf3-7f4b-4052-9ce6-06fdb2c60fdd",
+      "id": "01a01534-3c60-7a17-9f6e-baa5950d76ce",
+      "op": "cancel",
+      "payload": {
+        "from": "active"
+      },
+      "ts": "2026-08-18T14:09:00Z"
+    },
+    {
+      "actor": "user",
+      "entity": "task",
+      "entity_id": "9c9c2d91-ad9a-4296-a4aa-17344d1079ab",
+      "id": "01a019af-6440-7783-933e-fae969d4b6cc",
+      "op": "start",
+      "payload": {
+        "interval_started": "2026-08-19T11:02:00Z"
+      },
+      "ts": "2026-08-19T11:02:00Z"
+    },
+    {
+      "actor": "user",
+      "entity": "task",
+      "entity_id": "9c9c2d91-ad9a-4296-a4aa-17344d1079ab",
+      "id": "01a019d4-0340-79c6-a8e3-f7939da4b378",
+      "op": "cancel",
+      "payload": {
+        "from": "active"
+      },
+      "ts": "2026-08-19T11:42:00Z"
+    },
+    {
+      "actor": "user",
+      "entity": "task",
+      "entity_id": "3dd1e044-e448-473c-bf91-4fe871227cb2",
+      "id": "01a0236d-49c0-7728-9d30-68a36b666ff6",
+      "op": "start",
+      "payload": {
+        "interval_started": "2026-08-21T08:26:00Z"
+      },
+      "ts": "2026-08-21T08:26:00Z"
+    },
+    {
+      "actor": "user",
+      "entity": "task",
+      "entity_id": "3dd1e044-e448-473c-bf91-4fe871227cb2",
+      "id": "01a0239b-1080-70ac-87e0-4c32be6e0ec5",
+      "op": "stop",
+      "payload": {
+        "tracked": "PT50M"
+      },
+      "ts": "2026-08-21T09:16:00Z"
+    },
+    {
+      "actor": "user",
+      "entity": "task",
+      "entity_id": "3dd1e044-e448-473c-bf91-4fe871227cb2",
+      "id": "01a0239f-a460-7e97-950d-7616a3bc6081",
+      "op": "done",
+      "payload": {
+        "completed": "2026-08-21T09:21:00Z"
+      },
+      "ts": "2026-08-21T09:21:00Z"
+    },
+    {
+      "actor": "user",
+      "entity": "task",
+      "entity_id": "33465430-ea0a-468a-812f-694dce554174",
+      "id": "01a0297e-05c0-7af8-b93e-081b5273fb71",
+      "op": "start",
+      "payload": {
+        "interval_started": "2026-08-22T12:42:00Z"
+      },
+      "ts": "2026-08-22T12:42:00Z"
+    },
+    {
+      "actor": "user",
+      "entity": "task",
+      "entity_id": "33465430-ea0a-468a-812f-694dce554174",
+      "id": "01a029ab-cc80-7fb2-9ea9-01ac3e955df7",
+      "op": "cancel",
+      "payload": {
+        "from": "active"
+      },
+      "ts": "2026-08-22T13:32:00Z"
+    },
+    {
+      "actor": "user",
+      "entity": "task",
+      "entity_id": "59ca6ef0-7f18-46d3-a272-0c5422dc73ab",
+      "id": "01a03e63-72e0-7d08-a0fd-baeebbfa1535",
+      "op": "done",
+      "payload": {
+        "completed": "2026-08-26T14:05:00Z",
+        "model": "claude-opus-5",
+        "tokens": {
+          "cache_creation_tokens": 24000,
+          "cache_read_tokens": 2339000,
+          "confidence": "medium",
+          "created": "2026-08-26T14:05:00Z",
+          "id": "a212e20c-30a5-446d-9778-04a0b2f4432f",
+          "input_tokens": 111000,
+          "model": "claude-opus-5",
+          "output_tokens": 8000,
+          "source": "self-report",
+          "tool": "claude-code"
+        },
+        "tool": "claude-code"
+      },
+      "ts": "2026-08-26T14:05:00Z"
+    },
+    {
+      "actor": "user",
+      "entity": "task",
+      "entity_id": "1ce262d6-2b4c-4859-9265-42ee46dc1a26",
+      "id": "01a04204-b580-70f7-b22b-9969ea6cc216",
+      "op": "start",
+      "payload": {
+        "interval_started": "2026-08-27T07:00:00Z"
+      },
+      "ts": "2026-08-27T07:00:00Z"
+    },
+    {
+      "actor": "user",
+      "entity": "task",
+      "entity_id": "1ce262d6-2b4c-4859-9265-42ee46dc1a26",
+      "id": "01a0428e-09c0-70df-8a1d-3045aee4438e",
+      "op": "stop",
+      "payload": {
+        "tracked": "PT2H30M"
+      },
+      "ts": "2026-08-27T09:30:00Z"
+    },
+    {
+      "actor": "user",
+      "entity": "task",
+      "entity_id": "1ce262d6-2b4c-4859-9265-42ee46dc1a26",
+      "id": "01a042c4-f840-7fbb-b3af-6fdb3097bea7",
+      "op": "start",
+      "payload": {
+        "interval_started": "2026-08-27T10:30:00Z"
+      },
+      "ts": "2026-08-27T10:30:00Z"
+    },
+    {
+      "actor": "user",
+      "entity": "task",
+      "entity_id": "1ce262d6-2b4c-4859-9265-42ee46dc1a26",
+      "id": "01a0434e-4c80-7726-bace-fc74808cd779",
+      "op": "stop",
+      "payload": {
+        "tracked": "PT2H30M"
+      },
+      "ts": "2026-08-27T13:00:00Z"
+    },
+    {
+      "actor": "user",
+      "entity": "task",
+      "entity_id": "1ce262d6-2b4c-4859-9265-42ee46dc1a26",
+      "id": "01a04352-e060-7d4b-80db-84e14754feb6",
+      "op": "done",
+      "payload": {
+        "completed": "2026-08-27T13:05:00Z"
+      },
+      "ts": "2026-08-27T13:05:00Z"
+    },
+    {
+      "actor": "user",
+      "entity": "task",
+      "entity_id": "ac11d871-7e6e-4dbe-851d-1a33a0301309",
+      "id": "01a04d2e-fc40-755c-826d-01480f8fba2f",
+      "op": "done",
+      "payload": {
+        "completed": "2026-08-29T11:02:00Z"
+      },
+      "ts": "2026-08-29T11:02:00Z"
+    },
+    {
+      "actor": "user",
+      "entity": "task",
+      "entity_id": "47331d97-080f-43bb-9427-79f5131e2d48",
+      "id": "01a057c1-48c0-78f9-9a3b-72a809bd5491",
+      "op": "done",
+      "payload": {
+        "completed": "2026-08-31T12:18:00Z"
+      },
+      "ts": "2026-08-31T12:18:00Z"
+    },
+    {
+      "actor": "user",
+      "entity": "task",
+      "entity_id": "c77d357f-3cc6-462d-8433-9c10d4652689",
+      "id": "01a05c32-5e80-7be8-9f88-f5d0fb42efac",
+      "op": "done",
+      "payload": {
+        "completed": "2026-09-01T09:00:00Z",
+        "model": "claude-opus-5",
+        "tokens": {
+          "cache_creation_tokens": 38000,
+          "cache_read_tokens": 2787000,
+          "confidence": "medium",
+          "created": "2026-09-01T09:00:00Z",
+          "id": "c4d91f76-c4cc-4dd1-9686-78559facee45",
+          "input_tokens": 124000,
+          "model": "claude-opus-5",
+          "output_tokens": 7000,
+          "source": "self-report",
+          "tool": "claude-code"
+        },
+        "tool": "claude-code"
+      },
+      "ts": "2026-09-01T09:00:00Z"
+    },
+    {
+      "actor": "user",
+      "entity": "task",
+      "entity_id": "9064dbd9-caa0-4141-a637-a18a4f1c9ce2",
+      "id": "01a05c32-5e80-7d20-a9b2-ebf716210cc5",
+      "op": "done",
+      "payload": {
+        "completed": "2026-09-01T09:00:00Z"
+      },
+      "ts": "2026-09-01T09:00:00Z"
+    },
+    {
+      "actor": "user",
+      "entity": "task",
+      "entity_id": "a3d1863b-a7b0-4693-890f-6c23a1455615",
+      "id": "01a06284-1b20-73df-8211-05debf506a79",
+      "op": "start",
+      "payload": {
+        "interval_started": "2026-09-02T14:27:00Z"
+      },
+      "ts": "2026-09-02T14:27:00Z"
+    },
+    {
+      "actor": "user",
+      "entity": "task",
+      "entity_id": "a3d1863b-a7b0-4693-890f-6c23a1455615",
+      "id": "01a062bb-09a0-7e73-a693-4caccf5418e9",
+      "op": "stop",
+      "payload": {
+        "tracked": "PT1H"
+      },
+      "ts": "2026-09-02T15:27:00Z"
+    },
+    {
+      "actor": "user",
+      "entity": "task",
+      "entity_id": "a3d1863b-a7b0-4693-890f-6c23a1455615",
+      "id": "01a062bf-9d80-7ca2-b1c0-2d3e3691f577",
+      "op": "done",
+      "payload": {
+        "completed": "2026-09-02T15:32:00Z"
+      },
+      "ts": "2026-09-02T15:32:00Z"
+    },
+    {
+      "actor": "user",
+      "entity": "task",
+      "entity_id": "b6d75031-2dbe-4f3d-818b-fbb079a2ed17",
+      "id": "01a07975-36c0-7e87-a75f-db6e6d7aa345",
+      "op": "start",
+      "payload": {
+        "interval_started": "2026-09-07T01:22:00Z"
+      },
+      "ts": "2026-09-07T01:22:00Z"
+    },
+    {
+      "actor": "user",
+      "entity": "task",
+      "entity_id": "b6d75031-2dbe-4f3d-818b-fbb079a2ed17",
+      "id": "01a07a67-d420-7646-98d6-1a2594a1851e",
+      "op": "stop",
+      "payload": {
+        "tracked": "PT4H25M"
+      },
+      "ts": "2026-09-07T05:47:00Z"
+    },
+    {
+      "actor": "user",
+      "entity": "task",
+      "entity_id": "b6d75031-2dbe-4f3d-818b-fbb079a2ed17",
+      "id": "01a07a9e-c2a0-7f00-824c-d92a8c71eebf",
+      "op": "start",
+      "payload": {
+        "interval_started": "2026-09-07T06:47:00Z"
+      },
+      "ts": "2026-09-07T06:47:00Z"
+    },
+    {
+      "actor": "user",
+      "entity": "task",
+      "entity_id": "b6d75031-2dbe-4f3d-818b-fbb079a2ed17",
+      "id": "01a07b91-6000-7f11-abbb-3073d37f05b6",
+      "op": "stop",
+      "payload": {
+        "tracked": "PT4H25M"
+      },
+      "ts": "2026-09-07T11:12:00Z"
+    },
+    {
+      "actor": "user",
+      "entity": "task",
+      "entity_id": "b6d75031-2dbe-4f3d-818b-fbb079a2ed17",
+      "id": "01a07b95-f3e0-7a77-934c-cc9f98be768b",
+      "op": "done",
+      "payload": {
+        "completed": "2026-09-07T11:17:00Z"
+      },
+      "ts": "2026-09-07T11:17:00Z"
+    },
+    {
+      "actor": "user",
+      "entity": "task",
+      "entity_id": "8a29110d-5882-42d5-8751-459f45b90d8c",
+      "id": "01a07faa-91c0-7261-8687-605dd2d0a678",
+      "op": "start",
+      "payload": {
+        "interval_started": "2026-09-08T06:18:00Z"
+      },
+      "ts": "2026-09-08T06:18:00Z"
+    },
+    {
+      "actor": "user",
+      "entity": "task",
+      "entity_id": "8a29110d-5882-42d5-8751-459f45b90d8c",
+      "id": "01a0804a-c960-7698-8f65-b7181379eed0",
+      "op": "stop",
+      "payload": {
+        "tracked": "PT2H55M"
+      },
+      "ts": "2026-09-08T09:13:00Z"
+    },
+    {
+      "actor": "user",
+      "entity": "task",
+      "entity_id": "8a29110d-5882-42d5-8751-459f45b90d8c",
+      "id": "01a08081-b7e0-70b7-bc1f-943c916658f5",
+      "op": "start",
+      "payload": {
+        "interval_started": "2026-09-08T10:13:00Z"
+      },
+      "ts": "2026-09-08T10:13:00Z"
+    },
+    {
+      "actor": "user",
+      "entity": "task",
+      "entity_id": "8a29110d-5882-42d5-8751-459f45b90d8c",
+      "id": "01a08121-ef80-7c82-b6a8-be8aaf7195dc",
+      "op": "stop",
+      "payload": {
+        "tracked": "PT2H55M"
+      },
+      "ts": "2026-09-08T13:08:00Z"
+    },
+    {
+      "actor": "user",
+      "entity": "task",
+      "entity_id": "8a29110d-5882-42d5-8751-459f45b90d8c",
+      "id": "01a08126-8360-7070-ae96-cb4c1540e467",
+      "op": "done",
+      "payload": {
+        "completed": "2026-09-08T13:13:00Z",
+        "model": "claude-opus-5",
+        "tokens": {
+          "cache_creation_tokens": 51000,
+          "cache_read_tokens": 292000,
+          "confidence": "medium",
+          "created": "2026-09-08T13:13:00Z",
+          "id": "b99969f8-7ea8-4c6b-8dc6-2e13b1f266ea",
+          "input_tokens": 353000,
+          "model": "claude-opus-5",
+          "output_tokens": 7000,
+          "source": "self-report",
+          "tool": "claude-code"
+        },
+        "tool": "claude-code"
+      },
+      "ts": "2026-09-08T13:13:00Z"
+    },
+    {
+      "actor": "user",
+      "entity": "task",
+      "entity_id": "b3257dda-cabc-4222-9948-74ac64bd7a63",
+      "id": "01a08589-dd80-7496-a1b7-cc2e486d2107",
+      "op": "start",
+      "payload": {
+        "interval_started": "2026-09-09T09:40:00Z"
+      },
+      "ts": "2026-09-09T09:40:00Z"
+    },
+    {
+      "actor": "user",
+      "entity": "task",
+      "entity_id": "b3257dda-cabc-4222-9948-74ac64bd7a63",
+      "id": "01a08613-31c0-7842-9b98-e36a38002d3a",
+      "op": "stop",
+      "payload": {
+        "tracked": "PT2H30M"
+      },
+      "ts": "2026-09-09T12:10:00Z"
+    },
+    {
+      "actor": "user",
+      "entity": "task",
+      "entity_id": "b3257dda-cabc-4222-9948-74ac64bd7a63",
+      "id": "01a08617-c5a0-73f4-b1a8-ba71c39f4143",
+      "op": "done",
+      "payload": {
+        "completed": "2026-09-09T12:15:00Z"
+      },
+      "ts": "2026-09-09T12:15:00Z"
+    },
+    {
+      "actor": "user",
+      "entity": "task",
+      "entity_id": "32668377-741a-4215-b354-293c2141c6d1",
+      "id": "01a08a59-3fe0-7551-8e05-0c8bfe0babf5",
+      "op": "start",
+      "payload": {
+        "interval_started": "2026-09-10T08:05:00Z"
+      },
+      "ts": "2026-09-10T08:05:00Z"
+    },
+    {
+      "actor": "user",
+      "entity": "task",
+      "entity_id": "32668377-741a-4215-b354-293c2141c6d1",
+      "id": "01a08a9d-ea00-764b-b8a1-7111514f7eb0",
+      "op": "stop",
+      "payload": {
+        "tracked": "PT1H15M"
+      },
+      "ts": "2026-09-10T09:20:00Z"
+    },
+    {
+      "actor": "user",
+      "entity": "task",
+      "entity_id": "32668377-741a-4215-b354-293c2141c6d1",
+      "id": "01a08aa2-7de0-7d94-87bb-ec7070204a29",
+      "op": "done",
+      "payload": {
+        "blocked_by": [
+          46
+        ],
+        "completed": "2026-09-10T09:25:00Z",
+        "forced": true
+      },
+      "ts": "2026-09-10T09:25:00Z"
+    },
+    {
+      "actor": "user",
+      "entity": "task",
+      "entity_id": "d1c778e6-cbf8-401a-80ad-b24ae11b2b6d",
+      "id": "01a0a49a-22c0-7338-95b6-05746546ab8a",
+      "op": "start",
+      "payload": {
+        "interval_started": "2026-09-15T10:26:00Z"
+      },
+      "ts": "2026-09-15T10:26:00Z"
+    },
+    {
+      "actor": "user",
+      "entity": "task",
+      "entity_id": "d1c778e6-cbf8-401a-80ad-b24ae11b2b6d",
+      "id": "01a0a50e-dd90-7d24-b1e8-ed0dcbcf3248",
+      "op": "stop",
+      "payload": {
+        "tracked": "PT2H7M"
+      },
+      "ts": "2026-09-15T12:33:30Z"
+    },
+    {
+      "actor": "user",
+      "entity": "task",
+      "entity_id": "d1c778e6-cbf8-401a-80ad-b24ae11b2b6d",
+      "id": "01a0a545-cc10-7d95-941a-224a5c97fdc1",
+      "op": "start",
+      "payload": {
+        "interval_started": "2026-09-15T13:33:30Z"
+      },
+      "ts": "2026-09-15T13:33:30Z"
+    },
+    {
+      "actor": "user",
+      "entity": "task",
+      "entity_id": "d1c778e6-cbf8-401a-80ad-b24ae11b2b6d",
+      "id": "01a0a5ba-86e0-7d50-9d02-0032062c8cac",
+      "op": "stop",
+      "payload": {
+        "tracked": "PT2H7M"
+      },
+      "ts": "2026-09-15T15:41:00Z"
+    },
+    {
+      "actor": "user",
+      "entity": "task",
+      "entity_id": "d1c778e6-cbf8-401a-80ad-b24ae11b2b6d",
+      "id": "01a0a5bf-1ac0-7593-bf90-ee4f842374f6",
+      "op": "done",
+      "payload": {
+        "completed": "2026-09-15T15:46:00Z"
+      },
+      "ts": "2026-09-15T15:46:00Z"
+    },
+    {
+      "actor": "user",
+      "entity": "task",
+      "entity_id": "63e5a05b-e665-459b-be06-d750369a9ad7",
+      "id": "01a0a971-c280-7000-8000-000000000001",
+      "op": "start",
+      "payload": {
+        "interval_started": "2026-09-16T09:00:00Z"
+      },
+      "ts": "2026-09-16T09:00:00Z"
+    },
+    {
+      "actor": "user",
+      "entity": "task",
+      "entity_id": "32668377-741a-4215-b354-293c2141c6d1",
+      "id": "01b8d526-e8f3-4d7e-a327-c967a023ecd5",
+      "op": "add",
+      "payload": {
+        "priority": null,
+        "project": "website",
+        "recurrence": null,
+        "status": "pending",
+        "tags": [],
+        "title": "Publish the changelog feed"
+      },
+      "ts": "2026-08-13T09:25:00Z"
+    },
+    {
+      "actor": "user",
+      "entity": "task",
+      "entity_id": "07bfc096-ca60-4e28-b1b9-ab7c6aca8c4a",
+      "id": "03b86766-92a3-4328-bffb-20e6dd0c8b94",
+      "op": "add",
+      "payload": {
+        "priority": "H",
+        "project": "website",
+        "recurrence": null,
+        "status": "pending",
+        "tags": [],
+        "title": "Write the incident postmortem"
+      },
+      "ts": "2026-07-22T11:38:00Z"
+    },
+    {
+      "actor": "user",
+      "entity": "task",
+      "entity_id": "97bdd982-cdac-4046-b990-3b72f88ece64",
+      "id": "050684bf-e286-452c-bf76-9e374ddc74c8",
+      "op": "add",
+      "payload": {
+        "priority": "M",
+        "project": "api",
+        "recurrence": null,
+        "status": "pending",
+        "tags": [],
+        "title": "Fix double charge on retry"
+      },
+      "ts": "2026-07-05T11:14:00Z"
+    },
+    {
+      "actor": "user",
+      "entity": "task",
+      "entity_id": "d4ea65d0-03d7-4684-9f85-58a628518867",
+      "id": "09208a65-0f3e-4dd3-902b-938b8743feb6",
+      "op": "add",
+      "payload": {
+        "priority": null,
+        "project": "website",
+        "recurrence": null,
+        "status": "pending",
+        "tags": [],
+        "title": "Add sitemap.xml"
+      },
+      "ts": "2026-06-11T14:09:00Z"
+    },
+    {
+      "actor": "user",
+      "entity": "task",
+      "entity_id": "59ca6ef0-7f18-46d3-a272-0c5422dc73ab",
+      "id": "0a62f486-d945-4bf3-a549-8256d64be5f0",
+      "op": "add",
+      "payload": {
+        "priority": "H",
+        "project": "mobile",
+        "recurrence": null,
+        "status": "pending",
+        "tags": [],
+        "title": "Localise the onboarding"
+      },
+      "ts": "2026-08-24T14:05:00Z"
+    },
+    {
+      "actor": "user",
+      "entity": "task",
+      "entity_id": "1b98fbe4-6680-4a11-9ba1-192ec42b7170",
+      "id": "111b8aaa-62f2-4d1a-8a78-9cb3d8b9b45c",
+      "op": "add",
+      "payload": {
+        "priority": "M",
+        "project": "infra",
+        "recurrence": null,
+        "status": "pending",
+        "tags": [],
+        "title": "Paginate the audit log"
+      },
+      "ts": "2026-06-15T12:31:00Z"
+    },
+    {
+      "actor": "user",
+      "entity": "task",
+      "entity_id": "d48dd9f3-5436-4c21-9c3e-cb54c5cefdd8",
+      "id": "13041452-12ca-4f70-a2dc-08d64bdbf090",
+      "op": "add",
+      "payload": {
+        "priority": "M",
+        "project": "infra",
+        "recurrence": null,
+        "status": "pending",
+        "tags": [],
+        "title": "Speed up cold start"
+      },
+      "ts": "2026-07-15T15:25:00Z"
+    },
+    {
+      "actor": "user",
+      "entity": "task",
+      "entity_id": "a3d1863b-a7b0-4693-890f-6c23a1455615",
+      "id": "13f5bc90-f55d-4d76-9e62-03e3ceb0c71e",
+      "op": "add",
+      "payload": {
+        "priority": "M",
+        "project": "mobile",
+        "recurrence": null,
+        "status": "pending",
+        "tags": [],
+        "title": "Publish the changelog feed"
+      },
+      "ts": "2026-08-25T15:32:00Z"
+    },
+    {
+      "actor": "user",
+      "entity": "task",
+      "entity_id": "83b852d7-c00d-463d-84c9-55f11572c073",
+      "id": "16759ecb-99ed-44d1-8f6b-8f6007a04e64",
+      "op": "add",
+      "payload": {
+        "priority": "M",
+        "project": "mobile",
+        "recurrence": null,
+        "status": "pending",
+        "tags": [],
+        "title": "Set up error budget alerts"
+      },
+      "ts": "2026-08-12T14:04:00Z"
+    },
+    {
+      "actor": "user",
+      "entity": "task",
+      "entity_id": "14186ebf-9a81-47e9-bb86-2eace1d7300f",
+      "id": "1bea8593-1a95-4cca-8c22-82666be49ee7",
+      "op": "add",
+      "payload": {
+        "priority": "L",
+        "project": "mobile",
+        "recurrence": null,
+        "status": "pending",
+        "tags": [],
+        "title": "Fix crash on rotate"
+      },
+      "ts": "2026-07-12T16:30:00Z"
+    },
+    {
+      "actor": "user",
+      "entity": "task",
+      "entity_id": "127eeabe-9bde-4398-832f-bce3952a71b2",
+      "id": "1d96ac56-a3b0-4043-9734-bc4414881edc",
+      "op": "add",
+      "payload": {
+        "priority": null,
+        "project": "website",
+        "recurrence": null,
+        "status": "pending",
+        "tags": [],
+        "title": "Compress hero images"
+      },
+      "ts": "2026-08-07T10:56:00Z"
+    },
+    {
+      "actor": "user",
+      "entity": "task",
+      "entity_id": "cc5dcd5f-d17f-47d2-9dbc-8dddb8d0c65d",
+      "id": "1f9ca6ce-b7b8-41a0-ac9a-5dc8a440f745",
+      "op": "add",
+      "payload": {
+        "priority": "H",
+        "project": "infra",
+        "recurrence": null,
+        "status": "pending",
+        "tags": [
+          "ops"
+        ],
+        "title": "Renew the TLS certificate for api.example.dev"
+      },
+      "ts": "2026-09-03T10:00:00Z"
+    },
+    {
+      "actor": "user",
+      "entity": "task",
+      "entity_id": "5e617f8e-99ed-4ce7-83f8-670d3e361858",
+      "id": "20918fa7-7405-4241-9f45-2c075f27ff08",
+      "op": "add",
+      "payload": {
+        "priority": "H",
+        "project": "website",
+        "recurrence": null,
+        "status": "pending",
+        "tags": [],
+        "title": "Remove the legacy SDK"
+      },
+      "ts": "2026-07-14T10:13:00Z"
+    },
+    {
+      "actor": "user",
+      "entity": "project",
+      "entity_id": "2fa91425-cb00-4853-9d2c-67eda13ffe79",
+      "id": "244caf9c-4dab-4481-b253-edc618187993",
+      "op": "create",
+      "payload": {
+        "default": false,
+        "description": "iOS and Android apps",
+        "name": "mobile"
+      },
+      "ts": "2026-06-18T00:00:00Z"
+    },
+    {
+      "actor": "user",
+      "entity": "task",
+      "entity_id": "93b3a3d9-a44f-476a-9a1d-e24edab871d5",
+      "id": "2577c1ec-fd42-4044-8ac7-93f519af685d",
+      "op": "add",
+      "payload": {
+        "priority": null,
+        "project": "mobile",
+        "recurrence": null,
+        "status": "pending",
+        "tags": [],
+        "title": "Fix double charge on retry"
+      },
+      "ts": "2026-07-10T09:09:00Z"
+    },
+    {
+      "actor": "user",
+      "entity": "task",
+      "entity_id": "5387f613-76c4-48ae-8732-1cc007b37e14",
+      "id": "320094ea-d7a9-4ded-9749-1e2370c6a5b8",
+      "op": "add",
+      "payload": {
+        "priority": "M",
+        "project": "infra",
+        "recurrence": null,
+        "status": "pending",
+        "tags": [],
+        "title": "Add retry to the email worker"
+      },
+      "ts": "2026-06-21T09:58:00Z"
+    },
+    {
+      "actor": "user",
+      "entity": "task",
+      "entity_id": "46773aad-c4aa-435a-abe1-fcde8ce09658",
+      "id": "37e2265e-0745-46cf-ab75-44127cc95bc2",
+      "op": "add",
+      "payload": {
+        "priority": "M",
+        "project": "api",
+        "recurrence": null,
+        "status": "pending",
+        "tags": [
+          "docs"
+        ],
+        "title": "Write the migration guide for SDK 3.0"
+      },
+      "ts": "2026-08-16T10:00:00Z"
+    },
+    {
+      "actor": "user",
+      "entity": "task",
+      "entity_id": "33465430-ea0a-468a-812f-694dce554174",
+      "id": "38363a3c-6269-4354-b6d5-1bffe1594dc4",
+      "op": "add",
+      "payload": {
+        "priority": "M",
+        "project": "website",
+        "recurrence": null,
+        "status": "pending",
+        "tags": [],
+        "title": "Publish the changelog feed"
+      },
+      "ts": "2026-08-18T13:32:00Z"
+    },
+    {
+      "actor": "user",
+      "entity": "task",
+      "entity_id": "3dd1e044-e448-473c-bf91-4fe871227cb2",
+      "id": "402746a4-aa78-4c61-a79e-2a6153b3b0ff",
+      "op": "add",
+      "payload": {
+        "priority": null,
+        "project": "infra",
+        "recurrence": null,
+        "status": "pending",
+        "tags": [],
+        "title": "Upgrade Postgres to 16"
+      },
+      "ts": "2026-08-09T09:21:00Z"
+    },
+    {
+      "actor": "user",
+      "entity": "task",
+      "entity_id": "83a39808-85d5-46a8-aa12-dc9da38d0f39",
+      "id": "41aadc8c-8f5a-43e4-a83f-0c55d7f7b3fa",
+      "op": "add",
+      "payload": {
+        "priority": "L",
+        "project": "website",
+        "recurrence": null,
+        "status": "pending",
+        "tags": [
+          "ui"
+        ],
+        "title": "Replace the carousel on the home page"
+      },
+      "ts": "2026-08-24T10:00:00Z"
+    },
+    {
+      "actor": "user",
+      "entity": "task",
+      "entity_id": "24226d81-d9cc-44c3-8df0-d47a354f305b",
+      "id": "45e0dd42-8633-4bf8-8b72-3f2cf7ebb520",
+      "op": "add",
+      "payload": {
+        "priority": "L",
+        "project": "website",
+        "recurrence": null,
+        "status": "pending",
+        "tags": [],
+        "title": "Archive last year's analytics dashboards"
+      },
+      "ts": "2026-08-23T10:00:00Z"
+    },
+    {
+      "actor": "user",
+      "entity": "task",
+      "entity_id": "63e5a05b-e665-459b-be06-d750369a9ad7",
+      "id": "4f52d3fe-fa34-4b15-967c-d62efb019964",
+      "op": "add",
+      "payload": {
+        "priority": "H",
+        "project": "website",
+        "recurrence": null,
+        "status": "pending",
+        "tags": [
+          "launch"
+        ],
+        "title": "Ship the v2 pricing page"
+      },
+      "ts": "2026-09-07T10:00:00Z"
+    },
+    {
+      "actor": "user",
+      "entity": "task",
+      "entity_id": "62d74145-ddd4-4054-a2bf-b8e0931719fd",
+      "id": "4f91540c-2775-4991-a093-1ed42ecdcc0a",
+      "op": "add",
+      "payload": {
+        "priority": null,
+        "project": "website",
+        "recurrence": null,
+        "status": "pending",
+        "tags": [],
+        "title": "Upgrade Postgres to 16"
+      },
+      "ts": "2026-07-12T11:34:00Z"
+    },
+    {
+      "actor": "user",
+      "entity": "task",
+      "entity_id": "13284c79-a2dc-4d24-992e-f43805713dc6",
+      "id": "4fa1d41f-bb01-4a75-9138-a4e47b73ccf8",
+      "op": "add",
+      "payload": {
+        "priority": "H",
+        "project": "api",
+        "recurrence": null,
+        "status": "pending",
+        "tags": [],
+        "title": "Retire the v1 webhooks"
+      },
+      "ts": "2026-07-26T16:25:00Z"
+    },
+    {
+      "actor": "user",
+      "entity": "task",
+      "entity_id": "d1c778e6-cbf8-401a-80ad-b24ae11b2b6d",
+      "id": "53935c55-76b5-4cc1-97d5-3e43f1bae498",
+      "op": "add",
+      "payload": {
+        "priority": "M",
+        "project": "website",
+        "recurrence": null,
+        "status": "pending",
+        "tags": [],
+        "title": "Tune the autoscaler"
+      },
+      "ts": "2026-08-18T15:46:00Z"
+    },
+    {
+      "actor": "user",
+      "entity": "task",
+      "entity_id": "32d03fdd-a123-4501-90f5-380e12b2a414",
+      "id": "563e9bed-4510-4358-acc6-d8f2c74c7ccf",
+      "op": "add",
+      "payload": {
+        "priority": "M",
+        "project": "mobile",
+        "recurrence": null,
+        "status": "pending",
+        "tags": [],
+        "title": "Clean up feature flags"
+      },
+      "ts": "2026-06-23T16:44:00Z"
+    },
+    {
+      "actor": "user",
+      "entity": "task",
+      "entity_id": "813547e2-5937-41f0-8401-82fcdb14a009",
+      "id": "5790db4f-70de-4693-8981-abb61530959b",
+      "op": "add",
+      "payload": {
+        "priority": "H",
+        "project": "api",
+        "recurrence": null,
+        "status": "pending",
+        "tags": [
+          "perf"
+        ],
+        "title": "Rate-limit the /search endpoint"
+      },
+      "ts": "2026-08-31T10:00:00Z"
+    },
+    {
+      "actor": "user",
+      "entity": "task",
+      "entity_id": "ec7038c9-08fb-49a0-9702-16fc23edcb04",
+      "id": "5b8349ce-e903-4efa-b98c-06fe0494b6d2",
+      "op": "add",
+      "payload": {
+        "priority": "L",
+        "project": "mobile",
+        "recurrence": null,
+        "status": "pending",
+        "tags": [],
+        "title": "Speed up cold start"
+      },
+      "ts": "2026-07-27T12:30:00Z"
+    },
+    {
+      "actor": "user",
+      "entity": "task",
+      "entity_id": "ed52a241-35b0-4a54-b6a8-0bdf0023b682",
+      "id": "601e5b45-7851-4608-8d65-0372e90794df",
+      "op": "add",
+      "payload": {
+        "priority": null,
+        "project": "infra",
+        "recurrence": null,
+        "status": "pending",
+        "tags": [],
+        "title": "Paginate the audit log"
+      },
+      "ts": "2026-06-22T12:05:00Z"
+    },
+    {
+      "actor": "user",
+      "entity": "task",
+      "entity_id": "9064dbd9-caa0-4141-a637-a18a4f1c9ce2",
+      "id": "67ba7848-22c9-4b83-a417-a0fe04e4a7fa",
+      "op": "add",
+      "payload": {
+        "priority": "L",
+        "project": "infra",
+        "recurrence": null,
+        "status": "pending",
+        "tags": [],
+        "title": "Set up error budget alerts"
+      },
+      "ts": "2026-08-23T09:00:00Z"
+    },
+    {
+      "actor": "user",
+      "entity": "task",
+      "entity_id": "15c1d2df-a996-4aef-812d-0ea67ff12229",
+      "id": "6822a6b2-4735-4f1c-a7a1-149075139237",
+      "op": "add",
+      "payload": {
+        "priority": "M",
+        "project": "website",
+        "recurrence": null,
+        "status": "pending",
+        "tags": [],
+        "title": "Publish the changelog feed"
+      },
+      "ts": "2026-06-09T09:36:00Z"
+    },
+    {
+      "actor": "user",
+      "entity": "task",
+      "entity_id": "b3257dda-cabc-4222-9948-74ac64bd7a63",
+      "id": "69155cca-1653-4f4c-b953-0168e7ff25b9",
+      "op": "add",
+      "payload": {
+        "priority": "L",
+        "project": "website",
+        "recurrence": null,
+        "status": "pending",
+        "tags": [],
+        "title": "Compress hero images"
+      },
+      "ts": "2026-08-26T12:15:00Z"
+    },
+    {
+      "actor": "user",
+      "entity": "task",
+      "entity_id": "84a991f3-b93b-4587-a68b-92e4843afa19",
+      "id": "70ae8985-b07a-4746-ad89-f4a1d708b232",
+      "op": "add",
+      "payload": {
+        "priority": "M",
+        "project": "infra",
+        "recurrence": null,
+        "status": "pending",
+        "tags": [
+          "ci"
+        ],
+        "title": "Cut build time under five minutes"
+      },
+      "ts": "2026-08-11T10:00:00Z"
+    },
+    {
+      "actor": "user",
+      "entity": "project",
+      "entity_id": "db5b5fab-8f4d-4e27-9da1-494c73cf256d",
+      "id": "73ab4876-7734-47c1-87fd-e805ec99108d",
+      "op": "create",
+      "payload": {
+        "default": true,
+        "description": "Marketing site and docs portal",
+        "name": "website"
+      },
+      "ts": "2026-06-18T00:00:00Z"
+    },
+    {
+      "actor": "user",
+      "entity": "task",
+      "entity_id": "ef2b1ae5-6370-403f-9484-b3dbba6bc77c",
+      "id": "752f7bd9-94b9-43ed-b1b4-3d07bc2b75cd",
+      "op": "add",
+      "payload": {
+        "priority": "L",
+        "project": "api",
+        "recurrence": null,
+        "status": "pending",
+        "tags": [],
+        "title": "Paginate the audit log"
+      },
+      "ts": "2026-08-03T16:35:00Z"
+    },
+    {
+      "actor": "user",
+      "entity": "task",
+      "entity_id": "57740511-ea3d-4be7-b6a0-0758cb138653",
+      "id": "7928c6a1-af65-49a4-95bd-c39d5a11cca5",
+      "op": "add",
+      "payload": {
+        "priority": "M",
+        "project": "mobile",
+        "recurrence": null,
+        "status": "pending",
+        "tags": [],
+        "title": "Set up error budget alerts"
+      },
+      "ts": "2026-07-18T15:55:00Z"
+    },
+    {
+      "actor": "user",
+      "entity": "project",
+      "entity_id": "309d6b79-965e-4a32-9ae4-45508201e2bd",
+      "id": "79cb9e86-830c-41c2-8dcc-69292f45e678",
+      "op": "create",
+      "payload": {
+        "default": false,
+        "description": "Public REST API and its SDKs",
+        "name": "api"
+      },
+      "ts": "2026-06-18T00:00:00Z"
+    },
+    {
+      "actor": "user",
+      "entity": "task",
+      "entity_id": "fa285a0d-b869-435c-ade2-6c2e2ce933e1",
+      "id": "7ab36602-3a78-4ebb-a05b-c308119b4fe5",
+      "op": "add",
+      "payload": {
+        "priority": null,
+        "project": "mobile",
+        "recurrence": null,
+        "status": "pending",
+        "tags": [],
+        "title": "Retire the v1 webhooks"
+      },
+      "ts": "2026-07-15T10:44:00Z"
+    },
+    {
+      "actor": "user",
+      "entity": "task",
+      "entity_id": "c7aa8cf3-7f4b-4052-9ce6-06fdb2c60fdd",
+      "id": "7c7dfaf5-eba3-4bf6-a8fe-622a9d5015e5",
+      "op": "add",
+      "payload": {
+        "priority": "L",
+        "project": "api",
+        "recurrence": null,
+        "status": "pending",
+        "tags": [],
+        "title": "Ship push notifications"
+      },
+      "ts": "2026-08-13T14:09:00Z"
+    },
+    {
+      "actor": "user",
+      "entity": "task",
+      "entity_id": "8a29110d-5882-42d5-8751-459f45b90d8c",
+      "id": "801b43bf-853a-4037-b262-b76db28302c1",
+      "op": "add",
+      "payload": {
+        "priority": "M",
+        "project": "website",
+        "recurrence": null,
+        "status": "pending",
+        "tags": [],
+        "title": "Rotate the staging secrets"
+      },
+      "ts": "2026-08-22T13:13:00Z"
+    },
+    {
+      "actor": "user",
+      "entity": "task",
+      "entity_id": "ae9ca08b-2d7c-4048-bca0-7386cc099a1e",
+      "id": "82450164-728a-4fcf-b03a-07b28f2df760",
+      "op": "add",
+      "payload": {
+        "priority": "M",
+        "project": "infra",
+        "recurrence": null,
+        "status": "pending",
+        "tags": [],
+        "title": "Cache the pricing API response"
+      },
+      "ts": "2026-06-24T10:10:00Z"
+    },
+    {
+      "actor": "user",
+      "entity": "task",
+      "entity_id": "4105cca7-b533-42fc-954c-d2aad7185dda",
+      "id": "834c687a-3acb-4266-820b-a2c250b601fc",
+      "op": "add",
+      "payload": {
+        "priority": null,
+        "project": "api",
+        "recurrence": null,
+        "status": "pending",
+        "tags": [],
+        "title": "Add SSO for the admin panel"
+      },
+      "ts": "2026-06-24T13:26:00Z"
+    },
+    {
+      "actor": "user",
+      "entity": "task",
+      "entity_id": "0beddb07-0f7a-4443-bfc2-a9087219c1da",
+      "id": "87efda6b-5e68-47ca-882e-a7602d1ef7bf",
+      "op": "add",
+      "payload": {
+        "priority": "L",
+        "project": "mobile",
+        "recurrence": null,
+        "status": "pending",
+        "tags": [],
+        "title": "Set up error budget alerts"
+      },
+      "ts": "2026-07-21T14:05:00Z"
+    },
+    {
+      "actor": "user",
+      "entity": "task",
+      "entity_id": "6dcea371-1066-47dc-9e17-b009cf23cf20",
+      "id": "887aae6a-2c42-4eac-88fc-9878ccc39dd2",
+      "op": "add",
+      "payload": {
+        "priority": "M",
+        "project": "mobile",
+        "recurrence": null,
+        "status": "pending",
+        "tags": [
+          "ui"
+        ],
+        "title": "Dark mode for the settings screen"
+      },
+      "ts": "2026-09-02T10:00:00Z"
+    },
+    {
+      "actor": "user",
+      "entity": "task",
+      "entity_id": "b6d75031-2dbe-4f3d-818b-fbb079a2ed17",
+      "id": "88ebd524-78e2-4103-814b-051002c19aa9",
+      "op": "add",
+      "payload": {
+        "priority": "H",
+        "project": "mobile",
+        "recurrence": null,
+        "status": "pending",
+        "tags": [],
+        "title": "Paginate the audit log"
+      },
+      "ts": "2026-08-29T11:17:00Z"
+    },
+    {
+      "actor": "user",
+      "entity": "task",
+      "entity_id": "2891dd3c-3096-46c8-b9b3-38eb3fdf2348",
+      "id": "8dce6f52-f0be-400d-a104-a795bd4aeab0",
+      "op": "add",
+      "payload": {
+        "priority": null,
+        "project": "mobile",
+        "recurrence": null,
+        "status": "pending",
+        "tags": [],
+        "title": "Speed up cold start"
+      },
+      "ts": "2026-07-07T11:34:00Z"
+    },
+    {
+      "actor": "user",
+      "entity": "task",
+      "entity_id": "8f0be063-86d3-49a0-b07d-f76f38ae994e",
+      "id": "8fc0819e-ba95-47c2-94c6-e1b84a488f58",
+      "op": "add",
+      "payload": {
+        "priority": "M",
+        "project": "website",
+        "recurrence": null,
+        "status": "pending",
+        "tags": [
+          "a11y"
+        ],
+        "title": "Accessibility pass on the signup flow"
+      },
+      "ts": "2026-09-07T10:00:00Z"
+    },
+    {
+      "actor": "user",
+      "entity": "project",
+      "entity_id": "e3eff9c0-cf44-4d3f-89e7-d15f17362f25",
+      "id": "986e86cb-0ab8-4b67-a26b-7f62b1852f27",
+      "op": "create",
+      "payload": {
+        "default": false,
+        "description": "CI, deploys and on-call",
+        "name": "infra"
+      },
+      "ts": "2026-06-18T00:00:00Z"
+    },
+    {
+      "actor": "user",
+      "entity": "task",
+      "entity_id": "f46cc2ff-6197-4f87-abda-3a974fcb694e",
+      "id": "9c03e73b-e688-4f0b-9ebc-e607d862ff16",
+      "op": "add",
+      "payload": {
+        "priority": "L",
+        "project": "home",
+        "recurrence": null,
+        "status": "pending",
+        "tags": [],
+        "title": "Book the dentist"
+      },
+      "ts": "2026-08-08T10:00:00Z"
+    },
+    {
+      "actor": "user",
+      "entity": "project",
+      "entity_id": "73f778aa-f6fa-4db8-a56a-bd72fb710734",
+      "id": "a66b0d38-9d95-447e-bd29-9753a7677796",
+      "op": "create",
+      "payload": {
+        "default": false,
+        "description": null,
+        "name": "home"
+      },
+      "ts": "2026-06-18T00:00:00Z"
+    },
+    {
+      "actor": "user",
+      "entity": "task",
+      "entity_id": "47331d97-080f-43bb-9427-79f5131e2d48",
+      "id": "ada219c6-0a9e-4bc1-9b88-b1e5df71b994",
+      "op": "add",
+      "payload": {
+        "priority": "M",
+        "project": "mobile",
+        "recurrence": null,
+        "status": "pending",
+        "tags": [],
+        "title": "Compress hero images"
+      },
+      "ts": "2026-08-29T12:18:00Z"
+    },
+    {
+      "actor": "user",
+      "entity": "task",
+      "entity_id": "ec3fbf4d-c20e-4164-a8f9-18d8f6cdb2f8",
+      "id": "b4ff00ae-3f13-47de-a274-ea181e34b3f1",
+      "op": "add",
+      "payload": {
+        "priority": null,
+        "project": "mobile",
+        "recurrence": null,
+        "status": "pending",
+        "tags": [],
+        "title": "Ship push notifications"
+      },
+      "ts": "2026-07-03T15:56:00Z"
+    },
+    {
+      "actor": "user",
+      "entity": "task",
+      "entity_id": "eea93b6f-ca71-467b-ba0c-31f68975fcdb",
+      "id": "b7e06d03-e8f5-4608-830a-c63152056395",
+      "op": "add",
+      "payload": {
+        "priority": "H",
+        "project": "mobile",
+        "recurrence": null,
+        "status": "pending",
+        "tags": [
+          "bug"
+        ],
+        "title": "Fix token refresh race on Android"
+      },
+      "ts": "2026-09-06T10:00:00Z"
+    },
+    {
+      "actor": "user",
+      "entity": "task",
+      "entity_id": "7349dbc4-e414-48aa-a36e-ba1f5cb58b8e",
+      "id": "bb9fab2b-a82c-42cd-94ba-1e74fb019df4",
+      "op": "add",
+      "payload": {
+        "priority": "L",
+        "project": "website",
+        "recurrence": null,
+        "status": "pending",
+        "tags": [],
+        "title": "Speed up cold start"
+      },
+      "ts": "2026-07-25T09:30:00Z"
+    },
+    {
+      "actor": "user",
+      "entity": "task",
+      "entity_id": "365fdcd6-47bc-4548-92fa-d8029d42f670",
+      "id": "bfbd7d14-3437-45ab-aa3a-0683ead81dcd",
+      "op": "add",
+      "payload": {
+        "priority": "M",
+        "project": "mobile",
+        "recurrence": null,
+        "status": "pending",
+        "tags": [],
+        "title": "Clean up feature flags"
+      },
+      "ts": "2026-07-12T09:50:00Z"
+    },
+    {
+      "actor": "user",
+      "entity": "task",
+      "entity_id": "9c9c2d91-ad9a-4296-a4aa-17344d1079ab",
+      "id": "c0f727ad-2b6b-4fce-84b5-829733dbeaab",
+      "op": "add",
+      "payload": {
+        "priority": "L",
+        "project": "infra",
+        "recurrence": null,
+        "status": "pending",
+        "tags": [],
+        "title": "Add retry to the email worker"
+      },
+      "ts": "2026-08-07T11:42:00Z"
+    },
+    {
+      "actor": "user",
+      "entity": "task",
+      "entity_id": "94362459-7e19-4ec0-a143-aa65f21c805c",
+      "id": "c201bf98-1605-42ed-b066-70aaf2fbc7f9",
+      "op": "add",
+      "payload": {
+        "priority": "M",
+        "project": "api",
+        "recurrence": null,
+        "status": "pending",
+        "tags": [
+          "docs"
+        ],
+        "title": "Add OpenAPI examples for every endpoint"
+      },
+      "ts": "2026-09-05T10:00:00Z"
+    },
+    {
+      "actor": "user",
+      "entity": "task",
+      "entity_id": "ac11d871-7e6e-4dbe-851d-1a33a0301309",
+      "id": "d786e466-d6d0-46d0-b75d-e6f250bc3228",
+      "op": "add",
+      "payload": {
+        "priority": "H",
+        "project": "api",
+        "recurrence": null,
+        "status": "pending",
+        "tags": [],
+        "title": "Fix crash on rotate"
+      },
+      "ts": "2026-08-19T11:02:00Z"
+    },
+    {
+      "actor": "user",
+      "entity": "task",
+      "entity_id": "64409ddb-b45f-41c3-bd65-693b3d0840fb",
+      "id": "e7a28cbd-d2df-4c20-abba-8d2141c9886e",
+      "op": "add",
+      "payload": {
+        "priority": "M",
+        "project": "website",
+        "recurrence": null,
+        "status": "pending",
+        "tags": [],
+        "title": "Cache the pricing API response"
+      },
+      "ts": "2026-07-05T11:33:00Z"
+    },
+    {
+      "actor": "user",
+      "entity": "task",
+      "entity_id": "89cf6d5a-071a-4c55-a085-0d669af034b9",
+      "id": "ead7af87-8419-4d91-8b40-7faff82aead1",
+      "op": "add",
+      "payload": {
+        "priority": null,
+        "project": "home",
+        "recurrence": null,
+        "status": "pending",
+        "tags": [],
+        "title": "Sketch ideas for the Q4 offsite"
+      },
+      "ts": "2026-08-10T10:00:00Z"
+    },
+    {
+      "actor": "user",
+      "entity": "task",
+      "entity_id": "1ce262d6-2b4c-4859-9265-42ee46dc1a26",
+      "id": "ecfcc396-4671-420d-b8aa-8105735dc327",
+      "op": "add",
+      "payload": {
+        "priority": "H",
+        "project": "website",
+        "recurrence": null,
+        "status": "pending",
+        "tags": [],
+        "title": "Compress hero images"
+      },
+      "ts": "2026-08-11T13:05:00Z"
+    },
+    {
+      "actor": "user",
+      "entity": "task",
+      "entity_id": "5e268fa0-8bcc-47cd-b3fd-c19413446df8",
+      "id": "efae0b46-e673-4cb8-8b62-0dc6bcac6462",
+      "op": "add",
+      "payload": {
+        "priority": "M",
+        "project": "website",
+        "recurrence": null,
+        "status": "pending",
+        "tags": [],
+        "title": "Upgrade Postgres to 16"
+      },
+      "ts": "2026-07-17T14:09:00Z"
+    },
+    {
+      "actor": "user",
+      "entity": "task",
+      "entity_id": "c77d357f-3cc6-462d-8433-9c10d4652689",
+      "id": "fbe84036-0c04-4d96-8bfe-2f8d24105a49",
+      "op": "add",
+      "payload": {
+        "priority": null,
+        "project": "infra",
+        "recurrence": null,
+        "status": "pending",
+        "tags": [],
+        "title": "Speed up cold start"
+      },
+      "ts": "2026-08-15T09:00:00Z"
+    },
+    {
+      "actor": "user",
+      "entity": "task",
+      "entity_id": "623d8eb7-a4ca-43b2-ab52-b08d21870f0b",
+      "id": "fd741069-6bb6-43de-a515-1c401dd377bf",
+      "op": "add",
+      "payload": {
+        "priority": "M",
+        "project": "api",
+        "recurrence": null,
+        "status": "pending",
+        "tags": [],
+        "title": "Publish the changelog feed"
+      },
+      "ts": "2026-07-10T15:22:00Z"
+    },
+    {
+      "actor": "user",
+      "entity": "task",
+      "entity_id": "ea7f7301-c9b4-43b5-afc3-eec055c2d7f4",
+      "id": "fff47593-260f-49dd-b876-c03c23f7d227",
+      "op": "add",
+      "payload": {
+        "priority": "M",
+        "project": "infra",
+        "recurrence": null,
+        "status": "pending",
+        "tags": [
+          "ops"
+        ],
+        "title": "Move nightly backups to object storage"
+      },
+      "ts": "2026-08-15T10:00:00Z"
+    }
+  ],
+  "links": [],
+  "projects": [
+    {
+      "archived": false,
+      "created": "2026-06-18T00:00:00Z",
+      "description": "Public REST API and its SDKs",
+      "id": "309d6b79-965e-4a32-9ae4-45508201e2bd",
+      "name": "api"
+    },
+    {
+      "archived": false,
+      "created": "2026-06-18T00:00:00Z",
+      "description": null,
+      "id": "73f778aa-f6fa-4db8-a56a-bd72fb710734",
+      "name": "home"
+    },
+    {
+      "archived": false,
+      "created": "2026-06-18T00:00:00Z",
+      "description": "CI, deploys and on-call",
+      "id": "e3eff9c0-cf44-4d3f-89e7-d15f17362f25",
+      "name": "infra"
+    },
+    {
+      "archived": false,
+      "created": "2026-06-18T00:00:00Z",
+      "description": "iOS and Android apps",
+      "id": "2fa91425-cb00-4853-9d2c-67eda13ffe79",
+      "name": "mobile"
+    },
+    {
+      "archived": false,
+      "created": "2026-06-18T00:00:00Z",
+      "description": "Marketing site and docs portal",
+      "id": "db5b5fab-8f4d-4e27-9da1-494c73cf256d",
+      "name": "website"
+    }
+  ],
+  "tasks": [
+    {
+      "_rev": 1,
+      "annotations": [
+        {
+          "body": "Verified on staging and production; nothing paged overnight.",
+          "created": "2026-06-24T14:09:00Z",
+          "id": "cf7d77e7-a0bd-416b-bda3-34aeea31df80"
+        }
+      ],
+      "budget_tokens": null,
+      "checks": [],
+      "completed": "2026-06-24T14:09:00Z",
+      "created": "2026-06-11T14:09:00Z",
+      "depends_on": [],
+      "due": null,
+      "estimate": "PT2H",
+      "id": "d4ea65d0-03d7-4684-9f85-58a628518867",
+      "modified": "2026-06-24T14:09:00Z",
+      "priority": null,
+      "project": "website",
+      "recurrence": null,
+      "remind": null,
+      "scheduled": null,
+      "short_id": 1,
+      "status": "done",
+      "tags": [],
+      "title": "Add sitemap.xml",
+      "tracked_seconds": 11400,
+      "urgency": 1.0,
+      "wait": null
+    },
+    {
+      "_rev": 1,
+      "annotations": [
+        {
+          "body": "Deployed Tuesday morning; the dashboards have been flat since.",
+          "created": "2026-06-25T09:58:00Z",
+          "id": "e401278a-50a3-44ea-9a66-905a50dd1af0"
+        }
+      ],
+      "budget_tokens": null,
+      "checks": [],
+      "completed": "2026-06-25T09:58:00Z",
+      "created": "2026-06-21T09:58:00Z",
+      "depends_on": [],
+      "due": null,
+      "estimate": null,
+      "id": "5387f613-76c4-48ae-8732-1cc007b37e14",
+      "modified": "2026-06-25T09:58:00Z",
+      "priority": "M",
+      "project": "infra",
+      "recurrence": null,
+      "remind": null,
+      "scheduled": null,
+      "short_id": 2,
+      "status": "done",
+      "tags": [],
+      "title": "Add retry to the email worker",
+      "urgency": 4.8,
+      "wait": null
+    },
+    {
+      "_rev": 1,
+      "annotations": [
+        {
+          "body": "Paired on the review; two edge cases found and fixed before merge.",
+          "created": "2026-06-28T09:36:00Z",
+          "id": "e335eeaf-31cd-4037-bf94-1dcdc73f9f68"
+        }
+      ],
+      "budget_tokens": null,
+      "checks": [
+        {
+          "body": "The on-call runbook mentions it",
+          "created": "2026-06-09T09:36:00Z",
+          "evidence": null,
+          "id": "3d45e04e-e393-4895-a249-61dc18cbeef9",
+          "modified": "2026-06-28T09:36:00Z",
+          "position": 0,
+          "state": "passed"
+        },
+        {
+          "body": "Checked on a real device, not only the simulator",
+          "created": "2026-06-09T09:36:00Z",
+          "evidence": null,
+          "id": "426e6ddf-1690-41f7-ba00-eb1b21ee3e33",
+          "modified": "2026-06-28T09:36:00Z",
+          "position": 1,
+          "state": "passed"
+        },
+        {
+          "body": "Covered by a test that fails without the change",
+          "created": "2026-06-09T09:36:00Z",
+          "evidence": null,
+          "id": "d508ff34-6f4e-4f08-98d6-084d634d585b",
+          "modified": "2026-06-28T09:36:00Z",
+          "position": 2,
+          "state": "passed"
+        }
+      ],
+      "completed": "2026-06-28T09:36:00Z",
+      "created": "2026-06-09T09:36:00Z",
+      "depends_on": [],
+      "due": null,
+      "estimate": null,
+      "id": "15c1d2df-a996-4aef-812d-0ea67ff12229",
+      "modified": "2026-06-28T09:36:00Z",
+      "priority": "M",
+      "project": "website",
+      "recurrence": null,
+      "remind": null,
+      "scheduled": null,
+      "short_id": 3,
+      "status": "done",
+      "tags": [],
+      "title": "Publish the changelog feed",
+      "urgency": 4.9,
+      "wait": null
+    },
+    {
+      "_rev": 1,
+      "annotations": [
+        {
+          "body": "Took longer than planned: the test fixtures needed rebuilding first.",
+          "created": "2026-06-29T13:26:00Z",
+          "id": "18972e44-048b-452f-8c81-f272af6a3e68"
+        }
+      ],
+      "budget_tokens": null,
+      "checks": [],
+      "completed": "2026-06-29T13:26:00Z",
+      "created": "2026-06-24T13:26:00Z",
+      "depends_on": [],
+      "due": null,
+      "estimate": "PT2H",
+      "id": "4105cca7-b533-42fc-954c-d2aad7185dda",
+      "modified": "2026-06-29T13:26:00Z",
+      "priority": null,
+      "project": "api",
+      "recurrence": null,
+      "remind": null,
+      "scheduled": null,
+      "short_id": 4,
+      "status": "done",
+      "tags": [],
+      "title": "Add SSO for the admin panel",
+      "tracked_seconds": 8400,
+      "urgency": 0.8,
+      "wait": null
+    },
+    {
+      "_rev": 1,
+      "annotations": [
+        {
+          "body": "Measured before and after: p95 down from 840ms to 310ms.",
+          "created": "2026-07-01T12:31:00Z",
+          "id": "f7e7a342-d22b-4aa4-a94f-bd205b8adc51"
+        }
+      ],
+      "budget_tokens": null,
+      "checks": [],
+      "completed": "2026-07-01T12:31:00Z",
+      "created": "2026-06-15T12:31:00Z",
+      "depends_on": [],
+      "due": null,
+      "estimate": null,
+      "id": "1b98fbe4-6680-4a11-9ba1-192ec42b7170",
+      "modified": "2026-07-01T12:31:00Z",
+      "priority": "M",
+      "project": "infra",
+      "recurrence": null,
+      "remind": null,
+      "scheduled": null,
+      "short_id": 5,
+      "status": "done",
+      "tags": [],
+      "title": "Paginate the audit log",
+      "tokens": [
+        {
+          "cache_creation_tokens": 109000,
+          "cache_read_tokens": 108000,
+          "confidence": "medium",
+          "created": "2026-07-01T12:31:00Z",
+          "id": "81744e12-b467-4b8a-9d8b-86945c7fb02d",
+          "input_tokens": 240000,
+          "model": "claude-opus-5",
+          "output_tokens": 31000,
+          "source": "self-report",
+          "tool": "claude-code",
+          "total_tokens": 0
+        }
+      ],
+      "urgency": 4.8,
+      "wait": null
+    },
+    {
+      "_rev": 1,
+      "annotations": [
+        {
+          "body": "Done. The follow-up cleanup is its own task.",
+          "created": "2026-07-03T12:05:00Z",
+          "id": "0638d57b-1b2e-4cd7-bb69-2cda120fb44e"
+        }
+      ],
+      "budget_tokens": null,
+      "checks": [
+        {
+          "body": "The on-call runbook mentions it",
+          "created": "2026-06-22T12:05:00Z",
+          "evidence": null,
+          "id": "9d05633a-8d3a-47ef-8312-3f99099565a2",
+          "modified": "2026-07-03T12:05:00Z",
+          "position": 0,
+          "state": "passed"
+        },
+        {
+          "body": "Checked on a real device, not only the simulator",
+          "created": "2026-06-22T12:05:00Z",
+          "evidence": null,
+          "id": "7b34f6d9-9199-465c-a7b4-b57e83cb86df",
+          "modified": "2026-07-03T12:05:00Z",
+          "position": 1,
+          "state": "passed"
+        },
+        {
+          "body": "Covered by a test that fails without the change",
+          "created": "2026-06-22T12:05:00Z",
+          "evidence": null,
+          "id": "1d6d2a93-2f3d-4554-b087-bbf925849de2",
+          "modified": "2026-07-03T12:05:00Z",
+          "position": 2,
+          "state": "open"
+        }
+      ],
+      "completed": "2026-07-03T12:05:00Z",
+      "created": "2026-06-22T12:05:00Z",
+      "depends_on": [],
+      "due": null,
+      "estimate": "PT2H",
+      "id": "ed52a241-35b0-4a54-b6a8-0bdf0023b682",
+      "modified": "2026-07-03T12:05:00Z",
+      "priority": null,
+      "project": "infra",
+      "recurrence": null,
+      "remind": null,
+      "scheduled": null,
+      "short_id": 6,
+      "status": "done",
+      "tags": [],
+      "title": "Paginate the audit log",
+      "tracked_seconds": 8400,
+      "urgency": 0.9,
+      "wait": null
+    },
+    {
+      "_rev": 1,
+      "annotations": [
+        {
+          "body": "Paired on the review; two edge cases found and fixed before merge.",
+          "created": "2026-07-09T16:44:00Z",
+          "id": "ed48d09d-4878-40a9-bd84-64202874799a"
+        }
+      ],
+      "budget_tokens": null,
+      "checks": [],
+      "completed": "2026-07-09T16:44:00Z",
+      "created": "2026-06-23T16:44:00Z",
+      "depends_on": [],
+      "due": null,
+      "estimate": null,
+      "id": "32d03fdd-a123-4501-90f5-380e12b2a414",
+      "modified": "2026-07-09T16:44:00Z",
+      "priority": "M",
+      "project": "mobile",
+      "recurrence": null,
+      "remind": null,
+      "scheduled": null,
+      "short_id": 7,
+      "status": "done",
+      "tags": [],
+      "title": "Clean up feature flags",
+      "urgency": 4.7,
+      "wait": null
+    },
+    {
+      "_rev": 1,
+      "annotations": [
+        {
+          "body": "Took longer than planned: the test fixtures needed rebuilding first.",
+          "created": "2026-07-10T15:56:00Z",
+          "id": "ae53c374-f395-4c0b-a26b-55010fdba219"
+        }
+      ],
+      "budget_tokens": null,
+      "checks": [
+        {
+          "body": "Covered by a test that fails without the change",
+          "created": "2026-07-03T15:56:00Z",
+          "evidence": null,
+          "id": "18c23ef0-c3c4-48a0-93dd-f702764a44b4",
+          "modified": "2026-07-10T15:56:00Z",
+          "position": 0,
+          "state": "passed"
+        },
+        {
+          "body": "Checked on a real device, not only the simulator",
+          "created": "2026-07-03T15:56:00Z",
+          "evidence": null,
+          "id": "6d2b653f-778a-4e87-a410-ff8753aaf3b7",
+          "modified": "2026-07-10T15:56:00Z",
+          "position": 1,
+          "state": "passed"
+        },
+        {
+          "body": "The on-call runbook mentions it",
+          "created": "2026-07-03T15:56:00Z",
+          "evidence": null,
+          "id": "35c823a2-6e19-4e13-9ac5-1cc883e9db77",
+          "modified": "2026-07-10T15:56:00Z",
+          "position": 2,
+          "state": "open"
+        }
+      ],
+      "completed": "2026-07-10T15:56:00Z",
+      "created": "2026-07-03T15:56:00Z",
+      "depends_on": [],
+      "due": null,
+      "estimate": null,
+      "id": "ec3fbf4d-c20e-4164-a8f9-18d8f6cdb2f8",
+      "modified": "2026-07-10T15:56:00Z",
+      "priority": null,
+      "project": "mobile",
+      "recurrence": null,
+      "remind": null,
+      "scheduled": null,
+      "short_id": 8,
+      "status": "done",
+      "tags": [],
+      "title": "Ship push notifications",
+      "urgency": 0.7,
+      "wait": null
+    },
+    {
+      "_rev": 1,
+      "annotations": [],
+      "budget_tokens": null,
+      "checks": [],
+      "completed": "2026-07-13T10:10:00Z",
+      "created": "2026-06-24T10:10:00Z",
+      "depends_on": [],
+      "due": null,
+      "estimate": "PT1H",
+      "id": "ae9ca08b-2d7c-4048-bca0-7386cc099a1e",
+      "modified": "2026-07-13T10:10:00Z",
+      "priority": "M",
+      "project": "infra",
+      "recurrence": null,
+      "remind": null,
+      "scheduled": null,
+      "short_id": 9,
+      "status": "done",
+      "tags": [],
+      "title": "Cache the pricing API response",
+      "tracked_seconds": 3900,
+      "urgency": 4.7,
+      "wait": null
+    },
+    {
+      "_rev": 1,
+      "annotations": [
+        {
+          "body": "Measured before and after: p95 down from 840ms to 310ms.",
+          "created": "2026-07-14T15:22:00Z",
+          "id": "ebff2ec1-67c1-40bc-9ec5-0631bd450232"
+        }
+      ],
+      "budget_tokens": null,
+      "checks": [],
+      "completed": "2026-07-14T15:22:00Z",
+      "created": "2026-07-10T15:22:00Z",
+      "depends_on": [],
+      "due": null,
+      "estimate": null,
+      "id": "623d8eb7-a4ca-43b2-ab52-b08d21870f0b",
+      "modified": "2026-07-14T15:22:00Z",
+      "priority": "M",
+      "project": "api",
+      "recurrence": null,
+      "remind": null,
+      "scheduled": null,
+      "short_id": 10,
+      "status": "done",
+      "tags": [],
+      "title": "Publish the changelog feed",
+      "tokens": [
+        {
+          "cache_creation_tokens": 154000,
+          "cache_read_tokens": 2546000,
+          "confidence": "medium",
+          "created": "2026-07-14T15:22:00Z",
+          "id": "1844ebd1-2a42-46e7-9ad8-e8b131f3c57c",
+          "input_tokens": 174000,
+          "model": "claude-opus-5",
+          "output_tokens": 19000,
+          "source": "self-report",
+          "tool": "claude-code",
+          "total_tokens": 0
+        }
+      ],
+      "urgency": 4.6,
+      "wait": null
+    },
+    {
+      "_rev": 1,
+      "annotations": [
+        {
+          "body": "Took longer than planned: the test fixtures needed rebuilding first.",
+          "created": "2026-07-15T11:14:00Z",
+          "id": "a11f7657-e8a3-4edb-9c58-eafbe0291bc8"
+        }
+      ],
+      "budget_tokens": null,
+      "checks": [],
+      "completed": "2026-07-15T11:14:00Z",
+      "created": "2026-07-05T11:14:00Z",
+      "depends_on": [],
+      "due": null,
+      "estimate": "PT1H",
+      "id": "97bdd982-cdac-4046-b990-3b72f88ece64",
+      "modified": "2026-07-15T11:14:00Z",
+      "priority": "M",
+      "project": "api",
+      "recurrence": null,
+      "remind": null,
+      "scheduled": null,
+      "short_id": 11,
+      "status": "done",
+      "tags": [],
+      "title": "Fix double charge on retry",
+      "tracked_seconds": 2700,
+      "urgency": 4.6,
+      "wait": null
+    },
+    {
+      "_rev": 1,
+      "annotations": [],
+      "budget_tokens": null,
+      "checks": [],
+      "completed": null,
+      "created": "2026-07-10T09:09:00Z",
+      "depends_on": [],
+      "due": null,
+      "estimate": null,
+      "id": "93b3a3d9-a44f-476a-9a1d-e24edab871d5",
+      "modified": "2026-07-16T09:09:00Z",
+      "priority": null,
+      "project": "mobile",
+      "recurrence": null,
+      "remind": null,
+      "scheduled": null,
+      "short_id": 12,
+      "status": "cancelled",
+      "tags": [],
+      "title": "Fix double charge on retry",
+      "tracked_seconds": 3000,
+      "urgency": 0.7,
+      "wait": null
+    },
+    {
+      "_rev": 1,
+      "annotations": [
+        {
+          "body": "Measured before and after: p95 down from 840ms to 310ms.",
+          "created": "2026-07-18T15:25:00Z",
+          "id": "478e5850-421d-4b0a-832c-4da8ce08c67d"
+        }
+      ],
+      "budget_tokens": null,
+      "checks": [],
+      "completed": "2026-07-18T15:25:00Z",
+      "created": "2026-07-15T15:25:00Z",
+      "depends_on": [],
+      "due": null,
+      "estimate": "PT1H",
+      "id": "d48dd9f3-5436-4c21-9c3e-cb54c5cefdd8",
+      "modified": "2026-07-18T15:25:00Z",
+      "priority": "M",
+      "project": "infra",
+      "recurrence": null,
+      "remind": null,
+      "scheduled": null,
+      "short_id": 13,
+      "status": "done",
+      "tags": [],
+      "title": "Speed up cold start",
+      "tracked_seconds": 3300,
+      "urgency": 4.5,
+      "wait": null
+    },
+    {
+      "_rev": 1,
+      "annotations": [
+        {
+          "body": "Verified on staging and production; nothing paged overnight.",
+          "created": "2026-07-19T10:13:00Z",
+          "id": "e13d4b11-5475-4733-a583-fa5d221a61a1"
+        }
+      ],
+      "budget_tokens": 250000,
+      "checks": [
+        {
+          "body": "Checked on a real device, not only the simulator",
+          "created": "2026-07-14T10:13:00Z",
+          "evidence": null,
+          "id": "c46bcb23-5eaf-4cd4-b1de-553289f3a393",
+          "modified": "2026-07-19T10:13:00Z",
+          "position": 0,
+          "state": "passed"
+        },
+        {
+          "body": "Covered by a test that fails without the change",
+          "created": "2026-07-14T10:13:00Z",
+          "evidence": null,
+          "id": "67def005-2e7a-47f2-83e6-0e906e803472",
+          "modified": "2026-07-19T10:13:00Z",
+          "position": 1,
+          "state": "passed"
+        },
+        {
+          "body": "The on-call runbook mentions it",
+          "created": "2026-07-14T10:13:00Z",
+          "evidence": null,
+          "id": "120fac4a-2f50-41f8-b8fe-90a634f2bae5",
+          "modified": "2026-07-19T10:13:00Z",
+          "position": 2,
+          "state": "passed"
+        }
+      ],
+      "completed": "2026-07-19T10:13:00Z",
+      "created": "2026-07-14T10:13:00Z",
+      "depends_on": [],
+      "due": null,
+      "estimate": "PT4H",
+      "id": "5e617f8e-99ed-4ce7-83f8-670d3e361858",
+      "modified": "2026-07-19T10:13:00Z",
+      "priority": "H",
+      "project": "website",
+      "recurrence": null,
+      "remind": null,
+      "scheduled": null,
+      "short_id": 14,
+      "status": "done",
+      "tags": [],
+      "title": "Remove the legacy SDK",
+      "tokens": [
+        {
+          "cache_creation_tokens": 177000,
+          "cache_read_tokens": 1354000,
+          "confidence": "medium",
+          "created": "2026-07-19T10:13:00Z",
+          "id": "7805ec94-4d3b-4462-977a-dfd3cc1e0437",
+          "input_tokens": 43000,
+          "model": "claude-opus-5",
+          "output_tokens": 2000,
+          "source": "self-report",
+          "tool": "claude-code",
+          "total_tokens": 0
+        }
+      ],
+      "tracked_seconds": 8400,
+      "urgency": 6.6,
+      "wait": null
+    },
+    {
+      "_rev": 1,
+      "annotations": [
+        {
+          "body": "Shipped behind a flag and rolled out to everyone after a quiet day.",
+          "created": "2026-07-20T11:34:00Z",
+          "id": "67f8388b-a8e6-4cb5-b74e-e8d7567b159a"
+        }
+      ],
+      "budget_tokens": 110000,
+      "checks": [
+        {
+          "body": "Covered by a test that fails without the change",
+          "created": "2026-07-12T11:34:00Z",
+          "evidence": null,
+          "id": "13ab6410-8877-48e7-ae95-050791cfb3fa",
+          "modified": "2026-07-20T11:34:00Z",
+          "position": 0,
+          "state": "passed"
+        },
+        {
+          "body": "Checked on a real device, not only the simulator",
+          "created": "2026-07-12T11:34:00Z",
+          "evidence": null,
+          "id": "7f6262b4-fff8-487d-83c3-417f63bc6fea",
+          "modified": "2026-07-20T11:34:00Z",
+          "position": 1,
+          "state": "passed"
+        }
+      ],
+      "completed": "2026-07-20T11:34:00Z",
+      "created": "2026-07-12T11:34:00Z",
+      "depends_on": [],
+      "due": null,
+      "estimate": "PT2H",
+      "id": "62d74145-ddd4-4054-a2bf-b8e0931719fd",
+      "modified": "2026-07-20T11:34:00Z",
+      "priority": null,
+      "project": "website",
+      "recurrence": null,
+      "remind": null,
+      "scheduled": null,
+      "short_id": 15,
+      "status": "done",
+      "tags": [],
+      "title": "Upgrade Postgres to 16",
+      "tokens": [
+        {
+          "cache_creation_tokens": 42000,
+          "cache_read_tokens": 508000,
+          "confidence": "medium",
+          "created": "2026-07-20T11:34:00Z",
+          "id": "1e9eca4f-b385-4a64-b695-80ffa46b7f17",
+          "input_tokens": 37000,
+          "model": "claude-opus-5",
+          "output_tokens": 24000,
+          "source": "self-report",
+          "tool": "claude-code",
+          "total_tokens": 0
+        }
+      ],
+      "tracked_seconds": 11700,
+      "urgency": 0.7,
+      "wait": null
+    },
+    {
+      "_rev": 1,
+      "annotations": [
+        {
+          "body": "Took longer than planned: the test fixtures needed rebuilding first.",
+          "created": "2026-07-20T11:34:00Z",
+          "id": "9d8a9ea9-1d61-4a4c-85d7-90b6932d823f"
+        }
+      ],
+      "budget_tokens": null,
+      "checks": [],
+      "completed": "2026-07-20T11:34:00Z",
+      "created": "2026-07-07T11:34:00Z",
+      "depends_on": [],
+      "due": null,
+      "estimate": null,
+      "id": "2891dd3c-3096-46c8-b9b3-38eb3fdf2348",
+      "modified": "2026-07-20T11:34:00Z",
+      "priority": null,
+      "project": "mobile",
+      "recurrence": null,
+      "remind": null,
+      "scheduled": null,
+      "short_id": 16,
+      "status": "done",
+      "tags": [],
+      "title": "Speed up cold start",
+      "urgency": 0.7,
+      "wait": null
+    },
+    {
+      "_rev": 1,
+      "annotations": [
+        {
+          "body": "Reopened: the first fix missed the retry path. Redone with a test for it.",
+          "created": "2026-07-21T17:30:00Z",
+          "id": "02c27e4b-602c-495b-a5e3-f4d03208c155"
+        }
+      ],
+      "budget_tokens": 340000,
+      "checks": [],
+      "completed": "2026-07-22T16:30:00Z",
+      "created": "2026-07-12T16:30:00Z",
+      "depends_on": [],
+      "due": null,
+      "estimate": null,
+      "id": "14186ebf-9a81-47e9-bb86-2eace1d7300f",
+      "modified": "2026-07-22T16:30:00Z",
+      "priority": "L",
+      "project": "mobile",
+      "recurrence": null,
+      "remind": null,
+      "scheduled": null,
+      "short_id": 17,
+      "status": "done",
+      "tags": [],
+      "title": "Fix crash on rotate",
+      "tokens": [
+        {
+          "cache_creation_tokens": 184000,
+          "cache_read_tokens": 713000,
+          "confidence": "medium",
+          "created": "2026-07-22T16:30:00Z",
+          "id": "4693bb1f-403a-490b-8230-d4e81933f5a3",
+          "input_tokens": 22000,
+          "model": "claude-opus-5",
+          "output_tokens": 17000,
+          "source": "self-report",
+          "tool": "claude-code",
+          "total_tokens": 0
+        }
+      ],
+      "urgency": 2.5,
+      "wait": null
+    },
+    {
+      "_rev": 1,
+      "annotations": [],
+      "budget_tokens": null,
+      "checks": [],
+      "completed": null,
+      "created": "2026-07-05T11:33:00Z",
+      "depends_on": [],
+      "due": null,
+      "estimate": null,
+      "id": "64409ddb-b45f-41c3-bd65-693b3d0840fb",
+      "modified": "2026-07-23T11:33:00Z",
+      "priority": "M",
+      "project": "website",
+      "recurrence": null,
+      "remind": null,
+      "scheduled": null,
+      "short_id": 18,
+      "status": "cancelled",
+      "tags": [],
+      "title": "Cache the pricing API response",
+      "tracked_seconds": 3900,
+      "urgency": 4.6,
+      "wait": null
+    },
+    {
+      "_rev": 1,
+      "annotations": [
+        {
+          "body": "Reopened: the first fix missed the retry path. Redone with a test for it.",
+          "created": "2026-07-23T10:44:00Z",
+          "id": "a354cb3a-1981-4cb5-bebf-3621d8acacfd"
+        }
+      ],
+      "budget_tokens": null,
+      "checks": [
+        {
+          "body": "The on-call runbook mentions it",
+          "created": "2026-07-15T10:44:00Z",
+          "evidence": null,
+          "id": "13819483-a508-4794-8f3d-3dcd71c08716",
+          "modified": "2026-07-24T10:44:00Z",
+          "position": 0,
+          "state": "passed"
+        },
+        {
+          "body": "Covered by a test that fails without the change",
+          "created": "2026-07-15T10:44:00Z",
+          "evidence": null,
+          "id": "c25e175d-ab1e-4d91-98f8-285a8ca68024",
+          "modified": "2026-07-24T10:44:00Z",
+          "position": 1,
+          "state": "passed"
+        }
+      ],
+      "completed": "2026-07-24T10:44:00Z",
+      "created": "2026-07-15T10:44:00Z",
+      "depends_on": [],
+      "due": null,
+      "estimate": null,
+      "id": "fa285a0d-b869-435c-ade2-6c2e2ce933e1",
+      "modified": "2026-07-24T10:44:00Z",
+      "priority": null,
+      "project": "mobile",
+      "recurrence": null,
+      "remind": null,
+      "scheduled": null,
+      "short_id": 19,
+      "status": "done",
+      "tags": [],
+      "title": "Retire the v1 webhooks",
+      "urgency": 0.6,
+      "wait": null
+    },
+    {
+      "_rev": 1,
+      "annotations": [
+        {
+          "body": "Deployed Tuesday morning; the dashboards have been flat since.",
+          "created": "2026-07-28T09:50:00Z",
+          "id": "62ca815b-28f1-469a-b048-4de3ee1e8faf"
+        }
+      ],
+      "budget_tokens": null,
+      "checks": [],
+      "completed": "2026-07-28T09:50:00Z",
+      "created": "2026-07-12T09:50:00Z",
+      "depends_on": [],
+      "due": null,
+      "estimate": null,
+      "id": "365fdcd6-47bc-4548-92fa-d8029d42f670",
+      "modified": "2026-07-28T09:50:00Z",
+      "priority": "M",
+      "project": "mobile",
+      "recurrence": null,
+      "remind": null,
+      "scheduled": null,
+      "short_id": 20,
+      "status": "done",
+      "tags": [],
+      "title": "Clean up feature flags",
+      "tokens": [
+        {
+          "cache_creation_tokens": 146000,
+          "cache_read_tokens": 1618000,
+          "confidence": "medium",
+          "created": "2026-07-28T09:50:00Z",
+          "id": "db0d5869-2b4b-4f2c-b856-80d178c55d1f",
+          "input_tokens": 334000,
+          "model": "claude-opus-5",
+          "output_tokens": 10000,
+          "source": "self-report",
+          "tool": "claude-code",
+          "total_tokens": 0
+        }
+      ],
+      "urgency": 4.6,
+      "wait": null
+    },
+    {
+      "_rev": 1,
+      "annotations": [
+        {
+          "body": "Shipped behind a flag and rolled out to everyone after a quiet day.",
+          "created": "2026-07-29T14:05:00Z",
+          "id": "f1fd7037-6df8-4816-8efc-d38b98b84db3"
+        }
+      ],
+      "budget_tokens": null,
+      "checks": [],
+      "completed": "2026-07-29T14:05:00Z",
+      "created": "2026-07-21T14:05:00Z",
+      "depends_on": [],
+      "due": null,
+      "estimate": null,
+      "id": "0beddb07-0f7a-4443-bfc2-a9087219c1da",
+      "modified": "2026-07-29T14:05:00Z",
+      "priority": "L",
+      "project": "mobile",
+      "recurrence": null,
+      "remind": null,
+      "scheduled": null,
+      "short_id": 21,
+      "status": "done",
+      "tags": [],
+      "title": "Set up error budget alerts",
+      "urgency": 2.4,
+      "wait": null
+    },
+    {
+      "_rev": 1,
+      "annotations": [],
+      "budget_tokens": null,
+      "checks": [],
+      "completed": "2026-07-30T09:30:00Z",
+      "created": "2026-07-25T09:30:00Z",
+      "depends_on": [],
+      "due": null,
+      "estimate": "PT4H",
+      "id": "7349dbc4-e414-48aa-a36e-ba1f5cb58b8e",
+      "modified": "2026-07-30T09:30:00Z",
+      "priority": "L",
+      "project": "website",
+      "recurrence": null,
+      "remind": null,
+      "scheduled": null,
+      "short_id": 22,
+      "status": "done",
+      "tags": [],
+      "title": "Speed up cold start",
+      "tracked_seconds": 31800,
+      "urgency": 2.3,
+      "wait": null
+    },
+    {
+      "_rev": 1,
+      "annotations": [
+        {
+          "body": "Done. The follow-up cleanup is its own task.",
+          "created": "2026-07-31T12:30:00Z",
+          "id": "03965226-06e0-4202-8bc9-4f65bf6c7424"
+        }
+      ],
+      "budget_tokens": 190000,
+      "checks": [],
+      "completed": "2026-07-31T12:30:00Z",
+      "created": "2026-07-27T12:30:00Z",
+      "depends_on": [],
+      "due": null,
+      "estimate": null,
+      "id": "ec7038c9-08fb-49a0-9702-16fc23edcb04",
+      "modified": "2026-07-31T12:30:00Z",
+      "priority": "L",
+      "project": "mobile",
+      "recurrence": null,
+      "remind": null,
+      "scheduled": null,
+      "short_id": 23,
+      "status": "done",
+      "tags": [],
+      "title": "Speed up cold start",
+      "tokens": [
+        {
+          "cache_creation_tokens": 113000,
+          "cache_read_tokens": 1687000,
+          "confidence": "medium",
+          "created": "2026-07-31T12:30:00Z",
+          "id": "0af33cc2-95f7-42c5-beb9-d0abc5c1c59f",
+          "input_tokens": 68000,
+          "model": "claude-opus-5",
+          "output_tokens": 21000,
+          "source": "self-report",
+          "tool": "claude-code",
+          "total_tokens": 0
+        }
+      ],
+      "urgency": 2.3,
+      "wait": null
+    },
+    {
+      "_rev": 1,
+      "annotations": [
+        {
+          "body": "Measured before and after: p95 down from 840ms to 310ms.",
+          "created": "2026-08-01T16:25:00Z",
+          "id": "94ed581c-0cd7-4b2b-a5d4-5380bf94b9a1"
+        }
+      ],
+      "budget_tokens": 240000,
+      "checks": [],
+      "completed": "2026-08-01T16:25:00Z",
+      "created": "2026-07-26T16:25:00Z",
+      "depends_on": [],
+      "due": null,
+      "estimate": "PT1H",
+      "id": "13284c79-a2dc-4d24-992e-f43805713dc6",
+      "modified": "2026-08-01T16:25:00Z",
+      "priority": "H",
+      "project": "api",
+      "recurrence": null,
+      "remind": null,
+      "scheduled": null,
+      "short_id": 24,
+      "status": "done",
+      "tags": [],
+      "title": "Retire the v1 webhooks",
+      "tokens": [
+        {
+          "cache_creation_tokens": 50000,
+          "cache_read_tokens": 2082000,
+          "confidence": "medium",
+          "created": "2026-08-01T16:25:00Z",
+          "id": "51b9b419-f1c7-44cc-b91a-dc4dfd1ffe87",
+          "input_tokens": 211000,
+          "model": "claude-opus-5",
+          "output_tokens": 28000,
+          "source": "self-report",
+          "tool": "claude-code",
+          "total_tokens": 0
+        }
+      ],
+      "tracked_seconds": 4200,
+      "urgency": 6.5,
+      "wait": null
+    },
+    {
+      "_rev": 1,
+      "annotations": [
+        {
+          "body": "Deployed Tuesday morning; the dashboards have been flat since.",
+          "created": "2026-08-04T14:09:00Z",
+          "id": "7a448c01-b818-4fd9-adf4-be4f3944babf"
+        }
+      ],
+      "budget_tokens": null,
+      "checks": [],
+      "completed": "2026-08-04T14:09:00Z",
+      "created": "2026-07-17T14:09:00Z",
+      "depends_on": [],
+      "due": null,
+      "estimate": null,
+      "id": "5e268fa0-8bcc-47cd-b3fd-c19413446df8",
+      "modified": "2026-08-04T14:09:00Z",
+      "priority": "M",
+      "project": "website",
+      "recurrence": null,
+      "remind": null,
+      "scheduled": null,
+      "short_id": 25,
+      "status": "done",
+      "tags": [],
+      "title": "Upgrade Postgres to 16",
+      "urgency": 4.5,
+      "wait": null
+    },
+    {
+      "_rev": 1,
+      "annotations": [
+        {
+          "body": "Deployed Tuesday morning; the dashboards have been flat since.",
+          "created": "2026-08-05T15:55:00Z",
+          "id": "193585f8-85fa-426b-8ba1-8f333e63aac2"
+        }
+      ],
+      "budget_tokens": 160000,
+      "checks": [],
+      "completed": "2026-08-05T15:55:00Z",
+      "created": "2026-07-18T15:55:00Z",
+      "depends_on": [],
+      "due": null,
+      "estimate": null,
+      "id": "57740511-ea3d-4be7-b6a0-0758cb138653",
+      "modified": "2026-08-05T15:55:00Z",
+      "priority": "M",
+      "project": "mobile",
+      "recurrence": null,
+      "remind": null,
+      "scheduled": null,
+      "short_id": 26,
+      "status": "done",
+      "tags": [],
+      "title": "Set up error budget alerts",
+      "tokens": [
+        {
+          "cache_creation_tokens": 44000,
+          "cache_read_tokens": 1358000,
+          "confidence": "medium",
+          "created": "2026-08-05T15:55:00Z",
+          "id": "e8d33780-b905-479f-8f67-329feff0fd26",
+          "input_tokens": 22000,
+          "model": "claude-opus-5",
+          "output_tokens": 39000,
+          "source": "self-report",
+          "tool": "claude-code",
+          "total_tokens": 0
+        }
+      ],
+      "urgency": 4.5,
+      "wait": null
+    },
+    {
+      "_rev": 1,
+      "annotations": [
+        {
+          "body": "Paired on the review; two edge cases found and fixed before merge.",
+          "created": "2026-08-10T11:38:00Z",
+          "id": "9a870e44-3ec4-40c4-9112-fdfdf5bf77aa"
+        }
+      ],
+      "budget_tokens": null,
+      "checks": [],
+      "completed": "2026-08-10T11:38:00Z",
+      "created": "2026-07-22T11:38:00Z",
+      "depends_on": [],
+      "due": null,
+      "estimate": null,
+      "id": "07bfc096-ca60-4e28-b1b9-ab7c6aca8c4a",
+      "modified": "2026-08-10T11:38:00Z",
+      "priority": "H",
+      "project": "website",
+      "recurrence": null,
+      "remind": null,
+      "scheduled": null,
+      "short_id": 27,
+      "status": "done",
+      "tags": [],
+      "title": "Write the incident postmortem",
+      "urgency": 6.6,
+      "wait": null
+    },
+    {
+      "_rev": 1,
+      "annotations": [
+        {
+          "body": "Deployed Tuesday morning; the dashboards have been flat since.",
+          "created": "2026-08-12T10:56:00Z",
+          "id": "1e32f289-74a8-439f-aaca-dd579fceb71a"
+        }
+      ],
+      "budget_tokens": null,
+      "checks": [],
+      "completed": "2026-08-12T10:56:00Z",
+      "created": "2026-08-07T10:56:00Z",
+      "depends_on": [],
+      "due": null,
+      "estimate": null,
+      "id": "127eeabe-9bde-4398-832f-bce3952a71b2",
+      "modified": "2026-08-12T10:56:00Z",
+      "priority": null,
+      "project": "website",
+      "recurrence": null,
+      "remind": null,
+      "scheduled": null,
+      "short_id": 28,
+      "status": "done",
+      "tags": [],
+      "title": "Compress hero images",
+      "tokens": [
+        {
+          "cache_creation_tokens": 176000,
+          "cache_read_tokens": 319000,
+          "confidence": "medium",
+          "created": "2026-08-12T10:56:00Z",
+          "id": "5b507fdc-0d53-45d2-9c72-f57f3422dc67",
+          "input_tokens": 337000,
+          "model": "claude-opus-5",
+          "output_tokens": 11000,
+          "source": "self-report",
+          "tool": "claude-code",
+          "total_tokens": 0
+        }
+      ],
+      "urgency": 0.4,
+      "wait": null
+    },
+    {
+      "_rev": 1,
+      "annotations": [
+        {
+          "body": "Shipped behind a flag and rolled out to everyone after a quiet day.",
+          "created": "2026-08-13T16:35:00Z",
+          "id": "aafaebfe-23c8-41e9-b15f-8ae15d015d21"
+        }
+      ],
+      "budget_tokens": 470000,
+      "checks": [],
+      "completed": "2026-08-13T16:35:00Z",
+      "created": "2026-08-03T16:35:00Z",
+      "depends_on": [],
+      "due": null,
+      "estimate": null,
+      "id": "ef2b1ae5-6370-403f-9484-b3dbba6bc77c",
+      "modified": "2026-08-13T16:35:00Z",
+      "priority": "L",
+      "project": "api",
+      "recurrence": null,
+      "remind": null,
+      "scheduled": null,
+      "short_id": 29,
+      "status": "done",
+      "tags": [],
+      "title": "Paginate the audit log",
+      "tokens": [
+        {
+          "cache_creation_tokens": 12000,
+          "cache_read_tokens": 2440000,
+          "confidence": "medium",
+          "created": "2026-08-13T16:35:00Z",
+          "id": "431ae9a9-99de-4a2f-b49f-265f6abec276",
+          "input_tokens": 291000,
+          "model": "claude-opus-5",
+          "output_tokens": 34000,
+          "source": "self-report",
+          "tool": "claude-code",
+          "total_tokens": 0
+        }
+      ],
+      "urgency": 2.2,
+      "wait": null
+    },
+    {
+      "_rev": 1,
+      "annotations": [],
+      "budget_tokens": null,
+      "checks": [],
+      "completed": null,
+      "created": "2026-08-12T14:04:00Z",
+      "depends_on": [],
+      "due": null,
+      "estimate": null,
+      "id": "83b852d7-c00d-463d-84c9-55f11572c073",
+      "modified": "2026-08-17T14:04:00Z",
+      "priority": "M",
+      "project": "mobile",
+      "recurrence": null,
+      "remind": null,
+      "scheduled": null,
+      "short_id": 30,
+      "status": "cancelled",
+      "tags": [],
+      "title": "Set up error budget alerts",
+      "tracked_seconds": 3300,
+      "urgency": 4.2,
+      "wait": null
+    },
+    {
+      "_rev": 1,
+      "annotations": [],
+      "budget_tokens": null,
+      "checks": [],
+      "completed": null,
+      "created": "2026-08-13T14:09:00Z",
+      "depends_on": [],
+      "due": null,
+      "estimate": null,
+      "id": "c7aa8cf3-7f4b-4052-9ce6-06fdb2c60fdd",
+      "modified": "2026-08-18T14:09:00Z",
+      "priority": "L",
+      "project": "api",
+      "recurrence": null,
+      "remind": null,
+      "scheduled": null,
+      "short_id": 31,
+      "status": "cancelled",
+      "tags": [],
+      "title": "Ship push notifications",
+      "tracked_seconds": 3900,
+      "urgency": 2.1,
+      "wait": null
+    },
+    {
+      "_rev": 1,
+      "annotations": [],
+      "budget_tokens": null,
+      "checks": [],
+      "completed": null,
+      "created": "2026-08-07T11:42:00Z",
+      "depends_on": [],
+      "due": null,
+      "estimate": null,
+      "id": "9c9c2d91-ad9a-4296-a4aa-17344d1079ab",
+      "modified": "2026-08-19T11:42:00Z",
+      "priority": "L",
+      "project": "infra",
+      "recurrence": null,
+      "remind": null,
+      "scheduled": null,
+      "short_id": 32,
+      "status": "cancelled",
+      "tags": [],
+      "title": "Add retry to the email worker",
+      "tracked_seconds": 2400,
+      "urgency": 2.2,
+      "wait": null
+    },
+    {
+      "_rev": 1,
+      "annotations": [
+        {
+          "body": "Done. The follow-up cleanup is its own task.",
+          "created": "2026-08-21T09:21:00Z",
+          "id": "4a45e625-f3df-4313-a310-b11eff64fb1b"
+        }
+      ],
+      "budget_tokens": null,
+      "checks": [],
+      "completed": "2026-08-21T09:21:00Z",
+      "created": "2026-08-09T09:21:00Z",
+      "depends_on": [],
+      "due": null,
+      "estimate": "PT1H",
+      "id": "3dd1e044-e448-473c-bf91-4fe871227cb2",
+      "modified": "2026-08-21T09:21:00Z",
+      "priority": null,
+      "project": "infra",
+      "recurrence": null,
+      "remind": null,
+      "scheduled": null,
+      "short_id": 33,
+      "status": "done",
+      "tags": [],
+      "title": "Upgrade Postgres to 16",
+      "tracked_seconds": 3000,
+      "urgency": 0.4,
+      "wait": null
+    },
+    {
+      "_rev": 1,
+      "annotations": [],
+      "budget_tokens": null,
+      "checks": [],
+      "completed": null,
+      "created": "2026-08-18T13:32:00Z",
+      "depends_on": [],
+      "due": null,
+      "estimate": null,
+      "id": "33465430-ea0a-468a-812f-694dce554174",
+      "modified": "2026-08-22T13:32:00Z",
+      "priority": "M",
+      "project": "website",
+      "recurrence": null,
+      "remind": null,
+      "scheduled": null,
+      "short_id": 34,
+      "status": "cancelled",
+      "tags": [],
+      "title": "Publish the changelog feed",
+      "tracked_seconds": 3000,
+      "urgency": 4.2,
+      "wait": null
+    },
+    {
+      "_rev": 1,
+      "annotations": [
+        {
+          "body": "Paired on the review; two edge cases found and fixed before merge.",
+          "created": "2026-08-26T14:05:00Z",
+          "id": "e487f655-80c1-4adc-9d26-7d547b299f4a"
+        }
+      ],
+      "budget_tokens": null,
+      "checks": [
+        {
+          "body": "The on-call runbook mentions it",
+          "created": "2026-08-24T14:05:00Z",
+          "evidence": null,
+          "id": "9ffe747c-81e1-4213-88c8-76664f008cc7",
+          "modified": "2026-08-26T14:05:00Z",
+          "position": 0,
+          "state": "passed"
+        },
+        {
+          "body": "Covered by a test that fails without the change",
+          "created": "2026-08-24T14:05:00Z",
+          "evidence": null,
+          "id": "4581ccd9-4656-4bb6-9bf3-79c4d8b843a4",
+          "modified": "2026-08-26T14:05:00Z",
+          "position": 1,
+          "state": "passed"
+        },
+        {
+          "body": "Checked on a real device, not only the simulator",
+          "created": "2026-08-24T14:05:00Z",
+          "evidence": null,
+          "id": "909ca87e-b99e-4c2c-af5e-b4919c1c6a5e",
+          "modified": "2026-08-26T14:05:00Z",
+          "position": 2,
+          "state": "passed"
+        }
+      ],
+      "completed": "2026-08-26T14:05:00Z",
+      "created": "2026-08-24T14:05:00Z",
+      "depends_on": [],
+      "due": null,
+      "estimate": null,
+      "id": "59ca6ef0-7f18-46d3-a272-0c5422dc73ab",
+      "modified": "2026-08-26T14:05:00Z",
+      "priority": "H",
+      "project": "mobile",
+      "recurrence": null,
+      "remind": null,
+      "scheduled": null,
+      "short_id": 35,
+      "status": "done",
+      "tags": [],
+      "title": "Localise the onboarding",
+      "tokens": [
+        {
+          "cache_creation_tokens": 24000,
+          "cache_read_tokens": 2339000,
+          "confidence": "medium",
+          "created": "2026-08-26T14:05:00Z",
+          "id": "a212e20c-30a5-446d-9778-04a0b2f4432f",
+          "input_tokens": 111000,
+          "model": "claude-opus-5",
+          "output_tokens": 8000,
+          "source": "self-report",
+          "tool": "claude-code",
+          "total_tokens": 0
+        }
+      ],
+      "urgency": 6.2,
+      "wait": null
+    },
+    {
+      "_rev": 1,
+      "annotations": [],
+      "budget_tokens": null,
+      "checks": [],
+      "completed": "2026-08-27T13:05:00Z",
+      "created": "2026-08-11T13:05:00Z",
+      "depends_on": [],
+      "due": null,
+      "estimate": "PT3H",
+      "id": "1ce262d6-2b4c-4859-9265-42ee46dc1a26",
+      "modified": "2026-08-27T13:05:00Z",
+      "priority": "H",
+      "project": "website",
+      "recurrence": null,
+      "remind": null,
+      "scheduled": null,
+      "short_id": 36,
+      "status": "done",
+      "tags": [],
+      "title": "Compress hero images",
+      "tracked_seconds": 18000,
+      "urgency": 6.4,
+      "wait": null
+    },
+    {
+      "_rev": 1,
+      "annotations": [
+        {
+          "body": "Done. The follow-up cleanup is its own task.",
+          "created": "2026-08-29T11:02:00Z",
+          "id": "9f93cf9c-06e3-4b27-acd9-727e426fd48d"
+        }
+      ],
+      "budget_tokens": null,
+      "checks": [],
+      "completed": "2026-08-29T11:02:00Z",
+      "created": "2026-08-19T11:02:00Z",
+      "depends_on": [],
+      "due": null,
+      "estimate": null,
+      "id": "ac11d871-7e6e-4dbe-851d-1a33a0301309",
+      "modified": "2026-08-29T11:02:00Z",
+      "priority": "H",
+      "project": "api",
+      "recurrence": null,
+      "remind": null,
+      "scheduled": null,
+      "short_id": 37,
+      "status": "done",
+      "tags": [],
+      "title": "Fix crash on rotate",
+      "urgency": 6.3,
+      "wait": null
+    },
+    {
+      "_rev": 1,
+      "annotations": [
+        {
+          "body": "Shipped behind a flag and rolled out to everyone after a quiet day.",
+          "created": "2026-08-31T12:18:00Z",
+          "id": "c17b558b-128e-43f5-873d-e8558aa97466"
+        }
+      ],
+      "budget_tokens": null,
+      "checks": [],
+      "completed": "2026-08-31T12:18:00Z",
+      "created": "2026-08-29T12:18:00Z",
+      "depends_on": [],
+      "due": null,
+      "estimate": null,
+      "id": "47331d97-080f-43bb-9427-79f5131e2d48",
+      "modified": "2026-08-31T12:18:00Z",
+      "priority": "M",
+      "project": "mobile",
+      "recurrence": null,
+      "remind": null,
+      "scheduled": null,
+      "short_id": 38,
+      "status": "done",
+      "tags": [],
+      "title": "Compress hero images",
+      "urgency": 4.1,
+      "wait": null
+    },
+    {
+      "_rev": 1,
+      "annotations": [
+        {
+          "body": "Paired on the review; two edge cases found and fixed before merge.",
+          "created": "2026-09-01T09:00:00Z",
+          "id": "a1901fe2-3c18-4810-8cf5-ff3a292df063"
+        }
+      ],
+      "budget_tokens": null,
+      "checks": [],
+      "completed": "2026-09-01T09:00:00Z",
+      "created": "2026-08-23T09:00:00Z",
+      "depends_on": [],
+      "due": null,
+      "estimate": null,
+      "id": "9064dbd9-caa0-4141-a637-a18a4f1c9ce2",
+      "modified": "2026-09-01T09:00:00Z",
+      "priority": "L",
+      "project": "infra",
+      "recurrence": null,
+      "remind": null,
+      "scheduled": null,
+      "short_id": 39,
+      "status": "done",
+      "tags": [],
+      "title": "Set up error budget alerts",
+      "urgency": 2.0,
+      "wait": null
+    },
+    {
+      "_rev": 1,
+      "annotations": [
+        {
+          "body": "Measured before and after: p95 down from 840ms to 310ms.",
+          "created": "2026-09-01T09:00:00Z",
+          "id": "5697e720-35ec-4528-9aa6-40157a829d0a"
+        }
+      ],
+      "budget_tokens": 130000,
+      "checks": [
+        {
+          "body": "Checked on a real device, not only the simulator",
+          "created": "2026-08-15T09:00:00Z",
+          "evidence": null,
+          "id": "22240b7c-beac-487b-be91-601b57fcc1f1",
+          "modified": "2026-09-01T09:00:00Z",
+          "position": 0,
+          "state": "passed"
+        },
+        {
+          "body": "Covered by a test that fails without the change",
+          "created": "2026-08-15T09:00:00Z",
+          "evidence": null,
+          "id": "cd606cdb-1308-41db-9e9e-a6ead6ab77a6",
+          "modified": "2026-09-01T09:00:00Z",
+          "position": 1,
+          "state": "passed"
+        },
+        {
+          "body": "The on-call runbook mentions it",
+          "created": "2026-08-15T09:00:00Z",
+          "evidence": null,
+          "id": "d27158ee-cf26-4e1f-b282-e11f1eaa75e2",
+          "modified": "2026-09-01T09:00:00Z",
+          "position": 2,
+          "state": "passed"
+        }
+      ],
+      "completed": "2026-09-01T09:00:00Z",
+      "created": "2026-08-15T09:00:00Z",
+      "depends_on": [],
+      "due": null,
+      "estimate": null,
+      "id": "c77d357f-3cc6-462d-8433-9c10d4652689",
+      "modified": "2026-09-01T09:00:00Z",
+      "priority": null,
+      "project": "infra",
+      "recurrence": null,
+      "remind": null,
+      "scheduled": null,
+      "short_id": 40,
+      "status": "done",
+      "tags": [],
+      "title": "Speed up cold start",
+      "tokens": [
+        {
+          "cache_creation_tokens": 38000,
+          "cache_read_tokens": 2787000,
+          "confidence": "medium",
+          "created": "2026-09-01T09:00:00Z",
+          "id": "c4d91f76-c4cc-4dd1-9686-78559facee45",
+          "input_tokens": 124000,
+          "model": "claude-opus-5",
+          "output_tokens": 7000,
+          "source": "self-report",
+          "tool": "claude-code",
+          "total_tokens": 0
+        }
+      ],
+      "urgency": 0.3,
+      "wait": null
+    },
+    {
+      "_rev": 1,
+      "annotations": [
+        {
+          "body": "Shipped behind a flag and rolled out to everyone after a quiet day.",
+          "created": "2026-09-02T15:32:00Z",
+          "id": "fd3af032-d61a-42f7-a756-1c512749959b"
+        }
+      ],
+      "budget_tokens": null,
+      "checks": [],
+      "completed": "2026-09-02T15:32:00Z",
+      "created": "2026-08-25T15:32:00Z",
+      "depends_on": [],
+      "due": null,
+      "estimate": "PT2H",
+      "id": "a3d1863b-a7b0-4693-890f-6c23a1455615",
+      "modified": "2026-09-02T15:32:00Z",
+      "priority": "M",
+      "project": "mobile",
+      "recurrence": null,
+      "remind": null,
+      "scheduled": null,
+      "short_id": 41,
+      "status": "done",
+      "tags": [],
+      "title": "Publish the changelog feed",
+      "tracked_seconds": 3600,
+      "urgency": 4.1,
+      "wait": null
+    },
+    {
+      "_rev": 1,
+      "annotations": [
+        {
+          "body": "Deployed Tuesday morning; the dashboards have been flat since.",
+          "created": "2026-09-07T11:17:00Z",
+          "id": "8b2b8834-1419-4342-92fb-badbe00bad83"
+        }
+      ],
+      "budget_tokens": null,
+      "checks": [],
+      "completed": "2026-09-07T11:17:00Z",
+      "created": "2026-08-29T11:17:00Z",
+      "depends_on": [],
+      "due": null,
+      "estimate": "PT4H",
+      "id": "b6d75031-2dbe-4f3d-818b-fbb079a2ed17",
+      "modified": "2026-09-07T11:17:00Z",
+      "priority": "H",
+      "project": "mobile",
+      "recurrence": null,
+      "remind": null,
+      "scheduled": null,
+      "short_id": 42,
+      "status": "done",
+      "tags": [],
+      "title": "Paginate the audit log",
+      "tracked_seconds": 31800,
+      "urgency": 6.2,
+      "wait": null
+    },
+    {
+      "_rev": 1,
+      "annotations": [
+        {
+          "body": "Paired on the review; two edge cases found and fixed before merge.",
+          "created": "2026-09-08T13:13:00Z",
+          "id": "14eae053-9a8d-43cf-a97f-45cde92295bc"
+        }
+      ],
+      "budget_tokens": null,
+      "checks": [],
+      "completed": "2026-09-08T13:13:00Z",
+      "created": "2026-08-22T13:13:00Z",
+      "depends_on": [],
+      "due": null,
+      "estimate": "PT4H",
+      "id": "8a29110d-5882-42d5-8751-459f45b90d8c",
+      "modified": "2026-09-08T13:13:00Z",
+      "priority": "M",
+      "project": "website",
+      "recurrence": null,
+      "remind": null,
+      "scheduled": null,
+      "short_id": 43,
+      "status": "done",
+      "tags": [],
+      "title": "Rotate the staging secrets",
+      "tokens": [
+        {
+          "cache_creation_tokens": 51000,
+          "cache_read_tokens": 292000,
+          "confidence": "medium",
+          "created": "2026-09-08T13:13:00Z",
+          "id": "b99969f8-7ea8-4c6b-8dc6-2e13b1f266ea",
+          "input_tokens": 353000,
+          "model": "claude-opus-5",
+          "output_tokens": 7000,
+          "source": "self-report",
+          "tool": "claude-code",
+          "total_tokens": 0
+        }
+      ],
+      "tracked_seconds": 21000,
+      "urgency": 4.1,
+      "wait": null
+    },
+    {
+      "_rev": 1,
+      "annotations": [
+        {
+          "body": "Took longer than planned: the test fixtures needed rebuilding first.",
+          "created": "2026-09-09T12:15:00Z",
+          "id": "e801c67e-5dcc-46db-93ba-9764b9d989c9"
+        }
+      ],
+      "budget_tokens": null,
+      "checks": [
+        {
+          "body": "Covered by a test that fails without the change",
+          "created": "2026-08-26T12:15:00Z",
+          "evidence": null,
+          "id": "70e41c13-b593-49c7-928b-c4f91e0cc26c",
+          "modified": "2026-09-09T12:15:00Z",
+          "position": 0,
+          "state": "passed"
+        },
+        {
+          "body": "Checked on a real device, not only the simulator",
+          "created": "2026-08-26T12:15:00Z",
+          "evidence": null,
+          "id": "e703013f-eb26-46c4-9842-bdd191bbfa2b",
+          "modified": "2026-09-09T12:15:00Z",
+          "position": 1,
+          "state": "passed"
+        },
+        {
+          "body": "The on-call runbook mentions it",
+          "created": "2026-08-26T12:15:00Z",
+          "evidence": null,
+          "id": "4779c8a1-e9d2-46b2-afe2-946ff09fa24f",
+          "modified": "2026-09-09T12:15:00Z",
+          "position": 2,
+          "state": "passed"
+        }
+      ],
+      "completed": "2026-09-09T12:15:00Z",
+      "created": "2026-08-26T12:15:00Z",
+      "depends_on": [],
+      "due": null,
+      "estimate": "PT2H",
+      "id": "b3257dda-cabc-4222-9948-74ac64bd7a63",
+      "modified": "2026-09-09T12:15:00Z",
+      "priority": "L",
+      "project": "website",
+      "recurrence": null,
+      "remind": null,
+      "scheduled": null,
+      "short_id": 44,
+      "status": "done",
+      "tags": [],
+      "title": "Compress hero images",
+      "tracked_seconds": 9000,
+      "urgency": 2.0,
+      "wait": null
+    },
+    {
+      "_rev": 1,
+      "annotations": [
+        {
+          "body": "Closed ahead of its blocker on purpose: that one only gates the rollout.",
+          "created": "2026-09-10T09:25:00Z",
+          "id": "e50cdb10-bad3-4b8e-af46-45f2f7bfc49b"
+        }
+      ],
+      "budget_tokens": null,
+      "checks": [],
+      "completed": "2026-09-10T09:25:00Z",
+      "created": "2026-08-13T09:25:00Z",
+      "depends_on": [
+        "d1c778e6-cbf8-401a-80ad-b24ae11b2b6d"
+      ],
+      "due": null,
+      "estimate": "PT1H",
+      "id": "32668377-741a-4215-b354-293c2141c6d1",
+      "modified": "2026-09-10T09:25:00Z",
+      "priority": null,
+      "project": "website",
+      "recurrence": null,
+      "remind": null,
+      "scheduled": null,
+      "short_id": 45,
+      "status": "done",
+      "tags": [],
+      "title": "Publish the changelog feed",
+      "tracked_seconds": 4500,
+      "urgency": 0.3,
+      "wait": null
+    },
+    {
+      "_rev": 1,
+      "annotations": [
+        {
+          "body": "Paired on the review; two edge cases found and fixed before merge.",
+          "created": "2026-09-15T15:46:00Z",
+          "id": "63e7281c-cc0d-4ea1-9e45-76c89055811f"
+        }
+      ],
+      "budget_tokens": null,
+      "checks": [
+        {
+          "body": "The on-call runbook mentions it",
+          "created": "2026-08-18T15:46:00Z",
+          "evidence": null,
+          "id": "975508c4-d61c-42ca-a7a0-170a8a623c58",
+          "modified": "2026-09-15T15:46:00Z",
+          "position": 0,
+          "state": "passed"
+        },
+        {
+          "body": "Checked on a real device, not only the simulator",
+          "created": "2026-08-18T15:46:00Z",
+          "evidence": null,
+          "id": "16f92d8e-2d35-456c-ad62-c4b090124c47",
+          "modified": "2026-09-15T15:46:00Z",
+          "position": 1,
+          "state": "passed"
+        }
+      ],
+      "completed": "2026-09-15T15:46:00Z",
+      "created": "2026-08-18T15:46:00Z",
+      "depends_on": [],
+      "due": null,
+      "estimate": "PT2H",
+      "id": "d1c778e6-cbf8-401a-80ad-b24ae11b2b6d",
+      "modified": "2026-09-15T15:46:00Z",
+      "priority": "M",
+      "project": "website",
+      "recurrence": null,
+      "remind": null,
+      "scheduled": null,
+      "short_id": 46,
+      "status": "done",
+      "tags": [],
+      "title": "Tune the autoscaler",
+      "tracked_seconds": 15300,
+      "urgency": 4.2,
+      "wait": null
+    },
+    {
+      "_rev": 1,
+      "annotations": [],
+      "budget_tokens": null,
+      "checks": [],
+      "completed": null,
+      "created": "2026-09-03T10:00:00Z",
+      "depends_on": [],
+      "due": "2026-09-14T00:00:00Z",
+      "estimate": "PT1H",
+      "id": "cc5dcd5f-d17f-47d2-9dbc-8dddb8d0c65d",
+      "modified": "2026-09-03T10:00:00Z",
+      "priority": "H",
+      "project": "infra",
+      "recurrence": null,
+      "remind": null,
+      "scheduled": null,
+      "short_id": 47,
+      "status": "pending",
+      "tags": [
+        "ops"
+      ],
+      "title": "Renew the TLS certificate for api.example.dev",
+      "urgency": 18.1,
+      "wait": null
+    },
+    {
+      "_rev": 2,
+      "active_since": "2026-09-16T09:00:00Z",
+      "annotations": [],
+      "budget_tokens": null,
+      "checks": [],
+      "completed": null,
+      "created": "2026-09-07T10:00:00Z",
+      "depends_on": [],
+      "due": "2026-09-16T17:00:00Z",
+      "estimate": "PT6H",
+      "id": "63e5a05b-e665-459b-be06-d750369a9ad7",
+      "modified": "2026-09-16T09:00:00Z",
+      "priority": "H",
+      "project": "website",
+      "recurrence": null,
+      "remind": null,
+      "scheduled": null,
+      "short_id": 48,
+      "status": "active",
+      "tags": [
+        "launch"
+      ],
+      "title": "Ship the v2 pricing page",
+      "urgency": 17.8,
+      "wait": null
+    },
+    {
+      "_rev": 1,
+      "annotations": [],
+      "budget_tokens": null,
+      "checks": [],
+      "completed": null,
+      "created": "2026-09-06T10:00:00Z",
+      "depends_on": [],
+      "due": "2026-09-17T17:00:00Z",
+      "estimate": "PT4H",
+      "id": "eea93b6f-ca71-467b-ba0c-31f68975fcdb",
+      "modified": "2026-09-06T10:00:00Z",
+      "priority": "H",
+      "project": "mobile",
+      "recurrence": null,
+      "remind": null,
+      "scheduled": null,
+      "short_id": 49,
+      "status": "pending",
+      "tags": [
+        "bug"
+      ],
+      "title": "Fix token refresh race on Android",
+      "urgency": 17.0,
+      "wait": null
+    },
+    {
+      "_rev": 1,
+      "annotations": [],
+      "budget_tokens": null,
+      "checks": [],
+      "completed": null,
+      "created": "2026-08-31T10:00:00Z",
+      "depends_on": [],
+      "due": "2026-09-19T00:00:00Z",
+      "estimate": "PT3H",
+      "id": "813547e2-5937-41f0-8401-82fcdb14a009",
+      "modified": "2026-08-31T10:00:00Z",
+      "priority": "H",
+      "project": "api",
+      "recurrence": null,
+      "remind": null,
+      "scheduled": null,
+      "short_id": 50,
+      "status": "pending",
+      "tags": [
+        "perf"
+      ],
+      "title": "Rate-limit the /search endpoint",
+      "urgency": 15.9,
+      "wait": null
+    },
+    {
+      "_rev": 1,
+      "annotations": [
+        {
+          "body": "Ruling: the guide ships WITH the 3.0 release, not after it. A migration note that lands a week late is a support ticket that already happened.",
+          "created": "2026-09-11T11:20:00Z",
+          "id": "17dd6621-7db4-43b5-9f36-ddf89018081e"
+        },
+        {
+          "body": "Blocked until the rate limit lands: the guide has to state the real ceiling, and quoting a number that then changes is worse than waiting.",
+          "created": "2026-09-15T11:20:00Z",
+          "id": "ee4a9a3b-10de-465a-aab1-84eeb0e48236"
+        },
+        {
+          "body": "Scope: the 2.x → 3.0 rename table, the auth change, and a worked example per SDK. Not the reference — that generates itself.",
+          "created": "2026-09-04T11:20:00Z",
+          "id": "fd496ca3-cd12-4457-8b43-5ef0668cab3c"
+        }
+      ],
+      "budget_tokens": null,
+      "checks": [
+        {
+          "body": "Every renamed symbol has a row in the table",
+          "created": "2026-09-04T11:30:00Z",
+          "evidence": null,
+          "id": "ebb86ee2-69ed-4938-b57c-c12a89e9414e",
+          "modified": "2026-09-14T09:10:00Z",
+          "position": 0,
+          "state": "passed"
+        },
+        {
+          "body": "One worked example per SDK (js, py, go)",
+          "created": "2026-09-04T11:30:00Z",
+          "evidence": null,
+          "id": "6776fd34-ec65-4b9e-8ce6-a106f4f51c13",
+          "modified": "2026-09-14T09:10:00Z",
+          "position": 1,
+          "state": "passed"
+        },
+        {
+          "body": "The rate-limit ceiling is stated with its real number",
+          "created": "2026-09-04T11:30:00Z",
+          "evidence": null,
+          "id": "7e37a508-7921-4cb2-bf0c-0a2944eb31e4",
+          "modified": "2026-09-14T09:10:00Z",
+          "position": 2,
+          "state": "open"
+        },
+        {
+          "body": "Reviewed by whoever ships 3.0",
+          "created": "2026-09-04T11:30:00Z",
+          "evidence": null,
+          "id": "e6a1096b-6f05-4e95-96f5-52452080f2ac",
+          "modified": "2026-09-14T09:10:00Z",
+          "position": 3,
+          "state": "open"
+        }
+      ],
+      "completed": null,
+      "created": "2026-08-16T10:00:00Z",
+      "depends_on": [
+        "813547e2-5937-41f0-8401-82fcdb14a009"
+      ],
+      "due": "2026-09-21T00:00:00Z",
+      "estimate": "PT5H",
+      "id": "46773aad-c4aa-435a-abe1-fcde8ce09658",
+      "modified": "2026-08-16T10:00:00Z",
+      "priority": "M",
+      "project": "api",
+      "recurrence": null,
+      "remind": null,
+      "scheduled": null,
+      "short_id": 51,
+      "status": "pending",
+      "tags": [
+        "docs"
+      ],
+      "title": "Write the migration guide for SDK 3.0",
+      "urgency": 12.2,
+      "wait": null
+    },
+    {
+      "_rev": 1,
+      "annotations": [],
+      "budget_tokens": null,
+      "checks": [],
+      "completed": null,
+      "created": "2026-09-02T10:00:00Z",
+      "depends_on": [],
+      "due": "2026-09-25T00:00:00Z",
+      "estimate": "PT8H",
+      "id": "6dcea371-1066-47dc-9e17-b009cf23cf20",
+      "modified": "2026-09-02T10:00:00Z",
+      "priority": "M",
+      "project": "mobile",
+      "recurrence": null,
+      "remind": null,
+      "scheduled": null,
+      "short_id": 52,
+      "status": "pending",
+      "tags": [
+        "ui"
+      ],
+      "title": "Dark mode for the settings screen",
+      "urgency": 8.6,
+      "wait": null
+    },
+    {
+      "_rev": 1,
+      "annotations": [],
+      "budget_tokens": null,
+      "checks": [],
+      "completed": null,
+      "created": "2026-08-15T10:00:00Z",
+      "depends_on": [],
+      "due": null,
+      "estimate": "PT3H",
+      "id": "ea7f7301-c9b4-43b5-afc3-eec055c2d7f4",
+      "modified": "2026-08-15T10:00:00Z",
+      "priority": "M",
+      "project": "infra",
+      "recurrence": null,
+      "remind": null,
+      "scheduled": null,
+      "short_id": 53,
+      "status": "pending",
+      "tags": [
+        "ops"
+      ],
+      "title": "Move nightly backups to object storage",
+      "urgency": 4.2,
+      "wait": null
+    },
+    {
+      "_rev": 1,
+      "annotations": [],
+      "budget_tokens": null,
+      "checks": [],
+      "completed": null,
+      "created": "2026-08-11T10:00:00Z",
+      "depends_on": [],
+      "due": null,
+      "estimate": "PT6H",
+      "id": "84a991f3-b93b-4587-a68b-92e4843afa19",
+      "modified": "2026-08-11T10:00:00Z",
+      "priority": "M",
+      "project": "infra",
+      "recurrence": null,
+      "remind": null,
+      "scheduled": null,
+      "short_id": 54,
+      "status": "pending",
+      "tags": [
+        "ci"
+      ],
+      "title": "Cut build time under five minutes",
+      "urgency": 4.3,
+      "wait": null
+    },
+    {
+      "_rev": 1,
+      "annotations": [],
+      "budget_tokens": null,
+      "checks": [],
+      "completed": null,
+      "created": "2026-09-05T10:00:00Z",
+      "depends_on": [],
+      "due": null,
+      "estimate": "PT4H",
+      "id": "94362459-7e19-4ec0-a143-aa65f21c805c",
+      "modified": "2026-09-05T10:00:00Z",
+      "priority": "M",
+      "project": "api",
+      "recurrence": null,
+      "remind": null,
+      "scheduled": null,
+      "short_id": 55,
+      "status": "pending",
+      "tags": [
+        "docs"
+      ],
+      "title": "Add OpenAPI examples for every endpoint",
+      "urgency": 4.0,
+      "wait": null
+    },
+    {
+      "_rev": 1,
+      "annotations": [],
+      "budget_tokens": null,
+      "checks": [],
+      "completed": null,
+      "created": "2026-09-07T10:00:00Z",
+      "depends_on": [],
+      "due": "2026-09-28T00:00:00Z",
+      "estimate": "PT5H",
+      "id": "8f0be063-86d3-49a0-b07d-f76f38ae994e",
+      "modified": "2026-09-07T10:00:00Z",
+      "priority": "M",
+      "project": "website",
+      "recurrence": null,
+      "remind": null,
+      "scheduled": null,
+      "short_id": 56,
+      "status": "pending",
+      "tags": [
+        "a11y"
+      ],
+      "title": "Accessibility pass on the signup flow",
+      "urgency": 6.0,
+      "wait": null
+    },
+    {
+      "_rev": 1,
+      "annotations": [],
+      "budget_tokens": null,
+      "checks": [],
+      "completed": null,
+      "created": "2026-08-24T10:00:00Z",
+      "depends_on": [],
+      "due": null,
+      "estimate": "PT2H",
+      "id": "83a39808-85d5-46a8-aa12-dc9da38d0f39",
+      "modified": "2026-08-24T10:00:00Z",
+      "priority": "L",
+      "project": "website",
+      "recurrence": null,
+      "remind": null,
+      "scheduled": null,
+      "short_id": 57,
+      "status": "pending",
+      "tags": [
+        "ui"
+      ],
+      "title": "Replace the carousel on the home page",
+      "urgency": 2.0,
+      "wait": null
+    },
+    {
+      "_rev": 1,
+      "annotations": [],
+      "budget_tokens": null,
+      "checks": [],
+      "completed": null,
+      "created": "2026-08-08T10:00:00Z",
+      "depends_on": [],
+      "due": "2026-09-22T00:00:00Z",
+      "estimate": null,
+      "id": "f46cc2ff-6197-4f87-abda-3a974fcb694e",
+      "modified": "2026-08-08T10:00:00Z",
+      "priority": "L",
+      "project": "home",
+      "recurrence": null,
+      "remind": null,
+      "scheduled": null,
+      "short_id": 58,
+      "status": "pending",
+      "tags": [],
+      "title": "Book the dentist",
+      "urgency": 9.4,
+      "wait": null
+    },
+    {
+      "_rev": 1,
+      "annotations": [],
+      "budget_tokens": null,
+      "checks": [],
+      "completed": null,
+      "created": "2026-08-23T10:00:00Z",
+      "depends_on": [],
+      "due": null,
+      "estimate": "PT1H",
+      "id": "24226d81-d9cc-44c3-8df0-d47a354f305b",
+      "modified": "2026-08-23T10:00:00Z",
+      "priority": "L",
+      "project": "website",
+      "recurrence": null,
+      "remind": null,
+      "scheduled": null,
+      "short_id": 59,
+      "status": "pending",
+      "tags": [],
+      "title": "Archive last year's analytics dashboards",
+      "urgency": 2.0,
+      "wait": null
+    },
+    {
+      "_rev": 1,
+      "annotations": [],
+      "budget_tokens": null,
+      "checks": [],
+      "completed": null,
+      "created": "2026-09-08T10:00:00Z",
+      "depends_on": [],
+      "due": null,
+      "estimate": null,
+      "id": "693cc50d-3372-469f-bf65-d54d92af698d",
+      "modified": "2026-09-08T10:00:00Z",
+      "priority": null,
+      "project": "mobile",
+      "recurrence": null,
+      "remind": null,
+      "scheduled": null,
+      "short_id": 60,
+      "status": "pending",
+      "tags": [
+        "bug",
+        "ci"
+      ],
+      "title": "Investigate flaky checkout test",
+      "urgency": 0.1,
+      "wait": null
+    },
+    {
+      "_rev": 1,
+      "annotations": [],
+      "budget_tokens": null,
+      "checks": [],
+      "completed": null,
+      "created": "2026-08-10T10:00:00Z",
+      "depends_on": [],
+      "due": null,
+      "estimate": null,
+      "id": "89cf6d5a-071a-4c55-a085-0d669af034b9",
+      "modified": "2026-08-10T10:00:00Z",
+      "priority": null,
+      "project": "home",
+      "recurrence": null,
+      "remind": null,
+      "scheduled": null,
+      "short_id": 61,
+      "status": "pending",
+      "tags": [],
+      "title": "Sketch ideas for the Q4 offsite",
+      "urgency": 0.4,
+      "wait": null
+    }
+  ]
+}

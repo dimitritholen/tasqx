@@ -177,28 +177,24 @@ memory-list-plain	pipe-plain	100	-	memory list	-	-
 theme-list-plain	pipe-plain	100	-	theme list	-	-
 
 # --- default-mode captures for verbs ../manifest.tsv does not show at all.
-# `config set`/`config unset`/`theme set` and `config path`/`config store` are
-# deliberately absent: the first three write config.toml, which (unlike
-# tasks.db) this harness does not copy per row, so a mutating config row would
-# make every row after it depend on manifest order; the last two print an
-# absolute path (TASQX_CONFIG_DIR / TASQX_DB), which is this machine's, the
-# same reason ../manifest.tsv drops `about`. `setup --list` uses a fixed,
-# nonexistent --home so its ITEM/STATUS table never reads a real machine's
-# ~/.claude. `memory import` names a real path in this repo
-# (docs/maintainers/dependency-policy.md) rather than a scratch file: the
-# command run from the repo root does not echo it back (checked), and the
+# `setup --list` uses a fixed, nonexistent --home so its ITEM/STATUS table
+# never reads a real machine's ~/.claude. `memory import` names a real path in
+# this repo (docs/maintainers/dependency-policy.md) rather than a scratch file:
+# the command run from the repo root does not echo it back (checked), and the
 # imported prose is real content worth a fixture over a throwaway string.
 # `completions bash`/`completions powershell` stand in for the other three
 # shells clap_complete emits (elvish, fish, zsh): same code path, different
 # grammar, not worth five near-identical fixtures.
 #
-# `export` and `memory add` are absent too, found by this file's own
-# determinism proof (two captures, diffed): the demo store's one RUNNING task
-# is left running by a live `tasqx start` inside demo-store.py, which mints a
-# real event id at the pin instant, and `export`'s full-store dump prints that
-# id's random tail; `memory add`'s echo prints the fresh doc UUID it just
-# minted, with no short-id form the way `add-echo`'s task id has. Same class
-# as `api task.add`'s exclusion in ../manifest.tsv, one layer further in. ---
+# The last seven rows of this block were once excluded and are captured since
+# #811 by two things scripts/docs-capture.sh does (see `scrub` there).
+# `config set`/`config unset`/`theme set` are `pipe-mut`, which copies the
+# config dir per row as well as tasks.db, so a write never reaches the next
+# row. `config path`/`config store` and the config writers' echo print the
+# store and config paths, rewritten to `$TASQX_DB`/`$TASQX_CONFIG_DIR`.
+# `export` dumps the event id demo-store.py's live `tasqx start` mints at the
+# pin, and `memory add` echoes the doc id it mints: both are v7 ids whose time
+# half the pin fixes, and their random tail is rewritten to a counter. ---
 chart-heatmap	pipe	100	-	chart heatmap	-	-
 chart-throughput	pipe	100	-	chart throughput	-	-
 theme-show	pipe	100	-	theme show	-	-
@@ -218,6 +214,13 @@ tokens-add	pipe-mut	100	-	tokens add 49 --total 500 --tool claude-code	-	-
 check-set	pipe-mut	100	-	check set 51 7e37a508-7921-4cb2-bf0c-0a2944eb31e4 passed --evidence "docs/guides/sdk-3.0.md#rate-limits"	-	-
 check-remove	pipe-mut	100	-	check remove 51 e6a1096b-6f05-4e95-96f5-52452080f2ac	-	-
 unannotate	pipe-mut	100	-	unannotate 51 17dd6621-7db4-43b5-9f36-ddf89018081e	-	-
+config-set	pipe-mut	100	-	config set theme.name nord	-	-
+config-unset	pipe-mut	100	-	config unset dashboard.panels	-	-
+theme-set	pipe-mut	100	-	theme set nord	-	-
+config-path	pipe	100	-	config path	-	-
+config-store	pipe	100	-	config store	-	-
+export	pipe	100	-	export	-	-
+memory-add	pipe-mut	100	-	memory add "Baseline capture note" "Written by the behaviour baseline's memory-add row." --project website	-	-
 
 # --- the MCP tool specs: an `initialize` handshake, then `tools/list`, piped
 # as newline-delimited JSON-RPC into `tasqx mcp serve` (`%b` expands the `\n`

@@ -91,23 +91,6 @@ site's own manifest already, and are not repeated here. `tasqx daemon` and
 `tasqx watch` are excluded outright — both run until killed, with nothing to
 end a capture on.
 
-A few rows were captured once and then dropped, found by this corpus's own
-determinism check (capture twice, diff):
-
-- **`export`** — the demo store's one RUNNING task is left running by a live
-  `tasqx start` inside `scripts/demo-store.py`, which mints a real event id at
-  the pin instant. `export`'s full-store dump quotes that id's random tail,
-  the same reason the site manifest excludes `task.add`.
-- **`memory add`** — its echo quotes the fresh doc UUID it just minted, with
-  no short-id form the way a task's `add-echo` has.
-- **`config set` / `config unset` / `theme set`** — each writes
-  `config.toml`, which (unlike `tasks.db`) this harness does not copy per row,
-  so a mutating config row would make every row captured after it depend on
-  the manifest's order.
-- **`config path` / `config store`** — each prints an absolute
-  `TASQX_CONFIG_DIR`/`TASQX_DB` path, this machine's, the same reason the site
-  manifest drops `about`.
-
 `setup --list` is captured with a fixed, nonexistent `--home` so its table
 never reads a real machine's `~/.claude`. `completions bash` and
 `completions powershell` stand in for the other three shells `clap_complete`
@@ -131,6 +114,29 @@ directory with `HOME`/`PATH` pointed at paths nothing has ever installed
 into, so every machine now answers "nothing installed" and infers the same
 default project — proved by running `--check` under `env -i` with a fresh
 `HOME` and a `PATH` built from scratch.
+
+## Rows that needed help to hold still
+
+Seven rows print something no pin fixes on its own, and
+`scripts/docs-capture.sh` makes each reproducible rather than leaving it out
+(#811):
+
+- **`config set` / `config unset` / `theme set`** each write `config.toml`.
+  They are `pipe-mut` rows, and a `pipe-mut` row gets its own copy of the
+  demo config dir as well as of `tasks.db`, so the write never reaches a row
+  captured after it and the manifest's order stays irrelevant.
+- **`config path` / `config store`**, and the echo of the two config writers,
+  print the absolute `TASQX_CONFIG_DIR`/`TASQX_DB` the row ran with, which is
+  this machine's. The capture rewrites those two paths to the literal
+  `$TASQX_CONFIG_DIR` and `$TASQX_DB`.
+- **`export`** dumps the event id of the demo store's one RUNNING task, which
+  a live `tasqx start` inside `scripts/demo-store.py` mints at the pin, and
+  **`memory add`** echoes the doc id it just minted. Both are v7 ids: the pin
+  fixes their first 48 bits (the clock) and only the random tail moves. The
+  capture rewrites every id carrying the pin's time prefix to
+  `<prefix>-7000-8000-<n>`, numbered by first appearance in its file, so a
+  dump that quotes one id twice still shows it as the same id. Ids the demo
+  store seeds carry earlier times and are never touched.
 
 ## Proving it
 

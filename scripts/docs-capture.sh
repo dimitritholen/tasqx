@@ -169,7 +169,9 @@ TASQX="$TASQX" TASQX_NOW="$PIN" python3 "$root/scripts/demo-store.py" >/dev/null
 # A copy of the store for one mutating row. `add`, `done`, `start` and
 # `annotate` write, and a row that wrote into the shared store would change
 # every row captured after it — the screens would then depend on the order of
-# the manifest, which is the one thing a fixture must not do.
+# the manifest, which is the one thing a fixture must not do. The config dir
+# is copied beside it for the same reason: `config set`, `config unset` and
+# `theme set` write config.toml (#811).
 copy_store() {
     local dest=$1
     cp "$demo_db" "$dest"
@@ -208,7 +210,7 @@ capture_tui() {
     pane_cmd="$pane_cmd; echo \$? >$(printf '%q' "$status_file"); sleep 300"
     clean_env tmux -f /dev/null -L "$tmux_sock" new-session -d -s "$session" -x "$cols" -y "$rows" \
         -e "TASQX_DB=$db" \
-        -e "TASQX_CONFIG_DIR=$demo_config" \
+        -e "TASQX_CONFIG_DIR=$config" \
         -e "TASQX_NOW=$PIN" \
         -e "TASQX_FORCE_COLOR=1" \
         -e "COLORTERM=truecolor" \
@@ -266,7 +268,7 @@ capture_pipe() {
     local status=0
     if [ "$render" = plain ]; then
         if [ "$stdin" = "-" ]; then
-            clean_env TASQX_DB="$db" TASQX_CONFIG_DIR="$demo_config" TASQX_NOW="$PIN" \
+            clean_env TASQX_DB="$db" TASQX_CONFIG_DIR="$config" TASQX_NOW="$PIN" \
                 COLUMNS="$cols" \
                 "$TASQX" --no-daemon "$@" >"$dest" 2>&1 </dev/null || status=$?
         else
@@ -277,18 +279,18 @@ capture_pipe() {
             # this one carried a backslash, so every other stdin column is
             # unchanged by the switch.
             printf '%b' "$stdin" |
-                clean_env TASQX_DB="$db" TASQX_CONFIG_DIR="$demo_config" TASQX_NOW="$PIN" \
+                clean_env TASQX_DB="$db" TASQX_CONFIG_DIR="$config" TASQX_NOW="$PIN" \
                     COLUMNS="$cols" \
                     "$TASQX" --no-daemon "$@" >"$dest" 2>&1 || status=$?
         fi
     else
         if [ "$stdin" = "-" ]; then
-            clean_env TASQX_DB="$db" TASQX_CONFIG_DIR="$demo_config" TASQX_NOW="$PIN" \
+            clean_env TASQX_DB="$db" TASQX_CONFIG_DIR="$config" TASQX_NOW="$PIN" \
                 TASQX_FORCE_COLOR=1 TERM=xterm-256color COLUMNS="$cols" \
                 "$TASQX" --no-daemon "$@" >"$dest" 2>&1 </dev/null || status=$?
         else
             printf '%b' "$stdin" |
-                clean_env TASQX_DB="$db" TASQX_CONFIG_DIR="$demo_config" TASQX_NOW="$PIN" \
+                clean_env TASQX_DB="$db" TASQX_CONFIG_DIR="$config" TASQX_NOW="$PIN" \
                     TASQX_FORCE_COLOR=1 TERM=xterm-256color COLUMNS="$cols" \
                     "$TASQX" --no-daemon "$@" >"$dest" 2>&1 || status=$?
         fi
@@ -325,7 +327,7 @@ capture_pipe_isolated() {
     if [ "$stdin" = "-" ]; then
         (
             cd "$work" &&
-                clean_env TASQX_DB="$db" TASQX_CONFIG_DIR="$demo_config" TASQX_NOW="$PIN" \
+                clean_env TASQX_DB="$db" TASQX_CONFIG_DIR="$config" TASQX_NOW="$PIN" \
                     TASQX_FORCE_COLOR=1 TERM=xterm-256color COLUMNS="$cols" \
                     HOME=/nonexistent-tasqx-baseline-home \
                     PATH=/nonexistent-tasqx-baseline-path \
@@ -335,7 +337,7 @@ capture_pipe_isolated() {
         printf '%b' "$stdin" |
             (
                 cd "$work" &&
-                    clean_env TASQX_DB="$db" TASQX_CONFIG_DIR="$demo_config" TASQX_NOW="$PIN" \
+                    clean_env TASQX_DB="$db" TASQX_CONFIG_DIR="$config" TASQX_NOW="$PIN" \
                         TASQX_FORCE_COLOR=1 TERM=xterm-256color COLUMNS="$cols" \
                         HOME=/nonexistent-tasqx-baseline-home \
                         PATH=/nonexistent-tasqx-baseline-path \
@@ -345,16 +347,45 @@ capture_pipe_isolated() {
     return $status
 }
 
+# The two things a row can print that no pin fixes, rewritten to a stable
+# spelling after capture (#811):
+#
+# - the store and config paths the row ran with, which are this machine's
+#   (`config path`, `config store`, and `config set`/`theme set`'s echo of the
+#   file they wrote), become `$TASQX_DB` and `$TASQX_CONFIG_DIR`;
+# - an id minted live at the pin. The engine's v7 ids take their first 48
+#   bits from the clock, so under TASQX_NOW those are fixed and only the
+#   random tail differs run to run: demo-store.py's live `start` event, which
+#   `export` dumps, and the doc `memory add` echoes. Each distinct one becomes
+#   `<pin prefix>-7000-8000-<n>`, numbered in order of first appearance in
+#   its file, so a dump that quotes the same id twice still says so. An id
+#   seeded by demo-store.py is stamped with its own, earlier time and never
+#   matches.
+pin_id=$(python3 -c 'import datetime, sys
+t = datetime.datetime.strptime(sys.argv[1], "%Y-%m-%dT%H:%M:%SZ")
+h = "%012x" % (int(t.replace(tzinfo=datetime.timezone.utc).timestamp()) * 1000)
+print(h[:8] + "-" + h[8:])' "$PIN")
+scrub() {
+    SCRUB_DB=$db SCRUB_CONFIG=$config SCRUB_PIN=$pin_id perl -pi -e '
+        s/\Q$ENV{SCRUB_CONFIG}\E/\$TASQX_CONFIG_DIR/g;
+        s/\Q$ENV{SCRUB_DB}\E/\$TASQX_DB/g;
+        s/\b(\Q$ENV{SCRUB_PIN}\E-7[0-9a-f]{3}-[0-9a-f]{4}-[0-9a-f]{12})\b/$seen{$1} ||= sprintf("%s-7000-8000-%012x", $ENV{SCRUB_PIN}, ++$n)/ge;
+    ' "$1"
+}
+
 names=()
 while IFS=$'\t' read -r name kind cols rows args keys stdin <&3 || [ -n "${name:-}" ]; do
     case "$name" in '' | '#'*) continue ;; esac
     names+=("$name")
     dest=$out/$name.ansi
     db=$demo_db
+    config=$demo_config
     case "$kind" in
     *-mut)
         db=$work/$name.db
         copy_store "$db"
+        config=$work/$name.config
+        cp -R "$demo_config" "$config"
         ;;
     esac
     # The manifest is repository content, read by a repository script, so its
@@ -400,6 +431,7 @@ while IFS=$'\t' read -r name kind cols rows args keys stdin <&3 || [ -n "${name:
         exit 2
         ;;
     esac
+    scrub "$dest"
     echo "docs-capture: $name" >&2
 done 3<"$manifest"
 

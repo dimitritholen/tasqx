@@ -1,0 +1,1 @@
+dashboard.panels unset; now tasks,projects,burndown,pulse,effort,tokens (default)
