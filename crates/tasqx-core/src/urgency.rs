@@ -29,6 +29,24 @@ use crate::util::parse_ts;
 /// the formula moved.
 pub const DUE_WEIGHT: f64 = 12.0;
 
+/// The priority term per priority — `(label, priority, weight)`, `none` last.
+/// Public so the object reference prints the weights the formula scores with.
+pub const PRIORITY_TERMS: [(&str, Option<Priority>, f64); 4] = [
+    ("H", Some(Priority::H), 6.0),
+    ("M", Some(Priority::M), 3.9),
+    ("L", Some(Priority::L), 1.8),
+    ("none", None, 0.0),
+];
+
+/// Days of lead time the due term ramps down over.
+pub const DUE_RAMP_DAYS: f64 = 14.0;
+
+/// The age term's rate per day since creation.
+pub const AGE_PER_DAY: f64 = 0.01;
+
+/// The age term's ceiling.
+pub const AGE_CAP: f64 = 1.0;
+
 /// Days from `now` until `target`, or None if `target` is unparseable.
 ///
 /// Seconds-to-f64 is exact for any instant this tool will ever see (f64
@@ -53,12 +71,10 @@ pub fn breakdown_at(
 ) -> Vec<(&'static str, f64)> {
     let mut parts: Vec<(&'static str, f64)> = Vec::new();
 
-    let prio = match priority {
-        Some(Priority::H) => 6.0,
-        Some(Priority::M) => 3.9,
-        Some(Priority::L) => 1.8,
-        None => 0.0,
-    };
+    let prio = PRIORITY_TERMS
+        .iter()
+        .find(|(_, p, _)| *p == priority)
+        .map_or(0.0, |(_, _, w)| *w);
     parts.push(("priority", prio));
 
     let mut due_term = 0.0;
@@ -67,7 +83,7 @@ pub fn breakdown_at(
             due_term = if d <= 0.0 {
                 DUE_WEIGHT
             } else {
-                (DUE_WEIGHT * (1.0 - d / 14.0)).max(0.0)
+                (DUE_WEIGHT * (1.0 - d / DUE_RAMP_DAYS)).max(0.0)
             };
         }
     }
@@ -76,7 +92,7 @@ pub fn breakdown_at(
     let mut age_term = 0.0;
     if let Some(age) = days_until(created, now) {
         let age_days = (-age).max(0.0); // created is in the past => negative
-        age_term = (age_days * 0.01).min(1.0);
+        age_term = (age_days * AGE_PER_DAY).min(AGE_CAP);
     }
     parts.push(("age", age_term));
 
