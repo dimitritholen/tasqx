@@ -254,7 +254,7 @@ fn graph_views_quarantine(app: AppHandle) -> Result<String, String> {
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
-/// The pages the newer-release notice links (D???), and the only URLs the host
+/// The pages the newer-release notice links (D230), and the only URLs the host
 /// opens. A fixed prefix and a plain character set, so the string handed to
 /// the OS opener can only ever be one of those pages.
 const RELEASE_PAGES: &str = "https://github.com/dimitritholen/tasqx/releases/";

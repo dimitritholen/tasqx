@@ -5,7 +5,7 @@ name: Desktop
 # it: neither `cargo fmt --all` nor `cargo test --workspace` at the root reach
 # the host crate. This workflow is the only thing that builds it.
 #
-# Every run uploads the bundles as workflow artifacts, unsigned (D???). A
+# Every run uploads the bundles as workflow artifacts, unsigned (D230). A
 # version tag is the one run that reads the signing secrets, and it passes
 # without them: the first desktop release ships unsigned, and a tag run on a
 # repository holding none of them uploads the same unsigned bundles a pull

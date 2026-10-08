@@ -6,7 +6,7 @@ import { Button } from '../ui/primitives';
 import { APP_VERSION, dismissUpdate, useUpdates } from './updates';
 
 /**
- * "A newer version exists", with the release page and a dismiss (D10, D???).
+ * "A newer version exists", with the release page and a dismiss (D10, D230).
  * The link is the only action: nothing is downloaded or installed here.
  */
 export function UpdateNotice() {

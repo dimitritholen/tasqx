@@ -3,7 +3,7 @@ import { useEffect, useSyncExternalStore } from 'react';
 import { version as APP_VERSION } from '../../package.json';
 
 /**
- * The newer-release notice (D???). D10 allows a passive "a newer version
+ * The newer-release notice (D230). D10 allows a passive "a newer version
  * exists" and nothing more: there is no updater, nothing is downloaded or
  * installed, and the notice only links the release page. Asking GitHub is the
  * one network request the app makes on its own, so it is off until the user
