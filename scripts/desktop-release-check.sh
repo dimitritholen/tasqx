@@ -213,15 +213,19 @@ unix_fds() { { lsof -a -U -p "$daemon_pid" 2>/dev/null || true; } | tail -n +2 |
 before_fds=0
 [[ "$os" == windows ]] || before_fds="$(unix_fds)"
 if [[ "$os" == linux ]]; then
-    Xvfb :97 >/dev/null 2>&1 &
+    # 24-bit: Xvfb's default screen is 8-bit, and WebKit wants a true-colour visual.
+    Xvfb :97 -screen 0 1280x1024x24 -nolisten tcp >/dev/null 2>&1 &
     xvfb_pid=$!
     sleep 1
     # WebKitGTK on a GPU-less Xvfb can fail to render (and so never run the
     # app's script); keep it off DMA-BUF, compositing and the GPU.
     # The runner's Ubuntu restricts unprivileged user namespaces, which
     # WebKitGTK's bubblewrap sandbox needs, so the page may never load there.
+    # A CI runner has no session bus; dbus-run-session gives the app one.
+    session=()
+    if command -v dbus-run-session >/dev/null; then session=(dbus-run-session --); fi
     DISPLAY=:97 WEBKIT_DISABLE_DMABUF_RENDERER=1 WEBKIT_DISABLE_COMPOSITING_MODE=1 LIBGL_ALWAYS_SOFTWARE=1 \
-        WEBKIT_DISABLE_SANDBOX_THIS_IS_DANGEROUS=1 "$exe" >"$scratch/app.log" 2>&1 &
+        WEBKIT_DISABLE_SANDBOX_THIS_IS_DANGEROUS=1 ${session[@]+"${session[@]}"} "$exe" >"$scratch/app.log" 2>&1 &
 else
     "$exe" >"$scratch/app.log" 2>&1 &
 fi
@@ -244,6 +248,17 @@ if [[ "$os" != windows ]]; then
         tail -20 "$scratch/app.log" >&2
         echo "--- the app's child processes" >&2
         ps -o pid,stat,args -p "$(pgrep -d, -P "$app_pid" || echo "$app_pid")" >&2 || true
+        if [[ "$os" == linux ]]; then
+            echo "--- the app's threads" >&2
+            # Under dbus-run-session the app is the wrapper's child.
+            target="$(pgrep -P "$app_pid" | head -1)"
+            target="${target:-$app_pid}"
+            ps -L -o tid,stat,wchan:32,comm -p "$target" >&2 || true
+            if command -v gdb >/dev/null; then
+                echo "--- where they wait" >&2
+                timeout 30 sudo gdb -batch -p "$target" -ex 'thread apply all bt 12' 2>&1 | grep -E '^(Thread|#)' | head -80 >&2 || true
+            fi
+        fi
         echo "--- the daemon's Unix sockets" >&2
         lsof -a -U -p "$daemon_pid" >&2 || true
         fail "the app never connected to the scratch daemon in 30 s"
