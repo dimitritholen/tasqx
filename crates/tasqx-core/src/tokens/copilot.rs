@@ -500,6 +500,50 @@ mod tests {
     }
 
     #[test]
+    fn an_all_zero_usage_record_is_dropped() {
+        // Every count zero (or absent): nothing to bill, so no sample, even
+        // with a response id and a usable timestamp. A sibling record for the
+        // same response that does carry usage still yields exactly one.
+        let content = concat!(
+            r#"{"attributes":{"gen_ai.response.id":"z","gen_ai.usage.input_tokens":0,"gen_ai.usage.output_tokens":0,"gen_ai.usage.cache_read.input_tokens":0},"hrTime":[1700000000,0]}"#,
+            "\n",
+            r#"{"attributes":{"gen_ai.response.id":"w","gen_ai.usage.input_tokens":10,"gen_ai.usage.output_tokens":5},"hrTime":[1700000001,0]}"#,
+            "\n",
+        );
+        let path = write_fixture(content);
+        let samples = samples_from_file(&path).expect("parse");
+        std::fs::remove_file(&path).ok();
+
+        assert_eq!(samples.len(), 1);
+        assert_eq!(samples[0].input_tokens, 10);
+    }
+
+    #[test]
+    fn unknown_fields_are_ignored_and_never_counted() {
+        // Version tolerance: extra attributes and extra record fields neither
+        // fail the record nor leak into a bucket, including token-looking ones.
+        let content = concat!(
+            r#"{"future":{"x":1},"attributes":{"gen_ai.response.id":"u","gen_ai.usage.input_tokens":100,"gen_ai.usage.output_tokens":20,"gen_ai.usage.reasoning.output_tokens":999,"gen_ai.usage.future_tokens":777,"something.new":"v"},"hrTime":[1700000000,0]}"#,
+            "\n",
+        );
+        let path = write_fixture(content);
+        let samples = samples_from_file(&path).expect("parse");
+        std::fs::remove_file(&path).ok();
+
+        assert_eq!(samples.len(), 1);
+        let s = &samples[0];
+        assert_eq!(
+            (
+                s.input_tokens,
+                s.output_tokens,
+                s.cache_read_tokens,
+                s.cache_creation_tokens
+            ),
+            (100, 20, 0, 0)
+        );
+    }
+
+    #[test]
     fn cache_only_record_is_kept_with_zero_input() {
         // A record whose only usage is cache-read (input == cache-read) still
         // carries real, billable tokens and must not be dropped.
