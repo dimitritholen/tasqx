@@ -487,15 +487,6 @@ pub fn best_streak(days: &[DayCount]) -> u32 {
 /// which already lists every task to build `days` in the first place, can
 /// tell the two apart (#233.2, and the collision it had with #234 item 8's
 /// deliberately all-zero, all-future single-week fixture).
-/// `Sep`, `Jan` — the month as a chart axis abbreviates it. Only ever fed
-/// `Date::month`, whose range is 1..=12.
-fn month_abbrev(m: i8) -> &'static str {
-    const NAMES: [&str; 12] = [
-        "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
-    ];
-    NAMES.get((m - 1).max(0) as usize).copied().unwrap_or("???")
-}
-
 pub fn render_heatmap(ctx: &Ctx, days: &[DayCount], anchor: Date, store_empty: bool) -> String {
     if store_empty {
         return "No events recorded yet — add a task to start the history.\n".to_string();
@@ -522,7 +513,7 @@ pub fn render_heatmap(ctx: &Ctx, days: &[DayCount], anchor: Date, store_empty: b
         let m = dc.date.month();
         let at = w * 2; // each column is a glyph plus its trailing space
         if last_month != Some(m) && at >= written {
-            let name = month_abbrev(m);
+            let name = tasqx_core::datetime::month_abbrev(m).unwrap_or("???");
             months.push_str(&" ".repeat(at - written));
             months.push_str(name);
             written = at + name.len();

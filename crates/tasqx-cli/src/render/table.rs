@@ -468,12 +468,7 @@ pub(crate) fn urgency_meter(ramp: f64) -> (String, String) {
 /// `Date::month`, whose range is 1..=12; anything else would be a jiff bug, and
 /// falling back to the number keeps a date on screen either way.
 pub(crate) fn month_abbrev(m: i8) -> String {
-    const NAMES: [&str; 12] = [
-        "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
-    ];
-    NAMES
-        .get((m - 1).max(0) as usize)
-        .map_or_else(|| m.to_string(), ToString::to_string)
+    tasqx_core::datetime::month_abbrev(m).map_or_else(|| m.to_string(), ToString::to_string)
 }
 
 /// The `DUE` cell: the deadline as a reader dates it, not as the store spells

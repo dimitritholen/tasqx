@@ -29,6 +29,7 @@ use jiff::civil::{Date, DateTime, Time, Weekday};
 use jiff::tz::TimeZone;
 use jiff::{Span, Timestamp};
 
+use crate::datetime::weekday;
 use crate::error::ApiError;
 
 /// A parsed recurrence rule (the D2 subset).
@@ -325,19 +326,6 @@ fn to_ts(date: Date, time: Time) -> Result<Timestamp, ApiError> {
         .to_zoned(TimeZone::UTC)
         .map_err(|e| ApiError::internal(format!("recurrence datetime: {e}")))?
         .timestamp())
-}
-
-fn weekday(s: &str) -> Option<Weekday> {
-    Some(match s {
-        "monday" | "mon" => Weekday::Monday,
-        "tuesday" | "tue" | "tues" => Weekday::Tuesday,
-        "wednesday" | "wed" => Weekday::Wednesday,
-        "thursday" | "thu" | "thur" | "thurs" => Weekday::Thursday,
-        "friday" | "fri" => Weekday::Friday,
-        "saturday" | "sat" => Weekday::Saturday,
-        "sunday" | "sun" => Weekday::Sunday,
-        _ => return None,
-    })
 }
 
 fn weekday_name(w: Weekday) -> &'static str {

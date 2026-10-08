@@ -566,8 +566,9 @@ fn next_week_day(today: Date, target: Weekday) -> Date {
         .unwrap_or(today)
 }
 
-/// Map a weekday name (full or 3-letter) to a `Weekday`.
-fn weekday(s: &str) -> Option<Weekday> {
+/// Map a weekday name (full or 3-letter) to a `Weekday`. The one spelling
+/// table for `due:` and `every`, so the two cannot accept different words.
+pub(crate) fn weekday(s: &str) -> Option<Weekday> {
     Some(match s {
         "monday" | "mon" => Weekday::Monday,
         "tuesday" | "tue" | "tues" => Weekday::Tuesday,
@@ -578,6 +579,16 @@ fn weekday(s: &str) -> Option<Weekday> {
         "sunday" | "sun" => Weekday::Sunday,
         _ => return None,
     })
+}
+
+/// `Sep`, `Jan` — the month as a `DUE` cell or a chart axis abbreviates it.
+/// `None` above 12; a caller picks its own fallback. Fed `Date::month`
+/// (1..=12), so the clamp of 0 and below to `Jan` is never reached.
+pub fn month_abbrev(m: i8) -> Option<&'static str> {
+    const NAMES: [&str; 12] = [
+        "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+    ];
+    NAMES.get((m - 1).max(0) as usize).copied()
 }
 
 /// A trailing token counts as a clock only if it carries a `:` or an am/pm
@@ -635,6 +646,33 @@ mod tests {
     /// as written. `tests/utc_clock.rs` proves that under a non-UTC `TZ`.
     fn p(s: &str) -> String {
         parse_when(s, now()).unwrap()
+    }
+
+    #[test]
+    fn month_abbrev_names_each_month_and_refuses_past_twelve() {
+        let names: Vec<_> = (1..=12).map(|m| month_abbrev(m).unwrap()).collect();
+        assert_eq!(
+            names.join(" "),
+            "Jan Feb Mar Apr May Jun Jul Aug Sep Oct Nov Dec"
+        );
+        assert_eq!(month_abbrev(13), None);
+    }
+
+    /// `due:` and `every` share one spelling table: every word `weekday`
+    /// knows is accepted by both, so a spelling added there reaches both.
+    #[test]
+    fn due_and_every_accept_the_same_weekday_spellings() {
+        for w in [
+            "mon", "tue", "tues", "wed", "thu", "thur", "thurs", "fri", "sat", "sun",
+        ] {
+            assert!(weekday(w).is_some(), "{w}");
+            assert!(parse_when(&format!("next {w}"), now()).is_ok(), "due {w}");
+            let rule = format!("weekly on {w}");
+            assert!(crate::recur::parse_rule(&rule).is_ok(), "every {w}");
+        }
+        assert!(weekday("weds").is_none());
+        assert!(parse_when("next weds", now()).is_err());
+        assert!(crate::recur::parse_rule("weekly on weds").is_err());
     }
 
     /// `--due -1d` has to mean "yesterday", not "unparseable". The short-offset
