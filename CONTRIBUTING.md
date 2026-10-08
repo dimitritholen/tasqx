@@ -15,6 +15,7 @@ is a bug worth reporting.
 | `crates/tasqx-core` | The engine: storage, the JSON API (`dispatch::PARAMS` is the method table), the daemon and the MCP server. |
 | `crates/tasqx-cli` | The `tasqx` binary: argument parsing, rendering, the TUI screens and the in-binary docs. |
 | `docs/wiki`, `docs/guides` | User documentation. Drift guards in `crates/tasqx-cli/tests/` check both. |
+| `docs/site` | The `tasqx docs` site's own pages (overview, install, filters, …), rendered with the wiki and the guides. |
 | `docs/maintainers` | How the project itself is run: terminal house style, mutation testing, dependency policy, the Homebrew tap. |
 | `scripts/` | Release helpers, installer smoke tests and screen-capture tools. |
 

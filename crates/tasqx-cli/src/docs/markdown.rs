@@ -1,11 +1,13 @@
-//! The wiki and the guides, compiled in and rendered as pages of the guide.
+//! The site's pages, the wiki and the guides, compiled in and rendered as
+//! pages of the guide.
 //!
 //! `docs/wiki` and `docs/guides` are good prose that used to exist only on the
-//! repository's web page. They are the same thing the rest of [`super`] is —
-//! pages of one self-contained HTML file — so they are `include_str!`d here and
-//! rendered at *generation* time, rather than copied into Rust string literals.
-//! One artifact, one source: editing a wiki page changes the site, and there is
-//! no second copy for the two to drift apart on.
+//! repository's web page, and `docs/site` holds the pages that used to be
+//! built in Rust, one `push_str` at a time. They are the same thing the rest of
+//! [`super`] is — pages of one self-contained HTML file — so they are
+//! `include_str!`d here and rendered at *generation* time, rather than copied
+//! into Rust string literals. One artifact, one source: editing a page changes
+//! the site, and there is no second copy for the two to drift apart on.
 //!
 //! **The events are post-processed, not the HTML.** `pulldown-cmark` parses, but
 //! what it would emit — `<h2>`, `<table>`, `<pre><code class="language-console">`
@@ -32,6 +34,65 @@ use std::sync::LazyLock;
 use pulldown_cmark::{CodeBlockKind, CowStr, Event, HeadingLevel, Options, Parser, Tag, TagEnd};
 
 use crate::html::esc;
+
+/// The site's own pages, in reading order: `(file, section, sidebar label)`.
+///
+/// Each one's id is its file name without `.md` — `filters.md` is
+/// `#filters` — and those ids are **frozen**, as are the `#h-…` ids its
+/// headings get ([`heading_prefix`]): they were the guide's hand-built pages
+/// before they were markdown, and every link anyone shared is one of them.
+/// The label is trusted markup (`&amp;`), shorter than the `# ` title the page
+/// opens with.
+const SITE: &[(&str, &str, &str, &str)] = &[
+    (
+        "overview.md",
+        "get-started",
+        "Overview",
+        include_str!("../../../../docs/site/overview.md"),
+    ),
+    (
+        "install.md",
+        "get-started",
+        "Install &amp; quickstart",
+        include_str!("../../../../docs/site/install.md"),
+    ),
+    (
+        "filters.md",
+        "using",
+        "Filter grammar",
+        include_str!("../../../../docs/site/filters.md"),
+    ),
+    (
+        "scheduling.md",
+        "using",
+        "Scheduling &amp; recurrence",
+        include_str!("../../../../docs/site/scheduling.md"),
+    ),
+    (
+        "reminders.md",
+        "using",
+        "Reminders",
+        include_str!("../../../../docs/site/reminders.md"),
+    ),
+    (
+        "daemon.md",
+        "using",
+        "Daemon &amp; watch",
+        include_str!("../../../../docs/site/daemon.md"),
+    ),
+    (
+        "data.md",
+        "using",
+        "Export &amp; import",
+        include_str!("../../../../docs/site/data.md"),
+    ),
+    (
+        "themes.md",
+        "using",
+        "Themes &amp; reports",
+        include_str!("../../../../docs/site/themes.md"),
+    ),
+];
 
 /// The wiki, in reading order — the order the sidebar lists them under
 /// "Using tasqx" and the order prev/next walks.
@@ -152,6 +213,8 @@ pub(super) struct MdPage {
     pub(super) section: &'static str,
     /// The file's `# ` heading, raw (the caller escapes it).
     pub(super) title: String,
+    /// The sidebar entry, as markup: [`SITE`]'s label, or the title escaped.
+    pub(super) label: String,
     /// The rendered body, **without** the title: [`super::page_open`] emits the
     /// `h2`, so a page has exactly one.
     pub(super) body: String,
@@ -166,7 +229,18 @@ pub(super) static PAGES: LazyLock<Vec<MdPage>> = LazyLock::new(build);
 
 fn build() -> Vec<MdPage> {
     let ids = id_map();
-    let mut out = Vec::with_capacity(WIKI.len() + GUIDES.len());
+    let mut out = Vec::with_capacity(SITE.len() + WIKI.len() + GUIDES.len());
+    for (file, section, label, src) in SITE {
+        let id = site_id(file).to_string();
+        let (title, body) = render(&id, file, src, &ids);
+        out.push(MdPage {
+            id,
+            section,
+            title,
+            label: (*label).to_string(),
+            body,
+        });
+    }
     for (section, prefix, table) in [("using", "wiki", WIKI), ("guides", "guide", GUIDES)] {
         for (file, src) in table {
             let id = page_id(prefix, file);
@@ -174,6 +248,7 @@ fn build() -> Vec<MdPage> {
             out.push(MdPage {
                 id,
                 section,
+                label: esc(&title),
                 title,
                 body,
             });
@@ -186,12 +261,36 @@ fn build() -> Vec<MdPage> {
 /// because a page links forward as often as back.
 fn id_map() -> BTreeMap<&'static str, String> {
     let mut map = BTreeMap::new();
+    for (file, ..) in SITE {
+        map.insert(*file, site_id(file).to_string());
+    }
     for (prefix, table) in [("wiki", WIKI), ("guide", GUIDES)] {
         for (file, _) in table {
             map.insert(*file, page_id(prefix, file));
         }
     }
     map
+}
+
+/// `filters.md` → `filters`: a [`SITE`] page's id is its file name.
+fn site_id(file: &str) -> &str {
+    file.strip_suffix(".md")
+        .unwrap_or_else(|| panic!("`{file}` is not a markdown file"))
+}
+
+fn is_site(page_id: &str) -> bool {
+    SITE.iter().any(|(file, ..)| site_id(file) == page_id)
+}
+
+/// What a heading's slug is prefixed with to make its id: `h-` on a [`SITE`]
+/// page, whose headings shipped as `#h-…` and are frozen; the page id and
+/// `--` everywhere else, so two pages may both carry a `## tasqx why`.
+fn heading_prefix(page_id: &str) -> String {
+    if is_site(page_id) {
+        "h-".to_string()
+    } else {
+        format!("{page_id}--")
+    }
 }
 
 /// `("wiki", "Finding-Tasks.md")` → `wiki-finding-tasks`.
@@ -239,6 +338,11 @@ fn render(
     let mut in_body = false;
     let mut col = 0usize;
 
+    // A site page opens on a lead paragraph, the way the hand-built pages it
+    // replaced did: the first block under the title, if it is a paragraph.
+    let mut lead = is_site(page_id);
+    let mut in_lead = false;
+
     let mut i = 0;
     while i < events.len() {
         // The title is collected, not emitted: everything between `# ` and its
@@ -255,7 +359,19 @@ fn render(
             continue;
         }
         match &events[i] {
+            Event::Start(Tag::Paragraph) if lead => {
+                lead = false;
+                in_lead = true;
+                out.push(html("<p class=\"lead\">".to_string()));
+            }
+            Event::End(TagEnd::Paragraph) if in_lead => {
+                in_lead = false;
+                out.push(html("</p>".to_string()));
+            }
             Event::Start(Tag::Heading { level, .. }) => {
+                if *level != HeadingLevel::H1 {
+                    lead = false;
+                }
                 if *level == HeadingLevel::H1 {
                     assert!(
                         title.is_none(),
@@ -267,7 +383,7 @@ fn render(
                 } else {
                     let end = heading_end(&events, i, file);
                     let text = inline_text(&events[i + 1..end]);
-                    let anchor = format!("{page_id}--{}", super::slug(&text));
+                    let anchor = format!("{}{}", heading_prefix(page_id), super::slug(&text));
                     let tag = shifted(*level);
                     // `unique` is applied to the whole id, not the slug, so two
                     // pages may both have a "tasqx why" heading.
@@ -300,6 +416,7 @@ fn render(
             }
 
             Event::Start(Tag::CodeBlock(kind)) => {
+                lead = false;
                 let lang = match kind {
                     CodeBlockKind::Fenced(info) => {
                         info.split(',').next().unwrap_or("").trim().to_string()
@@ -316,6 +433,7 @@ fn render(
             // never takes the page sideways. Only the outer tags are replaced —
             // the rows keep the renderer's own escaping.
             Event::Start(Tag::Table(_)) => {
+                lead = false;
                 out.push(html("<div class=\"tw\"><table class=\"grid\">".to_string()));
             }
             Event::End(TagEnd::Table) => {
@@ -373,6 +491,7 @@ fn render(
             }
 
             Event::Start(Tag::BlockQuote(_)) => {
+                lead = false;
                 let (kind, tag, next) = callout_kind(&events, i);
                 out.push(html(callout_open(kind, tag)));
                 if next > i + 1 {
@@ -399,6 +518,18 @@ fn render(
             // Raw HTML in a source file is shown, not run: this document is
             // assembled from trusted builders and a markdown file is the one
             // input that a hand could put a `<script>` in.
+            // The one comment that is read: `<!-- generated: NAME -->` is a
+            // block the page cannot hold as text — a table or a grammar
+            // rendered from the code it documents — and [`super::generated`]
+            // builds it. GitHub shows nothing there; an unknown name stops the
+            // build, like an unresolved link.
+            Event::Html(s) if s.trim().starts_with(GENERATED) => {
+                lead = false;
+                let name = s.trim()[GENERATED.len()..].trim_end_matches("-->").trim();
+                out.push(html(super::generated(name).unwrap_or_else(|| {
+                    panic!("{file}: no generated block named `{name}`")
+                })));
+            }
             Event::Html(s) | Event::InlineHtml(s) => out.push(Event::Text(s.clone())),
 
             other => out.push(other.clone()),
@@ -413,6 +544,9 @@ fn render(
     });
     (title, body)
 }
+
+/// The marker of a [`super::generated`] block.
+const GENERATED: &str = "<!-- generated:";
 
 /// An already-built fragment of the site's own markup, handed to the renderer
 /// as-is. Everything reaching this is built by [`super`]'s escaping helpers.
@@ -553,7 +687,7 @@ fn pre_lang(lang: &str, text: &str) -> String {
     )
 }
 
-/// The opening half of [`super::note`] / [`super::warn`], for a blockquote
+/// The opening half of [`super::note`] (or its `warn`/`Careful` twin), for a blockquote
 /// whose own paragraphs are the body. Kept identical to them by
 /// [`tests::a_callout_opens_the_same_way_the_pages_own_callouts_do`].
 fn callout_open(kind: &str, tag: &str) -> String {
@@ -625,8 +759,14 @@ fn resolve(file: &str, page_id: &str, dest: &str, ids: &BTreeMap<&'static str, S
         return Target::External(dest.to_string());
     }
     if let Some(anchor) = dest.strip_prefix('#') {
-        // A link within the page: its ids carry the page id, so this one must too.
-        return Target::Anchor(format!("#{page_id}--{anchor}"));
+        // A site page's ids are the document's own (`h-…`, `cli-dashboard`),
+        // so its anchor is one already. Anywhere else a heading's id carries
+        // the page id, so the link must too.
+        return Target::Anchor(if is_site(page_id) {
+            dest.to_string()
+        } else {
+            format!("#{page_id}--{anchor}")
+        });
     }
     let (path, anchor) = match dest.split_once('#') {
         Some((p, a)) => (p, Some(a)),
@@ -635,7 +775,7 @@ fn resolve(file: &str, page_id: &str, dest: &str, ids: &BTreeMap<&'static str, S
     let name = path.rsplit('/').next().unwrap_or(path);
     if let Some(id) = ids.get(name) {
         return Target::Anchor(match anchor {
-            Some(a) => format!("#{id}--{a}"),
+            Some(a) => format!("#{}{a}", heading_prefix(id)),
             None => format!("#{id}"),
         });
     }
@@ -718,13 +858,20 @@ mod tests {
             on_disk("guides"),
             "docs/guides and the GUIDES table disagree"
         );
+        let site: BTreeSet<String> = SITE.iter().map(|(f, ..)| (*f).to_string()).collect();
+        assert_eq!(
+            site,
+            on_disk("site"),
+            "docs/site and the SITE table disagree"
+        );
     }
 
     /// Every file on disk is embedded verbatim — the table's second column is
     /// the file, not a paraphrase of it that an edit could leave behind.
     #[test]
     fn the_embedded_text_is_the_file_on_disk() {
-        for (which, table) in [("wiki", WIKI), ("guides", GUIDES)] {
+        let site: Vec<(&str, &str)> = SITE.iter().map(|(f, _, _, src)| (*f, *src)).collect();
+        for (which, table) in [("wiki", WIKI), ("guides", GUIDES), ("site", &site[..])] {
             for (file, src) in table {
                 let path = docs_dir(which).join(file);
                 let disk = fs::read_to_string(&path).expect("the embedded file is readable");
@@ -992,7 +1139,6 @@ mod tests {
     #[test]
     fn a_callout_opens_the_same_way_the_pages_own_callouts_do() {
         assert!(super::super::note("x").starts_with(&callout_open("note", "Note")));
-        assert!(super::super::warn("x").starts_with(&callout_open("warn", "Careful")));
     }
 
     /// Raw HTML in a source file is shown as text, never as markup: these files
@@ -1006,10 +1152,10 @@ mod tests {
     }
 
     /// Every page renders, has a title, and is not empty — the cheapest check
-    /// that the twenty-one real files still parse.
+    /// that every real file still parses.
     #[test]
     fn every_page_renders_with_a_title_and_a_body() {
-        assert_eq!(PAGES.len(), WIKI.len() + GUIDES.len());
+        assert_eq!(PAGES.len(), SITE.len() + WIKI.len() + GUIDES.len());
         for p in PAGES.iter() {
             assert!(!p.title.trim().is_empty(), "{} has no title", p.id);
             assert!(
@@ -1019,10 +1165,61 @@ mod tests {
                 p.body.len()
             );
             assert!(
-                p.id.starts_with("wiki-") || p.id.starts_with("guide-"),
+                p.id.starts_with("wiki-") || p.id.starts_with("guide-") || is_site(&p.id),
                 "unexpected page id {}",
                 p.id
             );
         }
+    }
+
+    /// A site page's headings keep the `#h-…` ids they shipped with, its
+    /// first paragraph is its lead, and its `#` links are the document's own.
+    #[test]
+    fn a_site_page_keeps_its_frozen_anchors_and_its_lead() {
+        let (_, body) = render_one(
+            "filters",
+            "# T\n\nThe lead.\n\n## Work it, finish it\n\nProse, [the dashboard](#cli-dashboard).\n",
+        );
+        assert!(body.contains("<p class=\"lead\">The lead.</p>"), "{body}");
+        assert!(
+            body.contains("<h3 id=\"h-work-it--finish-it\">Work it, finish it</h3>"),
+            "{body}"
+        );
+        assert!(
+            body.contains("<p>Prose, "),
+            "only the first paragraph leads: {body}"
+        );
+        assert!(body.contains("href=\"#cli-dashboard\""), "{body}");
+    }
+
+    /// A wiki page has no lead: its first paragraph renders as it always did.
+    #[test]
+    fn a_wiki_page_has_no_lead() {
+        let (_, body) = render_one("wiki-x", "# T\n\nFirst.\n");
+        assert!(body.contains("<p>First.</p>"), "{body}");
+    }
+
+    /// The marker comment becomes the block the code builds; any other
+    /// comment is text, like any other raw HTML.
+    #[test]
+    fn a_generated_comment_becomes_its_block() {
+        let (_, body) = render_one("wiki-x", "# T\n\n<!-- generated: filter-grammar -->\n");
+        assert!(
+            body.contains(&super::super::pre_plain(tasqx_core::filter::GRAMMAR)),
+            "{body}"
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "no generated block named `nope`")]
+    fn an_unknown_generated_block_is_a_build_time_panic() {
+        render_one("wiki-x", "# T\n\n<!-- generated: nope -->\n");
+    }
+
+    /// A link to a site page's heading lands on its `#h-…` id.
+    #[test]
+    fn a_link_to_a_site_pages_heading_uses_its_frozen_id() {
+        let (_, body) = render_one("wiki-x", "# T\n\nSee [it](filters.md#the-grammar).\n");
+        assert!(body.contains("href=\"#h-the-grammar\""), "{body}");
     }
 }
