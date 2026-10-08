@@ -627,6 +627,17 @@ struct DocWrite<'a> {
     replaced: bool,
 }
 
+/// The row a `memory.import` entry's `source` already names, as far as the
+/// replace-or-no-op decision needs it.
+struct Existing {
+    id: String,
+    rev: i64,
+    title: String,
+    origin_path: Option<String>,
+    body: String,
+    project: Option<String>,
+}
+
 /// Land one document, in place when its id is already in `docs`.
 ///
 /// ON CONFLICT DO UPDATE, never DELETE+INSERT (D41's own rule, learned the
@@ -867,6 +878,7 @@ impl Engine {
         }
         let mut out = Vec::new();
         let mut replaced = 0i64;
+        let mut unchanged = 0i64;
         // #972: each doc a replace overwrote, with the title it had — the
         // count alone never said WHICH doc's text was just lost.
         let mut replaced_docs = Vec::new();
@@ -905,17 +917,32 @@ impl Engine {
             // 404'd the moment ANY re-run happened — announced nowhere, and
             // at scale on a real store one source had been silently
             // overwritten 34 times.
-            let existing: Option<(String, i64, String, Option<String>)> = match &source {
+            let existing: Option<Existing> = match &source {
                 Some(src) => tx
                     .query_row(
-                        "SELECT id, rev, title, origin_path FROM docs WHERE source = ?1",
+                        "SELECT id, rev, title, origin_path, body, project \
+                         FROM docs WHERE source = ?1",
                         params![src],
-                        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+                        |r| {
+                            Ok(Existing {
+                                id: r.get(0)?,
+                                rev: r.get(1)?,
+                                title: r.get(2)?,
+                                origin_path: r.get(3)?,
+                                body: r.get(4)?,
+                                project: r.get(5)?,
+                            })
+                        },
                     )
                     .optional()?,
                 None => None,
             };
-            if let Some((id, _, _, Some(stored))) = &existing {
+            if let Some(Existing {
+                id,
+                origin_path: Some(stored),
+                ..
+            }) = &existing
+            {
                 refuse_replace_from_another_file(
                     id,
                     source.as_deref().unwrap_or_default(),
@@ -923,15 +950,46 @@ impl Engine {
                     origin_path.as_deref(),
                 )?;
             }
+            // #86/D221: a re-import of the same title, body and scope is a
+            // true no-op — no rev, no `modified`, no event, not "replaced".
+            // A batch that names no `project` has no opinion on scope (the
+            // COALESCE in `upsert_doc`), so only a NAMED, different one is a
+            // change. Origin metadata is not content: a `touch` leaves the
+            // doc unchanged, and only the origin columns follow the file.
+            if let Some(ex) = existing.as_ref().filter(|ex| {
+                ex.title == title
+                    && ex.body == body
+                    && project
+                        .as_deref()
+                        .is_none_or(|p| ex.project.as_deref() == Some(p))
+            }) {
+                tx.execute(
+                    "UPDATE docs SET origin_path=?2, origin_mtime=?3, origin_size=?4 \
+                     WHERE id=?1 AND (origin_path IS NOT ?2 OR origin_mtime IS NOT ?3 \
+                     OR origin_size IS NOT ?4)",
+                    params![ex.id, origin_path, origin_mtime, origin_size],
+                )?;
+                unchanged += 1;
+                out.push(json!({
+                    "id": ex.id,
+                    "title": title,
+                    "source": source,
+                    "project": ex.project,
+                    "replaced": false,
+                    "unchanged": true,
+                    "_rev": ex.rev,
+                }));
+                continue;
+            }
             let is_replace = existing.is_some();
             let (id, rev) = match existing {
-                Some((id, cur_rev, previous_title, _)) => {
+                Some(ex) => {
                     replaced_docs.push(json!({
-                        "id": id,
+                        "id": ex.id,
                         "source": source,
-                        "previous_title": previous_title,
+                        "previous_title": ex.title,
                     }));
-                    (id, cur_rev + 1)
+                    (ex.id, ex.rev + 1)
                 }
                 None => (crate::clock::uuid_v7().to_string(), 0),
             };
@@ -965,6 +1023,7 @@ impl Engine {
                 "source": source,
                 "project": project,
                 "replaced": is_replace,
+                "unchanged": false,
                 "_rev": rev,
             }));
         }
@@ -973,6 +1032,7 @@ impl Engine {
         Ok(json!({
             "imported": out.len(),
             "replaced": replaced,
+            "unchanged": unchanged,
             "docs": out,
             "replaced_docs": replaced_docs,
         }))

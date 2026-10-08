@@ -1214,7 +1214,7 @@ const PARAM_DOCS: &[(&str, &str, &str, &str, &str)] = &[
         "docs",
         "array of object",
         "",
-        "The documents to store, each `{title, body, source?}`. One transaction: same `source` replaces in place, keeping the doc's id and creation date (D143); a batch naming one `source` twice is refused whole (D174). A doc may also carry `origin_path` (the absolute path of the file it was read from), `origin_mtime` (that file's modification time in unix seconds) and `origin_size` (its size in bytes) — all optional, stored as given and overwritten on every re-import, never used as identity (D180). A replace whose stored doc recorded a different `origin_path` that still exists is refused whole with `conflict`, naming the doc and both files (D203); every doc a replace did overwrite is named under `replaced_docs`.",
+        "The documents to store, each `{title, body, source?}`. One transaction: same `source` replaces in place, keeping the doc's id and creation date (D143); a batch naming one `source` twice is refused whole (D174). A doc may also carry `origin_path` (the absolute path of the file it was read from), `origin_mtime` (that file's modification time in unix seconds) and `origin_size` (its size in bytes) — all optional, stored as given and overwritten on every re-import, never used as identity (D180). A replace whose stored doc recorded a different `origin_path` that still exists is refused whole with `conflict`, naming the doc and both files (D203); every doc a replace did overwrite is named under `replaced_docs`. A doc whose title and body already match the stored one is left alone (no new `rev`, no event) and counted under `unchanged` (#86).",
     ),
     (
         "memory.import",

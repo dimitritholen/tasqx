@@ -1575,13 +1575,20 @@ pub(crate) fn run_memory_import(
     // who thought to try. `replaced` is counted by the engine either way, so
     // rendering it here is the one thing on the write side that was missing.
     let replaced = result["replaced"].as_u64().unwrap_or(0);
-    let mut text = if replaced > 0 {
-        format!(
-            "Imported {imported} doc(s) into memory ({replaced} replaced; the previous text is \
-             not recoverable)\n"
-        )
-    } else {
-        format!("Imported {imported} doc(s) into memory\n")
+    // #86/D221: a doc whose title and body were already stored is left alone
+    // and counted apart, so a re-run over unedited files says so.
+    let unchanged = result["unchanged"].as_u64().unwrap_or(0);
+    let mut text = match (replaced, unchanged) {
+        (0, 0) => format!("Imported {imported} doc(s) into memory\n"),
+        (0, u) => format!("Imported {imported} doc(s) into memory ({u} unchanged)\n"),
+        (r, 0) => format!(
+            "Imported {imported} doc(s) into memory ({r} replaced; the previous text is not \
+             recoverable)\n"
+        ),
+        (r, u) => format!(
+            "Imported {imported} doc(s) into memory ({r} replaced, {u} unchanged; the previous \
+             text is not recoverable)\n"
+        ),
     };
     // #972: the count never said WHICH doc's text was just lost — the
     // engine's `replaced_docs` does, one line each, with the title it had.

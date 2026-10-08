@@ -5500,6 +5500,50 @@ fn memory_import_keeps_two_repos_readmes_apart_and_names_what_it_replaces() {
     let _ = std::fs::remove_dir_all(&base);
 }
 
+/// #86/D221: re-running `memory import` over files nobody edited is a no-op:
+/// the summary says `unchanged`, names nothing as replaced, and `--json`
+/// carries the count. An edited file still replaces.
+#[test]
+fn memory_import_rerun_over_unedited_files_reports_unchanged() {
+    let dir = fresh_config_dir("memory-import-unchanged");
+    let repo = std::env::temp_dir().join(format!(
+        "tasqx-reg-memory-import-unchanged-{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&repo);
+    std::fs::create_dir_all(repo.join("docs")).expect("create docs dir");
+    std::fs::create_dir_all(repo.join(".git")).expect("create .git dir");
+    for (n, t) in [("a", "A"), ("b", "B")] {
+        std::fs::write(
+            repo.join("docs").join(format!("{n}.md")),
+            format!("# {t}\n\nbody"),
+        )
+        .expect("write doc");
+    }
+    let run = |args: &[&str]| {
+        bin("memory-import-unchanged", &dir)
+            .current_dir(&repo)
+            .args(args)
+            .output()
+            .expect("run tasqx")
+    };
+    assert!(run(&["memory", "import", "docs"]).status.success());
+
+    let out = run(&["memory", "import", "docs"]);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("2 unchanged"), "{stdout}");
+    assert!(!stdout.contains("replaced"), "{stdout}");
+    let v: serde_json::Value =
+        serde_json::from_slice(&run(&["--json", "memory", "import", "docs"]).stdout).expect("json");
+    assert_eq!(v["unchanged"], 2, "{v}");
+    assert_eq!(v["replaced"], 0, "{v}");
+
+    std::fs::write(repo.join("docs").join("a.md"), "# A\n\nedited").expect("edit");
+    let stdout = String::from_utf8_lossy(&run(&["memory", "import", "docs"]).stdout).to_string();
+    assert!(stdout.contains("1 replaced, 1 unchanged"), "{stdout}");
+    let _ = std::fs::remove_dir_all(&repo);
+}
+
 /// #788/D180: `memory import` records which file each doc came from and what
 /// it looked like — the ABSOLUTE path (`source` stays the git-relative
 /// spelling D179 made it), the file's size in bytes and its mtime — so a

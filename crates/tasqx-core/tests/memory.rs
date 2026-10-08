@@ -3828,6 +3828,87 @@ fn memory_import_names_every_doc_it_replaced_with_its_previous_title() {
     );
 }
 
+/// #86/D221: a byte-identical re-import is a true no-op. The doc keeps its
+/// rev and `modified`, writes no event, is not counted or named as replaced,
+/// and is reported `unchanged`. Changed origin metadata alone (a `touch`) is
+/// the same content, so it is still unchanged. An edited file still replaces
+/// and bumps the rev.
+#[test]
+fn memory_import_of_identical_content_is_a_no_op_and_reports_unchanged() {
+    let e = engine();
+    let doc = |body: &str, mtime: i64| {
+        json!({ "title": "Deploy", "body": body, "source": "r/deploy.md",
+                "origin_path": "/x/r/deploy.md", "origin_mtime": mtime, "origin_size": 9 })
+    };
+    let events = |e: &Engine| {
+        call(e, "event.list", json!({ "entity": "doc" })).unwrap()["events"]
+            .as_array()
+            .unwrap()
+            .len()
+    };
+    let first = call(&e, "memory.import", json!({ "docs": [doc("v1", 100)] })).unwrap();
+    assert_eq!(first["unchanged"], 0, "{first}");
+    let id = first["docs"][0]["id"].as_str().unwrap().to_string();
+    let before = call(&e, "memory.get", json!({ "id": id.clone() })).unwrap();
+    let n = events(&e);
+
+    // Same bytes, the file only touched: mtime moved, content did not.
+    let again = call(&e, "memory.import", json!({ "docs": [doc("v1", 200)] })).unwrap();
+    assert_eq!(again["replaced"], 0, "{again}");
+    assert_eq!(again["unchanged"], 1, "{again}");
+    assert_eq!(again["replaced_docs"], json!([]), "{again}");
+    assert_eq!(again["docs"][0]["id"], id, "{again}");
+    assert_eq!(again["docs"][0]["replaced"], false, "{again}");
+    assert_eq!(again["docs"][0]["unchanged"], true, "{again}");
+    assert_eq!(again["docs"][0]["_rev"], 0, "{again}");
+    let after = call(&e, "memory.get", json!({ "id": id.clone() })).unwrap();
+    assert_eq!(after["_rev"], before["_rev"], "rev must not move: {after}");
+    assert_eq!(after["modified"], before["modified"], "{after}");
+    assert_eq!(events(&e), n, "an unchanged re-import writes no event");
+    // The origin columns still follow the file, so the freshness check
+    // (memory.refresh) keeps its fast path.
+    assert_eq!(after["origin_mtime"], 200, "{after}");
+
+    // An edit still replaces and bumps.
+    let edited = call(&e, "memory.import", json!({ "docs": [doc("v2", 300)] })).unwrap();
+    assert_eq!(edited["replaced"], 1, "{edited}");
+    assert_eq!(edited["unchanged"], 0, "{edited}");
+    assert_eq!(edited["docs"][0]["unchanged"], false, "{edited}");
+    let changed = call(&e, "memory.get", json!({ "id": id })).unwrap();
+    assert_eq!(changed["_rev"], 1, "{changed}");
+    assert_eq!(events(&e), n + 1);
+}
+
+/// #86/D221: naming a different `project` than the stored doc's is a change,
+/// so a byte-identical body does not make that re-import a no-op.
+#[test]
+fn memory_import_that_moves_a_docs_project_is_not_unchanged() {
+    let e = engine();
+    call(&e, "project.create", json!({ "name": "ledger" })).unwrap();
+    let docs = json!([{ "title": "T", "body": "b", "source": "r/a.md" }]);
+    call(&e, "memory.import", json!({ "docs": docs })).unwrap();
+    let moved = call(
+        &e,
+        "memory.import",
+        json!({ "docs": docs, "project": "ledger" }),
+    )
+    .unwrap();
+    assert_eq!(moved["replaced"], 1, "{moved}");
+    assert_eq!(moved["unchanged"], 0, "{moved}");
+    let same = call(
+        &e,
+        "memory.import",
+        json!({ "docs": docs, "project": "ledger" }),
+    )
+    .unwrap();
+    assert_eq!(same["unchanged"], 1, "{same}");
+    let bare = call(&e, "memory.import", json!({ "docs": docs })).unwrap();
+    assert_eq!(
+        bare["unchanged"], 1,
+        "no project named keeps the scope: {bare}"
+    );
+}
+
 /// #972/D203 review: `Path::exists` answers `false` on a metadata error, so a
 /// stored file that is present but unreadable — a directory whose mode shut
 /// this user out — read as "gone" and let the replace overwrite its doc. An
