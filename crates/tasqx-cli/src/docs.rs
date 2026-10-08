@@ -1639,6 +1639,21 @@ fn term_block(html_inner: &str) -> String {
 /// the manifest, the directory and the embedded list are already held equal by
 /// a test in [`crate::fixtures`], so a name that misses is a typo here.
 fn term_screen(cmd: &str, name: &str) -> String {
+    format!(
+        "<div class=\"snip\"><div class=\"snip-h\"><span class=\"dollar\">$</span></div>\
+           <pre class=\"cmd\"><code>{}</code></pre>{}</div>",
+        esc(cmd),
+        captured(name),
+    )
+}
+
+/// [`term_screen`] with no command above it: a screen whose page prose has
+/// already said what produced it.
+fn term_screen_bare(name: &str) -> String {
+    format!("<div class=\"snip\">{}</div>", captured(name))
+}
+
+fn captured(name: &str) -> String {
     let screen = crate::fixtures::screen(name).unwrap_or_else(|| {
         panic!(
             "no captured screen named {name:?}; add a row to \
@@ -1646,12 +1661,7 @@ fn term_screen(cmd: &str, name: &str) -> String {
              scripts/docs-capture.sh"
         )
     });
-    format!(
-        "<div class=\"snip\"><div class=\"snip-h\"><span class=\"dollar\">$</span></div>\
-           <pre class=\"cmd\"><code>{}</code></pre>{}</div>",
-        esc(cmd),
-        crate::ansi_html::render(screen),
-    )
+    crate::ansi_html::render(screen)
 }
 
 // ============================================================================

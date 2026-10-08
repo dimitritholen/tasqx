@@ -4917,10 +4917,10 @@ Local build and signing steps: `docs/maintainers/desktop-release.md`.
 
 **Rejected:** a second tag-only workflow (it would duplicate the whole build matrix and drift from it); failing on a partial set of secrets (an unsigned platform is the stated default, and the script's `off` lines say which one); the Tauri updater plugin (D10); `tauri-plugin-opener` for the one link (it pulled a newer `tauri` into the lockfile; a fixed-prefix host command is smaller); an update check on by default (§10's no phone-home).
 
-### D??? — an output block in the wiki or a guide names the capture it excerpts: `<!-- fixture: NAME -->` above a console session (task #706; extends D149, D226)
+### D231 — an output block in the wiki or a guide names the capture it excerpts: `<!-- fixture: NAME -->` above a console session (task #706; extends D149, D226)
 
 The markdown keeps a short typed excerpt of the output, so the page stays readable on GitHub; the site and `tasqx docs` draw the captured screen `NAME` (a `docs-fixtures/manifest.tsv` row) in its place, through the same `term_screen` the reference pages use.
 
 **Why:** typed output went stale silently, and a fence that names a screen shows GitHub readers nothing. `every_fixture_excerpt_is_in_its_capture` (`tests/wiki.rs`) requires the excerpt to be a contiguous piece of the capture with SGR stripped, so the typed text cannot drift from what the binary prints, and the existing `docs-fixtures` CI job already fails a screen that changed without a recapture. An unknown name or a marker with no fence after it stops the build.
 
-**Where:** `docs/markdown.rs` (`FIXTURE`, `fixture_block`), `tests/wiki.rs`, `docs/wiki/Adding-and-Editing-Tasks.md`, `docs/wiki/Finding-Tasks.md`; new row `done-unblock-echo`.
+**Where:** `docs/markdown.rs` (`FIXTURE`, `fixture_block`), `tests/wiki.rs`, `docs/wiki/Adding-and-Editing-Tasks.md`, `docs/wiki/Finding-Tasks.md`; new rows `done-unblock-echo`, `import-conflict-echo`, `report-outcomes`. A fence with no `$ ` line (a `text` block) renders the capture alone. Every `console`/`text`/`json`/untagged block that is tasqx output carries a marker; `export --out`'s echo is the one sample left typed, because it prints this machine's absolute path (listed beside the other absent screens in the manifest).

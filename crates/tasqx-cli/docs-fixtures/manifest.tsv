@@ -36,6 +36,9 @@
 #                          nothing fixes the rest. The CLI's `add` echo
 #                          (add-echo) shows the write instead, and prints a
 #                          short id, which is stable.
+#   export --out PATH      its first line echoes the absolute path it wrote, which
+#                          is this machine's again; wiki/Import-and-Export.md
+#                          shows that sample as typed text, unmarked.
 #   any api response        carrying search hits (`task.brief`, `memory.search`):
 #                          until D196 a hit's `rank` was bm25, computed with the
 #                          platform's `log()`, so the last digits differed
@@ -83,6 +86,7 @@ brief	pipe	100	-	brief 51	-	-
 why	pipe	100	-	why 51	-	-
 projects	pipe	100	-	projects	-	-
 report	pipe	100	-	report	-	-
+report-outcomes	pipe	100	-	report --outcomes	-	-
 chart-burndown	pipe	100	-	chart burndown	-	-
 memory-list	pipe	100	-	memory list	-	-
 memory-search	pipe	100	-	memory search release canary	-	-
@@ -92,6 +96,7 @@ add-echo	pipe-mut	100	-	add "Draft the Q4 roadmap" project:website !H due:friday
 start-echo	pipe-mut	100	-	start 49	-	-
 done-echo	pipe-mut	100	-	done 47	-	-
 done-unblock-echo	pipe-mut	100	-	done 50	-	-
+import-conflict-echo	pipe-mut	100	-	import -	-	{"projects":[{"name":"api","description":"B's api description"}],"tasks":[],"docs":[]}
 annotate-echo	pipe-mut	100	-	annotate 50 "Ship it behind a flag; the ceiling is 60 requests a minute per key."	-	-
 api-task-list	pipe	100	-	api	-	{"tasqx":"1","id":"e1","method":"task.list","params":{"filter":"+docs","sort":["-urgency"]}}
 api-task-get	pipe	100	-	api	-	{"tasqx":"1","id":"g1","method":"task.get","params":{"ref":"51"}}

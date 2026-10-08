@@ -1030,6 +1030,6 @@ fn every_fixture_excerpt_is_in_its_capture() {
             seen += 1;
         }
     }
-    // Floor: three blocks were fixture-backed when this guard was written.
-    assert!(seen >= 3, "only {seen} fixture-backed blocks found");
+    // Floor: seven blocks were fixture-backed when this guard was written.
+    assert!(seen >= 7, "only {seen} fixture-backed blocks found");
 }

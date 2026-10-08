@@ -71,16 +71,11 @@ daemon's OTLP receiver when `otlp.enabled = true`
 
 `tasqx report` says what the work cost. `--outcomes` says how it went.
 
+<!-- fixture: report-outcomes -->
 ```console
-tasqx report --outcomes
-```
-
-```
+$ tasqx report --outcomes
 PROJECT  CLOSED  DONE  REWORK  FORCED  SILENT     CALIB  DROPPED  OVER  UNPROVEN  UNBRIEFED               TOKENS
 api           7     6     0/6     0/6     0/6  ×1.17 n3      1/7   1/2         -        6/6  cacheR 7.0M ~medium
-infra         9     8     0/8     0/8     1/8  ×1.00 n4      1/9   1/1       1/2        8/8  cacheR 2.8M ~medium
-mobile       15    13    2/13    0/13    0/13  ×1.35 n2     2/15   1/3       1/3      13/13  cacheR 7.7M ~medium
-website      15    13    0/13    1/13    2/13  ×1.58 n9     2/15   0/2       0/5      13/13  cacheR 2.4M ~medium
 ```
 
 | Column | What it counts |

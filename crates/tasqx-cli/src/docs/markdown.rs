@@ -440,7 +440,7 @@ fn render(
                 };
                 let (text, next) = code_text(&events, i, file);
                 out.push(html(match fixture.take() {
-                    Some(name) => fixture_block(&name, &text, file),
+                    Some(name) => fixture_block(&name, &text),
                     None => code_block(&lang, &text),
                 }));
                 i = next;
@@ -586,14 +586,14 @@ const GENERATED: &str = "<!-- generated:";
 /// The marker of a fence whose output is a captured screen.
 const FIXTURE: &str = "<!-- fixture:";
 
-/// A marked ```console session: its `$ ` lines are the command, and the typed
-/// output under them gives way to the captured screen `name`.
-fn fixture_block(name: &str, text: &str, file: &str) -> String {
+/// A marked fence: its `$ ` lines, if any, are the command, and the typed
+/// output gives way to the captured screen `name`. A fence with no command
+/// (a `text` block, or a bare line of output) renders the capture alone.
+fn fixture_block(name: &str, text: &str) -> String {
     let cmd: Vec<&str> = text.lines().filter_map(|l| l.strip_prefix("$ ")).collect();
-    assert!(
-        !cmd.is_empty(),
-        "{file}: the fence under `fixture: {name}` has no `$ ` command line"
-    );
+    if cmd.is_empty() {
+        return super::term_screen_bare(name);
+    }
     super::term_screen(&cmd.join("\n"), name)
 }
 
@@ -1270,6 +1270,20 @@ mod tests {
         assert!(body.contains("pre class=\"term\""), "{body}");
         assert!(!body.contains("typed excerpt"), "{body}");
         assert!(body.contains("<pre class=\"out\"><code>plain"), "{body}");
+    }
+
+    /// A marked fence with no `$ ` line renders the capture with no command.
+    #[test]
+    fn a_fixture_fence_without_a_command_renders_the_capture_alone() {
+        let (_, body) = render_one(
+            "wiki-x",
+            "# T\n\n<!-- fixture: list -->\n```text\ntyped excerpt\n```\n",
+        );
+        assert!(body.contains("pre class=\"term\""), "{body}");
+        assert!(
+            !body.contains("typed excerpt") && !body.contains("class=\"cmd\""),
+            "{body}"
+        );
     }
 
     #[test]

@@ -163,17 +163,22 @@ way out is named at every width.
 cancelled, and `s` on such a row is refused on the key bar's own row with the
 screen still open.
 
-Captured on a terminal at 64 columns, since this screen cannot be piped:
+Captured on a terminal 120 columns wide, since this screen cannot be piped:
 
+<!-- fixture: pick -->
 ```text
-pick   @working   3 tasks · 1 overdue · #1 running
+ pick   @working   14 tasks · 1 overdue · 1 due today · ▶ #48 running
 
-       ID          URG  TASK                  PROJECT  DUE
- ▸      4  H ▄▄▄▄ 18.0  Renew the TLS certi…  work     yesterday
-   ▶    1  H ▄▄▄▄ 16.7  Ship the v2 pricing…  work     Mon
-        3  - ▁▁▁▁  0.0  Write the migration…  work
+       ID          URG  TASK                                           PROJECT  DUE             TAGS
+ ▸     47  H ▄▄▄▄ 18.1  Renew the TLS certificate for api.example.dev  infra    2d ago          +ops
+   ▶   48  H ▄▄▄▄ 17.8  Ship the v2 pricing page                       website  today 17:00     +launch
+```
 
- j/k move   / search   enter open   s start   q leave
+The key bar is the screen's bottom row, below the rest of the list:
+
+<!-- fixture: pick -->
+```text
+ j/k move   / search   enter open   s start   g/G ends   q leave
 ```
 
 `pick` needs a real terminal (it draws a screen), so in scripts use
