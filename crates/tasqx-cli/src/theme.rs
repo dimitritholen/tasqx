@@ -628,40 +628,55 @@ fn build(
     }
 }
 
-fn spec(fg: &str) -> StyleSpec {
-    StyleSpec {
-        fg: Some(fg.to_string()),
-        ..Default::default()
-    }
-}
-fn spec_b(fg: &str) -> StyleSpec {
-    StyleSpec {
-        bold: Some(true),
-        ..spec(fg)
-    }
-}
-fn spec_d(fg: &str) -> StyleSpec {
-    StyleSpec {
-        dim: Some(true),
-        ..spec(fg)
-    }
-}
-/// The colourless counterparts `mono` is made of: emphasis with no hue.
-fn only_bold() -> StyleSpec {
-    StyleSpec {
-        bold: Some(true),
-        ..Default::default()
-    }
-}
-fn only_dim() -> StyleSpec {
-    StyleSpec {
-        dim: Some(true),
-        ..Default::default()
-    }
+/// Emphasis a role carries on top of (or instead of) its hue.
+#[derive(Clone, Copy)]
+enum Em {
+    No,
+    Bold,
+    Dim,
+    BoldUnderline,
 }
 
-/// The five anchors every built-in sets, then the three hexes the colored
-/// built-ins differ in beyond them: `project`, `tag` and `timer.active`.
+/// Where a role's hue comes from in its palette row: an anchor name or a
+/// literal hex (both resolved by [`build`]), one of the row's three per-theme
+/// hexes, or nothing at all.
+#[derive(Clone, Copy)]
+enum Hue {
+    Named(&'static str),
+    Project,
+    Tag,
+    Timer,
+    Plain,
+}
+
+/// The one role template every built-in is made from: role, hue, emphasis
+/// when the palette row carries hues, and emphasis when it carries none.
+/// `mono` (no hues) spends bold, dim and underline where the coloured themes
+/// spend colour, so it stays correct on a NO_COLOR or 16-colour terminal.
+const TEMPLATE: [(&str, Hue, Em, Em); 17] = [
+    ("header", Hue::Named("accent"), Em::Bold, Em::Bold),
+    ("project", Hue::Project, Em::Dim, Em::Dim),
+    ("tag", Hue::Tag, Em::No, Em::No),
+    ("priority.H", Hue::Named("danger"), Em::Bold, Em::Bold),
+    ("priority.M", Hue::Named("warn"), Em::No, Em::No),
+    ("priority.L", Hue::Named("muted"), Em::Dim, Em::Dim),
+    ("overdue", Hue::Named("danger"), Em::Bold, Em::BoldUnderline),
+    ("timer.active", Hue::Timer, Em::No, Em::Bold),
+    ("muted", Hue::Named("muted"), Em::Dim, Em::Dim),
+    ("danger", Hue::Named("danger"), Em::Bold, Em::Bold),
+    ("warn", Hue::Named("warn"), Em::No, Em::No),
+    ("accent", Hue::Named("accent"), Em::No, Em::Bold),
+    ("table.label", Hue::Named("#8a8a8a"), Em::No, Em::Dim),
+    ("chart.ideal", Hue::Named("#8a8a8a"), Em::Dim, Em::Dim),
+    ("card.frame", Hue::Named("#585858"), Em::No, Em::Dim),
+    ("card.label", Hue::Named("#8a8a8a"), Em::No, Em::Dim),
+    ("card.strong", Hue::Plain, Em::Bold, Em::Bold),
+];
+
+/// One built-in's palette row: the six anchors every built-in sets, then the
+/// three hexes the coloured built-ins differ in beyond them (`project`, `tag`,
+/// `timer.active`). `hues: None` is a colourless row: roles take no colour,
+/// the template's colourless emphasis, and no ramp.
 struct Palette {
     bg: &'static str,
     fg: &'static str,
@@ -669,14 +684,107 @@ struct Palette {
     warn: &'static str,
     danger: &'static str,
     muted: &'static str,
-    project: &'static str,
-    tag: &'static str,
-    timer: &'static str,
+    hues: Option<[&'static str; 3]>,
 }
 
-/// The four colored built-ins: one role list over a palette row. The ramp is
-/// always the shared grey, then the palette's own `warn` and `danger` (D119).
-fn colored(name: &str, p: &Palette) -> Theme {
+/// The five palette rows, in [`BUILTINS`] order.
+const PALETTES: [(&str, Palette); 5] = [
+    (
+        "nord",
+        Palette {
+            bg: "#2e3440",
+            fg: "#d8dee9",
+            accent: "#88c0d0",
+            warn: "#ebcb8b",
+            danger: "#bf616a",
+            muted: "#4c566a",
+            hues: Some(["#81a1c1", "#b48ead", "#a3be8c"]),
+        },
+    ),
+    (
+        "gruvbox",
+        Palette {
+            bg: "#282828",
+            fg: "#ebdbb2",
+            accent: "#83a598",
+            warn: "#fabd2f",
+            danger: "#fb4934",
+            muted: "#928374",
+            hues: Some(["#83a598", "#d3869b", "#b8bb26"]),
+        },
+    ),
+    (
+        "dracula",
+        Palette {
+            bg: "#282a36",
+            fg: "#f8f8f2",
+            accent: "#8be9fd",
+            warn: "#f1fa8c",
+            danger: "#ff5555",
+            muted: "#6272a4",
+            hues: Some(["#bd93f9", "#ff79c6", "#50fa7b"]),
+        },
+    ),
+    (
+        "solarized",
+        Palette {
+            bg: "#002b36",
+            fg: "#839496",
+            accent: "#268bd2",
+            warn: "#b58900",
+            danger: "#dc322f",
+            muted: "#586e75",
+            hues: Some(["#268bd2", "#6c71c4", "#859900"]),
+        },
+    ),
+    (
+        "mono",
+        Palette {
+            bg: "#000000",
+            fg: "#ffffff",
+            accent: "#ffffff",
+            warn: "#ffffff",
+            danger: "#ffffff",
+            muted: "#808080",
+            hues: None,
+        },
+    ),
+];
+
+/// A palette row run through [`TEMPLATE`]. A coloured row's ramp is always
+/// the shared grey, then its own `warn` and `danger` (D119); a colourless
+/// row has none.
+fn from_template(name: &str, p: &Palette) -> Theme {
+    let roles: Vec<(&str, StyleSpec)> = TEMPLATE
+        .iter()
+        .map(|&(role, hue, coloured, colourless)| {
+            let (fg, em) = match p.hues {
+                Some([project, tag, timer]) => {
+                    let fg = match hue {
+                        Hue::Named(s) => Some(s),
+                        Hue::Project => Some(project),
+                        Hue::Tag => Some(tag),
+                        Hue::Timer => Some(timer),
+                        Hue::Plain => None,
+                    };
+                    (fg, coloured)
+                }
+                None => (None, colourless),
+            };
+            let on = |b: bool| b.then_some(true);
+            let spec = StyleSpec {
+                fg: fg.map(str::to_string),
+                bold: on(matches!(em, Em::Bold | Em::BoldUnderline)),
+                dim: on(matches!(em, Em::Dim)),
+                underline: on(matches!(em, Em::BoldUnderline)),
+            };
+            (role, spec)
+        })
+        .collect();
+    let ramp: &[&str] = match p.hues {
+        Some(_) => &["#8a8a8a", p.warn, p.danger],
+        None => &[],
+    };
     build(
         name,
         &[
@@ -687,120 +795,17 @@ fn colored(name: &str, p: &Palette) -> Theme {
             ("danger", p.danger),
             ("muted", p.muted),
         ],
-        &[
-            ("header", spec_b("accent")),
-            ("project", spec_d(p.project)),
-            ("tag", spec(p.tag)),
-            ("priority.H", spec_b("danger")),
-            ("priority.M", spec("warn")),
-            ("priority.L", spec_d("muted")),
-            ("overdue", spec_b("danger")),
-            ("timer.active", spec(p.timer)),
-            ("muted", spec_d("muted")),
-            ("danger", spec_b("danger")),
-            ("warn", spec("warn")),
-            ("accent", spec("accent")),
-            ("table.label", spec("#8a8a8a")),
-            ("chart.ideal", spec_d("#8a8a8a")),
-            ("card.frame", spec("#585858")),
-            ("card.label", spec("#8a8a8a")),
-            ("card.strong", only_bold()),
-        ],
-        &["#8a8a8a", p.warn, p.danger],
+        &roles,
+        ramp,
     )
 }
 
 /// Return a built-in theme by name, or None.
 pub fn builtin(name: &str) -> Option<Theme> {
-    let p = match name {
-        "nord" => Palette {
-            bg: "#2e3440",
-            fg: "#d8dee9",
-            accent: "#88c0d0",
-            warn: "#ebcb8b",
-            danger: "#bf616a",
-            muted: "#4c566a",
-            project: "#81a1c1",
-            tag: "#b48ead",
-            timer: "#a3be8c",
-        },
-        "gruvbox" => Palette {
-            bg: "#282828",
-            fg: "#ebdbb2",
-            accent: "#83a598",
-            warn: "#fabd2f",
-            danger: "#fb4934",
-            muted: "#928374",
-            project: "#83a598",
-            tag: "#d3869b",
-            timer: "#b8bb26",
-        },
-        "dracula" => Palette {
-            bg: "#282a36",
-            fg: "#f8f8f2",
-            accent: "#8be9fd",
-            warn: "#f1fa8c",
-            danger: "#ff5555",
-            muted: "#6272a4",
-            project: "#bd93f9",
-            tag: "#ff79c6",
-            timer: "#50fa7b",
-        },
-        "solarized" => Palette {
-            bg: "#002b36",
-            fg: "#839496",
-            accent: "#268bd2",
-            warn: "#b58900",
-            danger: "#dc322f",
-            muted: "#586e75",
-            project: "#268bd2",
-            tag: "#6c71c4",
-            timer: "#859900",
-        },
-        // mono: no color anywhere — meaning is carried by bold/dim/underline
-        // only, so it is correct even on a NO_COLOR or 16-color terminal.
-        "mono" => {
-            return Some(build(
-                "mono",
-                &[
-                    ("bg", "#000000"),
-                    ("fg", "#ffffff"),
-                    ("accent", "#ffffff"),
-                    ("warn", "#ffffff"),
-                    ("danger", "#ffffff"),
-                    ("muted", "#808080"),
-                ],
-                &[
-                    ("header", only_bold()),
-                    ("project", only_dim()),
-                    ("tag", StyleSpec::default()),
-                    ("priority.H", only_bold()),
-                    ("priority.M", StyleSpec::default()),
-                    ("priority.L", only_dim()),
-                    (
-                        "overdue",
-                        StyleSpec {
-                            underline: Some(true),
-                            ..only_bold()
-                        },
-                    ),
-                    ("timer.active", only_bold()),
-                    ("muted", only_dim()),
-                    ("danger", only_bold()),
-                    ("warn", StyleSpec::default()),
-                    ("accent", only_bold()),
-                    ("table.label", only_dim()),
-                    ("chart.ideal", only_dim()),
-                    ("card.frame", only_dim()),
-                    ("card.label", only_dim()),
-                    ("card.strong", only_bold()),
-                ],
-                &[],
-            ));
-        }
-        _ => return None,
-    };
-    Some(colored(name, &p))
+    PALETTES
+        .iter()
+        .find(|(n, _)| *n == name)
+        .map(|(n, p)| from_template(n, p))
 }
 
 /// Every built-in theme name, in a stable order (for `theme list`).
@@ -1676,6 +1681,37 @@ urgency.ramp = ["#000000", "#ffffff"]
             let t = builtin(name).unwrap();
             assert!(t.ramp_style(1.0).bold, "{name}: top band not bold");
             assert!(!t.ramp_style(0.99).bold, "{name}: bold below the top band");
+        }
+    }
+
+    /// All five built-ins are palette rows of the one role template: each
+    /// defines exactly the template's roles with the emphasis column its row
+    /// selects (coloured or colourless), and only a colourless row drops hue.
+    #[test]
+    fn every_builtin_is_a_palette_row_of_the_one_template() {
+        let names: Vec<&str> = PALETTES.iter().map(|(n, _)| *n).collect();
+        assert_eq!(names, BUILTINS);
+        let mut template: Vec<&str> = TEMPLATE.iter().map(|r| r.0).collect();
+        template.sort_unstable();
+        for (name, p) in &PALETTES {
+            let t = builtin(name).unwrap();
+            assert_eq!(t.role_names(), template, "{name}");
+            for &(role, hue, coloured, colourless) in &TEMPLATE {
+                let s = t.role(role);
+                let em = if p.hues.is_some() {
+                    coloured
+                } else {
+                    colourless
+                };
+                let want = (
+                    matches!(em, Em::Bold | Em::BoldUnderline),
+                    matches!(em, Em::Dim),
+                    matches!(em, Em::BoldUnderline),
+                );
+                assert_eq!((s.bold, s.dim, s.underline), want, "{name} {role}");
+                let hued = p.hues.is_some() && !matches!(hue, Hue::Plain);
+                assert_eq!(s.fg.is_some(), hued, "{name} {role} fg");
+            }
         }
     }
 
