@@ -271,7 +271,7 @@ fn is_ours(entry: &Value) -> bool {
 
 /// Runs `<tool> <argv>` with its home set to setup's, so `--home` reaches the
 /// profile the tool writes as well as the one setup reads.
-fn cli(tool: &Tool, home: &Path, argv: &[&str]) -> Result<(), CliError> {
+fn cli(tool: &Tool, home: &Path, argv: &[&str]) -> Result<(), String> {
     let mut c = std::process::Command::new(tool.bin);
     c.env("HOME", home);
     // Codex puts its config under $CODEX_HOME when set, which would split what
@@ -281,7 +281,7 @@ fn cli(tool: &Tool, home: &Path, argv: &[&str]) -> Result<(), CliError> {
     c.env("USERPROFILE", home);
     match c.args(argv).output() {
         Ok(out) if out.status.success() => Ok(()),
-        Ok(out) => Err(CliError::Failed(format!(
+        Ok(out) => Err(format!(
             "failed: `{} {} {}` exited {}: {}",
             tool.bin,
             argv[0],
@@ -290,20 +290,9 @@ fn cli(tool: &Tool, home: &Path, argv: &[&str]) -> Result<(), CliError> {
                 .code()
                 .map_or("on a signal".into(), |c| c.to_string()),
             String::from_utf8_lossy(&out.stderr).trim()
-        ))),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Err(CliError::Missing),
-        Err(e) => Err(CliError::Failed(format!(
-            "failed: cannot run `{}`: {e}",
-            tool.bin
-        ))),
+        )),
+        Err(e) => Err(format!("failed: cannot run `{}`: {e}", tool.bin)),
     }
-}
-
-enum CliError {
-    /// The tool's binary is not on PATH.
-    Missing,
-    /// It ran and failed, or could not be started; the result line.
-    Failed(String),
 }
 
 /// What installing one item did, as the word a result line prints.
@@ -342,8 +331,6 @@ fn install(item: &Item, home: &Path, force: bool) -> Outcome {
     }
 }
 
-// ponytail: `Command::new("claude")` finds `claude` and `claude.exe` but not an
-// npm `claude.cmd` shim on Windows; that user gets the printed command.
 /// `<tool> mcp add`, after `<tool> mcp remove` when `replace`; a failed remove
 /// adds nothing.
 fn register_mcp(tool: &Tool, home: &Path, replace: bool) -> Outcome {
@@ -355,21 +342,7 @@ fn register_mcp(tool: &Tool, home: &Path, replace: bool) -> Outcome {
     for argv in steps {
         match cli(tool, home, argv) {
             Ok(()) => {}
-            Err(CliError::Failed(said)) => return Outcome { said, failed: true },
-            Err(CliError::Missing) => {
-                let run: Vec<String> = steps
-                    .iter()
-                    .map(|a| format!("`{} {}`", tool.bin, a.join(" ")))
-                    .collect();
-                return Outcome {
-                    said: format!(
-                        "skipped: {} CLI not found — run {}",
-                        tool.label,
-                        run.join(", then ")
-                    ),
-                    failed: false,
-                };
-            }
+            Err(said) => return Outcome { said, failed: true },
         }
     }
     Outcome {
