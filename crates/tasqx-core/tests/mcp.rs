@@ -824,10 +824,45 @@ fn with_only_topical_docs_the_section_carries_no_standing_rulings_heading() {
     let text = rulings_of(&McpServer::new(&engine, Scope::Write));
     assert!(!text.contains("Standing rulings"), "{text}");
     assert!(
-        text.contains("Recent notes for project alpha (context, not rulings):"),
+        text.starts_with("Recent notes for project alpha (default project; context, not rulings):"),
         "{text}"
     );
     assert!(text.contains("alpha note"), "{text}");
+}
+
+/// #686: with no standing docs the notes heading is the section's first, so it
+/// names how the project was inferred, as the standing header does; with
+/// standing docs above it the header already says so and the heading stays.
+#[test]
+fn the_notes_heading_names_the_source_when_it_opens_the_section() {
+    let _guard = RIPWIRE_PATH_ENV.lock().unwrap_or_else(|e| e.into_inner());
+    let engine = engine();
+    engine.project_create(&json!({ "name": "alpha" })).unwrap();
+    engine.project_create(&json!({ "name": "beta" })).unwrap();
+    add_doc(&engine, "alpha note", "alpha context", Some("alpha"), false);
+    add_doc(&engine, "beta note", "beta context", Some("beta"), false);
+
+    let by_dir = McpServer::new(&engine, Scope::Write).with_workdir(Some(temp_workdir("beta/sub")));
+    let text = rulings_of(&by_dir);
+    assert!(
+        text.starts_with(
+            "Recent notes for project beta (working directory; context, not rulings):"
+        ),
+        "{text}"
+    );
+
+    let text = rulings_of(&McpServer::new(&engine, Scope::Write));
+    assert!(
+        text.starts_with("Recent notes for project alpha (default project; context, not rulings):"),
+        "{text}"
+    );
+
+    add_doc(&engine, "alpha rule", "alpha only", Some("alpha"), true);
+    let text = rulings_of(&McpServer::new(&engine, Scope::Write));
+    assert!(
+        text.contains("\n\nRecent notes for project alpha (context, not rulings):"),
+        "{text}"
+    );
 }
 
 /// PR #48 review: `session_rulings` bounds what one session reads with
