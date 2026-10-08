@@ -335,6 +335,7 @@ impl<'a> From<&'a TaskSnapshot> for MatchCtx<'a> {
             due: t.due.as_deref(),
             completed: t.completed.as_deref(),
             blocked: snapshot.blocked,
+            title: &t.title,
         }
     }
 }

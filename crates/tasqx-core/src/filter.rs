@@ -221,6 +221,16 @@ pub enum Pred {
     /// `done` or `cancelled` (DESIGN §3, D11, D145); a closed task is never
     /// blocked.
     Blocked,
+    /// `status:any` / `status:all` (D210): no restriction on status, done and
+    /// cancelled included. Not [`Pred::Always`], so [`Filter::constrains_status`]
+    /// can see the caller named a status and let the report and agenda defaults
+    /// step aside.
+    AnyStatus,
+    /// A title term (D210): the text, already lowercased, must be a substring of
+    /// the lowercased [`MatchCtx::title`]. A bare word, a quoted phrase and
+    /// `title:VALUE` all land here. Matching is in memory, so `%` and `_` are
+    /// ordinary characters; there is no SQL `LIKE` to escape for.
+    Title(String),
     /// Always matches. Reachable from exactly one place: the empty filter,
     /// meaning the caller asked for no filtering. It is deliberately NOT what
     /// an unrecognised token maps to any more — that is an error.
@@ -238,32 +248,6 @@ pub enum Expr {
     Or(Vec<Expr>),
     /// A leaf.
     Pred(Pred),
-}
-
-/// The tree [`Filter`] really holds: [`Expr`] plus the D210 terms.
-///
-/// 1337: later: fold into pub Pred/Vocabulary/MatchCtx at the next minor (#815).
-/// `Title` and `AnyStatus` belong in [`Pred`], but adding a variant to that
-/// public exhaustive enum is a semver break (and `semver-checks` is a required
-/// gate), so they live here, crate-private, until the next minor bump.
-#[derive(Debug, Clone, PartialEq)]
-enum Node {
-    /// Every child must match.
-    And(Vec<Node>),
-    /// At least one child must match.
-    Or(Vec<Node>),
-    /// A leaf the public grammar already had.
-    Pred(Pred),
-    /// `status:any` / `status:all` (D210): no restriction on status, done and
-    /// cancelled included. Not [`Pred::Always`], so [`Filter::constrains_status`]
-    /// can see the caller named a status and let the report and agenda defaults
-    /// step aside.
-    AnyStatus,
-    /// A title term (D210): the lowercased text must be a substring of the
-    /// lowercased title. A bare word, a quoted phrase and `title:VALUE` all land
-    /// here. Matching is in memory, so `%` and `_` are ordinary characters; there
-    /// is no SQL `LIKE` to escape for.
-    Title(String),
 }
 
 /// The fields a predicate is evaluated against.
@@ -297,13 +281,16 @@ pub struct MatchCtx<'a> {
     /// re-deriving it per predicate would run that join once for `@working`
     /// and again for `@blocked` in the same expression.
     pub blocked: bool,
+    /// The row's title, which the title terms (D210) are substring-matched
+    /// against, case-insensitively.
+    pub title: &'a str,
 }
 
 /// A parsed filter. `Filter::parse` rejects what it cannot parse; `matches`
 /// evaluates what it accepted.
 #[derive(Debug, Clone)]
 pub struct Filter {
-    root: Node,
+    root: Expr,
 }
 
 impl Filter {
@@ -323,7 +310,7 @@ impl Filter {
         let toks = tokenize(input)?;
         if toks.is_empty() {
             return Ok(Filter {
-                root: Node::Pred(Pred::Always),
+                root: Expr::Pred(Pred::Always),
             });
         }
         let mut p = Parser {
@@ -342,23 +329,10 @@ impl Filter {
         Ok(Filter { root })
     }
 
-    /// True when `ctx` satisfies the filter.
-    ///
-    /// `MatchCtx` carries no title, so a title term (a bare word, a quoted
-    /// phrase, `title:`; D210) never matches here. Call
-    /// [`Filter::matches_titled`] to evaluate those too.
+    /// True when `ctx` satisfies the filter, title terms (a bare word, a quoted
+    /// phrase, `title:`; D210) included: they match against [`MatchCtx::title`].
     pub fn matches(&self, ctx: &MatchCtx) -> bool {
-        eval(&self.root, ctx, None)
-    }
-
-    /// True when `ctx` satisfies the filter and every title term in it is a
-    /// case-insensitive substring of `title` (D210).
-    ///
-    /// 1337: later: fold into pub Pred/Vocabulary/MatchCtx at the next minor
-    /// (#815): this is `matches` with a `title` field on `MatchCtx`, kept as a
-    /// second method so no public item changes.
-    pub fn matches_titled(&self, ctx: &MatchCtx, title: &str) -> bool {
-        eval(&self.root, ctx, Some(title))
+        eval(&self.root, ctx)
     }
 
     /// True when this filter already constrains status, so `report.summary`'s
@@ -378,11 +352,11 @@ impl Filter {
     /// included (D215: the working set leaves out an archived project's tasks
     /// unless the filter names the project).
     pub fn mentions_working(&self) -> bool {
-        fn walk(e: &Node) -> bool {
+        fn walk(e: &Expr) -> bool {
             match e {
-                Node::And(v) | Node::Or(v) => v.iter().any(walk),
-                Node::Pred(Pred::Working) => true,
-                Node::Pred(_) | Node::AnyStatus | Node::Title(_) => false,
+                Expr::And(v) | Expr::Or(v) => v.iter().any(walk),
+                Expr::Pred(Pred::Working) => true,
+                Expr::Pred(_) => false,
             }
         }
         walk(&self.root)
@@ -414,7 +388,7 @@ impl Filter {
     /// project or doc that no task references. Any other filter, even one that
     /// happens to match every row, narrows on purpose and is scoped.
     pub fn is_unfiltered(&self) -> bool {
-        matches!(self.root, Node::Pred(Pred::Always))
+        matches!(self.root, Expr::Pred(Pred::Always))
     }
 
     /// The VALUE carried by the single predicate this filter is — `None` when it
@@ -447,7 +421,7 @@ impl Filter {
     /// the string is gone by design. Nothing needs it — the date vocabulary is
     /// open, so no caller composes a date candidate to check.
     pub fn sole_value(&self) -> Option<&str> {
-        let Node::Pred(pred) = &self.root else {
+        let Expr::Pred(pred) = &self.root else {
             return None;
         };
         match pred {
@@ -459,6 +433,8 @@ impl Filter {
             // than inheriting `None` and quietly dropping its own candidates.
             Pred::DueBefore(_)
             | Pred::DueAfter(_)
+            | Pred::AnyStatus
+            | Pred::Title(_)
             | Pred::CompletedBefore(_)
             | Pred::CompletedAfter(_)
             | Pred::Working
@@ -468,39 +444,38 @@ impl Filter {
     }
 }
 
-fn constrains_status(e: &Node) -> bool {
+fn constrains_status(e: &Expr) -> bool {
     match e {
-        Node::And(v) | Node::Or(v) => v.iter().any(constrains_status),
+        Expr::And(v) | Expr::Or(v) => v.iter().any(constrains_status),
         // `@working` counts: it expands to `status in {pending,active}`, so the
         // caller has named a status set just as explicitly as `status:pending`.
-        Node::AnyStatus | Node::Pred(Pred::Status(_) | Pred::Working) => true,
-        Node::Pred(_) | Node::Title(_) => false,
+        Expr::Pred(Pred::AnyStatus | Pred::Status(_) | Pred::Working) => true,
+        Expr::Pred(_) => false,
     }
 }
 
 /// [`Filter::project_names`]'s walk, over borrowed [`Pred::Project`] strings so
 /// the caller pays no allocation for a filter that names none.
-fn collect_project_names<'a>(e: &'a Node, out: &mut Vec<&'a str>) {
+fn collect_project_names<'a>(e: &'a Expr, out: &mut Vec<&'a str>) {
     match e {
-        Node::And(v) | Node::Or(v) => v.iter().for_each(|c| collect_project_names(c, out)),
-        Node::Pred(Pred::Project(name)) => out.push(name.as_str()),
-        Node::Pred(_) | Node::AnyStatus | Node::Title(_) => {}
+        Expr::And(v) | Expr::Or(v) => v.iter().for_each(|c| collect_project_names(c, out)),
+        Expr::Pred(Pred::Project(name)) => out.push(name.as_str()),
+        Expr::Pred(_) => {}
     }
 }
 
-fn eval(e: &Node, ctx: &MatchCtx, title: Option<&str>) -> bool {
+fn eval(e: &Expr, ctx: &MatchCtx) -> bool {
     match e {
-        Node::And(v) => v.iter().all(|x| eval(x, ctx, title)),
-        Node::Or(v) => v.iter().any(|x| eval(x, ctx, title)),
-        Node::Pred(p) => eval_pred(p, ctx),
-        Node::AnyStatus => true,
-        Node::Title(t) => title.is_some_and(|ti| ti.to_lowercase().contains(t.as_str())),
+        Expr::And(v) => v.iter().all(|x| eval(x, ctx)),
+        Expr::Or(v) => v.iter().any(|x| eval(x, ctx)),
+        Expr::Pred(p) => eval_pred(p, ctx),
     }
 }
 
 fn eval_pred(p: &Pred, ctx: &MatchCtx) -> bool {
     match p {
-        Pred::Always => true,
+        Pred::Always | Pred::AnyStatus => true,
+        Pred::Title(t) => ctx.title.to_lowercase().contains(t.as_str()),
         // A plain enum comparison: an unreadable value never reaches here,
         // because `predicate()` refused it at parse time.
         Pred::Status(s) => *s == ctx.status,
@@ -610,6 +585,9 @@ pub enum Vocabulary {
     /// (`tomorrow`, `in 3 days`, `eom`) and no module exports a list of accepted
     /// words, because there is no list.
     Date,
+    /// Free text matched against the task title (D210): open, runtime, and
+    /// offered no candidates, since the title is not a closed list.
+    Text,
 }
 
 /// Value-taking predicate prefixes, i.e. the ones a quoted VALUE can follow,
@@ -632,7 +610,7 @@ pub enum Vocabulary {
 /// list is exported instead, and its consumers read it rather than restating it.
 ///
 /// The order is the grammar's, and is what a completion menu shows.
-pub const VALUE_PREFIXES: [(&str, Vocabulary); 10] = [
+pub const VALUE_PREFIXES: [(&str, Vocabulary); 11] = [
     ("project:", Vocabulary::Project),
     ("proj:", Vocabulary::Project),
     ("status:", Vocabulary::Status),
@@ -643,6 +621,7 @@ pub const VALUE_PREFIXES: [(&str, Vocabulary); 10] = [
     ("completed.after:", Vocabulary::Date),
     ("+", Vocabulary::Tag),
     ("-", Vocabulary::Tag),
+    ("title:", Vocabulary::Text),
 ];
 
 /// The predicates that are a whole token by themselves — no value, no prefix.
@@ -935,7 +914,7 @@ impl Parser {
             .is_some_and(|t| !t.quoted && t.text == s)
     }
 
-    fn parse_or(&mut self) -> Result<Node, String> {
+    fn parse_or(&mut self) -> Result<Expr, String> {
         let mut parts = vec![self.parse_and()?];
         while self.is_kw("or") {
             self.pos += 1; // consume 'or'
@@ -944,11 +923,11 @@ impl Parser {
         if parts.len() == 1 {
             Ok(parts.pop().unwrap())
         } else {
-            Ok(Node::Or(parts))
+            Ok(Expr::Or(parts))
         }
     }
 
-    fn parse_and(&mut self) -> Result<Node, String> {
+    fn parse_and(&mut self) -> Result<Expr, String> {
         // #229 item 12: `and` used to be a word this loop SKIPPED regardless
         // of position — so `+pr and` (nothing after it), `and +pr` (nothing
         // before it), and `+pr and or +review` (the `and`'s operand slot
@@ -970,7 +949,7 @@ impl Parser {
         if parts.len() == 1 {
             Ok(parts.pop().unwrap())
         } else {
-            Ok(Node::And(parts))
+            Ok(Expr::And(parts))
         }
     }
 
@@ -980,14 +959,14 @@ impl Parser {
     /// empty tail — so every "nothing here" case this grammar can reach
     /// (a dangling `and`, a leading `and`, an empty group `()`, a bare `or`)
     /// answers with the one message, `"expected a filter term"`.
-    fn parse_and_operand(&mut self) -> Result<Node, String> {
+    fn parse_and_operand(&mut self) -> Result<Expr, String> {
         if self.peek().is_none() || self.is_sym(")") || self.is_kw("or") || self.is_kw("and") {
             return Err("expected a filter term".to_string());
         }
         self.parse_term()
     }
 
-    fn parse_term(&mut self) -> Result<Node, String> {
+    fn parse_term(&mut self) -> Result<Expr, String> {
         if self.is_sym("(") {
             self.pos += 1; // consume '('
                            // Checked before the increment, so `depth` is only ever raised on a
@@ -1157,39 +1136,35 @@ const UNKNOWN_TOKEN: &str = "unknown filter token";
 
 /// Map one token to a tree leaf: the D210 terms first, then [`predicate`].
 ///
-/// 1337: later: fold into pub Pred/Vocabulary/MatchCtx at the next minor (#815):
-/// `title:` and the bare-word term are `Pred` variants and `Vocabulary::Text`
-/// there; they are recognised here so no public item changes.
-///
 /// A token `predicate` does not know is free text for the title when it is a
 /// bare word or a quoted phrase. A word that merely LOOKS like a token stays
 /// refused: a `key:value` with an unknown key (`remind:any`) is a mistyped
 /// predicate, and a leading `+`/`-`/`@` is a mistyped tag, flag or keyword. A
 /// quoted phrase is taken at its word, colon and all. Every other refusal
 /// (`status:nope`, `due.before:`) passes through untouched.
-fn leaf(tok: &str, quoted: bool, now: Timestamp) -> Result<Node, String> {
+fn leaf(tok: &str, quoted: bool, now: Timestamp) -> Result<Expr, String> {
     if let Some(v) = tok.strip_prefix("title:") {
         if v.is_empty() {
             return Err("`title:` needs a value — e.g. title:review, or \
                  title:\"weekly planning\" when it contains a space"
                 .to_string());
         }
-        return Ok(Node::Title(v.to_lowercase()));
+        return Ok(Expr::Pred(Pred::Title(v.to_lowercase())));
     }
     if let Some(v) = tok.strip_prefix("status:") {
         if v.eq_ignore_ascii_case("any") || v.eq_ignore_ascii_case("all") {
-            return Ok(Node::AnyStatus);
+            return Ok(Expr::Pred(Pred::AnyStatus));
         }
     }
     match predicate(tok, now) {
-        Ok(p) => Ok(Node::Pred(p)),
+        Ok(p) => Ok(Expr::Pred(p)),
         Err(e) if e.starts_with(UNKNOWN_TOKEN) => {
             let looks_like_token =
                 tok.starts_with(['+', '-', '@']) || (!quoted && tok.contains(':'));
             if tok.is_empty() || looks_like_token {
                 Err(e)
             } else {
-                Ok(Node::Title(tok.to_lowercase()))
+                Ok(Expr::Pred(Pred::Title(tok.to_lowercase())))
             }
         }
         Err(e) => Err(e),
@@ -1318,12 +1293,12 @@ mod tests {
     #[test]
     fn bare_words_are_title_terms_anded() {
         let f = parsed("weekly review");
-        assert!(f.matches_titled(&ctx_for(Status::Pending), "Weekly planning REVIEW"));
-        assert!(!f.matches_titled(&ctx_for(Status::Pending), "Weekly planning"));
-        assert!(parsed("PLAN").matches_titled(&ctx_for(Status::Pending), "weekly planning review"));
+        assert!(titled(&f, "Weekly planning REVIEW"));
+        assert!(!titled(&f, "Weekly planning"));
+        assert!(titled(&parsed("PLAN"), "weekly planning review"));
         // A term composes with the rest of the grammar.
-        assert!(parsed("plan or status:done").matches_titled(&ctx_for(Status::Pending), "a plan"));
-        assert!(!parsed("plan -x").matches_titled(&ctx_for(Status::Pending), "nothing"));
+        assert!(titled(&parsed("plan or status:done"), "a plan"));
+        assert!(!titled(&parsed("plan -x"), "nothing"));
     }
 
     /// D210: a quoted phrase is ONE substring, spaces included; it may hold a
@@ -1331,17 +1306,17 @@ mod tests {
     #[test]
     fn a_quoted_phrase_is_one_substring() {
         let f = parsed(r#""memory explorer""#);
-        assert!(f.matches_titled(&ctx_for(Status::Pending), "The Memory Explorer screen"));
-        assert!(!f.matches_titled(&ctx_for(Status::Pending), "explorer of memory"));
-        assert!(parsed(r#""fix: it""#).matches_titled(&ctx_for(Status::Pending), "Fix: it now"));
+        assert!(titled(&f, "The Memory Explorer screen"));
+        assert!(!titled(&f, "explorer of memory"));
+        assert!(titled(&parsed(r#""fix: it""#), "Fix: it now"));
     }
 
     /// D210: `title:` is the explicit spelling, quoted or not.
     #[test]
     fn the_title_key_matches_like_a_bare_word() {
-        assert!(parsed("title:plan").matches_titled(&ctx_for(Status::Pending), "A Plan"));
-        assert!(parsed(r#"title:"a plan""#).matches_titled(&ctx_for(Status::Pending), "is A Plan"));
-        assert!(!parsed(r#"title:"a plan""#).matches_titled(&ctx_for(Status::Pending), "plan a"));
+        assert!(titled(&parsed("title:plan"), "A Plan"));
+        assert!(titled(&parsed(r#"title:"a plan""#), "is A Plan"));
+        assert!(!titled(&parsed(r#"title:"a plan""#), "plan a"));
         assert!(refused("title:").contains("needs a value"));
     }
 
@@ -1350,10 +1325,10 @@ mod tests {
     /// not turn them into wildcards.
     #[test]
     fn percent_and_underscore_in_a_title_term_are_literal() {
-        assert!(parsed("100%").matches_titled(&ctx_for(Status::Pending), "reach 100% coverage"));
-        assert!(!parsed("100%").matches_titled(&ctx_for(Status::Pending), "reach 1000 coverage"));
-        assert!(parsed("a_b").matches_titled(&ctx_for(Status::Pending), "see a_b"));
-        assert!(!parsed("a_b").matches_titled(&ctx_for(Status::Pending), "see axb"));
+        assert!(titled(&parsed("100%"), "reach 100% coverage"));
+        assert!(!titled(&parsed("100%"), "reach 1000 coverage"));
+        assert!(titled(&parsed("a_b"), "see a_b"));
+        assert!(!titled(&parsed("a_b"), "see axb"));
     }
 
     /// Only a bare word becomes a title term. A word that is a malformed token
@@ -1387,8 +1362,17 @@ mod tests {
         }
     }
 
+    /// Evaluate `f` against a row that differs from `ctx_for` only in its title.
+    fn titled(f: &Filter, title: &str) -> bool {
+        f.matches(&MatchCtx {
+            title,
+            ..ctx_for(Status::Pending)
+        })
+    }
+
     fn ctx_for(status: Status) -> MatchCtx<'static> {
         MatchCtx {
+            title: "",
             status,
             priority: None,
             project: None,
@@ -1401,6 +1385,7 @@ mod tests {
 
     fn ctx_tagged(tags: &[String]) -> MatchCtx<'_> {
         MatchCtx {
+            title: "",
             status: Status::Pending,
             priority: None,
             project: None,
@@ -1413,6 +1398,7 @@ mod tests {
 
     fn ctx_with_priority(priority: Option<Priority>) -> MatchCtx<'static> {
         MatchCtx {
+            title: "",
             status: Status::Pending,
             priority,
             project: None,
@@ -1440,6 +1426,7 @@ mod tests {
         // Correct: (a or b) and c == (T or F) and F == FALSE.
         // Reassociated: a or (b and c) == T or (F and F) == TRUE.
         let ctx = MatchCtx {
+            title: "",
             status: Status::Pending,
             priority: None,
             project: Some("home"),
@@ -1467,6 +1454,7 @@ mod tests {
     #[test]
     fn proj_is_accepted_as_an_alias_of_project_on_the_read_side_too() {
         let ctx = MatchCtx {
+            title: "",
             status: Status::Pending,
             priority: None,
             project: Some("home"),
@@ -1497,6 +1485,7 @@ mod tests {
         }
         // The well-formed forms must still work exactly as before.
         let ctx = MatchCtx {
+            title: "",
             status: Status::Pending,
             priority: None,
             project: None,
@@ -1531,6 +1520,7 @@ mod tests {
     fn due_bounds_are_strict_at_the_exact_instant() {
         let bound = "2026-07-17T00:00:00Z";
         let ctx = MatchCtx {
+            title: "",
             status: Status::Pending,
             priority: None,
             project: None,
@@ -1549,11 +1539,13 @@ mod tests {
         );
         // One second either side still resolves the way the names promise.
         let earlier = MatchCtx {
+            title: "",
             due: Some("2026-07-16T23:59:59Z"),
             ..ctx
         };
         assert!(parsed(&format!("due.before:{bound}")).matches(&earlier));
         let later = MatchCtx {
+            title: "",
             due: Some("2026-07-17T00:00:01Z"),
             ..ctx
         };
@@ -1580,6 +1572,7 @@ mod tests {
         // the boundary and is legitimately outside both sides of it. Putting the
         // fixture on that instant would test the boundary rule, not this one.
         let ctx = MatchCtx {
+            title: "",
             status: Status::Pending,
             priority: None,
             project: None,
@@ -1655,6 +1648,7 @@ mod tests {
         let monday: Timestamp = "2026-07-20T12:00:00Z".parse().expect("anchor");
         let f = Filter::parse("due.before:tomorrow", monday).expect("parses");
         let just_inside = MatchCtx {
+            title: "",
             status: Status::Pending,
             priority: None,
             project: None,
@@ -1671,6 +1665,7 @@ mod tests {
             "the bound must stay at the instant parse resolved"
         );
         let earlier = MatchCtx {
+            title: "",
             due: Some("2026-07-20T23:59:59Z"),
             ..just_inside
         };
@@ -1847,6 +1842,7 @@ mod tests {
             assert_eq!(f.matches(&ctx_for(status)), want, "@working vs {status:?}");
 
             let blocked = MatchCtx {
+                title: "",
                 blocked: true,
                 ..ctx_for(status)
             };
@@ -1905,13 +1901,6 @@ mod tests {
             }
             let key = format!("{}:", lhs.rsplit('"').next().unwrap_or_default());
             seen += 1;
-            // 1337: later: fold into pub Pred/Vocabulary/MatchCtx at the next
-            // minor (#815). `title:` takes a value but has no `Vocabulary`
-            // variant (adding one is a semver break, D210), so it is not in
-            // VALUE_PREFIXES yet; `leaf` recognises it instead.
-            if key == "title:" {
-                continue;
-            }
             assert!(
                 VALUE_PREFIXES.iter().any(|(p, _)| *p == key),
                 "`{key}` takes an argument in GRAMMAR but is not in VALUE_PREFIXES, so a                  shell-quoted value would be re-split at its spaces"
@@ -2128,6 +2117,7 @@ mod tests {
             Vocabulary::Status,
             Vocabulary::Priority,
             Vocabulary::Date,
+            Vocabulary::Text,
         ] {
             assert!(
                 VALUE_PREFIXES.iter().any(|(_, v)| *v == want),
@@ -2143,6 +2133,7 @@ mod tests {
                 Vocabulary::Status => Status::ALL[0].as_str(),
                 Vocabulary::Priority => Priority::ALL[0].as_str(),
                 Vocabulary::Date => "tomorrow",
+                Vocabulary::Text => "sample",
             };
             Filter::parse(&format!("{prefix}{sample}"), anchor()).unwrap_or_else(|e| {
                 panic!("`{prefix}` claims {vocabulary:?} and refuses {sample:?}: {e}")
@@ -2182,6 +2173,7 @@ mod tests {
     fn a_spaced_value_needs_literal_quotes_and_the_stripped_form_is_a_title_term() {
         let tags = ["needs paint".to_string()];
         let ctx = MatchCtx {
+            title: "",
             status: Status::Pending,
             priority: None,
             project: Some("Home Renovation"),
@@ -2222,6 +2214,7 @@ mod tests {
         ] {
             let f = parsed(&format!("project:{}", quote(name)));
             let ctx = MatchCtx {
+                title: "",
                 status: Status::Pending,
                 priority: None,
                 project: Some(name),
@@ -2237,6 +2230,7 @@ mod tests {
             // Load-bearing: without it, a filter that lost everything after the
             // first space would still "pass" against a project named `Home`.
             let other = MatchCtx {
+                title: "",
                 project: Some("Home"),
                 ..ctx
             };
@@ -2269,6 +2263,7 @@ mod tests {
     #[test]
     fn quoting_suppresses_grouping_and_keyword_meaning() {
         let ctx = MatchCtx {
+            title: "",
             status: Status::Done,
             priority: None,
             project: Some("a (b) or c"),
@@ -2326,6 +2321,7 @@ mod tests {
             let f = Filter::parse(&format!("project:{}", quote(v)), anchor())
                 .unwrap_or_else(|e| panic!("quote({v:?}) must parse back: {e}"));
             let ctx = MatchCtx {
+                title: "",
                 status: Status::Pending,
                 priority: None,
                 project: Some(v),
@@ -2481,6 +2477,7 @@ mod tests {
         let tagged = vec!["needs".to_string()];
         fn ctx(tags: &[String]) -> MatchCtx<'_> {
             MatchCtx {
+                title: "",
                 status: Status::Pending,
                 priority: None,
                 project: None,
@@ -2648,6 +2645,7 @@ mod tests {
             ")".repeat(MAX_NESTING as usize)
         );
         let ctx = MatchCtx {
+            title: "",
             status: Status::Pending,
             priority: None,
             project: Some("home"),
@@ -2682,6 +2680,7 @@ mod tests {
     fn sibling_groups_do_not_accumulate_depth() {
         let flat = vec!["(project:home)"; 5_000].join(" or ");
         let ctx = MatchCtx {
+            title: "",
             status: Status::Pending,
             priority: None,
             project: Some("home"),
