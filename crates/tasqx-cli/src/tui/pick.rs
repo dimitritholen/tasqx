@@ -427,21 +427,13 @@ impl App {
     /// found again, and only when it has left the matches does the cursor
     /// fall back to the top.
     fn refilter(&mut self) {
-        let anchor = self.matches.get(self.cursor).copied();
-        let needle = self.query.to_lowercase();
-        let terms: Vec<&str> = needle.split_whitespace().collect();
-        self.matches = if terms.is_empty() {
-            // No query: the store's own `-urgency` order.
-            (0..self.rows.len()).collect()
-        } else {
-            // Ties keep their original order, which is `-urgency`, so urgency
-            // is the tiebreak for free (#203).
-            fuzzy::rank(self.rows.len(), |i| self.rows[i].score(&terms))
-        };
-        self.cursor = anchor
-            .and_then(|a| self.matches.iter().position(|&i| i == a))
-            .unwrap_or(0)
-            .min(self.matches.len().saturating_sub(1));
+        fuzzy::refilter(
+            self.rows.len(),
+            &self.query,
+            |i, terms| self.rows[i].score(terms),
+            &mut self.matches,
+            &mut self.cursor,
+        );
     }
 
     /// Rows the list gets: the frame less the header, the blank line under
