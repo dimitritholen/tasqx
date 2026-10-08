@@ -584,7 +584,8 @@ const METHODS: [(&str, &str, &str); 52] = [
     ),
     (
         "task.brief",
-        "<code>ref</code>, <code>memory_limit?</code>, <code>max_body_bytes?</code>",
+        "<code>ref</code>, <code>memory_limit?</code>, <code>annotations_limit?</code>, \
+         <code>annotations_offset?</code>, <code>max_body_bytes?</code>",
         "<code>{task, neighbourhood, memory}</code>. Everything needed before starting one task \
          (D136): <code>task</code> is <code>task.get</code>'s own result verbatim; \
          <code>neighbourhood.depends_on</code> names each prerequisite with its NEWEST \
@@ -604,10 +605,11 @@ const METHODS: [(&str, &str, &str); 52] = [
          knowledge docs and annotations fill the rest, either kind taking the other's unused \
          slots, docs listed first (D147); <code>reserved_docs</code>, <code>docs_total</code> \
          and <code>annotations_total</code> say what was done. <code>memory_limit</code> \
-         defaults to 5 (D154). <code>max_body_bytes</code> caps \
-         each annotation body of the TASK half in the response, exactly as on \
-         <code>task.get</code> (D148) — no <code>annotations_limit</code>, because a brief is \
-         what you read BEFORE starting and dropping whole notes from it is the wrong cut.",
+         defaults to 5 (D154). <code>annotations_limit</code>, \
+         <code>annotations_offset</code> and <code>max_body_bytes</code> page and cap the \
+         TASK half exactly as on <code>task.get</code> (D148, D220): absent, it carries the \
+         whole history with every body whole, and <code>annotations_total</code> and \
+         <code>annotations_next_offset</code> say what a page left out.",
     ),
     (
         "report.outcomes",
