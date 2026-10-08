@@ -2,7 +2,7 @@ import { execFileSync } from 'node:child_process';
 import { writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { env as processEnv } from 'node:process';
-import { DatabaseSync } from 'node:sqlite';
+import { createRequire } from 'node:module';
 
 import { act, fireEvent, screen, waitFor, within } from '@testing-library/react';
 import { createRoot, type Root } from 'react-dom/client';
@@ -31,6 +31,12 @@ import { BIN, ScratchDaemon } from '../scratchDaemon';
  * daemon.test.ts gives. And it proves, inside the test, that it never touched
  * the developer's own store or the default socket.
  */
+
+// node:sqlite is loaded at run time, not imported: this suite runs in jsdom
+// (it renders the app), and Vite refuses to bundle a Node built-in for that
+// environment under Node 22 (CI's version; the same import passes under 26).
+// A Node-environment file cannot host the suite instead, because it needs a DOM.
+const { DatabaseSync } = createRequire(import.meta.url)('node:sqlite') as typeof import('node:sqlite');
 
 /** Columns `migrate` adds to a store written before them (storage.rs). */
 const LATER_TASK_COLUMNS = ['remind', 'budget_tokens', 'delivered_annotation_id', 'tracked_adjustment_seconds', 'spawned_from'];

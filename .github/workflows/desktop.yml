@@ -61,9 +61,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # 22.13 is the first Node 22 with node:sqlite unflagged, which the
+      # release smoke suite uses to downgrade its scratch store.
       - uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version: '^22.13.0'
           cache: npm
           cache-dependency-path: apps/tasqx-desktop/package-lock.json
 
