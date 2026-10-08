@@ -3037,6 +3037,11 @@ fn error_cases() -> Vec<(&'static str, String, &'static str)> {
             "conflict",
         ),
         (
+            "an envelope that is JSON but names no method",
+            json!({ "tasqx": "1", "id": "e" }).to_string(),
+            "bad_request",
+        ),
+        (
             "a request that is not JSON at all",
             "{not json".to_string(),
             "bad_request",
@@ -3055,12 +3060,26 @@ fn every_failure_answers_the_frozen_error_envelope() {
         plain_task(&engine);
         let response = handle_envelope(&engine, &request);
 
-        let envelope = if response.get("id").is_some() {
+        // The shape follows the REQUEST: a failure echoes the id it was sent
+        // (DESIGN.md §4), or a daemon client multiplexing in-flight requests is
+        // stranded by any refusal. The only failure with no id to echo is text
+        // that is not JSON at all; a JSON object that merely fails envelope
+        // validation still carries its id.
+        let sent_id = serde_json::from_str::<Value>(&request)
+            .ok()
+            .and_then(|v| v.get("id").cloned());
+        let envelope = if sent_id.is_some() {
             E_ERROR
         } else {
             E_ERROR_NO_ID
         };
         check_shape(&response, envelope, &format!("{label} response"));
+        assert_eq!(
+            response.get("id"),
+            sent_id.as_ref(),
+            "{label}: the request's id must come back unchanged on the error path, and an \
+             unreadable request must answer with no `id` key"
+        );
 
         assert_eq!(
             response["tasqx"], API_VERSION,
