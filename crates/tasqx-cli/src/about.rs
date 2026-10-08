@@ -107,6 +107,7 @@ pub(crate) fn render(ctx: &Ctx, f: &Facts) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_common::strip_sgr;
     use crate::theme::{builtin, default_theme, Caps, ColorDepth};
 
     fn facts() -> Facts {
@@ -135,23 +136,6 @@ mod tests {
             unicode: false,
         };
         Ctx::new(default_theme(), caps).with_cols(cols)
-    }
-
-    fn strip(s: &str) -> String {
-        let mut out = String::new();
-        let mut chars = s.chars();
-        while let Some(c) = chars.next() {
-            if c == '\x1b' {
-                for c in chars.by_ref() {
-                    if c == 'm' {
-                        break;
-                    }
-                }
-            } else {
-                out.push(c);
-            }
-        }
-        out
     }
 
     /// A URL is copied text: whole on one line, undecorated, at every width a
@@ -329,7 +313,7 @@ mod tests {
             );
             let row = lines
                 .iter()
-                .find(|l| strip(l).trim_start().starts_with("made by"))
+                .find(|l| strip_sgr(l).trim_start().starts_with("made by"))
                 .expect("the made by row");
             assert!(
                 row.contains(&format!("{label}made by")),
@@ -364,7 +348,7 @@ mod tests {
             pin: Some("2026-09-16T09:00:00Z".to_string()),
             ..facts()
         };
-        let screen = strip(&render(&at(100), &pinned));
+        let screen = strip_sgr(&render(&at(100), &pinned));
         let clock_row = |screen: &str| -> String {
             screen
                 .lines()
@@ -383,7 +367,7 @@ mod tests {
         // A console that cannot draw `·` gets the house fallback, not mojibake
         // on the one row whose job is to be believed. `Facts` therefore carries
         // the instant alone and the separator is chosen at render time.
-        let ascii = clock_row(&strip(&render(&ascii_at(100), &pinned)));
+        let ascii = clock_row(&strip_sgr(&render(&ascii_at(100), &pinned)));
         assert!(
             !ascii.contains('·') && ascii.contains("TASQX_NOW - 2026-09-16T09:00:00Z"),
             "the non-Unicode clock row must use `-`: {ascii:?}"

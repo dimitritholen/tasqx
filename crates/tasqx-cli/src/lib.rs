@@ -37,6 +37,9 @@ mod settings;
 mod setup;
 mod sugar;
 mod sync;
+#[cfg(test)]
+#[path = "../tests/common/mod.rs"]
+mod test_common;
 mod theme;
 mod tokens;
 mod tui;
