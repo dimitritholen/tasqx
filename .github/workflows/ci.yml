@@ -511,6 +511,48 @@ jobs:
             }
           }
 
+      # D223: -Uninstall cuts the completion block an older tasqx wrote into
+      # $PROFILE, byte for byte. The Windows half of installer-smoke.sh's
+      # "--uninstall cuts the completion block" case: a UTF-8 BOM, CRLF, a line
+      # that merely quotes the marker and no final newline all survive. $PROFILE
+      # is pointed at a scratch file so the runner's own profile is never read.
+      # -DryRun -Uninstall runs first and must leave every byte in place.
+      - name: uninstall cuts the completion block (install.ps1 -Uninstall)
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: |
+          $dir = Join-Path $env:RUNNER_TEMP 'cutblock'
+          New-Item -ItemType Directory -Force -Path (Join-Path $dir 'bin') | Out-Null
+          Set-Content -LiteralPath (Join-Path $dir 'bin\tasqx.exe') -Value 'placeholder'
+          $profileFile = Join-Path $dir 'profile.ps1'
+          $begin = '# >>> tasqx completions >>>'
+          $end = '# <<< tasqx completions <<<'
+          $bom = [string][char]0xFEFF
+          $seed = "$bom# mine`r`n$begin`r`n# Added by tasqx`r`n`$env:TASQX_COMPLETE = 'powershell'`r`n$end`r`nWrite-Output '$begin'`r`nlast"
+          $want = "$bom# mine`r`nWrite-Output '$begin'`r`nlast"
+          $utf8 = New-Object Text.UTF8Encoding($false)
+          [IO.File]::WriteAllBytes($profileFile, $utf8.GetBytes($seed))
+          Set-Variable -Name PROFILE -Value $profileFile -Scope Global
+          $env:TASQX_INSTALL = Join-Path $dir 'bin'
+          # -DryRun first: it must name the block and change no byte of it.
+          $dry = (& .\install.ps1 -DryRun -Uninstall 2>&1 | Out-String)
+          Write-Output $dry
+          if ($dry -notmatch 'would be cut') { throw 'the dry run does not name the block it would cut' }
+          $afterDry = [IO.File]::ReadAllBytes($profileFile)
+          if ([Convert]::ToBase64String($afterDry) -ne [Convert]::ToBase64String($utf8.GetBytes($seed))) {
+            throw 'the dry run changed the profile'
+          }
+          if (-not (Test-Path -LiteralPath (Join-Path $dir 'bin\tasqx.exe'))) { throw 'the dry run removed the binary' }
+          & .\install.ps1 -Uninstall
+          $got = [IO.File]::ReadAllBytes($profileFile)
+          $wantBytes = $utf8.GetBytes($want)
+          if ([Convert]::ToBase64String($got) -ne [Convert]::ToBase64String($wantBytes)) {
+            throw "the profile is not the seed minus its block: $([BitConverter]::ToString($got))"
+          }
+          if (Test-Path -LiteralPath (Join-Path $dir 'bin\tasqx.exe')) { throw 'the binary was not removed' }
+          if (Test-Path -LiteralPath "$profileFile.tasqx-uninstall.bak") { throw 'the backup was left behind' }
+          Write-Output 'the completion block was cut and nothing else changed'
+
       # The real thing: download, compare the checksum, unpack, run the binary.
       # The cases live in scripts/installer-smoke.sh rather than inline here, so
       # a developer runs exactly what CI runs — a check only CI can run is one
@@ -521,12 +563,7 @@ jobs:
       # reporting "NOT COVERED" per case and exiting 0, and the job reports
       # success for having skipped everything.
       #
-      # The completions case runs with `$SHELL` deliberately unset. If it goes
-      # red, the fix is install.sh's skip path — never `SHELL=/bin/bash` in this
-      # workflow. Setting it here turns the case green while proving nothing
-      # about the container with no procps and no $SHELL that the case exists to
-      # reproduce.
-      - name: real install, truncated pipe, no hasher, completions (installer-smoke.sh)
+      - name: real install, truncated pipe, no hasher, uninstall (installer-smoke.sh)
         if: runner.os != 'Windows'
         run: REQUIRE=curl scripts/installer-smoke.sh
 

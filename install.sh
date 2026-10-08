@@ -22,8 +22,9 @@
 # is correct for exactly one release and silently wrong for every one after
 # it. The tag comes from the release itself.
 #
-# This script never uses sudo or doas, and writes nowhere but
-# ${TASQX_INSTALL:-$HOME/.local/bin}.
+# This script never uses sudo or doas, and installs nowhere but
+# ${TASQX_INSTALL:-$HOME/.local/bin}. The one other write is `--uninstall`
+# cutting an old tasqx completion block out of a shell startup file.
 #
 # `set -eu` lives inside main for the same reason everything else does: it is a
 # command, and a command outside main is a command a truncated pipe can run.
@@ -47,12 +48,14 @@ Options:
   --dry-run       Print what would happen and stop, whichever other flag it is
                   combined with. Writes nothing, creates no directory,
                   downloads nothing, removes nothing.
-  --uninstall     Remove an installed tasqx: its completion block, then the
-                  binary, then the directory if this script made it and it is
-                  now empty. Never your task database.
-  --completions   Also switch Tab completion on, after the install. Opt-in: the
-                  bare one-liner never edits a shell startup file.
+  --uninstall     Remove an installed tasqx: the completion block an older
+                  tasqx added to a shell startup file, then the binary, then
+                  the directory if this script made it and it is now empty.
+                  Never your task database.
   --help          This text.
+
+Tab completion: `tasqx completions <shell>` prints the one line to add to your
+shell's startup file. This script never adds it.
 
 Environment:
   TASQX_VERSION   Tag to install, with or without the leading v. Default: the
@@ -522,81 +525,6 @@ report_path() {
     err "warning: 'tasqx' on your PATH resolves to ${resolved} (${other_version}), not the one just installed."
 }
 
-# Sets comp_shell to the name of the shell whose startup file should be edited,
-# or to the empty string when this machine gives no usable answer.
-#
-# $SHELL first, because that is the variable every POSIX login shell sets to its
-# own path and the only one `tasqx completions` itself consults
-# (complete/install.rs:364-377). The parent process name is the fallback, and it
-# exists because $SHELL is routinely unset in containers and non-login CI
-# sessions — the machines a piped installer is most likely to run on. `ps` is
-# probed rather than assumed: a container image with no procps is exactly the
-# same population.
-#
-# `sh`, `dash` and `ash` are answers, not shells to set up. They are what runs
-# THIS script, they are never a shell tasqx can complete, and passing one on
-# would turn "I could not tell" into a refusal about a shell nobody chose.
-#
-# A leading `-` is stripped because a login shell's argv[0] is `-bash`, and the
-# path is reduced to its last component the way `canonical_shell_name` reduces
-# `/usr/bin/zsh`.
-#
-# shellcheck disable=SC2217
-resolve_completion_shell() {
-    comp_shell="${SHELL:-}"
-    if [ -z "$comp_shell" ] && command -v ps >/dev/null 2>&1; then
-        comp_shell="$(ps -o comm= -p "$PPID" </dev/null 2>/dev/null)" || comp_shell=""
-    fi
-    comp_shell="${comp_shell##*/}"
-    comp_shell="${comp_shell#-}"
-    case "$comp_shell" in
-    "" | sh | dash | ash) comp_shell="" ;;
-    esac
-}
-
-# Names the command the reader can run by hand, on the two paths where this
-# script declines to run it for them. One sentence, one command, and never an
-# error: see completions_step.
-completion_hint() {
-    err "warning: $1" \
-        "Switch it on yourself with: tasqx completions <shell> --install"
-}
-
-# `--completions`: turn Tab completion on for the shell this machine appears to
-# run.
-#
-# EXIT 0 ON EVERY FAILURE, deliberately. This runs after the binary is in place
-# and reported, so the install has already succeeded; a non-zero exit here would
-# tell the user their install is broken when the only thing that did not happen
-# is a convenience they can add in one command. Both arms therefore print a
-# warning naming that command and return 0.
-#
-# The shell name is passed EXPLICITLY. `tasqx completions --install` with no
-# name reads $SHELL itself and refuses when it is empty
-# (complete/install.rs:375-385) — so omitting the name here would put the
-# fallback above out of reach on precisely the containers and CI sessions it was
-# written for.
-#
-# `-y` is not optional. `install_into` withholds consent when stdin is not a
-# terminal (complete/install.rs:994), and under `curl … | sh` stdin is the
-# script itself. Without `-y` this path writes nothing, ever, on the only
-# transport this installer advertises.
-#
-# `</dev/null` for the reason the header gives, and this is the call that
-# motivated the rule: `tasqx completions` is the one child here that reads stdin
-# on purpose.
-completions_step() {
-    resolve_completion_shell
-    if [ -z "$comp_shell" ]; then
-        completion_hint "cannot tell which shell to set up: \$SHELL is not set and the parent process is not a shell tasqx completes."
-        return 0
-    fi
-    if ! "$installed_path" completions "$comp_shell" --install -y </dev/null; then
-        completion_hint "could not switch on ${comp_shell} completions."
-        return 0
-    fi
-}
-
 # D178/#795: the same nudge `tasqx setup` and `--help` print
 # (crates/tasqx-cli/src/setup.rs, RIPWIRE_INSTALL_HINT), so the three cannot
 # drift apart. ripwire ships no Homebrew formula and no Scoop manifest tasqx
@@ -609,34 +537,114 @@ ripwire_hint() {
     fi
 }
 
-# Takes the completion block back out, while there is still a binary able to do
-# it.
+# Cuts the tasqx completion block out of one startup file, if it has one.
 #
-# Silent when there is nothing to remove: `tasqx completions <shell>
-# --uninstall` exits 4 on a file with no block (D33 — a command that changed
-# nothing must not answer ok), and that is the ordinary case for anyone who
-# never passed `--completions`. The block is removed byte for byte, so
-# attempting it unconditionally costs a process and nothing else.
+# Until D223 the binary did this (`tasqx completions --uninstall`). It no longer
+# can, and the blocks it wrote are still in people's startup files, each one a
+# line that runs `tasqx` at every shell start. So the installer that removes the
+# binary removes the block too, with the rules the binary used:
 #
-# `-y` for the same reason completions_step needs it: uninstall_from consults
-# the same consent gate (complete/install.rs:1053), and without it the block
-# would quietly survive the uninstall.
-uninstall_completions() {
-    resolve_completion_shell
-    if [ -z "$comp_shell" ]; then
+#  * the markers are the exact lines `--install` wrote, matched as WHOLE lines
+#    after trimming surrounding whitespace (and a CRLF's `\r`), never as a
+#    substring — `echo "# >>> tasqx completions >>>"` is not a marker;
+#  * every complete begin..end block is cut, markers included, and nothing else:
+#    an end marker with no begin above it is ordinary text and stays;
+#  * a begin marker never closed refuses: the file is left untouched and named,
+#    because deleting to the end of the file would take whatever the user added
+#    below it;
+#  * no block, no write: the file keeps its bytes and its mtime;
+#  * a file holding a NUL byte (a UTF-16 PowerShell-era profile) is not the text
+#    this edits, and is left alone.
+#
+# Every other byte survives, including a missing final newline. awk runs under
+# LC_ALL=C so it handles bytes rather than characters, and re-adds the final
+# newline only where the original had one.
+#
+# Written back IN PLACE (`cat >`), not renamed over: that keeps a symlinked or
+# hardlinked dotfile attached to its dotfiles repository and keeps the file's
+# permissions, the two things a rename destroys. The price is a moment in which
+# the file is being rewritten, so the original is copied aside first and the
+# copy is only removed once the write succeeded; a failed write names it.
+#
+# Never fails the uninstall. A block it could not cut is a warning, because the
+# binary is the thing being uninstalled and the user can delete five lines.
+#
+# SC2217 for `rm` and `cp`: the header's one rule for every child.
+# shellcheck disable=SC2217
+cut_completion_block() {
+    [ -f "$1" ] || return 0
+    if [ "$(tr -d '\000' <"$1" | wc -c)" -ne "$(wc -c <"$1")" ]; then
         return 0
     fi
-    if "$1" completions "$comp_shell" --uninstall -y </dev/null >/dev/null 2>&1; then
-        printf '%s\n' "removed the ${comp_shell} completion block"
+    cut_nl="no"
+    [ -z "$(tail -c 1 "$1" </dev/null)" ] && cut_nl="yes"
+    cut_out="$1.tasqx-uninstall.$$"
+    cut_code=0
+    LC_ALL=C awk -v nl="$cut_nl" '
+        function trim(s) { sub(/^[ \t\r\f\v]+/, "", s); sub(/[ \t\r\f\v]+$/, "", s); return s }
+        {
+            t = trim($0)
+            if (!open && t == "# >>> tasqx completions >>>") { open = NR; next }
+            if (open) { if (t == "# <<< tasqx completions <<<") { open = 0; cut++ }; next }
+            if (n++) printf "\n"
+            printf "%s", $0
+        }
+        END {
+            if (open) { print open > "/dev/stderr"; exit 3 }
+            if (!cut) exit 1
+            if (n && nl == "yes") printf "\n"
+        }' "$1" >"$cut_out" 2>"$cut_out.line" </dev/null || cut_code=$?
+    case "$cut_code" in
+    0) ;;
+    1)
+        rm -f "$cut_out" "$cut_out.line" </dev/null
+        return 0
+        ;;
+    3)
+        err "warning: line $(cat "$cut_out.line" </dev/null) of $1 opens a tasqx completion block that is never closed;" \
+            "  the file was left unchanged. Remove that block by hand."
+        rm -f "$cut_out" "$cut_out.line" </dev/null
+        return 0
+        ;;
+    *)
+        err "warning: could not read $1 to remove its tasqx completion block; it was left unchanged."
+        rm -f "$cut_out" "$cut_out.line" </dev/null
+        return 0
+        ;;
+    esac
+    rm -f "$cut_out.line" </dev/null
+    if ! cp "$1" "$cut_out.bak" </dev/null; then
+        err "warning: could not back up $1, so its tasqx completion block was left in place."
+        rm -f "$cut_out" </dev/null
+        return 0
     fi
+    if ! cat "$cut_out" >"$1" </dev/null; then
+        err "warning: writing $1 failed; the original is kept at $cut_out.bak."
+        rm -f "$cut_out" </dev/null
+        return 0
+    fi
+    rm -f "$cut_out" "$cut_out.bak" </dev/null
+    printf '%s\n' "removed the tasqx completion block from $1"
 }
 
-# `--uninstall`: undo the install, in the only order that works.
+# The files `tasqx completions --install` wrote to on macOS and Linux, one per
+# shell it served: bash, zsh, elvish, and fish's own completions file (where
+# $XDG_CONFIG_HOME moves it, as fish itself honours). Every one is checked
+# rather than only the current $SHELL's, because a block left in the file of a
+# shell the user ran once still runs `tasqx` there.
+uninstall_completions() {
+    cut_completion_block "$HOME/.bashrc"
+    cut_completion_block "$HOME/.zshrc"
+    cut_completion_block "$HOME/.elvish/rc.elv"
+    cut_completion_block "${XDG_CONFIG_HOME:-$HOME/.config}/fish/completions/tasqx.fish"
+}
+
+# `--uninstall`: undo the install.
 #
-# The completion block goes FIRST, because the program that knows how to remove
-# it is the binary step 2 deletes. Reversed, this would invoke a path that no
-# longer exists and leave a `source <(…)` line in a startup file pointing at a
-# tasqx that is gone — a shell that prints an error on every new terminal.
+# The completion block goes FIRST, and even when there is no binary to remove:
+# a `source <(…)` line left in a startup file pointing at a tasqx that is gone
+# is a shell that prints an error on every new terminal, and that is most likely
+# on exactly the machine where the binary has already been deleted by hand.
 #
 # THE STORE IS NEVER TOUCHED. $TASQX_DB and the user's tasks are their data, not
 # installer state; an uninstaller that deletes them has destroyed the one thing
@@ -653,12 +661,12 @@ uninstall_completions() {
 uninstall() {
     installed_path="${install_dir}/tasqx"
 
+    uninstall_completions
+
     if [ ! -e "$installed_path" ]; then
         printf '%s\n' "nothing to remove at ${installed_path}"
         return 0
     fi
-
-    uninstall_completions "$installed_path"
 
     if ! rm -f "$installed_path" </dev/null; then
         err "could not remove ${installed_path}."
@@ -688,11 +696,6 @@ uninstall() {
 # whose entire promise is "writes nothing" performed a real uninstall. A dry run
 # that deletes a binary is worse than no dry run at all, because the person who
 # typed it chose it in order to be safe.
-#
-# The binary is deliberately never RUN here. Naming the startup file the
-# completion block lives in would read better, and the only thing on the machine
-# that knows that path is the binary — but asking it means starting the same
-# program the real uninstall starts, in the one mode that promised not to.
 dry_run_uninstall() {
     installed_path="${install_dir}/tasqx"
 
@@ -703,13 +706,20 @@ dry_run_uninstall() {
         printf '  %-12s %s\n' "binary" "${installed_path} (not there — nothing to remove)"
     fi
 
-    resolve_completion_shell
-    if [ -n "$comp_shell" ]; then
-        printf '  %-12s %s\n' "completions" \
-            "the ${comp_shell} block, via: tasqx completions ${comp_shell} --uninstall -y"
-    else
-        printf '  %-12s %s\n' "completions" \
-            "none — no shell tasqx completes was detected, so no block would be touched"
+    # Read, never cut: `grep` only. A begin marker is enough to name the file;
+    # whether its block is closed is the real run's question, and it answers
+    # it with a warning rather than an edit.
+    dry_cut="no"
+    for dry_file in "$HOME/.bashrc" "$HOME/.zshrc" "$HOME/.elvish/rc.elv" \
+        "${XDG_CONFIG_HOME:-$HOME/.config}/fish/completions/tasqx.fish"; do
+        if [ -f "$dry_file" ] &&
+            grep -q '^[[:space:]]*# >>> tasqx completions >>>[[:space:]]*$' "$dry_file" </dev/null; then
+            printf '  %-12s %s\n' "completions" "the tasqx block in ${dry_file} would be cut"
+            dry_cut="yes"
+        fi
+    done
+    if [ "$dry_cut" = "no" ]; then
+        printf '  %-12s %s\n' "completions" "no tasqx block in any startup file, so none would be touched"
     fi
 
     # Said even though it is a no-op, because "what would be removed" is exactly
@@ -737,18 +747,11 @@ main() {
     # printed an install plan for an install nobody asked for. Held separately,
     # it can win over every action below instead of racing them.
     dry_run="no"
-    # A modifier, not an action. D57 rules that completion is switched on
-    # without asking only where a package manager did the installing; every
-    # other route asks first, and here "asks" means the user typed the flag.
-    # The bare one-liner must reach the end of an install having edited no
-    # startup file at all.
-    want_completions="no"
 
     while [ "$#" -gt 0 ]; do
         case "$1" in
         --dry-run) dry_run="yes" ;;
         --uninstall) action="uninstall" ;;
-        --completions) want_completions="yes" ;;
         --help)
             usage
             return 0
@@ -794,19 +797,6 @@ main() {
         printf '  %-10s %s %s -> %s\n' "platform" "$uname_s" "$uname_m" "$target"
         printf '  %-10s %s\n' "archive" "$archive_url"
         printf '  %-10s %s\n' "install to" "${install_dir}/tasqx"
-        # Said only when it was asked for, so the four contract lines above are
-        # the whole of an ordinary dry run. `--completions` edits a startup
-        # file, which is the write a reader of a dry run most wants named.
-        if [ "$want_completions" = "yes" ]; then
-            resolve_completion_shell
-            if [ -n "$comp_shell" ]; then
-                printf '  %-10s %s\n' "completions" \
-                    "would be switched on for ${comp_shell} after the install"
-            else
-                printf '  %-10s %s\n' "completions" \
-                    "asked for, but no shell tasqx completes was detected"
-            fi
-        fi
         return 0
     fi
 
@@ -814,12 +804,6 @@ main() {
     fetch_and_verify || return
     install_binary || return
     report_path
-
-    # Last, after the install is done and reported. The order is the reason
-    # completions_step can afford to exit 0 on every failure.
-    if [ "$want_completions" = "yes" ]; then
-        completions_step
-    fi
 
     # Very last: a missing ripwire is a hint, never a reason to fail an
     # install that otherwise succeeded.
