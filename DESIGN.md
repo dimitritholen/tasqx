@@ -1015,12 +1015,12 @@ The report generator is *just another client* — anything it shows, a plugin or
 | `tasqx docs --no-open` | Write the temp file, print the path. |
 | `tasqx docs --stdout` | Write the HTML to stdout. |
 
-**Eleven pages**, each a `<section id>` shown one at a time by the inline script: overview, install & quickstart, commands, filter grammar, scheduling & recurrence, reminders, daemon & watch, MCP, JSON API, export & import, themes & reports.
+**Pages**, each a `<section id>` shown one at a time by the stylesheet's `:target` — the page the hash names, or the page holding the heading or row it names, or the first page when it names neither. Every page of prose is a markdown file rendered at generation time: `docs/site` (overview, install & quickstart, filter grammar, scheduling & recurrence, reminders, daemon & watch, export & import, themes & reports), then the wiki and the guides; the commands, JSON API, MCP and object pages are generated references. Light or dark follows `prefers-color-scheme`, with no switch of the page's own.
 
 **Three properties the tests hold** (`docs.rs`):
 
 - **Self-contained.** No `http://`/`https://`/`src=`/`<link>`/`@import`/`url(`; every `href` is an in-page anchor.
-- **Hash-driven navigation, never the History API.** `history.pushState` throws a `SecurityError` on a `file://` document (origin `null`) — which is exactly how `tasqx docs` opens the guide. Navigation is driven by `location.hash` + `hashchange`, the only mechanism that works on that transport, which is what makes anchors genuinely cross-linkable and the back button real.
+- **Hash-driven navigation, never the History API.** `history.pushState` throws a `SecurityError` on a `file://` document (origin `null`) — which is exactly how `tasqx docs` opens the guide. Navigation is the hash and CSS `:target`, which works on that transport with no script at all, and is what makes anchors genuinely cross-linkable and the back button real.
 - **No doc drift.** The Commands and JSON API pages render *from* the `VERBS` / `METHODS` tables, and those tables are asserted equal to clap's own subcommand list (names *and* aliases), `core.capabilities`'s method list, and `main::CLEARABLE`. A verb or method cannot ship undocumented.
 
 ---
