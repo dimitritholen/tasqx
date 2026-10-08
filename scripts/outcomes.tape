@@ -10,8 +10,8 @@ Output docs/img/outcomes.gif
 
 Set Shell bash
 Set FontSize 16
-Set Width 1080
-Set Height 300
+Set Width 1280
+Set Height 360
 Set Padding 16
 Set Framerate 12
 Set TypingSpeed 45ms

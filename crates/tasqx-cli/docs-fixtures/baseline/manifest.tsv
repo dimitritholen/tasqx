@@ -159,7 +159,7 @@ sync-status	pipe	100	-	sync --status	-	-
 # --- --card / --card --ascii, the four verbs that take it ---
 show-card	pipe	100	-	show 51 --card	-	-
 show-card-ascii	pipe	100	-	show 51 --card --ascii	-	-
-brief-card	pipe	100	-	brief 51 --card	-	-
+brief-card	pipe-mut	100	-	brief 51 --card	-	-
 next-card	pipe	100	-	next --card	-	-
 why-card	pipe	100	-	why 51 --card	-	-
 
@@ -170,7 +170,7 @@ agenda-plain	pipe-plain	100	-	agenda	-	-
 next-plain	pipe-plain	100	-	next	-	-
 why-plain	pipe-plain	100	-	why 51	-	-
 show-plain	pipe-plain	100	-	show 51	-	-
-brief-plain	pipe-plain	100	-	brief 51	-	-
+brief-plain	pipe-plain-mut	100	-	brief 51	-	-
 projects-plain	pipe-plain	100	-	projects	-	-
 report-plain	pipe-plain	100	-	report	-	-
 memory-list-plain	pipe-plain	100	-	memory list	-	-

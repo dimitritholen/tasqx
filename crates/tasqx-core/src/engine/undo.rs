@@ -241,6 +241,11 @@ pub const NOT_UNDOABLE: &[(&str, &str)] = &[
          change; `tasqx modify <ref> --clear remind` stops the reminder instead.",
     ),
     (
+        "briefed",
+        "A `briefed` event records that a task was read for, not a change to it, and undo steps \
+         over it to the change before; nothing needs taking back.",
+    ),
+    (
         "create",
         "A project cannot be un-created: its NAME is what every task in it stores; `tasqx \
          archive <name>` takes it out of rotation instead.",
@@ -355,7 +360,8 @@ impl Engine {
         // module header.
         let newest: Option<(String, String, String, Option<String>, String)> = tx
             .query_row(
-                "SELECT id, entity_id, op, payload, ts FROM events ORDER BY rowid DESC LIMIT 1",
+                "SELECT id, entity_id, op, payload, ts FROM events WHERE op <> 'briefed' \
+                 ORDER BY rowid DESC LIMIT 1",
                 [],
                 |r| {
                     Ok((
@@ -389,7 +395,7 @@ impl Engine {
                 let prior: Option<(String, String, String, Option<String>, String)> = tx
                     .query_row(
                         "SELECT id, entity_id, op, payload, ts FROM events \
-                         ORDER BY rowid DESC LIMIT 1 OFFSET 1",
+                         WHERE op <> 'briefed' ORDER BY rowid DESC LIMIT 1 OFFSET 1",
                         [],
                         |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
                     )
@@ -741,7 +747,7 @@ fn remove_untouched_spawn(tx: &Transaction, id: &str) -> Result<i64, ApiError> {
         |r| Ok((r.get(0)?, r.get(1)?)),
     )?;
     let events: i64 = tx.query_row(
-        "SELECT COUNT(*) FROM events WHERE entity_id = ?1",
+        "SELECT COUNT(*) FROM events WHERE entity_id = ?1 AND op <> 'briefed'",
         params![id],
         |r| r.get(0),
     )?;

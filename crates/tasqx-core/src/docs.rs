@@ -1396,6 +1396,11 @@ pub const OUTCOME_GROUP_ROW: &[FieldDoc] = &[
         "object",
         "Completions that overrode still-open blockers (D150).",
     ),
+    f(
+        "unbriefed",
+        "object",
+        "Completions of a task that was never the subject of `task.brief` and whose start carried no memory (D227).",
+    ),
 ];
 
 /// A rate and its denominator (D137). Never one without the other.
@@ -1878,6 +1883,7 @@ pub fn result_shape(method: &str) -> &'static [(&'static str, &'static [FieldDoc
             ("result.groups[].unproven", OUTCOME_RATE),
             ("result.groups[].unproven", OUTCOME_UNPROVEN),
             ("result.groups[].forced", OUTCOME_RATE),
+            ("result.groups[].unbriefed", OUTCOME_RATE),
         ],
         "store.export" => &[
             ("result", R_STORE_EXPORT),

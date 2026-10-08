@@ -143,8 +143,10 @@ during one task resurface during the next:
 the work cost, this answers whether it worked. Over the tasks that **closed**,
 it reports rework (completions that were later reopened), estimate calibration,
 token cost, silent completions (no annotation written), abandoned work, token
-overruns, unproven completions and forced completions (completions that
-overrode open blockers) — each rate beside the `n` it was computed over,
+overruns, unproven completions, forced completions (completions that
+overrode open blockers) and unbriefed completions (a task closed without a
+`tasqx_brief_task`, or a `tasqx_start_timer` that carried memory, ever having
+read the project's rulings) — each rate beside the `n` it was computed over,
 because a rework rate over three completions is not evidence.
 
 ```console
