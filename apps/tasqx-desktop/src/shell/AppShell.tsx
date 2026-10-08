@@ -18,6 +18,7 @@ const NAV: { screen: Screen; label: string; icon: IconName }[] = [
   { screen: 'projects', label: 'Projects', icon: 'projects' },
   { screen: 'memory', label: 'Memory', icon: 'memory' },
   { screen: 'graph', label: 'Graph', icon: 'graph' },
+  { screen: 'charts', label: 'Charts', icon: 'charts' },
   { screen: 'reports', label: 'Reports', icon: 'reports' },
   { screen: 'settings', label: 'Settings', icon: 'settings' },
 ];
@@ -82,6 +83,7 @@ export function AppShell({ screen, commands, children, sidebarFooter, banner, in
       { keys: 'g t', run: go('tasks') },
       { keys: 'g m', run: go('memory') },
       { keys: 'g g', run: go('graph') },
+      { keys: 'g c', run: go('charts') },
       { keys: 'r', run: () => onRefresh?.() },
     ];
     // setStack/setPaletteOpen are stable, so only the read state is a dep.
