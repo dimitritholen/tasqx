@@ -1313,6 +1313,7 @@ pub fn default_weeks(is_year: bool, weeks: Option<usize>) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_common::strip_sgr;
     use serde_json::json;
 
     /// Both heatmaps break a row with `split_runs`: empty, one run, a run per
@@ -1807,23 +1808,6 @@ mod tests {
         // The last row carries the `partial` note, so it is measured up to it.
         fn bare(r: &str) -> &str {
             r.split("  partial").next().unwrap_or(r)
-        }
-        /// Everything a terminal would not draw: `ESC [ … m`.
-        fn strip_sgr(s: &str) -> String {
-            let mut out = String::with_capacity(s.len());
-            let mut chars = s.chars();
-            while let Some(c) = chars.next() {
-                if c == '\u{1b}' {
-                    for c in chars.by_ref() {
-                        if c == 'm' {
-                            break;
-                        }
-                    }
-                } else {
-                    out.push(c);
-                }
-            }
-            out
         }
         for row in &rows {
             assert_eq!(

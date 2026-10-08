@@ -978,6 +978,7 @@ complete."
 mod tests {
     use super::*;
     use crate::render;
+    use crate::test_common::strip_sgr;
     use crate::theme::{default_theme, Caps, ColorDepth, Ctx};
 
     fn plain() -> Ctx {
@@ -1083,29 +1084,11 @@ mod tests {
         copied
     }
 
-    /// `s` without its SGR escapes.
-    fn strip(s: &str) -> String {
-        let mut out = String::new();
-        let mut chars = s.chars();
-        while let Some(c) = chars.next() {
-            if c == '\x1b' {
-                for c in chars.by_ref() {
-                    if c == 'm' {
-                        break;
-                    }
-                }
-            } else {
-                out.push(c);
-            }
-        }
-        out
-    }
-
     /// A command page's lines after its EXAMPLES heading: where its notes
     /// are, and where no summary or usage line can be mistaken for one.
     fn below_examples(page: &str) -> Vec<&str> {
         page.lines()
-            .skip_while(|l| strip(l).trim() != "EXAMPLES")
+            .skip_while(|l| strip_sgr(l).trim() != "EXAMPLES")
             .skip(1)
             .collect()
     }
@@ -2062,7 +2045,7 @@ mod tests {
                 let lines: Vec<&str> = page.lines().collect();
                 let title_line = lines[0];
                 assert!(
-                    strip(title_line).starts_with(title),
+                    strip_sgr(title_line).starts_with(title),
                     "{theme}: {title} is not the page's first line:\n{page}"
                 );
                 let title_sgr = sgr(title_line, title);
@@ -2073,7 +2056,7 @@ mod tests {
                 for section in sections {
                     let at = lines
                         .iter()
-                        .position(|l| strip(l) == *section)
+                        .position(|l| strip_sgr(l) == *section)
                         .unwrap_or_else(|| panic!("{theme}: no {section} heading:\n{page}"));
                     assert_ne!(
                         sgr(lines[at], section),
@@ -2126,7 +2109,7 @@ mod tests {
         assert_eq!(rows.len(), expected.len(), "one TOC row per entry:\n{toc}");
         for (row, (name, text)) in rows.iter().zip(expected) {
             assert_eq!(
-                strip(row).split_whitespace().next(),
+                strip_sgr(row).split_whitespace().next(),
                 Some(name),
                 "TOC rows out of order:\n{toc}"
             );

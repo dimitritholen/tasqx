@@ -12,6 +12,9 @@
 //! to stderr) that a unit test of a renderer cannot see. Every call gets a
 //! scratch store and `--no-daemon`; see `bin`.
 
+mod common;
+use common::strip_sgr;
+
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
@@ -76,7 +79,7 @@ impl Store {
     }
 
     fn term(&self, cols: usize, args: &[&str]) -> String {
-        strip(&String::from_utf8_lossy(&self.term_raw(cols, args).stdout))
+        strip_sgr(&String::from_utf8_lossy(&self.term_raw(cols, args).stdout))
     }
 
     fn term_ansi(&self, cols: usize, args: &[&str]) -> String {
@@ -92,24 +95,6 @@ impl Store {
     fn path(&self) -> &Path {
         &self.dir
     }
-}
-
-/// Drop every SGR sequence.
-fn strip(s: &str) -> String {
-    let mut out = String::new();
-    let mut chars = s.chars().peekable();
-    while let Some(c) = chars.next() {
-        if c == '\u{1b}' {
-            for n in chars.by_ref() {
-                if n == 'm' {
-                    break;
-                }
-            }
-        } else {
-            out.push(c);
-        }
-    }
-    out
 }
 
 /// The runs of text drawn bold on one line, trimmed. Under NO_COLOR bold is the
@@ -489,7 +474,7 @@ fn every_echo_fits_a_sixty_column_terminal() {
 /// Every line of a run's stdout and stderr wider than 60 cells.
 fn overflow(over: &mut Vec<String>, what: &str, out: &Output) {
     for stream in [&out.stdout, &out.stderr] {
-        for line in strip(&String::from_utf8_lossy(stream)).lines() {
+        for line in strip_sgr(&String::from_utf8_lossy(stream)).lines() {
             if line.width() > 60 {
                 over.push(format!("{what}: {} cells: {line:?}", line.width()));
             }
@@ -563,7 +548,7 @@ fn bold_on_the_second_line_means_this_write_changed_it() {
         &["add", "Plan the offsite", "due:friday", "est:2h", "+team"],
     );
     let line2 = add.lines().nth(1).unwrap();
-    assert_eq!(bold_runs(line2), vec!["added"], "{:?}", strip(line2));
+    assert_eq!(bold_runs(line2), vec!["added"], "{:?}", strip_sgr(line2));
 
     let modify = st.term_ansi(100, &["modify", "5", "due:monday"]);
     let line2 = modify.lines().nth(1).unwrap();
@@ -581,7 +566,7 @@ fn bold_on_the_second_line_means_this_write_changed_it() {
     assert_eq!(bold_runs(start.lines().nth(1).unwrap()), vec!["started"]);
     let again = st.term_ansi(100, &["start", "5"]);
     let line2 = again.lines().nth(1).unwrap();
-    assert!(strip(line2).contains("already running"), "{again}");
+    assert!(strip_sgr(line2).contains("already running"), "{again}");
     assert!(
         bold_runs(line2).is_empty(),
         "nothing changed, so nothing is bold: {:?}",
