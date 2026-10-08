@@ -84,4 +84,13 @@ describe('ChartsScreen', () => {
     mount(harness(script(), '#/charts'));
     expect(screen.getAllByRole('status').some((n) => n.textContent?.includes('Not connected'))).toBe(true);
   });
+
+  it('opens the Sky mode and falls back to the task table where there is no WebGL', async () => {
+    await live(script(), '#/charts?chart=sky');
+
+    expect(await screen.findByText('3D view unavailable')).toBeInTheDocument();
+    const table = screen.getByRole('table', { name: 'Tasks', hidden: true });
+    // The done task is hidden until asked for.
+    expect(within(table).getAllByRole('row', { hidden: true })).toHaveLength(4);
+  });
 });

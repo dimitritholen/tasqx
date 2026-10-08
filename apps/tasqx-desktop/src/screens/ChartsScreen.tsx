@@ -1,13 +1,15 @@
-import { useEffect, useMemo, useState } from 'react';
+import { lazy, Suspense, useEffect, useMemo, useState } from 'react';
 
 import { useConnection } from '../api';
 import type { ApiError } from '../api/envelope';
 import type { EventRow, TaskRow } from '../api/types';
 import { updateQuery, useRoute } from '../shell/router';
+import { useTheme } from '../shell/theme';
 import { useStore } from '../state/store';
 import {
   buildCfd,
   buildDag,
+  buildSky,
   buildTreemap,
   isOpen,
   layoutDag,
@@ -16,7 +18,9 @@ import {
   loadTaskEvents,
 } from '../state/charts';
 import { EmptyState, ErrorState, Field, Skeleton } from '../ui/primitives';
-import { CfdChart, DagChart, TreemapChart } from './ChartViews';
+import { CfdChart, DagChart, Figure, SelectButton, TreemapChart } from './ChartViews';
+import { hasWebGL } from './GraphCanvas';
+import type { SkyColors } from './SkyChart';
 
 /**
  * The Charts screen (#741): dependency DAG, treemap and cumulative flow, read
@@ -29,6 +33,7 @@ export const CHART_MODES = [
   { id: 'dag', label: 'DAG', hint: 'order' },
   { id: 'treemap', label: 'Treemap', hint: 'shape' },
   { id: 'cfd', label: 'CFD', hint: 'velocity' },
+  { id: 'sky', label: 'Sky', hint: '3D' },
 ] as const;
 type Mode = (typeof CHART_MODES)[number]['id'];
 
@@ -90,6 +95,7 @@ export function ChartsScreen() {
     if (tasks === null || (wantEvents && events === null)) return <Skeleton />;
     if (mode === 'dag') return <Dag tasks={shown} onSelect={select} />;
     if (mode === 'treemap') return <Treemap tasks={shown} onSelect={select} />;
+    if (mode === 'sky') return <Sky tasks={shown} onSelect={select} />;
     return <Cfd tasks={scoped} events={events as { events: EventRow[]; cut: boolean }} />;
   }
 
@@ -170,6 +176,81 @@ function Cfd({ tasks, events }: { tasks: TaskRow[]; events: { events: EventRow[]
         {events.cut && ' Only the newest events were read; older history is cut.'}
       </p>
       <CfdChart cfd={cfd} />
+    </>
+  );
+}
+
+// Its own chunk: three.js loads only when the Sky is opened.
+const SkyChart = lazy(() => import('./SkyChart'));
+
+function skyColors(): SkyColors {
+  const style = getComputedStyle(document.documentElement);
+  const token = (name: string, fallback: string) => style.getPropertyValue(name).trim() || fallback;
+  const muted = token('--color-muted', '#98A2B3');
+  return {
+    star: token('--color-warning', '#FFD60A'),
+    status: {
+      backlog: token('--color-purple', '#BF5AF2'),
+      pending: muted,
+      active: token('--color-accent', '#6AC4DC'),
+      done: token('--color-success', '#32D74B'),
+      cancelled: token('--color-border', '#2A313A'),
+    },
+    orbit: token('--color-border', '#2A313A'),
+    open: token('--color-danger', '#FF453A'),
+    closed: muted,
+  };
+}
+
+function Sky({ tasks, onSelect }: { tasks: TaskRow[]; onSelect(shortId: number): void }) {
+  const theme = useTheme();
+  const data = useMemo(() => buildSky(tasks), [tasks]);
+  // The tokens are read off the live document, so a theme change re-reads them.
+  const colors = useMemo(() => (void theme, skyColors()), [theme]);
+  const [failed, setFailed] = useState<string | null>(null);
+  if (tasks.length === 0) return <EmptyState title="No tasks" message="Nothing to draw for this selection." />;
+  const title = `Sky: ${tasks.length} tasks around ${data.nodes.length - tasks.length} project stars`;
+  return (
+    <>
+      <p className="muted">Stars are projects; size is urgency. Red particles run from an open blocker to what it blocks.</p>
+      <Figure
+        id="sky"
+        title={title}
+        table={
+          <table aria-label="Tasks">
+            <thead>
+              <tr>
+                <th scope="col">Task</th>
+                <th scope="col">Project</th>
+                <th scope="col">Status</th>
+                <th scope="col">Urgency</th>
+              </tr>
+            </thead>
+            <tbody>
+              {tasks.map((task) => (
+                <tr key={task.short_id}>
+                  <td>
+                    <SelectButton task={task} onSelect={onSelect} />
+                  </td>
+                  <td>{task.project ?? '(none)'}</td>
+                  <td>{task.status}</td>
+                  <td>{task.urgency.toFixed(1)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        }
+      >
+        {hasWebGL() && failed === null ? (
+          <Suspense fallback={<Skeleton />}>
+            <div className="sky-frame" role="img" aria-label={title}>
+              <SkyChart data={data} colors={colors} onSelect={onSelect} onFailed={setFailed} />
+            </div>
+          </Suspense>
+        ) : (
+          <EmptyState title="3D view unavailable" message={failed ?? 'This window has no WebGL. The data table below lists the same tasks.'} />
+        )}
+      </Figure>
     </>
   );
 }
