@@ -264,52 +264,110 @@ pub fn task_brief(ctx: &Ctx, result: &Value, now: Timestamp) -> String {
         .unwrap_or_default();
     if !hits.is_empty() {
         heading(&mut out, "FROM MEMORY");
-        for h in &hits {
-            let source = s(h, "source");
-            // #657: which project this hit is scoped to — empty (global, or
-            // an older recorded response with no `project` key) prints
-            // nothing, since a bracket that never says anything is noise.
-            let project = s(h, "project");
-            // #790/D180: nothing when false or null — an annotation and a
-            // doc `memory.add` wrote both have no origin to be behind.
-            let stale = h.get("stale").and_then(Value::as_bool).unwrap_or(false);
-            // D196 (#838): a hit found by meaning alone says so, with its
-            // similarity. The brief's words side is its derived OR, which
-            // never claims every word, so no hit here is partial.
-            let why = if h.get("via").and_then(Value::as_str) == Some("semantic") {
-                h.get("similarity")
-                    .and_then(Value::as_f64)
-                    .map(|sim| {
-                        let mark = if ctx.caps.unicode { "≈" } else { "~" };
-                        format!("  {}", ctx.paint("muted", &format!("{mark} {sim:.2}")))
-                    })
-                    .unwrap_or_default()
-            } else {
-                String::new()
-            };
-            out.push_str(&format!(
-                "  {}{}{}{}{why}\n",
-                san(&s(h, "title")),
-                if source.is_empty() {
-                    String::new()
+        // D147 (#616): the markdown tail's grouping, on the terminal. Docs
+        // first, then annotations, each labelled shown-of-matched; a hit that
+        // names neither kind (a response recorded before D147) still prints,
+        // unlabelled, because dropping what we do not recognise is the failure
+        // the labels exist to prevent.
+        let total_of = |key: &str| {
+            result
+                .get("memory")
+                .and_then(|m| m.get(key))
+                .and_then(Value::as_i64)
+        };
+        let kind_of = |h: &Value| h.get("kind").and_then(Value::as_str).map(str::to_owned);
+        let groups: [(&str, Vec<&Value>, Option<i64>); 3] = [
+            (
+                "Docs",
+                hits.iter()
+                    .filter(|h| kind_of(h).as_deref() == Some("doc"))
+                    .collect(),
+                total_of("docs_total"),
+            ),
+            (
+                "Annotations",
+                hits.iter()
+                    .filter(|h| kind_of(h).as_deref() == Some("annotation"))
+                    .collect(),
+                total_of("annotations_total"),
+            ),
+            (
+                "",
+                hits.iter()
+                    .filter(|h| !matches!(kind_of(h).as_deref(), Some("doc" | "annotation")))
+                    .collect(),
+                None,
+            ),
+        ];
+        let mut written = false;
+        for (label, group, group_total) in groups {
+            if group.is_empty() {
+                continue;
+            }
+            if written {
+                out.push('\n');
+            }
+            written = true;
+            // Hits sit two columns under their label; an unlabelled group
+            // has no label to sit under.
+            let pad = if label.is_empty() { "  " } else { "    " };
+            if !label.is_empty() {
+                // No denominator when an older response carries none: the
+                // count shown is true, a number invented from the page is not.
+                let text = match group_total {
+                    Some(m) => format!("{label} — {} of {m}", group.len()),
+                    None => format!("{label} — {}", group.len()),
+                };
+                out.push_str(&format!("  {}\n", ctx.paint("muted", &text)));
+            }
+            for h in group {
+                let source = s(h, "source");
+                // #657: which project this hit is scoped to — empty (global, or
+                // an older recorded response with no `project` key) prints
+                // nothing, since a bracket that never says anything is noise.
+                let project = s(h, "project");
+                // #790/D180: nothing when false or null — an annotation and a
+                // doc `memory.add` wrote both have no origin to be behind.
+                let stale = h.get("stale").and_then(Value::as_bool).unwrap_or(false);
+                // D196 (#838): a hit found by meaning alone says so, with its
+                // similarity. The brief's words side is its derived OR, which
+                // never claims every word, so no hit here is partial.
+                let why = if h.get("via").and_then(Value::as_str) == Some("semantic") {
+                    h.get("similarity")
+                        .and_then(Value::as_f64)
+                        .map(|sim| {
+                            let mark = if ctx.caps.unicode { "≈" } else { "~" };
+                            format!("  {}", ctx.paint("muted", &format!("{mark} {sim:.2}")))
+                        })
+                        .unwrap_or_default()
                 } else {
-                    format!("  {}", ctx.paint("muted", &san(&source)))
-                },
-                if project.is_empty() {
                     String::new()
-                } else {
-                    format!("  {}", ctx.paint("muted", &format!("[{}]", san(&project))))
-                },
-                if stale {
-                    format!("  {}", ctx.paint("muted", "stale"))
-                } else {
-                    String::new()
-                }
-            ));
-            let snippet = san(&s(h, "snippet"));
-            if !snippet.is_empty() {
-                for line in wrap_words(&snippet, ctx.cols.saturating_sub(6).max(20)) {
-                    out.push_str(&format!("    {}\n", ctx.paint("muted", &line)));
+                };
+                out.push_str(&format!(
+                    "{pad}{}{}{}{}{why}\n",
+                    san(&s(h, "title")),
+                    if source.is_empty() {
+                        String::new()
+                    } else {
+                        format!("  {}", ctx.paint("muted", &san(&source)))
+                    },
+                    if project.is_empty() {
+                        String::new()
+                    } else {
+                        format!("  {}", ctx.paint("muted", &format!("[{}]", san(&project))))
+                    },
+                    if stale {
+                        format!("  {}", ctx.paint("muted", "stale"))
+                    } else {
+                        String::new()
+                    }
+                ));
+                let snippet = san(&s(h, "snippet"));
+                if !snippet.is_empty() {
+                    for line in wrap_words(&snippet, ctx.cols.saturating_sub(pad.len() + 4).max(20))
+                    {
+                        out.push_str(&format!("{pad}  {}\n", ctx.paint("muted", &line)));
+                    }
                 }
             }
         }

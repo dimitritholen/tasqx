@@ -813,6 +813,33 @@ fn a_brief_prints_what_each_prerequisite_concluded() {
     );
 }
 
+/// D147 on the terminal: the brief groups its memory hits by kind, docs
+/// first, each group labelled with shown-of-matched, so a ruling is not read
+/// as a sibling's note.
+#[test]
+fn a_brief_labels_memory_docs_and_annotations_with_their_counts() {
+    let ctx = Ctx::new(theme::default_theme(), Caps::PLAIN);
+    let result = json!({
+        "task": { "short_id": 1, "title": "t", "status": "pending" },
+        "neighbourhood": { "depends_on": [], "blocks": [] },
+        "memory": { "hits": [
+            { "kind": "doc", "title": "The ruling", "source": "DESIGN.md", "snippet": "s" },
+            { "kind": "doc", "title": "Second ruling", "source": "docs/b.md", "snippet": "s" },
+            { "kind": "annotation", "title": "A note", "source": "task:#7", "snippet": "n" },
+        ], "total": 9, "reserved_docs": 2, "docs_total": 4, "annotations_total": 5 },
+    });
+    let out = task_brief(&ctx, &result, crate::clock::now());
+    let docs = out.find("Docs — 2 of 4").unwrap_or_else(|| panic!("{out}"));
+    let notes = out
+        .find("Annotations — 1 of 5")
+        .unwrap_or_else(|| panic!("{out}"));
+    let (second, note) = (
+        out.find("Second ruling").unwrap(),
+        out.find("A note").unwrap(),
+    );
+    assert!(docs < second && second < notes && notes < note, "{out}");
+}
+
 /// D170: a recurrence spawn's brief quotes what the previous occurrence
 /// delivered, and its detail names that occurrence on the repeats row.
 #[test]
