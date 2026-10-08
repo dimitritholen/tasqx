@@ -86,7 +86,20 @@ if $apply; then
     # rather than leaving that for whoever next runs a cargo command to
     # discover as an unexplained lockfile diff.
     cargo check --workspace --quiet --offline || cargo check --workspace --quiet
-    echo "bumped ${current} -> ${new} (${bump}), Cargo.toml, tasqx-cli's tasqx-core dependency and Cargo.lock written"
+    # Tasqx Desktop carries the workspace's version (scripts/desktop-release-check.sh
+    # fails a bundle whose version differs), but it is its own npm project and
+    # its own Cargo workspace, so nothing above reaches it. The first
+    # `"version"` / `version =` in each file is the app's own; the npm
+    # lockfile records it twice (the root and its `packages[""]` entry), and
+    # the Cargo lockfile once, on the line after its name.
+    d=apps/tasqx-desktop
+    for f in "$d/package.json" "$d/src-tauri/tauri.conf.json"; do
+        perl -pi -e "if (!\$done && s/^  \"version\": \"[^\"]+\"/  \"version\": \"${new}\"/) { \$done = 1 }" "$f"
+    done
+    perl -pi -e "if (\$n < 2 && s/^(  (?:    )?)\"version\": \"[^\"]+\"/\${1}\"version\": \"${new}\"/) { \$n++ }" "$d/package-lock.json"
+    perl -pi -e "if (!\$done && s/^version = \"[^\"]+\"/version = \"${new}\"/) { \$done = 1 }" "$d/src-tauri/Cargo.toml"
+    perl -0pi -e "s/(name = \"tasqx-desktop\"\nversion = \")[^\"]+/\${1}${new}/" "$d/src-tauri/Cargo.lock"
+    echo "bumped ${current} -> ${new} (${bump}), Cargo.toml, tasqx-cli's tasqx-core dependency, Cargo.lock and Tasqx Desktop's five version sites written"
 else
     echo "${current} -> ${new} (${bump})"
 fi
