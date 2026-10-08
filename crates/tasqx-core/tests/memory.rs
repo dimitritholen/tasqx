@@ -3881,3 +3881,156 @@ fn memory_import_still_refuses_a_replace_across_two_clones_of_one_name() {
         .expect_err("two clones under one name are two repositories");
     assert_eq!(err.code, ErrorCode::Conflict, "{err:?}");
 }
+
+// ---- #81: memory engine gaps ---------------------------------------------------
+
+/// `memory.update` naming only `body` leaves `source` and `project` as they
+/// were: absent is not `null`. Losing the source would also hide the doc from
+/// `memory.import`'s replace-by-source lookup, so the next import would add a
+/// second copy.
+#[test]
+fn memory_update_naming_only_a_body_keeps_the_source_and_project() {
+    let e = engine();
+    call(&e, "project.create", json!({ "name": "ledger" })).expect("project");
+    let added = call(
+        &e,
+        "memory.add",
+        json!({ "title": "A", "body": "v1", "source": "docs/a.md", "project": "ledger" }),
+    )
+    .unwrap();
+    let id = added["id"].as_str().unwrap().to_string();
+
+    let updated = call(&e, "memory.update", json!({ "id": id, "body": "v2" })).unwrap();
+    assert_eq!(updated["source"], "docs/a.md", "{updated}");
+    assert_eq!(updated["project"], "ledger", "{updated}");
+    let doc = call(&e, "memory.get", json!({ "id": id })).unwrap();
+    assert_eq!(doc["source"], "docs/a.md", "{doc}");
+    assert_eq!(doc["project"], "ledger", "{doc}");
+
+    let out = call(
+        &e,
+        "memory.import",
+        json!({ "docs": [{ "title": "A", "body": "v3", "source": "docs/a.md" }] }),
+    )
+    .unwrap();
+    assert_eq!(out["docs"][0]["replaced"], true, "{out}");
+    assert_eq!(out["docs"][0]["id"], id.as_str(), "{out}");
+}
+
+/// A re-import that names a doc but no project must not null its scope; the
+/// stored row, not just the reported answer, keeps `ledger`.
+#[test]
+fn memory_import_replace_never_nulls_the_stored_project() {
+    let e = engine();
+    call(&e, "project.create", json!({ "name": "ledger" })).expect("project");
+    call(
+        &e,
+        "memory.import",
+        json!({ "docs": [{ "title": "A", "body": "v1", "source": "a.md" }], "project": "ledger" }),
+    )
+    .unwrap();
+    call(
+        &e,
+        "memory.import",
+        json!({ "docs": [{ "title": "A", "body": "v2", "source": "a.md" }] }),
+    )
+    .unwrap();
+    let project: Option<String> = e
+        .conn()
+        .query_row("SELECT project FROM docs WHERE source = 'a.md'", [], |r| {
+            r.get(0)
+        })
+        .unwrap();
+    assert_eq!(project.as_deref(), Some("ledger"));
+}
+
+/// `include_unscoped` widens the annotation arm too: a note on a task with no
+/// project is found from a project-scoped search, a note on another project's
+/// task is not.
+#[test]
+fn include_unscoped_admits_annotations_on_unscoped_tasks_and_not_other_projects() {
+    let e = engine();
+    // A task added after the first project exists inherits it, so the
+    // unscoped one goes in while no project does.
+    let loose = e.task_add(&json!({ "title": "loose task" })).unwrap();
+    e.annotation_add(&json!({ "ref": loose["short_id"], "body": "retries are bounded" }))
+        .unwrap();
+    for name in ["alpha", "beta"] {
+        e.project_create(&json!({ "name": name })).unwrap();
+    }
+    for (title, project) in [("alpha task", "alpha"), ("beta task", "beta")] {
+        let t = e
+            .task_add(&json!({ "title": title, "project": project }))
+            .unwrap();
+        e.annotation_add(&json!({ "ref": t["short_id"], "body": "retries are bounded" }))
+            .unwrap();
+    }
+
+    let titles = |v: &Value| -> Vec<String> {
+        let mut t: Vec<String> = v["hits"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|h| h["title"].as_str().unwrap().to_string())
+            .collect();
+        t.sort();
+        t
+    };
+    let strict = call(
+        &e,
+        "memory.search",
+        json!({ "query": "retries", "project": "alpha", "scope": "annotations" }),
+    )
+    .unwrap();
+    assert_eq!(titles(&strict), ["alpha task"], "{strict}");
+    let widened = call(
+        &e,
+        "memory.search",
+        json!({
+            "query": "retries", "project": "alpha", "scope": "annotations",
+            "include_unscoped": true
+        }),
+    )
+    .unwrap();
+    assert_eq!(titles(&widened), ["alpha task", "loose task"], "{widened}");
+}
+
+/// `limit: 0` answers an empty page with a null `next_offset`; a client
+/// walking `next_offset` would otherwise be handed 0 forever.
+#[test]
+fn memory_list_with_limit_zero_ends_the_walk() {
+    let e = engine();
+    call(&e, "memory.add", json!({ "title": "A", "body": "one" })).unwrap();
+    let out = call(&e, "memory.list", json!({ "limit": 0 })).unwrap();
+    assert_eq!(out["count"], 0, "{out}");
+    assert_eq!(out["total"], 1, "{out}");
+    assert!(out["next_offset"].is_null(), "{out}");
+}
+
+/// The unknown-column refusal names the columns of the scope searched, not the
+/// generic all-scope sentence.
+#[test]
+fn a_raw_query_against_an_unknown_column_names_the_scopes_own_columns() {
+    let e = engine();
+    call(&e, "memory.add", json!({ "title": "A", "body": "release" })).unwrap();
+    let t = call(&e, "task.add", json!({ "title": "Ship" })).unwrap();
+    call(
+        &e,
+        "annotation.add",
+        json!({ "ref": t["short_id"], "body": "release" }),
+    )
+    .unwrap();
+    for (scope, cols) in [("docs", "title, body)"), ("annotations", "body)")] {
+        let err = call(
+            &e,
+            "memory.search",
+            json!({ "query": "nope:release", "raw": true, "scope": scope }),
+        )
+        .expect_err("no such column");
+        assert!(
+            err.message.contains(&format!("scope {scope:?}: {cols}")),
+            "{scope}: {}",
+            err.message
+        );
+    }
+}
