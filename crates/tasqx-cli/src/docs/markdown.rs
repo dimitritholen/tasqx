@@ -355,6 +355,9 @@ fn render(
     let mut lead = is_site(page_id);
     let mut in_lead = false;
 
+    // The screen a `<!-- fixture: NAME -->` comment names for the next fence.
+    let mut fixture: Option<String> = None;
+
     let mut i = 0;
     while i < events.len() {
         // The title is collected, not emitted: everything between `# ` and its
@@ -436,7 +439,10 @@ fn render(
                     CodeBlockKind::Indented => String::new(),
                 };
                 let (text, next) = code_text(&events, i, file);
-                out.push(html(code_block(&lang, &text)));
+                out.push(html(match fixture.take() {
+                    Some(name) => fixture_block(&name, &text, file),
+                    None => code_block(&lang, &text),
+                }));
                 i = next;
                 continue;
             }
@@ -542,6 +548,19 @@ fn render(
                     panic!("{file}: no generated block named `{name}`")
                 })));
             }
+            // `<!-- fixture: NAME -->` above a ```console session: the site
+            // shows the captured screen NAME in place of the typed output;
+            // GitHub shows the typed excerpt. [`fixture_block`] draws it, and
+            // `every_fixture_excerpt_is_in_its_capture` (tests/wiki.rs) keeps
+            // the excerpt a piece of the capture.
+            Event::Html(s) if s.trim().starts_with(FIXTURE) => {
+                fixture = Some(
+                    s.trim()[FIXTURE.len()..]
+                        .trim_end_matches("-->")
+                        .trim()
+                        .to_string(),
+                );
+            }
             Event::Html(s) | Event::InlineHtml(s) => out.push(Event::Text(s.clone())),
 
             other => out.push(other.clone()),
@@ -549,6 +568,10 @@ fn render(
         i += 1;
     }
 
+    assert!(
+        fixture.is_none(),
+        "{file}: a `fixture:` comment with no code fence after it"
+    );
     let mut body = String::new();
     pulldown_cmark::html::push_html(&mut body, out.into_iter());
     let title = title.unwrap_or_else(|| {
@@ -559,6 +582,20 @@ fn render(
 
 /// The marker of a [`super::generated`] block.
 const GENERATED: &str = "<!-- generated:";
+
+/// The marker of a fence whose output is a captured screen.
+const FIXTURE: &str = "<!-- fixture:";
+
+/// A marked ```console session: its `$ ` lines are the command, and the typed
+/// output under them gives way to the captured screen `name`.
+fn fixture_block(name: &str, text: &str, file: &str) -> String {
+    let cmd: Vec<&str> = text.lines().filter_map(|l| l.strip_prefix("$ ")).collect();
+    assert!(
+        !cmd.is_empty(),
+        "{file}: the fence under `fixture: {name}` has no `$ ` command line"
+    );
+    super::term_screen(&cmd.join("\n"), name)
+}
 
 /// An already-built fragment of the site's own markup, handed to the renderer
 /// as-is. Everything reaching this is built by [`super`]'s escaping helpers.
@@ -1219,6 +1256,28 @@ mod tests {
         assert!(
             body.contains(&super::super::pre_plain(tasqx_core::filter::GRAMMAR)),
             "{body}"
+        );
+    }
+
+    /// A fixture comment swaps the typed output for the capture, once.
+    #[test]
+    fn a_fixture_comment_renders_the_capture_for_the_next_fence_only() {
+        let (_, body) = render_one(
+            "wiki-x",
+            "# T\n\n<!-- fixture: list -->\n```console\n$ tasqx list\ntyped excerpt\n```\n\n\
+             ```console\n$ tasqx next\nplain\n```\n",
+        );
+        assert!(body.contains("pre class=\"term\""), "{body}");
+        assert!(!body.contains("typed excerpt"), "{body}");
+        assert!(body.contains("<pre class=\"out\"><code>plain"), "{body}");
+    }
+
+    #[test]
+    #[should_panic(expected = "no captured screen named \"nope\"")]
+    fn an_unknown_fixture_is_a_build_time_panic() {
+        render_one(
+            "wiki-x",
+            "# T\n\n<!-- fixture: nope -->\n```console\n$ x\n```\n",
         );
     }
 

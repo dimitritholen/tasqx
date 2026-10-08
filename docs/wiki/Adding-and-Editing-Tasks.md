@@ -74,21 +74,23 @@ and what changed, then the rest of that row. Bold is the write's own mark — it
 says THIS is what changed, and nothing else wears it, because bold is the one
 emphasis that survives `NO_COLOR`.
 
+<!-- fixture: start-echo -->
 ```console
-$ tasqx start 1
-▌ #1  Ship the v2 pricing page
-▶ started   H ▄▄▄▄ 16.7   work   due Mon   +launch
+$ tasqx start 49
+▌ #49  Fix token refresh race on Android
+▶ started   H ▄▄▄▄ 17.0   mobile   due tomorrow 17:00 UTC   +bug   est 4h
 ```
 
 The rail at the left carries the state: `▶` while the task runs, `⊘` while it
 is blocked, `▌` otherwise. Another task the write moved gets a line of its own
 under the card:
 
+<!-- fixture: done-unblock-echo -->
 ```console
-$ tasqx done 1
-▌ #1  Ship the v2 pricing page
-▌ done today   tracked 5m   work   due Mon   +launch
-  #2  unblocked · Rate-limit the search endpoint
+$ tasqx done 50
+▌ #50  Rate-limit the /search endpoint
+▌ done today   api   due Sat   +perf   est 3h
+  #51  unblocked · Write the migration guide for SDK 3.0
 ```
 
 Through a pipe the same words print, unfitted: the rail spells itself `*` for

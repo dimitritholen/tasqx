@@ -1251,14 +1251,18 @@ exception — a tag comes off by name, with <a href="#wiki-adding-and-editing-ta
 and what changed, then the rest of that row. Bold is the write's own mark — it
 says THIS is what changed, and nothing else wears it, because bold is the one
 emphasis that survives <code>NO_COLOR</code>.</p>
-<div class="snip"><div class="snip-h"><span class="dollar">$</span><button class="copy" type="button">Copy</button></div><pre class="cmd"><code>tasqx start 1</code></pre><pre class="out"><code>▌ #1  Ship the v2 pricing page
-▶ started   H ▄▄▄▄ 16.7   work   due Mon   +launch</code></pre></div>
+<div class="snip"><div class="snip-h"><span class="dollar">$</span></div><pre class="cmd"><code>tasqx start 49</code></pre><pre class="term"><span style="color:#a3be8c">▌</span> <span style="color:#8a8a8a">#49</span>  <span style="font-weight:700">Fix token refresh race on Android</span>
+<span style="color:#a3be8c">▶</span> <span style="font-weight:700">started</span>   <span style="color:#bf616a">H</span> <span style="color:#bf616a">▄▄▄▄</span> <span style="color:#bf616a">17.0</span>   <span style="color:#81a1c1;opacity:.6">mobile</span>   <span style="color:#8a8a8a">due</span> tomorrow 17:00 UTC   <span style="color:#b48ead">+bug</span>   <span style="color:#8a8a8a">est</span> 4h
+  <span style="color:#8a8a8a">#48</span>  <span style="color:#a3be8c">stopped</span> · <span style="color:#8a8a8a">Ship the v2 pricing page</span>
+</pre></div>
 <p>The rail at the left carries the state: <code>▶</code> while the task runs, <code>⊘</code> while it
 is blocked, <code>▌</code> otherwise. Another task the write moved gets a line of its own
 under the card:</p>
-<div class="snip"><div class="snip-h"><span class="dollar">$</span><button class="copy" type="button">Copy</button></div><pre class="cmd"><code>tasqx done 1</code></pre><pre class="out"><code>▌ #1  Ship the v2 pricing page
-▌ done today   tracked 5m   work   due Mon   +launch
-  #2  unblocked · Rate-limit the search endpoint</code></pre></div>
+<div class="snip"><div class="snip-h"><span class="dollar">$</span></div><pre class="cmd"><code>tasqx done 50</code></pre><pre class="term"><span style="color:#4c566a;opacity:.6">▌</span> <span style="color:#8a8a8a">#50</span>  <span style="font-weight:700">Rate-limit the /search endpoint</span>
+<span style="color:#4c566a;opacity:.6">▌</span> <span style="font-weight:700">done today</span>   <span style="color:#81a1c1;opacity:.6">api</span>   <span style="color:#8a8a8a">due</span> Sat   <span style="color:#b48ead">+perf</span>   <span style="color:#8a8a8a">est</span> 3h
+  <span style="color:#8a8a8a">#51</span>  <span style="color:#88c0d0">unblocked</span> · <span style="color:#8a8a8a">Write the migration guide for SDK 3.0</span>
+note: no token counts were self-reported — tasqx done --help names the flags
+</pre></div>
 <p>Through a pipe the same words print, unfitted: the rail spells itself <code>*</code> for
 running and <code>B</code> for blocked, and the gauge and the <code>▌</code> go. <code>--json</code> is
 unchanged.</p>
@@ -1430,12 +1434,14 @@ its id and when it was removed — and the box card's Notes row appends
 <h3 id="wiki-finding-tasks--tasqx-why">tasqx why</h3>
 <p>Every open task gets an urgency score, and the ordering of every list comes
 from it. <code>why</code> shows the arithmetic instead of asking you to trust it:</p>
-<div class="snip"><div class="snip-h"><span class="dollar">$</span><button class="copy" type="button">Copy</button></div><pre class="cmd"><code>tasqx why 42</code></pre><pre class="out"><code>#42  Ship the release notes
+<div class="snip"><div class="snip-h"><span class="dollar">$</span></div><pre class="cmd"><code>tasqx why 51</code></pre><pre class="term"><span style="color:#8a8a8a">#51</span>  <span style="font-weight:700">Write the migration guide for SDK 3.0</span>
 
-  priority   H                 6.0
-  deadline   due Fri           7.5
-  age        created today     0.0
-  urgency                     13.5</code></pre></div>
+  <span style="color:#8a8a8a">priority  </span> M           3.9
+  <span style="color:#8a8a8a">deadline  </span> due Mon     8.0
+  <span style="color:#8a8a8a">age       </span> 30 days     0.3
+  <span style="color:#8a8a8a">urgency   </span>          <span style="font-weight:700">  12.2</span>
+  <span style="color:#bf616a;font-weight:700">blocked by</span> #50 Rate-limit the /search endpoint — `next` skips this task
+</pre></div>
 <p>Each row names the input in the words the rest of the terminal uses — the
 priority letter, how the deadline reads on a list, how old the task is — and
 the last row is the score every list sorts by.</p>

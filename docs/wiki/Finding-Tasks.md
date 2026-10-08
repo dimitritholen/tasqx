@@ -92,14 +92,15 @@ its id and when it was removed — and the box card's Notes row appends
 Every open task gets an urgency score, and the ordering of every list comes
 from it. `why` shows the arithmetic instead of asking you to trust it:
 
+<!-- fixture: why -->
 ```console
-$ tasqx why 42
-#42  Ship the release notes
+$ tasqx why 51
+#51  Write the migration guide for SDK 3.0
 
-  priority   H                 6.0
-  deadline   due Fri           7.5
-  age        created today     0.0
-  urgency                     13.5
+  priority   M           3.9
+  deadline   due Mon     8.0
+  age        30 days     0.3
+  urgency               12.2
 ```
 
 Each row names the input in the words the rest of the terminal uses — the
