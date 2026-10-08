@@ -1040,4 +1040,47 @@ mod tests {
         let midnight_ts: Timestamp = "2026-07-15T00:00:00Z".parse().unwrap();
         assert_eq!(day_start_utc(midnight_ts), midnight_ts);
     }
+
+    /// 12am is midnight and 12pm is noon; collapsing the 12-hour arms to
+    /// `if pm { h += 12 }` makes 12am noon and 12pm unparseable (#75).
+    #[test]
+    fn twelve_hour_clock_boundaries() {
+        assert_eq!(p("tomorrow 12am"), "2026-07-16T00:00:00Z");
+        assert_eq!(p("tomorrow 12pm"), "2026-07-16T12:00:00Z");
+        assert_eq!(p("tomorrow 12:30am"), "2026-07-16T00:30:00Z");
+        assert_eq!(p("tomorrow 12:30pm"), "2026-07-16T12:30:00Z");
+        assert_eq!(p("tomorrow 1am"), "2026-07-16T01:00:00Z");
+        assert_eq!(p("tomorrow 11pm"), "2026-07-16T23:00:00Z");
+        assert_eq!(p("tomorrow 9:30am"), "2026-07-16T09:30:00Z");
+        // Outside 1..=12 an am/pm suffix is no clock at all.
+        assert!(parse_when("tomorrow 13pm", now()).is_err());
+        assert!(parse_when("tomorrow 0am", now()).is_err());
+    }
+
+    /// A bare time typed at exactly `now` is not in the future, so it rolls to
+    /// tomorrow; one second later it is still today. `<=` to `<` flips the first.
+    #[test]
+    fn bare_time_at_exactly_now_rolls_to_tomorrow() {
+        assert_eq!(p("12:00"), "2026-07-16T12:00:00Z");
+        assert_eq!(p("12:00:01"), "2026-07-15T12:00:01Z");
+        assert_eq!(p("11:59:59"), "2026-07-16T11:59:59Z");
+    }
+
+    /// On a Sunday `eow` is today (as `eom`/`eoy` are on their last day), not
+    /// the Sunday a week on.
+    #[test]
+    fn eow_on_a_sunday_is_today() {
+        let sunday: Timestamp = "2026-07-19T09:00:00Z".parse().unwrap();
+        assert_eq!(parse_when("eow", sunday).unwrap(), "2026-07-19T23:59:59Z");
+        let monday: Timestamp = "2026-07-20T09:00:00Z".parse().unwrap();
+        assert_eq!(parse_when("eow", monday).unwrap(), "2026-07-26T23:59:59Z");
+    }
+
+    /// The long weekday spellings nothing else reaches.
+    #[test]
+    fn weekday_aliases() {
+        assert_eq!(p("tues"), "2026-07-21T00:00:00Z");
+        assert_eq!(p("thur"), "2026-07-16T00:00:00Z");
+        assert_eq!(p("thurs"), "2026-07-16T00:00:00Z");
+    }
 }

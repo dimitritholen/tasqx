@@ -591,4 +591,64 @@ mod tests {
             assert_eq!(r, round, "round-trip failed for {s}");
         }
     }
+
+    /// Unsorted and repeated days come out Monday-first and unique; the sort
+    /// and dedup in `parse_rule` are the only thing that makes it so.
+    #[test]
+    fn weekly_on_sorts_and_dedups_days() {
+        assert_eq!(
+            parse_rule("weekly on fri,mon,mon").unwrap(),
+            Recur::WeeklyOn(vec![Weekday::Monday, Weekday::Friday])
+        );
+        // The long weekday spellings collapse onto one day too.
+        assert_eq!(
+            parse_rule("weekly on thurs,tues,thur,thu").unwrap(),
+            Recur::WeeklyOn(vec![Weekday::Tuesday, Weekday::Thursday])
+        );
+    }
+
+    #[test]
+    fn bare_numeral_ordinals() {
+        for n in 1..=5i8 {
+            assert_eq!(
+                parse_rule(&format!("monthly on the {n} tuesday")).unwrap(),
+                Recur::MonthlyNthWeekday(n, Weekday::Tuesday)
+            );
+        }
+    }
+
+    #[test]
+    fn monthly_last_weekday_advances() {
+        let r = Recur::MonthlyNthWeekday(-1, Weekday::Friday);
+        // Last Fri of Jul 2026 (31st) -> last Fri of Aug 2026 (28th; the 31st is a Monday).
+        let next = next_after(&r, ts("2026-07-31T09:00:00Z"), ts("2026-07-31T09:00:00Z")).unwrap();
+        assert_eq!(next.to_string(), "2026-08-28T09:00:00Z");
+        // Into leap February: 29 Feb 2028 is a Tuesday, so the last Friday is the 25th.
+        let next = next_after(&r, ts("2028-01-28T09:00:00Z"), ts("2028-01-28T09:00:00Z")).unwrap();
+        assert_eq!(next.to_string(), "2028-02-25T09:00:00Z");
+    }
+
+    #[test]
+    fn leap_day_clamps_and_recovers() {
+        // Day 29 lands on the 29th in a leap February, the 28th otherwise.
+        let r = Recur::MonthlyOnDay(29);
+        let leap = next_after(&r, ts("2028-01-29T09:00:00Z"), ts("2028-01-29T09:00:00Z")).unwrap();
+        assert_eq!(leap.to_string(), "2028-02-29T09:00:00Z");
+        let plain = next_after(&r, ts("2027-01-29T09:00:00Z"), ts("2027-01-29T09:00:00Z")).unwrap();
+        assert_eq!(plain.to_string(), "2027-02-28T09:00:00Z");
+        // A year on from a leap day is the 28th of the next February.
+        let r = Recur::EveryMonths(12);
+        let next = next_after(&r, ts("2028-02-29T09:00:00Z"), ts("2028-02-29T09:00:00Z")).unwrap();
+        assert_eq!(next.to_string(), "2029-02-28T09:00:00Z");
+    }
+
+    #[test]
+    fn monthly_on_day_31_recovers_after_short_month() {
+        // Unlike `every month`, day-31 clamps to Feb 28 and then returns to the 31st.
+        let r = Recur::MonthlyOnDay(31);
+        let feb = next_after(&r, ts("2027-01-31T09:00:00Z"), ts("2027-01-31T09:00:00Z")).unwrap();
+        assert_eq!(feb.to_string(), "2027-02-28T09:00:00Z");
+        let mar = next_after(&r, feb, feb).unwrap();
+        assert_eq!(mar.to_string(), "2027-03-31T09:00:00Z");
+    }
 }
