@@ -511,6 +511,13 @@ fn not_undoable(op: &str, event_ts: &str) -> ApiError {
     ))
 }
 
+/// A typed read of a logged event field. The util layer refuses a wrong-typed
+/// value as a `bad_request` about the caller's params; here the value came out
+/// of the log, so a malformed one is the same `conflict` an absent one is.
+fn event_field<T>(read: Result<T, ApiError>) -> Result<T, ApiError> {
+    read.map_err(|e| ApiError::conflict(format!("{} Nothing was changed.", e.message)))
+}
+
 /// Reopen the interval a `task.stop` closed: back to `active`, with the seconds
 /// that stop folded into `tracked_seconds` taken off again.
 ///
@@ -536,17 +543,14 @@ fn revert_stop(
     payload: &Value,
     event_ts: &str,
 ) -> Result<Value, ApiError> {
-    let tracked = payload
-        .get("tracked")
-        .and_then(Value::as_str)
-        .ok_or_else(|| {
-            ApiError::conflict(
-                "this `stop` event carries no `tracked` duration, so the log does not say how \
-                 much time the interval contributed and undo cannot take it back off the total. \
-                 Nothing was changed; `tasqx start <ref>` opens a fresh interval.",
-            )
-        })?;
-    let elapsed = duration_secs(tracked).ok_or_else(|| {
+    let tracked = event_field(opt_str(payload, "tracked"))?.ok_or_else(|| {
+        ApiError::conflict(
+            "this `stop` event carries no `tracked` duration, so the log does not say how \
+             much time the interval contributed and undo cannot take it back off the total. \
+             Nothing was changed; `tasqx start <ref>` opens a fresh interval.",
+        )
+    })?;
+    let elapsed = duration_secs(&tracked).ok_or_else(|| {
         ApiError::conflict(format!(
             "this `stop` event records `tracked` as {tracked:?}, which is not a duration this \
              build can read, so undo cannot say how many seconds to take back. Nothing was \
@@ -928,16 +932,7 @@ fn revert_tag_add(tx: &Transaction, task: &Task, payload: &Value) -> Result<Valu
 /// that means an external writer put it back, and re-attaching silently would
 /// report a restoration that did not happen.
 fn revert_tag_remove(tx: &Transaction, task: &Task, payload: &Value) -> Result<Value, ApiError> {
-    let tags: Vec<String> = payload
-        .get("tags")
-        .and_then(Value::as_array)
-        .map(|a| {
-            a.iter()
-                .filter_map(Value::as_str)
-                .map(str::to_string)
-                .collect()
-        })
-        .unwrap_or_default();
+    let tags = event_field(opt_str_array(payload, "tags"))?;
     // An event written before D172 can name `Perf`; the task now carries `perf`.
     let tags = normalize_tags(tags)?;
     if tags.is_empty() {
@@ -989,16 +984,13 @@ fn revert_dependency_remove(
     task: &Task,
     payload: &Value,
 ) -> Result<Value, ApiError> {
-    let dep_id = payload
-        .get("depends_on")
-        .and_then(Value::as_str)
-        .ok_or_else(|| {
-            ApiError::conflict(
-                "this `dependency.remove` event names no `depends_on`, so the log does not say \
-                 which edge came off. Nothing was changed; `tasqx dep <ref> <blocker>` adds the \
-                 edge you name.",
-            )
-        })?;
+    let dep_id = event_field(opt_str(payload, "depends_on"))?.ok_or_else(|| {
+        ApiError::conflict(
+            "this `dependency.remove` event names no `depends_on`, so the log does not say \
+             which edge came off. Nothing was changed; `tasqx dep <ref> <blocker>` adds the \
+             edge you name.",
+        )
+    })?;
 
     // The FOREIGN KEY would refuse a missing blocker anyway, but as a bare
     // constraint violation naming a column. Reading the row first means the
@@ -1026,7 +1018,7 @@ fn revert_dependency_remove(
     // "nothing has happened since" would be trusting a premise the three
     // siblings above each refuse to trust, on the one inverse where being wrong
     // costs a graph no verb can repair.
-    if reaches(tx, dep_id, &task.id)? {
+    if reaches(tx, &dep_id, &task.id)? {
         return Err(ApiError::conflict(format!(
             "putting this edge back would make #{} and #{blocker_short} block each other: \
              #{blocker_short} now depends on #{}, which it cannot have done when the edge came \
@@ -1063,7 +1055,7 @@ fn revert_annotation_add(
     task: &Task,
     payload: &Value,
 ) -> Result<Value, ApiError> {
-    let id = payload.get("id").and_then(Value::as_str).ok_or_else(|| {
+    let id = event_field(opt_str(payload, "id"))?.ok_or_else(|| {
         ApiError::conflict(
             "this `annotation.add` event carries no annotation `id`, so undo cannot tell which \
              note it created. Nothing was changed.",
@@ -1176,16 +1168,13 @@ fn revert_adjust_tracked(
     task: &Task,
     payload: &Value,
 ) -> Result<Value, ApiError> {
-    let delta = payload
-        .get("delta_seconds")
-        .and_then(Value::as_i64)
-        .ok_or_else(|| {
-            ApiError::conflict(
-                "this `adjust_tracked` event carries no `delta_seconds`, so the log does not say \
-                 how much the correction moved the total. Nothing was changed; `tasqx adjust` \
-                 corrects it again.",
-            )
-        })?;
+    let delta = event_field(opt_i64(payload, "delta_seconds"))?.ok_or_else(|| {
+        ApiError::conflict(
+            "this `adjust_tracked` event carries no `delta_seconds`, so the log does not say \
+             how much the correction moved the total. Nothing was changed; `tasqx adjust` \
+             corrects it again.",
+        )
+    })?;
     let total = task.tracked_seconds.saturating_sub(delta);
     if total < 0 {
         return Err(ApiError::conflict(format!(
