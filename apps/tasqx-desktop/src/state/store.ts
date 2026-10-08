@@ -606,7 +606,7 @@ export class DashboardStore {
     try {
       const result = await client.request<GraphQueryResult>(
         'graph.query',
-        graphQueryParams({ ...request, root: id, depth: 1 }),
+        graphQueryParams({ ...request, root: id, select: null, depth: 1 }),
       );
       const current = this.state.graph.data;
       if (seq !== this.graphSeq || current === null) return;

@@ -1233,6 +1233,183 @@ fn a_missing_root_is_not_found() {
     assert!(missing.message.contains("root"), "{}", missing.message);
 }
 
+// ---- graph.query: the whole-store selects (task #809) -----------------------
+
+/// A store with one of each shape the selects tell apart: a chain 1 -> 2 -> 3
+/// (1 waits on 2, 2 on 3), a task whose only blocker is done (not blocked), a
+/// done task that once depended on an open one (closed, so not blocked), a
+/// task with a note, a task filed in a project, a doc nothing links, an empty
+/// project and a loner.
+fn store_wide(e: &Engine) {
+    for title in [
+        "waits on two",   // 1
+        "waits on three", // 2
+        "free blocker",   // 3
+        "finished",       // 4
+        "waits on done",  // 5
+        "noted",          // 6
+        "filed",          // 7
+        "lonely",         // 8
+        "closed early",   // 9
+    ] {
+        ok(e, "task.add", json!({ "title": title }));
+    }
+    // After the tasks, because a task added while a project exists inherits it.
+    ok(e, "project.create", json!({ "name": "work" }));
+    ok(e, "project.create", json!({ "name": "empty" }));
+    ok(
+        e,
+        "task.modify",
+        json!({ "ref": 7, "set": { "project": "work" } }),
+    );
+    for (dependent, blocker) in [(1, 2), (2, 3), (5, 4), (9, 3)] {
+        ok(
+            e,
+            "dependency.add",
+            json!({ "ref": dependent, "depends_on": blocker }),
+        );
+    }
+    ok(e, "task.done", json!({ "ref": 4 }));
+    ok(e, "task.done", json!({ "ref": 9, "force": true }));
+    ok(e, "annotation.add", json!({ "ref": 6, "body": "a note" }));
+    ok(
+        e,
+        "memory.add",
+        json!({ "title": "unlinked ruling", "body": "nobody links this" }),
+    );
+}
+
+/// `blocked`: every open task with an unmet blocker, plus those blockers, and
+/// the unmet `depends_on` edges between them; blocked tasks come first (depth 0).
+#[test]
+fn select_blocked_returns_unmet_dependencies_and_their_chain() {
+    let e = engine();
+    store_wide(&e);
+    let g = ok(
+        &e,
+        "graph.query",
+        json!({ "root": null, "select": "blocked" }),
+    );
+    assert_eq!(g["root"], json!(null));
+    assert_eq!(g["select"], json!("blocked"));
+    let mut got = labels(&g);
+    assert_eq!(
+        got.last().map(String::as_str),
+        Some("free blocker"),
+        "blocked tasks first, the pure blocker last: {got:?}"
+    );
+    got.sort();
+    assert_eq!(got, ["free blocker", "waits on three", "waits on two"]);
+    assert_eq!(g["edge_count"], json!(2));
+    assert_eq!(
+        provenance(&g),
+        [("depends_on".to_string(), "dependencies".to_string())]
+    );
+    assert_eq!(g["truncated"], json!(false));
+}
+
+/// `orphans`: nodes with no edge of any relation the walk crosses.
+#[test]
+fn select_orphans_returns_nodes_without_an_edge() {
+    let e = engine();
+    store_wide(&e);
+    let g = ok(&e, "graph.query", json!({ "select": "orphans" }));
+    assert_eq!(g["root"], json!(null));
+    assert_eq!(g["select"], json!("orphans"));
+    assert_eq!(g["edge_count"], json!(0));
+    let mut got = labels(&g);
+    got.sort();
+    assert_eq!(
+        got,
+        ["empty", "lonely", "unlinked ruling"],
+        "every other task hangs on a dependency, a note or a project"
+    );
+
+    // relation_types narrows which edges count: with only `depends_on`, the
+    // noted and the filed task are orphans too.
+    let narrow = ok(
+        &e,
+        "graph.query",
+        json!({ "select": "orphans", "relation_types": ["depends_on"], "node_types": ["task"] }),
+    );
+    let mut got = labels(&narrow);
+    got.sort();
+    assert_eq!(got, ["filed", "lonely", "noted"]);
+}
+
+/// The filters still apply, and the caps bite with the usual `truncated` report.
+#[test]
+fn a_select_honours_the_filters_and_the_caps() {
+    let e = engine();
+    store_wide(&e);
+    let only_projects = ok(
+        &e,
+        "graph.query",
+        json!({ "select": "orphans", "node_types": ["project"] }),
+    );
+    assert_eq!(labels(&only_projects), ["empty"]);
+
+    let capped = ok(
+        &e,
+        "graph.query",
+        json!({ "select": "orphans", "max_nodes": 2 }),
+    );
+    assert_eq!(capped["node_count"], json!(2));
+    assert_eq!(capped["truncated"], json!(true));
+    assert_eq!(capped["omitted_nodes"], json!(1));
+    assert_eq!(
+        capped,
+        ok(
+            &e,
+            "graph.query",
+            json!({ "select": "orphans", "max_nodes": 2 })
+        )
+    );
+
+    let edges = ok(
+        &e,
+        "graph.query",
+        json!({ "select": "blocked", "max_edges": 1 }),
+    );
+    assert_eq!(edges["edge_count"], json!(1));
+    assert_eq!(edges["omitted_edges"], json!(1));
+    assert_eq!(edges["truncated"], json!(true));
+}
+
+/// The mode is closed: no select and no root is the old error, a root with a
+/// select is ambiguous, a depth means nothing without a root, and an unknown
+/// select names the accepted set.
+#[test]
+fn a_select_and_a_root_are_exclusive_and_the_set_is_closed() {
+    let e = engine();
+    store_wide(&e);
+    for params in [json!({ "root": null }), json!({})] {
+        let err = call(&e, "graph.query", params).expect_err("root or select is required");
+        assert_eq!(err.code, ErrorCode::BadRequest);
+        assert!(err.message.contains("root"), "{}", err.message);
+        assert!(err.message.contains("select"), "{}", err.message);
+    }
+    let both = call(&e, "graph.query", json!({ "root": 1, "select": "blocked" }))
+        .expect_err("a root and a select");
+    assert_eq!(both.code, ErrorCode::BadRequest);
+    let depth = call(
+        &e,
+        "graph.query",
+        json!({ "select": "blocked", "depth": 1 }),
+    )
+    .expect_err("depth has no root to count from");
+    assert_eq!(depth.code, ErrorCode::BadRequest);
+    assert!(depth.message.contains("depth"), "{}", depth.message);
+    let unknown =
+        call(&e, "graph.query", json!({ "select": "everything" })).expect_err("not a select");
+    assert_eq!(unknown.code, ErrorCode::BadRequest);
+    assert!(
+        unknown.message.contains("blocked") && unknown.message.contains("orphans"),
+        "{}",
+        unknown.message
+    );
+}
+
 // ---- graph.query: the bound holds at store scale ----------------------------
 
 /// The default cap is what stands between a graph call and a whole store.
@@ -1278,6 +1455,20 @@ fn a_twelve_hundred_task_store_clamps_to_the_default_cap_quickly() {
         "graph.query over 1,200 tasks took {elapsed:?} — a batched lookup became a \
          per-node query"
     );
+}
+
+/// A whole-store select over twelve hundred loners clamps to the default cap
+/// and says so, rather than returning the store.
+#[test]
+fn an_orphans_select_over_a_big_store_clamps_to_the_default_cap() {
+    let e = engine();
+    for n in 0..1200 {
+        ok(&e, "task.add", json!({ "title": format!("loner {n:04}") }));
+    }
+    let g = ok(&e, "graph.query", json!({ "select": "orphans" }));
+    assert_eq!(g["node_count"], json!(250));
+    assert_eq!(g["truncated"], json!(true));
+    assert_eq!(g["omitted_nodes"], json!(950));
 }
 
 /// D196: a `search_match` edge claims the entry holds the title's words, so

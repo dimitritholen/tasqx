@@ -271,8 +271,11 @@ export interface GraphEdgeRow {
 }
 
 export interface GraphQueryResult {
-  root: string;
+  /** Null on a whole-store `select`. */
+  root: string | null;
   depth: number;
+  /** The whole-store set asked for, or null on a walk from a root. */
+  select: string | null;
   nodes: GraphNodeRow[];
   edges: GraphEdgeRow[];
   node_count: number;

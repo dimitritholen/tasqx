@@ -699,9 +699,46 @@ impl Engine {
             graph_bound(p, "max_edges", GRAPH_EDGES_DEFAULT, 1, GRAPH_EDGES_MAX)? as usize;
         let include_inferred = opt_bool(p, "include_inferred")?.unwrap_or(false);
         let filters = graph_filters(p)?;
+        let select = graph_select(p)?;
+        let has_root = p.get("root").is_some_and(|v| !v.is_null());
+        if let Some(select) = select {
+            if has_root {
+                return Err(ApiError::bad_request(
+                    "`root` and `select` are two different questions — name a root to walk \
+                     from one node, or a select to scan the whole store, not both",
+                ));
+            }
+            if opt_i64(p, "depth")?.is_some() {
+                return Err(ApiError::bad_request(
+                    "`depth` counts hops from a `root`, and a `select` has none — omit it",
+                ));
+            }
+            let (kept, edges) = match select {
+                GraphSelect::Blocked => self.graph_blocked(&filters)?,
+                GraphSelect::Orphans => self.graph_orphans(&filters)?,
+            };
+            return Ok(graph_answer(
+                GraphHeader {
+                    root: Value::Null,
+                    depth: 0,
+                    select: json!(select.as_str()),
+                },
+                kept,
+                edges,
+                Vec::new(),
+                0,
+                (&filters, include_inferred, max_nodes, max_edges),
+            ));
+        }
         // Resolved last of the parameters, so a malformed `depth` is answered
         // without a store read, and first of the work, so a missing root is
         // `not_found` before anything is walked.
+        if !has_root {
+            return Err(ApiError::bad_request(format!(
+                "missing required field: root (or `select`, one of {})",
+                GraphSelect::accepted()
+            )));
+        }
         let root = self.parse_node_ref_on(&self.conn, required_node_ref(p, "root")?)?;
 
         let mut kept = self.load_graph_nodes(std::slice::from_ref(&root), 0)?;
@@ -775,40 +812,168 @@ impl Engine {
             inferred.extend(matched);
         }
 
-        kept.sort_by(|a, b| a.order().cmp(&b.order()));
-        if kept.len() > max_nodes {
-            omitted_nodes += kept.len() - max_nodes;
-            kept.truncate(max_nodes);
+        Ok(graph_answer(
+            GraphHeader {
+                root: json!(node_id(&root)),
+                depth,
+                select: Value::Null,
+            },
+            kept,
+            edges.into_values().collect(),
+            inferred,
+            omitted_nodes,
+            (&filters, include_inferred, max_nodes, max_edges),
+        ))
+    }
+
+    /// `select: "blocked"` — every open task with an unmet blocker, those
+    /// blockers, and the `depends_on` edges between them (D225).
+    ///
+    /// The predicate is [`Self::unmet_blocker_source`], the one `task.get`'s
+    /// `blocked` flag reads, so this scan and a task's own answer cannot
+    /// disagree. A blocker that is itself waiting is a blocked task too, which
+    /// is what makes the blocker chain complete without a walk. Blocked tasks
+    /// sit at depth 0 and blockers that block nothing open at depth 1, so a
+    /// `max_nodes` cut keeps the work that is waiting before the work it waits
+    /// on.
+    ///
+    /// ponytail: reads every unmet edge and loads every node on it before the
+    /// filters and the cap apply, so the cost is the number of blocked tasks;
+    /// only the answer is bounded. A store with tens of thousands of blocked
+    /// tasks wants a filter pushed into the SQL.
+    fn graph_blocked(
+        &self,
+        filters: &GraphFilters,
+    ) -> Result<(Vec<GraphNode>, Vec<GraphEdge>), ApiError> {
+        if !filters.allows("depends_on") {
+            return Ok((Vec::new(), Vec::new()));
         }
-        let kept_ids: HashSet<String> = kept.iter().map(|n| node_id(&n.node)).collect();
+        let mut stmt = self.conn.prepare(&format!(
+            "SELECT d.task_id, d.depends_on_id {}",
+            Self::unmet_blocker_source()
+        ))?;
+        let rows = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?;
+        let mut edges = Vec::new();
+        let mut blocked: Vec<Node> = Vec::new();
+        let mut blockers: Vec<Node> = Vec::new();
+        for row in rows {
+            let (dependent, blocker) = row?;
+            let from = (NodeType::Task, dependent);
+            let to = (NodeType::Task, blocker);
+            edges.push(structural_edge(
+                format!("dep:{}:{}", node_id(&from), node_id(&to)),
+                &from,
+                &to,
+                "depends_on",
+                "dependencies",
+            ));
+            blocked.push(from);
+            blockers.push(to);
+        }
+        blocked.sort();
+        blocked.dedup();
+        blockers.sort();
+        blockers.dedup();
+        blockers.retain(|n| blocked.binary_search(n).is_err());
+        let mut nodes = self.load_graph_nodes(&blocked, 0)?;
+        nodes.extend(self.load_graph_nodes(&blockers, 1)?);
+        nodes.retain(|n| filters.keeps(n));
+        Ok((nodes, edges))
+    }
 
-        // After the node cut, so a pair is only drawn between two tasks that
-        // are really in the answer.
-        if include_inferred && filters.allows("shared_tag") {
-            inferred.extend(graph_shared_tags(&kept));
+    /// `select: "orphans"` — every task, document and project with no edge of
+    /// a relation the walk crosses (D225). Draws no edges, by definition.
+    ///
+    /// An annotation is never one: it exists as a note on a task. Which
+    /// relations count follows `relation_types`, so naming only `depends_on`
+    /// asks for the nodes no dependency touches. The connected set is built from
+    /// one statement per table and the candidates are loaded in batches, so the
+    /// cost is the size of the store's id columns plus the orphans themselves.
+    fn graph_orphans(
+        &self,
+        filters: &GraphFilters,
+    ) -> Result<(Vec<GraphNode>, Vec<GraphEdge>), ApiError> {
+        let mut connected: HashSet<Node> = HashSet::new();
+        let pairs = |sql: &str| -> Result<Vec<(String, String)>, ApiError> {
+            let mut stmt = self.conn.prepare(sql)?;
+            let rows = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?;
+            Ok(rows.collect::<Result<_, _>>()?)
+        };
+        if filters.allows("depends_on") {
+            for (a, b) in pairs("SELECT task_id, depends_on_id FROM dependencies")? {
+                connected.insert((NodeType::Task, a));
+                connected.insert((NodeType::Task, b));
+            }
+        }
+        if filters.allows("has_annotation") {
+            for (task, _) in pairs(
+                "SELECT DISTINCT task_id, id FROM annotations WHERE removed IS NULL \
+                 GROUP BY task_id",
+            )? {
+                connected.insert((NodeType::Task, task));
+            }
+        }
+        if filters.allows("belongs_to_project") {
+            for (sql, ty) in [
+                (
+                    "SELECT t.id, p.id FROM tasks t JOIN projects p ON p.name = t.project",
+                    NodeType::Task,
+                ),
+                (
+                    "SELECT d.id, p.id FROM docs d JOIN projects p ON p.name = d.project",
+                    NodeType::Memory,
+                ),
+            ] {
+                for (member, project) in pairs(sql)? {
+                    connected.insert((ty, member));
+                    connected.insert((NodeType::Project, project));
+                }
+            }
+        }
+        let mut stmt = self
+            .conn
+            .prepare("SELECT from_type, from_id, to_type, to_id, relation FROM links")?;
+        let rows = stmt.query_map([], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, String>(2)?,
+                r.get::<_, String>(3)?,
+                r.get::<_, String>(4)?,
+            ))
+        })?;
+        for row in rows {
+            let (from_type, from_id, to_type, to_id, relation) = row?;
+            if let (true, Some(ft), Some(tt)) = (
+                filters.allows(&relation),
+                NodeType::parse(&from_type),
+                NodeType::parse(&to_type),
+            ) {
+                connected.insert((ft, from_id));
+                connected.insert((tt, to_id));
+            }
         }
 
-        let mut drawn: Vec<GraphEdge> = edges
-            .into_values()
-            .chain(inferred)
-            .filter(|e| kept_ids.contains(&e.from) && kept_ids.contains(&e.to))
-            .collect();
-        drawn.sort_by(|a, b| (&a.relation, &a.from, &a.to).cmp(&(&b.relation, &b.from, &b.to)));
-        let omitted_edges = drawn.len().saturating_sub(max_edges);
-        drawn.truncate(max_edges);
-
-        Ok(json!({
-            "root": node_id(&root),
-            "depth": depth,
-            "nodes": kept.iter().map(graph_node_json).collect::<Vec<_>>(),
-            "edges": drawn.iter().map(graph_edge_json).collect::<Vec<_>>(),
-            "node_count": kept.len(),
-            "edge_count": drawn.len(),
-            "truncated": omitted_nodes > 0 || omitted_edges > 0,
-            "omitted_nodes": omitted_nodes,
-            "omitted_edges": omitted_edges,
-            "include_inferred": include_inferred,
-        }))
+        let mut candidates: Vec<Node> = Vec::new();
+        for (table, ty) in [
+            ("tasks", NodeType::Task),
+            ("docs", NodeType::Memory),
+            ("projects", NodeType::Project),
+        ] {
+            // `table` is one of three literals chosen by this loop.
+            let mut stmt = self.conn.prepare(&format!("SELECT id FROM {table}"))?;
+            let ids = stmt.query_map([], |r| r.get::<_, String>(0))?;
+            for id in ids {
+                let node = (ty, id?);
+                if !connected.contains(&node) {
+                    candidates.push(node);
+                }
+            }
+        }
+        candidates.sort();
+        let mut nodes = self.load_graph_nodes(&candidates, 0)?;
+        nodes.retain(|n| filters.keeps(n));
+        Ok((nodes, Vec::new()))
     }
 
     /// One BFS level: every structural edge touching `frontier`, and every node
@@ -1413,6 +1578,95 @@ fn check_node_rev(conn: &Connection, node: &Node, expected: i64) -> Result<(), A
         ),
         Some(json!({ "expected": expected, "current": current, "node": node_id(node) })),
     ))
+}
+
+/// The whole-store sets `graph.query`'s `select` names (D225).
+#[derive(Clone, Copy)]
+enum GraphSelect {
+    Blocked,
+    Orphans,
+}
+
+impl GraphSelect {
+    fn as_str(self) -> &'static str {
+        match self {
+            GraphSelect::Blocked => "blocked",
+            GraphSelect::Orphans => "orphans",
+        }
+    }
+
+    fn accepted() -> &'static str {
+        "blocked, orphans"
+    }
+}
+
+/// `graph.query`'s `select`, or `None` when the call is a rooted walk.
+fn graph_select(p: &Value) -> Result<Option<GraphSelect>, ApiError> {
+    Ok(match opt_str_nonempty(p, "select")?.as_deref() {
+        None => None,
+        Some("blocked") => Some(GraphSelect::Blocked),
+        Some("orphans") => Some(GraphSelect::Orphans),
+        Some(other) => {
+            return Err(ApiError::bad_request(format!(
+                "`{other}` is not a select — expected one of {}",
+                GraphSelect::accepted()
+            )))
+        }
+    })
+}
+
+/// The three fields of an answer that say what was asked.
+struct GraphHeader {
+    root: Value,
+    depth: i64,
+    select: Value,
+}
+
+/// The cut and the JSON, shared by the rooted walk and the whole-store selects
+/// so the two cannot disagree about order, caps or what `truncated` means.
+fn graph_answer(
+    head: GraphHeader,
+    mut kept: Vec<GraphNode>,
+    edges: Vec<GraphEdge>,
+    mut inferred: Vec<GraphEdge>,
+    mut omitted_nodes: usize,
+    (filters, include_inferred, max_nodes, max_edges): (&GraphFilters, bool, usize, usize),
+) -> Value {
+    kept.sort_by(|a, b| a.order().cmp(&b.order()));
+    if kept.len() > max_nodes {
+        omitted_nodes += kept.len() - max_nodes;
+        kept.truncate(max_nodes);
+    }
+    let kept_ids: HashSet<String> = kept.iter().map(|n| node_id(&n.node)).collect();
+
+    // After the node cut, so a pair is only drawn between two tasks that
+    // are really in the answer.
+    if include_inferred && filters.allows("shared_tag") {
+        inferred.extend(graph_shared_tags(&kept));
+    }
+
+    let mut drawn: Vec<GraphEdge> = edges
+        .into_iter()
+        .chain(inferred)
+        .filter(|e| kept_ids.contains(&e.from) && kept_ids.contains(&e.to))
+        .collect();
+    drawn.sort_by(|a, b| (&a.relation, &a.from, &a.to).cmp(&(&b.relation, &b.from, &b.to)));
+    let omitted_edges = drawn.len().saturating_sub(max_edges);
+    drawn.truncate(max_edges);
+
+    json!({
+        "root": head.root,
+        "depth": head.depth,
+        "select": head.select,
+        "nodes": kept.iter().map(graph_node_json).collect::<Vec<_>>(),
+        "edges": drawn.iter().map(graph_edge_json).collect::<Vec<_>>(),
+        "node_count": kept.len(),
+        "edge_count": drawn.len(),
+        "truncated": omitted_nodes > 0 || omitted_edges > 0,
+        "omitted_nodes": omitted_nodes,
+        "omitted_edges": omitted_edges,
+        "include_inferred": include_inferred,
+    })
 }
 
 /// Read one of `graph.query`'s integer bounds, defaulted and range-checked.

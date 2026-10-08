@@ -449,14 +449,16 @@ const METHODS: [(&str, &str, &str); 52] = [
     ),
     (
         "graph.query",
-        "<code>root</code>, <code>depth?</code>, <code>node_types?</code>, \
+        "<code>root</code>, <code>select?</code>, <code>depth?</code>, <code>node_types?</code>, \
          <code>relation_types?</code>, <code>project?</code>, <code>status?</code>, \
          <code>tags?</code>, <code>modified_after?</code>, <code>modified_before?</code>, \
          <code>include_inferred?</code>, <code>max_nodes?</code>, <code>max_edges?</code>",
-        "<code>{root, depth, nodes, edges, node_count, edge_count, truncated, omitted_nodes, \
-         omitted_edges, include_inferred}</code> — one bounded projection of the knowledge graph \
-         around <code>root</code> (D160), which is a node reference in <code>link.add</code>'s \
-         grammar. Nodes come back ordered by depth, kind then id and edges by relation, \
+        "<code>{root, depth, select, nodes, edges, node_count, edge_count, truncated, \
+         omitted_nodes, omitted_edges, include_inferred}</code> — one bounded projection of the \
+         knowledge graph around <code>root</code> (D160), which is a node reference in \
+         <code>link.add</code>'s grammar. With <code>root: null</code> and a <code>select</code> \
+         (<code>blocked</code> or <code>orphans</code>) it answers a whole-store question \
+         instead, under the same caps, and <code>depth</code> is refused. Nodes come back ordered by depth, kind then id and edges by relation, \
          <code>from</code> then <code>to</code>, so the same call twice is the same JSON. \
          <code>depth</code> is 0–4 (default 2), <code>max_nodes</code> 1–1,000 (default 250) and \
          <code>max_edges</code> 1–5,000 (default 750), each refused by name rather than clamped; \

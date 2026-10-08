@@ -14,6 +14,7 @@ import {
   GRAPH_MAX_DEPTH,
   GRAPH_NODE_LIMITS,
   GRAPH_PRESETS,
+  type GraphPreset,
   layoutGraphModel,
   parseRootRef,
   requestKey,
@@ -52,8 +53,8 @@ import { RemoveConfirm } from './MemoryInspector';
 type ServerRequest = Omit<GraphRequest, 'root'>;
 
 function withoutRoot(request: GraphRequest): ServerRequest {
-  const { depth, maxNodes, includeInferred, tag, relations } = request;
-  return { depth, maxNodes, includeInferred, tag, relations };
+  const { select, depth, maxNodes, includeInferred, tag, relations } = request;
+  return { select, depth, maxNodes, includeInferred, tag, relations };
 }
 
 const TYPE_LABELS: Record<GraphNodeType, string> = {
@@ -181,12 +182,14 @@ function Filters({
 /** Presets, saved views, and the views file's export/import. */
 function Views({
   views,
+  presets,
   onViews,
   snapshot,
   onApplyPreset,
   onApplyView,
 }: {
   views: ViewsFile;
+  presets: GraphPreset[];
   onViews(next: ViewsFile, notice?: string): void;
   snapshot(name: string): GraphView;
   onApplyPreset(id: string): void;
@@ -230,7 +233,7 @@ function Views({
         <select value={chosen} onChange={(event) => choose(event.target.value)}>
           <option value="">Choose a preset or a saved view…</option>
           <optgroup label="Presets">
-            {GRAPH_PRESETS.map((preset) => (
+            {presets.map((preset) => (
               <option value={`preset:${preset.id}`} key={preset.id}>
                 {preset.name}
               </option>
@@ -288,11 +291,19 @@ export function GraphScreen() {
   const theme = useTheme();
   const live = connection.status === 'live';
   const supported = live && client.supports('graph.query');
+  // The whole-store presets need a daemon that accepts `select`.
+  const presets = GRAPH_PRESETS.filter(
+    (preset) => preset.request.select == null || client.supportsParam('graph.query', 'select'),
+  );
 
   const graph = useMemo(() => createGraphModel(), []);
-  const [request, setRequest] = useState<ServerRequest>(() =>
+  const [chosen, setRequest] = useState<ServerRequest>(() =>
     state.graphRequest === null ? DEFAULT_GRAPH_REQUEST : withoutRoot(state.graphRequest),
   );
+  // The root the route held when a whole-store select was chosen. Choosing a
+  // root afterwards (typed, "Make root", a selected task) is a walk again, so
+  // the select only counts while the root is still that one.
+  const [selectedAt, setSelectedAt] = useState<string | null>(null);
   const [filters, setFilters] = useState<GraphFilters>(DEFAULT_GRAPH_FILTERS);
   const [webgl] = useState(hasWebGL);
   const [canvasFailed, setCanvasFailed] = useState<string | null>(null);
@@ -313,6 +324,10 @@ export function GraphScreen() {
   const rootText =
     route.query['root'] ?? (state.route.sel !== null ? String(state.route.sel) : firstTask === null ? null : String(firstTask));
   const root = rootText === null ? null : parseRootRef(rootText);
+  const request = useMemo<ServerRequest>(
+    () => (chosen.select === null || selectedAt === rootText ? chosen : { ...chosen, select: null }),
+    [chosen, selectedAt, rootText],
+  );
   const data = state.graph.data;
   const pins = state.graphPins;
 
@@ -335,15 +350,14 @@ export function GraphScreen() {
   // A new root or a new server request is a new neighbourhood; coming back to
   // the screen with the one already loaded keeps it, expansions included.
   useEffect(() => {
-    if (!supported || root === null) return;
-    const next: GraphRequest = { ...request, root };
+    if (!supported || (root === null && request.select === null)) return;
+    const next: GraphRequest = { ...request, root: request.select === null ? root : null };
     const current = store.getState();
     if (current.graph.data !== null && current.graphRequest !== null && requestKey(current.graphRequest) === requestKey(next)) {
       return;
     }
     void store.loadGraph(next);
   }, [supported, root, request, store]);
-
   // Bring the model in line with the data, lay out what is new and filter —
   // the renderer redraws from the model's own events — then read back what is
   // visible for the list. Memoised on exactly what changes the model.
@@ -386,7 +400,7 @@ export function GraphScreen() {
     return {
       project: rootNode?.type === 'project' ? rootNode.label : (rootNode?.project ?? null),
       name,
-      request: { ...request, root: root ?? data?.root ?? '' },
+      request: { ...request, root: request.select === null ? (root ?? data?.root ?? '') : null },
       filters,
       pins: savedPins,
       camera: cameraRef.current,
@@ -398,6 +412,7 @@ export function GraphScreen() {
     const preset = GRAPH_PRESETS.find((candidate) => candidate.id === id);
     if (preset === undefined) return;
     setRequest((current) => ({ ...current, ...preset.request }));
+    setSelectedAt(rootText);
     setFilters(resolvePresetFilters({ ...DEFAULT_GRAPH_FILTERS, ...preset.filters }, new Date()));
     if (preset.rootAt === 'project') {
       const rootNode = data?.nodes.find((node) => node.id === data.root);
@@ -410,8 +425,9 @@ export function GraphScreen() {
   function applyView(view: GraphView): void {
     setApplied((n) => n + 1);
     setRequest(withoutRoot(view.request));
+    setSelectedAt(rootText);
     setFilters(view.filters);
-    updateQuery({ root: String(view.request.root) });
+    if (view.request.root !== null) updateQuery({ root: String(view.request.root) });
     // Loaded here rather than by the effect, so the pins travel with it; the
     // effect then finds this request already loaded and leaves it alone.
     if (supported) void store.loadGraph(view.request, { pins: view.pins });
@@ -455,7 +471,7 @@ export function GraphScreen() {
     if (!supported) {
       return <EmptyState title="No graph on this daemon" message="This daemon does not offer graph.query. Update tasqx." />;
     }
-    if (root === null) {
+    if (root === null && request.select === null) {
       return <EmptyState title="No root yet" message="Enter a task number or a node reference above to open its neighbourhood." />;
     }
     if (state.graph.error !== null) {
@@ -463,7 +479,7 @@ export function GraphScreen() {
         <ErrorState
           title="Could not load the graph"
           error={state.graph.error}
-          onRetry={() => void store.loadGraph({ ...request, root }, { pins })}
+          onRetry={() => void store.loadGraph({ ...request, root: request.select === null ? root : null }, { pins })}
         />
       );
     }
@@ -557,7 +573,7 @@ export function GraphScreen() {
           </Field>
         </form>
         <Field label="Depth">
-          <select value={request.depth} onChange={(event) => patchRequest({ depth: Number(event.target.value) })}>
+          <select value={request.depth} disabled={request.select !== null} onChange={(event) => patchRequest({ depth: Number(event.target.value) })}>
             {Array.from({ length: GRAPH_MAX_DEPTH + 1 }, (_, depth) => (
               <option value={depth} key={depth}>
                 {depth}
@@ -589,6 +605,7 @@ export function GraphScreen() {
         views={views}
         onViews={persist}
         snapshot={snapshot}
+        presets={presets}
         onApplyPreset={applyPreset}
         onApplyView={applyView}
       />
