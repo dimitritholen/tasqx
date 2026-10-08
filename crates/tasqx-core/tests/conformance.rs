@@ -2529,6 +2529,11 @@ fn cases() -> Vec<Case> {
                 // row in every array `task.get` answers with, and the search
                 // needs a hit — a row shape no fixture produces is unchecked.
                 // The cap is shorter than the note so D148's markers show.
+                // D220: two notes and a page of one, so the task half's
+                // `annotations_next_offset` is observed as a number on the
+                // brief and not only as `task.get`'s.
+                e.annotation_add(&json!({ "ref": 1, "body": "an older note" }))
+                    .expect("annotate the subject");
                 e.annotation_add(&json!({ "ref": 1, "body": "shipping the freeze today" }))
                     .expect("annotate the subject");
                 // D170's `last_time` is present only on a recurrence spawn, so
@@ -2547,7 +2552,7 @@ fn cases() -> Vec<Case> {
                 e.check_add(&json!({ "ref": 1, "body": "the criterion" }))
                     .expect("check");
                 e.token_add(&self_report(1)).expect("token");
-                json!({ "ref": 1, "max_body_bytes": 3 })
+                json!({ "ref": 1, "max_body_bytes": 3, "annotations_limit": 1 })
             },
             R_TASK_BRIEF,
         ),

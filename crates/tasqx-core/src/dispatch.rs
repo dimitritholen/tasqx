@@ -88,16 +88,20 @@ pub const PARAMS: &[(&str, &[&str], bool)] = &[
         ],
         false,
     ),
-    // D136. No `annotations_limit`: a brief is what is read BEFORE starting,
-    // so the task's own history is the part least worth truncating, and the
-    // transport's byte budget is where an oversized answer is cut (D66).
-    // `max_body_bytes` IS forwarded (D148), because it cuts inside one note
-    // rather than dropping notes, and the brief's task half is `task.get`'s
-    // own result — an uncapped one is the same oversized answer with a
-    // neighbourhood stapled to it.
+    // D136. The task half is `task.get`'s own result, so it takes
+    // `task.get`'s page and body cap (D148, D220): without a page, a long
+    // history left the transport's budget no lever but the memory page, and
+    // an oversized brief went out whole. Absent, both mean what they mean on
+    // `task.get` — the whole history, every body whole.
     (
         "task.brief",
-        &["ref", "memory_limit", "max_body_bytes"],
+        &[
+            "ref",
+            "memory_limit",
+            "annotations_limit",
+            "annotations_offset",
+            "max_body_bytes",
+        ],
         false,
     ),
     // D213. `resume` is the only part that reads beyond `task.list`.
