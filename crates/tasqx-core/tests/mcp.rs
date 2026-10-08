@@ -4611,6 +4611,50 @@ fn start_timer_carries_the_briefs_memory_block() {
     );
 }
 
+/// D227: the read side is measured. A read-scope connection's `tasqx_brief_task`
+/// still answers (the event it records changes no task data), a start that
+/// carried memory counts as briefed, and a start that opted out does not.
+#[test]
+fn briefing_and_a_memory_carrying_start_count_as_briefed_under_any_scope() {
+    let engine = engine();
+    for title in [
+        "read briefed",
+        "start briefed",
+        "start opted out",
+        "never read",
+    ] {
+        engine.task_add(&json!({ "title": title })).expect("task");
+    }
+    let read = McpServer::new(&engine, Scope::Read);
+    let brief = call(&read, 1, "tasqx_brief_task", json!({ "ref": 1 }));
+    assert!(
+        !is_error(&brief),
+        "a brief stays callable on read scope: {brief}"
+    );
+
+    let write = McpServer::new(&engine, Scope::Write);
+    call(&write, 2, "tasqx_start_timer", json!({ "ref": 2 }));
+    call(
+        &write,
+        3,
+        "tasqx_start_timer",
+        json!({ "ref": 3, "include_memory": false }),
+    );
+    for r in 1..=4 {
+        call(&write, 10 + r, "tasqx_complete_task", json!({ "ref": r }));
+    }
+
+    let out = tool_json(&call(
+        &read,
+        20,
+        "tasqx_outcomes",
+        json!({ "metrics": ["unbriefed"] }),
+    ));
+    let u = &out["groups"][0]["unbriefed"];
+    assert_eq!(u["refs"], json!([3, 4]), "{out}");
+    assert_eq!(u["n"], 4);
+}
+
 /// `include_memory: false` drops the block, and the rest of the answer is
 /// `task.start`'s own frozen result — checked here against the JSON API's
 /// direct call on an identically seeded store.

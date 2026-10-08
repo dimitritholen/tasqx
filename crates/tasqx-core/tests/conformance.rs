@@ -1408,6 +1408,9 @@ const OUTCOME_GROUP_ROW: &[Field] = &[
     // D150. Completions that overrode still-open blockers; its denominator is
     // completions, like `rework`'s, because any of them could have been one.
     req_of("forced", Ty::Object, &[OUTCOME_RATE]),
+    // D227. Completions of a task no brief or memory-carrying start read for;
+    // its denominator is completions, like `silent`'s.
+    req_of("unbriefed", Ty::Object, &[OUTCOME_RATE]),
 ];
 
 /// Abandonment adds the time inside the dropped work to the rate shape —

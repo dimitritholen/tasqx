@@ -362,6 +362,18 @@ fn the_unproven_cell_names_failed_checks_only_when_there_are_some() {
     assert!(out.contains("2/3") && !out.contains("failed"), "{out}");
 }
 
+/// D227: UNBRIEFED reads count over completions like the other rates.
+#[test]
+fn the_unbriefed_column_reads_count_over_completions() {
+    let ctx = Ctx::new(theme::default_theme(), Caps::PLAIN);
+    let result = json!({ "groups": [{
+        "project": "work", "closed": 4, "completions": 4,
+        "unbriefed": { "count": 3, "n": 4, "rate": 0.75, "refs": [1, 2, 3] },
+    }] });
+    let out = outcomes(&ctx, &result, "project");
+    assert!(out.contains("UNBRIEFED") && out.contains("3/4"), "{out}");
+}
+
 /// A rate with nothing to divide by prints `-`, not `0/0`: "none of them"
 /// and "there were none" are different answers.
 #[test]

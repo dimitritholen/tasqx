@@ -220,6 +220,69 @@ fn a_completion_with_no_annotation_is_silent() {
     assert_eq!(silent["refs"], json!([b]));
 }
 
+// ---- unbriefed completions (D227) -----------------------------------------
+
+fn unbriefed(e: &Engine) -> Value {
+    let out = call(e, "report.outcomes", json!({ "metrics": ["unbriefed"] })).expect("outcomes");
+    only_group(&out)["unbriefed"].clone()
+}
+
+#[test]
+fn a_completion_never_briefed_is_unbriefed_and_a_briefed_one_is_not() {
+    let e = engine();
+    let a = add(&e, "briefed first", json!({}));
+    let b = add(&e, "straight to done", json!({}));
+    call(&e, "task.brief", json!({ "ref": a })).expect("brief a");
+    call(&e, "task.done", json!({ "ref": a })).expect("done a");
+    call(&e, "task.done", json!({ "ref": b })).expect("done b");
+
+    let u = unbriefed(&e);
+    assert_eq!(u["count"], 1);
+    assert_eq!(u["n"], 2, "the denominator is completions");
+    assert_eq!(u["refs"], json!([b]));
+}
+
+#[test]
+fn a_cancelled_task_is_not_an_unbriefed_completion() {
+    let e = engine();
+    let a = add(&e, "dropped", json!({}));
+    call(&e, "task.cancel", json!({ "ref": a })).expect("cancel");
+    let b = add(&e, "finished", json!({}));
+    call(&e, "task.done", json!({ "ref": b })).expect("done");
+
+    let u = unbriefed(&e);
+    assert_eq!((u["count"].clone(), u["n"].clone()), (json!(1), json!(1)));
+    assert_eq!(u["refs"], json!([b]));
+}
+
+#[test]
+fn briefing_twice_records_one_event_and_undo_steps_over_it() {
+    let e = engine();
+    let a = add(&e, "before", json!({}));
+    call(
+        &e,
+        "task.modify",
+        json!({ "ref": a, "set": { "title": "after" } }),
+    )
+    .expect("modify");
+    call(&e, "task.brief", json!({ "ref": a })).expect("brief");
+    call(&e, "task.brief", json!({ "ref": a })).expect("brief again");
+
+    let events = call(&e, "event.list", json!({})).expect("events");
+    let briefed = events["events"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|v| v["op"] == "briefed")
+        .count();
+    assert_eq!(briefed, 1, "a second brief appends nothing");
+
+    let undone = e
+        .event_revert()
+        .expect("undo reaches the modify, not the brief");
+    assert_eq!(undone["reverted"]["op"], "modify");
+}
+
 // ---- abandonment ----------------------------------------------------------
 
 #[test]
@@ -585,6 +648,7 @@ fn every_metric_is_reported_when_none_is_named() {
         "silent",
         "abandonment",
         "forced",
+        "unbriefed",
     ] {
         assert!(g.get(m).is_some(), "{m} missing from a default report: {g}");
     }

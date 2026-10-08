@@ -76,16 +76,23 @@ tasqx report --outcomes
 ```
 
 ```
-PROJECT  CLOSED  DONE  REWORK  SILENT     CALIB  DROPPED  TOKENS
-work          4     3     1/3     2/3  ×1.00 n2      1/4       -
+PROJECT  CLOSED  DONE  REWORK  FORCED  SILENT     CALIB  DROPPED  OVER  UNPROVEN  UNBRIEFED               TOKENS
+api           7     6     0/6     0/6     0/6  ×1.17 n3      1/7   1/2         -        6/6  cacheR 7.0M ~medium
+infra         9     8     0/8     0/8     1/8  ×1.00 n4      1/9   1/1       1/2        8/8  cacheR 2.8M ~medium
+mobile       15    13    2/13    0/13    0/13  ×1.35 n2     2/15   1/3       1/3      13/13  cacheR 7.7M ~medium
+website      15    13    0/13    1/13    2/13  ×1.58 n9     2/15   0/2       0/5      13/13  cacheR 2.4M ~medium
 ```
 
 | Column | What it counts |
 |---|---|
 | REWORK | Completions that were later reopened |
+| FORCED | Completions that overrode open blockers |
 | SILENT | Completions carrying no annotation |
+| UNBRIEFED | Completions of a task that no `tasqx brief`, or `tasqx_start_timer` that carried memory, was ever read for |
 | CALIB | Median tracked-over-estimate, and how many completions had both |
 | DROPPED | Work that was started and then cancelled |
+| OVER | Completions that went past their token budget, of those that had one |
+| UNPROVEN | Completions with a check still open or failed, of those that had checks |
 | TOKENS | The largest token bucket, as everywhere else |
 
 Every rate reads `count/n` rather than a percentage, deliberately: "3/12" and

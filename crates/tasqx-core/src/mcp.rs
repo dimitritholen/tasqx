@@ -930,8 +930,8 @@ fn build_tool_specs() -> Vec<ToolSpec> {
             idempotent: true,
             description: "How the work went rather than what it cost: rework, estimate \
                 calibration, token cost, unannotated completions, started-then-cancelled \
-                work, and `forced` (completions that overrode open blockers). Every rate \
-                carries the `n` it was computed over. Scope is tasks that CLOSED; \
+                work, `forced` (overrode blockers), `unbriefed`. \
+                Every rate carries the `n` it was computed over. Scope is tasks that CLOSED; \
                 `tasqx_summary` reads work in flight.",
             schema: json!({
                 "type": "object",

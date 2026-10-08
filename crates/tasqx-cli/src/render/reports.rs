@@ -259,6 +259,9 @@ pub fn outcomes(ctx: &Ctx, result: &Value, group_by: &str) -> String {
     if has("unproven") {
         labels.push("UNPROVEN".into());
     }
+    if has("unbriefed") {
+        labels.push("UNBRIEFED".into());
+    }
     if has("cost") {
         labels.push("TOKENS".into());
     }
@@ -304,6 +307,9 @@ pub fn outcomes(ctx: &Ctx, result: &Value, group_by: &str) -> String {
                 Some(f) if f > 0 => format!("{cell} {f} failed"),
                 _ => cell,
             });
+        }
+        if let Some(m) = g.get("unbriefed") {
+            cells.push(over(m, "count"));
         }
         if let Some(m) = g.get("cost") {
             // The group's dominant bucket, the D92 cell — `cost` is keyed with
@@ -396,10 +402,11 @@ pub fn outcomes(ctx: &Ctx, result: &Value, group_by: &str) -> String {
     out.push_str(&prose(
         ctx,
         Some("muted"),
-        "REWORK / FORCED / SILENT / DROPPED / OVER / UNPROVEN read count over the completions \
+        "REWORK / FORCED / SILENT / DROPPED / OVER / UNPROVEN / UNBRIEFED read count over the completions \
          or closings they were counted against — a rate with no denominator beside it is not \
          a rate. OVER counts only the completions that had a budget and UNPROVEN only those \
-         that had acceptance criteria. CALIB is the median tracked-over-estimate ratio and \
+         that had acceptance criteria. UNBRIEFED counts completions of a task no brief or \
+         memory-carrying start was ever read for. CALIB is the median tracked-over-estimate ratio and \
          the number of completions carrying both figures.",
         "",
     ));

@@ -795,19 +795,31 @@ fn a_param_the_method_does_not_read_is_refused_at_dispatch() {
     assert_eq!(err.code, ErrorCode::BadRequest);
 }
 
+/// D227: the one write a brief makes is a single `briefed` event, once per
+/// task, and it touches no task row.
 #[test]
-fn the_brief_writes_nothing() {
+fn the_brief_writes_one_briefed_event_and_no_task_data() {
     let e = engine();
     let t = add(&e, "a task", json!({}));
-    let count = |e: &Engine| {
+    let ops = |e: &Engine| -> Vec<String> {
         call(e, "event.list", json!({})).expect("events")["events"]
             .as_array()
             .expect("events array")
-            .len()
+            .iter()
+            .map(|v| v["op"].as_str().unwrap().to_string())
+            .collect()
     };
-    let before = count(&e);
+    let before = ops(&e);
+    let rev = call(&e, "task.get", json!({ "ref": t })).unwrap()["rev"].clone();
     brief(&e, t);
-    assert_eq!(before, count(&e), "a read appends nothing to the log");
+    brief(&e, t);
+    let after = ops(&e);
+    assert_eq!(after.len(), before.len() + 1, "{after:?}");
+    assert_eq!(after.iter().filter(|o| *o == "briefed").count(), 1);
+    assert_eq!(
+        call(&e, "task.get", json!({ "ref": t })).unwrap()["rev"],
+        rev
+    );
 }
 
 // ---- the reserved half (D147) ---------------------------------------------

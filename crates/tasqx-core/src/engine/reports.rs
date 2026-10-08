@@ -438,6 +438,7 @@ impl Engine {
 
         let history = self.task_closing_history()?;
         let annotated = self.annotated_task_ids()?;
+        let briefed = self.briefed_task_ids()?;
         // Hoisted: one grouped read for the whole report, never one per task —
         // the N+1 `SnapshotParts` exists to forbid, and this loop walks every
         // task in the store.
@@ -453,6 +454,9 @@ impl Engine {
             /// against `completions`, like `rework` — see `OUTCOME_METRICS`.
             forced: Vec<i64>,
             silent: Vec<i64>,
+            /// D227: completions of a task no brief or memory-carrying start
+            /// ever read for. Read against `completions`, like `silent`.
+            unbriefed: Vec<i64>,
             abandoned: Vec<i64>,
             abandoned_secs: i64,
             ratios: Vec<f64>,
@@ -518,6 +522,7 @@ impl Engine {
                 rework: Vec::new(),
                 forced: Vec::new(),
                 silent: Vec::new(),
+                unbriefed: Vec::new(),
                 abandoned: Vec::new(),
                 abandoned_secs: 0,
                 ratios: Vec::new(),
@@ -563,6 +568,9 @@ impl Engine {
             }
             if !annotated.contains(&t.id) {
                 agg.silent.push(t.short_id);
+            }
+            if !briefed.contains(&t.id) {
+                agg.unbriefed.push(t.short_id);
             }
             // Calibration needs both numbers to be a ratio at all; a
             // completion missing either contributes to no `n`, which is why
@@ -732,6 +740,18 @@ impl Engine {
                         "n": agg.completions,
                         "rate": rate(agg.silent.len() as i64, agg.completions),
                         "refs": agg.silent,
+                    }),
+                );
+            }
+            if wants("unbriefed") {
+                agg.unbriefed.sort_unstable();
+                obj.insert(
+                    "unbriefed".into(),
+                    json!({
+                        "count": agg.unbriefed.len(),
+                        "n": agg.completions,
+                        "rate": rate(agg.unbriefed.len() as i64, agg.completions),
+                        "refs": agg.unbriefed,
                     }),
                 );
             }
@@ -926,6 +946,22 @@ impl Engine {
         let mut stmt = self
             .conn()
             .prepare("SELECT DISTINCT task_id FROM annotations")?;
+        let rows = stmt.query_map([], |r| r.get::<_, String>(0))?;
+        let mut out = HashSet::new();
+        for row in rows {
+            out.insert(row?);
+        }
+        Ok(out)
+    }
+
+    /// D227: the ids of tasks with a `briefed` event — a `task.brief`, or a
+    /// start that returned memory. One grouped read, like `annotated_task_ids`.
+    // ponytail: any brief counts, before or after the close; compare against
+    // `TaskClose::at` if a post-hoc brief ever needs to be told apart.
+    fn briefed_task_ids(&self) -> Result<HashSet<String>, ApiError> {
+        let mut stmt = self.conn().prepare(
+            "SELECT DISTINCT entity_id FROM events WHERE entity = 'task' AND op = 'briefed'",
+        )?;
         let rows = stmt.query_map([], |r| r.get::<_, String>(0))?;
         let mut out = HashSet::new();
         for row in rows {

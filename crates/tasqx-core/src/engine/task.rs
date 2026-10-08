@@ -3022,7 +3022,7 @@ impl Engine {
         // would be recomputed for every brief. The memory half then answers
         // from the warm copy when its generation is the one the snapshot sees.
         self.reconcile_vectors();
-        let _snapshot = self.conn.unchecked_transaction()?;
+        let snapshot = self.conn.unchecked_transaction()?;
         let task = self.resolve_ref(p)?;
         let tags = task_tags(&self.conn, &task.id)?;
 
@@ -3067,7 +3067,34 @@ impl Engine {
         if let Some(last) = self.last_time(&task.id)? {
             out["last_time"] = last;
         }
+        // D227: the read is over, so the record is written outside the
+        // snapshot (a deferred read cannot upgrade without risking
+        // SQLITE_BUSY_SNAPSHOT).
+        drop(snapshot);
+        self.record_brief(&task.id);
         Ok(out)
+    }
+
+    /// D227: note that `task_id` was read for, once. Best-effort: a brief is a
+    /// read and must answer even when the store is busy or read-only, so a
+    /// failed write is dropped and the task simply counts as unbriefed. The
+    /// event changes no task row (no `rev` bump), so it is allowed on the MCP
+    /// read scope; undo steps over it.
+    fn record_brief(&self, task_id: &str) {
+        let _ = (|| -> Result<(), ApiError> {
+            let tx = self.begin_mutation()?;
+            let seen: bool = tx.query_row(
+                "SELECT EXISTS(SELECT 1 FROM events \
+                 WHERE entity = 'task' AND entity_id = ?1 AND op = 'briefed')",
+                params![task_id],
+                |r| r.get(0),
+            )?;
+            if !seen {
+                insert_event(&tx, Entity::Task, task_id, "briefed", &json!({}))?;
+            }
+            tx.commit()?;
+            Ok(())
+        })();
     }
 
     /// The same memory half [`Self::task_brief`] computes, for a caller that
@@ -3084,7 +3111,10 @@ impl Engine {
     ) -> Result<Value, ApiError> {
         let task = self.resolve_ref(p)?;
         let tags = task_tags(&self.conn, &task.id)?;
-        self.derived_memory(&task, &tags, limit)
+        let memory = self.derived_memory(&task, &tags, limit)?;
+        // D227: a start that returned memory counts as a brief.
+        self.record_brief(&task.id);
+        Ok(memory)
     }
 
     /// The short_id of the task a recurrence spawned `task_id` from (D170).

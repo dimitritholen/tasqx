@@ -119,7 +119,7 @@ pub const SUMMARY_METRICS: [&str; 9] = [
 /// completions carrying no annotation, not "bad completions". D137 refuses a
 /// composite score for the same reason these stay five names — the blend
 /// destroys the split that makes a figure actionable.
-pub const OUTCOME_METRICS: [&str; 8] = [
+pub const OUTCOME_METRICS: [&str; 9] = [
     "rework",
     "calibration",
     "cost",
@@ -138,6 +138,10 @@ pub const OUTCOME_METRICS: [&str; 8] = [
     // every completion could have been a forced one, so there is no smaller
     // population to measure it against.
     "forced",
+    // D227. Completions of a task nobody briefed and whose start carried no
+    // memory. Its denominator is completions, like `silent`'s: the read side
+    // is measured as the write side is.
+    "unbriefed",
 ];
 
 /// `memory.search`'s default page when the caller names no `limit`.

@@ -4863,3 +4863,17 @@ Measured: the block adds 935 bytes plus JSON escaping to a completion result; th
 **Accepted cost:** five guide heading ids with punctuation changed (none linked), and a reader can no longer force light or dark against their system setting.
 
 **Where:** `crates/tasqx-cli/src/docs.rs` (`generated`, `slug`, `css`, `SCRIPT`), `docs/markdown.rs` (`SITE`, `heading_prefix`, `wiki_source`), `manual.rs` (`topic_source`, `shapes`), `docs/site/`, `docs/wiki/`, `scripts/snap-web.mjs`.
+
+### D227 — `report.outcomes` counts `unbriefed` completions, and a brief is recorded as a `briefed` event that a read-scope connection may write (task #99; extends D137 and D186)
+
+**Decision.** `report.outcomes` gains `unbriefed`: completions of a task that was never the subject of `task.brief` and whose `tasqx_start_timer` did not return memory, as `{count, n, rate, refs}` with `n` = completions in scope, the denominator `silent` uses. Cancelled tasks are not completions and are excluded. The record is one `briefed` event per task (`entity: task`, payload `{}`), written by `task.brief` and by the memory half of `tasqx_start_timer` (`task_start_memory`, D186), only if the task has none yet. `OUTCOME_METRICS` grows to nine; the new field is additive in `report.outcomes`' result.
+
+**Why an event and not a column.** D137 ruled out new writes for the metrics it shipped and said any that needed one would be dropped; this one cannot be derived, because a read leaves nothing behind. An event is the smallest write: no migration, retroactive from the day it ships, carried by `store.export`/`store.import` and sync like `reminded` (a merged store keeps the fact that either side briefed), and unknown ops are already ignored by the merge and by D137's closing-history reader.
+
+**The read-scope ruling.** `task.brief` stays on the read scope (§7: an agent that cannot write must still orient itself), and the write is allowed there on purpose: it appends one event, touches no task row (no `rev`, `modified` or `tracked` change), and is invisible to every reader but `report.outcomes`, the same argument that lets `memory.search` write derived vectors under read scope. The write is best-effort, in its own transaction after the brief's read snapshot closes: a busy or read-only store drops it, the brief still answers, and the task counts as unbriefed. A metric that errs toward "unbriefed" is the safe direction; a brief that fails because it could not log itself is not.
+
+**Undo and bookkeeping.** `briefed` is in `NOT_UNDOABLE`, and `undo` selects the newest event with `op <> 'briefed'`, so briefing never makes the previous change un-undoable; the untouched-spawn check (D215) ignores it likewise. The daemon's change feed does emit it as an ordinary `task.changed` with no `_rev` movement.
+
+**Rejected: a `briefed_at` column.** It needs a migration and an `export` field, and a column written by a read path is a task-row write with no `rev` bump, which every other writer treats as a conflict signal. **Rejected: counting a brief only if it precedes the close.** Any brief counts; the ceiling is a post-hoc brief that flatters the rate, and the fix, comparing `ts` with the closing event, is local to `briefed_task_ids`.
+
+**Where:** `crates/tasqx-core/src/engine/task.rs` (`record_brief`, `task_brief`, `task_start_memory`), `engine/reports.rs` (`briefed_task_ids`), `engine/undo.rs`, `engine.rs` (`OUTCOME_METRICS`), `crates/tasqx-cli/src/render/reports.rs` (UNBRIEFED column).

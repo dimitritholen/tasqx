@@ -627,7 +627,9 @@ const METHODS: [(&str, &str, &str); 52] = [
          were reopened), <code>calibration</code> (median tracked-over-estimate), \
          <code>cost</code> (the four token buckets, never blended), <code>silent</code> \
          (completions carrying no annotation), <code>abandonment</code> (started, then \
-         cancelled) and <code>forced</code> (completions that overrode open blockers, D150). \
+         cancelled) <code>forced</code> (completions that overrode open blockers, D150) and \
+         <code>unbriefed</code> (completions of a task that no <code>task.brief</code> or \
+         memory-carrying <code>task.start</code> was ever read for, D227). \
          Every rate comes back beside the <code>n</code> it was computed over. \
          Scope is tasks that CLOSED, by the instant they closed — so a completion that was \
          reopened still counts, which is the whole point. Omitting <code>metrics</code> emits \
