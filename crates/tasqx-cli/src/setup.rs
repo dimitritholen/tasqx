@@ -7,8 +7,8 @@
 //! `mcp add` — each tool rewrites its config while it runs, so a second writer
 //! would race it. The two skills are the repository's own `SKILL.md` files,
 //! compiled in, so the skills a user installs are the ones that match the
-//! tasqx they run. Claude Code is always listed; Codex and Gemini only when
-//! their binary is on `PATH`.
+//! tasqx they run. A tool is listed only when its binary (`claude`, `codex`,
+//! `gemini`) is on `PATH`.
 //!
 //! A skill's state is a byte comparison and nothing more: absent, equal, or
 //! different. A different file is either an older bundled copy or the user's
@@ -104,10 +104,9 @@ const GEMINI: Tool = Tool {
 };
 
 impl Tool {
-    /// Claude Code is always offered (its skills need no binary, and without
-    /// one the mcp item prints the command); the others only when found.
+    /// A tool is offered only when its binary is found on PATH (D224).
     fn offered(&self) -> bool {
-        self.id == "claude" || on_path(self.bin)
+        on_path(self.bin)
     }
 }
 
@@ -120,6 +119,11 @@ fn on_path(bin: &str) -> bool {
     std::env::var_os("PATH")
         .is_some_and(|p| std::env::split_paths(&p).any(|d| d.join(&name).is_file()))
 }
+
+/// What `run` prints when none of the supported tools is on `PATH` (D224).
+const NO_TOOL_HINT: &str = "no supported agent tool found on PATH: install Claude Code \
+    (npm install -g @anthropic-ai/claude-code), Codex (npm install -g @openai/codex) or \
+    Gemini CLI (npm install -g @google/gemini-cli), then run `tasqx setup` again.";
 
 /// The nudge `run` prints when `ripwire` is not on `PATH`, and the same words
 /// `tasqx setup --help` shows for the same case (D178, `cmddoc.rs`), so the
@@ -501,7 +505,8 @@ fn list(ctx: &Ctx, home: &Path, items: &[&Item]) -> (Value, String) {
         "tools": tools,
         "items": found.iter().map(|(i, s)| json!({ "name": i.name, "status": s.label() })).collect::<Vec<_>>(),
     });
-    (json, out)
+    // Nothing on offer: no empty tables, `run` adds the install hint.
+    (json, if items.is_empty() { String::new() } else { out })
 }
 
 fn apply(ctx: &Ctx, home: &Path, chosen: &[(&Item, bool)]) -> crate::CmdOutcome {
@@ -542,11 +547,15 @@ pub fn run(ctx: &Ctx, a: Args) -> crate::CmdOutcome {
     let (json, mut text) = if a.yes {
         let chosen: Vec<(&Item, bool)> = items.iter().map(|i| (*i, a.force)).collect();
         apply(ctx, &home, &chosen)?
-    } else if a.list || a.json || !tui::is_interactive(&ctx.caps) {
+    } else if a.list || a.json || items.is_empty() || !tui::is_interactive(&ctx.caps) {
         list(ctx, &home, &items)
     } else {
         screen(ctx, &home, &items)?
     };
+    if !ITEMS.iter().any(|i| i.tool.offered()) {
+        text.push_str(&ctx.paint("muted", NO_TOOL_HINT));
+        text.push('\n');
+    }
     // D178: tasqx never fetches ripwire, only says once whether it is there;
     // silent when found, so this never grows into a nag on every run.
     if !tasqx_core::mcp::ripwire_on_path() {

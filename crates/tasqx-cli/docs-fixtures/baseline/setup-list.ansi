@@ -1,9 +1,3 @@
-[38;2;138;138;138mTOOL         CLI          UNDER[0m
-Claude Code  not on PATH  [2;38;2;76;86;106m/nonexistent-tasqx-baseline-home/.claude[0m
-
-[38;2;138;138;138mITEM            STATUS         WHAT[0m
-mcp             [38;2;235;203;139mnot installed  [0m[2;38;2;76;86;106mMCP server, write access[0m
-tasqx-workflow  [38;2;235;203;139mnot installed  [0m[2;38;2;76;86;106msearch, track, annotate[0m
-retro           [38;2;235;203;139mnot installed  [0m[2;38;2;76;86;106mend-of-session lessons[0m
+[2;38;2;76;86;106mno supported agent tool found on PATH: install Claude Code (npm install -g @anthropic-ai/claude-code), Codex (npm install -g @openai/codex) or Gemini CLI (npm install -g @google/gemini-cli), then run `tasqx setup` again.[0m
 
 [2;38;2;76;86;106mripwire not found on PATH: install it from https://github.com/redhat-et/ripwire and put it on PATH.[0m

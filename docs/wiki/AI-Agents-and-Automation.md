@@ -9,8 +9,9 @@ properties you do.
 
 Connects tasqx to Claude Code, Codex CLI and Gemini CLI in one step. For each
 tool it finds, it registers the MCP server (user level, write access) and
-installs the `tasqx-workflow` and `retro` skills. Claude Code is always
-offered; Codex and Gemini appear when `codex` or `gemini` is on your PATH.
+installs the `tasqx-workflow` and `retro` skills. A tool appears
+only when `claude`, `codex` or `gemini` is on your PATH; with none of them, setup
+says how to install one.
 
 ```console
 tasqx setup

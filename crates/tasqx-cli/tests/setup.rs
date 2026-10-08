@@ -22,9 +22,11 @@ fn scratch(tag: &str) -> PathBuf {
 
 /// The binary with `--home <dir>/home`, its store and config inside `dir`.
 fn bin(dir: &Path) -> Command {
-    // An empty PATH: which of codex and gemini the developer has installed
-    // must not change what a case sees. Cases that want a CLI replace it.
+    // A PATH holding only a no-op `claude`: which of the tools the developer
+    // has installed must not change what a case sees. Cases that want other
+    // CLIs, or none, replace it.
     std::fs::create_dir_all(dir.join("nopath")).unwrap();
+    stub_claude(&dir.join("nopath"));
     let mut c = Command::new(env!("CARGO_BIN_EXE_tasqx"));
     c.env("PATH", dir.join("nopath"))
         .env("TASQX_CONFIG_DIR", dir.join("cfg"))
@@ -33,6 +35,19 @@ fn bin(dir: &Path) -> Command {
         .args(["setup", "--home"])
         .arg(dir.join("home"));
     c
+}
+
+/// A `claude` that does nothing, so the tool counts as on PATH.
+fn stub_claude(bin_dir: &Path) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let f = bin_dir.join("claude");
+        if !f.exists() {
+            std::fs::write(&f, "#!/bin/sh\nexit 0\n").unwrap();
+            std::fs::set_permissions(&f, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+    }
 }
 
 fn run(c: &mut Command) -> (i32, String, String) {
@@ -244,6 +259,7 @@ fn fake_cli(dir: &Path, name: &str, then: &str) -> (PathBuf, PathBuf, PathBuf) {
     use std::os::unix::fs::PermissionsExt;
     let bin_dir = dir.join("bin");
     std::fs::create_dir_all(&bin_dir).unwrap();
+    stub_claude(&bin_dir);
     let calls = dir.join(format!("{name}-calls.txt"));
     let home = dir.join(format!("{name}-home.txt"));
     let script = bin_dir.join(name);
@@ -357,21 +373,60 @@ fn a_failed_remove_reports_failure_and_adds_nothing() {
     );
 }
 
+/// #1149: with nothing on PATH no tool is listed and one hint names the three
+/// and how to install them; the bare Claude names still resolve (so `--only
+/// retro` says what is missing instead of calling the name unknown) and exit 2.
 #[cfg(unix)]
 #[test]
-fn without_claude_on_path_yes_prints_the_command_and_exits_0() {
+fn with_no_tool_on_path_the_list_is_empty_and_a_hint_says_how_to_install() {
     let dir = scratch("noclaude");
     let empty = dir.join("empty");
     std::fs::create_dir_all(&empty).unwrap();
-    let (code, out, err) = run(bin(&dir)
-        .env("PATH", &empty)
-        .args(["--yes", "--only", "mcp"]));
+    let (code, out, err) = run(bin(&dir).env("PATH", &empty).args(["--list"]));
     assert_eq!(code, 0, "stderr: {err}");
-    assert!(out.contains("Claude Code CLI not found"), "{out}");
-    assert!(
-        out.contains("claude mcp add --scope user tasqx -- tasqx mcp serve --scope write"),
+    assert!(!out.contains("TOOL"), "{out}");
+    assert_eq!(
+        out.matches("no supported agent tool found").count(),
+        1,
         "{out}"
     );
+    assert!(
+        out.contains("@anthropic-ai/claude-code")
+            && out.contains("@openai/codex")
+            && out.contains("@google/gemini-cli"),
+        "{out}"
+    );
+    let (_, out, _) = run(bin(&dir).env("PATH", &empty).args(["--list", "--json"]));
+    assert!(
+        out.contains("\"tools\": []") || out.contains("\"tools\":[]"),
+        "{out}"
+    );
+    for name in ["mcp", "retro", "tasqx-workflow", "claude:retro"] {
+        let (code, _, err) = run(bin(&dir)
+            .env("PATH", &empty)
+            .args(["--yes", "--only", name]));
+        assert_eq!(code, 2, "{name}: {err}");
+        assert!(
+            err.contains("claude") && err.contains("PATH"),
+            "{name}: {err}"
+        );
+    }
+}
+
+/// Only claude missing: Codex alone is listed and no install hint appears.
+#[cfg(unix)]
+#[test]
+fn only_claude_missing_lists_the_rest_with_no_hint() {
+    let dir = scratch("onlycodex");
+    let (path, ..) = fake_cli(&dir, "codex", "");
+    std::fs::remove_file(path.join("claude")).unwrap();
+    let (code, out, _) = run(bin(&dir).env("PATH", &path).args(["--list"]));
+    assert_eq!(code, 0);
+    assert!(
+        !out.contains("Claude Code") && out.contains("Codex"),
+        "{out}"
+    );
+    assert!(!out.contains("no supported agent tool"), "{out}");
 }
 
 /// D178: no `ripwire` on `PATH` prints the shared install hint, once, and the
@@ -389,7 +444,7 @@ fn without_ripwire_on_path_setup_prints_the_install_hint_and_exits_0() {
     );
 }
 
-/// Only tools whose binary is on PATH are offered, besides Claude Code; the
+/// Only tools whose binary is on PATH are offered; the
 /// table names them and the items carry the `<tool>:` prefix.
 #[cfg(unix)]
 #[test]
@@ -430,7 +485,7 @@ fn only_naming_a_tool_that_is_not_on_path_exits_2() {
     let (code, _, err) = run(bin(&dir).args(["--yes", "--only", "gemini:mcp"]));
     assert_eq!(code, 2);
     assert!(err.contains("gemini") && err.contains("PATH"), "{err}");
-    // `claude:` is an accepted spelling of the bare name.
+    // `claude:` is an accepted spelling of the bare name (a stub claude is on PATH).
     let (code, out, _) = run(bin(&dir).args(["--list", "--only", "claude:retro"]));
     assert_eq!(code, 0);
     assert!(row(&out, "retro").contains("not installed"), "{out}");
