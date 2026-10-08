@@ -22,7 +22,7 @@ function deferred(): { promise: Promise<void>; resolve: () => void } {
 }
 
 function changed(shortId: number): string {
-  return JSON.stringify({ event: 'task.changed', data: { op: 'update', short_id: shortId } });
+  return JSON.stringify({ event: 'task.changed', data: { op: 'modify', short_id: shortId } });
 }
 
 function retryIn(controller: ConnectionController): number {
@@ -310,7 +310,7 @@ describe('ConnectionController', () => {
     await controller.start();
     const push = (rev: number): void =>
       transport.pushLine(
-        JSON.stringify({ event: 'task.changed', data: { op: 'update', short_id: 4, entity_id: 'u4', _rev: rev } }),
+        JSON.stringify({ event: 'task.changed', data: { op: 'modify', short_id: 4, entity_id: 'u4', _rev: rev } }),
       );
 
     // The daemon stamps each row of one pump with the task's current rev, so
@@ -380,6 +380,83 @@ describe('ConnectionController', () => {
     // A good connect is not a good snapshot: the ladder does not reset.
     expect(delays).toEqual([0, 250, 500, 1000]);
     expect(controller.getState().diagnostic).toBe('connect failed: task.list failed');
+  });
+
+  it('marks the data stale while connecting and synchronizing, and only live clears it', async () => {
+    const gate = deferred();
+    const { controller } = make(() => gate.promise);
+    const seen: string[] = [];
+    controller.subscribe(() => {
+      const { status, stale } = controller.getState();
+      const entry = `${status}:${stale}`;
+      if (seen.at(-1) !== entry) seen.push(entry);
+    });
+
+    const started = controller.start();
+    await flush();
+    expect(controller.getState()).toMatchObject({ status: 'synchronizing', stale: true });
+    gate.resolve();
+    await started;
+
+    expect(seen).toEqual(['disconnected:true', 'connecting:true', 'synchronizing:true', 'live:false']);
+  });
+
+  it('reloads the baseline on an operation it does not know', async () => {
+    const { transport, baseline, controller } = make();
+    const seen: EventFrame[] = [];
+    controller.onEvent((event) => seen.push(event));
+    await controller.start();
+
+    transport.pushLine(JSON.stringify({ event: 'task.changed', data: { op: 'teleport', short_id: 3, _rev: 4 } }));
+    await flush();
+
+    expect(controller.getState().diagnostic).toBe('unknown operation teleport');
+    expect(baseline).toHaveBeenCalledTimes(2);
+    expect(seen).toEqual([]);
+  });
+
+  it('treats a task.changed without an op as unreadable and reloads the baseline', async () => {
+    const { transport, baseline, controller } = make();
+    await controller.start();
+
+    transport.pushLine(JSON.stringify({ event: 'task.changed', data: { short_id: 3 } }));
+    await flush();
+
+    expect(baseline).toHaveBeenCalledTimes(2);
+    expect(controller.getState().status).toBe('live');
+  });
+
+  it.each([
+    ['a gap', JSON.stringify({ event: 'task.changed.gap', dropped: 2 })],
+    ['a malformed frame', '{"not":"a frame"}'],
+    ['an unknown event', JSON.stringify({ event: 'task.exploded' })],
+    ['an unknown operation', JSON.stringify({ event: 'task.changed', data: { op: 'teleport', short_id: 3 } })],
+    ['a lower revision', JSON.stringify({ event: 'task.changed', data: { op: 'modify', short_id: 4, entity_id: 'u4', _rev: 1 } })],
+  ])('after %s, no delta reaches the store until the full baseline is back', async (_name, line) => {
+    const gate = deferred();
+    let loads = 0;
+    const { transport, controller } = make(async () => {
+      loads += 1;
+      if (loads === 2) await gate.promise;
+    });
+    const seen: number[] = [];
+    controller.onEvent((event) => seen.push(Number((event as TaskChangedEvent).data.short_id)));
+    await controller.start();
+    transport.pushLine(JSON.stringify({ event: 'task.changed', data: { op: 'modify', short_id: 4, entity_id: 'u4', _rev: 5 } }));
+    expect(seen).toEqual([4]);
+
+    transport.pushLine(line);
+    await flush();
+    expect(controller.getState()).toMatchObject({ status: 'synchronizing', stale: true });
+    transport.pushLine(changed(8));
+    expect(seen).toEqual([4]);
+
+    gate.resolve();
+    await flush();
+
+    expect(loads).toBe(2);
+    expect(controller.getState().status).toBe('live');
+    expect(seen).toEqual([4, 8]);
   });
 
   it('keeps only the last 20 resync reasons', async () => {
