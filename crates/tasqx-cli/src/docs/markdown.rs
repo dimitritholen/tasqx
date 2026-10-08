@@ -191,6 +191,18 @@ const GUIDES: &[(&str, &str)] = &[
     ),
 ];
 
+/// One wiki page's markdown, by file name — what `tasqx manual` renders its
+/// topics from, so the terminal and the site read the same file.
+///
+/// Panics on a name that is not in [`WIKI`]: the manual's topic table names
+/// literals, so a miss is a typo there.
+pub(crate) fn wiki_source(file: &str) -> &'static str {
+    WIKI.iter()
+        .find(|(f, _)| *f == file)
+        .map(|(_, src)| *src)
+        .unwrap_or_else(|| panic!("`{file}` is not a page of docs/wiki"))
+}
+
 /// Markdown files that exist and are deliberately **not** pages, with the
 /// reason. Named rather than skipped silently, so the guard below still fails
 /// the day a new file lands with nobody having decided anything about it.

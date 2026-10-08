@@ -141,23 +141,49 @@ what `done` unblocked. The answer names them.
 *Aliases: `p`, `fzf`*
 
 A full-screen browser over your tasks, each row the row `tasqx list` prints.
-`j`/`k` or the arrows move. Enter opens the task's `tasqx show` card (Esc goes
-back), and `s` starts the task under the cursor. `/` searches, fuzzy-search
-style — `wac` finds "**W**rite **A**PI **c**onformance tests" — and Enter or Esc
-keeps the filter. Esc in the list clears it, and `q` leaves.
 
 | Command | What it does |
 |---|---|
 | `tasqx pick` | Browse the working set |
 | `tasqx pick project:work` | Narrow the candidates first |
 
+| Key | What it does |
+|---|---|
+| `j`/`k` | move, as do the arrows; `g`/`G` jump to the ends |
+| `/` | search as you type, fuzzy-search style: `wac` finds "**W**rite **A**PI **c**onformance tests"; Enter or Esc keeps the filter |
+| `enter` | open that task's card, the one `tasqx show` prints (Esc goes back) |
+| `s` | start the task under the cursor, from the list or from its card |
+| `q` | leave; `esc` clears a search first, and only then leaves |
+
+The bar along the bottom names the keys that can do something where you are,
+so it is shorter on an empty list, on a card, and on a narrow terminal — the
+way out is named at every width.
+
+`s` is the only key that writes. A filter can list work that is done or
+cancelled, and `s` on such a row is refused on the key bar's own row with the
+screen still open.
+
+Captured on a terminal at 64 columns, since this screen cannot be piped:
+
+```text
+pick   @working   3 tasks · 1 overdue · #1 running
+
+       ID          URG  TASK                  PROJECT  DUE
+ ▸      4  H ▄▄▄▄ 18.0  Renew the TLS certi…  work     yesterday
+   ▶    1  H ▄▄▄▄ 16.7  Ship the v2 pricing…  work     Mon
+        3  - ▁▁▁▁  0.0  Write the migration…  work
+
+ j/k move   / search   enter open   s start   q leave
+```
+
 `pick` needs a real terminal (it draws a screen), so in scripts use
 `tasqx next` to ask the same question and `tasqx start <ref>` to act on it.
 
-Closing the browser without starting anything exits 0 — reading your tasks and
-starting none of them is an ordinary way to use it, so `tasqx pick && …` and a
-prompt indicator survive `q`. A filter that matches no task exits 4 instead:
-that is a question tasqx could not answer, not a session you ended.
+Leaving without starting a task exits 0: reading your tasks and starting none
+of them is an ordinary way to use it, so `tasqx pick && …` and a prompt
+indicator survive `q`. A filter that matches no task still exits 4, and so
+does an empty working set: that is a question tasqx could not answer, not a
+session you ended.
 
 ## tasqx undo
 

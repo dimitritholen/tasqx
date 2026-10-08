@@ -55,7 +55,10 @@ your tasks.
 - Overdue tasks always show, no matter the window.
 - Tasks it can't place (no date, or past the horizon) are counted under the
   table rather than silently dropped, with the exact command that would reach
-  them.
+  them: the `--days` that reaches the furthest one, or `tasqx list` when it is
+  further out than `--days` goes.
+- Days are UTC days: a bare date is midnight UTC, so a day groups the same way
+  the store holds it.
 
 ## tasqx show
 
@@ -131,6 +134,8 @@ Everything that lists tasks (`list`, `agenda`, `pick`, `watch`, `report`,
 | `'"memory explorer"'` | Title contains the phrase |
 | `title:review` | The same, spelled as a key |
 | `status:any` | Every status, done and cancelled too (`status:all` is the same) |
+| `@working` | Pending or active and not blocked — what a bare `list` shows |
+| `@blocked` | Open, with a dependency that is not yet done or cancelled |
 
 A bare word is a title search, so `tasqx list weekly review` finds "Weekly
 planning review". A word that looks like a token but is not one — `remind:x`,
@@ -144,7 +149,9 @@ tasqx list "project:work and (+api or +ui)"
 ```
 
 **Values with spaces need quotes that actually reach tasqx** — so wrap the
-whole thing in single quotes to protect it from your shell:
+whole thing in single quotes (or backslash-escape it) to protect it from your
+shell. Inside the quotes, parentheses and the `and`/`or` keywords are ordinary
+characters too, as in a shell:
 
 ```console
 tasqx list 'project:"Home Renovation"'
@@ -155,5 +162,23 @@ eats your quotes, `project:Home Renovation` is the project `Home` plus the title
 word `Renovation`; a project that does not exist is refused by name, which is
 the signal to quote. `+needs paint` is the tag `needs` plus the word `paint`;
 when that matches nothing, `list` prints a `hint:` line naming `+"needs paint"`.
+The same rule is what lets you pass a whole expression as one argument:
+`tasqx list "+api or +web"` is the expression.
+
 `report` takes one axis, as its first word, and refuses `report project priority`;
 write `title:priority` to match that word in titles.
+
+`add` and `modify` split their sugar with the same scanner, but the write side
+also honours the argument boundary your shell drew, so an unquoted multi-word
+value is not refused there: it either `not_found`s (no project named by the
+leading word) or — once a project happens to be named exactly that leading
+word — files the task there and welds the remainder onto the title.
+`tasqx add "paint" project:Home Renovation` becomes project `Home`, title
+"paint Renovation". Use the quoted spelling on both sides and this cannot
+happen: `tasqx add "paint" project:"Home Renovation"`.
+
+Write `\"` for a literal quote and `\\` for a literal backslash — a name
+holding a quote needs that form on both sides:
+`tasqx add "paint" project:"My \"Big\" Project"`.
+
+`due` is compared as an instant, not a calendar day.

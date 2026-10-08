@@ -2,6 +2,26 @@
 
 Two ways to watch your work instead of querying it.
 
+## Screens and pipes
+
+Five commands open a screen instead of printing a table, and each answers a
+pipe in its own way. `tasqx pick`, `tasqx dashboard` and `tasqx config edit`
+refuse one outright rather than write escape codes into it.
+`tasqx memory list` prints its one-line-per-doc table instead, and
+`tasqx watch` prints each update as it arrives rather than repainting a screen
+— it needs a running daemon either way.
+
+| Command | What it opens |
+|---|---|
+| `tasqx pick` | browse tasks, search them, read one, start one |
+| `tasqx dashboard` | the overview, and what a bare `tasqx` opens |
+| `tasqx config edit` | settings, previewing a theme as you move over it |
+| `tasqx memory list` | your docs, with the one under the cursor beside them |
+| `tasqx watch` | a table repainted on every change (needs a daemon) |
+
+`tasqx list` never opens a screen. It is the verb that always prints the
+table, on a terminal and through a pipe alike.
+
 ## tasqx dashboard
 
 *Alias: `dash`*
