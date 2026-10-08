@@ -1054,7 +1054,7 @@ pub fn generate() -> String {
          <title>tasqx — user guide</title>\n<style>\n{css}\n</style>\n</head>\n\
          <body>\n{body}\n<script>\n{js}\n</script>\n</body>\n</html>\n",
         css = css(),
-        js = js(),
+        js = SCRIPT,
     )
 }
 
@@ -2500,19 +2500,9 @@ fn lead(text: &str) -> String {
     format!("<p class=\"lead\">{text}</p>")
 }
 
-/// A section heading.
+/// A section heading, anchored `h-` + its [`slug`].
 fn h3(text: &str) -> String {
-    let anchor: String = text
-        .chars()
-        .map(|c| {
-            if c.is_ascii_alphanumeric() {
-                c.to_ascii_lowercase()
-            } else {
-                '-'
-            }
-        })
-        .collect();
-    format!("<h3 id=\"h-{anchor}\">{}</h3>", esc(text))
+    format!("<h3 id=\"h-{}\">{}</h3>", slug(text), esc(text))
 }
 
 /// A prose paragraph. **Trusted markup**: the argument is a literal in this file,
@@ -2520,43 +2510,6 @@ fn h3(text: &str) -> String {
 /// these builders comes from the store or from argv.
 fn p(html: &str) -> String {
     format!("<p>{html}</p>")
-}
-
-/// A small count as an English word, for prose that states a number the code
-/// owns. Panics past the table rather than dropping a digit into a sentence
-/// written for a word — extending it is a one-line edit the day a roster grows
-/// that far, which is cheaper than the sentence going stale unwatched.
-fn count_word(n: usize) -> &'static str {
-    const WORDS: [&str; 19] = [
-        "zero",
-        "one",
-        "two",
-        "three",
-        "four",
-        "five",
-        "six",
-        "seven",
-        "eight",
-        "nine",
-        "ten",
-        "eleven",
-        "twelve",
-        // The thirteenth: the methods the MCP page says an agent cannot reach
-        // (#647). Extending the table is the one-line edit this panic asks for.
-        "thirteen",
-        // Sixteen the day D160's three `link.*` methods joined that list,
-        // seventeen when `graph.query` did.
-        "fourteen",
-        "fifteen",
-        "sixteen",
-        "seventeen",
-        // Eighteen when `project.unarchive` joined (D215).
-        "eighteen",
-    ];
-    WORDS
-        .get(n)
-        .copied()
-        .unwrap_or_else(|| panic!("count {n} is past the number-word table; extend it"))
 }
 
 fn note(html: &str) -> String {
@@ -2685,23 +2638,33 @@ thread_local! {
 // Reference building blocks — the two-column template, tabs, params, terminal
 // ============================================================================
 
-/// An id-safe slug: lowercase alphanumerics, everything else one `-`.
+/// The site's one slug: an ASCII letter or digit lowercased, anything else a
+/// `-` of its own.
 ///
-/// Deliberately *not* [`h3`]'s anchor scheme, which maps every non-alphanumeric
-/// to its own dash and so is not collapsing. Changing that would rewrite the
-/// `#h-…` anchors already shipped, and the ids it produces (`install---
-/// quickstart`) are only ever machine-read. New ids get the readable spelling;
-/// the old ones keep the links they have.
+/// Not collapsing, on purpose: it is the scheme every `#h-…` anchor already
+/// shipped under (`h-work-it--finish-it`), and those links are frozen. A
+/// caller that wants the readable spelling collapses the runs itself
+/// ([`param_table`]'s row ids).
 fn slug(text: &str) -> String {
-    let mut out = String::new();
-    for c in text.chars() {
-        if c.is_ascii_alphanumeric() {
-            out.push(c.to_ascii_lowercase());
-        } else if !out.ends_with('-') {
-            out.push('-');
-        }
-    }
-    out.trim_matches('-').to_string()
+    text.chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() {
+                c.to_ascii_lowercase()
+            } else {
+                '-'
+            }
+        })
+        .collect()
+}
+
+/// [`slug`] with each run of dashes collapsed and the ends trimmed:
+/// `--theme <name>` is `theme-name`, the id a parameter row has always carried.
+fn row_slug(name: &str) -> String {
+    slug(name)
+        .split('-')
+        .filter(|w| !w.is_empty())
+        .collect::<Vec<_>>()
+        .join("-")
 }
 
 /// A two-column reference block: prose left, the code that goes with it right.
@@ -2811,7 +2774,7 @@ fn param_table(section: &str, rows: &[Param]) -> String {
                  <span class=\"badge\">{ty}</span>{pill}{def}</dt>\
                <dd class=\"param-d\">{desc}</dd>\
              </div>",
-            slug = slug(r.name),
+            slug = row_slug(r.name),
             ty = esc(r.ty),
             desc = r.html_desc,
         ));
@@ -3544,10 +3507,6 @@ const SCRIPT: &str = r##"(function () {
 
   go(location.hash.slice(1) || pages[0].id);
 }());"##;
-
-fn js() -> String {
-    String::from(SCRIPT)
-}
 
 #[cfg(test)]
 mod tests {
@@ -5283,14 +5242,20 @@ mod tests {
 
     // ---- the shell's building blocks ---------------------------------------
 
-    /// The id slug collapses, where [`h3`]'s deliberately does not.
+    /// The heading slug does not collapse — the frozen `#h-…` anchors were
+    /// minted that way — and a parameter row's id does.
     #[test]
-    fn slug_collapses_punctuation_and_trims_it() {
+    fn slug_keeps_every_dash_and_a_row_id_collapses_them() {
+        assert_eq!(slug("Work it, finish it"), "work-it--finish-it");
+        assert_eq!(slug("One-shot or daemon?"), "one-shot-or-daemon-");
         assert_eq!(slug("Global flags"), "global-flags");
-        assert_eq!(slug("--no-daemon"), "no-daemon");
-        assert_eq!(slug("--theme <name>"), "theme-name");
-        assert_eq!(slug("Install &amp; quickstart"), "install-amp-quickstart");
-        assert_eq!(slug("!!!"), "");
+        assert_eq!(row_slug("--no-daemon"), "no-daemon");
+        assert_eq!(row_slug("--theme <name>"), "theme-name");
+        assert_eq!(
+            row_slug("Install &amp; quickstart"),
+            "install-amp-quickstart"
+        );
+        assert_eq!(row_slug("!!!"), "");
     }
 
     /// One flag cell, two halves — over every shape [`GLOBAL_FLAGS`] really
@@ -5498,7 +5463,7 @@ mod tests {
     fn a_placeholder_panel_is_marked_as_one() {
         let html = tabs(&[("CLI", "<p>real</p>"), ("JSON API", &soon("Coming later."))]);
         assert!(html.contains("<div class=\"soon\"><p>Coming later.</p></div>"));
-        let js = js();
+        let js = SCRIPT;
         assert!(
             js.contains("querySelector('.soon')"),
             "a remembered tab label is applied without checking for a placeholder"
@@ -5516,7 +5481,7 @@ mod tests {
         for (flag, _) in GLOBAL_FLAGS {
             let (name, _) = split_flag(flag);
             assert!(
-                page.contains(&format!("id=\"global-flags-{}\"", slug(&name))),
+                page.contains(&format!("id=\"global-flags-{}\"", row_slug(&name))),
                 "no addressable row for `{name}`"
             );
             assert!(
@@ -5617,7 +5582,7 @@ mod tests {
     /// tab. Two call sites, both wrapped, and nothing else may touch it.
     #[test]
     fn stored_preferences_never_take_the_page_down() {
-        let js = js();
+        let js = SCRIPT;
         assert_eq!(
             js.matches("localStorage").count(),
             2,

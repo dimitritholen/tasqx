@@ -267,7 +267,7 @@ fn render(
                 } else {
                     let end = heading_end(&events, i, file);
                     let text = inline_text(&events[i + 1..end]);
-                    let anchor = format!("{page_id}--{}", gh_slug(&text));
+                    let anchor = format!("{page_id}--{}", super::slug(&text));
                     let tag = shifted(*level);
                     // `unique` is applied to the whole id, not the slug, so two
                     // pages may both have a "tasqx why" heading.
@@ -437,23 +437,6 @@ fn inline_text(events: &[Event]) -> String {
             Event::Text(t) | Event::Code(t) => out.push_str(t),
             Event::SoftBreak | Event::HardBreak => out.push(' '),
             _ => {}
-        }
-    }
-    out
-}
-
-/// GitHub's heading slug: lowercase, spaces to `-`, punctuation dropped,
-/// `-` and `_` kept. `## tasqx why` → `tasqx-why`, which is what the wiki's own
-/// `Finding-Tasks.md#tasqx-why` links were written against.
-fn gh_slug(text: &str) -> String {
-    let mut out = String::new();
-    for c in text.chars() {
-        if c.is_alphanumeric() {
-            out.extend(c.to_lowercase());
-        } else if c == ' ' {
-            out.push('-');
-        } else if c == '-' || c == '_' {
-            out.push(c);
         }
     }
     out
@@ -763,25 +746,25 @@ mod tests {
         );
     }
 
-    /// The anchors the wiki's own links were written against are GitHub's, so
-    /// this has to be GitHub's scheme and not [`super::slug`]'s.
+    /// A heading's id is the site's one slug. The wiki's own links are written
+    /// against GitHub's scheme, which agrees with it wherever a heading carries
+    /// no punctuation but spaces and dashes — every heading a link names today;
+    /// `every_anchor_resolves_to_an_id_in_the_document` is what catches the
+    /// first link that names one that does not.
     #[test]
-    fn heading_slugs_are_the_ones_the_wikis_links_name() {
-        assert_eq!(gh_slug("tasqx why"), "tasqx-why");
-        assert_eq!(gh_slug("The filter language"), "the-filter-language");
-        assert_eq!(
-            gh_slug("tasqx report --outcomes"),
-            "tasqx-report---outcomes"
+    fn heading_ids_are_the_sites_one_slug() {
+        let (_, body) = render_one(
+            "wiki-x",
+            "# T\n\n## tasqx report --outcomes\n\n## Work it, one task at a time\n",
         );
-        assert_eq!(
-            gh_slug("Dates, Reminders and Recurrence"),
-            "dates-reminders-and-recurrence"
+        assert!(
+            body.contains("id=\"wiki-x--tasqx-report---outcomes\""),
+            "{body}"
         );
-        assert_eq!(
-            gh_slug("Step 0: Delegate to a fork"),
-            "step-0-delegate-to-a-fork"
+        assert!(
+            body.contains("id=\"wiki-x--work-it--one-task-at-a-time\""),
+            "{body}"
         );
-        assert_eq!(gh_slug("Token_accounting"), "token_accounting");
     }
 
     fn render_one(id: &str, src: &str) -> (String, String) {

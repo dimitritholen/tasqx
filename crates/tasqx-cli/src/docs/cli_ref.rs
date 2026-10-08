@@ -816,8 +816,8 @@ fn extra_prose(verb: &str) -> String {
                  for. The other two are drawn from the screen's own model, so \
                  <code>--panels pulse,effort</code> is a valid request that answers with no panel \
                  payload at all.",
-                super::count_word(crate::tui::dashboard::model::PANEL_NAMES.len()),
-                super::count_word(crate::tui::dashboard::json::PAYLOAD_PANELS.len()),
+                crate::tui::dashboard::model::PANEL_NAMES.len(),
+                crate::tui::dashboard::json::PAYLOAD_PANELS.len(),
                 crate::tui::dashboard::json::PAYLOAD_PANELS
                     .map(|panel| format!("<code>{panel}</code>"))
                     .join(", "),
