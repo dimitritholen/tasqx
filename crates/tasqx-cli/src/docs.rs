@@ -151,7 +151,7 @@ const VERBS: [(&str, &str, &str); 48] = [
     ("api", "—", "(any)"),
     ("daemon", "—", "(serves all)"),
     ("watch", "—", "task.list + push"),
-    ("board", "—", "task.list + task.get + push"),
+    ("board", "—", "task.list + push + lifecycle verbs"),
     ("mcp", "—", "(subset)"),
     ("setup", "—", "— (no store)"),
     ("docs", "—", "— (no store)"),

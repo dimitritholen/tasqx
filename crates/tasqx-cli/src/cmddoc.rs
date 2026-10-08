@@ -1062,12 +1062,16 @@ pub const COMMAND_REF: &[CmdDoc] = &[
     CmdDoc {
         verb: "board",
         aliases: &[],
-        method: "task.list + task.get + push",
-        summary: "Live read-only kanban in your browser.",
-        usage: "tasqx board [--port PORT] [--no-open]",
-        examples: &[ex_norun("tasqx board", "open the board; needs a running daemon")],
+        method: "task.list + push + lifecycle verbs",
+        summary: "Live kanban in your browser: drag a card to change the task.",
+        usage: "tasqx board [--port PORT] [--no-open] [--scope read|write]",
+        examples: &[
+            ex_norun("tasqx board", "open the board; needs a running daemon"),
+            ex_norun("tasqx board --scope read", "a wall screen: every change refused"),
+        ],
         notes: &[
-            "Serves one page on 127.0.0.1 only, behind a secret token and an Origin check, and repaints from the daemon's pushes. It writes nothing. Single-user and local: behind a reverse proxy, authentication is the proxy's job.",
+            "Serves one page on 127.0.0.1 only, behind a secret token and an Origin check, and repaints from the daemon's pushes. Single-user and local: behind a reverse proxy, authentication is the proxy's job.",
+            "A drag sends the verb you would type (start, stop, done, reopen, cancel, or a priority, wait or scheduled change) with the card's revision, so a task changed elsewhere since is refused rather than overwritten. Events record `board` as the actor. --scope read refuses every write server-side.",
             "`--port` or `board.port` fixes the port and keeps the token between runs, so a bookmark survives; otherwise a free port and a new token each run.",
         ],
         see_also: &["watch", "daemon"],

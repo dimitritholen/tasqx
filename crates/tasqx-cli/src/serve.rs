@@ -734,12 +734,13 @@ fn write_private(path: &std::path::Path, text: &str) -> std::io::Result<()> {
 
 /// `tasqx board`: bind 127.0.0.1, print the URL, open the browser, and serve
 /// until Ctrl-C. Needs a running daemon, like `watch`: the page is fed by its
-/// pushes and reads through it.
+/// pushes and reads and writes through it. `writes` is `--scope write`.
 pub(crate) fn run_board(
     socket_flag: Option<&str>,
     no_daemon: bool,
     port_flag: Option<u16>,
     no_open: bool,
+    writes: bool,
     ctx: &Ctx,
 ) {
     clock::refuse_to_serve_a_pin();
@@ -762,7 +763,7 @@ pub(crate) fn run_board(
             exit(1);
         }
     };
-    let page = board_page::page(&ctx.theme).replace(board_page::NONCE_SLOT, &nonce);
+    let page = board_page::page(&ctx.theme, writes).replace(board_page::NONCE_SLOT, &nonce);
     let shutdown = Arc::new(AtomicBool::new(false));
     let board = match tasqx_core::board::Board::bind(
         std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST),
@@ -775,7 +776,7 @@ pub(crate) fn run_board(
         },
         shutdown.clone(),
     ) {
-        Ok(b) => b,
+        Ok(b) => b.with_writes(writes),
         Err(e) => {
             eprintln!("tasqx board: cannot bind 127.0.0.1:{port}: {e}");
             exit(1);
@@ -789,8 +790,9 @@ pub(crate) fn run_board(
     }
     let url = board.url();
     eprintln!(
-        "tasqx board: serving on 127.0.0.1:{} (Ctrl-C stops it)",
-        board.port()
+        "tasqx board: serving on 127.0.0.1:{}{} (Ctrl-C stops it)",
+        board.port(),
+        if writes { "" } else { ", read-only" }
     );
     println!("{url}");
     if !no_open {

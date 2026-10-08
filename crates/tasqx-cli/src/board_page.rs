@@ -5,15 +5,19 @@
 //! active theme).
 //!
 //! The page owns no state of its own: it asks `/api` (`task.list`, `task.get`),
-//! and repaints when `/events` says something changed. Phase 1 writes nothing.
-//! Cards are built with `textContent`, never `innerHTML`, so a task title is
-//! only ever text.
+//! and repaints when `/events` says something changed. A drag (#638) sends one
+//! of the listener's [`tasqx_core::board::WRITE_METHODS`] with the card's
+//! `_rev` as `expected_rev`; the detail panel's buttons and the `s`/`d` keys
+//! send the same calls, so every drag has a keyboard and touch equivalent.
+//! Under `--scope read` the page draws no drag, button or key that writes (and
+//! the listener refuses them anyway). Cards are built with `textContent`, never
+//! `innerHTML`, so a task title is only ever text.
 
 use crate::theme::Theme;
 
 /// The script's ceiling in bytes, so growth is a red test rather than drift.
 #[cfg(test)]
-const SCRIPT_BUDGET: usize = 12 * 1024;
+const SCRIPT_BUDGET: usize = 16 * 1024;
 
 /// Where the per-run nonce goes; the listener's CSP allows only that script.
 pub(crate) const NONCE_SLOT: &str = "__NONCE__";
@@ -29,16 +33,17 @@ const COLUMNS: [(&str, &str, &str); 5] = [
     ("done", "Done", "completed.after:-7d"),
 ];
 
-/// The page, with [`NONCE_SLOT`] still in it.
-pub(crate) fn page(theme: &Theme) -> String {
+/// The page, with [`NONCE_SLOT`] still in it. `writes` is `--scope write`.
+pub(crate) fn page(theme: &Theme, writes: bool) -> String {
     format!(
         "<!doctype html>\n<html lang=\"en\"><head><meta charset=\"utf-8\">\
          <meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">\
          <meta name=\"color-scheme\" content=\"light dark\">\
-         <title>tasqx board</title><style>{}{}</style></head><body>{}\
+         <title>tasqx board</title><style>{}{}</style></head><body data-writes=\"{}\">{}\
          <script nonce=\"{NONCE_SLOT}\">{}</script></body></html>\n",
         crate::html::palette(theme),
         CSS,
+        u8::from(writes),
         BODY,
         SCRIPT
     )
@@ -58,7 +63,9 @@ const BODY: &str = r##"<a class="skip" href="#cols">Skip to the board</a>
 <button id="pclose" class="x" aria-label="Close details (Esc)">&times;</button>
 <h2 id="ptitle"></h2><div id="pbody"></div>
 </aside>
-<p class="keys">j/k move &middot; h/l column &middot; Enter open &middot; / search &middot; Esc close</p>"##;
+<div id="tray" class="tray" hidden aria-hidden="true"><b data-pri="H">H</b><b data-pri="M">M</b><b data-pri="L">L</b><b data-pri="">clear</b><b data-cancel="1" class="cx">cancel</b></div>
+<div id="toast" class="toast" role="status" aria-live="polite" hidden><span id="tmsg"></span><button id="tundo" type="button" hidden>Undo</button></div>
+<p class="keys">j/k move &middot; h/l column &middot; Enter open &middot; / search &middot; Esc close<span class="w"> &middot; s start &middot; d done &middot; drag a card to a column, or onto H/M/L to set priority</span></p>"##;
 
 const CSS: &str = r###"*{box-sizing:border-box}
 body{margin:0;background:var(--bg);color:var(--fg);font:15px/1.45 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;-webkit-text-size-adjust:100%}
@@ -105,6 +112,19 @@ select{background:var(--sunken);border:1px solid var(--line-strong);border-radiu
 .panel ul{margin:0 0 12px;padding-left:20px}
 .panel h3{font-size:12px;text-transform:uppercase;letter-spacing:.05em;color:var(--muted);margin:12px 0 4px}
 .keys{margin:0;padding:8px clamp(12px,2vw,24px) 16px;color:var(--muted);font-size:12px}
+body[data-writes="1"] .card{cursor:grab;-webkit-user-select:none;user-select:none}
+body.dnd{-webkit-user-select:none;user-select:none;cursor:grabbing}
+body[data-writes="0"] .w{display:none}
+.col.over{outline:2px dashed var(--accent);outline-offset:-2px}.col.no{outline-color:var(--danger)}
+.ghost{position:fixed;pointer-events:none;z-index:8;opacity:.92;box-shadow:0 8px 24px var(--shadow);margin:0}
+.dragging{opacity:.4}
+.tray{position:fixed;z-index:9;display:flex;gap:6px;padding:6px;background:var(--surface);border:1px solid var(--line-strong);border-radius:8px;box-shadow:0 4px 16px var(--shadow)}
+.tray b{min-width:44px;min-height:44px;display:grid;place-items:center;padding:0 8px;border:1px solid var(--line-strong);border-radius:6px}
+.tray b.over{background:var(--accent);color:var(--on-accent)}.tray .cx{color:var(--danger)}.tray .cx.over{background:var(--danger);color:var(--on-accent)}
+.toast{position:fixed;left:50%;bottom:16px;transform:translateX(-50%);z-index:10;display:flex;gap:12px;align-items:center;max-width:calc(100% - 24px);padding:10px 14px;background:var(--fg);color:var(--bg);border-radius:8px;box-shadow:0 4px 16px var(--shadow)}
+.toast button{background:none;border:1px solid var(--bg);border-radius:6px;padding:4px 10px;color:inherit;cursor:pointer}
+.acts{display:flex;flex-wrap:wrap;gap:6px;margin:0 0 12px}
+.acts button{min-height:36px;padding:4px 12px;background:var(--sunken);border:1px solid var(--line-strong);border-radius:6px;cursor:pointer}
 @media (max-width:760px){.cols{grid-template-columns:1fr;overflow-x:visible}.keys{display:none}}
 @media (prefers-reduced-motion:no-preference){.card{transition:border-color .15s}}
 @media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important;scroll-behavior:auto!important}}
@@ -115,16 +135,18 @@ const SCRIPT: &str = r###"(()=>{
 const COLS=[["backlog","Backlog","status:backlog"],["blocked","Blocked","@blocked"],["ready","Ready","@working"],["active","Active","status:active"],["done","Done","completed.after:-7d"]];
 const $=id=>document.getElementById(id);
 const el=(t,c,x)=>{const e=document.createElement(t);if(c)e.className=c;if(x!=null)e.textContent=x;return e};
-const state={data:{},q:"",lanes:"none",sel:null,live:false};
-let timer=0,seq=0;
+const W=document.body.dataset.writes==="1";
+const state={data:{},byId:{},q:"",lanes:"none",sel:null,live:false,drag:null};
+let timer=0,seq=0,ttimer=0;
 async function api(method,params){
  const r=await fetch("/api",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({tasqx:"1",id:"1",method,params}),credentials:"same-origin"});
  let env;try{env=await r.json()}catch(e){throw new Error("HTTP "+r.status)}
- if(!env.ok)throw new Error(env.error&&env.error.message||("HTTP "+r.status));
+ if(!env.ok){const er=new Error(env.error&&env.error.message||("HTTP "+r.status));er.code=env.error&&env.error.code;throw er}
  return env.result;
 }
 function showErr(m){const e=$("err");e.hidden=!m;e.textContent=m||""}
 async function load(){
+ if(state.drag){later();return}
  const mine=++seq;
  try{
   const rs=await Promise.all(COLS.map(c=>api("task.list",{filter:c[2],sort:["-urgency"],limit:500})));
@@ -142,7 +164,7 @@ function hit(t){
 }
 function lane(t){return state.lanes==="project"?t.project||"(none)":state.lanes==="priority"?({H:"High",M:"Medium",L:"Low"}[t.priority]||"No priority"):""}
 function card(t,col){
- const li=el("li","card");li.tabIndex=0;li.dataset.id=t.short_id;
+ const li=el("li","card");li.tabIndex=0;li.dataset.id=t.short_id;li.dataset.col=col;state.byId[t.short_id]=t;
  const top=el("div","top");
  const blk=t.blocked&&t.status!=="done";
  const rail=el("span","rail"+(blk?" blk":""),t.status==="active"?"▶":blk?"⊘":"");
@@ -161,15 +183,16 @@ function card(t,col){
   const i=el("i");i.style.width=Math.min(100,Math.max(0,u/12*100))+"%";g.append(i);li.append(g);
  }
  li.setAttribute("aria-label",t.title+", #"+t.short_id);
- li.addEventListener("click",()=>open(t.short_id));
+ li.addEventListener("click",()=>{if(!state.moved)open(t.short_id)});
+ if(W)li.addEventListener("pointerdown",e=>grab(e,li));
  return li;
 }
 function paint(){
  const keep=state.sel,main=$("cols"),had=document.activeElement&&document.activeElement.dataset&&document.activeElement.dataset.id;
- main.replaceChildren();
+ main.replaceChildren();state.byId={};
  COLS.forEach(c=>{
   const rows=(state.data[c[0]]||[]).filter(t=>(c[0]!=="ready"||t.status!=="active")&&hit(t));
-  const s=el("section","col");s.setAttribute("aria-labelledby","h-"+c[0]);
+  const s=el("section","col");s.setAttribute("aria-labelledby","h-"+c[0]);s.dataset.col=c[0];
   const h=el("header"),h2=el("h2");const nm=el("span","",c[1]);nm.id="h-"+c[0];
   h2.append(nm,el("span","n",String(rows.length)));h.append(h2,el("code","",c[2]));s.append(h);
   if(!rows.length)s.append(el("p","empty","Nothing here."));
@@ -211,6 +234,7 @@ async function open(id){
    b.append(el("h3","","Checks "+done+"/"+t.checks.length));
    const ul=el("ul");t.checks.forEach(c=>ul.append(el("li","",(c.state==="passed"?"[x] ":"[ ] ")+c.body)));b.append(ul);
   }
+  if(W)b.append(acts(t));
   if(t.first_annotation){b.append(el("h3","","Opening note"),el("p","",t.first_annotation.body))}
  }catch(e){$("pbody").replaceChildren(el("p","err",e.message))}
 }
@@ -233,13 +257,119 @@ $("pclose").addEventListener("click",close);
 document.addEventListener("keydown",e=>{
  if(e.ctrlKey||e.metaKey||e.altKey)return;
  const typing=/^(INPUT|SELECT|TEXTAREA)$/.test(document.activeElement.tagName);
- if(e.key==="Escape"){if(!$("panel").hidden)close();else if(typing)document.activeElement.blur();return}
+ if(e.key==="Escape"){if(state.drag)end();else if(!$("panel").hidden)close();else if(typing)document.activeElement.blur();return}
  if(typing)return;
  if(e.key==="/"){e.preventDefault();$("q").focus()}
  else if(e.key==="j")move(0,1);else if(e.key==="k")move(0,-1);
  else if(e.key==="l")move(1,0);else if(e.key==="h")move(-1,0);
  else if(e.key==="Enter"){const k=document.activeElement;if(k&&k.classList.contains("card"))open(k.dataset.id)}
+ else if(W&&(e.key==="s"||e.key==="d")){const k=document.activeElement;if(k&&k.classList.contains("card"))drop(k.dataset.id,k.dataset.col,e.key==="s"?"active":"done")}
 });
+const verbs={"task.start":"Started","task.stop":"Stopped","task.done":"Done","task.reopen":"Reopened","task.cancel":"Cancelled"};
+const iso=d=>String(d||"").replace(/^P(T)?/,"").toLowerCase();
+function plan(from,to){
+ if(to==="blocked")return{no:"Blocked comes from dependencies; it is not a drop target."};
+ if(to==="active")return{m:"task.start"};
+ if(to==="done")return{m:"task.done"};
+ if(to==="ready")return from==="active"?{m:"task.stop"}:from==="done"?{m:"task.reopen"}:from==="backlog"?{m:"task.modify",p:{set:{wait:null,scheduled:null}}}:{no:"It is blocked by its dependencies; finish those first."};
+ return from==="ready"||from==="blocked"?{m:"task.modify",p:{set:{wait:"+1w"}}}:{no:"Only a ready task goes to Backlog; stop or reopen it first."};
+}
+function drop(id,from,to){
+ if(from===to)return;
+ const t=state.byId[id],pl=plan(from,to);
+ if(pl.no)return toast("#"+id+": "+pl.no);
+ act(t,pl.m,pl.p);
+}
+function said(m,p,r,id){
+ const n="#"+id;
+ if(m==="task.modify"){const s=p.set;
+  if("priority" in s)return s.priority?"Priority "+s.priority+" on "+n:"Cleared the priority on "+n;
+  return s.wait?n+" waits a week (Backlog)":n+" is ready: wait and scheduled cleared";}
+ let x=verbs[m]+" "+n;
+ if(m==="task.start"){if(r.already_running)x=n+" was already running";(r.auto_stopped||[]).forEach(a=>{x+=" · stopped #"+a.short_id+" after "+iso(a.tracked)})}
+ if(m==="task.stop")x+=" after "+iso(r.interval);
+ if((r.unblocked||[]).length)x+=" · unblocked "+r.unblocked.map(u=>"#"+u).join(" ");
+ return x;
+}
+async function act(t,m,p){
+ const id=t.short_id,rev=t._rev;
+ try{
+  const r=await api(m,Object.assign({ref:id,expected_rev:rev},p||{}));
+  const x=said(m,p,r,id);
+  // start and reopen are outside undo's exact set (D54): drag it back instead.
+  if(m==="task.start"||m==="task.reopen")toast(x+". Drag it back to undo.");
+  else toast(x,()=>undo(id,rev+1));
+ }catch(e){
+  if(e.code==="conflict"&&/expected_rev/.test(e.message)){
+   try{const c=await api("task.get",{ref:id});toast("#"+id+": another session changed it (rev "+c._rev+"). Nothing was written; the card is up to date.")}catch(_){toast(e.message)}
+  }else toast("#"+id+": "+e.message);
+ }
+ later();if(state.sel===String(id)||state.sel===id)open(id);
+}
+async function undo(id,rev){
+ try{const r=await api("event.revert",{ref:id,expected_rev:rev});toast("Undid "+r.reverted.op+" on #"+id)}
+ catch(e){toast(e.code==="conflict"?"#"+id+": another session changed it since, so Undo would take back theirs. Nothing was undone.":e.message)}
+ later();
+}
+function toast(m,fn){
+ const t=$("toast"),u=$("tundo");$("tmsg").textContent=m;t.hidden=false;u.hidden=!fn;
+ u.onclick=fn?()=>{t.hidden=true;fn()}:null;
+ clearTimeout(ttimer);ttimer=setTimeout(()=>{if(!t.contains(document.activeElement))t.hidden=true},fn?10000:6000);
+}
+function acts(t){
+ const d=el("div","acts"),s=t.status,b=(x,m,p)=>{const k=el("button","",x);k.type="button";k.addEventListener("click",()=>act(t,m,p));d.append(k)};
+ if(s==="pending"||s==="backlog")b("Start","task.start");
+ if(s==="active")b("Stop","task.stop");
+ if(s==="pending"||s==="active")b("Done","task.done");
+ if(s==="done"||s==="cancelled")b("Reopen","task.reopen");
+ if(s==="backlog")b("Ready","task.modify",{set:{wait:null,scheduled:null}});
+ if(s==="pending")b("Backlog","task.modify",{set:{wait:"+1w"}});
+ ["H","M","L"].forEach(x=>{if(t.priority!==x)b("Priority "+x,"task.modify",{set:{priority:x}})});
+ if(t.priority)b("Clear priority","task.modify",{set:{priority:null}});
+ if(s!=="done"&&s!=="cancelled")b("Cancel","task.cancel");
+ return d;
+}
+// Drag: a mouse or pen moves a ghost; touch scrolls, and uses the panel.
+function grab(e,li){
+ if(e.button||e.pointerType==="touch")return;
+ const x0=e.clientX,y0=e.clientY;state.moved=false;
+ const mv=ev=>{
+  if(!state.drag){if(Math.abs(ev.clientX-x0)+Math.abs(ev.clientY-y0)<6)return;start(li,x0,y0)}
+  const d=state.drag;d.g.style.left=ev.clientX-d.dx+"px";d.g.style.top=ev.clientY-d.dy+"px";
+  over(document.elementFromPoint(ev.clientX,ev.clientY));
+ };
+ const up=ev=>{
+  removeEventListener("pointermove",mv);removeEventListener("pointerup",up);removeEventListener("pointercancel",up);
+  const d=state.drag;if(!d)return;
+  const hit=ev.type==="pointerup"&&document.elementFromPoint(ev.clientX,ev.clientY);
+  end();
+  if(!hit)return;
+  const z=hit.closest(".tray b"),c=hit.closest(".col");
+  if(z){const t=state.byId[d.id];z.dataset.cancel?act(t,"task.cancel"):act(t,"task.modify",{set:{priority:z.dataset.pri||null}})}
+  else if(c)drop(d.id,d.from,c.dataset.col);
+ };
+ addEventListener("pointermove",mv);addEventListener("pointerup",up);addEventListener("pointercancel",up);
+}
+function start(li,x,y){
+ const r=li.getBoundingClientRect(),g=li.cloneNode(true);
+ g.className="card ghost";g.style.width=r.width+"px";g.removeAttribute("tabindex");document.body.append(g);
+ li.classList.add("dragging");document.body.classList.add("dnd");state.moved=true;
+ state.drag={id:li.dataset.id,from:li.dataset.col,li,g,dx:x-r.left,dy:y-r.top};
+ const tr=$("tray");tr.hidden=false;
+ tr.style.left=Math.max(8,Math.min(innerWidth-tr.offsetWidth-8,x-tr.offsetWidth/2))+"px";
+ tr.style.top=Math.max(8,Math.min(innerHeight-tr.offsetHeight-8,y+48))+"px";
+}
+function over(t){
+ document.querySelectorAll(".over,.no").forEach(n=>n.classList.remove("over","no"));
+ if(!t)return;
+ const z=t.closest(".tray b"),c=t.closest(".col");
+ if(z)z.classList.add("over");
+ else if(c&&c.dataset.col!==state.drag.from)c.classList.add("over",...(plan(state.drag.from,c.dataset.col).no?["no"]:[]));
+}
+function end(){
+ const d=state.drag;state.drag=null;d.g.remove();d.li.classList.remove("dragging");document.body.classList.remove("dnd");$("tray").hidden=true;over(null);
+ setTimeout(()=>{state.moved=false},0);
+}
 load();stream();
 })();
 "###;
@@ -249,7 +379,7 @@ mod tests {
     use super::*;
 
     fn built() -> String {
-        page(&crate::theme::builtin("nord").expect("nord ships"))
+        page(&crate::theme::builtin("nord").expect("nord ships"), true)
     }
 
     #[test]
@@ -304,15 +434,44 @@ mod tests {
         }
     }
 
-    /// Phase 1 writes nothing: the script asks for reads and no other method.
+    /// The script names no API method the listener would refuse: every
+    /// method it spells is a listed read or write, and every write the
+    /// listener lists is one the page can send.
     #[test]
-    fn the_script_asks_only_read_methods() {
-        for m in SCRIPT.split("api(\"").skip(1) {
-            let name = m.split('"').next().unwrap();
+    fn the_script_names_only_listed_methods() {
+        use tasqx_core::board::{READ_METHODS, WRITE_METHODS};
+        let listed =
+            |m: &str| READ_METHODS.contains(&m) || WRITE_METHODS.iter().any(|(w, _)| *w == m);
+        for (m, _, _) in tasqx_core::PARAMS {
+            if SCRIPT.contains(&format!("\"{m}\"")) {
+                assert!(
+                    listed(m),
+                    "the page sends `{m}`, which the board does not serve"
+                );
+            }
+        }
+        for (m, _) in WRITE_METHODS {
             assert!(
-                tasqx_core::board::READ_METHODS.contains(&name),
-                "the page calls `{name}`, which the board does not serve"
+                SCRIPT.contains(&format!("\"{m}\"")),
+                "nothing on the page sends `{m}`"
             );
+        }
+    }
+
+    /// `--scope read` reaches the page as `data-writes="0"`, which the script
+    /// reads before it wires a drag, a button or a key that writes.
+    #[test]
+    fn the_scope_reaches_the_page() {
+        let theme = crate::theme::builtin("nord").expect("nord ships");
+        assert!(page(&theme, false).contains("<body data-writes=\"0\">"));
+        assert!(page(&theme, true).contains("<body data-writes=\"1\">"));
+        assert!(SCRIPT.contains("const W=document.body.dataset.writes===\"1\""));
+        for gate in [
+            "if(W)li.addEventListener",
+            "if(W)b.append(acts(t))",
+            "else if(W&&",
+        ] {
+            assert!(SCRIPT.contains(gate), "the write path is not gated: {gate}");
         }
     }
 
@@ -452,7 +611,7 @@ mod tests {
     #[test]
     fn every_text_pair_the_board_uses_clears_aa_in_both_schemes() {
         for name in crate::theme::BUILTINS {
-            let doc = page(&crate::theme::builtin(name).unwrap());
+            let doc = page(&crate::theme::builtin(name).unwrap(), true);
             let light = &doc[doc.find(":root{--bg:").unwrap()..];
             let light = &light[..light.find('}').unwrap()];
             let dark = &doc[doc.find("[data-theme=\"dark\"]{").unwrap()..];

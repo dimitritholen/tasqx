@@ -1,4 +1,5 @@
-//! The board listener (#637): its security boundary first, then the live path.
+//! The board listener (#637, #638): its security boundary first, then the read
+//! path, the live stream and the writes a drag sends.
 //!
 //! Each test binds a real [`Board`] on an ephemeral loopback port in front of a
 //! real daemon on a temporary socket, and speaks raw HTTP to it — the same bytes
@@ -14,7 +15,7 @@ use std::time::{Duration, Instant};
 
 use serde_json::{json, Value};
 
-use tasqx_core::board::{Board, BoardOptions, READ_METHODS};
+use tasqx_core::board::{Board, BoardOptions, READ_METHODS, SET_FIELDS, WRITE_METHODS};
 use tasqx_core::daemon;
 use tasqx_core::notify::LogNotifier;
 use tasqx_core::{Engine, PARAMS};
@@ -75,15 +76,22 @@ impl Drop for Rig {
     }
 }
 
-/// A board in front of a live daemon.
+/// A board in front of a live daemon, writes enabled (`--scope write`).
 fn rig() -> Rig {
     let (db, socket) = unique_socket();
     start_daemon(&db, &socket);
-    board_on(socket)
+    board_on(socket, true)
+}
+
+/// A `--scope read` board in front of a live daemon.
+fn read_rig() -> Rig {
+    let (db, socket) = unique_socket();
+    start_daemon(&db, &socket);
+    board_on(socket, false)
 }
 
 /// A board in front of whatever `socket` names (possibly nothing).
-fn board_on(socket: String) -> Rig {
+fn board_on(socket: String, writes: bool) -> Rig {
     let shutdown = Arc::new(AtomicBool::new(false));
     let board = Board::bind(
         IpAddr::V4(Ipv4Addr::LOCALHOST),
@@ -96,7 +104,8 @@ fn board_on(socket: String) -> Rig {
         },
         shutdown.clone(),
     )
-    .expect("bind loopback");
+    .expect("bind loopback")
+    .with_writes(writes);
     let port = board.port();
     thread::spawn(move || board.serve());
     Rig {
@@ -166,10 +175,49 @@ fn api(port: u16, envelope: &Value) -> Reply {
     )
 }
 
-fn task_count(socket: &str) -> i64 {
+/// A write as the page sends it: the cookie and the board's own Origin.
+fn write(port: u16, method: &str, params: Value) -> Reply {
+    write_from(
+        port,
+        Some(&format!("http://127.0.0.1:{port}")),
+        method,
+        params,
+    )
+}
+
+fn write_from(port: u16, origin: Option<&str>, method: &str, params: Value) -> Reply {
+    let c = cookie(port);
+    let mut headers = vec![("Cookie", c.as_str()), ("Content-Type", "application/json")];
+    if let Some(o) = origin {
+        headers.push(("Origin", o));
+    }
+    let env = json!({ "tasqx": "1", "id": "1", "method": method, "params": params });
+    send(port, "POST", "/api", &headers, &env.to_string())
+}
+
+fn envelope(rep: &Reply) -> Value {
+    serde_json::from_str(&rep.body).unwrap_or_else(|_| panic!("not JSON: {}", rep.body))
+}
+
+/// Every event in the store, oldest first, as the daemon reports them.
+fn events(socket: &str) -> Vec<Value> {
     let mut c = daemon::try_connect(socket).expect("daemon");
-    let env = c.request("task.list", &json!({ "limit": 1 })).unwrap();
-    env["result"]["total"].as_i64().unwrap()
+    let env = c.request("event.list", &json!({ "limit": 1000 })).unwrap();
+    let mut all = env["result"]["events"].as_array().unwrap().clone();
+    all.reverse(); // event.list answers newest first
+    all
+}
+
+fn add(socket: &str, title: &str) -> (i64, i64) {
+    let mut c = daemon::try_connect(socket).expect("daemon");
+    let t = c.request("task.add", &json!({ "title": title })).unwrap();
+    let sid = t["result"]["short_id"].as_i64().unwrap();
+    (sid, task(socket, sid)["_rev"].as_i64().unwrap())
+}
+
+fn task(socket: &str, sid: i64) -> Value {
+    let mut c = daemon::try_connect(socket).expect("daemon");
+    c.request("task.get", &json!({ "ref": sid })).unwrap()["result"].clone()
 }
 
 // ---- security: the boundary, before anything else ---------------------------
@@ -330,29 +378,164 @@ fn no_write_method_is_reachable() {
         send(r.port, "POST", "/", &[("Cookie", &c)], "{}").status,
         405
     );
+}
 
-    // Every API method that is not a listed read is refused, and none runs.
-    let before = task_count(&r.socket);
+/// The write allowlist is closed: every API method that is neither a listed
+/// read nor a listed write is refused, from the board's own origin, with the
+/// cookie, with a well-formed `ref` and `expected_rev` — and none runs.
+#[test]
+fn a_write_method_outside_the_allowlist_is_refused() {
+    let r = rig();
+    let (sid, rev) = add(&r.socket, "target");
+    let before = events(&r.socket).len();
+    for (method, _, _) in PARAMS {
+        if READ_METHODS.contains(method) || WRITE_METHODS.iter().any(|(m, _)| m == method) {
+            continue;
+        }
+        let rep = write(
+            r.port,
+            method,
+            json!({ "ref": sid, "expected_rev": rev, "title": "smuggled" }),
+        );
+        assert_eq!(rep.status, 403, "{method} must be refused: {}", rep.body);
+        assert_eq!(envelope(&rep)["ok"], json!(false), "{method}");
+    }
+    assert_eq!(events(&r.socket).len(), before, "the store did not change");
+}
+
+/// Inside the allowlist, a param or a `set` field the board never sends is
+/// refused, so `task.done {force}` or `task.modify {set:{title}}` cannot ride
+/// in on a listed method.
+#[test]
+fn a_param_outside_the_allowlist_is_refused() {
+    let r = rig();
+    let (sid, rev) = add(&r.socket, "target");
+    let before = events(&r.socket).len();
+    for (method, params) in [
+        (
+            "task.done",
+            json!({ "ref": sid, "expected_rev": rev, "force": true }),
+        ),
+        (
+            "task.start",
+            json!({ "ref": sid, "expected_rev": rev, "keep": true }),
+        ),
+        (
+            "task.start",
+            json!({ "ref": sid, "expected_rev": rev, "actor": "mcp:x" }),
+        ),
+        (
+            "task.modify",
+            json!({ "ref": sid, "expected_rev": rev, "set": { "title": "x" } }),
+        ),
+        (
+            "task.modify",
+            json!({ "ref": sid, "expected_rev": rev, "set": {} }),
+        ),
+        ("task.modify", json!({ "ref": sid, "expected_rev": rev })),
+        ("task.stop", json!([sid, rev])),
+    ] {
+        let rep = write(r.port, method, params.clone());
+        assert_eq!(rep.status, 400, "{method} {params}: {}", rep.body);
+        assert_eq!(envelope(&rep)["error"]["code"], "bad_request");
+    }
+    assert_eq!(events(&r.socket).len(), before, "the store did not change");
+}
+
+#[test]
+fn a_write_without_expected_rev_is_refused() {
+    let r = rig();
+    let (sid, _) = add(&r.socket, "target");
+    let before = events(&r.socket).len();
+    for (method, _) in WRITE_METHODS {
+        for params in [
+            json!({ "ref": sid, "set": { "priority": "H" } }),
+            json!({ "ref": sid, "expected_rev": null, "set": { "priority": "H" } }),
+            json!({ "ref": sid, "expected_rev": "2", "set": { "priority": "H" } }),
+            json!({ "expected_rev": 2, "set": { "priority": "H" } }),
+        ] {
+            let mut params = params;
+            if *method != "task.modify" {
+                params.as_object_mut().unwrap().remove("set");
+            }
+            let rep = write(r.port, method, params.clone());
+            assert_eq!(rep.status, 400, "{method} {params}: {}", rep.body);
+            assert_eq!(envelope(&rep)["error"]["code"], "bad_request");
+        }
+    }
+    assert_eq!(events(&r.socket).len(), before, "the store did not change");
+}
+
+/// A write needs the board's own Origin: a foreign one is a CSRF page, and a
+/// missing one is not a browser on this page at all (reads still allow it).
+#[test]
+fn a_write_from_a_foreign_or_missing_origin_is_refused() {
+    let r = rig();
+    let (sid, rev) = add(&r.socket, "target");
+    let before = events(&r.socket).len();
+    for origin in [
+        Some("http://evil.example"),
+        Some("null"),
+        Some("http://127.0.0.1:1"),
+        None,
+    ] {
+        let rep = write_from(
+            r.port,
+            origin,
+            "task.start",
+            json!({ "ref": sid, "expected_rev": rev }),
+        );
+        assert_eq!(rep.status, 403, "{origin:?}: {}", rep.body);
+    }
+    assert_eq!(events(&r.socket).len(), before, "the store did not change");
+    assert_eq!(task(&r.socket, sid)["status"], "pending");
+}
+
+/// `--scope read` refuses every write server-side, however well-formed, and
+/// still serves the reads.
+#[test]
+fn read_scope_refuses_every_write() {
+    let r = read_rig();
+    let (sid, rev) = add(&r.socket, "target");
+    let before = events(&r.socket).len();
     for (method, _, _) in PARAMS {
         if READ_METHODS.contains(method) {
             continue;
         }
-        let rep = api(
+        let rep = write(
             r.port,
-            &json!({ "tasqx": "1", "id": "1", "method": method, "params": { "title": "smuggled" } }),
+            method,
+            json!({ "ref": sid, "expected_rev": rev, "set": { "priority": "H" } }),
         );
-        assert_eq!(rep.status, 403, "{method} must be refused: {}", rep.body);
-        let env: Value = serde_json::from_str(&rep.body).unwrap();
-        assert_eq!(env["ok"], json!(false), "{method}");
+        assert_eq!(rep.status, 403, "{method}: {}", rep.body);
+        if WRITE_METHODS.iter().any(|(m, _)| m == method) {
+            assert!(rep.body.contains("--scope read"), "{method}: {}", rep.body);
+        }
     }
-    assert_eq!(task_count(&r.socket), before, "the store did not change");
+    assert_eq!(events(&r.socket).len(), before, "the store did not change");
+    let rep = write(r.port, "task.get", json!({ "ref": sid }));
+    assert_eq!(rep.status, 200, "{}", rep.body);
 }
 
 #[test]
-fn every_listed_read_method_is_a_real_api_method() {
+fn every_listed_method_and_param_is_a_real_api_one() {
     for m in READ_METHODS {
         assert!(PARAMS.iter().any(|(name, _, _)| name == m), "{m}");
     }
+    for (m, keys) in WRITE_METHODS {
+        let (_, api_keys, _) = PARAMS
+            .iter()
+            .find(|(name, _, _)| name == m)
+            .unwrap_or_else(|| panic!("{m} is not an API method"));
+        for k in *keys {
+            assert!(api_keys.contains(k), "{m} takes no `{k}`");
+        }
+        assert!(
+            keys.contains(&"expected_rev"),
+            "{m} must carry expected_rev"
+        );
+    }
+    assert_eq!(SET_FIELDS, ["priority", "wait", "scheduled"]);
 }
 
 // ---- function: the read path and the live stream -----------------------------
@@ -386,7 +569,7 @@ fn a_malformed_envelope_is_a_400_not_a_forward() {
 #[test]
 fn a_missing_daemon_is_a_503_envelope() {
     let (_, socket) = unique_socket();
-    let r = board_on(socket);
+    let r = board_on(socket, true);
     let rep = api(
         r.port,
         &json!({ "tasqx": "1", "id": "1", "method": "task.list", "params": {} }),
@@ -452,4 +635,191 @@ fn a_task_change_shows_up_on_the_event_stream() {
         .unwrap();
     let ev = wait_for(&rx, "event: task.changed");
     assert!(ev.contains("\"op\":\"add\""), "{ev}");
+}
+
+// ---- function: the writes a drag sends (#638) --------------------------------
+
+/// Each drop's envelope lands, moves the task, and is attributed to the board
+/// in the events table.
+#[test]
+fn each_drop_lands_and_is_attributed_to_the_board() {
+    let r = rig();
+    let (sid, _) = add(&r.socket, "dragged");
+    let (other, _) = add(&r.socket, "running");
+    {
+        let mut c = daemon::try_connect(&r.socket).unwrap();
+        c.request("task.start", &json!({ "ref": other })).unwrap();
+    }
+    let at = |s: &Rig| task(&s.socket, sid)["_rev"].as_i64().unwrap();
+    let before = events(&r.socket).len();
+
+    // Ready -> Active: start, displacing the running task (D6).
+    let rep = write(
+        r.port,
+        "task.start",
+        json!({ "ref": sid, "expected_rev": at(&r) }),
+    );
+    let env = envelope(&rep);
+    assert_eq!(env["ok"], json!(true), "{env}");
+    assert_eq!(env["result"]["auto_stopped"][0]["short_id"], json!(other));
+    // Active -> Ready: stop.
+    let env = envelope(&write(
+        r.port,
+        "task.stop",
+        json!({ "ref": sid, "expected_rev": at(&r) }),
+    ));
+    assert_eq!(env["result"]["status"], "pending", "{env}");
+    // Ready -> Backlog: wait a week.
+    let env = envelope(&write(
+        r.port,
+        "task.modify",
+        json!({ "ref": sid, "expected_rev": at(&r), "set": { "wait": "+1w" } }),
+    ));
+    assert_eq!(env["ok"], json!(true), "{env}");
+    assert_eq!(task(&r.socket, sid)["status"], "backlog");
+    // Backlog -> Ready: clear wait and scheduled.
+    let env = envelope(&write(
+        r.port,
+        "task.modify",
+        json!({ "ref": sid, "expected_rev": at(&r), "set": { "wait": null, "scheduled": null } }),
+    ));
+    assert_eq!(env["ok"], json!(true), "{env}");
+    assert_eq!(task(&r.socket, sid)["status"], "pending");
+    // Priority tray: H, then clear.
+    for p in [json!("H"), Value::Null] {
+        let env = envelope(&write(
+            r.port,
+            "task.modify",
+            json!({ "ref": sid, "expected_rev": at(&r), "set": { "priority": p } }),
+        ));
+        assert_eq!(env["ok"], json!(true), "{env}");
+        assert_eq!(task(&r.socket, sid)["priority"], p);
+    }
+    // Ready -> Done, Done -> Ready (reopen), then cancel from the tray.
+    let env = envelope(&write(
+        r.port,
+        "task.done",
+        json!({ "ref": sid, "expected_rev": at(&r) }),
+    ));
+    assert_eq!(env["ok"], json!(true), "{env}");
+    let env = envelope(&write(
+        r.port,
+        "task.reopen",
+        json!({ "ref": sid, "expected_rev": at(&r) }),
+    ));
+    assert_eq!(env["ok"], json!(true), "{env}");
+    let env = envelope(&write(
+        r.port,
+        "task.cancel",
+        json!({ "ref": sid, "expected_rev": at(&r) }),
+    ));
+    assert_eq!(env["result"]["status"], "cancelled", "{env}");
+
+    let written = &events(&r.socket)[before..];
+    assert!(written.len() >= 9, "{written:?}");
+    for ev in written {
+        assert_eq!(ev["actor"], "board", "{ev}");
+    }
+    assert!(
+        events(&r.socket)[..before]
+            .iter()
+            .all(|e| e["actor"] == "user"),
+        "the daemon's own callers stay `user`"
+    );
+}
+
+/// A stale `expected_rev` — somebody changed the card since it was drawn — is
+/// the core's `conflict`, carrying the current rev for the toast, and the
+/// other session's change stands.
+#[test]
+fn a_stale_rev_is_a_conflict_not_an_overwrite() {
+    let r = rig();
+    let (sid, rev) = add(&r.socket, "contested");
+    {
+        let mut c = daemon::try_connect(&r.socket).unwrap();
+        c.request(
+            "task.modify",
+            &json!({ "ref": sid, "set": { "priority": "L" } }),
+        )
+        .unwrap();
+    }
+    for (method, params) in [
+        ("task.start", json!({ "ref": sid, "expected_rev": rev })),
+        (
+            "task.modify",
+            json!({ "ref": sid, "expected_rev": rev, "set": { "priority": "H" } }),
+        ),
+    ] {
+        let env = envelope(&write(r.port, method, params));
+        assert_eq!(env["ok"], json!(false), "{method}: {env}");
+        assert_eq!(env["error"]["code"], "conflict", "{method}");
+        assert_eq!(env["error"]["data"]["current"], json!(rev + 1), "{method}");
+    }
+    let now = task(&r.socket, sid);
+    assert_eq!(
+        (now["status"].as_str(), now["priority"].as_str()),
+        (Some("pending"), Some("L"))
+    );
+}
+
+/// Undo takes back the board's own last write, and refuses once anything else
+/// has been written since.
+#[test]
+fn undo_takes_back_the_last_drop_and_nothing_later() {
+    let r = rig();
+    let (sid, rev) = add(&r.socket, "undo me");
+    let env = envelope(&write(
+        r.port,
+        "task.done",
+        json!({ "ref": sid, "expected_rev": rev }),
+    ));
+    assert_eq!(env["ok"], json!(true), "{env}");
+    let env = envelope(&write(
+        r.port,
+        "event.revert",
+        json!({ "ref": sid, "expected_rev": rev + 1 }),
+    ));
+    assert_eq!(env["result"]["reverted"]["op"], "done", "{env}");
+    assert_eq!(task(&r.socket, sid)["status"], "pending");
+    assert_eq!(events(&r.socket).last().unwrap()["actor"], "board");
+
+    let at = task(&r.socket, sid)["_rev"].as_i64().unwrap();
+    let env = envelope(&write(
+        r.port,
+        "task.modify",
+        json!({ "ref": sid, "expected_rev": at, "set": { "priority": "H" } }),
+    ));
+    assert_eq!(env["ok"], json!(true), "{env}");
+    add(&r.socket, "somebody else's later write");
+    let env = envelope(&write(
+        r.port,
+        "event.revert",
+        json!({ "ref": sid, "expected_rev": at + 1 }),
+    ));
+    assert_eq!(env["error"]["code"], "conflict", "{env}");
+    assert_eq!(task(&r.socket, sid)["priority"], "H", "nothing was undone");
+}
+
+/// A caller that never calls `with_writes` keeps phase 1's read-only board.
+#[test]
+fn a_board_is_read_only_until_writes_are_asked_for() {
+    let shutdown = Arc::new(AtomicBool::new(false));
+    let board = Board::bind(
+        IpAddr::V4(Ipv4Addr::LOCALHOST),
+        0,
+        BoardOptions {
+            socket: unique_socket().1,
+            token: TOKEN.into(),
+            nonce: "n".into(),
+            page: PAGE.into(),
+        },
+        shutdown.clone(),
+    )
+    .expect("bind loopback");
+    let port = board.port();
+    thread::spawn(move || board.serve());
+    let rep = write(port, "task.start", json!({ "ref": 1, "expected_rev": 1 }));
+    assert_eq!(rep.status, 403, "{}", rep.body);
+    assert!(rep.body.contains("--scope read"), "{}", rep.body);
+    shutdown.store(true, Ordering::SeqCst);
 }

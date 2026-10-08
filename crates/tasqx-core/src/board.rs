@@ -1,10 +1,10 @@
-//! The `tasqx board` listener (#637): a read-only live kanban served over
-//! loopback HTTP to a browser.
+//! The `tasqx board` listener (#637, #638): a live kanban served over loopback
+//! HTTP to a browser, which moves a task by sending the API's own verbs.
 //!
 //! A separate module beside [`crate::otlp`], on the same [`crate::http`] reader,
 //! because the threat models differ. The OTLP receiver is unauthenticated
 //! telemetry ingress and off by default; the board authenticates, holds
-//! server-sent-event connections open, and (in later phases) will write. No web
+//! server-sent-event connections open, and writes. No web
 //! framework: blocking threads on loopback are enough (DESIGN §2).
 //!
 //! ## Security model
@@ -21,9 +21,12 @@
 //! * **Token**: a random secret, supplied by the caller. `/?token=…` trades it
 //!   for a `HttpOnly; SameSite=Strict` cookie and redirects to a clean `/`;
 //!   every other route needs that cookie. The token is the boundary.
-//! * **Read-only**: the only method that can change anything is `POST /api`,
-//!   and it forwards only the methods in [`READ_METHODS`] — default deny. Every
-//!   other method on every route is a 405.
+//! * **Allowlist**: the only route that can change anything is `POST /api`,
+//!   and it forwards only the methods in [`READ_METHODS`] and
+//!   [`WRITE_METHODS`] — default deny, params included. A write must also carry
+//!   the page's Origin and an `expected_rev`, and is refused outright under
+//!   `--scope read` ([`Board::with_writes`]). Every other HTTP method on
+//!   every route is a 405.
 //! * **Page**: served with a CSP that allows no network except this origin, and
 //!   one nonce'd inline script.
 //!
@@ -36,7 +39,8 @@
 //!   daemon is reachable, then one `task.changed` per daemon push, with a
 //!   heartbeat comment so a dead peer is noticed.
 //! * `POST /api` — one JSON API envelope in, the daemon's envelope out, for the
-//!   read methods only.
+//!   listed methods only; a write goes with `actor: board`, so the events table
+//!   tells a drag from a CLI call or an agent.
 
 use std::io::{self, BufReader, Write};
 use std::net::{IpAddr, SocketAddr, TcpListener, TcpStream};
@@ -55,9 +59,32 @@ use crate::http::{
 };
 
 /// The API methods `POST /api` forwards. Default deny: a method not listed here
-/// is refused, so a write method added to the API later is unreachable from the
-/// board until someone lists it on purpose (phase 2).
+/// or in [`WRITE_METHODS`] is refused, so a method added to the API later is
+/// unreachable from the board until someone lists it on purpose.
 pub const READ_METHODS: &[&str] = &["task.list", "task.get", "project.list"];
+
+/// The writes a drag sends (#638), each with the only params it may carry.
+/// Closed twice over: an unlisted method is a 403 and an unlisted param a 400,
+/// so `task.done {force}` or `task.start {keep}` cannot ride in on a listed
+/// method. Every one requires `ref` and an integer `expected_rev`, and goes
+/// to the daemon with the envelope's `actor` set to [`ACTOR`].
+pub const WRITE_METHODS: &[(&str, &[&str])] = &[
+    ("task.start", &["ref", "expected_rev"]),
+    ("task.stop", &["ref", "expected_rev"]),
+    ("task.done", &["ref", "expected_rev"]),
+    ("task.cancel", &["ref", "expected_rev"]),
+    ("task.reopen", &["ref", "expected_rev"]),
+    ("task.modify", &["ref", "expected_rev", "set"]),
+    // Undo: the core refuses unless the newest event is this task's, at this rev.
+    ("event.revert", &["ref", "expected_rev"]),
+];
+
+/// The fields a board `task.modify` may `set`: the priority tray, and the
+/// Backlog/Ready drops (`wait`, `scheduled`). Nothing else is editable here.
+pub const SET_FIELDS: &[&str] = &["priority", "wait", "scheduled"];
+
+/// The `actor` the events table records for every board write.
+pub const ACTOR: &str = "board";
 
 /// Largest `POST /api` body. An envelope is a few hundred bytes.
 const MAX_BODY_BYTES: usize = 64 * 1024;
@@ -97,6 +124,8 @@ struct Shared {
     hub: Hub,
     connections: AtomicUsize,
     shutdown: Arc<AtomicBool>,
+    /// [`Board::with_writes`]; false (the default) is `--scope read`.
+    writes: bool,
 }
 
 /// Fan-out of daemon pushes to open event streams.
@@ -166,8 +195,21 @@ impl Board {
                 },
                 connections: AtomicUsize::new(0),
                 shutdown,
+                writes: false,
             }),
         })
+    }
+
+    /// `--scope write` (#638): forward [`WRITE_METHODS`]. A bound board is
+    /// read-only until this says otherwise, so a caller that never asks for
+    /// writes keeps phase 1's board: every write refused here, whatever the
+    /// page sends. A builder rather than a `BoardOptions` field, which would
+    /// break every caller that builds the options by literal.
+    pub fn with_writes(mut self, on: bool) -> Board {
+        Arc::get_mut(&mut self.shared)
+            .expect("only `serve` shares the state, and it consumes the board")
+            .writes = on;
+        self
     }
 
     /// The port actually bound.
@@ -435,7 +477,7 @@ fn authorized(req: &HttpRequest, shared: &Shared) -> bool {
         .is_some_and(|t| same_secret(t, &shared.opts.token))
 }
 
-/// Forward one read envelope to the daemon and hand its answer back.
+/// Forward one listed envelope to the daemon and hand its answer back.
 fn api(stream: &TcpStream, shared: &Shared, req: &HttpRequest) {
     let json_type = "application/json";
     let Ok(env) = serde_json::from_slice::<Value>(&req.body) else {
@@ -459,21 +501,48 @@ fn api(stream: &TcpStream, shared: &Shared, req: &HttpRequest) {
             &envelope_error("bad_request", "the envelope has no `method`"),
         );
     };
-    if !READ_METHODS.contains(&method) {
-        return respond(
+    let write = WRITE_METHODS.iter().find(|(m, _)| *m == method);
+    let refuse = |status, msg: &str| {
+        respond(
             stream,
             shared,
-            403,
+            status,
             json_type,
-            &envelope_error(
-                "bad_request",
-                &format!("the board is read-only: `{method}` is not served"),
-            ),
-        );
+            &envelope_error("bad_request", msg),
+        )
+    };
+    match write {
+        None if !READ_METHODS.contains(&method) => {
+            return refuse(403, &format!("the board does not serve `{method}`"));
+        }
+        None => {}
+        Some(_) if !shared.writes => {
+            return refuse(
+                403,
+                &format!("this board is read-only (--scope read): `{method}` is refused"),
+            );
+        }
+        // A write needs the page's own Origin (checked equal above): absent is
+        // not this page in a browser, and a write is no place to guess.
+        Some(_) if req.header("origin").is_none() => {
+            return refuse(
+                403,
+                "a write must come from the board's own page (no Origin)",
+            );
+        }
+        Some((_, allowed)) => {
+            if let Err(msg) = write_params_ok(&params, allowed) {
+                return refuse(400, &format!("`{method}`: {msg}"));
+            }
+        }
     }
+    let actor = write.map(|_| ACTOR);
     let answer = daemon::try_connect(&shared.opts.socket)
         .ok_or("no daemon reachable".to_string())
-        .and_then(|mut c| c.request(method, &params).map_err(|e| e.to_string()));
+        .and_then(|mut c| {
+            c.request_as(actor, method, &params)
+                .map_err(|e| e.to_string())
+        });
     match answer {
         Ok(env) => respond(stream, shared, 200, json_type, env.to_string().as_bytes()),
         Err(e) => respond(
@@ -484,6 +553,33 @@ fn api(stream: &TcpStream, shared: &Shared, req: &HttpRequest) {
             &envelope_error("internal", &format!("daemon unavailable: {e}")),
         ),
     }
+}
+
+/// A board write's params: only the keys its [`WRITE_METHODS`] row lists, a
+/// `ref`, an integer `expected_rev`, and a `set` (when sent) naming only
+/// [`SET_FIELDS`].
+fn write_params_ok(params: &Value, allowed: &[&str]) -> Result<(), String> {
+    let obj = params.as_object().ok_or("`params` must be an object")?;
+    if let Some(k) = obj.keys().find(|k| !allowed.contains(&k.as_str())) {
+        return Err(format!("the board does not send `{k}`"));
+    }
+    if obj.get("ref").is_none_or(Value::is_null) {
+        return Err("a board write names its task in `ref`".into());
+    }
+    if !obj.get("expected_rev").is_some_and(Value::is_i64) {
+        return Err("a board write carries the card's `_rev` as an integer `expected_rev`".into());
+    }
+    if allowed.contains(&"set") {
+        let set = obj
+            .get("set")
+            .and_then(Value::as_object)
+            .filter(|s| !s.is_empty())
+            .ok_or("`set` must name at least one field")?;
+        if let Some(k) = set.keys().find(|k| !SET_FIELDS.contains(&k.as_str())) {
+            return Err(format!("the board does not set `{k}`"));
+        }
+    }
+    Ok(())
 }
 
 /// Hold the connection open and write server-sent events until the peer leaves

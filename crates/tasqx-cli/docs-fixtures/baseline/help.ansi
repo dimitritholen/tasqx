@@ -44,7 +44,7 @@ Commands:
   api          stdio one-shot: read ONE JSON request envelope on stdin, write ONE response
   daemon       Run the long-lived daemon: bind a local socket / named pipe and serve the JSON API to many concurrent clients, pushing live change notifications (DESIGN.md §2). Ctrl-C stops it cleanly
   watch        Live view: connect to a daemon, subscribe, and re-render the working set on every `task.changed` push (DESIGN.md §6a). Needs a running daemon
-  board        Open a live, read-only kanban of your tasks in the browser
+  board        Open a live kanban of your tasks in the browser; drag a card to change it
   mcp          Bundled MCP server (DESIGN.md §7, §12-D7)
   docs         Open the English user guide in your browser: one self-contained HTML file (inline CSS + JS, no external requests), generated from this binary
   about        Who made tasqx, where to find it, and what build this is. Prints the author, two links, this build's version and commit, and the store it would open. Needs no store and no network
