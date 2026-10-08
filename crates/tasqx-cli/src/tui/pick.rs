@@ -43,6 +43,7 @@ use tasqx_core::markdown::TimeFormat;
 
 use crate::render::{self, TaskCols, TaskRow};
 use crate::theme::{Caps, Ctx, Theme};
+use crate::tui::list::{ListState, Mode};
 use crate::tui::{self, first_visible, fuzzy, rt_style, Hint, Key};
 
 /// A margin, the cursor glyph and a space: the memory browser's lead.
@@ -123,17 +124,6 @@ impl Row {
 /// (audit #203).
 const FIELD_WEIGHT: [i64; 4] = [250, 250, 50, 50];
 
-/// Which keys the screen is listening to.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum Mode {
-    /// Moving through the list: j/k, Enter reads, `s` starts, `/` searches.
-    List,
-    /// Typing a query: every character is a letter, so j and q type j and q.
-    Search,
-    /// One task's `show` card, full screen, scrolling.
-    Detail,
-}
-
 /// An intent for the caller to carry out. `App` performs nothing itself.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Action {
@@ -153,22 +143,15 @@ pub struct App {
     rows: Vec<Row>,
     /// `render::task_row` of each row, measured once: `list`'s cells.
     table: Vec<TaskRow>,
-    /// Indices into `rows` that match `query`, best first; every row, in the
-    /// store's `-urgency` order, while there is no query.
-    matches: Vec<usize>,
-    /// Position within `matches`, NOT within `rows`.
-    cursor: usize,
-    /// What the reader has typed after `/`.
-    pub query: String,
-    mode: Mode,
-    /// The first card line the detail view shows.
-    scroll: usize,
+    /// Cursor, query, mode and scroll (the first card line the detail view
+    /// shows); `matches` is in the store's `-urgency` order while there is no
+    /// query.
+    ls: ListState,
     /// The `task.get` answer for the card, or why it could not be read.
     detail: Option<(i64, Result<Value, String>)>,
     /// A sentence for the bottom row in place of the key bar, until the next
     /// key: why a key did nothing (`s` on a task that cannot start).
     status: Option<String>,
-    size: (u16, u16),
     theme: Theme,
     caps: Caps,
     time_format: TimeFormat,
@@ -186,18 +169,12 @@ impl App {
             .iter()
             .map(|r| render::task_row(&r.task, now, ctx.caps.unicode))
             .collect();
-        let matches = (0..rows.len()).collect();
         App {
+            ls: ListState::new(rows.len()),
             rows,
             table,
-            matches,
-            cursor: 0,
-            query: String::new(),
-            mode: Mode::List,
-            scroll: 0,
             detail: None,
             status: None,
-            size: (80, 24),
             theme: ctx.theme.clone(),
             caps: ctx.caps,
             time_format: ctx.time_format,
@@ -209,8 +186,8 @@ impl App {
     /// The terminal's size, re-read before every frame so paging and the
     /// card's width and scroll limit follow a resize.
     pub fn observe(&mut self, width: u16, height: u16) {
-        self.size = (width, height);
-        self.scroll = self.scroll.min(self.max_scroll());
+        self.ls.size = (width, height);
+        self.ls.scroll = self.ls.scroll.min(self.max_scroll());
     }
 
     pub fn rows(&self) -> &[Row] {
@@ -220,28 +197,28 @@ impl App {
     #[cfg(test)]
     /// The indices of `rows` currently listed, in display order.
     pub fn matches(&self) -> &[usize] {
-        &self.matches
+        &self.ls.matches
     }
 
     #[cfg(test)]
     pub fn cursor(&self) -> usize {
-        self.cursor
+        self.ls.cursor
     }
 
     #[cfg(test)]
     pub fn mode(&self) -> Mode {
-        self.mode
+        self.ls.mode
     }
 
     /// The highlighted row, or `None` when nothing matches the query.
     pub fn selected(&self) -> Option<&Row> {
-        self.matches.get(self.cursor).map(|i| &self.rows[*i])
+        self.ls.matches.get(self.ls.cursor).map(|i| &self.rows[*i])
     }
 
     /// The task whose card the screen needs and does not have: the one under
     /// the cursor, once the card is open.
     pub fn wanted(&self) -> Option<i64> {
-        if self.mode != Mode::Detail {
+        if self.ls.mode != Mode::Detail {
             return None;
         }
         let id = self.selected()?.short_id;
@@ -257,7 +234,7 @@ impl App {
         // The error sentence is built from a store message, and it is painted
         // through the same seam as everything else, so it is sanitised too.
         self.detail = Some((id, task.map_err(|why| render::san(&why))));
-        self.scroll = self.scroll.min(self.max_scroll());
+        self.ls.scroll = self.ls.scroll.min(self.max_scroll());
     }
 
     /// Fold one key into the state.
@@ -277,10 +254,12 @@ impl App {
         if ctrl && key.code == KeyCode::Char('c') {
             return Some(Action::Cancel);
         }
-        match self.mode {
+        match self.ls.mode {
             Mode::List => self.list_key(key, ctrl),
             Mode::Search => {
-                self.search_key(key, ctrl);
+                let rows = &self.rows;
+                self.ls
+                    .search_key(key, ctrl, rows.len(), |i, terms| rows[i].score(terms));
                 None
             }
             Mode::Detail => self.detail_key(key),
@@ -317,134 +296,46 @@ impl App {
     }
 
     fn list_key(&mut self, key: KeyEvent, ctrl: bool) -> Option<Action> {
-        let page = self.list_rows() as isize;
-        match key.code {
-            KeyCode::Char('n') if ctrl => self.step(1),
-            KeyCode::Char('p') if ctrl => self.step(-1),
-            KeyCode::Char('d') if ctrl => self.step(page / 2),
-            KeyCode::Char('u') if ctrl => self.step(-page / 2),
-            _ if ctrl => {}
-            KeyCode::Char('j') | KeyCode::Down => self.step(1),
-            KeyCode::Char('k') | KeyCode::Up => self.step(-1),
-            KeyCode::PageDown => self.step(page),
-            KeyCode::PageUp => self.step(-page),
-            KeyCode::Char('g') | KeyCode::Home => self.cursor = 0,
-            KeyCode::Char('G') | KeyCode::End => {
-                self.cursor = self.matches.len().saturating_sub(1);
-            }
-            KeyCode::Char('/') => self.mode = Mode::Search,
-            KeyCode::Enter if self.selected().is_some() => {
-                self.mode = Mode::Detail;
-                self.scroll = 0;
-            }
-            KeyCode::Char('s') => return self.start(),
-            // Esc undoes the search first, and only leaves once there is
-            // nothing left to undo, so the key that ends a search is never the
-            // key that quits the screen by surprise.
-            KeyCode::Esc if !self.query.is_empty() => {
-                self.query.clear();
-                self.refilter();
-            }
-            KeyCode::Esc | KeyCode::Char('q') => return Some(Action::Cancel),
-            _ => {}
+        let rows = &self.rows;
+        let score = |i: usize, terms: &[&str]| rows[i].score(terms);
+        if self
+            .ls
+            .list_key(key, ctrl, self.list_rows(), rows.len(), score)
+        {
+            return None;
         }
-        None
-    }
-
-    fn search_key(&mut self, key: KeyEvent, ctrl: bool) {
         match key.code {
-            // Both keep the filter: the search is finished, not abandoned.
-            // Esc in the list clears it afterwards, one press further on.
-            KeyCode::Enter | KeyCode::Esc => self.mode = Mode::List,
-            KeyCode::Down => self.step(1),
-            KeyCode::Up => self.step(-1),
-            KeyCode::Char('n') if ctrl => self.step(1),
-            KeyCode::Char('p') if ctrl => self.step(-1),
-            // The readline pair that goes with ctrl-n/ctrl-p: clear the line,
-            // and delete the word behind the cursor.
-            KeyCode::Char('u') if ctrl => {
-                self.query.clear();
-                self.refilter();
-            }
-            KeyCode::Char('w') if ctrl => {
-                // Trailing whitespace, then the word behind it — a shell's
-                // ctrl-w, so `"foo "` becomes `""` in one press.
-                let trimmed = self.query.trim_end();
-                let cut = trimmed
-                    .rfind(char::is_whitespace)
-                    .map(|i| i + 1)
-                    .unwrap_or(0);
-                self.query.truncate(cut);
-                self.refilter();
-            }
-            KeyCode::Backspace => {
-                self.query.pop();
-                self.refilter();
-            }
-            KeyCode::Char(c) if !ctrl => {
-                self.query.push(c);
-                self.refilter();
-            }
-            _ => {}
+            KeyCode::Char('s') => self.start(),
+            KeyCode::Esc | KeyCode::Char('q') => Some(Action::Cancel),
+            _ => None,
         }
     }
 
     fn detail_key(&mut self, key: KeyEvent) -> Option<Action> {
-        let page = self.detail_rows();
-        let max = self.max_scroll();
-        match key.code {
-            KeyCode::Char('j') | KeyCode::Down => self.scroll = (self.scroll + 1).min(max),
-            KeyCode::Char('k') | KeyCode::Up => self.scroll = self.scroll.saturating_sub(1),
-            KeyCode::Char(' ') | KeyCode::PageDown => self.scroll = (self.scroll + page).min(max),
-            KeyCode::Char('b') | KeyCode::PageUp => self.scroll = self.scroll.saturating_sub(page),
-            KeyCode::Char('g') | KeyCode::Home => self.scroll = 0,
-            KeyCode::Char('G') | KeyCode::End => self.scroll = max,
-            // Read, then start: the card is where the decision gets made.
-            KeyCode::Char('s') => return self.start(),
-            // The card is read again the next time it opens, so a failed read
-            // is retried and a card does not outlive the list around it.
-            KeyCode::Esc | KeyCode::Char('q') | KeyCode::Backspace | KeyCode::Left => {
-                self.mode = Mode::List;
-                self.detail = None;
-            }
-            _ => {}
+        // Read, then start: the card is where the decision gets made.
+        if key.code == KeyCode::Char('s') {
+            return self.start();
+        }
+        // The card is read again the next time it opens, so a failed read
+        // is retried and a card does not outlive the list around it.
+        if self
+            .ls
+            .detail_key(key, self.detail_rows(), self.max_scroll())
+        {
+            self.detail = None;
         }
         None
-    }
-
-    /// Move the cursor by `by`, clamped at both ends — never wrapped, and
-    /// never a usize underflow inside a raw-mode alt screen.
-    fn step(&mut self, by: isize) {
-        let last = self.matches.len().saturating_sub(1) as isize;
-        self.cursor = (self.cursor as isize + by).clamp(0, last.max(0)) as usize;
-    }
-
-    /// Re-rank against the query, keeping the highlight on the SAME TASK.
-    ///
-    /// Not cosmetic (D55). The cursor indexes `matches`, so leaving it alone
-    /// across a refilter silently re-aims it at whatever task now sits there,
-    /// and `s` then starts a task the reader never highlighted. The task is
-    /// found again, and only when it has left the matches does the cursor
-    /// fall back to the top.
-    fn refilter(&mut self) {
-        fuzzy::refilter(
-            self.rows.len(),
-            &self.query,
-            |i, terms| self.rows[i].score(terms),
-            &mut self.matches,
-            &mut self.cursor,
-        );
     }
 
     /// Rows the list gets: the frame less the header, the blank line under
     /// it, the column labels, the blank line above the key bar, and the bar.
     fn list_rows(&self) -> usize {
-        (self.size.1 as usize).saturating_sub(5).max(1)
+        (self.ls.size.1 as usize).saturating_sub(5).max(1)
     }
 
     /// Rows the card gets: the frame less the blank line and the key bar.
     fn detail_rows(&self) -> usize {
-        (self.size.1 as usize).saturating_sub(2).max(1)
+        (self.ls.size.1 as usize).saturating_sub(2).max(1)
     }
 
     /// A render context at `cols` cells, for the printed renderers.
@@ -463,7 +354,7 @@ impl App {
         let Some(sel) = self.selected() else {
             return Vec::new();
         };
-        let cols = (self.size.0 as usize).saturating_sub(2);
+        let cols = (self.ls.size.0 as usize).saturating_sub(2);
         match &self.detail {
             Some((id, Ok(task))) if *id == sel.short_id => {
                 render::task_detail(&self.ctx_at(cols), task, self.now)
@@ -479,7 +370,7 @@ impl App {
     }
 
     fn max_scroll(&self) -> usize {
-        if self.mode != Mode::Detail {
+        if self.ls.mode != Mode::Detail {
             return 0;
         }
         self.card().len().saturating_sub(self.detail_rows())
@@ -781,10 +672,10 @@ pub const DETAIL_FIT_KEYS: &[Key] = &[
 /// nothing to scroll — has a table of its own, so the bar only names live
 /// keys (D62).
 fn keys_for(app: &App) -> &'static [Key] {
-    let empty = app.matches.is_empty();
-    match app.mode {
+    let empty = app.ls.matches.is_empty();
+    match app.ls.mode {
         Mode::List if empty => LIST_EMPTY_KEYS,
-        Mode::List if !app.query.is_empty() => LIST_FILTERED_KEYS,
+        Mode::List if !app.ls.query.is_empty() => LIST_FILTERED_KEYS,
         Mode::List => LIST_KEYS,
         Mode::Search if empty => SEARCH_EMPTY_KEYS,
         Mode::Search => SEARCH_KEYS,
@@ -806,7 +697,7 @@ pub fn render(app: &App, frame: &mut Frame) {
         return;
     }
     let sty = |role: &str| rt_style(app.theme.role(role), &app.caps);
-    match app.mode {
+    match app.ls.mode {
         Mode::Detail => draw_detail(app, frame, area),
         Mode::List | Mode::Search => draw_list(app, &sty, frame, area),
     }
@@ -835,9 +726,9 @@ pub fn render(app: &App, frame: &mut Frame) {
     }
     // Where the card is, when it is longer than the screen: `tui::key_bar`
     // measures that number first, so the hints give way to it.
-    let position = (app.mode == Mode::Detail).then(|| {
+    let position = (app.ls.mode == Mode::Detail).then(|| {
         let card = app.card().len();
-        (app.scroll, app.detail_rows(), card)
+        (app.ls.scroll, app.detail_rows(), card)
     });
     let spans = tui::key_bar(
         keys_for(app),
@@ -884,14 +775,14 @@ fn draw_list(
         Span::raw("   "),
     ];
     let lead_w = 1 + 4 + 3;
-    if app.mode == Mode::Search || !app.query.is_empty() {
+    if app.ls.mode == Mode::Search || !app.ls.query.is_empty() {
         // The memory browser's search line too: one function fits both.
         head.extend(tui::search_spans(
             &tui::SearchLine {
                 filter: &app.filter,
-                query: &app.query,
-                searching: app.mode == Mode::Search,
-                kept: app.matches.len(),
+                query: &app.ls.query,
+                searching: app.ls.mode == Mode::Search,
+                kept: app.ls.matches.len(),
                 total: app.rows.len(),
             },
             w.saturating_sub(lead_w),
@@ -917,18 +808,18 @@ fn draw_list(
     }
     line_at(frame, area, area.y, head);
 
-    if app.matches.is_empty() {
+    if app.ls.matches.is_empty() {
         // Each mode names the key that does it there: in the search Esc
         // keeps the filter, so it may not be the key this sentence offers.
         let msg = if app.rows.is_empty() {
             "Nothing to pick.".to_string()
-        } else if app.mode == Mode::Search {
+        } else if app.ls.mode == Mode::Search {
             format!(
                 "Nothing matches {:?}. Backspace or ctrl-u edits the search.",
-                app.query
+                app.ls.query
             )
         } else {
-            format!("Nothing matches {:?}. Esc clears the search.", app.query)
+            format!("Nothing matches {:?}. Esc clears the search.", app.ls.query)
         };
         // Cut to the width with an ellipsis rather than by the frame, which
         // would stop it mid-word (rule 2: a line under a record is cut).
@@ -959,9 +850,9 @@ fn draw_list(
 
     let rows = app.list_rows();
     let top = area.y + 3;
-    let first = first_visible(app.cursor, app.matches.len(), rows);
-    for (n, &i) in app.matches.iter().enumerate().skip(first).take(rows) {
-        let on = n == app.cursor;
+    let first = first_visible(app.ls.cursor, app.ls.matches.len(), rows);
+    for (n, &i) in app.ls.matches.iter().enumerate().skip(first).take(rows) {
+        let on = n == app.ls.cursor;
         let mark = match (on, unicode) {
             (true, true) => "▸",
             (true, false) => ">",
@@ -982,7 +873,7 @@ fn draw_list(
 
 fn draw_detail(app: &App, frame: &mut Frame, area: Rect) {
     let rows = app.detail_rows();
-    for (r, line) in app.card().iter().skip(app.scroll).take(rows).enumerate() {
+    for (r, line) in app.card().iter().skip(app.ls.scroll).take(rows).enumerate() {
         let mut spans = vec![Span::raw(" ")];
         spans.extend(tui::painted_line(line).spans);
         line_at(frame, area, area.y + r as u16, spans);

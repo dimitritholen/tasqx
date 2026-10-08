@@ -2406,8 +2406,8 @@ pub(crate) fn run_chart(engine: &Engine, ctx: &Ctx, kind: Option<ChartKind>) -> 
             let days_n = days.unwrap_or(30);
             // `--project` is shorthand appended to the SAME positional
             // (#663/D173 review finding): through `filter::quote`, never
-            // interpolated, for the reason `dashboard_screen`'s own
-            // `Action::ListProject` composition gives — a project may be
+            // interpolated, for the reason the dashboard's own
+            // ⏎-on-PROJECTS composition gives — a project may be
             // named `Home Renovation` or `a (b)`. Appended rather than
             // replacing `filter`, so `chart burndown project:work --project
             // other` (an odd thing to type, but not refused) ANDs both terms

@@ -2452,7 +2452,7 @@ fn enter_on_projects_asks_the_loop_to_list_that_project() {
     a.on_key(key(KeyCode::Char('2')));
     assert_eq!(
         a.on_key(key(KeyCode::Enter)),
-        Some(Action::ListProject("work".to_string())),
+        Some(Action::List(vec![r#"project:"work""#.to_string()])),
         "enter on a real PROJECTS row must ask the loop to filter to it, not silently do nothing"
     );
 }

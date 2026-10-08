@@ -160,7 +160,11 @@ fn the_cursor_clamps_at_both_ends() {
 fn j_and_k_move_through_the_list() {
     let mut a = app();
     a.on_key(press(KeyCode::Char('j')));
-    assert!(a.query.is_empty(), "j typed into a query: {:?}", a.query);
+    assert!(
+        a.ls.query.is_empty(),
+        "j typed into a query: {:?}",
+        a.ls.query
+    );
     assert_eq!(a.selected().map(|r| r.short_id), Some(43));
     a.on_key(press(KeyCode::Char('k')));
     assert_eq!(a.selected().map(|r| r.short_id), Some(42));
@@ -181,7 +185,7 @@ fn slash_opens_the_search_where_every_letter_types() {
     for c in ['j', 'k', 'q', 's'] {
         assert_eq!(a.on_key(press(KeyCode::Char(c))), None, "`{c}` acted");
     }
-    assert_eq!(a.query, "jkqs");
+    assert_eq!(a.ls.query, "jkqs");
     assert_eq!(a.mode(), Mode::Search, "q must not leave the search");
 }
 
@@ -400,7 +404,7 @@ fn enter_or_esc_leaves_the_search_with_the_filter_kept_and_esc_again_clears_it()
         search(&mut a, "api");
         assert_eq!(a.on_key(press(leave)), None);
         assert_eq!(a.mode(), Mode::List);
-        assert_eq!(a.query, "api", "{leave:?} dropped the filter");
+        assert_eq!(a.ls.query, "api", "{leave:?} dropped the filter");
         assert_eq!(ids(&a).len(), 3);
         assert_eq!(a.on_key(press(KeyCode::Esc)), None, "the first esc clears");
         assert_eq!(ids(&a), vec![42, 43, 47, 55], "clearing restores all");
@@ -423,7 +427,7 @@ fn the_control_keys_navigate_and_interrupt() {
     assert_eq!(a.cursor(), 1, "ctrl-p moves while typing");
     a.on_key(ctrl('n'));
     assert_eq!(a.cursor(), 2, "ctrl-n moves while typing");
-    assert_eq!(a.query, "api", "a control chord typed its letter");
+    assert_eq!(a.ls.query, "api", "a control chord typed its letter");
     assert_eq!(a.on_key(ctrl('c')), Some(Action::Cancel));
 }
 
@@ -451,11 +455,11 @@ fn ctrl_u_and_ctrl_w_edit_the_query_the_readline_way() {
     let mut a = app();
     search(&mut a, "publish api docs");
     a.on_key(ctrl('w'));
-    assert_eq!(a.query, "publish api ");
+    assert_eq!(a.ls.query, "publish api ");
     a.on_key(ctrl('w'));
-    assert_eq!(a.query, "publish ", "ctrl-w eats the space it exposed");
+    assert_eq!(a.ls.query, "publish ", "ctrl-w eats the space it exposed");
     a.on_key(ctrl('u'));
-    assert!(a.query.is_empty());
+    assert!(a.ls.query.is_empty());
     assert_eq!(a.matches().len(), a.rows().len());
 }
 
@@ -466,7 +470,7 @@ fn backspace_widens_the_match_list_again() {
     search(&mut a, "apix");
     assert!(ids(&a).is_empty());
     a.on_key(press(KeyCode::Backspace));
-    assert_eq!(a.query, "api");
+    assert_eq!(a.ls.query, "api");
     assert_eq!(ids(&a).len(), 3, "the list did not widen back");
 }
 
@@ -482,7 +486,7 @@ fn a_key_release_is_not_a_second_key_press() {
     let mut release = press(KeyCode::Char('a'));
     release.kind = KeyEventKind::Release;
     a.on_key(release);
-    assert!(a.query.is_empty(), "a Release event typed a character");
+    assert!(a.ls.query.is_empty(), "a Release event typed a character");
 }
 
 /// Task text is untrusted (`store.import`, MCP writes). The search reads only
@@ -562,7 +566,7 @@ fn every_key_in_the_tables_does_something() {
             t => panic!("the key table names {t:?}, which this test cannot press"),
         }
     };
-    let state = |a: &App| (a.mode(), a.cursor(), a.query.clone(), a.scroll);
+    let state = |a: &App| (a.mode(), a.cursor(), a.ls.query.clone(), a.ls.scroll);
     // The empty states: a search that matched nothing, kept and still open.
     let empty = |open: bool| {
         let mut a = app();

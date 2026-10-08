@@ -7,7 +7,7 @@
 //! screen does not answer, or hide one it does.
 //!
 //! Same shape as every screen on the `tui` foundation (D26): a pure [`App`]
-//! that folds keys into state and returns an [`Action`] for the caller to
+//! that folds keys into state and returns whether the key quits, for the caller to
 //! carry out, and a [`render`] that decides nothing. The one thing the screen
 //! cannot do for itself is read a body from the store, so it asks:
 //! [`App::wanted`] names the doc it needs and the caller answers with
@@ -25,6 +25,7 @@ use ratatui::Frame;
 use crate::columns::{self, Column};
 use crate::render;
 use crate::theme::{Caps, Theme};
+use crate::tui::list::{ListState, Mode};
 use crate::tui::{self, first_visible, fuzzy, rt_style, Hint, Key};
 use tasqx_core::frontmatter;
 
@@ -133,51 +134,23 @@ impl Doc {
     }
 }
 
-/// Which keys the screen is listening to.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum Mode {
-    /// Moving through the list: j/k, Enter opens, `/` starts a search.
-    List,
-    /// Typing a query: every character is a letter, so j and q type j and q.
-    Search,
-    /// One doc, full screen, scrolling.
-    Detail,
-}
-
-/// An intent for the caller. `App` performs nothing itself.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum Action {
-    Quit,
-}
-
 /// The state of the screen.
 pub struct App {
     docs: Vec<Doc>,
-    /// Indices into `docs`, best match first; every doc, in the store's
-    /// newest-first order, while there is no query.
-    matches: Vec<usize>,
-    cursor: usize,
-    query: String,
-    mode: Mode,
-    /// The first body line shown in the detail view.
-    scroll: usize,
+    /// Cursor, query, mode and scroll (the first body line shown in the
+    /// detail view); `matches` is in the store's newest-first order while
+    /// there is no query.
+    ls: ListState,
     bodies: HashMap<String, String>,
-    size: (u16, u16),
     unicode: bool,
 }
 
 impl App {
     pub fn new(docs: Vec<Doc>, unicode: bool) -> Self {
-        let matches = (0..docs.len()).collect();
         App {
+            ls: ListState::new(docs.len()),
             docs,
-            matches,
-            cursor: 0,
-            query: String::new(),
-            mode: Mode::List,
-            scroll: 0,
             bodies: HashMap::new(),
-            size: (80, 24),
             unicode,
         }
     }
@@ -185,12 +158,12 @@ impl App {
     /// The terminal's size, re-read before every frame so paging and the
     /// detail view's scroll limit follow a resize.
     pub fn observe(&mut self, width: u16, height: u16) {
-        self.size = (width, height);
-        self.scroll = self.scroll.min(self.max_scroll());
+        self.ls.size = (width, height);
+        self.ls.scroll = self.ls.scroll.min(self.max_scroll());
     }
 
     pub fn selected(&self) -> Option<&Doc> {
-        self.matches.get(self.cursor).map(|&i| &self.docs[i])
+        self.ls.matches.get(self.ls.cursor).map(|&i| &self.docs[i])
     }
 
     /// The doc whose body the screen needs and does not have: the one under
@@ -212,137 +185,49 @@ impl App {
     /// Only presses count. Windows reports a release for every key, and
     /// folding both in moved the cursor twice per press (the same guard
     /// `pick` and the dashboard carry).
-    pub fn on_key(&mut self, key: KeyEvent) -> Option<Action> {
+    /// Whether the key quits the screen.
+    pub fn on_key(&mut self, key: KeyEvent) -> bool {
         if key.kind != KeyEventKind::Press {
-            return None;
+            return false;
         }
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
         if ctrl && key.code == KeyCode::Char('c') {
-            return Some(Action::Quit);
+            return true;
         }
-        match self.mode {
-            Mode::List => return self.list_key(key, ctrl),
-            Mode::Search => self.search_key(key, ctrl),
-            Mode::Detail => self.detail_key(key),
+        let docs = &self.docs;
+        let score = |i: usize, terms: &[&str]| docs[i].score(terms);
+        match self.ls.mode {
+            Mode::List => {
+                let handled = self
+                    .ls
+                    .list_key(key, ctrl, self.list_rows(), docs.len(), score);
+                return !handled && matches!(key.code, KeyCode::Esc | KeyCode::Char('q'));
+            }
+            Mode::Search => self.ls.search_key(key, ctrl, docs.len(), score),
+            Mode::Detail => {
+                self.ls
+                    .detail_key(key, self.detail_rows(), self.max_scroll());
+            }
         }
-        None
-    }
-
-    fn list_key(&mut self, key: KeyEvent, ctrl: bool) -> Option<Action> {
-        let page = self.list_rows() as isize;
-        match key.code {
-            KeyCode::Char('j') | KeyCode::Down => self.step(1),
-            KeyCode::Char('k') | KeyCode::Up => self.step(-1),
-            KeyCode::Char('d') if ctrl => self.step(page / 2),
-            KeyCode::Char('u') if ctrl => self.step(-page / 2),
-            KeyCode::PageDown => self.step(page),
-            KeyCode::PageUp => self.step(-page),
-            KeyCode::Char('g') | KeyCode::Home => self.cursor = 0,
-            KeyCode::Char('G') | KeyCode::End => {
-                self.cursor = self.matches.len().saturating_sub(1);
-            }
-            KeyCode::Char('/') => self.mode = Mode::Search,
-            KeyCode::Enter if self.selected().is_some() => {
-                self.mode = Mode::Detail;
-                self.scroll = 0;
-            }
-            // Esc undoes the search first, and only leaves once there is
-            // nothing left to undo, so the key that ends a search is never
-            // the key that quits the screen by surprise.
-            KeyCode::Esc if !self.query.is_empty() => {
-                self.query.clear();
-                self.refilter();
-            }
-            KeyCode::Esc | KeyCode::Char('q') => return Some(Action::Quit),
-            _ => {}
-        }
-        None
-    }
-
-    fn search_key(&mut self, key: KeyEvent, ctrl: bool) {
-        match key.code {
-            // Both keep the filter: the search is finished, not abandoned.
-            // Esc in the list clears it afterwards, one press further on.
-            KeyCode::Enter | KeyCode::Esc => self.mode = Mode::List,
-            KeyCode::Down => self.step(1),
-            KeyCode::Up => self.step(-1),
-            KeyCode::Char('n') if ctrl => self.step(1),
-            KeyCode::Char('p') if ctrl => self.step(-1),
-            KeyCode::Char('u') if ctrl => {
-                self.query.clear();
-                self.refilter();
-            }
-            KeyCode::Char('w') if ctrl => {
-                let kept = self.query.trim_end().rfind(' ').map_or(0, |i| i + 1);
-                self.query.truncate(kept);
-                self.refilter();
-            }
-            KeyCode::Backspace => {
-                self.query.pop();
-                self.refilter();
-            }
-            KeyCode::Char(c) if !ctrl => {
-                self.query.push(c);
-                self.refilter();
-            }
-            _ => {}
-        }
-    }
-
-    fn detail_key(&mut self, key: KeyEvent) {
-        let page = self.detail_rows();
-        let max = self.max_scroll();
-        match key.code {
-            KeyCode::Char('j') | KeyCode::Down => self.scroll = (self.scroll + 1).min(max),
-            KeyCode::Char('k') | KeyCode::Up => self.scroll = self.scroll.saturating_sub(1),
-            KeyCode::Char(' ') | KeyCode::PageDown => self.scroll = (self.scroll + page).min(max),
-            KeyCode::Char('b') | KeyCode::PageUp => self.scroll = self.scroll.saturating_sub(page),
-            KeyCode::Char('g') | KeyCode::Home => self.scroll = 0,
-            KeyCode::Char('G') | KeyCode::End => self.scroll = max,
-            KeyCode::Esc | KeyCode::Char('q') | KeyCode::Backspace | KeyCode::Left => {
-                self.mode = Mode::List;
-            }
-            _ => {}
-        }
-    }
-
-    fn step(&mut self, by: isize) {
-        let last = self.matches.len().saturating_sub(1) as isize;
-        self.cursor = (self.cursor as isize + by).clamp(0, last.max(0)) as usize;
-    }
-
-    /// Re-rank against the query, keeping the cursor on the doc it was on.
-    ///
-    /// `pick` learned this the hard way: re-filtering under a cursor index
-    /// leaves the index pointing at whatever doc now sits there, and Enter
-    /// opens a doc the reader never highlighted. The doc is found again, and
-    /// only when it has left the matches does the cursor fall back to the top.
-    fn refilter(&mut self) {
-        fuzzy::refilter(
-            self.docs.len(),
-            &self.query,
-            |i, terms| self.docs[i].score(terms),
-            &mut self.matches,
-            &mut self.cursor,
-        );
+        false
     }
 
     /// Rows the list gets: the frame less the header (which carries the
     /// query), the blank line under it, the blank line above the key bar, and
     /// the key bar.
     fn list_rows(&self) -> usize {
-        (self.size.1 as usize).saturating_sub(4).max(1)
+        (self.ls.size.1 as usize).saturating_sub(4).max(1)
     }
 
     /// Rows the detail view's body gets: the frame less the title, the two
     /// fact lines, the id line, a blank line, and the blank line and key bar
     /// at the bottom.
     fn detail_rows(&self) -> usize {
-        (self.size.1 as usize).saturating_sub(7).max(1)
+        (self.ls.size.1 as usize).saturating_sub(7).max(1)
     }
 
     fn detail_width(&self) -> usize {
-        (self.size.0 as usize).saturating_sub(2).max(8)
+        (self.ls.size.0 as usize).saturating_sub(2).max(8)
     }
 
     fn body_lines(&self, width: usize) -> Vec<DocLine> {
@@ -353,7 +238,7 @@ impl App {
     }
 
     fn max_scroll(&self) -> usize {
-        if self.mode != Mode::Detail {
+        if self.ls.mode != Mode::Detail {
             return 0;
         }
         self.body_lines(self.detail_width())
@@ -767,7 +652,7 @@ pub fn render(app: &App, theme: &Theme, caps: &Caps, frame: &mut Frame) {
     if area.height == 0 || area.width == 0 {
         return;
     }
-    match app.mode {
+    match app.ls.mode {
         Mode::Detail => draw_detail(app, &sty, frame, area),
         Mode::List | Mode::Search => draw_list(app, &sty, frame, area),
     }
@@ -782,12 +667,12 @@ pub fn render(app: &App, theme: &Theme, caps: &Caps, frame: &mut Frame) {
     };
     // Where the reader is in a long doc: `tui::key_bar` measures it first,
     // so the hints give way to it (the one bar `pick`'s card uses too).
-    let position = (app.mode == Mode::Detail).then(|| {
+    let position = (app.ls.mode == Mode::Detail).then(|| {
         let total = app.body_lines(app.detail_width()).len();
-        (app.scroll, app.detail_rows(), total)
+        (app.ls.scroll, app.detail_rows(), total)
     });
     let spans = tui::key_bar(
-        keys_for(app.mode),
+        keys_for(app.ls.mode),
         area.width,
         position,
         sty("accent"),
@@ -861,15 +746,15 @@ fn draw_list(app: &App, sty: &dyn Fn(&str) -> RtStyle, frame: &mut Frame, area: 
         Span::styled("memory".to_string(), sty("header")),
         Span::raw("   "),
     ];
-    if app.mode == Mode::Search || !app.query.is_empty() {
+    if app.ls.mode == Mode::Search || !app.ls.query.is_empty() {
         // `pick`'s search line too: one function fits both, and the count
         // never gives way (D124).
         head.extend(tui::search_spans(
             &tui::SearchLine {
                 filter: "",
-                query: &app.query,
-                searching: app.mode == Mode::Search,
-                kept: app.matches.len(),
+                query: &app.ls.query,
+                searching: app.ls.mode == Mode::Search,
+                kept: app.ls.matches.len(),
                 total,
             },
             w.saturating_sub(1 + 6 + 3),
@@ -916,11 +801,11 @@ fn draw_list(app: &App, sty: &dyn Fn(&str) -> RtStyle, frame: &mut Frame, area: 
         w
     };
 
-    if app.docs.is_empty() || app.matches.is_empty() {
+    if app.docs.is_empty() || app.ls.matches.is_empty() {
         let msg = if app.docs.is_empty() {
             "No memory docs yet. `tasqx memory add <title> <body>` stores one.".to_string()
         } else {
-            format!("Nothing matches {:?}. Esc clears the search.", app.query)
+            format!("Nothing matches {:?}. Esc clears the search.", app.ls.query)
         };
         line_at(
             frame,
@@ -964,10 +849,10 @@ fn draw_list(app: &App, sty: &dyn Fn(&str) -> RtStyle, frame: &mut Frame, area: 
         budget,
     );
 
-    let first = first_visible(app.cursor, app.matches.len(), rows);
-    for (n, &i) in app.matches.iter().enumerate().skip(first).take(rows) {
+    let first = first_visible(app.ls.cursor, app.ls.matches.len(), rows);
+    for (n, &i) in app.ls.matches.iter().enumerate().skip(first).take(rows) {
         let d = &app.docs[i];
-        let on = n == app.cursor;
+        let on = n == app.ls.cursor;
         let mark = match (on, app.unicode) {
             (true, true) => "▸",
             (true, false) => ">",
@@ -1092,7 +977,7 @@ fn draw_detail(app: &App, sty: &dyn Fn(&str) -> RtStyle, frame: &mut Frame, area
     let rows = app.detail_rows();
     let top = y0 + 5;
     let lines = app.body_lines(width);
-    for (r, line) in lines.iter().skip(app.scroll).take(rows).enumerate() {
+    for (r, line) in lines.iter().skip(app.ls.scroll).take(rows).enumerate() {
         let mut spans = vec![Span::raw(" ")];
         spans.extend(doc_spans(line, sty));
         line_at(frame, area, top + r as u16, x0, spans);
@@ -1197,7 +1082,7 @@ mod tests {
         a.on_key(press(KeyCode::Char('/')));
         typed(&mut a, "deploy checklist smoke tests");
         let head = row(&draw(&a, MIN_WIDTH, 12), 0);
-        let n = a.matches.len();
+        let n = a.ls.matches.len();
         assert!(head.contains(&format!("{n} of 4 match")), "{head}");
     }
 
@@ -1236,11 +1121,11 @@ mod tests {
     #[test]
     fn slash_opens_the_search_where_j_and_q_are_letters() {
         let mut a = app();
-        assert_eq!(a.on_key(press(KeyCode::Char('/'))), None);
-        assert_eq!(a.mode, Mode::Search);
+        assert!(!a.on_key(press(KeyCode::Char('/'))));
+        assert_eq!(a.ls.mode, Mode::Search);
         typed(&mut a, "jq");
-        assert_eq!(a.query, "jq");
-        assert_eq!(a.mode, Mode::Search, "q must not leave the search");
+        assert_eq!(a.ls.query, "jq");
+        assert_eq!(a.ls.mode, Mode::Search, "q must not leave the search");
     }
 
     #[test]
@@ -1250,17 +1135,13 @@ mod tests {
             a.on_key(press(KeyCode::Char('/')));
             typed(&mut a, "deploy");
             a.on_key(press(leave));
-            assert_eq!(a.mode, Mode::List);
-            assert_eq!(a.query, "deploy", "{leave:?} dropped the filter");
-            assert_eq!(a.matches.len(), 2);
-            assert_eq!(a.on_key(press(KeyCode::Esc)), None, "the first esc clears");
-            assert_eq!(a.query, "");
-            assert_eq!(a.matches.len(), 4);
-            assert_eq!(
-                a.on_key(press(KeyCode::Esc)),
-                Some(Action::Quit),
-                "the next leaves"
-            );
+            assert_eq!(a.ls.mode, Mode::List);
+            assert_eq!(a.ls.query, "deploy", "{leave:?} dropped the filter");
+            assert_eq!(a.ls.matches.len(), 2);
+            assert!(!a.on_key(press(KeyCode::Esc)), "the first esc clears");
+            assert_eq!(a.ls.query, "");
+            assert_eq!(a.ls.matches.len(), 4);
+            assert!(a.on_key(press(KeyCode::Esc)), "the next leaves");
         }
     }
 
@@ -1280,7 +1161,7 @@ mod tests {
         a.on_key(press(KeyCode::Char('/')));
         typed(&mut a, "s");
         assert_ne!(
-            a.matches[0], 2,
+            a.ls.matches[0], 2,
             "the fixture no longer moves the doc off the top"
         );
         assert_eq!(
@@ -1297,7 +1178,11 @@ mod tests {
         let mut a = app();
         a.on_key(press(KeyCode::Char('/')));
         typed(&mut a, "deploy");
-        let ids: Vec<&str> = a.matches.iter().map(|&i| a.docs[i].id.as_str()).collect();
+        let ids: Vec<&str> =
+            a.ls.matches
+                .iter()
+                .map(|&i| a.docs[i].id.as_str())
+                .collect();
         assert_eq!(ids, ["a", "c"], "the title hit must come first");
     }
 
@@ -1306,10 +1191,10 @@ mod tests {
         let mut a = app();
         a.on_key(press(KeyCode::Char('j')));
         a.on_key(press(KeyCode::Enter));
-        assert_eq!(a.mode, Mode::Detail);
+        assert_eq!(a.ls.mode, Mode::Detail);
         assert_eq!(a.selected().unwrap().id, "b");
         a.on_key(press(KeyCode::Char('q')));
-        assert_eq!(a.mode, Mode::List, "q in the detail goes back, not out");
+        assert_eq!(a.ls.mode, Mode::List, "q in the detail goes back, not out");
         assert_eq!(a.selected().unwrap().id, "b");
     }
 
@@ -1365,7 +1250,7 @@ mod tests {
                 t => panic!("the key table names {t:?}, which this test cannot press"),
             }
         };
-        let state = |a: &App| (a.mode, a.cursor, a.query.clone(), a.scroll);
+        let state = |a: &App| (a.ls.mode, a.ls.cursor, a.ls.query.clone(), a.ls.scroll);
         for (mode, table) in [
             (Mode::List, LIST_KEYS),
             (Mode::Search, SEARCH_KEYS),
@@ -1377,7 +1262,7 @@ mod tests {
                     let before = state(&a);
                     let action = a.on_key(key_of(tok));
                     assert!(
-                        action.is_some() || state(&a) != before,
+                        action || state(&a) != before,
                         "{mode:?}: `{tok}` ({}) did nothing",
                         k.help
                     );
@@ -1535,7 +1420,11 @@ mod tests {
         );
         a.on_key(press(KeyCode::Char('/')));
         typed(&mut a, "tui");
-        let ids: Vec<&str> = a.matches.iter().map(|&i| a.docs[i].id.as_str()).collect();
+        let ids: Vec<&str> =
+            a.ls.matches
+                .iter()
+                .map(|&i| a.docs[i].id.as_str())
+                .collect();
         assert_eq!(
             ids,
             ["z", "y"],
@@ -1568,7 +1457,11 @@ mod tests {
         );
         a.on_key(press(KeyCode::Char('/')));
         typed(&mut a, "tui");
-        let ids: Vec<&str> = a.matches.iter().map(|&i| a.docs[i].id.as_str()).collect();
+        let ids: Vec<&str> =
+            a.ls.matches
+                .iter()
+                .map(|&i| a.docs[i].id.as_str())
+                .collect();
         assert_eq!(
             ids.first(),
             Some(&"y"),

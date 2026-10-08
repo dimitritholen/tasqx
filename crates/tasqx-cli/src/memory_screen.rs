@@ -74,7 +74,7 @@ pub(crate) fn run_memory_screen(
             let Event::Key(key) = event::read()? else {
                 continue;
             };
-            if app.on_key(key) == Some(tui::memory::Action::Quit) {
+            if app.on_key(key) {
                 return Ok(());
             }
         }
