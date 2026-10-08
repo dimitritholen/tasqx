@@ -32,6 +32,9 @@ release also trims tasqx-core's public API, which is why it is a minor bump.
   hit says why it matched (D196).
 - **`undo` reaches done, cancel, tag and modify; `tasqx unarchive`** (D215). Notes can
   be named by position or id prefix and moved to another task (D211).
+- **A byte-identical `memory import` is a no-op** (the doc keeps its rev, modified and
+  events, and the summary says unchanged), and **`task.brief` pages a long annotation
+  history** instead of overrunning the response budget (D220).
 
 ## 0.14.0
 
