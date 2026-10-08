@@ -16,7 +16,7 @@ is a bug worth reporting.
 | `crates/tasqx-cli` | The `tasqx` binary: argument parsing, rendering, the TUI screens and the in-binary docs. |
 | `docs/wiki`, `docs/guides` | User documentation. Drift guards in `crates/tasqx-cli/tests/` check both. |
 | `docs/site` | The `tasqx docs` site's own pages (overview, install, filters, …), rendered with the wiki and the guides. |
-| `docs/maintainers` | How the project itself is run: terminal house style, mutation testing, dependency policy, the Homebrew tap. |
+| `docs/maintainers` | How the project itself is run: terminal house style, mutation testing, dependency policy, the Homebrew tap, building and signing the desktop app. |
 | `scripts/` | Release helpers, installer smoke tests and screen-capture tools. |
 
 There is one JSON API, and every surface — the CLI, the MCP server, the HTML
