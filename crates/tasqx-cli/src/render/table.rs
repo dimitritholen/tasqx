@@ -280,6 +280,66 @@ pub(crate) fn row_cells<S: AsRef<str>>(
     )
 }
 
+/// Column widths for a table whose first column is a name and whose others are
+/// numbers (#234 item 2): the name is sized to its entries and `key_extra`
+/// (the header, a TOTAL label), capped, and is the one column that gives when
+/// the terminal is narrow. A number cut to fit is a different number, while
+/// one dropped to fit hides a bucket the reader may have asked for by name
+/// (`--metrics tokens_in`), so past the key's floor the row overflows.
+/// `rows` pairs each key with its cells, a total row included; `labels` heads
+/// the number columns.
+pub(crate) fn num_widths<'a>(
+    ctx: &Ctx,
+    key_extra: &[&str],
+    labels: &[String],
+    rows: impl Iterator<Item = (&'a str, &'a [String])> + Clone,
+) -> Vec<usize> {
+    const MIN_KEY: usize = 8;
+    const MAX_KEY: usize = 32;
+    let key_w = rows
+        .clone()
+        .map(|(key, _)| width(key))
+        .chain(key_extra.iter().map(|k| width(k)))
+        .max()
+        .unwrap_or(0)
+        .min(MAX_KEY);
+    let mut cols = vec![Column::shrinks(key_w, MIN_KEY.min(key_w))];
+    for (n, label) in labels.iter().enumerate() {
+        let w = rows
+            .clone()
+            .map(|(_, cells)| width(&cells[n]))
+            .chain([width(label)])
+            .max()
+            .unwrap_or(0);
+        cols.push(Column::fixed(w));
+    }
+    columns::fit(&cols, ctx.cols)
+}
+
+/// One line of a [`num_widths`] table: the key cell, then every other cell
+/// right-aligned. The padding goes OUTSIDE any paint, so `join_cells` can trim
+/// the end and the escapes never count as width.
+pub(crate) fn num_line(
+    ctx: &Ctx,
+    w: &[usize],
+    key: String,
+    cells: Vec<(Option<&str>, String)>,
+) -> String {
+    let mut parts = vec![key];
+    for ((role, c), cw) in cells.into_iter().zip(&w[1..]) {
+        if *cw == 0 {
+            continue;
+        }
+        let pad = " ".repeat(cw.saturating_sub(width(&c)));
+        let c = match role {
+            Some(r) => ctx.paint(r, &c),
+            None => c,
+        };
+        parts.push(format!("{pad}{c}"));
+    }
+    join_cells(parts)
+}
+
 /// The header line for a fitted table. `when_label` must be the same string the
 /// widths were fitted with — see [`TaskCols::fit`].
 pub(crate) fn header_line(c: &TaskCols, when_label: &str) -> String {
