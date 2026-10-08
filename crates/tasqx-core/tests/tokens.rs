@@ -1011,6 +1011,12 @@ fn a_still_active_neighbour_contests_a_shared_session_window() {
     use tasqx_core::otlp::OtlpSample;
     use tasqx_core::tokens::UsageSample;
 
+    // Session-keyed with no `transcript_path`: should the OTLP sample ever
+    // miss the window, `compute_attribution` falls through to a root scan, so
+    // it runs under an isolated, empty HOME — never the developer's real one.
+    let _guard = LOCATE_ENV.lock().unwrap_or_else(|e| e.into_inner());
+    let dir = scratch_dir("still-active-neighbour");
+
     let e = engine();
     let parent = e.task_add(&json!({ "title": "parent" })).unwrap()["short_id"].clone();
     let child = e.task_add(&json!({ "title": "child" })).unwrap()["short_id"].clone();
@@ -1023,13 +1029,12 @@ fn a_still_active_neighbour_contests_a_shared_session_window() {
 
     // One OTLP sample landing inside both windows: the parent's window has no
     // end yet, because it is still active.
-    let sample_ts = jiff::Timestamp::now().to_string();
     e.otlp_ingest(&[OtlpSample {
         tool: "claude-code".into(),
         session_id: Some("sess-ov".into()),
         sample: UsageSample {
             id: None,
-            ts: sample_ts,
+            ts: "2026-07-25T10:15:00Z".into(),
             model: None,
             input_tokens: 5000,
             output_tokens: 9000,
@@ -1042,6 +1047,29 @@ fn a_still_active_neighbour_contests_a_shared_session_window() {
     // Only the child finishes; the parent is still active.
     e.task_done(&json!({ "ref": child, "client": "claude-code", "session_id": "sess-ov" }))
         .unwrap();
+
+    // Pin the field-observed instants (engine timestamps are wall-clock): the
+    // parent opened at 09:50, the child spans [10:00, 10:30], the sample sits
+    // at 10:15. The parent's open window still ends at the engine's `now`,
+    // which every clock this test can run under is past 2026-07-25.
+    let (parent_id, child_id) = (task_uuid(&e, &parent), task_uuid(&e, &child));
+    e.conn()
+        .execute(
+            "UPDATE events SET payload = ?1 WHERE entity_id = ?2 AND op = 'start'",
+            (
+                json!({ "interval_started": "2026-07-25T09:50:00Z", "session_id": "sess-ov" })
+                    .to_string(),
+                &parent_id,
+            ),
+        )
+        .unwrap();
+    e.conn()
+        .execute(
+            "UPDATE events SET payload = ?1 WHERE entity_id = ?2 AND op = 'start'",
+            (r#"{"interval_started":"2026-07-25T10:00:00Z"}"#, &child_id),
+        )
+        .unwrap();
+    pin_done_session(&e, &child_id, "2026-07-25T10:30:00Z", "sess-ov");
 
     let pending = pending_attributions(&e).unwrap();
     let pa = pending
@@ -1059,8 +1087,8 @@ fn a_still_active_neighbour_contests_a_shared_session_window() {
     // End to end: the child must NOT bank the contested spend while the
     // parent is still active — it must stay transient, exactly like two
     // completed overlapping windows do.
-    let now = jiff::Timestamp::now();
-    match compute_attribution(pa, now) {
+    let now: jiff::Timestamp = "2026-07-25T10:35:00Z".parse().unwrap();
+    match with_isolated_home(&dir, || compute_attribution(pa, now)) {
         Ok(r) => panic!(
             "child banked a contested spend while its still-active parent shares \
              the session: {r:?}"
@@ -1071,6 +1099,8 @@ fn a_still_active_neighbour_contests_a_shared_session_window() {
             err.message
         ),
     }
+
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 /// A wrong-typed `sample_ids` is a caller error, not an absent value.
@@ -1245,11 +1275,13 @@ fn otlp_ingest_prunes_samples_past_the_retention_window() {
     // when it seeded a row dated 2000-01-01: any window from seconds to
     // millennia pruned that row, so it proved a DELETE ran and nothing about
     // WHEN. The pair pins the window's MAGNITUDE. It deliberately does not pin
-    // `<` vs `<=`: the cutoff comes from `Timestamp::now()` inside the ingest,
+    // `<` vs `<=`: the cutoff comes from `clock::now()` inside the ingest,
     // so a row landing exactly on it is a race no deterministic test can seed.
+    // The seeds read that same clock, so a `TASQX_NOW` pin moves both together
+    // and a real clock step has a day of margin either side (#94).
     let day = jiff::SignedDuration::from_hours(24);
-    let keep = (jiff::Timestamp::now() - day * 29).to_string();
-    let prune = (jiff::Timestamp::now() - day * 31).to_string();
+    let keep = (tasqx_core::clock::now() - day * 29).to_string();
+    let prune = (tasqx_core::clock::now() - day * 31).to_string();
     for (id, created) in [("young", &keep), ("old", &prune)] {
         e.conn()
             .execute(
@@ -1590,6 +1622,11 @@ fn an_otel_measurement_that_agrees_on_a_model_records_it() {
     use tasqx_core::otlp::OtlpSample;
     use tasqx_core::tokens::UsageSample;
 
+    // Session-keyed with no `transcript_path`: a sample outside the window
+    // falls through to a root scan, so even that path must find an empty HOME.
+    let _guard = LOCATE_ENV.lock().unwrap_or_else(|e| e.into_inner());
+    let dir = scratch_dir("model-otel");
+
     let e = engine();
     let sid = e.task_add(&json!({ "title": "t" })).unwrap()["short_id"].clone();
     e.task_start(&json!({ "ref": sid, "session_id": "sess-model-otel" }))
@@ -1600,7 +1637,7 @@ fn an_otel_measurement_that_agrees_on_a_model_records_it() {
         session_id: Some("sess-model-otel".into()),
         sample: UsageSample {
             id: None,
-            ts: jiff::Timestamp::now().to_string(),
+            ts: "2026-07-25T10:15:00Z".into(),
             model: Some("claude-opus-4-6".into()),
             input_tokens: 5000,
             output_tokens: 9000,
@@ -1613,13 +1650,25 @@ fn an_otel_measurement_that_agrees_on_a_model_records_it() {
     e.task_done(&json!({ "ref": sid, "client": "claude-code", "session_id": "sess-model-otel" }))
         .unwrap();
 
-    let now = jiff::Timestamp::now();
+    // Pin the field-observed instants (engine timestamps are wall-clock): a
+    // backward clock step between `task_start` and a wall-clock stamp dropped
+    // the sample out of the window and fell through to the real `~/.claude`.
+    let id = task_uuid(&e, &sid);
+    e.conn()
+        .execute(
+            "UPDATE events SET payload = ?1 WHERE entity_id = ?2 AND op = 'start'",
+            (r#"{"interval_started":"2026-07-25T10:00:00Z"}"#, &id),
+        )
+        .unwrap();
+    pin_done_session(&e, &id, "2026-07-25T10:30:00Z", "sess-model-otel");
+
+    let now: jiff::Timestamp = "2026-07-25T10:35:00Z".parse().unwrap();
     let pending = pending_attributions(&e).unwrap();
     let pa = pending
         .iter()
         .find(|p| p.short_id == sid.as_i64().unwrap())
         .expect("the completed task is pending attribution");
-    let r = compute_attribution(pa, now).unwrap();
+    let r = with_isolated_home(&dir, || compute_attribution(pa, now)).unwrap();
     assert!(r.found, "the OTLP-buffered spend must bank");
     assert_eq!(r.source, tasqx_core::tokens::SOURCE_OTEL);
     attribute_one(&e, pa, &r).unwrap();
@@ -1637,6 +1686,8 @@ fn an_otel_measurement_that_agrees_on_a_model_records_it() {
         Some("claude-opus-4-6"),
         "the buffered sample's model must survive onto the OTEL measurement"
     );
+
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 /// `otlp_samples_for_session` reads its five numeric columns positionally
@@ -1653,6 +1704,10 @@ fn an_otel_measurement_keeps_cache_read_and_cache_creation_in_their_own_columns(
     use tasqx_core::attribution::{attribute_one, compute_attribution, pending_attributions};
     use tasqx_core::otlp::OtlpSample;
     use tasqx_core::tokens::UsageSample;
+
+    // Session-keyed with no `transcript_path`, like its sibling above.
+    let _guard = LOCATE_ENV.lock().unwrap_or_else(|e| e.into_inner());
+    let dir = scratch_dir("cache-cols-otel");
 
     let e = engine();
     let sid = e.task_add(&json!({ "title": "t" })).unwrap()["short_id"].clone();
@@ -1713,7 +1768,7 @@ fn an_otel_measurement_keeps_cache_read_and_cache_creation_in_their_own_columns(
     );
 
     let now: jiff::Timestamp = "2026-07-25T10:35:00Z".parse().unwrap();
-    let r = compute_attribution(pa, now).unwrap();
+    let r = with_isolated_home(&dir, || compute_attribution(pa, now)).unwrap();
     assert!(r.found, "the OTLP-buffered spend must bank");
     attribute_one(&e, pa, &r).unwrap();
 
@@ -1732,6 +1787,8 @@ fn an_otel_measurement_keeps_cache_read_and_cache_creation_in_their_own_columns(
         m["cache_creation_tokens"], 11,
         "the banked measurement must keep cache_creation_tokens in its own field"
     );
+
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 /// One Claude Code transcript line carrying all four usage counts.
@@ -3277,7 +3334,7 @@ fn token_add_names_every_missing_required_field_at_once() {
 // `classify_task`'s `stored`-keyed scope entirely; these tests exercise the
 // separate `locate` path `token_recompute` runs for exactly that gap.
 
-/// Serialises the tests below that override `$HOME`/`$CLAUDE_CONFIG_DIR`/
+/// Serialises the tests that override `$HOME`/`$CLAUDE_CONFIG_DIR`/
 /// `$USERPROFILE` to isolate `locate_transcripts_by_task_call`'s filesystem
 /// scan from a developer's real `~/.claude` — the same hazard, and the same
 /// fix, `attribution.rs`'s own `DISCOVERY_ENV` guards against.
