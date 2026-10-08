@@ -305,6 +305,83 @@ describe('ConnectionController', () => {
     expect(controller.getState()).toMatchObject({ status: 'live', diagnostic: 'manual refresh' });
   });
 
+  it('resynchronizes when an entity revision goes backwards, but not on a repeat', async () => {
+    const { transport, baseline, controller } = make();
+    await controller.start();
+    const push = (rev: number): void =>
+      transport.pushLine(
+        JSON.stringify({ event: 'task.changed', data: { op: 'update', short_id: 4, entity_id: 'u4', _rev: rev } }),
+      );
+
+    // The daemon stamps each row of one pump with the task's current rev, so
+    // a burst for one task repeats a revision and that is not an anomaly.
+    push(5);
+    push(5);
+    push(6);
+    await flush();
+    expect(baseline).toHaveBeenCalledTimes(1);
+
+    push(3);
+    await flush();
+
+    expect(baseline).toHaveBeenCalledTimes(2);
+    expect(controller.resyncReasons).toEqual(['non-increasing revision: u4 6 -> 3']);
+    expect(controller.getState().status).toBe('live');
+
+    // A fresh baseline starts a fresh stream: the old high-water mark is gone.
+    push(3);
+    await flush();
+    expect(baseline).toHaveBeenCalledTimes(2);
+  });
+
+  it('recovers events missed across a daemon restart with the full baseline before deltas resume', async () => {
+    const gate = deferred();
+    let loads = 0;
+    const { transport, baseline, controller } = make(async () => {
+      loads += 1;
+      if (loads === 2) await gate.promise;
+    });
+    const seen: number[] = [];
+    controller.onEvent((event) => seen.push(Number((event as TaskChangedEvent).data.short_id)));
+    await controller.start();
+
+    // The daemon goes away; whatever it wrote meanwhile never reaches us.
+    transport.pushClose('daemon restarted');
+    expect(controller.getState()).toMatchObject({ status: 'disconnected', stale: true });
+
+    await vi.advanceTimersByTimeAsync(0);
+    expect(controller.getState()).toMatchObject({ status: 'synchronizing', stale: true });
+    expect(transport.connects).toBe(2);
+
+    // A delta that lands during the second baseline waits for it.
+    transport.pushLine(changed(7));
+    expect(seen).toEqual([]);
+
+    gate.resolve();
+    await flush();
+
+    expect(baseline).toHaveBeenCalledTimes(2);
+    expect(controller.getState()).toMatchObject({ status: 'live', stale: false });
+    expect(seen).toEqual([7]);
+  });
+
+  it('keeps climbing the ladder while connects succeed but the baseline does not', async () => {
+    const { controller } = make(async () => {
+      throw new Error('task.list failed');
+    });
+
+    await controller.start();
+    const delays = [retryIn(controller)];
+    for (const step of [0, 250, 500]) {
+      await vi.advanceTimersByTimeAsync(step);
+      delays.push(retryIn(controller));
+    }
+
+    // A good connect is not a good snapshot: the ladder does not reset.
+    expect(delays).toEqual([0, 250, 500, 1000]);
+    expect(controller.getState().diagnostic).toBe('connect failed: task.list failed');
+  });
+
   it('keeps only the last 20 resync reasons', async () => {
     const { transport, controller } = make();
     await controller.start();
