@@ -111,7 +111,10 @@ tasqx memory import docs/adr
 - Re-importing the same directory *replaces* those documents instead of
   duplicating them, so it's safe to re-run whenever the sources change.
   Every document a re-import replaced is named under the summary line, with
-  the title it had (`replaced_docs` under `--json`).
+  the title it had (`replaced_docs` under `--json`). A document whose title
+  and text are exactly what is stored is left alone — same revision, no
+  event, not counted as replaced — and the summary reports it as `unchanged`
+  (`2 replaced, 3 unchanged`; `unchanged` under `--json`).
   Over the JSON API, a batch that names one source twice is refused whole.
 - A document whose recorded file still exists and is not the file being
   imported under its source — two clones under the same directory name — is

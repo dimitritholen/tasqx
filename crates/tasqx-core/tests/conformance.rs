@@ -1123,12 +1123,14 @@ const IMPORTED_DOC_ROW: &[Field] = &[
     // result already does — null when the import named none.
     nul("project", Ty::Str),
     req("replaced", Ty::Bool),
+    req("unchanged", Ty::Bool),
     req("_rev", Ty::Int),
 ];
 
 const R_MEMORY_IMPORT: Shape = &[&[
     req("imported", Ty::Int),
     req("replaced", Ty::Int),
+    req("unchanged", Ty::Int),
     req_of("docs", Ty::Array, &[IMPORTED_DOC_ROW]),
     // #972: additive — each doc a replace overwrote, always present.
     req_of("replaced_docs", Ty::Array, &[REPLACED_DOC_ROW]),

@@ -1179,11 +1179,16 @@ pub const R_MEMORY_REMOVE: &[FieldDoc] = &[
 
 /// `memory.import`'s result.
 pub const R_MEMORY_IMPORT: &[FieldDoc] = &[
-    f("imported", "integer", "How many docs the batch stored."),
+    f("imported", "integer", "How many docs the batch carried, unchanged ones included."),
     f(
         "replaced",
         "integer",
-        "How many of those replaced a doc with the same `source`, in place.",
+        "How many of those replaced a doc with the same `source`, in place, because its title, body or named project differed.",
+    ),
+    f(
+        "unchanged",
+        "integer",
+        "How many matched a stored doc's title and body exactly and were left alone: no new `rev`, no event, not in `replaced_docs` (#86).",
     ),
     f("docs", "array", "One row per document in the batch."),
     f(
@@ -1211,6 +1216,7 @@ pub const IMPORTED_DOC_ROW: &[FieldDoc] = &[
     n("source", "string", "The source it was keyed on."),
     n("project", "string", "The batch's `project`, echoed per doc — null when the import named none (#657)."),
     f("replaced", "boolean", "Whether this row replaced an existing doc rather than creating one (D143)."),
+    f("unchanged", "boolean", "Whether this row matched the stored doc exactly and was left alone, `_rev` as it was (#86)."),
     f("_rev", "integer", "The row's revision counter, bumped by every write. Send it back as `expected_rev` to make a change conditional."),
 ];
 
