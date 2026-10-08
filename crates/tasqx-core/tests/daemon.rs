@@ -1612,6 +1612,50 @@ fn tokens_recompute_is_refused_over_the_socket_naming_the_in_process_invocation(
     let _ = std::fs::remove_file(&db);
 }
 
+/// A `core.capabilities` request padded with an ignored field to exactly
+/// `total` bytes, newline included.
+fn padded_request(total: usize) -> String {
+    let bare =
+        json!({ "tasqx": "1", "id": 1, "method": "core.capabilities", "params": {}, "pad": "" });
+    let pad = total - 1 - bare.to_string().len();
+    let mut line =
+        json!({ "tasqx": "1", "id": 1, "method": "core.capabilities", "params": {}, "pad": "x".repeat(pad) })
+            .to_string();
+    line.push('\n');
+    assert_eq!(line.len(), total);
+    line
+}
+
+#[test]
+fn a_request_frame_at_the_cap_is_served_and_one_byte_over_ends_the_connection() {
+    const CAP: usize = 1 << 20; // DESIGN: a daemon refuses a request frame over 1 MiB.
+    let (db, sock) = unique_target();
+    let shutdown = start_daemon(&db, &sock);
+
+    let mut c = daemon::try_connect(&sock).expect("connect");
+    c.send_line(&padded_request(CAP)).unwrap();
+    let reply: Value = serde_json::from_str(&c.read_line().unwrap().expect("a reply")).unwrap();
+    assert_eq!(reply.get("ok"), Some(&Value::Bool(true)), "{reply}");
+
+    // One byte over: never dispatched, and the daemon hangs up on this client.
+    // (It sends no envelope today; this pins the refusal, not that silence.)
+    // The write itself may fail once the daemon has closed on us.
+    let _ = c.send_line(&padded_request(CAP + 1));
+    while let Ok(Some(l)) = c.read_line() {
+        let v: Value = serde_json::from_str(&l).unwrap();
+        assert_ne!(v.get("ok"), Some(&Value::Bool(true)), "served: {v}");
+    }
+
+    // The refusal is per-connection: the daemon itself is still up.
+    let mut again = daemon::try_connect(&sock).expect("reconnect");
+    let caps = again.request("core.capabilities", &json!({})).unwrap();
+    assert_eq!(caps.get("ok"), Some(&Value::Bool(true)), "{caps}");
+
+    drop((c, again));
+    shutdown.store(true, Ordering::Relaxed);
+    let _ = std::fs::remove_file(&db);
+}
+
 // ---- D74: the store is a read surface of the daemon itself -------------------
 
 /// D74's socket half: any ordinary client can ask a running daemon which store

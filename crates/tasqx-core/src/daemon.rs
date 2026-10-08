@@ -4200,4 +4200,152 @@ mod tests {
             "token attribution must be opt-in (DESIGN §10)"
         );
     }
+
+    // ---- read_frame_capped / MAX_FRAME_BYTES / is_read_method (#77) -------------
+
+    /// Run one capped read; `Ok` carries the frame text, `Err` the error kind.
+    fn capped<R: BufRead>(r: &mut R, max: usize) -> Result<(usize, String), io::ErrorKind> {
+        let (mut bytes, mut text) = (Vec::new(), String::new());
+        read_frame_capped(r, &mut bytes, &mut text, max)
+            .map(|n| (n, text))
+            .map_err(|e| e.kind())
+    }
+
+    /// A frame of exactly `total` bytes, newline included.
+    fn frame_of(total: usize) -> Vec<u8> {
+        let mut f = vec![b'a'; total - 1];
+        f.push(b'\n');
+        f
+    }
+
+    #[test]
+    fn the_frame_cap_is_one_mebibyte() {
+        assert_eq!(MAX_FRAME_BYTES, 1 << 20);
+    }
+
+    #[test]
+    fn a_frame_at_the_cap_is_accepted_and_one_byte_over_is_refused() {
+        // Across a buffer boundary too: a 4-byte BufReader splits the newline
+        // away from the bytes before it, and 64 KiB exercises the real path.
+        for cap in [4, 5, 16, 64 * 1024] {
+            for reader_cap in [4, 7, 8 * 1024] {
+                let mut at = BufReader::with_capacity(reader_cap, io::Cursor::new(frame_of(cap)));
+                let (n, text) = capped(&mut at, cap).expect("a frame at the cap is accepted");
+                assert_eq!((n, text.len()), (cap, cap), "cap {cap} reader {reader_cap}");
+
+                let mut over =
+                    BufReader::with_capacity(reader_cap, io::Cursor::new(frame_of(cap + 1)));
+                assert_eq!(
+                    capped(&mut over, cap),
+                    Err(io::ErrorKind::InvalidData),
+                    "cap {cap} reader {reader_cap}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn the_real_cap_admits_one_mebibyte_and_refuses_one_byte_more() {
+        let mut at = BufReader::new(io::Cursor::new(frame_of(MAX_FRAME_BYTES)));
+        assert_eq!(capped(&mut at, MAX_FRAME_BYTES).unwrap().0, MAX_FRAME_BYTES);
+        let mut over = BufReader::new(io::Cursor::new(frame_of(MAX_FRAME_BYTES + 1)));
+        assert_eq!(
+            capped(&mut over, MAX_FRAME_BYTES),
+            Err(io::ErrorKind::InvalidData)
+        );
+    }
+
+    #[test]
+    fn the_refusal_names_the_limit() {
+        let (mut bytes, mut text) = (Vec::new(), String::new());
+        let mut r = BufReader::new(io::Cursor::new(frame_of(9)));
+        let e = read_frame_capped(&mut r, &mut bytes, &mut text, 8).unwrap_err();
+        assert_eq!(e.to_string(), "request frame exceeds limit");
+    }
+
+    #[test]
+    fn a_stream_with_no_newline_is_refused_instead_of_buffered() {
+        // The client this cap exists for: bytes and never a `\n`. The source is
+        // finite-but-huge and errors past 100x the cap, so a cap that fails to
+        // bite fails the test (Other) instead of hanging or exhausting memory.
+        struct Flood(usize);
+        impl io::Read for Flood {
+            fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+                if self.0 == 0 {
+                    return Err(io::Error::other("read past 100x the cap"));
+                }
+                let n = buf.len().min(self.0);
+                buf[..n].fill(b'a');
+                self.0 -= n;
+                Ok(n)
+            }
+        }
+        let mut flood = BufReader::with_capacity(8, Flood(6400));
+        assert_eq!(capped(&mut flood, 64), Err(io::ErrorKind::InvalidData));
+    }
+
+    #[test]
+    fn a_refused_frame_leaves_the_reader_on_the_next_frame() {
+        let mut input = frame_of(10);
+        input.extend_from_slice(b"ok\n");
+        let mut r = BufReader::with_capacity(4, &input[..]);
+        assert_eq!(capped(&mut r, 8), Err(io::ErrorKind::InvalidData));
+        assert_eq!(capped(&mut r, 8), Ok((3, "ok\n".to_string())));
+        assert_eq!(capped(&mut r, 8), Ok((0, String::new())), "then EOF");
+    }
+
+    #[test]
+    fn eof_inside_a_frame_returns_what_arrived() {
+        let mut r = BufReader::with_capacity(4, &b"abcdef"[..]);
+        assert_eq!(capped(&mut r, 8), Ok((6, "abcdef".to_string())));
+        let mut over = BufReader::with_capacity(4, &b"abcdefghi"[..]);
+        assert_eq!(capped(&mut over, 8), Err(io::ErrorKind::InvalidData));
+    }
+
+    const READ_METHODS: [&str; 7] = [
+        "task.list",
+        "task.get",
+        "project.list",
+        "report.summary",
+        "store.export",
+        "event.list",
+        "core.capabilities",
+    ];
+
+    fn request(method: &str) -> String {
+        json!({ "id": 1, "method": method, "params": {} }).to_string()
+    }
+
+    #[test]
+    fn every_read_method_skips_the_pump() {
+        for m in READ_METHODS {
+            assert!(is_read_method(&request(m)), "{m} is a read");
+        }
+    }
+
+    #[test]
+    fn no_other_method_in_the_api_is_classed_as_a_read() {
+        let methods: Vec<&str> = crate::dispatch::PARAMS.iter().map(|(m, _, _)| *m).collect();
+        for m in READ_METHODS {
+            assert!(methods.contains(&m), "{m} is not an API method any more");
+        }
+        for m in methods.iter().filter(|m| !READ_METHODS.contains(m)) {
+            assert!(!is_read_method(&request(m)), "{m} may write; it must pump");
+        }
+    }
+
+    #[test]
+    fn unrecognised_or_unparseable_input_is_treated_as_a_write() {
+        for line in [
+            "",
+            "not json",
+            "{}",
+            r#"{"id":1}"#,
+            r#"{"method":7}"#,
+            r#"{"method":"task.list.extra"}"#,
+            r#"{"method":"TASK.LIST"}"#,
+        ] {
+            assert!(!is_read_method(line), "{line:?}");
+        }
+    }
 }
