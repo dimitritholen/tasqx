@@ -168,7 +168,7 @@ pub(super) fn page() -> String {
         "An agent cannot reach every method: {} of them are deliberately off the tool surface. \
          Not exposing a tool is a decision here rather than silence — each one names its reason, \
          and a method that ships with neither a tool nor a line in this table fails the build:",
-        super::count_word(tasqx_core::mcp::unexposed_methods().len()),
+        tasqx_core::mcp::unexposed_methods().len(),
     )));
     let rows: Vec<Vec<String>> = tasqx_core::mcp::unexposed_methods()
         .iter()
@@ -503,10 +503,7 @@ mod tests {
         }
         // And the count in the prose is the one the table has.
         assert!(
-            page.contains(&format!(
-                "{} of them are deliberately",
-                super::super::count_word(unexposed.len())
-            )),
+            page.contains(&format!("{} of them are deliberately", unexposed.len())),
             "the sentence over the table does not count it"
         );
     }
