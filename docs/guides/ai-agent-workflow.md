@@ -5,8 +5,9 @@ core API your shell uses. No glue code, no scraping `--json` output.
 
 ## Wire it up
 
-For Claude Code, one command sets up the server and installs the
-`tasqx-workflow` and `retro` skills:
+For Claude Code, Codex CLI and Gemini CLI, one command sets up the server and
+installs the `tasqx-workflow` and `retro` skills for each tool it finds on
+your PATH:
 
 ```console
 tasqx setup
@@ -19,6 +20,8 @@ server by hand:
 
 ```console
 claude mcp add --scope user tasqx -- tasqx mcp serve --scope write
+codex mcp add tasqx -- tasqx mcp serve --scope write
+gemini mcp add --scope user tasqx tasqx -- mcp serve --scope write
 ```
 
 Any other MCP client takes the same command/args shape:

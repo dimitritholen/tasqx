@@ -1154,10 +1154,10 @@ pub const COMMAND_REF: &[CmdDoc] = &[
         verb: "setup",
         aliases: &[],
         method: "— (no store)",
-        summary: "Install the Claude Code integration: the MCP server and the bundled skills.",
+        summary: "Install the Claude Code, Codex and Gemini integrations: the MCP server and the bundled skills.",
         usage: "tasqx setup [--list | --yes [--force]] [--only NAME]... [--home DIR]",
         examples: &[
-            // Safe: `--list` only reads `~/.claude.json` and two skill files.
+            // Safe: `--list` only reads each tool's MCP config and skill files.
             // Every example that installs is NoRun — `tests/help.rs` runs the
             // Safe ones on the developer's own machine.
             exn("tasqx setup --list", "what is installed; writes nothing"),
@@ -1175,9 +1175,10 @@ pub const COMMAND_REF: &[CmdDoc] = &[
             ),
         ],
         notes: &[
-            "Three items: `mcp` registers `tasqx mcp serve --scope write` with Claude Code at user scope by running `claude mcp add`; `tasqx-workflow` and `retro` are skills written to `~/.claude/skills/<name>/SKILL.md` from copies compiled into this binary, so they match the tasqx you run (D159).",
+            "Three items per tool: `mcp` registers `tasqx mcp serve --scope write` at user level by running the tool's own `mcp add`; `tasqx-workflow` and `retro` are skills written to `~/.claude/skills`, `~/.codex/skills` or `~/.gemini/skills` (`<name>/SKILL.md`) from copies compiled into this binary, so they match the tasqx you run (D159).",
+            "Claude Code is always offered; Codex and Gemini CLI only when `codex` or `gemini` is on PATH. Their items are named `codex:mcp`, `gemini:retro` and so on for --only; Claude's stay bare (`mcp`, `retro`).",
             "A skill that exists and is not byte-equal to the bundled copy reads `differs` — an older copy and your own edit look the same — and is kept unless you pass --force or tick it on the screen. So is an MCP registration that runs anything else, such as the read-only `tasqx mcp serve`; replacing it runs `claude mcp remove` first.",
-            "It never writes `~/.claude.json` itself. Without the `claude` command on PATH, the mcp item prints the exact command to run instead. Piped, with no flags, it prints the list and exits 0.",
+            "It never writes a tool's config file itself (`~/.claude.json`, `~/.codex/config.toml`, `~/.gemini/settings.json`). Without the `claude` command on PATH, the mcp item prints the exact command to run instead. Piped, with no flags, it prints the list and exits 0.",
             crate::setup::RIPWIRE_INSTALL_HINT,
         ],
         see_also: &["mcp"],

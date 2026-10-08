@@ -70,7 +70,7 @@ pub struct Row {
 pub struct App {
     pub rows: Vec<Row>,
     pub cursor: usize,
-    /// Where the items go, as the header names it (`~/.claude`).
+    /// Where the items go, as the header names it (`~`).
     pub at: String,
 }
 
@@ -133,7 +133,7 @@ pub fn render(app: &App, theme: &Theme, caps: &Caps, frame: &mut Frame) {
     .areas(area);
 
     let title = "tasqx setup";
-    let at = format!("Claude Code at {}", app.at);
+    let at = format!("under {}", app.at);
     let gap = (area.width as usize).saturating_sub(render::width(title) + render::width(&at));
     frame.render_widget(
         Paragraph::new(Line::from(vec![
@@ -162,12 +162,12 @@ pub fn render(app: &App, theme: &Theme, caps: &Caps, frame: &mut Frame) {
     let mut lines: Vec<Line> = Vec::new();
     let mut group = "";
     for (i, r) in app.rows.iter().enumerate() {
-        if r.item.group != group {
+        if r.item.tool.label != group {
             // A blank line ahead of every heading but the first (house rule 7).
             if !group.is_empty() {
                 lines.push(Line::raw(""));
             }
-            group = r.item.group;
+            group = r.item.tool.label;
             lines.push(Line::styled(format!("  {group}"), sty("table.label")));
         }
         let here = i == app.cursor;
@@ -221,7 +221,7 @@ mod tests {
                 (&ITEMS[1], Status::Differs),
                 (&ITEMS[2], Status::Current),
             ],
-            "~/.claude".into(),
+            "~".into(),
         )
     }
 
@@ -287,11 +287,11 @@ mod tests {
             .collect();
         let all = text.join("\n");
         assert!(
-            text[0].starts_with("tasqx setup") && text[0].contains("~/.claude"),
+            text[0].starts_with("tasqx setup") && text[0].contains("under ~"),
             "{all}"
         );
         let line = |needle: &str| text.iter().find(|l| l.contains(needle)).unwrap();
-        assert!(line("Connection").trim() == "Connection", "{all}");
+        assert!(line("Claude Code").trim() == "Claude Code", "{all}");
         assert!(line("mcp").starts_with("▸ [x] mcp") && line("mcp").contains("not installed"));
         assert!(
             line("tasqx-workflow").contains("[ ]") && line("tasqx-workflow").contains("differs")

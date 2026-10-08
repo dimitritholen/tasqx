@@ -35,6 +35,9 @@ release also trims tasqx-core's public API, which is why it is a minor bump.
 - **A byte-identical `memory import` is a no-op** (the doc keeps its rev, modified and
   events, and the summary says unchanged), and **`task.brief` pages a long annotation
   history** instead of overrunning the response budget (D220).
+- **`tasqx setup` covers Codex CLI and Gemini CLI** as well as Claude Code: for each one
+  on PATH it registers the MCP server through its own `mcp add` and installs the skills
+  (`codex:mcp`, `gemini:retro` and so on for `--only`) (D224).
 
 ## 0.14.0
 

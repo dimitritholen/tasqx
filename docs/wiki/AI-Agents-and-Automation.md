@@ -7,8 +7,10 @@ properties you do.
 
 ## tasqx setup
 
-Connects tasqx to Claude Code in one step: it registers the MCP server (user
-scope, write access) and installs the `tasqx-workflow` and `retro` skills.
+Connects tasqx to Claude Code, Codex CLI and Gemini CLI in one step. For each
+tool it finds, it registers the MCP server (user level, write access) and
+installs the `tasqx-workflow` and `retro` skills. Claude Code is always
+offered; Codex and Gemini appear when `codex` or `gemini` is on your PATH.
 
 ```console
 tasqx setup
@@ -20,8 +22,12 @@ Without a terminal it prints that list and exits.
 
 - `tasqx setup --list`: what is installed, per item
 - `tasqx setup --yes`: install everything not yet present, no screen
-- `tasqx setup --only retro`: limit to one item (`mcp`, `tasqx-workflow`, `retro`); repeatable
+- `tasqx setup --only retro`: limit to one item (`mcp`, `tasqx-workflow`, `retro`); repeatable. Codex and Gemini items carry the tool's name: `codex:mcp`, `gemini:retro`
 - `tasqx setup --yes --force`: also overwrite a skill file that differs from the one tasqx carries
+
+Each tool is registered through its own command (`claude mcp add`,
+`codex mcp add`, `gemini mcp add`); tasqx never edits their config files. The
+skills land in `~/.claude/skills`, `~/.codex/skills` and `~/.gemini/skills`.
 
 The skill text is compiled into tasqx, so an upgrade brings new skill text
 with it. A skill file you edited is kept unless you pass `--force` or tick it
@@ -45,6 +51,13 @@ To wire it into Claude Code by hand, without the skills that
 
 ```console
 claude mcp add --scope user tasqx -- tasqx mcp serve --scope write
+```
+
+By hand for the other two, the commands `tasqx setup` runs:
+
+```console
+codex mcp add tasqx -- tasqx mcp serve --scope write
+gemini mcp add --scope user tasqx tasqx -- mcp serve --scope write
 ```
 
 Any other MCP client takes the same shape in its config:
