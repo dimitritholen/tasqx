@@ -8,7 +8,7 @@
 use std::io;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
 use std::time::Duration;
 
@@ -45,22 +45,47 @@ fn unique_target() -> (String, String) {
 /// A notifier that records every delivery, so a test can assert on reminder
 /// delivery with no OS notification transport anywhere in the picture (§9).
 #[derive(Default)]
-struct Collecting(Mutex<Vec<Notification>>);
+struct Collecting {
+    seen: Mutex<Vec<Notification>>,
+    arrived: Condvar,
+}
 
 impl Notifier for Collecting {
     fn notify(&self, n: &Notification) {
-        self.0.lock().unwrap().push(n.clone());
+        self.seen.lock().unwrap().push(n.clone());
+        self.arrived.notify_all();
     }
 }
 
 impl Collecting {
     fn titles(&self) -> Vec<String> {
-        self.0
+        self.seen
             .lock()
             .unwrap()
             .iter()
             .map(|n| n.title.clone())
             .collect()
+    }
+
+    /// Block until a notification titled `title` has been delivered.
+    ///
+    /// A `reminded` push does not mean the notifier has run (#1139). The
+    /// reminder tick writes the event, releases the engine lock and only then
+    /// calls `notify`, and the daemon's poller is free to pump that row to
+    /// subscribers in between. Under load a test woke by the push read the
+    /// collector before `notify` had happened and saw `[]`. The budget only
+    /// separates slow from broken, as in [`wait_for_op`].
+    fn wait_for(&self, title: &str) {
+        let (_seen, waited) = self
+            .arrived
+            .wait_timeout_while(self.seen.lock().unwrap(), Duration::from_secs(5), |seen| {
+                !seen.iter().any(|n| n.title == title)
+            })
+            .unwrap();
+        assert!(
+            !waited.timed_out(),
+            "no {title:?} notification arrived within the deadline"
+        );
     }
 }
 
@@ -586,6 +611,7 @@ fn subscriber_receives_a_reminded_push_when_a_reminder_ripens() {
     assert_eq!(reminded[0]["payload"]["at"], json!("2020-01-01T00:00:00Z"));
 
     // And the notifier ran — once, for this task.
+    collector.wait_for("ripe now");
     assert_eq!(collector.titles(), vec!["ripe now".to_string()]);
 
     shutdown.store(true, Ordering::Relaxed);
@@ -622,6 +648,7 @@ fn a_restarted_daemon_does_not_refire_an_already_reminded_reminder() {
         .unwrap();
     let short_id = ok(&added).get("short_id").and_then(Value::as_i64).unwrap();
     wait_for_op(&rx, "reminded");
+    first_collector.wait_for("fire once");
     assert_eq!(first_collector.titles(), vec!["fire once".to_string()]);
     drop(writer);
     shutdown.store(true, Ordering::Relaxed);
@@ -640,6 +667,7 @@ fn a_restarted_daemon_does_not_refire_an_already_reminded_reminder() {
         )
         .unwrap();
     wait_for_op(&rx2, "reminded");
+    second_collector.wait_for("barrier");
 
     // The restarted daemon has now demonstrably run a full scheduling pass.
     // The first task must still carry exactly one `reminded` event.
