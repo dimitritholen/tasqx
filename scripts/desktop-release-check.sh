@@ -130,11 +130,31 @@ remove_created_data() {
     for dir in ${data_dirs[@]+"${data_dirs[@]}"}; do
         mine=true
         for kept in ${existed[@]+"${existed[@]}"}; do [[ "$kept" == "$dir" ]] && mine=false; done
-        if $mine; then rm -rf "$dir"; fi
+        # The webview's helper processes can hold files open for a moment
+        # after the app is gone (WebView2 on Windows), so retry briefly.
+        if $mine; then
+            for _ in 1 2 3 4 5 6 7 8 9 10; do
+                rm -rf "$dir" 2>/dev/null && break
+                sleep 1
+            done
+        fi
     done
 }
+# Stop the app by its own PID. On Windows that PID is Git Bash's view of the
+# process; taskkill /T on the real one takes WebView2's helper processes with
+# it, which a plain kill leaves holding the app's data directory open.
+stop_app() {
+    [[ -n "$app_pid" ]] || return 0
+    if [[ "$os" == windows && -r "/proc/$app_pid/winpid" ]]; then
+        taskkill //PID "$(cat "/proc/$app_pid/winpid")" //T //F >/dev/null 2>&1 || true
+    fi
+    kill "$app_pid" 2>/dev/null || true
+    wait "$app_pid" 2>/dev/null || true
+    app_pid=""
+}
 cleanup() {
-    for pid in $app_pid $xvfb_pid $daemon_pid; do kill "$pid" 2>/dev/null || true; done
+    stop_app
+    for pid in $xvfb_pid $daemon_pid; do kill "$pid" 2>/dev/null || true; done
     wait 2>/dev/null || true
     remove_created_data
     rm -rf "$scratch"
@@ -198,8 +218,10 @@ if [[ "$os" == linux ]]; then
     sleep 1
     # WebKitGTK on a GPU-less Xvfb can fail to render (and so never run the
     # app's script); keep it off DMA-BUF, compositing and the GPU.
+    # The runner's Ubuntu restricts unprivileged user namespaces, which
+    # WebKitGTK's bubblewrap sandbox needs, so the page may never load there.
     DISPLAY=:97 WEBKIT_DISABLE_DMABUF_RENDERER=1 WEBKIT_DISABLE_COMPOSITING_MODE=1 LIBGL_ALWAYS_SOFTWARE=1 \
-        "$exe" >"$scratch/app.log" 2>&1 &
+        WEBKIT_DISABLE_SANDBOX_THIS_IS_DANGEROUS=1 "$exe" >"$scratch/app.log" 2>&1 &
 else
     "$exe" >"$scratch/app.log" 2>&1 &
 fi
@@ -217,15 +239,20 @@ for _ in $(seq 30); do
     fi
 done
 if [[ "$os" != windows ]]; then
-    $connected || fail "the app never connected to the scratch daemon in 30 s; its output:
-$(tail -20 "$scratch/app.log")"
+    if ! $connected; then
+        echo "--- the app's output" >&2
+        tail -20 "$scratch/app.log" >&2
+        echo "--- the app's child processes" >&2
+        ps -o pid,stat,args -p "$(pgrep -d, -P "$app_pid" || echo "$app_pid")" >&2 || true
+        echo "--- the daemon's Unix sockets" >&2
+        lsof -a -U -p "$daemon_pid" >&2 || true
+        fail "the app never connected to the scratch daemon in 30 s"
+    fi
     ok "launched, and the app connected to the scratch daemon"
 else
     ok "launched and still running after 30 s"
 fi
-kill "$app_pid"
-wait "$app_pid" 2>/dev/null || true
-app_pid=""
+stop_app
 
 # Uninstall, then check for leftovers.
 case "$os" in
