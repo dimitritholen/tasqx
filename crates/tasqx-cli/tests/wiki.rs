@@ -6,6 +6,8 @@
 //! *content* still cannot be asserted, but two structural claims can be, and
 //! both are the kind whose failure a visitor hits before anyone here does:
 //! a command with no wiki section, and a link that 404s on the repo page.
+//! A third is that every `tasqx …` command the wiki and the guides show
+//! still parses (#705).
 //!
 //! Same conventions as `readme.rs`: deliberately minimal parsing (heading
 //! prefixes and `](…)` spans, no markdown model), and every scan pins a floor
@@ -514,4 +516,365 @@ fn the_why_sample_uses_the_rows_the_command_prints() {
             "{name}'s `why` sample is missing the {row:?} row the command prints"
         );
     }
+}
+
+// ---- Every `tasqx …` command the docs show parses (#705) -------------------
+
+/// Every wiki page and every guide, as (`wiki/<page>` or `guides/<page>`,
+/// content) — the two folders a reader copies commands out of.
+fn wiki_and_guides() -> Vec<(String, String)> {
+    let mut all: Vec<(String, String)> = pages()
+        .into_iter()
+        .map(|(name, text)| (format!("wiki/{name}"), text))
+        .collect();
+    let dir = wiki_dir().join("../guides");
+    let mut guides: Vec<PathBuf> = fs::read_dir(&dir)
+        .expect("docs/guides exists")
+        .map(|e| e.expect("readable dir entry").path())
+        .filter(|p| p.extension().is_some_and(|x| x == "md"))
+        .collect();
+    guides.sort();
+    // Floor: seven guides shipped when this guard was written.
+    assert!(
+        guides.len() >= 7,
+        "docs/guides holds only {} .md pages",
+        guides.len()
+    );
+    for p in guides {
+        let name = p.file_name().expect("a file has a name").to_string_lossy();
+        let text =
+            fs::read_to_string(&p).unwrap_or_else(|e| panic!("{} is readable: {e}", p.display()));
+        all.push((format!("guides/{name}"), text));
+    }
+    all
+}
+
+/// One piece of code a page shows a reader.
+struct Code {
+    /// 1-based line in the page.
+    line: usize,
+    text: String,
+    /// `Some(info string)` for a line of a fenced block, `None` for an inline
+    /// code span.
+    fence: Option<String>,
+}
+
+/// Every fenced-block line and every inline code span on a page.
+///
+/// Deliberately small, like the rest of this file: a line opening with
+/// three backticks toggles a fence and its remainder is the info string;
+/// inline spans are the odd-numbered pieces of a line split on single
+/// backticks, so a span never crosses a line. Inline spans are read in prose
+/// and inside `markdown` fences (a page quoting a prompt is still markdown);
+/// indented code blocks are not read at all. #707 reads the same spans for API
+/// methods, MCP tools and config keys.
+fn code_in(text: &str) -> Vec<Code> {
+    let mut out = Vec::new();
+    let mut fence: Option<String> = None;
+    for (i, raw) in text.lines().enumerate() {
+        let line = i + 1;
+        if let Some(info) = raw.trim_start().strip_prefix("```") {
+            fence = match fence {
+                None => Some(info.trim().to_string()),
+                Some(_) => None,
+            };
+            continue;
+        }
+        if let Some(info) = &fence {
+            out.push(Code {
+                line,
+                text: raw.to_string(),
+                fence: Some(info.clone()),
+            });
+            if info != "markdown" {
+                continue;
+            }
+        }
+        for span in raw.split('`').skip(1).step_by(2) {
+            out.push(Code {
+                line,
+                text: span.to_string(),
+                fence: None,
+            });
+        }
+    }
+    out
+}
+
+/// A shell word, or an operator (`|`, `&&`, `;`, `>`, …) as its own token.
+#[derive(Debug, PartialEq)]
+enum Sh {
+    Word(String),
+    Op(String),
+}
+
+/// POSIX-ish word splitting: single quotes literal, double quotes with `\`
+/// escapes, `\` outside quotes escapes one character (a `\` before a newline
+/// joins lines), a `#` opening a word comments out the rest, and `|&;<>` runs
+/// are operators. `$VAR` and `$(…)` stay literal text — the value is not ours
+/// to know, only that it lands in one argument. Returns `None` when a quote or
+/// a trailing `\` is still open, so the caller can join the next line.
+fn shell_split(s: &str) -> Option<Vec<Sh>> {
+    let mut out = Vec::new();
+    let mut word = String::new();
+    let mut in_word = false;
+    let mut chars = s.chars().peekable();
+    while let Some(c) = chars.next() {
+        match c {
+            '\'' => {
+                in_word = true;
+                loop {
+                    match chars.next()? {
+                        '\'' => break,
+                        c => word.push(c),
+                    }
+                }
+            }
+            '"' => {
+                in_word = true;
+                loop {
+                    match chars.next()? {
+                        '"' => break,
+                        '\\' => match chars.next()? {
+                            c @ ('"' | '\\' | '$' | '`') => word.push(c),
+                            '\n' => {}
+                            c => {
+                                word.push('\\');
+                                word.push(c);
+                            }
+                        },
+                        c => word.push(c),
+                    }
+                }
+            }
+            '\\' => match chars.next()? {
+                '\n' => {}
+                c => {
+                    in_word = true;
+                    word.push(c);
+                }
+            },
+            '#' if !in_word => break,
+            '|' | '&' | ';' | '<' | '>' => {
+                if in_word {
+                    out.push(Sh::Word(std::mem::take(&mut word)));
+                    in_word = false;
+                }
+                let mut op = c.to_string();
+                while let Some(&n) = chars.peek() {
+                    if !"|&;<>".contains(n) {
+                        break;
+                    }
+                    op.push(n);
+                    chars.next();
+                }
+                out.push(Sh::Op(op));
+            }
+            c if c.is_whitespace() => {
+                if in_word {
+                    out.push(Sh::Word(std::mem::take(&mut word)));
+                    in_word = false;
+                }
+            }
+            c => {
+                in_word = true;
+                word.push(c);
+            }
+        }
+    }
+    if in_word {
+        out.push(Sh::Word(word));
+    }
+    Some(out)
+}
+
+/// The `tasqx` invocations in one shell line, as argv vectors.
+///
+/// The line splits into commands at `|`, `||`, `&&`, `;` and `&`; a
+/// redirection operator takes the word after it with it; leading `NAME=value`
+/// words are environment, not arguments. A command whose first remaining word
+/// is `tasqx` is kept, so `tasqx export | tasqx import -` is two.
+fn tasqx_invocations(tokens: &[Sh]) -> Vec<Vec<String>> {
+    let mut commands: Vec<Vec<String>> = vec![Vec::new()];
+    let mut redirect = false;
+    for t in tokens {
+        match t {
+            Sh::Op(op) if op.contains(['<', '>']) => redirect = true,
+            Sh::Op(_) => commands.push(Vec::new()),
+            Sh::Word(_) if redirect => redirect = false,
+            Sh::Word(w) => commands.last_mut().expect("never empty").push(w.clone()),
+        }
+    }
+    commands
+        .into_iter()
+        .map(|c| c.into_iter().skip_while(|w| is_env(w)).collect::<Vec<_>>())
+        .filter(|c| c.first().is_some_and(|w| w == "tasqx"))
+        .collect()
+}
+
+/// A `NAME=value` word: environment for the command after it.
+fn is_env(word: &str) -> bool {
+    word.split_once('=').is_some_and(|(name, _)| {
+        !name.is_empty() && name.chars().all(|c| c.is_ascii_uppercase() || c == '_')
+    })
+}
+
+/// What a doc's placeholder stands for when the line is parsed.
+///
+/// Substituted in the text before it is split, since an unquoted `<id>` is
+/// a redirection to a shell. A `<word…` left over afterwards fails the guard
+/// rather than reaching clap, so a new placeholder is a decision someone makes
+/// here, not a word that happens to parse.
+const PLACEHOLDERS: &[(&str, &str)] = &[
+    ("<id>", "42"),
+    ("<ref>", "42"),
+    ("<shell>", "bash"),
+    ("<topic>", "filters"),
+    ("<command>", "add"),
+];
+
+/// `text` with every [`PLACEHOLDERS`] entry substituted. Done before
+/// splitting, since an unquoted `<id>` is a redirection to a shell; a
+/// `<word…` left over is a placeholder nobody decided on, and fails.
+fn filled(page: &str, line: usize, text: &str) -> String {
+    let mut out = text.to_string();
+    for (p, v) in PLACEHOLDERS {
+        out = out.replace(p, v);
+    }
+    for (at, _) in out.match_indices('<') {
+        assert!(
+            !out[at + 1..].starts_with(|c: char| c.is_ascii_alphabetic()),
+            "{page}:{line}: placeholder {:?} is not in PLACEHOLDERS",
+            &out[at..]
+        );
+    }
+    out
+}
+
+/// Every `tasqx …` command a reader can copy out of the docs, as
+/// (`page:line`, the text with placeholders substituted, argv, inline?).
+///
+/// Fenced lines count in `console`, `sh`, `bash` and `shell` fences; an
+/// optional `$ ` prompt is dropped, a line is a command when its first
+/// word after any `NAME=value` is `tasqx`, and an open quote or a trailing `\` pulls in the
+/// next line. Inline spans count when they open with `tasqx `. A trailing
+/// `...`/`…` word ("and so on") is dropped.
+fn doc_commands() -> Vec<(String, String, Vec<String>, bool)> {
+    let mut out = Vec::new();
+    for (page, text) in wiki_and_guides() {
+        let code = code_in(&text);
+        let mut i = 0;
+        while i < code.len() {
+            let c = &code[i];
+            i += 1;
+            let shell = match &c.fence {
+                Some(info) => matches!(info.as_str(), "console" | "sh" | "bash" | "shell"),
+                None => false,
+            };
+            let line = c.text.trim().trim_start_matches("$ ");
+            let starts_tasqx = line.split_whitespace().find(|w| !is_env(w)) == Some("tasqx");
+            let mut src = match (&c.fence, shell) {
+                // Output lines share the fence, and an apostrophe in one would
+                // read as an open quote: only a line that starts a command is
+                // split at all.
+                (Some(_), true) if starts_tasqx => filled(&page, c.line, line),
+                (None, _) if c.text.starts_with("tasqx ") => filled(&page, c.line, &c.text),
+                _ => continue,
+            };
+            let tokens = loop {
+                if let Some(t) = shell_split(&src) {
+                    break t;
+                }
+                // Only a fenced line continues, and only onto the same fence.
+                let next = code.get(i).filter(|n| shell && n.fence == c.fence);
+                match next {
+                    Some(n) => {
+                        src.push('\n');
+                        src.push_str(&filled(&page, n.line, &n.text));
+                        i += 1;
+                    }
+                    None => panic!("{page}:{}: unterminated shell line {src:?}", c.line),
+                }
+            };
+            for mut argv in tasqx_invocations(&tokens) {
+                if argv.last().is_some_and(|w| w == "..." || w == "…") {
+                    argv.pop();
+                }
+                out.push((
+                    format!("{page}:{}", c.line),
+                    src.clone(),
+                    argv,
+                    c.fence.is_none(),
+                ));
+            }
+        }
+    }
+    out
+}
+
+/// Every `tasqx …` command in `docs/wiki` and `docs/guides` parses with the
+/// binary's own clap tree, and `add`/`modify` words pass the sugar parser.
+///
+/// A renamed verb or flag used to break the docs silently: nothing in the
+/// build read them as commands. This parses each one through
+/// [`tasqx_cli::parse_argv`] — the same prepass and command tree `tasqx` runs —
+/// and executes nothing.
+///
+/// A fenced line is a command to run, so it must parse whole. An inline span
+/// is often a verb's name in prose (`tasqx modify`, `tasqx check set`), so a
+/// span may stop short of its required arguments; any other refusal — an
+/// unknown verb, flag or value — fails it just the same.
+#[test]
+fn every_command_the_docs_show_parses() {
+    use clap::error::ErrorKind;
+    let commands = doc_commands();
+    let mut failures = Vec::new();
+    for (at, src, argv, inline) in &commands {
+        match tasqx_cli::parse_argv(argv) {
+            Ok(()) => {}
+            Err(e)
+                if *inline
+                    && matches!(
+                        e.kind(),
+                        ErrorKind::MissingRequiredArgument
+                            | ErrorKind::MissingSubcommand
+                            | ErrorKind::DisplayHelpOnMissingArgumentOrSubcommand
+                    ) => {}
+            Err(e) => failures.push(format!("{at}: {src:?}\n{}", e.render())),
+        }
+    }
+    assert!(
+        failures.is_empty(),
+        "{} documented command(s) do not parse:\n\n{}",
+        failures.len(),
+        failures.join("\n")
+    );
+    // Floor: the docs showed 356 when this guard was written. Far fewer means
+    // the extraction stopped seeing commands, not that the docs got cleaner.
+    assert!(
+        commands.len() >= 350,
+        "only {} `tasqx …` commands found in docs/wiki and docs/guides",
+        commands.len()
+    );
+}
+
+/// The splitter's rules, each one a doc shape the guard depends on.
+#[test]
+fn shell_split_reads_the_shapes_the_docs_use() {
+    let argv = |s: &str| tasqx_invocations(&shell_split(s).expect("closed"));
+    assert_eq!(
+        argv(r#"tasqx list 'project:"Home Renovation"' # a comment"#),
+        [vec!["tasqx", "list", r#"project:"Home Renovation""#]]
+    );
+    assert_eq!(
+        argv("tasqx export | tasqx import -"),
+        [vec!["tasqx", "export"], vec!["tasqx", "import", "-"]]
+    );
+    assert_eq!(
+        argv("TASQX_DB=/tmp/x.db tasqx export > out.json"),
+        [vec!["tasqx", "export"]]
+    );
+    assert_eq!(argv("cargo build && tasqx about"), [vec!["tasqx", "about"]]);
+    assert_eq!(shell_split("tasqx annotate 2 'open"), None);
+    assert_eq!(shell_split("tasqx add one \\"), None);
 }
