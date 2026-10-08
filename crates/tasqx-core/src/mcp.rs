@@ -2184,7 +2184,14 @@ impl<'e> McpServer<'e> {
         // PR #48 review: topical fill is context, not a ruling, so it sits
         // under its own heading rather than reading as more of the standing
         // list above it.
-        let topical_header = format!("\n\nRecent notes for project {name} (context, not rulings):");
+        // #686: when no standing header precedes it, this heading opens the
+        // section and carries the inference source the standing header would.
+        let basis = match &r.project {
+            Some((_, source)) if r.standing.is_empty() => format!("{source}; "),
+            _ => String::new(),
+        };
+        let topical_header =
+            format!("\n\nRecent notes for project {name} ({basis}context, not rulings):");
         let footer = |left: usize| {
             format!("\n{left} more docs for project {name}; tasqx_search_memory reaches them.")
         };
