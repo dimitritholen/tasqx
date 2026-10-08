@@ -176,6 +176,7 @@ pub const COMMAND_REF: &[CmdDoc] = &[
         notes: &[
             "Inline sugar: `+tag`, `project:p` (or `proj:`), `!high`, `due:…`, `scheduled:…` (or `sched:`), `wait:…`, `repeat:…` (or `every:`/`recur:`), `remind:…`, `est:4h` (or `estimate:`).",
             "A bare add lands in the default project (`tasqx use` to change it).",
+            "Anywhere a command takes a `<ref>`, it accepts either the short id you see in the table (`1`) or the full UUID. Short ids are for your fingers; UUIDs are stable forever and are what `export` carries.",
         ],
         see_also: &["modify", "use", "list", "next"],
         topic: Topic::Capturing,
@@ -194,6 +195,7 @@ pub const COMMAND_REF: &[CmdDoc] = &[
         notes: &[
             "Setting is `due:friday`/`--due friday`; removal is only ever `--clear <field>` — there is no magic empty value.",
             "`--clear` covers the steering fields only. `modify 42 +api` adds a tag; taking one off is `tasqx untag 42 api`.",
+            "`title` and `status` are absent from `--clear` on purpose: a task without a title is not a task, and lifecycle moves through `start`/`done`/`cancel` so their invariants hold. Naming a field in both a set and a `--clear` is a `bad_request`, not a precedence puzzle.",
             "`--expected-rev` fails with conflict (exit 5) if the task moved on.",
         ],
         see_also: &["add", "show", "why", "untag"],

@@ -31,5 +31,6 @@ EXAMPLES
 
 NOTE  Inline sugar: `+tag`, `project:p` (or `proj:`), `!high`, `due:…`, `scheduled:…` (or `sched:`), `wait:…`, `repeat:…` (or `every:`/`recur:`), `remind:…`, `est:4h` (or `estimate:`).
       A bare add lands in the default project (`tasqx use` to change it).
+      Anywhere a command takes a `<ref>`, it accepts either the short id you see in the table (`1`) or the full UUID. Short ids are for your fingers; UUIDs are stable forever and are what `export` carries.
 
 See also: modify · use · list · next        Full manual: tasqx manual

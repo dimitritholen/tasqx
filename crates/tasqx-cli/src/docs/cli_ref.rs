@@ -737,23 +737,16 @@ fn code_bare_urls(text: &str) -> String {
 /// The handful of things a verb's section carries that neither `cmddoc` nor
 /// clap can supply, each of them generated from a table this crate owns.
 ///
-/// This is deliberately short. Everything that used to be prose here and is a
-/// restatement of a `cmddoc` note is gone: the note is rendered instead.
+/// Generated, never prose: a sentence that does not read a table belongs in
+/// the verb's `cmddoc` notes, which `-h`, the manual and this page all render.
 fn extra_prose(verb: &str) -> String {
     match verb {
         "add" => {
-            let mut s = String::new();
-            s.push_str(&p(
-                "Anywhere a command takes a <code>&lt;ref&gt;</code>, it accepts either the short \
-                 id you see in the table (<code>1</code>) or the full UUID. Short ids are for \
-                 your fingers; UUIDs are stable forever and are what \
-                 <a href=\"#data\">export</a> carries.",
-            ));
-            s.push_str(&p(
+            let mut s = p(
                 "Flags win over inline sugar when both name the same field. The sugar column is \
                  bound to the parser's own key table, so a spelling here is a spelling that \
                  parses:",
-            ));
+            );
             let rows: Vec<Vec<String>> = ADD_FIELDS
                 .iter()
                 .map(|(flag, sugar, notes)| {
@@ -770,13 +763,6 @@ fn extra_prose(verb: &str) -> String {
         "modify" => {
             let mut s = p("<code>--clear</code> is repeatable over a closed set:");
             s.push_str(&pre_plain(&DOCUMENTED_CLEAR_FIELDS.join("   ")));
-            s.push_str(&p(
-                "<code>title</code> and <code>status</code> are absent on purpose: a task \
-                 without a title is not a task, and lifecycle moves through \
-                 <code>start</code>/<code>done</code>/<code>cancel</code> so their invariants \
-                 hold. Naming a field in both a set and a <code>--clear</code> is a \
-                 <code>bad_request</code>, not a precedence puzzle.",
-            ));
             s
         }
         "list" => {

@@ -80,6 +80,7 @@ EXAMPLES
 
 NOTE  Setting is `due:friday`/`--due friday`; removal is only ever `--clear <field>` — there is no magic empty value.
       `--clear` covers the steering fields only. `modify 42 +api` adds a tag; taking one off is `tasqx untag 42 api`.
+      `title` and `status` are absent from `--clear` on purpose: a task without a title is not a task, and lifecycle moves through `start`/`done`/`cancel` so their invariants hold. Naming a field in both a set and a `--clear` is a `bad_request`, not a precedence puzzle.
       `--expected-rev` fails with conflict (exit 5) if the task moved on.
 
 See also: add · show · why · untag        Full manual: tasqx manual
