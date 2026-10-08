@@ -192,12 +192,6 @@ fn cases(tmp: &str) -> Vec<(Case, Vec<String>)> {
         c("theme", &["theme", "list"]),
         c("chart", &["chart", "throughput"]),
         c("docs", &["docs", "--no-open", "--stdout"]),
-        // Printing only. `completions --install` is the mode that writes, and
-        // it is deliberately NOT driven here: this guard runs on the
-        // developer's own machine, and a case that installed would append an
-        // activation line to their real startup file every time the suite ran.
-        // The flag is answered by the same `Exit::Out` terminal either way, so
-        // the printing case is what proves the contract.
         c("completions", &["completions", "bash"]),
         // `--list` only reads, and `--home` keeps it off the developer's own
         // `~/.claude`; installing is `tests/setup.rs`'s business.

@@ -58,8 +58,8 @@ curl -fsSL https://raw.githubusercontent.com/dimitritholen/tasqx/main/install.sh
 &([scriptblock]::Create((irm https://raw.githubusercontent.com/dimitritholen/tasqx/main/install.ps1))) -DryRun
 ```
 
-The rest are `--uninstall`/`-Uninstall`, `--completions`/`-Completions` and
-`--help`/`-Help`; every switch also has an environment variable
+The rest are `--uninstall`/`-Uninstall` (which also takes out the completion
+block an older tasqx added to your shell's startup file) and `--help`/`-Help`; every switch also has an environment variable
 (`TASQX_UNINSTALL`, `TASQX_DRY_RUN`, …), `TASQX_VERSION` pins a tag, and
 `TASQX_INSTALL` moves the destination.
 

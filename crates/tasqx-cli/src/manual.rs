@@ -882,9 +882,10 @@ the primary source `tasqx report`'s TOKENS column reads
 Tab completion for bash, zsh, fish, elvish and PowerShell — the
 same five on Linux, macOS and Windows.
 
-  tasqx completions <shell>\tprint the line
-  tasqx completions --install\tedit the startup file
-  tasqx completions <shell> --uninstall\ttake it back out
+  tasqx completions <shell>\tprint the line for your startup file
+  tasqx completions bash >> ~/.bashrc\tadd it, for bash
+
+tasqx never edits a startup file itself; add the line yourself.
 
 The line, and the file it belongs in:
 
@@ -899,19 +900,10 @@ The line, and the file it belongs in:
   powershell\t`$PROFILE`
   \t$env:TASQX_COMPLETE = \"powershell\"; tasqx | Out-String | Invoke-Expression; Remove-Item Env:\\TASQX_COMPLETE
 
-`--install` finds the shell from $SHELL, prints the exact block
-it would add, and asks. A stdin that is not a terminal is a
-refusal, not an implied yes — pass `--yes` from a script. It
-writes ONE marked block and replaces it on a re-run rather than
-appending a second, and `--uninstall` restores the file byte
-for byte.
-
-No Windows shell sets $SHELL, so name the shell there. And
-PowerShell's `--install` refuses to guess where your profile
-is: $PROFILE is a PowerShell variable, not an environment
-variable, and it differs between Windows PowerShell 5.1,
-PowerShell 7 and the ISE. Let the shell expand it for you:
-  tasqx completions powershell --install --profile $PROFILE
+With no shell named, tasqx reads $SHELL. No Windows shell sets
+it, so name the shell there. In PowerShell, let the shell
+expand its own profile path:
+  tasqx completions powershell >> $PROFILE
 
 The zsh ordering is not a nicety. That registration ends in
 `compdef`, which exists only once `compinit` has run — source it
@@ -926,11 +918,7 @@ errors, and completion simply never turns on. `Get-ExecutionPolicy`
 tells you; `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned`
 is the minimum that runs it.
 
-cmd.exe is a permanent NON-GOAL, not a gap: no program can
-register a completer with it at all. nushell is a real gap —
-it completes external commands through its own `extern`
-definitions, and nothing tasqx prints today activates them.
-Asking for either says so, rather than \"unknown shell\".
+Any other shell is refused, naming the five above.
 
 What completes: verbs and flags, closed value sets
 (`--priority`, `--scope`, `status:`), file paths, your task ids,
@@ -1742,14 +1730,15 @@ mod tests {
     }
 
     /// A definition is not wrapped into a column too narrow to read: at 60
-    /// columns the completion topic's `--install` row broke "edit the
-    /// startup" from "file". Too narrow for two columns, a table stacks each
-    /// definition under its term instead.
+    /// columns the completion topic's (since removed) `--install` row broke
+    /// "edit the startup" from "file". Too narrow for two columns, a table
+    /// stacks each definition under its term instead.
     #[test]
     fn a_narrow_table_stacks_rather_than_orphaning_a_word() {
         let page = topic_section(&at(60), Topic::Completion);
         assert!(
-            page.lines().any(|l| l.contains("edit the startup file")),
+            page.lines()
+                .any(|l| l.contains("print the line for your startup file")),
             "the definition was split into a column too narrow for it:\n{page}"
         );
     }

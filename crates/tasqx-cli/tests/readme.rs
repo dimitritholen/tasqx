@@ -350,7 +350,7 @@ fn isolated_tasqx() -> std::process::Command {
 /// So the lines are not compared against a second copy kept in this test. They
 /// are compared against what the BINARY prints, for every shell
 /// `Shells::builtins()` names — the same registry `tasqx completions` resolves
-/// its argument out of, and the same one `install::ACTIVATIONS` is guarded
+/// its argument out of, and the same one `activation::ACTIVATIONS` is guarded
 /// against. Upstream gaining a sixth shell, the activation shape changing, or a
 /// wiki line edited by hand all fail here.
 /// # Both documents, and both halves of each row
@@ -372,7 +372,7 @@ fn isolated_tasqx() -> std::process::Command {
 ///
 /// So one loop covers both documents and asserts both halves, out of the binary
 /// rather than out of a list kept here. The target comes from `--json`, which is
-/// `install::target_path` — the same resolution `--install` writes to — and is
+/// `activation::target_path` — and is
 /// `null` for PowerShell, which deliberately has no knowable target.
 #[test]
 fn both_documents_carry_the_activation_lines_and_targets_the_binary_prints() {

@@ -2158,7 +2158,7 @@ pub(crate) fn run_export(
         return Ok((result, text));
     };
     // The same pretty bytes stdout prints, so `--out` and `>` write one file.
-    crate::complete::install::write_atomically(&target, &text)?;
+    write_atomically(&target, &text)?;
     // `report --out`'s answer — where the file landed and how big it is —
     // beside the core's counts of what the document left out.
     let mut summary = answer;
@@ -2193,6 +2193,79 @@ pub(crate) fn run_export(
         text.push_str(&format!("Left out: {}\n", left_out.join(", ")));
     }
     Ok((summary, text))
+}
+
+/// Replace `path`'s contents with `text`, without a window in which the file is
+/// half-written. `export --out` and `setup`'s skill files go through here.
+///
+/// Written to a sibling temp file and renamed over the original, because the
+/// alternative — truncate and write — leaves the file EMPTY if the process
+/// dies, the disk fills, or the machine loses power in between. The temp file
+/// is a sibling rather than in the system temp directory so the rename stays
+/// within one filesystem; `std::fs::rename` across mount points fails, and on
+/// Windows it replaces the destination atomically only on the same volume.
+///
+/// # Two things the rename would destroy, and what is done about them
+///
+/// A rename replaces a directory ENTRY, so whatever was true of the entry
+/// rather than of the bytes is lost unless it is put back, silently.
+///
+/// **Link identity.** A path that is a SYMLINK (into a dotfiles repository, say)
+/// would be detached: the link replaced by an unrelated regular file and the
+/// real file never written. So the path is CANONICALISED first and the write
+/// lands on the real file behind the link.
+///
+/// **Permissions.** A fresh temp file gets default permissions, so the rename
+/// would hand a deliberately-restricted file back with whatever the umask says.
+/// The original's permissions are copied onto the temp file before the rename
+/// when the target already existed. On Windows that carries the read-only flag
+/// and not the full ACL; `ReplaceFileW`, which keeps the ACL, is not reachable
+/// from `std`.
+///
+/// A HARDLINKED target is not repaired: both names ARE the file, so the rename
+/// replaces one entry and the other keeps the old contents. Writing in place
+/// would fix it and reopen the truncation window this function exists to
+/// close, so it stays unfixed.
+pub(crate) fn write_atomically(
+    path: &std::path::Path,
+    text: &str,
+) -> Result<(), tasqx_core::ApiError> {
+    // Through the link BEFORE anything else, so both the temp sibling and the
+    // rename target are the real file. Only when the path already exists:
+    // `canonicalize` fails on a path that does not, and creating a file is the
+    // ordinary case.
+    let path = &std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+
+    if let Some(parent) = path.parent() {
+        if !parent.as_os_str().is_empty() {
+            std::fs::create_dir_all(parent).map_err(|e| {
+                tasqx_core::ApiError::bad_request(format!(
+                    "cannot create {}: {e}",
+                    parent.display()
+                ))
+            })?;
+        }
+    }
+    let mut temp = path.to_path_buf();
+    let name = path
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    temp.set_file_name(format!(".{name}.tasqx-{}", std::process::id()));
+    std::fs::write(&temp, text).map_err(|e| {
+        tasqx_core::ApiError::bad_request(format!("cannot write {}: {e}", temp.display()))
+    })?;
+    // Best effort, and deliberately not fatal: failing the whole write
+    // because the mode could not be copied would refuse to do the thing the
+    // user asked for over a property most files do not have. The bytes are the
+    // contract; this is a repair on top of it.
+    if let Ok(original) = std::fs::metadata(path) {
+        let _ = std::fs::set_permissions(&temp, original.permissions());
+    }
+    std::fs::rename(&temp, path).map_err(|e| {
+        let _ = std::fs::remove_file(&temp);
+        tasqx_core::ApiError::bad_request(format!("cannot replace {}: {e}", path.display()))
+    })
 }
 
 pub(crate) fn run_import(
