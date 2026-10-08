@@ -4337,9 +4337,8 @@ mod tests {
     /// sort by size, not just urgency. Both are magnitudes with a "no value"
     /// case — no `estimate` at all, or `tracked_seconds == 0` because the
     /// task was never started — and that case sorts LAST whichever way `-`
-    /// points, the same promise `due`'s `opt_cmp` documents but does not
-    /// actually keep once its result passes back through `compare_by`'s
-    /// blanket `desc` reversal (D173's finding). Proven both directions so a
+    /// points, the same promise `due` and `priority` keep (#775) through
+    /// `opt_cmp_last`, despite `compare_by`'s blanket `desc` reversal (D173's finding). Proven both directions so a
     /// regression that only flips the ascending half would still go red.
     #[test]
     fn task_list_sorts_by_estimate_and_tracked_with_untracked_last() {

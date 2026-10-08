@@ -199,10 +199,9 @@ pub const BRIEF_MEMORY_LIMIT: u64 = 5;
 /// under `str::cmp`. Neither ever has a `None` that reaches `compare_by`:
 /// `estimate` is a genuine `Option`, and `tracked` reads `tracked_seconds ==
 /// 0` (never started) as the same "no value" case. Both place that case LAST
-/// on the sorted list REGARDLESS of `-`, which `due`'s `opt_cmp` documents but
-/// does not deliver once its answer passes back through the `desc` reversal
-/// below — D173 records the fix as its own comparator rather than reusing
-/// `opt_cmp` and inheriting that bug.
+/// on the sorted list REGARDLESS of `-`. So do `due` and `priority` (#775): all
+/// four go through `opt_cmp_last`, which bakes `desc` into the missing-value
+/// branch so the `desc` reversal below cannot flip it to first.
 pub const SORT_KEYS: [&str; 10] = [
     "urgency", "short_id", "priority", "due", "created", "modified", "title", "tokens", "estimate",
     "tracked",
@@ -1467,8 +1466,14 @@ fn compare_by(
         let ord = match k.key.as_str() {
             "urgency" => a.urgency.partial_cmp(&b.urgency).unwrap_or(Ordering::Equal),
             "short_id" => a.short_id.cmp(&b.short_id),
-            "priority" => priority_rank(a.priority).cmp(&priority_rank(b.priority)),
-            "due" => opt_cmp(&a.due, &b.due),
+            // #775: `None` last either way, so the rank is optional here (the
+            // old `priority_rank` gave `None` 3, which `-priority` put first).
+            "priority" => opt_cmp_last(
+                a.priority.map(|p| priority_rank(Some(p))),
+                b.priority.map(|p| priority_rank(Some(p))),
+                k.desc,
+            ),
+            "due" => opt_cmp_last(a.due.as_deref(), b.due.as_deref(), k.desc),
             // D144: `util::now` trims the fractional second at a whole
             // second, so under BINARY/`str::cmp` 'Z' outranks every digit and
             // '.' — `...10Z` would sort above `...10.9Z`. Strip the
@@ -1489,18 +1494,18 @@ fn compare_by(
             "tokens" => a_tokens.cmp(&b_tokens),
             // #663/D173: duration order, not string order — see SORT_KEYS's
             // doc for why `PT4H` must outrank `PT90M`. `k.desc` is threaded
-            // into the match arm itself (see `opt_magnitude_cmp_last`) rather
+            // into the match arm itself (see `opt_cmp_last`) rather
             // than left to the blanket reversal below, which is exactly what
             // leaves it OUT of the value comparison: the two magnitudes stay
             // direction-agnostic here and let that reversal flip them, while
             // the "no value" placement is pre-negated so the SAME reversal
             // cancels back out to "last" either way.
-            "estimate" => opt_magnitude_cmp_last(
+            "estimate" => opt_cmp_last(
                 a.estimate.as_deref().and_then(duration_secs),
                 b.estimate.as_deref().and_then(duration_secs),
                 k.desc,
             ),
-            "tracked" => opt_magnitude_cmp_last(
+            "tracked" => opt_cmp_last(
                 Some(a.tracked_seconds).filter(|&s| s != 0),
                 Some(b.tracked_seconds).filter(|&s| s != 0),
                 k.desc,
@@ -1527,22 +1532,10 @@ fn compare_by(
     a.short_id.cmp(&b.short_id)
 }
 
-/// Compare two optional strings, ordering `None` last regardless of direction.
-fn opt_cmp(a: &Option<String>, b: &Option<String>) -> std::cmp::Ordering {
-    use std::cmp::Ordering;
-    match (a, b) {
-        (Some(x), Some(y)) => x.cmp(y),
-        (Some(_), None) => Ordering::Less,
-        (None, Some(_)) => Ordering::Greater,
-        (None, None) => Ordering::Equal,
-    }
-}
-
-/// Compare two optional magnitudes (D173), placing the missing one LAST
-/// whichever way `desc` points — unlike [`opt_cmp`] above, whose "`None`
-/// last" is true only for the ascending caller and is silently undone the
-/// moment `compare_by`'s blanket `if k.desc { ord.reverse() }` runs on its
-/// answer too. `desc` therefore has to reach INTO this function rather than
+/// Compare two optional values (D173, #775), placing the missing one LAST
+/// whichever way `desc` points — a plain ascending `None`-last comparator is
+/// silently undone the moment `compare_by`'s blanket
+/// `if k.desc { ord.reverse() }` runs on its answer too. `desc` therefore has to reach INTO this function rather than
 /// stay outside it, and only half the match needs it:
 ///
 ///  * `(Some, Some)` stays a plain, direction-agnostic `cmp` — the caller's
@@ -1552,9 +1545,9 @@ fn opt_cmp(a: &Option<String>, b: &Option<String>) -> std::cmp::Ordering {
 ///    SAME reversal lands back on "the value sorts before the missing one"
 ///    either way, instead of flipping the "last" placement along with the
 ///    order it belongs to.
-fn opt_magnitude_cmp_last(a: Option<i64>, b: Option<i64>, desc: bool) -> std::cmp::Ordering {
-    match (a, b) {
-        (Some(x), Some(y)) => x.cmp(&y),
+fn opt_cmp_last<T: Ord>(a: Option<T>, b: Option<T>, desc: bool) -> std::cmp::Ordering {
+    match (&a, &b) {
+        (Some(x), Some(y)) => x.cmp(y),
         // The missing side sorts after; pre-flipped so compare_by's desc reversal restores it.
         _ => {
             let o = b.is_some().cmp(&a.is_some());
@@ -1854,6 +1847,61 @@ mod tests {
         // b spent more: descending `-tokens` must put b first.
         assert_eq!(compare_by(&a, &b, 15, 3_300, &keys), Ordering::Greater);
         assert_eq!(compare_by(&b, &a, 3_300, 15, &keys), Ordering::Less);
+    }
+
+    /// #775: a task lacking an optional sort key's value sorts LAST whichever
+    /// way `-` points. `due` and `priority` used to lose that placement to
+    /// `compare_by`'s blanket `desc` reversal.
+    #[test]
+    fn compare_by_places_a_missing_value_last_in_both_directions() {
+        use std::cmp::Ordering;
+
+        let has = Task {
+            id: "a".to_string(),
+            short_id: 1,
+            title: "has".to_string(),
+            status: Status::Pending,
+            status_raw: None,
+            priority: Some(Priority::H),
+            project: None,
+            due: Some("2026-10-01".to_string()),
+            scheduled: None,
+            wait: None,
+            estimate: None,
+            recurrence: None,
+            remind: None,
+            urgency: 0.0,
+            active_since: None,
+            tracked_seconds: 0,
+            rev: 1,
+            created: "2026-08-30T12:00:00Z".to_string(),
+            modified: "2026-08-30T12:00:00Z".to_string(),
+            completed: None,
+            budget_tokens: None,
+            delivered_annotation_id: None,
+            tracked_adjustment_seconds: 0,
+        };
+        let mut lacks = has.clone();
+        lacks.id = "b".to_string();
+        lacks.short_id = 2;
+        lacks.priority = None;
+        lacks.due = None;
+
+        for key in ["due", "priority"] {
+            for desc in [false, true] {
+                let keys = vec![SortKey {
+                    key: key.to_string(),
+                    desc,
+                }];
+                assert_eq!(
+                    compare_by(&has, &lacks, 0, 0, &keys),
+                    Ordering::Less,
+                    "{}{key}: the task with a value sorts before the one without",
+                    if desc { "-" } else { "" }
+                );
+                assert_eq!(compare_by(&lacks, &has, 0, 0, &keys), Ordering::Greater);
+            }
+        }
     }
 
     use crate::error::ErrorCode;
