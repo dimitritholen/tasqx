@@ -34,6 +34,7 @@
 //!  * [`tokens`]    — the token vocabulary + the per-tool transcript parsers.
 //!  * [`otlp`]      — the opt-in local OTLP receiver that buffers live samples.
 //!  * [`http`]      — the HTTP/1.1 reader and writer the OTLP receiver and the board share.
+//!  * [`board`]     — the read-only browser kanban behind `tasqx board`: loopback, token, Origin, SSE.
 //!  * [`attribution`] — a task's window turned into a measured token spend (#17).
 //!  * [`util`]      — the shared time/JSON param readers (D17, D32).
 //!  * [`exec`]      — run a child: JSON in, JSON out, a kill deadline, capped stdout.
@@ -65,6 +66,7 @@
 #![warn(missing_docs)]
 
 pub mod attribution;
+pub mod board;
 pub mod clock;
 pub mod daemon;
 pub mod datetime;
