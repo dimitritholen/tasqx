@@ -106,6 +106,9 @@ struct PreparedCall {
     /// True unless the caller said otherwise: the whole point is that a
     /// session which never calls `task.brief` still sees it.
     include_memory: bool,
+    /// Whether `tasqx_complete_task`'s answer carries the `retro` block (D222).
+    /// True unless the caller said otherwise, like `include_memory`.
+    include_retro: bool,
 }
 
 /// Which of a task's two human renderings the rendered block carries (D146).
@@ -276,6 +279,21 @@ const MEMORY_LIST_PAGE: u64 = 20;
 /// unlike that constant this one has no `tasqx api`/CLI caller to share it
 /// with — it is spent only inside this transport's own envelope.
 const START_MEMORY_LIMIT: u64 = 3;
+
+/// The retrospective `tasqx_complete_task` answers with (D222): the procedure a
+/// model follows without any hook or skill file. Under about 1 KB because it
+/// is paid on every completion; a straight-through task spends one line of it.
+const RETRO: &str = "Retro, answer in one line if nothing applies (\"straight through, nothing \
+to record\" is valid; then stop). 1 Did the user correct or redirect you? Each correction is \
+tasqx_add_memory with standing:true, unscoped if it holds in every repo, project-scoped if about \
+this codebase; search first: a standing doc that already says it stays, one that contradicts it is \
+retracted. 2 Goal vs delivered? 3 Rework? 4 A discovery written down nowhere? 5 Would you redo \
+anything? 6 A procedure others will repeat? Route: a fact to tasqx_add_memory after \
+tasqx_search_memory; a prohibition named to the user as a hook candidate; a procedure to a task \
+titled `skill candidate:` on its second sighting. Keep anything worth it as a `retro:` \
+tasqx_annotate_task on this task. Retract: search memory for the same subject; if your new ruling \
+supersedes a doc, read it with tasqx_get_memory, then tasqx_remove_memory it (permanent), so two \
+never contradict.";
 
 /// How many standing-rulings titles the tiny addendum on `tasqx_list_tasks`'s
 /// `@working` page and on `tasqx_add_task` carries (D186).
@@ -613,6 +631,11 @@ const TRANSPORT_ONLY_ARGS: &[(&str, &str, &str)] = &[
         "tasqx_start_timer",
         "include_memory",
         "whether the response carries the same memory half `task.brief` computes for this task, reused through `task_start_memory` so the two tools agree, at a smaller three-hit page than the brief's five (D186). Default TRUE: transcript evidence is that starting a task and reading its brief are two separate calls an agent often skips the second of, so the rulings that govern the task have to reach it from the call it does make. `false` answers exactly `task.start`'s own frozen result, byte for byte, for a caller that already briefed the task and would otherwise pay for the same memory search twice.",
+    ),
+    (
+        "tasqx_complete_task",
+        "include_retro",
+        "whether the response carries the `retro` block: the retrospective questions, routing and retraction step (D222). Default TRUE: the procedure has to reach every MCP client from the call it makes anyway, with no hook or skill installed. `false` answers `task.done`'s own frozen result, for a batch of completions that already ran one retro. `task.done` has no opinion on what its transport appends.",
     ),
 ];
 
@@ -1259,8 +1282,7 @@ fn build_tool_specs() -> Vec<ToolSpec> {
                     "force": {
                         "type": "boolean",
                         "description": "Complete despite still-open dependencies; without it \
-                            that is a `conflict` naming them (D150). The override is recorded \
-                            and counted under `forced`."
+                            that is a `conflict` naming them (D150)."
                     },
                     "view": {
                         "type": "string",
@@ -1268,6 +1290,10 @@ fn build_tool_specs() -> Vec<ToolSpec> {
                         "description": "Default \"markdown\": the plain JSON result. \"card\" \
                             leads with the D146 box card of the task AS COMPLETED, in a text \
                             fence, the JSON unchanged behind it, for a PERSON deciding on it (D164)."
+                    },
+                    "include_retro": {
+                        "type": "boolean",
+                        "description": "Add the `retro` block (D222). Default true."
                     }
                 },
                 "required": ["ref"]
@@ -1888,7 +1914,8 @@ pub fn instructions(scope: Scope) -> String {
         so name files and symbols in them. Call tasqx_add_memory when a decision settles or you \
         learn a convention written down nowhere: the ruling in the first line, the why under it, \
         the path in source. A wrong entry is removed with tasqx_remove_memory (permanent), not \
-        corrected beside.";
+        corrected beside. Store a correction the user gives you the moment it lands, as a \
+        standing doc (standing: true), not at completion: a session can end before the task does.";
 
     const READ_ONLY: &str = "This server is read-only: no write tool is listed. Say so once, keep \
         searching, and put what you would have stored (decisions and their reasons, outcomes, \
@@ -2464,6 +2491,11 @@ impl<'e> McpServer<'e> {
             .get("include_memory")
             .and_then(Value::as_bool)
             .unwrap_or(true);
+        // D222: default true, for the same reason as `include_memory`.
+        let include_retro = consumed
+            .get("include_retro")
+            .and_then(Value::as_bool)
+            .unwrap_or(true);
         // D146, and the one transport-only argument that is not a boolean.
         //
         // An unreadable value is REFUSED rather than defaulted, which is the
@@ -2601,6 +2633,7 @@ impl<'e> McpServer<'e> {
             paged_list_by_us,
             fields_defaulted_by_us,
             include_memory,
+            include_retro,
         })
     }
 
@@ -2674,6 +2707,12 @@ impl<'e> McpServer<'e> {
                 // by a one-line notice naming the read that draws it. The JSON
                 // is what must arrive, and a block the caller asked for is
                 // never dropped silently (D72).
+                // D222: the retrospective, on every completion. A read-scope
+                // connection never gets here (the write gate above refuses the
+                // tool), so the block is write-scope only by construction.
+                if spec.method == "task.done" && prepared.include_retro {
+                    result["retro"] = json!(RETRO);
+                }
                 if spec.method == "task.done" && prepared.view == View::Card {
                     let card_opts = self.card_opts(crate::clock::now());
                     let read = json!({
