@@ -4,17 +4,36 @@ name: Desktop
 # (src-tauri/Cargo.toml carries an empty `[workspace]`), so CI.yml never sees
 # it: neither `cargo fmt --all` nor `cargo test --workspace` at the root reach
 # the host crate. This workflow is the only thing that builds it.
+#
+# Every run uploads the bundles as workflow artifacts, unsigned (D???). A
+# version tag is the one run that reads the signing secrets, and it passes
+# without them: the first desktop release ships unsigned, and a tag run on a
+# repository holding none of them uploads the same unsigned bundles a pull
+# request does. None of these jobs is a required check on `main`, so the path
+# filter below never leaves a pull request waiting on a job that cannot start.
+#
+# It publishes nothing. The token is read-only (`permissions` below) and no step
+# calls `gh release` or `git tag`, so even a tag run can only upload artifacts;
+# release.yml stays the one workflow that creates a GitHub release.
 on:
   push:
     branches: [main]
+    # GitHub does not evaluate path filters for tag pushes, so a version tag
+    # always runs this workflow whatever it changed.
+    tags: ['v*']
     paths:
       - 'apps/tasqx-desktop/**'
+      - 'scripts/desktop-bundle.sh'
       - '.github/workflows/desktop.yml'
   pull_request:
     paths:
       - 'apps/tasqx-desktop/**'
+      - 'scripts/desktop-bundle.sh'
       - '.github/workflows/desktop.yml'
   workflow_dispatch:
+
+permissions:
+  contents: read
 
 env:
   CARGO_TERM_COLOR: always
@@ -98,7 +117,45 @@ jobs:
         working-directory: apps/tasqx-desktop/src-tauri
         run: cargo clippy --all-targets -- -D warnings
 
-      - run: npm run tauri:build
+      # Tag runs only, and a no-op without the certificate: Tauri signs with a
+      # thumbprint from the user's store, so the .pfx goes into the store here
+      # and the thumbprint on to desktop-bundle.sh.
+      - name: Import the Windows signing certificate
+        if: runner.os == 'Windows' && github.ref_type == 'tag'
+        shell: pwsh
+        env:
+          WINDOWS_CERTIFICATE: ${{ secrets.WINDOWS_CERTIFICATE }}
+          WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
+        run: |
+          if (-not $env:WINDOWS_CERTIFICATE -or -not $env:WINDOWS_CERTIFICATE_PASSWORD) {
+            Write-Output "WINDOWS_CERTIFICATE or WINDOWS_CERTIFICATE_PASSWORD not set; the Windows bundle stays unsigned"
+            exit 0
+          }
+          $pfx = Join-Path $env:RUNNER_TEMP 'signing.pfx'
+          [IO.File]::WriteAllBytes($pfx, [Convert]::FromBase64String($env:WINDOWS_CERTIFICATE))
+          $password = ConvertTo-SecureString $env:WINDOWS_CERTIFICATE_PASSWORD -AsPlainText -Force
+          $cert = Import-PfxCertificate -FilePath $pfx -CertStoreLocation Cert:\CurrentUser\My -Password $password
+          Remove-Item $pfx
+          "WINDOWS_CERTIFICATE_THUMBPRINT=$($cert.Thumbprint)" >> $env:GITHUB_ENV
+
+      # The secrets are named here and nowhere else. Off a tag every one is
+      # forced empty, so a pull request from a branch of this repository —
+      # which GitHub does hand the secrets — still builds unsigned; on a tag,
+      # an absent secret is empty too, and desktop-bundle.sh treats empty as
+      # unset and builds that platform unsigned.
+      - name: tauri build
+        working-directory: .
+        shell: bash
+        env:
+          APPLE_CERTIFICATE: ${{ github.ref_type == 'tag' && secrets.APPLE_CERTIFICATE || '' }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ github.ref_type == 'tag' && secrets.APPLE_CERTIFICATE_PASSWORD || '' }}
+          APPLE_SIGNING_IDENTITY: ${{ github.ref_type == 'tag' && secrets.APPLE_SIGNING_IDENTITY || '' }}
+          APPLE_ID: ${{ github.ref_type == 'tag' && secrets.APPLE_ID || '' }}
+          APPLE_PASSWORD: ${{ github.ref_type == 'tag' && secrets.APPLE_PASSWORD || '' }}
+          APPLE_TEAM_ID: ${{ github.ref_type == 'tag' && secrets.APPLE_TEAM_ID || '' }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ github.ref_type == 'tag' && secrets.TAURI_SIGNING_PRIVATE_KEY || '' }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ github.ref_type == 'tag' && secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD || '' }}
+        run: bash scripts/desktop-bundle.sh
 
       # `shell: bash` because on the Windows runner the default PowerShell
       # resolves `ls -R` against Get-ChildItem, where `-R` is an ambiguous
