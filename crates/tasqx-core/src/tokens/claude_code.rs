@@ -426,6 +426,7 @@ fn roots_from(config_dir: Option<&Path>, home: Option<&Path>) -> Vec<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::tokens::TempFixture;
 
     /// Minimal synthetic assistant line. Hand-written to avoid ever committing
     /// real transcript content (session logs are private conversation data).
@@ -778,15 +779,12 @@ mod tests {
 
     #[test]
     fn samples_from_file_reads_a_real_file() {
-        let path = std::env::temp_dir().join(format!("tasqx-cc-{}.jsonl", crate::clock::uuid_v7()));
         let content = assistant_line("2026-07-24T10:00:00Z", "msg_a", "claude-opus-4-7", 9, 9);
-        std::fs::write(&path, content).expect("write temp transcript");
+        let path = TempFixture::new("cc", "jsonl", content);
 
         let out = samples_from_file(&path).expect("parse temp transcript");
         assert_eq!(out.len(), 1);
         assert_eq!(out[0].input_tokens, 9);
-
-        let _ = std::fs::remove_file(&path);
     }
 
     #[test]
@@ -798,12 +796,9 @@ mod tests {
         bytes.extend_from_slice(b"{\xff not utf8}\n");
         bytes.extend_from_slice(good.as_bytes());
         bytes.push(b'\n');
-        let path =
-            std::env::temp_dir().join(format!("tasqx-cc-utf8-{}.jsonl", crate::clock::uuid_v7()));
-        std::fs::write(&path, &bytes).expect("write temp transcript");
+        let path = TempFixture::new("cc-utf8", "jsonl", &bytes);
 
         let out = samples_from_file(&path).expect("non-utf8 must not error");
-        let _ = std::fs::remove_file(&path);
         assert_eq!(out.len(), 1);
         assert_eq!(out[0].input_tokens, 9);
     }

@@ -39,7 +39,7 @@
 
 use crate::error::ApiError;
 use crate::tokens::otel;
-use crate::tokens::{home_dir, UsageSample};
+use crate::tokens::{env_path, home_dir, UsageSample};
 use serde_json::Value;
 use std::path::{Path, PathBuf};
 
@@ -54,12 +54,19 @@ const API_RESPONSE_EVENT: &str = "gemini_cli.api_response";
 /// `telemetry.log` live); otherwise `~/.gemini`. Returns an empty vec only if
 /// neither the override nor a home directory can be resolved.
 pub fn default_roots() -> Vec<PathBuf> {
-    if let Some(dir) = std::env::var_os("GEMINI_DATA_DIR").filter(|v| !v.is_empty()) {
-        return vec![PathBuf::from(dir)];
-    }
-    match home_dir() {
-        Some(home) => vec![home.join(".gemini")],
-        None => vec![],
+    roots_from(
+        env_path("GEMINI_DATA_DIR").as_deref(),
+        home_dir().as_deref(),
+    )
+}
+
+/// Pure core of [`default_roots`], taking the two env values so it is testable
+/// without mutating process env.
+fn roots_from(data_dir: Option<&Path>, home: Option<&Path>) -> Vec<PathBuf> {
+    match (data_dir, home) {
+        (Some(dir), _) => vec![dir.to_path_buf()],
+        (None, Some(home)) => vec![home.join(".gemini")],
+        (None, None) => vec![],
     }
 }
 
@@ -213,20 +220,12 @@ fn event_timestamp(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::Write;
-    use std::sync::atomic::{AtomicU64, Ordering};
+    use crate::tokens::TempFixture;
 
-    static SEQ: AtomicU64 = AtomicU64::new(0);
-
-    /// Write `content` to a uniquely named temp file and return its path; the
-    /// caller drives `samples_from_file`, which needs a real path on disk.
-    fn write_fixture(content: &str) -> PathBuf {
-        let n = SEQ.fetch_add(1, Ordering::Relaxed);
-        let path =
-            std::env::temp_dir().join(format!("tasqx-gemini-{}-{n}.log", std::process::id()));
-        let mut f = std::fs::File::create(&path).expect("create fixture");
-        f.write_all(content.as_bytes()).expect("write fixture");
-        path
+    /// Write `content` to a temp fixture; the caller drives
+    /// `samples_from_file`, which needs a real path on disk.
+    fn write_fixture(content: &str) -> TempFixture {
+        TempFixture::new("gemini", "log", content)
     }
 
     /// One synthetic api_response record in the nested-`attributes` shape — the
@@ -273,24 +272,13 @@ mod tests {
         assert_eq!(samples[0].input_tokens, 100);
         // output = output_token_count + thoughts_token_count.
         assert_eq!(samples[0].output_tokens, 50);
-        // cached taken as-is, NOT subtracted from input.
+        // cached taken as-is, NOT subtracted from input. The fixture's
+        // tool_token_count of 99 shows up in none of these buckets.
         assert_eq!(samples[0].cache_read_tokens, 5);
         assert_eq!(samples[0].cache_creation_tokens, 0);
         assert_eq!(samples[0].model.as_deref(), Some("gemini-2.5-pro"));
         assert_eq!(samples[1].input_tokens, 200);
         assert_eq!(samples[1].output_tokens, 100);
-    }
-
-    #[test]
-    fn tool_token_count_is_never_folded_into_input() {
-        // tool_token_count is 99 in every fixture record; it must not leak into
-        // any bucket (double-count risk).
-        let path = write_fixture(&record("2026-07-24T10:00:00Z", 100, 40, 0, 0));
-        let samples = samples_from_file(&path).expect("parse");
-        assert_eq!(samples.len(), 1);
-        assert_eq!(samples[0].input_tokens, 100);
-        assert_eq!(samples[0].output_tokens, 40);
-        assert_eq!(samples[0].cache_read_tokens, 0);
     }
 
     #[test]
@@ -376,12 +364,8 @@ mod tests {
         bytes.extend_from_slice(b"{\xff not utf8}\n");
         bytes.extend_from_slice(good.as_bytes());
         bytes.push(b'\n');
-        let n = SEQ.fetch_add(1, Ordering::Relaxed);
-        let path =
-            std::env::temp_dir().join(format!("tasqx-gemini-utf8-{}-{n}.log", std::process::id()));
-        std::fs::write(&path, &bytes).expect("write fixture");
+        let path = TempFixture::new("gemini-utf8", "log", &bytes);
         let samples = samples_from_file(&path).expect("non-utf8 must not error");
-        std::fs::remove_file(&path).ok();
         assert_eq!(samples.len(), 1);
         assert_eq!(samples[0].input_tokens, 100);
     }
@@ -475,15 +459,15 @@ mod tests {
 
     #[test]
     fn default_roots_honors_the_env_override() {
-        // Guard the process-global env with serialized set/restore.
-        let prev = std::env::var_os("GEMINI_DATA_DIR");
-        // SAFETY: single-threaded test body; restored before returning.
-        unsafe { std::env::set_var("GEMINI_DATA_DIR", "/custom/gemini/data") };
-        let roots = default_roots();
-        match prev {
-            Some(v) => unsafe { std::env::set_var("GEMINI_DATA_DIR", v) },
-            None => unsafe { std::env::remove_var("GEMINI_DATA_DIR") },
-        }
-        assert_eq!(roots, vec![PathBuf::from("/custom/gemini/data")]);
+        let home = Path::new("/home/someone");
+        assert_eq!(
+            roots_from(Some(Path::new("/custom/gemini/data")), Some(home)),
+            vec![PathBuf::from("/custom/gemini/data")]
+        );
+        assert_eq!(
+            roots_from(None, Some(home)),
+            vec![PathBuf::from("/home/someone/.gemini")]
+        );
+        assert!(roots_from(None, None).is_empty());
     }
 }

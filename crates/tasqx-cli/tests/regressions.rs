@@ -1766,6 +1766,7 @@ fn the_api_refuses_an_unknown_sort_key() {
 
     assert_eq!(v["ok"], false, "an unknown sort key came back ok: {v}");
     assert_eq!(v["error"]["code"], "bad_request", "{v}");
+    assert_eq!(out.status.code(), Some(2), "bad_request exits 2: {v}");
     let msg = v["error"]["message"].as_str().unwrap_or_default();
     assert!(
         msg.contains("bogus"),
@@ -1877,6 +1878,7 @@ fn the_api_refuses_an_unknown_fields_key() {
 
     assert_eq!(v["ok"], false, "an unknown field came back ok: {v}");
     assert_eq!(v["error"]["code"], "bad_request", "{v}");
+    assert_eq!(out.status.code(), Some(2), "bad_request exits 2: {v}");
     let msg = v["error"]["message"].as_str().unwrap_or_default();
     assert!(
         msg.contains("titel"),

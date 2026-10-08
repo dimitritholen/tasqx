@@ -252,6 +252,37 @@ pub(crate) fn home_dir() -> Option<PathBuf> {
 #[cfg(test)]
 pub(crate) static DISCOVERY_ENV: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
+/// A synthetic parser fixture in the temp dir, removed on drop so a failing
+/// assertion does not leak it. One naming scheme for every token parser's
+/// tests: `tasqx-<tag>-<uuid v7>.<ext>`, unique across threads and processes.
+#[cfg(test)]
+pub(crate) struct TempFixture(PathBuf);
+
+#[cfg(test)]
+impl TempFixture {
+    pub(crate) fn new(tag: &str, ext: &str, bytes: impl AsRef<[u8]>) -> Self {
+        let path =
+            std::env::temp_dir().join(format!("tasqx-{tag}-{}.{ext}", crate::clock::uuid_v7()));
+        std::fs::write(&path, bytes).expect("write temp fixture");
+        Self(path)
+    }
+}
+
+#[cfg(test)]
+impl std::ops::Deref for TempFixture {
+    type Target = std::path::Path;
+    fn deref(&self) -> &std::path::Path {
+        &self.0
+    }
+}
+
+#[cfg(test)]
+impl Drop for TempFixture {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.0);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

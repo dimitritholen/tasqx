@@ -218,15 +218,7 @@ fn watch_session(
                     // scrollback once the repaint scrolled past it (#249), and
                     // the alternate screen this path now draws into has no
                     // such scrollback for it to land in.
-                    let note = evt
-                        .pointer("/data/dropped")
-                        .and_then(Value::as_i64)
-                        .map(|d| {
-                            format!(
-                                "{d} event(s) dropped while this view was not keeping up; \
-                             the repaint is current"
-                            )
-                        });
+                    let note = dropped_note(&evt);
                     match watch_render(conn, filter_str, ctx, true, note.as_deref()) {
                         Ok(true) => {}
                         Ok(false) => return 0,
@@ -327,6 +319,19 @@ fn bound_to_viewport(mut result: Value, rows: u16, chrome: usize) -> Value {
         tasks.truncate(available);
     }
     result
+}
+
+/// The status note for a pushed event that carries the daemon's dropped-event
+/// count (#249), or `None` when it carries none.
+fn dropped_note(evt: &Value) -> Option<String> {
+    evt.pointer("/data/dropped")
+        .and_then(Value::as_i64)
+        .map(|d| {
+            format!(
+                "{d} event(s) dropped while this view was not keeping up; \
+                 the repaint is current"
+            )
+        })
 }
 
 /// Style one status note as a frame line (see `watch_session`'s comment on
@@ -752,17 +757,22 @@ mod tests {
     /// that the TTY path draws into the alternate screen (#206) — a
     /// screen with no reliable scrollback for a preceding `eprintln!` to
     /// survive in, unlike the plain-scrollback screen the old design relied
-    /// on. `note_line` is the pure half of that: it must carry the exact
-    /// count through, styled, so a viewer sees it in the very frame it
-    /// describes rather than losing it to a redraw with no history.
+    /// on. `dropped_note` and `note_line` are the pure half of that: they
+    /// must carry the exact count from the pushed event through, styled, so a
+    /// viewer sees it in the very frame it describes rather than losing it to
+    /// a redraw with no history.
     #[test]
     fn note_line_carries_the_dropped_count_into_the_frame() {
         let ctx = plain_ctx();
-        let line = note_line(
-            &ctx,
-            "3 event(s) dropped while this view was not keeping up; the repaint is current",
+        let evt = json!({ "event": "task.changed.gap", "data": { "op": "gap", "dropped": 3 } });
+        let note = dropped_note(&evt).expect("a frame with a dropped count gets a note");
+        let line = note_line(&ctx, &note);
+        assert!(line.contains("3 event(s) dropped"), "{line}");
+        assert_eq!(
+            dropped_note(&json!({ "event": "task.changed", "data": { "op": "add" } })),
+            None,
+            "an event that dropped nothing gets no note"
         );
-        assert!(line.contains("3 event(s) dropped"));
     }
 
     /// #228.6: `tasqx api` on a bare terminal used to give no prompt and no

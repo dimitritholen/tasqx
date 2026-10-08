@@ -48,7 +48,7 @@ use std::path::{Path, PathBuf};
 use serde_json::Value;
 
 use crate::error::ApiError;
-use crate::tokens::{home_dir, UsageSample};
+use crate::tokens::{env_path, home_dir, UsageSample};
 
 /// Session-level context from the first `session_meta` line. `id` is the field
 /// that earns its keep: it is the only anchor tying a rollout file to a tasqx
@@ -300,37 +300,30 @@ pub fn session_meta(path: &Path) -> Result<Option<CodexSessionMeta>, ApiError> {
 /// Returns an empty vec when neither `$CODEX_HOME` nor a home directory can be
 /// resolved — the caller has no roots to scan, which is not an error.
 pub fn default_roots() -> Vec<PathBuf> {
-    let Some(home) = codex_home() else {
-        return Vec::new();
-    };
-    vec![home.join("sessions"), home.join("archived_sessions")]
+    roots_from(env_path("CODEX_HOME").as_deref(), home_dir().as_deref())
 }
 
-/// `$CODEX_HOME` if set and non-empty, else `~`/`.codex`.
-fn codex_home() -> Option<PathBuf> {
-    if let Some(dir) = std::env::var_os("CODEX_HOME").filter(|v| !v.is_empty()) {
-        return Some(PathBuf::from(dir));
-    }
-    home_dir().map(|h| h.join(".codex"))
+/// Pure core of [`default_roots`], taking the two env values so it is testable
+/// without mutating process env: `codex_home` (`$CODEX_HOME`, already filtered
+/// for empty) wins, else `home`/`.codex`.
+fn roots_from(codex_home: Option<&Path>, home: Option<&Path>) -> Vec<PathBuf> {
+    let Some(base) = codex_home
+        .map(Path::to_path_buf)
+        .or_else(|| home.map(|h| h.join(".codex")))
+    else {
+        return Vec::new();
+    };
+    vec![base.join("sessions"), base.join("archived_sessions")]
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::Write;
+    use crate::tokens::TempFixture;
 
-    /// Write `lines` (already newline-joined) to a temp file and return it. The
-    /// file lives in the process temp dir with a pid+nonce name so parallel test
-    /// runs never collide.
-    fn temp_rollout(lines: &str) -> PathBuf {
-        use std::sync::atomic::{AtomicU64, Ordering};
-        static NONCE: AtomicU64 = AtomicU64::new(0);
-        let n = NONCE.fetch_add(1, Ordering::Relaxed);
-        let path =
-            std::env::temp_dir().join(format!("tasqx-codex-test-{}-{n}.jsonl", std::process::id()));
-        let mut f = std::fs::File::create(&path).expect("create temp rollout");
-        f.write_all(lines.as_bytes()).expect("write temp rollout");
-        path
+    /// Write `lines` (already newline-joined) to a temp fixture.
+    fn temp_rollout(lines: &str) -> TempFixture {
+        TempFixture::new("codex", "jsonl", lines)
     }
 
     /// One `token_count` line: `total_*` are the cumulative totals, `last_*` the
@@ -369,7 +362,6 @@ mod tests {
         );
         let path = temp_rollout(&format!("{l1}\n{l2}\n"));
         let samples = samples_from_file(&path).expect("parse");
-        std::fs::remove_file(&path).ok();
 
         assert_eq!(samples.len(), 2);
         // fresh input = input - cached; cache_read = cached; no cache creation.
@@ -393,7 +385,6 @@ mod tests {
         );
         let path = temp_rollout(&format!("{l}\n{l}\n"));
         let samples = samples_from_file(&path).expect("parse");
-        std::fs::remove_file(&path).ok();
         assert_eq!(samples.len(), 1);
     }
 
@@ -406,7 +397,6 @@ mod tests {
         );
         let path = temp_rollout(&format!("{{not json\n{good}\n"));
         let samples = samples_from_file(&path).expect("parse");
-        std::fs::remove_file(&path).ok();
         assert_eq!(samples.len(), 1);
         assert_eq!(samples[0].output_tokens, 5);
     }
@@ -424,11 +414,8 @@ mod tests {
         bytes.extend_from_slice(b"{\xff not utf8}\n");
         bytes.extend_from_slice(good.as_bytes());
         bytes.push(b'\n');
-        let path =
-            std::env::temp_dir().join(format!("tasqx-codex-utf8-{}.jsonl", std::process::id()));
-        std::fs::write(&path, &bytes).expect("write temp rollout");
+        let path = TempFixture::new("codex-utf8", "jsonl", &bytes);
         let samples = samples_from_file(&path).expect("non-utf8 must not error");
-        std::fs::remove_file(&path).ok();
         assert_eq!(samples.len(), 1);
         assert_eq!(samples[0].output_tokens, 5);
     }
@@ -441,7 +428,6 @@ mod tests {
              {\"type\":\"session_meta\",\"payload\":{\"id\":\"x\"}}\n",
         );
         let samples = samples_from_file(&path).expect("parse");
-        std::fs::remove_file(&path).ok();
         assert!(samples.is_empty());
     }
 
@@ -449,7 +435,6 @@ mod tests {
     fn empty_file_returns_empty() {
         let path = temp_rollout("");
         let samples = samples_from_file(&path).expect("parse");
-        std::fs::remove_file(&path).ok();
         assert!(samples.is_empty());
     }
 
@@ -476,7 +461,6 @@ mod tests {
         );
         let path = temp_rollout(&format!("{bad_ts}\n{good}\n"));
         let samples = samples_from_file(&path).expect("parse");
-        std::fs::remove_file(&path).ok();
         assert_eq!(samples.len(), 1);
         // The surviving sample is the second one, with its full totals intact
         // (the dropped first event did not become its baseline).
@@ -493,7 +477,6 @@ mod tests {
         );
         let path = temp_rollout(&format!("{l}\n"));
         let samples = samples_from_file(&path).expect("parse");
-        std::fs::remove_file(&path).ok();
         // Canonical form trims the trailing fractional zero.
         assert_eq!(samples[0].ts, "2026-03-10T10:47:41.05Z");
         assert!(crate::util::parse_ts(&samples[0].ts).is_some());
@@ -511,7 +494,6 @@ mod tests {
         let before = token_count_line("2026-03-10T10:47:40.000Z", (50, 0, 2, 52), (50, 0, 2, 52));
         let path = temp_rollout(&format!("{before}\n{ctx}\n{l}\n"));
         let samples = samples_from_file(&path).expect("parse");
-        std::fs::remove_file(&path).ok();
         assert_eq!(samples.len(), 2);
         assert_eq!(samples[0].model, None);
         assert_eq!(samples[1].model.as_deref(), Some("gpt-5.4"));
@@ -534,7 +516,6 @@ mod tests {
         );
         let path = temp_rollout(&format!("{l1}\n{l2}\n"));
         let samples = samples_from_file(&path).expect("parse");
-        std::fs::remove_file(&path).ok();
         assert_eq!(samples.len(), 2);
         // Second sample comes from the delta (300-100, 20-10, 13-5), mapped:
         // fresh input = 200-10 = 190, cache_read = 10, output = 8.
@@ -562,7 +543,6 @@ mod tests {
         );
         let path = temp_rollout(&format!("{e1}\n{e2}\n{e3}\n"));
         let samples = samples_from_file(&path).expect("parse");
-        std::fs::remove_file(&path).ok();
         // Two kept samples (e2 dropped). The second folds e2+e3: delta total
         // 470-150 = 320; fresh input 320-100 = 220, output 150-50 = 100.
         assert_eq!(samples.len(), 2);
@@ -583,7 +563,6 @@ mod tests {
         );
         let path = temp_rollout(&format!("{meta}\n{l}\n"));
         let got = session_meta(&path).expect("parse").expect("has meta");
-        std::fs::remove_file(&path).ok();
         assert_eq!(got.id.as_deref(), Some("abc-123"));
         assert_eq!(got.cwd.as_deref(), Some("/home/u/proj"));
         assert_eq!(got.cli_version.as_deref(), Some("0.112.0"));
@@ -598,21 +577,16 @@ mod tests {
         );
         let path = temp_rollout(&format!("{l}\n"));
         let got = session_meta(&path).expect("parse");
-        std::fs::remove_file(&path).ok();
         assert_eq!(got, None);
     }
 
     #[test]
     fn default_roots_honors_codex_home_override() {
-        // Set CODEX_HOME to a known dir and assert both roots hang off it.
-        // SAFETY: single-threaded within this test; we restore afterward.
-        let prev = std::env::var_os("CODEX_HOME");
-        unsafe { std::env::set_var("CODEX_HOME", "/custom/codex") };
-        let roots = default_roots();
-        match prev {
-            Some(v) => unsafe { std::env::set_var("CODEX_HOME", v) },
-            None => unsafe { std::env::remove_var("CODEX_HOME") },
-        }
+        // CODEX_HOME wins over HOME, and both roots hang off it.
+        let roots = roots_from(
+            Some(Path::new("/custom/codex")),
+            Some(Path::new("/home/someone")),
+        );
         assert_eq!(
             roots,
             vec![
@@ -620,5 +594,18 @@ mod tests {
                 PathBuf::from("/custom/codex/archived_sessions"),
             ]
         );
+    }
+
+    #[test]
+    fn default_roots_fall_back_to_dot_codex_under_home() {
+        let roots = roots_from(None, Some(Path::new("/home/someone")));
+        assert_eq!(
+            roots,
+            vec![
+                PathBuf::from("/home/someone/.codex/sessions"),
+                PathBuf::from("/home/someone/.codex/archived_sessions"),
+            ]
+        );
+        assert!(roots_from(None, None).is_empty());
     }
 }

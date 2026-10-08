@@ -147,10 +147,10 @@ mod tests {
     }
 
     #[test]
-    fn a_tie_reports_the_cheaper_bucket() {
-        // Not cosmetic: with the dearer one winning a tie, a page could name
-        // `out` on a store whose spend is half cache, which reads as costlier
-        // than it was. BUCKETS is ordered cheapest-first and the tie follows it.
+    fn a_tie_reports_the_earlier_bucket() {
+        // A tie goes to whichever bucket BUCKETS lists first, so both surfaces
+        // name the same one. That order is fixed but carries no cost meaning
+        // (see BUCKETS); this pins the tie-break, not a price ranking.
         let g = json!({
             "tokens_in": 0, "tokens_out": 500,
             "tokens_cache_read": 500, "tokens_cache_creation": 0

@@ -2051,27 +2051,6 @@ mod tests {
     }
 
     #[test]
-    fn no_foreign_windows_matches_totals_in_window_exactly() {
-        let samples = vec![sample("2026-07-25T09:47:00Z", 1000, 2000)];
-        let (totals1, n1, _, _, _) = totals_in_window_refusing(
-            &samples,
-            "2026-07-25T09:46:53Z",
-            "2026-07-25T09:49:37Z",
-            &[],
-            &HashSet::new(),
-        );
-        let (totals2, counted, contested, _, _) = totals_in_window_refusing(
-            &samples,
-            "2026-07-25T09:46:53Z",
-            "2026-07-25T09:49:37Z",
-            &[],
-            &HashSet::new(),
-        );
-        assert_eq!((totals2, counted), (totals1, n1));
-        assert_eq!(contested, 0);
-    }
-
-    #[test]
     fn a_bad_window_attributes_nothing_rather_than_everything() {
         let samples = [sample("2026-07-24T10:30:00Z", 10, 20)];
         let (totals, n, _, _, _) = totals_in_window_refusing(

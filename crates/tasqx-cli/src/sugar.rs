@@ -1068,10 +1068,6 @@ mod tests {
         assert_eq!(q.title, "see project::config");
         assert_eq!(q.project, None);
 
-        // The shorter alias must not pick up what the longer one just declined:
-        // `strip_prefix("proj:")` on `project::config` yields `ect::config`.
-        assert_ne!(q.project.as_deref(), Some("ect::config"));
-
         for tok in [
             "scheduled::at",
             "estimate::of",

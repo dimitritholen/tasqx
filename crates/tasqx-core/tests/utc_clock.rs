@@ -15,7 +15,10 @@ use tasqx_core::remind::{parse_remind, Remind};
 use tasqx_core::Engine;
 
 fn in_tokyo() {
-    std::env::set_var("TZ", "JST-9");
+    // SAFETY (`set_var` is `unsafe` from edition 2024): every test in this
+    // binary writes this same value, and jiff reads `TZ` through `std::env`,
+    // which takes the same lock, so no reader can see a torn or other value.
+    unsafe { std::env::set_var("TZ", "JST-9") };
 }
 
 /// Wednesday, 2026-07-15T12:00:00Z — 21:00 in the zone above.

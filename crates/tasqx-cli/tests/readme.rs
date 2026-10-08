@@ -324,6 +324,16 @@ fn the_agents_page_mcp_tool_roster_matches_the_server() {
     }
 }
 
+/// The binary pointed at a scratch store, off the daemon. `manual` and
+/// `completions` dispatch before the store opens, so the path is never created;
+/// it is set so that a verb that does open one can never reach the real store.
+fn isolated_tasqx() -> std::process::Command {
+    let db = std::env::temp_dir().join(format!("tasqx-readme-{}.db", std::process::id()));
+    let mut c = std::process::Command::new(env!("CARGO_BIN_EXE_tasqx"));
+    c.env("TASQX_DB", db).arg("--no-daemon");
+    c
+}
+
 /// The wiki's Shell Completion page prints an activation line per shell, by
 /// hand, and that is the worst place in it for a hand-kept copy. (The README
 /// carried the same lines until D162; the page is where they live now.)
@@ -366,7 +376,7 @@ fn the_agents_page_mcp_tool_roster_matches_the_server() {
 /// `null` for PowerShell, which deliberately has no knowable target.
 #[test]
 fn both_documents_carry_the_activation_lines_and_targets_the_binary_prints() {
-    let manual = std::process::Command::new(env!("CARGO_BIN_EXE_tasqx"))
+    let manual = isolated_tasqx()
         .args(["manual", "completion"])
         .output()
         .expect("render the manual's completion topic");
@@ -375,7 +385,7 @@ fn both_documents_carry_the_activation_lines_and_targets_the_binary_prints() {
 
     let mut checked = 0;
     for shell in clap_complete::env::Shells::builtins().names() {
-        let out = std::process::Command::new(env!("CARGO_BIN_EXE_tasqx"))
+        let out = isolated_tasqx()
             .args(["--json", "completions", shell])
             .output()
             .unwrap_or_else(|e| panic!("run `tasqx completions {shell}`: {e}"));
