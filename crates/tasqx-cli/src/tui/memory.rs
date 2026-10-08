@@ -318,18 +318,13 @@ impl App {
     /// opens a doc the reader never highlighted. The doc is found again, and
     /// only when it has left the matches does the cursor fall back to the top.
     fn refilter(&mut self) {
-        let anchor = self.matches.get(self.cursor).copied();
-        let needle = self.query.to_lowercase();
-        let terms: Vec<&str> = needle.split_whitespace().collect();
-        self.matches = if terms.is_empty() {
-            (0..self.docs.len()).collect()
-        } else {
-            fuzzy::rank(self.docs.len(), |i| self.docs[i].score(&terms))
-        };
-        self.cursor = anchor
-            .and_then(|a| self.matches.iter().position(|&i| i == a))
-            .unwrap_or(0)
-            .min(self.matches.len().saturating_sub(1));
+        fuzzy::refilter(
+            self.docs.len(),
+            &self.query,
+            |i, terms| self.docs[i].score(terms),
+            &mut self.matches,
+            &mut self.cursor,
+        );
     }
 
     /// Rows the list gets: the frame less the header (which carries the

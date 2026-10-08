@@ -51,6 +51,35 @@ pub(crate) fn rank(len: usize, score: impl Fn(usize) -> Option<i64>) -> Vec<usiz
     scored.into_iter().map(|(i, _)| i).collect()
 }
 
+/// Re-rank `0..len` against `query`, keeping `cursor` on the item it was on.
+///
+/// The cursor indexes `matches`, so leaving it alone across a refilter
+/// silently re-aims it at whatever item now sits there, and Enter opens one
+/// the reader never highlighted (D55). The anchored item is found again; only
+/// when it has left the matches does the cursor fall back to the top (0, also on an
+/// empty list, so it never underflows). No terms keeps the caller's own order;
+/// ties keep it too (see [`rank`]). `score` takes an index and the lowercased
+/// terms.
+pub(crate) fn refilter(
+    len: usize,
+    query: &str,
+    score: impl Fn(usize, &[&str]) -> Option<i64>,
+    matches: &mut Vec<usize>,
+    cursor: &mut usize,
+) {
+    let anchor = matches.get(*cursor).copied();
+    let needle = query.to_lowercase();
+    let terms: Vec<&str> = needle.split_whitespace().collect();
+    *matches = if terms.is_empty() {
+        (0..len).collect()
+    } else {
+        rank(len, |i| score(i, &terms))
+    };
+    *cursor = anchor
+        .and_then(|a| matches.iter().position(|&i| i == a))
+        .unwrap_or(0);
+}
+
 /// How well does `needle`'s characters fit inside `haystack`, in order but
 /// not necessarily adjacent? Both must already be lowercased. `None` when
 /// `needle` is not a subsequence of `haystack` at all; `Some(score)`
@@ -147,5 +176,65 @@ mod tests {
     #[test]
     fn ties_keep_the_order_they_came_in() {
         assert_eq!(rank(4, |i| (i != 2).then_some(7)), vec![0, 1, 3]);
+    }
+
+    /// Names `["ab", "ba", "cab", "xyz"]`, scored by the term as a substring.
+    fn narrow(query: &str, matches: &mut Vec<usize>, cursor: &mut usize) {
+        let names = ["ab", "ba", "cab", "xyz"];
+        refilter(
+            names.len(),
+            query,
+            |i, terms| terms.iter().all(|t| names[i].contains(t)).then_some(0),
+            matches,
+            cursor,
+        );
+    }
+
+    #[test]
+    fn refilter_keeps_the_cursor_on_the_anchored_item_when_it_still_matches() {
+        let (mut m, mut c) = ((0..4).collect::<Vec<_>>(), 2);
+        narrow("a", &mut m, &mut c);
+        assert_eq!(m, [0, 1, 2]);
+        assert_eq!(c, 2, "item 2 must stay selected");
+        narrow("b", &mut m, &mut c);
+        assert_eq!(m, [0, 1, 2]);
+        narrow("ba", &mut m, &mut c);
+        assert_eq!(m, [1], "item 2 left the matches");
+        assert_eq!(c, 0);
+    }
+
+    #[test]
+    fn refilter_moves_the_cursor_with_its_item_not_its_index() {
+        let (mut m, mut c) = ((0..4).collect::<Vec<_>>(), 3);
+        narrow("x", &mut m, &mut c);
+        assert_eq!((m.as_slice(), c), ([3].as_slice(), 0));
+        let (mut m, mut c) = ((0..4).collect::<Vec<_>>(), 2);
+        narrow("ab", &mut m, &mut c);
+        assert_eq!(m, [0, 2]);
+        assert_eq!(c, 1, "index 2 would be out of range; the item is at 1");
+    }
+
+    #[test]
+    fn refilter_falls_to_the_top_when_the_item_vanishes_and_survives_no_matches() {
+        let (mut m, mut c) = ((0..4).collect::<Vec<_>>(), 3);
+        narrow("a", &mut m, &mut c);
+        assert_eq!((m.as_slice(), c), ([0, 1, 2].as_slice(), 0));
+        narrow("zzz", &mut m, &mut c);
+        assert!(m.is_empty());
+        assert_eq!(c, 0, "an empty list leaves the cursor at 0, no underflow");
+        narrow("", &mut m, &mut c);
+        assert_eq!(
+            m,
+            [0, 1, 2, 3],
+            "an empty query restores the caller's order"
+        );
+        assert_eq!(c, 0);
+    }
+
+    #[test]
+    fn refilter_lowercases_the_query_and_splits_it_into_terms() {
+        let (mut m, mut c) = (Vec::new(), 0);
+        narrow("  CA   B ", &mut m, &mut c);
+        assert_eq!(m, [2]);
     }
 }
