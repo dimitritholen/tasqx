@@ -24,11 +24,13 @@ on:
     paths:
       - 'apps/tasqx-desktop/**'
       - 'scripts/desktop-bundle.sh'
+      - 'scripts/desktop-release-check.sh'
       - '.github/workflows/desktop.yml'
   pull_request:
     paths:
       - 'apps/tasqx-desktop/**'
       - 'scripts/desktop-bundle.sh'
+      - 'scripts/desktop-release-check.sh'
       - '.github/workflows/desktop.yml'
   workflow_dispatch:
 
@@ -93,7 +95,9 @@ jobs:
             libxdo-dev \
             libssl-dev \
             libayatana-appindicator3-dev \
-            librsvg2-dev
+            librsvg2-dev \
+            xvfb \
+            lsof
 
       - run: npm ci
       - run: npm run typecheck
@@ -153,8 +157,6 @@ jobs:
           APPLE_ID: ${{ github.ref_type == 'tag' && secrets.APPLE_ID || '' }}
           APPLE_PASSWORD: ${{ github.ref_type == 'tag' && secrets.APPLE_PASSWORD || '' }}
           APPLE_TEAM_ID: ${{ github.ref_type == 'tag' && secrets.APPLE_TEAM_ID || '' }}
-          TAURI_SIGNING_PRIVATE_KEY: ${{ github.ref_type == 'tag' && secrets.TAURI_SIGNING_PRIVATE_KEY || '' }}
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ github.ref_type == 'tag' && secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD || '' }}
         run: bash scripts/desktop-bundle.sh
 
       # `shell: bash` because on the Windows runner the default PowerShell
@@ -168,3 +170,14 @@ jobs:
         with:
           name: tasqx-desktop-${{ matrix.os }}
           path: apps/tasqx-desktop/src-tauri/target/release/bundle
+
+      # The release checks (scripts/desktop-release-check.sh): one version
+      # across the workspace, the app and a tag; the bundles exist; then the
+      # bundle installed, launched against a scratch daemon, quit and
+      # uninstalled clean. After the upload, so a failing check still leaves
+      # the bundles to look at. --no-suite because `npm test` above already
+      # ran the release smoke suite in this job.
+      - name: Release checks
+        working-directory: .
+        shell: bash
+        run: bash scripts/desktop-release-check.sh --no-suite

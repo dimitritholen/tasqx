@@ -15,7 +15,7 @@ bundle to a GitHub release is a decision for later and is not wired anywhere.
 Every run of the **Desktop** workflow uploads one artifact per runner:
 `tasqx-desktop-macos-latest`, `tasqx-desktop-windows-latest` and
 `tasqx-desktop-ubuntu-latest`. It runs on pull requests that touch
-`apps/tasqx-desktop`, `scripts/desktop-bundle.sh` or the workflow, on pushes to
+`apps/tasqx-desktop`, either desktop script or the workflow, on pushes to
 `main` that touch them, on every `v*` tag, and on demand:
 
 ```console
@@ -97,7 +97,6 @@ passes and uploads unsigned bundles.
 | `WINDOWS_CERTIFICATE` | the Authenticode certificate as a `.pfx`, base64-encoded (CI secret) |
 | `WINDOWS_CERTIFICATE_PASSWORD` | the `.pfx` password (CI secret) |
 | `WINDOWS_CERTIFICATE_THUMBPRINT` | locally: the thumbprint of that certificate in your user store (CI derives it) |
-| `TAURI_SIGNING_PRIVATE_KEY`, `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` | the Tauri updater keypair's private half and its password |
 
 ### macOS: sign and notarize
 
@@ -140,24 +139,33 @@ For CI, store `[Convert]::ToBase64String([IO.File]::ReadAllBytes("cert.pfx"))`
 as `WINDOWS_CERTIFICATE` and the password as `WINDOWS_CERTIFICATE_PASSWORD`. The
 workflow imports it on the Windows runner and passes the thumbprint on.
 
-### Updater keypair
+### No updater keypair
 
-Generate the pair once, outside the repository, and keep the private key and its
-password somewhere you will not lose them; an app built against a public key
-accepts updates signed only by its private half:
+The app has no updater and needs no updater key: it never downloads or
+installs anything itself (D10). With **Check for a newer release** switched on
+in Settings, it asks the GitHub releases API once at start-up and, when the
+latest tag is newer than its own version, shows a notice linking the release
+page. The check is off by default.
 
-```console
-cd apps/tasqx-desktop
-npx tauri signer generate -w ~/.tauri/tasqx-desktop.key
-```
+## Release checks
 
-The private key (the file's contents) and its password become
-`TAURI_SIGNING_PRIVATE_KEY` and `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`. The public
-key belongs in `src-tauri/tauri.conf.json` under `plugins > updater`, together
-with the updater plugin itself, which the app does not carry yet. Until it does,
-`tauri build` cannot produce updater artifacts, so the script reports a set key
-and ignores it; once `plugins > updater` is in the config it writes a `.sig`
-beside every updater bundle with no change to the script or the workflow.
+`scripts/desktop-release-check.sh` runs after a bundle build, locally or as the
+workflow's last step. It checks that the workspace, the app and a tag agree on
+one version; that this host's bundles exist and carry it (and on macOS that the
+`.app` is sealed); runs the release smoke suite in
+`apps/tasqx-desktop/src/test/integration`, which walks the app against a real
+daemon on a disposable store; and then installs the bundle the way a user
+would, launches it against a scratch daemon, checks that it connects, quits it,
+uninstalls it and checks nothing is left behind. Data the launch creates under
+your home directory is removed only if it was not there before, so your own
+install is never touched. `--no-suite` skips the suite and `--no-launch` the
+install step.
+
+The install step differs per platform: macOS mounts the `.dmg` and copies the
+app into a scratch directory; Linux installs the `.deb` with `sudo dpkg` and
+launches under `Xvfb`; Windows installs the `.msi` with `msiexec`. On Windows
+the connection is checked by the suite only, because a named pipe has no
+`lsof` view.
 
 ## Rolling back
 
