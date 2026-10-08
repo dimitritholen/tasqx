@@ -756,12 +756,16 @@ fn a_project_named_after_an_ancestor_directory_does_not_take_over_the_session() 
     engine.project_create(&json!({ "name": "alpha" })).unwrap();
     engine.project_create(&json!({ "name": "home" })).unwrap();
     engine.project_create(&json!({ "name": "other" })).unwrap();
+    engine.project_create(&json!({ "name": "src" })).unwrap();
+    add_doc(&engine, "src rule", "subdir", Some("src"), true);
     add_doc(&engine, "alpha rule", "default", Some("alpha"), true);
     add_doc(&engine, "home rule", "ancestor", Some("home"), true);
     add_doc(&engine, "other rule", "repo", Some("other"), true);
     engine.project_use(&json!({ "name": "alpha" })).unwrap();
 
     // `.../home/runner/repo/src`: `home` is an ancestor, `repo` the checkout.
+    // `src` is a project too, but the workdir's own name is not consulted
+    // inside a repo.
     let sub = temp_repo("home/runner/repo").join("src");
     std::fs::create_dir_all(&sub).unwrap();
     // A non-repo directory under `home` has only its own name to offer.
@@ -779,7 +783,10 @@ fn a_project_named_after_an_ancestor_directory_does_not_take_over_the_session() 
             text.contains(&format!("project {want} (")),
             "{what}:\n{text}"
         );
-        assert!(!text.contains("home rule"), "{what}:\n{text}");
+        assert!(
+            !text.contains("home rule") && !text.contains("src rule"),
+            "{what}:\n{text}"
+        );
     }
 }
 
