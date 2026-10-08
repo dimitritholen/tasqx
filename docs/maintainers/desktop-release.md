@@ -1,7 +1,7 @@
 # Building and signing Tasqx Desktop
 
 Tasqx Desktop (`apps/tasqx-desktop`) ships **unsigned** for its first release
-(D???). CI builds the unsigned bundles for macOS, Windows and Linux; signing is a
+(D230). CI builds the unsigned bundles for macOS, Windows and Linux; signing is a
 step a maintainer adds later with their own identities. This page covers both:
 building a bundle yourself from a clean clone, and the signing inputs the build
 reads when you have them.
