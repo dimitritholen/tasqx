@@ -115,6 +115,12 @@ export class ConnectionController {
   private heartbeatTimer: TimerHandle | null = null;
   private buffer: EventFrame[] = [];
   private buffering = false;
+  /**
+   * The highest `_rev` this stream has carried per entity. The daemon stamps
+   * every row of one pump with the task's current rev, so a repeat is normal;
+   * a lower one means the stream and the store disagree (D160).
+   */
+  private revs = new Map<string, number>();
 
   constructor(deps: ConnectionDeps) {
     this.transport = deps.transport;
@@ -196,6 +202,7 @@ export class ConnectionController {
     this.clearHeartbeat();
     this.buffering = true;
     this.buffer = [];
+    this.revs = new Map();
     this.set({ status: 'synchronizing', stale: true });
     await this.loadBaseline(this.client);
     if (generation !== this.generation) return;
@@ -299,6 +306,15 @@ export class ConnectionController {
     if (!isTaskChangedEvent(event)) {
       this.resync(`unknown event ${event.event}`);
       return;
+    }
+    const { entity_id: key, _rev: rev } = event.data;
+    if (key !== undefined && typeof rev === 'number') {
+      const seen = this.revs.get(key);
+      if (seen !== undefined && rev < seen) {
+        this.resync(`non-increasing revision: ${key} ${seen} -> ${rev}`);
+        return;
+      }
+      this.revs.set(key, rev);
     }
     if (this.buffering) this.buffer.push(event);
     else this.emit(event);
