@@ -1,6 +1,6 @@
 [package]
 name = "tasqx-desktop"
-version = "0.11.0"
+version = "0.15.0"
 edition = "2021"
 description = "Tasqx Desktop — Tauri host for the Tasqx client"
 publish = false
