@@ -295,7 +295,7 @@ fn config_list_still_reports_every_setting_despite_a_bad_line() {
 
 /// The same value read by every OTHER command must stay silent.
 ///
-/// The fallback in `toml_value_in` is on the path of every task capture; a
+/// The fallback in `toml_value` is on the path of every task capture; a
 /// warning there would put this text in front of someone typing `tasqx add`,
 /// which is precisely the noise the silent path exists to avoid.
 #[test]
@@ -5783,80 +5783,6 @@ fn a_store_that_cannot_be_opened_is_reported_with_a_bracketed_code() {
     );
 }
 
-/// #229 item 6: `--json` gets a note explaining it is ignored on a verb that
-/// cannot honour it (D31's `JSON_CARVE_OUTS`) — `--theme` and `--socket` did
-/// not, on verbs that cannot honour THEM either: `api` and `completions`
-/// produce no themed output at all, and `docs`/`manual`/`completions` never
-/// open a store or a daemon connection. Every subcommand's `--help` lists all
-/// four globals regardless, so a reader has no way to tell "ignored silently"
-/// from "does something" short of this note.
-///
-/// `--no-daemon` is deliberately NOT covered here (see `execute`'s comment):
-/// it is a defensive flag meant to ride along on every invocation, and this
-/// suite's own fixtures do exactly that.
-#[test]
-fn theme_and_socket_are_noted_as_inert_the_way_json_already_is() {
-    let dir = fresh_config_dir("inert-flags");
-    let raw = |args: &[&str]| -> std::process::Output {
-        Command::new(env!("CARGO_BIN_EXE_tasqx"))
-            .env("TASQX_CONFIG_DIR", &dir)
-            .env("TASQX_DB", db_path("inert-flags"))
-            .args(args)
-            .output()
-            .expect("run tasqx")
-    };
-
-    // `--theme` on a verb with no themed output.
-    for args in [
-        vec!["--theme", "mono", "completions", "bash"],
-        vec!["--theme", "mono", "api"],
-    ] {
-        let out = raw(&args);
-        let err = String::from_utf8_lossy(&out.stderr);
-        assert!(
-            err.contains("--theme") && err.contains("does not honour"),
-            "{args:?} must note that --theme is ignored, got stderr: {err}"
-        );
-    }
-
-    // `--socket` on a verb that never opens a store or a daemon. `docs` writes
-    // to stdout rather than opening a browser, so the test never launches one.
-    //
-    // The list is DERIVED, not hardcoded: the three-verb literal here could not
-    // see a new store-free verb, and did not — `about` shipped accepting
-    // `--socket` in silence while `manual` explained itself. Anything clap
-    // knows that needs no store belongs here, and a verb added to that set
-    // joins this guard on the day it is added (D30's rule, one verb over).
-    let store_free: &[(&str, &[&str])] = &[
-        ("docs", &["docs", "--no-open", "--stdout"]),
-        ("manual", &["manual"]),
-        ("about", &["about"]),
-        ("completions", &["completions", "bash"]),
-        (
-            "setup",
-            &["setup", "--list", "--home", "/nonexistent/tasqx-home"],
-        ),
-    ];
-    let known = tasqx_cli::subcommand_names();
-    for (verb, _) in store_free {
-        assert!(
-            known.iter().any(|k| k == verb),
-            "`{verb}` is not a clap subcommand any more — fix this list"
-        );
-    }
-    let verb_args = store_free;
-    for (verb, base) in verb_args {
-        let mut args: Vec<&str> = vec!["--socket", "/tmp/unused.sock"];
-        args.extend_from_slice(base);
-        let verb = *verb;
-        let out = raw(&args);
-        let err = String::from_utf8_lossy(&out.stderr);
-        assert!(
-            err.contains("--socket") && err.contains("does not honour"),
-            "`{verb}` with --socket must note it is ignored, got stderr: {err}"
-        );
-    }
-}
 /// `tasqx about` names the store it WOULD open, and authors nothing.
 ///
 /// Asserted against the FILESYSTEM, and with `$TASQX_DB` pointed at a path

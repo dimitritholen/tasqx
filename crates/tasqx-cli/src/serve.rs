@@ -42,18 +42,18 @@ pub(crate) fn run_daemon(socket_flag: Option<&str>, db: Option<&str>) {
     // opt-in. Without the `notify-os` feature compiled in, this is inert and the
     // log backend is used regardless — the flag can never resurrect a backend
     // that isn't in the binary.
-    let os_notify = config_notify_enabled();
+    let os_notify = config_is_enabled("notify.enabled");
     let notifier = notify::default_notifier(os_notify);
 
     // #17: token attribution is opt-in (DESIGN §10). When enabled, the daemon
     // spawns a third background thread that parses AI tool transcripts to
     // attribute token usage to completed tasks. Off by default.
-    let tokens_enabled = config_tokens_enabled();
+    let tokens_enabled = config_is_enabled("tokens.enabled");
 
     // #18: the local OTLP receiver is opt-in (DESIGN §10). When `[otlp] enabled`,
     // the daemon binds a std TcpListener on 127.0.0.1:<port> to ingest token
     // telemetry from AI tools; off by default => no listener thread.
-    let otlp_port = config_otlp_enabled().then(config_otlp_port);
+    let otlp_port = config_is_enabled("otlp.enabled").then(config_otlp_port);
 
     // D5: a daemon may self-terminate once nothing needs it. Off unless
     // `[daemon] idle_timeout` says otherwise — see `DaemonOptions::idle_timeout`

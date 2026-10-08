@@ -385,62 +385,77 @@ pub fn config_path() -> Option<PathBuf> {
 /// which is the parallel-list problem one layer down: a mutation test aimed at
 /// the coercion rule hit one copy and passed, because the other still enforced
 /// it.
-fn coerce(s: &Setting, v: toml::Value) -> Option<String> {
-    match (s.kind, v) {
+fn coerce(s: &Setting, v: &toml_edit::Item) -> Option<String> {
+    match s.kind {
         // A string outside its own closed vocabulary is NOT a value, by the
         // same doctrine the kinds already apply to `enabled = "true"` and to an
         // out-of-range port. Without this, `config set` refused a typo with
         // exit 2 while `config get` and `config list` reported the very same
         // typo — hand-written into the file — as live with exit 0. The two
         // surfaces disagreed about what the store's configuration was.
-        (Kind::Str, toml::Value::String(x)) => match s.choices {
-            Choices::Free | Choices::Themes => Some(x),
-            Choices::OneOf(allowed) => allowed.contains(&x.as_str()).then_some(x),
-            Choices::ManyOf(allowed) => parse_many(allowed, &x).ok().map(|v| v.join(",")),
-        },
-        (Kind::Bool, toml::Value::Boolean(b)) => Some(b.to_string()),
+        Kind::Str => {
+            let x = v.as_str()?;
+            match s.choices {
+                Choices::Free | Choices::Themes => Some(x.to_string()),
+                Choices::OneOf(allowed) => allowed.contains(&x).then(|| x.to_string()),
+                Choices::ManyOf(allowed) => parse_many(allowed, x).ok().map(|v| v.join(",")),
+            }
+        }
+        // A value of the wrong type is not a value. It falls through to the
+        // default, exactly as it did before the registry existed: the old
+        // reader used `as_bool`, so `enabled = "true"` (a quoted boolean, a
+        // common mistake) was a type mismatch that fell to `false`.
+        Kind::Bool => v.as_bool().map(|b| b.to_string()),
         // A port is a TOML integer within the valid range; anything else (a
         // string "4318", or an out-of-range number) is not a value and falls to
         // the default.
-        (Kind::Uint, toml::Value::Integer(n)) if is_valid_port(n) => Some(n.to_string()),
+        Kind::Uint => v
+            .as_integer()
+            .filter(|&n| is_valid_port(n))
+            .map(|n| n.to_string()),
         // Same rule, its own range — and `0` is inside this one, because for a
         // timeout it is the off switch rather than "let the OS choose".
-        (Kind::Minutes, toml::Value::Integer(n)) if is_valid_minutes(n) => Some(n.to_string()),
-        // A value of the wrong type is not a value. It falls through to the
-        // default, exactly as it did before the registry existed: the old
-        // reader used `toml::Value::as_bool`, so `enabled = "true"` (a quoted
-        // boolean, a common mistake) was a type mismatch that fell to `false`.
-        _ => None,
+        Kind::Minutes => v
+            .as_integer()
+            .filter(|&n| is_valid_minutes(n))
+            .map(|n| n.to_string()),
     }
 }
 
-/// Parse `config.toml` under an explicit directory, or `None` if it is missing
-/// or unreadable.
-///
-/// Deliberately silent: this is on the path of every command, and a malformed
-/// config must never block a task capture. `tasqx config` does NOT use this —
-/// it reports the parse error, because there the user is asking about the file.
-fn read_table_in(dir: &std::path::Path) -> Option<toml::Table> {
-    let text = std::fs::read_to_string(dir.join("config.toml")).ok()?;
-    text.parse::<toml::Table>().ok()
+/// The TOML type of a value, in the words the mismatch warning has always used
+/// (`toml::Value::type_str`'s, before #737 moved reads onto `toml_edit`): a
+/// table is a "table" whether it is written inline or under a header, and an
+/// array of tables is an "array".
+fn type_str(v: &toml_edit::Item) -> &'static str {
+    match v {
+        toml_edit::Item::Table(_) | toml_edit::Item::Value(toml_edit::Value::InlineTable(_)) => {
+            "table"
+        }
+        toml_edit::Item::ArrayOfTables(_) => "array",
+        other => other.type_name(),
+    }
 }
 
-/// The loud counterpart of `read_table_in`, for `tasqx config` only.
-///
-/// Silent degradation is right on the path of every command — a malformed
-/// config must never block a task capture. It is indefensible for `config
-/// list`/`get`, where the user is explicitly asking about the file: they would
-/// be told they never set the value, which is the exact confusion that sends
-/// someone looking at the wrong thing. `set` already reported the parse error;
-/// the read side just did not use the same door.
-///
-/// `Ok(None)` means "no file", which is a legitimate fresh-install state.
-pub fn read_table_strict(dir: &std::path::Path) -> Result<Option<toml::Table>, ApiError> {
-    let path = dir.join("config.toml");
-    match std::fs::read_to_string(&path) {
-        Ok(text) => text.parse::<toml::Table>().map(Some).map_err(|e| {
-            ApiError::bad_request(format!("{} is not valid TOML: {e}", path.display()))
-        }),
+/// The value `config.toml` holds for one setting, if it names it at all.
+fn lookup<'a>(doc: &'a toml_edit::DocumentMut, s: &Setting) -> Option<&'a toml_edit::Item> {
+    let (section, name) = s.parts();
+    doc.get(section)?.get(name)
+}
+
+/// Read and parse a `config.toml`; `Ok(None)` when there is no file, which is a
+/// legitimate fresh-install state. `note` finishes the "is not valid TOML"
+/// sentence, so the reader and the writer can each say what they did about it.
+fn parse_config(
+    path: &std::path::Path,
+    note: &str,
+) -> Result<Option<toml_edit::DocumentMut>, ApiError> {
+    match std::fs::read_to_string(path) {
+        Ok(text) => text
+            .parse::<toml_edit::DocumentMut>()
+            .map(Some)
+            .map_err(|e| {
+                ApiError::bad_request(format!("{} is not valid TOML{note}: {e}", path.display()))
+            }),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
         Err(e) => Err(ApiError::bad_request(format!(
             "cannot read {}: {e}",
@@ -449,9 +464,30 @@ pub fn read_table_strict(dir: &std::path::Path) -> Result<Option<toml::Table>, A
     }
 }
 
+/// Parse `config.toml` under `dir`, reporting a file that does not parse.
+///
+/// Silent degradation is right on the path of every command — a malformed
+/// config must never block a task capture, so [`toml_value`] drops this error.
+/// It is indefensible for `config list`/`get`, where the user is explicitly
+/// asking about the file: they would be told they never set the value, which
+/// is the exact confusion that sends someone looking at the wrong thing.
+pub fn read_table_strict(
+    dir: &std::path::Path,
+) -> Result<Option<toml_edit::DocumentMut>, ApiError> {
+    parse_config(&dir.join("config.toml"), "")
+}
+
+/// The directory a read or write works under: the one named, or the user's
+/// real config dir for `None`. Tests name one so they can exercise a real file
+/// without mutating process-global `$TASQX_CONFIG_DIR`, which cargo's parallel
+/// test threads make racy.
+fn dir_or_default(dir: Option<&std::path::Path>) -> Option<PathBuf> {
+    dir.map(std::path::Path::to_path_buf).or_else(config_dir)
+}
+
 impl Kind {
     /// The declared type, named the way a TOML author would name it. Used only
-    /// in the mismatch warning, so it must match `toml::Value::type_str`'s
+    /// in the mismatch warning, so it must match [`type_str`]'s
     /// vocabulary — a user comparing "expected boolean, found string" against
     /// their file should not have to translate Rust's spelling.
     fn type_str(self) -> &'static str {
@@ -620,42 +656,28 @@ pub struct FileValue {
 /// One setting's value, reading the file strictly. Used by `tasqx config`.
 ///
 /// Reports a wrong type rather than swallowing it. The silent counterpart
-/// [`toml_value_in`] must keep swallowing it: it is on the path of every
+/// [`toml_value`] must keep swallowing it: it is on the path of every
 /// command, and nothing about a bad config line may stand between a user and a
 /// captured task.
-pub fn toml_value_strict(s: &Setting) -> Result<FileValue, ApiError> {
-    let Some(dir) = config_dir() else {
+pub fn toml_value_strict(
+    dir: Option<&std::path::Path>,
+    s: &Setting,
+) -> Result<FileValue, ApiError> {
+    let Some(dir) = dir_or_default(dir) else {
         return Ok(FileValue::default());
     };
-    toml_value_strict_in(&dir, s)
-}
-
-/// [`toml_value_strict`] under an explicit directory.
-///
-/// The directory is a parameter for the same reason [`toml_value_in`] takes
-/// one: tests must exercise a real file without mutating process-global env,
-/// which cargo's parallel test threads make racy. Without this split the
-/// wrong-type detection below could only be tested through the ambient
-/// `$TASQX_CONFIG_DIR`, and two tests setting it at once would flake.
-pub fn toml_value_strict_in(dir: &std::path::Path, s: &Setting) -> Result<FileValue, ApiError> {
-    let Some(table) = read_table_strict(dir)? else {
+    let Some(doc) = read_table_strict(&dir)? else {
         return Ok(FileValue::default());
     };
-    let (section, name) = s.parts();
-    let Some(v) = table.get(section).and_then(|t| t.get(name)).cloned() else {
+    let Some(v) = lookup(&doc, s) else {
         return Ok(FileValue::default());
     };
-    let found = v.type_str();
     // A vocabulary refusal knows more than "wrong type" — carry its own words.
-    let reason = match (&v, s.choices) {
-        (toml::Value::String(x), Choices::OneOf(allowed)) if !allowed.contains(&x.as_str()) => {
-            Some(format!(
-                "{:?} is not one of {}",
-                x.as_str(),
-                allowed.join(", ")
-            ))
+    let reason = match (v.as_str(), s.choices) {
+        (Some(x), Choices::OneOf(allowed)) if !allowed.contains(&x) => {
+            Some(format!("{x:?} is not one of {}", allowed.join(", ")))
         }
-        (toml::Value::String(x), Choices::ManyOf(allowed)) => {
+        (Some(x), Choices::ManyOf(allowed)) => {
             parse_many(allowed, x).err().map(|e| e.reason(allowed))
         }
         _ => None,
@@ -670,7 +692,7 @@ pub fn toml_value_strict_in(dir: &std::path::Path, s: &Setting) -> Result<FileVa
             mismatch: Some(Mismatch {
                 key: s.key,
                 declared: s.kind.type_str(),
-                found,
+                found: type_str(v),
                 path: dir.join("config.toml"),
                 reason,
             }),
@@ -678,29 +700,20 @@ pub fn toml_value_strict_in(dir: &std::path::Path, s: &Setting) -> Result<FileVa
     }
 }
 
-/// One setting's raw value from a `config.toml` under an explicit directory.
+/// One setting's raw value from `config.toml`, or `None` if the file, the key
+/// or a value of the declared `Kind` is missing.
 ///
-/// The directory is a parameter rather than an ambient `$TASQX_CONFIG_DIR`
-/// read so tests can exercise a real file without mutating process-global env,
-/// which cargo's parallel test threads make racy. Same move `datetime.rs`
-/// already makes by taking an explicit `now`.
 /// Matching is by declared `Kind`, not "whatever converts". The first version
 /// of this accepted any scalar and stringified it, which quietly changed
-/// behaviour: the old reader used `toml::Value::as_bool`, so `enabled = "true"`
-/// (a quoted boolean, a common mistake) was a type mismatch and fell to
-/// `false`. Stringifying turned that exact input into `true`, so a user who had
-/// been silent since install would start getting OS toasts after an upgrade —
-/// on the one code path whose doc comment promises every failure mode lands on
+/// behaviour: the old reader used `as_bool`, so `enabled = "true"` (a quoted
+/// boolean, a common mistake) was a type mismatch and fell to `false`.
+/// Stringifying turned that exact input into `true`, so a user who had been
+/// silent since install would start getting OS toasts after an upgrade — on
+/// the one code path whose doc comment promises every failure mode lands on
 /// "don't notify".
-pub fn toml_value_in(dir: &std::path::Path, s: &Setting) -> Option<String> {
-    let (section, name) = s.parts();
-    let v = read_table_in(dir)?.get(section)?.get(name)?.clone();
-    coerce(s, v)
-}
-
-/// One setting's raw value from the user's real `config.toml`.
-pub fn toml_value(s: &Setting) -> Option<String> {
-    toml_value_in(&config_dir()?, s)
+pub fn toml_value(dir: Option<&std::path::Path>, s: &Setting) -> Option<String> {
+    let doc = read_table_strict(&dir_or_default(dir)?).ok()??;
+    coerce(s, lookup(&doc, s)?)
 }
 
 /// Load a `config.toml` as an editable document, preserving comments and
@@ -708,19 +721,7 @@ pub fn toml_value(s: &Setting) -> Option<String> {
 /// because the caller is about to write and must not clobber content it cannot
 /// read.
 fn read_document(path: &std::path::Path) -> Result<toml_edit::DocumentMut, ApiError> {
-    match std::fs::read_to_string(path) {
-        Ok(text) => text.parse::<toml_edit::DocumentMut>().map_err(|e| {
-            ApiError::bad_request(format!(
-                "{} is not valid TOML and was left untouched: {e}",
-                path.display()
-            ))
-        }),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(toml_edit::DocumentMut::new()),
-        Err(e) => Err(ApiError::bad_request(format!(
-            "cannot read {}: {e}",
-            path.display()
-        ))),
-    }
+    Ok(parse_config(path, " and was left untouched")?.unwrap_or_default())
 }
 
 /// A scratch path in the target's own directory, private to this writer.
@@ -786,7 +787,7 @@ fn write_document(
 /// The one explanation of why a `Home::Store` setting cannot be written through
 /// `config.toml`, and what to do instead.
 ///
-/// Two places refuse this now — `write_value_in`, which is reached by `config
+/// Two places refuse this now — `write_value`, which is reached by `config
 /// set`, and the settings screen, which never attempts the write and so cannot
 /// borrow the writer's error. A second literal would drift, and the two answers
 /// a user gets to the same question would disagree about which command works.
@@ -798,13 +799,14 @@ pub fn store_home_message(s: &Setting) -> String {
     )
 }
 
-/// Set one setting in a `config.toml` under an explicit directory, creating the
-/// section if needed.
-pub fn write_value_in(
-    dir: &std::path::Path,
+/// Set one setting in `config.toml`, creating the section if needed.
+pub fn write_value(
+    dir: Option<&std::path::Path>,
     s: &Setting,
     value: &str,
 ) -> Result<PathBuf, ApiError> {
+    let dir = dir_or_default(dir)
+        .ok_or_else(|| ApiError::bad_request("no config directory on this platform"))?;
     if s.home != Home::Toml {
         return Err(ApiError::bad_request(store_home_message(s)));
     }
@@ -890,16 +892,11 @@ pub fn write_value_in(
     write_document(&path, &doc)
 }
 
-/// Set one setting in the user's real `config.toml`.
-pub fn write_value(s: &Setting, value: &str) -> Result<PathBuf, ApiError> {
-    let dir = config_dir()
+/// Remove one setting from `config.toml`, so it falls back to its default.
+/// Returns whether the key was actually present.
+pub fn clear_value(dir: Option<&std::path::Path>, s: &Setting) -> Result<bool, ApiError> {
+    let dir = dir_or_default(dir)
         .ok_or_else(|| ApiError::bad_request("no config directory on this platform"))?;
-    write_value_in(&dir, s, value)
-}
-
-/// Remove one setting from a `config.toml` under an explicit directory, so it
-/// falls back to its default. Returns whether the key was actually present.
-pub fn clear_value_in(dir: &std::path::Path, s: &Setting) -> Result<bool, ApiError> {
     if s.home != Home::Toml {
         return Err(ApiError::bad_request(format!(
             "{} lives in the store, not config.toml",
@@ -918,13 +915,6 @@ pub fn clear_value_in(dir: &std::path::Path, s: &Setting) -> Result<bool, ApiErr
         write_document(&path, &doc)?;
     }
     Ok(existed)
-}
-
-/// Remove one setting from the user's real `config.toml`.
-pub fn clear_value(s: &Setting) -> Result<bool, ApiError> {
-    let dir = config_dir()
-        .ok_or_else(|| ApiError::bad_request("no config directory on this platform"))?;
-    clear_value_in(&dir, s)
 }
 
 #[cfg(test)]
@@ -1015,11 +1005,11 @@ enabled = true
         .unwrap();
 
         assert_eq!(
-            toml_value_in(&dir, find("theme.name").unwrap()).as_deref(),
+            toml_value(Some(&dir), find("theme.name").unwrap()).as_deref(),
             Some("gruvbox")
         );
         assert_eq!(
-            toml_value_in(&dir, find("notify.enabled").unwrap()).as_deref(),
+            toml_value(Some(&dir), find("notify.enabled").unwrap()).as_deref(),
             Some("true")
         );
 
@@ -1031,7 +1021,7 @@ name = \"mono\"
         )
         .unwrap();
         assert_eq!(
-            toml_value_in(&dir, find("notify.enabled").unwrap()),
+            toml_value(Some(&dir), find("notify.enabled").unwrap()),
             None,
             "absent key is None"
         );
@@ -1058,7 +1048,7 @@ enabled = true
 ";
         std::fs::write(&path, original).unwrap();
 
-        write_value_in(&dir, find("theme.name").unwrap(), "mono").unwrap();
+        write_value(Some(&dir), find("theme.name").unwrap(), "mono").unwrap();
         let after = std::fs::read_to_string(&path).unwrap();
 
         assert!(
@@ -1094,7 +1084,7 @@ enabled = true
     fn writing_creates_the_file_and_its_directory() {
         let dir = temp_dir("new");
 
-        write_value_in(&dir, find("theme.name").unwrap(), "mono").unwrap();
+        write_value(Some(&dir), find("theme.name").unwrap(), "mono").unwrap();
         let after = std::fs::read_to_string(dir.join("config.toml")).unwrap();
         assert!(after.contains("[theme]"), "{after}");
         assert!(after.contains("mono"), "{after}");
@@ -1117,7 +1107,7 @@ name = broken",
         )
         .unwrap();
 
-        let err = write_value_in(&dir, find("theme.name").unwrap(), "mono").unwrap_err();
+        let err = write_value(Some(&dir), find("theme.name").unwrap(), "mono").unwrap_err();
         assert!(err.message.contains("config.toml"), "{}", err.message);
         assert_eq!(
             std::fs::read_to_string(&path).unwrap(),
@@ -1137,20 +1127,20 @@ name = broken",
         let dir = temp_dir("rt");
         let s = find("theme.name").unwrap();
 
-        write_value_in(&dir, s, "gruvbox").unwrap();
-        assert_eq!(toml_value_in(&dir, s).as_deref(), Some("gruvbox"));
+        write_value(Some(&dir), s, "gruvbox").unwrap();
+        assert_eq!(toml_value(Some(&dir), s).as_deref(), Some("gruvbox"));
 
         assert!(
-            clear_value_in(&dir, s).unwrap(),
+            clear_value(Some(&dir), s).unwrap(),
             "the key was present, so removal is reported"
         );
         assert_eq!(
-            toml_value_in(&dir, s),
+            toml_value(Some(&dir), s),
             None,
             "unset means the file no longer names it"
         );
         assert!(
-            !clear_value_in(&dir, s).unwrap(),
+            !clear_value(Some(&dir), s).unwrap(),
             "a second unset removes nothing"
         );
 
@@ -1176,26 +1166,30 @@ name = broken",
         let dir = temp_dir("manyof");
 
         // A typo names itself, and the valid set is in the message.
-        let err = write_value_in(&dir, s, "now,nwo,due").unwrap_err().message;
+        let err = write_value(Some(&dir), s, "now,nwo,due")
+            .unwrap_err()
+            .message;
         assert!(err.contains("\"nwo\""), "must name the bad word: {err}");
         assert!(err.contains("blocked"), "must name the vocabulary: {err}");
 
         // Position is meaning, so a name has one position.
-        let err = write_value_in(&dir, s, "now,due,now").unwrap_err().message;
+        let err = write_value(Some(&dir), s, "now,due,now")
+            .unwrap_err()
+            .message;
         assert!(err.contains("twice"), "a repeat must be refused: {err}");
 
         // "Show nothing" is a different setting saying so.
         for empty in ["", " ", ",", " , "] {
             assert!(
-                write_value_in(&dir, s, empty).is_err(),
+                write_value(Some(&dir), s, empty).is_err(),
                 "an empty list must be refused, got ok for {empty:?}"
             );
         }
 
         // A good list round-trips, normalised: a human hand-edits with spaces.
-        write_value_in(&dir, s, "now, due , next").expect("a spaced list is accepted");
+        write_value(Some(&dir), s, "now, due , next").expect("a spaced list is accepted");
         assert_eq!(
-            toml_value_in(&dir, s).as_deref(),
+            toml_value(Some(&dir), s).as_deref(),
             Some("now,due,next"),
             "the spelling on disk is canonical, so every reader sees one string"
         );
@@ -1223,11 +1217,11 @@ name = broken",
         for key in ["detail.time_format", "dashboard.panels", "dashboard.window"] {
             let s = find(key).expect("registered");
             assert_eq!(
-                toml_value_in(&dir, s),
+                toml_value(Some(&dir), s),
                 None,
                 "{key}: a word outside the vocabulary is not a value"
             );
-            let (v, src) = resolve(s, None, toml_value_in(&dir, s).as_deref());
+            let (v, src) = resolve(s, None, toml_value(Some(&dir), s).as_deref());
             assert_eq!(v, s.default, "{key} must fall to its default");
             assert_eq!(
                 src,
@@ -1255,7 +1249,7 @@ enabled = {bad}
             )
             .unwrap();
             assert_eq!(
-                toml_value_in(&dir, notify),
+                toml_value(Some(&dir), notify),
                 None,
                 "a quoted/numeric boolean must not be read as one: {bad}"
             );
@@ -1268,7 +1262,7 @@ enabled = true
 ",
         )
         .unwrap();
-        assert_eq!(toml_value_in(&dir, notify).as_deref(), Some("true"));
+        assert_eq!(toml_value(Some(&dir), notify).as_deref(), Some("true"));
 
         // Symmetric: a bare boolean where a string is declared is not a string.
         std::fs::write(
@@ -1278,7 +1272,7 @@ name = true
 ",
         )
         .unwrap();
-        assert_eq!(toml_value_in(&dir, theme), None);
+        assert_eq!(toml_value(Some(&dir), theme), None);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -1298,12 +1292,12 @@ name = true
         std::fs::write(dir.join("config.toml"), "[theme]\nname = 42\n").unwrap();
 
         assert_eq!(
-            toml_value_in(&dir, theme),
+            toml_value(Some(&dir), theme),
             None,
             "the silent reader still degrades"
         );
 
-        let read = toml_value_strict_in(&dir, theme).expect("a wrong type is not a parse error");
+        let read = toml_value_strict(Some(&dir), theme).expect("a wrong type is not a parse error");
         assert_eq!(read.value, None, "the caller still gets the fallback");
         let m = read
             .mismatch
@@ -1320,7 +1314,7 @@ name = true
 
         // Symmetric for the other Kind, so the report is not string-specific.
         std::fs::write(dir.join("config.toml"), "[notify]\nenabled = \"true\"\n").unwrap();
-        let n = toml_value_strict_in(&dir, find("notify.enabled").unwrap()).unwrap();
+        let n = toml_value_strict(Some(&dir), find("notify.enabled").unwrap()).unwrap();
         let m = n.mismatch.expect("a quoted boolean is a mismatch too");
         assert_eq!((m.declared, m.found), ("boolean", "string"));
         let _ = std::fs::remove_dir_all(&dir);
@@ -1336,7 +1330,7 @@ name = true
         let theme = find("theme.name").unwrap();
 
         std::fs::write(dir.join("config.toml"), "[theme]\nname = \"gruvbox\"\n").unwrap();
-        let ok = toml_value_strict_in(&dir, theme).unwrap();
+        let ok = toml_value_strict(Some(&dir), theme).unwrap();
         assert_eq!(ok.value.as_deref(), Some("gruvbox"));
         assert!(
             ok.mismatch.is_none(),
@@ -1345,7 +1339,7 @@ name = true
 
         // An absent key is a fresh install, not a mistake.
         std::fs::write(dir.join("config.toml"), "[notify]\nenabled = true\n").unwrap();
-        let absent = toml_value_strict_in(&dir, theme).unwrap();
+        let absent = toml_value_strict(Some(&dir), theme).unwrap();
         assert_eq!(absent.value, None);
         assert!(
             absent.mismatch.is_none(),
@@ -1372,7 +1366,7 @@ name = broken",
         .unwrap();
 
         assert!(
-            read_table_in(&dir).is_none(),
+            toml_value(Some(&dir), find("theme.name").unwrap()).is_none(),
             "the silent reader still degrades"
         );
         let err = read_table_strict(&dir).expect_err("the strict reader must report it");
@@ -1408,7 +1402,7 @@ name = \"gruvbox\"  # inline note
         )
         .unwrap();
 
-        write_value_in(&dir, find("theme.name").unwrap(), "mono").unwrap();
+        write_value(Some(&dir), find("theme.name").unwrap(), "mono").unwrap();
         let after = std::fs::read_to_string(dir.join("config.toml")).unwrap();
 
         assert!(
@@ -1457,7 +1451,7 @@ name = \"nord\"
         )
         .unwrap();
 
-        write_value_in(&dir, find("theme.name").unwrap(), "mono").unwrap();
+        write_value(Some(&dir), find("theme.name").unwrap(), "mono").unwrap();
 
         let leftovers: Vec<String> = std::fs::read_dir(&dir)
             .unwrap()
@@ -1512,11 +1506,11 @@ name = \"nord\"
         assert_eq!(s.kind, Kind::Minutes);
 
         let dir = temp_dir("minutes");
-        write_value_in(&dir, s, "0").expect("0 is the off switch, not an invalid timeout");
-        write_value_in(&dir, s, "15").expect("a plain number of minutes is accepted");
+        write_value(Some(&dir), s, "0").expect("0 is the off switch, not an invalid timeout");
+        write_value(Some(&dir), s, "15").expect("a plain number of minutes is accepted");
 
         for bad in ["-1", &(MAX_TIMEOUT_MINUTES + 1).to_string(), "soon", "15m"] {
-            let err = write_value_in(&dir, s, bad).unwrap_err().message;
+            let err = write_value(Some(&dir), s, bad).unwrap_err().message;
             assert!(
                 err.contains("0 = never") && err.contains(&MAX_TIMEOUT_MINUTES.to_string()),
                 "the refusal of {bad:?} must name the range and what 0 means: {err}"
@@ -1524,32 +1518,35 @@ name = \"nord\"
         }
 
         // The silent reader agrees on the same range, including the zero.
-        assert_eq!(coerce(s, toml::Value::Integer(0)), Some("0".to_string()));
-        assert_eq!(coerce(s, toml::Value::Integer(-1)), None);
         assert_eq!(
-            coerce(s, toml::Value::Integer(MAX_TIMEOUT_MINUTES + 1)),
+            coerce(s, &toml_edit::Item::Value(0.into())),
+            Some("0".to_string())
+        );
+        assert_eq!(coerce(s, &toml_edit::Item::Value((-1i64).into())), None);
+        assert_eq!(
+            coerce(s, &toml_edit::Item::Value((MAX_TIMEOUT_MINUTES + 1).into())),
             None
         );
         assert_eq!(
-            coerce(s, toml::Value::String("15".into())),
+            coerce(s, &toml_edit::Item::Value("15".into())),
             None,
             "a quoted number is the wrong type, exactly as it is for a port"
         );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// `write_value_in` refuses a store-homed key with a sentence that tells the
+    /// `write_value` refuses a store-homed key with a sentence that tells the
     /// user where to go instead (`tasqx use`). The settings TUI must refuse with
-    /// the SAME sentence, and it cannot call `write_value_in` to get it — it
+    /// the SAME sentence, and it cannot call `write_value` to get it — it
     /// never attempts the write at all. Before this function the text existed
-    /// only as a literal inside `write_value_in`, so the second refusal site had
+    /// only as a literal inside `write_value`, so the second refusal site had
     /// no way to reuse it and would have answered the same question differently.
     #[test]
     fn the_store_home_refusal_has_exactly_one_wording() {
         let dir = temp_dir("storemsg");
         let s = find("default_project").unwrap();
 
-        let from_writer = write_value_in(&dir, s, "work").unwrap_err().message;
+        let from_writer = write_value(Some(&dir), s, "work").unwrap_err().message;
         assert_eq!(
             from_writer,
             store_home_message(s),
@@ -1598,7 +1595,7 @@ name = \"nord\"
         assert_eq!(s.default, "both");
 
         let dir = temp_dir("one-of");
-        let err = write_value_in(&dir, s, "xyz").unwrap_err();
+        let err = write_value(Some(&dir), s, "xyz").unwrap_err();
         assert!(
             err.message.contains("iso, relative, both"),
             "the refusal must list the valid values: {}",
@@ -1607,7 +1604,7 @@ name = \"nord\"
         // Refused before any filesystem work, like every other rejected write.
         assert!(!dir.exists(), "a refused write created {}", dir.display());
 
-        write_value_in(&dir, s, "relative").expect("a listed value is accepted");
+        write_value(Some(&dir), s, "relative").expect("a listed value is accepted");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -1669,5 +1666,247 @@ name = \"nord\"
             leftovers.is_empty(),
             "a failed write left scratch files behind: {leftovers:?}"
         );
+    }
+
+    /// #737: reads moved from the `toml` crate onto `toml_edit`, the crate
+    /// writes already used. Pinned here over a file naming EVERY `Home::Toml`
+    /// setting in every shape a hand-edited file takes — `[section]` headers,
+    /// a top-level inline table, TOML 1.1's multi-line inline table, dotted
+    /// keys, comments, unknown keys — and over a second file where every key
+    /// carries a wrong value. Values, mismatch wording and the unknown-key
+    /// warnings (in `toml::Table`'s sorted order) must read the same as they
+    /// did on the old parser, and a write of every key must keep the comments,
+    /// the unknown keys and the section order.
+    #[test]
+    fn every_setting_round_trips_through_one_parser() {
+        let dir = temp_dir("roundtrip");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.toml");
+        std::fs::write(
+            &path,
+            r#"# top comment
+stray = 3
+notify = { enabled = true }
+tokens = {
+  enabled = true,
+}
+otlp.enabled = true
+otlp.port = 4319
+
+[theme]
+name = "gruvbox"  # inline note
+zeta = 1
+alpha = "x"
+
+[dashboard]
+enabled = false
+panels = " tasks , burndown"
+refresh = "manual"
+window = "30d"
+
+[board]
+port = 8080  # bookmarked
+
+# daemon comment
+[daemon]
+idle_timeout = 15
+
+[detail]
+time_format = "iso"
+
+[extra]
+thing = 1
+
+[[arr]]
+x = 1
+"#,
+        )
+        .unwrap();
+        let want = [
+            ("theme.name", "gruvbox"),
+            ("dashboard.enabled", "false"),
+            ("dashboard.panels", "tasks,burndown"),
+            ("dashboard.refresh", "manual"),
+            ("dashboard.window", "30d"),
+            ("notify.enabled", "true"),
+            ("tokens.enabled", "true"),
+            ("otlp.enabled", "true"),
+            ("otlp.port", "4319"),
+            ("board.port", "8080"),
+            ("daemon.idle_timeout", "15"),
+            ("detail.time_format", "iso"),
+        ];
+        let toml_keys: Vec<&str> = SETTINGS
+            .iter()
+            .filter(|s| s.home == Home::Toml)
+            .map(|s| s.key)
+            .collect();
+        let mut covered: Vec<&str> = want.iter().map(|(k, _)| *k).collect();
+        covered.sort_unstable();
+        let mut all = toml_keys.clone();
+        all.sort_unstable();
+        assert_eq!(
+            covered, all,
+            "the fixture must name every Home::Toml setting"
+        );
+        for (key, value) in want {
+            let s = find(key).unwrap();
+            assert_eq!(toml_value(Some(&dir), s).as_deref(), Some(value), "{key}");
+            let strict = toml_value_strict(Some(&dir), s).unwrap();
+            assert_eq!(strict.value.as_deref(), Some(value), "{key}");
+            assert_eq!(strict.mismatch, None, "{key}");
+        }
+        let unknown = |k: &str| crate::settings::unknown_key(k).message;
+        assert_eq!(
+            crate::settings::config_file_warnings_in(&dir),
+            vec![
+                unknown("extra.thing"),
+                unknown("theme.alpha"),
+                unknown("theme.zeta")
+            ],
+        );
+
+        // Every key written once more: the values land, nothing else moves.
+        let next = [
+            ("theme.name", "mono"),
+            ("dashboard.enabled", "true"),
+            ("dashboard.panels", "pulse, tasks"),
+            ("dashboard.refresh", "auto"),
+            ("dashboard.window", "week"),
+            ("notify.enabled", "false"),
+            ("tokens.enabled", "false"),
+            ("otlp.enabled", "false"),
+            ("otlp.port", "4320"),
+            ("board.port", "8081"),
+            ("daemon.idle_timeout", "0"),
+            ("detail.time_format", "both"),
+        ];
+        for (key, value) in next {
+            write_value(Some(&dir), find(key).unwrap(), value).unwrap();
+        }
+        for (key, value) in next {
+            let want = if key == "dashboard.panels" {
+                "pulse,tasks"
+            } else {
+                value
+            };
+            assert_eq!(
+                toml_value(Some(&dir), find(key).unwrap()).as_deref(),
+                Some(want),
+                "{key}"
+            );
+        }
+        let text = std::fs::read_to_string(&path).unwrap();
+        for kept in [
+            "# top comment",
+            "stray = 3",
+            "name = \"mono\"  # inline note",
+            "# daemon comment",
+            "port = 8081  # bookmarked",
+            "zeta = 1",
+            "thing = 1",
+            "[[arr]]",
+        ] {
+            assert!(text.contains(kept), "lost {kept:?}:\n{text}");
+        }
+        let at = |needle: &str| text.find(needle).unwrap_or_else(|| panic!("{needle}"));
+        assert!(
+            at("[theme]") < at("[dashboard]")
+                && at("[dashboard]") < at("[board]")
+                && at("[board]") < at("[daemon]")
+                && at("[daemon]") < at("[detail]")
+                && at("[detail]") < at("[extra]"),
+            "section order moved:\n{text}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The other half of the round trip: every key with a value of the wrong
+    /// type or outside its vocabulary is `None` to the silent reader and a
+    /// mismatch naming the TOML type to the strict one.
+    #[test]
+    fn every_setting_reports_a_bad_value_the_way_the_old_parser_did() {
+        let dir = temp_dir("roundtrip-bad");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("config.toml"),
+            r#"[theme]
+name = 42
+[dashboard]
+enabled = "true"
+panels = "tasks,tasks"
+refresh = "sometimes"
+window = ["week"]
+[notify]
+enabled = 1.5
+[tokens]
+enabled = 1979-05-27
+[otlp]
+enabled = { on = true }
+port = 0
+[board]
+port = "8080"
+[daemon]
+idle_timeout = 99999
+[detail]
+time_format = 'ISO'
+"#,
+        )
+        .unwrap();
+        let want: [(&str, &str, Option<&str>); 12] = [
+            ("theme.name", "integer", None),
+            ("dashboard.enabled", "string", None),
+            (
+                "dashboard.panels",
+                "string",
+                Some("\"tasks\" appears twice; position is meaning, so a name appears once"),
+            ),
+            (
+                "dashboard.refresh",
+                "string",
+                Some("\"sometimes\" is not one of auto, manual"),
+            ),
+            ("dashboard.window", "array", None),
+            ("notify.enabled", "float", None),
+            ("tokens.enabled", "datetime", None),
+            ("otlp.enabled", "table", None),
+            ("otlp.port", "integer", None),
+            ("board.port", "string", None),
+            ("daemon.idle_timeout", "integer", None),
+            (
+                "detail.time_format",
+                "string",
+                Some("\"ISO\" is not one of iso, relative, both"),
+            ),
+        ];
+        for (key, found, reason) in want {
+            let s = find(key).unwrap();
+            assert_eq!(toml_value(Some(&dir), s), None, "{key}");
+            let m = toml_value_strict(Some(&dir), s)
+                .unwrap()
+                .mismatch
+                .unwrap_or_else(|| panic!("{key} must mismatch"));
+            assert_eq!(m.found, found, "{key}");
+            assert_eq!(m.reason.as_deref(), reason, "{key}");
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A file that does not parse keeps its message shape on both readers.
+    #[test]
+    fn a_malformed_file_reads_as_the_same_error() {
+        let dir = temp_dir("roundtrip-broken");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("config.toml"), "[theme\nname = broken").unwrap();
+        let err = read_table_strict(&dir).unwrap_err().message;
+        assert_eq!(
+            err,
+            format!(
+                "{} is not valid TOML: TOML parse error at line 1, column 7\n  |\n1 | [theme\n  \
+                 |       ^\nunclosed table, expected `]`\n",
+                dir.join("config.toml").display()
+            )
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
