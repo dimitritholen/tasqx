@@ -319,43 +319,15 @@ pub fn outcomes(ctx: &Ctx, result: &Value, group_by: &str) -> String {
         });
     }
 
-    const MIN_KEY: usize = 8;
-    const MAX_KEY: usize = 32;
     let header_label = group_by.to_uppercase();
-    let key_w = rows
-        .iter()
-        .map(|r| width(&r.key))
-        .chain([width(&header_label)])
-        .max()
-        .unwrap_or(0)
-        .min(MAX_KEY);
-    let mut cols = vec![Column::shrinks(key_w, MIN_KEY.min(key_w))];
-    for (n, label) in labels.iter().enumerate() {
-        let w = rows
-            .iter()
-            .map(|r| width(&r.cells[n]))
-            .chain([width(label)])
-            .max()
-            .unwrap_or(0);
-        cols.push(Column::fixed(w));
-    }
-    let w = columns::fit(&cols, ctx.cols);
+    let w = num_widths(
+        ctx,
+        &[&header_label],
+        &labels,
+        rows.iter().map(|r| (r.key.as_str(), r.cells.as_slice())),
+    );
 
-    let line = |key: String, cells: Vec<(Option<&str>, String)>| {
-        let mut parts = vec![key];
-        for ((role, c), cw) in cells.into_iter().zip(&w[1..]) {
-            if *cw == 0 {
-                continue;
-            }
-            let pad = " ".repeat(cw.saturating_sub(width(&c)));
-            let c = match role {
-                Some(r) => ctx.paint(r, &c),
-                None => c,
-            };
-            parts.push(format!("{pad}{c}"));
-        }
-        join_cells(parts)
-    };
+    let line = |key: String, cells: Vec<(Option<&str>, String)>| num_line(ctx, &w, key, cells);
 
     let rework_col = labels.iter().position(|l| l == "REWORK");
     let mut out = ctx.paint(
@@ -579,45 +551,16 @@ pub fn report(
     // fit is a different number, while one dropped to fit hides a bucket the
     // reader may have asked for by name (`--metrics tokens_in`). Past the
     // key's floor the row overflows.
-    const MIN_KEY: usize = 8;
-    const MAX_KEY: usize = 32;
-    let key_w = rows
-        .iter()
-        .map(|r| width(&r.key))
-        .chain([width(&header_label), width("TOTAL")])
-        .max()
-        .unwrap_or(0)
-        .min(MAX_KEY);
-    let mut cols = vec![Column::shrinks(key_w, MIN_KEY.min(key_w))];
-    for (n, label) in labels.iter().enumerate() {
-        let w = rows
-            .iter()
-            .map(|r| width(&r.cells[n]))
-            .chain([width(label), width(&total_cells[n])])
-            .max()
-            .unwrap_or(0);
-        cols.push(Column::fixed(w));
-    }
-    let w = columns::fit(&cols, ctx.cols);
+    let w = num_widths(
+        ctx,
+        &[&header_label, "TOTAL"],
+        &labels,
+        rows.iter()
+            .map(|r| (r.key.as_str(), r.cells.as_slice()))
+            .chain([("", total_cells.as_slice())]),
+    );
 
-    // One line: the key cell, then every other cell right-aligned. The padding
-    // goes OUTSIDE any paint, so `join_cells` can trim the end and the
-    // escapes never count as width.
-    let line = |key: String, cells: Vec<(Option<&str>, String)>| {
-        let mut parts = vec![key];
-        for ((role, c), cw) in cells.into_iter().zip(&w[1..]) {
-            if *cw == 0 {
-                continue;
-            }
-            let pad = " ".repeat(cw.saturating_sub(width(&c)));
-            let c = match role {
-                Some(r) => ctx.paint(r, &c),
-                None => c,
-            };
-            parts.push(format!("{pad}{c}"));
-        }
-        join_cells(parts)
-    };
+    let line = |key: String, cells: Vec<(Option<&str>, String)>| num_line(ctx, &w, key, cells);
     let plain = |cells: Vec<String>| cells.into_iter().map(|c| (None, c)).collect::<Vec<_>>();
 
     let mut out = ctx.paint(
