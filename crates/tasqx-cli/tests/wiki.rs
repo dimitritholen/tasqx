@@ -7,7 +7,8 @@
 //! both are the kind whose failure a visitor hits before anyone here does:
 //! a command with no wiki section, and a link that 404s on the repo page.
 //! A third is that every `tasqx …` command the wiki and the guides show
-//! still parses (#705).
+//! still parses (#705), and a fourth that every API method, MCP tool and
+//! config key they name still exists (#707).
 //!
 //! Same conventions as `readme.rs`: deliberately minimal parsing (heading
 //! prefixes and `](…)` spans, no markdown model), and every scan pins a floor
@@ -877,4 +878,110 @@ fn shell_split_reads_the_shapes_the_docs_use() {
     assert_eq!(argv("cargo build && tasqx about"), [vec!["tasqx", "about"]]);
     assert_eq!(shell_split("tasqx annotate 2 'open"), None);
     assert_eq!(shell_split("tasqx add one \\"), None);
+}
+
+// ---- Every API method, MCP tool and config key the docs name exists (#707) --
+
+/// Spans that have a method's or a config key's shape and are neither, each
+/// with the reason it is not drift.
+const NOT_NAMES: &[(&str, &str)] = &[
+    (
+        "tag.normalize",
+        "an event kind the D172 migration records, not a method",
+    ),
+    ("tokens.css", "a file name in a memory-search example"),
+];
+
+/// Every API method, MCP tool and config key named in a code span or a fenced
+/// line of `docs/wiki` and `docs/guides`, as (`page:line`, name, exists?).
+///
+/// A rename used to leave the prose naming a thing that no longer exists, and
+/// nothing in the build read the names. The text is cut into words at every
+/// character outside `[A-Za-z0-9_./-]`, a trailing `.` (a sentence's) dropped,
+/// and a word is classified by shape:
+///
+/// - `<head>.<tail>`, both `[a-z_]+`, whose head is a noun of
+///   [`tasqx_core::PARAMS`] (`task`, `memory`, …) or a section of
+///   `config::SETTINGS` (`theme`, `dashboard`, …) must be a `PARAMS` method
+///   or a `SETTINGS` key. The two share a shape and two heads (`tokens`,
+///   `otlp`), so either list satisfies it. A path, flag or version keeps its
+///   `/`, `-` or digit and never has the shape; a file name (`config.toml`,
+///   `backup.json`) has a head that is neither, and the few that collide are in
+///   [`NOT_NAMES`].
+/// - `tasqx_<name>`, `[a-z_]+`, must be a tool of
+///   [`tasqx_core::mcp::tool_docs`]. The bare `tasqx_*` wildcard is no name.
+///
+/// A head that is itself renamed or misspelled is out of reach by design: the
+/// heads come from the same lists, so a word whose head matches neither is
+/// prose.
+fn doc_names() -> Vec<(String, String, bool)> {
+    let methods: Vec<&str> = tasqx_core::PARAMS.iter().map(|(m, _, _)| *m).collect();
+    let keys: Vec<&str> = tasqx_cli::config::SETTINGS.iter().map(|s| s.key).collect();
+    let heads: Vec<&str> = methods
+        .iter()
+        .chain(&keys)
+        .filter_map(|n| n.split_once('.').map(|(h, _)| h))
+        .collect();
+    let tools: Vec<&str> = tasqx_core::mcp::tool_docs()
+        .iter()
+        .map(|t| t.name)
+        .collect();
+    let lower = |s: &str| !s.is_empty() && s.chars().all(|c| c.is_ascii_lowercase() || c == '_');
+    let mut out = Vec::new();
+    for (page, text) in wiki_and_guides() {
+        for c in code_in(&text) {
+            let words = c
+                .text
+                .split(|ch: char| !(ch.is_ascii_alphanumeric() || "_./-".contains(ch)))
+                .map(|w| w.strip_suffix('.').unwrap_or(w));
+            for w in words {
+                let at = format!("{page}:{}", c.line);
+                if w.strip_prefix("tasqx_").is_some_and(lower) {
+                    out.push((at, w.to_string(), tools.contains(&w)));
+                } else if let Some((head, tail)) = w.split_once('.') {
+                    if lower(head)
+                        && lower(tail)
+                        && heads.contains(&head)
+                        && !NOT_NAMES.iter().any(|(n, _)| *n == w)
+                    {
+                        let exists = methods.contains(&w) || keys.contains(&w);
+                        out.push((at, w.to_string(), exists));
+                    }
+                }
+            }
+        }
+    }
+    // A `markdown` fence's line is read whole and again span by span; one
+    // name on one line counts once.
+    let mut seen = std::collections::HashSet::new();
+    out.retain(|(at, name, _)| seen.insert((at.clone(), name.clone())));
+    out
+}
+
+/// Every API method, MCP tool and config key `docs/wiki` and `docs/guides`
+/// name exists, checked against the engine's own lists — see [`doc_names`]
+/// for what counts as a name.
+#[test]
+fn every_method_tool_and_config_key_the_docs_name_exists() {
+    let names = doc_names();
+    let missing: Vec<String> = names
+        .iter()
+        .filter(|(_, _, exists)| !exists)
+        .map(|(at, name, _)| format!("{at}: `{name}`"))
+        .collect();
+    assert!(
+        missing.is_empty(),
+        "{} name(s) in docs/wiki and docs/guides are no API method \
+         (tasqx_core::PARAMS), MCP tool (mcp::tool_docs) or config key \
+         (config::SETTINGS):\n{}",
+        missing.len(),
+        missing.join("\n")
+    );
+    // Floor: the docs named 86 when this guard was written. Far fewer means
+    // the classification stopped seeing names, not that the docs got cleaner.
+    assert!(
+        names.len() >= 80,
+        "only {} method, tool or config-key names found in docs/wiki and docs/guides",
+        names.len()
+    );
 }
