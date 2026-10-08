@@ -28,16 +28,37 @@ export function attachEvents(
 ): () => void {
   const setTimer = deps.setTimeout ?? ((fn, ms) => setTimeout(fn, ms));
   const clearTimer = deps.clearTimeout ?? ((handle) => clearTimeout(handle));
-  let timer: TimerHandle | null = null;
+  const cancels: (() => void)[] = [];
 
-  function schedulePageRefresh(): void {
-    if (timer !== null) clearTimer(timer);
-    timer = setTimer(() => {
+  /** One trailing-edge debounce: a burst of calls runs `fn` once, REFRESH_DEBOUNCE_MS after the last. */
+  function debounced(fn: () => void): () => void {
+    let timer: TimerHandle | null = null;
+    cancels.push(() => {
+      if (timer !== null) clearTimer(timer);
       timer = null;
-      void refreshPage(controller.client, store);
-      void refreshReport(controller.client, store);
-    }, REFRESH_DEBOUNCE_MS);
+    });
+    return () => {
+      if (timer !== null) clearTimer(timer);
+      timer = setTimer(() => {
+        timer = null;
+        fn();
+      }, REFRESH_DEBOUNCE_MS);
+    };
   }
+
+  const schedulePageRefresh = debounced(() => {
+    void refreshPage(controller.client, store);
+    void refreshReport(controller.client, store);
+  });
+
+  // The open task: every event for it, whatever its op, re-reads the row and
+  // the inspector together. A draft is not touched — the new server copy lands
+  // beside it and the conflict panel compares the two.
+  const scheduleSelectedRefresh = debounced(() => {
+    const open = store.getState().selected.data;
+    if (open === null) return;
+    store.refetchTask(open.short_id, true).catch(() => schedulePageRefresh());
+  });
 
   function handle(event: EventFrame): void {
     // A gap or a frame it cannot read never reaches here: the controller turns
@@ -51,33 +72,32 @@ export function attachEvents(
     // Docs and links have no screen in #691.
     if (entity !== undefined && entity !== 'task') return;
     const state = store.getState();
-    const row = shortId === undefined ? undefined : selectRow(state, shortId);
     if (shortId === undefined) {
       schedulePageRefresh();
       return;
     }
+    const row = selectRow(state, shortId);
+    // The open task need not be on the page under it — the dashboard's working
+    // set drops a task the moment it is done, and the inspector is still
+    // showing it. Follow the selection whether or not it has a row.
+    const selected = state.selected.data;
+    if (selected !== null && selected.short_id === shortId) {
+      if (applyEvent({ rev: selected._rev }, event) !== 'ignore') scheduleSelectedRefresh();
+      if (row === undefined) schedulePageRefresh();
+      return;
+    }
     if (row === undefined) {
-      // The open task need not be on the page under it — the dashboard's
-      // working set drops a task the moment it is done, and the inspector is
-      // still showing it. Follow the selection whether or not it has a row.
-      const selected = state.selected.data;
-      if (selected !== null && selected.short_id === shortId && applyEvent({ rev: selected._rev }, event) !== 'ignore') {
-        store.refetchTask(shortId, true).catch(() => schedulePageRefresh());
-      }
       schedulePageRefresh();
       return;
     }
-    const decision = applyEvent({ rev: row._rev }, event);
-    if (decision === 'ignore') return;
-    // `reload` ops can remove or reshape the task, so the open inspector has to
-    // follow it; `apply` only moves fields the table shows.
-    store.refetchTask(shortId, decision === 'reload').catch(() => schedulePageRefresh());
+    if (applyEvent({ rev: row._rev }, event) === 'ignore') return;
+    // Not the open task: only the table shows it, so the row alone is re-read.
+    store.refetchTask(shortId, false).catch(() => schedulePageRefresh());
   }
 
   const off = controller.onEvent(handle);
   return () => {
     off();
-    if (timer !== null) clearTimer(timer);
-    timer = null;
+    for (const cancel of cancels) cancel();
   };
 }

@@ -99,7 +99,7 @@ describe('attachEvents', () => {
     transport.clearCalls();
 
     transport.pushEvent({ entity: 'task', op: 'done', short_id: 1, _rev: 7 });
-    await settle();
+    await vi.advanceTimersByTimeAsync(REFRESH_DEBOUNCE_MS);
 
     expect(transport.methods).toEqual(['task.get']);
     expect(store.getState().tasks.data[0]?.title).toBe('Refetched');
@@ -107,21 +107,55 @@ describe('attachEvents', () => {
     detach();
   });
 
-  it('an apply op leaves the inspector alone — only reload reshapes it', async () => {
-    const { transport, store, detach } = await live({
-      'task.get': (params: Record<string, unknown>) =>
-        taskDetail({ short_id: Number(params['ref']), title: 'Refetched', _rev: 9 }),
-    });
+  it.each([
+    ['start', 'start'],
+    ['stop', 'stop'],
+    ['annotate', 'annotation.add'],
+    ['check add', 'check.add'],
+    ['modify', 'modify'],
+  ])('an external %s of the open task refreshes the inspector', async (_name, op) => {
+    const { transport, store, detach } = await live();
     await store.selectTask(1);
-    store.setSelected(taskDetail({ short_id: 1, title: 'As selected' }));
+    store.setSelected(taskDetail({ short_id: 1, title: 'As selected', _rev: 5 }));
     transport.clearCalls();
 
-    transport.pushEvent({ entity: 'task', op: 'start', short_id: 1, _rev: 6 });
-    await settle();
+    transport.pushEvent({ entity: 'task', op, short_id: 1, _rev: 6 });
+    await vi.advanceTimersByTimeAsync(REFRESH_DEBOUNCE_MS);
 
     expect(transport.countOf('task.get')).toBe(1);
     expect(store.getState().tasks.data[0]?.title).toBe('Refetched');
-    expect(store.getState().selected.data?.title).toBe('As selected');
+    expect(store.getState().selected.data?.title).toBe('Refetched');
+    detach();
+  });
+
+  it('a burst of events for the open task re-reads it once', async () => {
+    const { transport, store, detach } = await live();
+    await store.selectTask(1);
+    transport.clearCalls();
+
+    for (const [op, rev] of [['start', 6], ['annotation.add', 7], ['check.add', 8]] as const) {
+      transport.pushEvent({ entity: 'task', op, short_id: 1, _rev: rev });
+    }
+    await vi.advanceTimersByTimeAsync(REFRESH_DEBOUNCE_MS - 1);
+    expect(transport.countOf('task.get')).toBe(0);
+    await vi.advanceTimersByTimeAsync(1);
+
+    expect(transport.countOf('task.get')).toBe(1);
+    detach();
+  });
+
+  it('an open draft survives the refresh and sits beside the new server copy', async () => {
+    const { transport, store, detach } = await live();
+    await store.selectTask(1);
+    store.editTask(1);
+    store.setDraftValue(1, 'title', 'My edit');
+    transport.clearCalls();
+
+    transport.pushEvent({ entity: 'task', op: 'start', short_id: 1, _rev: 9 });
+    await vi.advanceTimersByTimeAsync(REFRESH_DEBOUNCE_MS);
+
+    expect(store.getState().selected.data?.title).toBe('Refetched');
+    expect(store.getState().drafts[1]?.values['title']).toBe('My edit');
     detach();
   });
 
