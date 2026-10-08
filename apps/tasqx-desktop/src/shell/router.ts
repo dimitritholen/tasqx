@@ -1,6 +1,6 @@
 import { useSyncExternalStore } from 'react';
 
-export const SCREENS = ['dashboard', 'tasks', 'projects', 'memory', 'graph', 'reports', 'settings'] as const;
+export const SCREENS = ['dashboard', 'tasks', 'projects', 'memory', 'graph', 'charts', 'reports', 'settings'] as const;
 
 export type Screen = (typeof SCREENS)[number];
 export type Query = Record<string, string>;

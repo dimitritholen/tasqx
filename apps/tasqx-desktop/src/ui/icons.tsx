@@ -28,6 +28,7 @@ const PATHS = {
       <path d="M6.7 4.9 4.6 10.4M9.3 4.9l2.1 5.5M5.3 12h5.4" />
     </>
   ),
+  charts: <path d="M2 13h12M3.5 13V9l3-3 3 2 3-4v9" />,
   reports: <path d="M3 13V7M8 13V3M13 13V9" />,
   settings: (
     <>

@@ -4,6 +4,7 @@ import { setTheme, useTheme } from '../shell/theme';
 import type { Theme } from '../shell/theme';
 import { EmptyState, Field } from '../ui/primitives';
 
+export { ChartsScreen } from './ChartsScreen';
 export { DashboardScreen } from './DashboardScreen';
 export { GraphInspector } from './GraphInspector';
 export { GraphScreen } from './GraphScreen';

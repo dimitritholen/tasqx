@@ -13,6 +13,7 @@ import { currentTheme, nextTheme, setTheme, useTheme } from './shell/theme';
 import { attachEvents } from './state/events';
 import { DashboardStore, StoreContext, useStore } from './state/store';
 import {
+  ChartsScreen,
   DashboardScreen,
   GraphInspector,
   GraphScreen,
@@ -35,6 +36,7 @@ const SCREEN_VIEWS: Record<Screen, ComponentType<{ connection?: ReactNode }>> = 
   projects: ProjectsScreen,
   memory: MemoryScreen,
   graph: GraphScreen,
+  charts: ChartsScreen,
   reports: ReportsScreen,
   settings: SettingsScreen,
 };

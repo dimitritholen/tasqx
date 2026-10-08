@@ -13,6 +13,7 @@ const SCREEN_TITLES: Record<Screen, string> = {
   projects: 'Projects',
   memory: 'Memory',
   graph: 'Graph',
+  charts: 'Charts',
   reports: 'Reports',
   settings: 'Settings',
 };
@@ -22,6 +23,7 @@ const SCREEN_HINTS: Partial<Record<Screen, string>> = {
   tasks: 'g t',
   memory: 'g m',
   graph: 'g g',
+  charts: 'g c',
 };
 
 export function shellCommands(actions: {

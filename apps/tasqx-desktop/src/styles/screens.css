@@ -714,3 +714,178 @@
   flex: none;
   white-space: nowrap;
 }
+
+/* --- Charts ------------------------------------------------------------ */
+.chart-modes {
+  display: flex;
+  gap: var(--space-1);
+}
+
+.chart-modes .btn[aria-pressed='true'] {
+  border-color: var(--color-accent);
+  color: var(--color-text);
+}
+
+.chart-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+}
+
+/* Status → fill, from the status tokens; done is dimmed so open work reads first. */
+.chart {
+  --chart-backlog: var(--status-backlog);
+  --chart-pending: var(--status-pending);
+  --chart-active: var(--status-active);
+  --chart-done: color-mix(in srgb, var(--status-done) 45%, var(--color-canvas));
+  --chart-cancelled: var(--color-border);
+  margin: 0;
+}
+
+.chart figcaption {
+  margin-bottom: var(--space-2);
+  color: var(--color-muted);
+  font-size: var(--text-secondary);
+}
+
+.chart-scroll {
+  overflow: auto;
+  border: var(--border-width) solid var(--color-border);
+  border-radius: var(--radius-panel);
+  background: var(--color-panel);
+}
+
+.chart-svg {
+  display: block;
+  width: 100%;
+  height: auto;
+  border: var(--border-width) solid var(--color-border);
+  border-radius: var(--radius-panel);
+  background: var(--color-panel);
+}
+
+.chart svg text {
+  fill: var(--color-text);
+  font-size: var(--text-secondary);
+  pointer-events: none;
+}
+
+.chart svg .chart-key {
+  fill: var(--color-muted);
+  font-size: var(--text-secondary);
+}
+
+.chart-data {
+  margin-top: var(--space-2);
+  overflow: auto;
+  max-height: 320px;
+}
+
+.chart-data summary {
+  cursor: pointer;
+  color: var(--color-muted);
+}
+
+.chart-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-3);
+  margin: var(--space-2) 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.chart-swatch {
+  display: inline-block;
+  width: 12px;
+  height: 12px;
+}
+
+[data-status='backlog'] {
+  --chart-fill: var(--chart-backlog);
+}
+[data-status='pending'] {
+  --chart-fill: var(--chart-pending);
+}
+[data-status='active'] {
+  --chart-fill: var(--chart-active);
+}
+[data-status='done'] {
+  --chart-fill: var(--chart-done);
+}
+[data-status='cancelled'] {
+  --chart-fill: var(--chart-cancelled);
+}
+
+.cfd-band {
+  fill: var(--chart-fill, var(--color-border));
+  background: var(--chart-fill);
+  opacity: 0.85;
+}
+
+.cfd-hover {
+  fill: transparent;
+}
+
+.cfd-hover:hover {
+  fill: var(--color-text);
+  fill-opacity: 0.08;
+}
+
+.tree-project {
+  fill: var(--color-panel);
+  stroke: var(--color-border);
+}
+
+.tree-tag {
+  fill: var(--color-elevated);
+  stroke: var(--color-border);
+}
+
+.tree-leaf {
+  fill: var(--chart-fill, var(--color-border));
+  cursor: pointer;
+}
+
+.chart svg .tree-label {
+  stroke: var(--color-canvas);
+  stroke-width: 4px;
+  paint-order: stroke;
+}
+
+.dag-box {
+  fill: var(--color-panel);
+  stroke: var(--chart-fill, var(--color-border));
+}
+
+.dag-rail {
+  fill: var(--chart-fill, var(--color-border));
+}
+
+.dag-node {
+  cursor: pointer;
+}
+
+.dag-node:focus-visible {
+  outline: var(--focus-ring);
+  outline-offset: var(--focus-offset);
+}
+
+.dag-edge {
+  fill: none;
+  stroke: var(--color-border);
+  stroke-width: 1.2;
+}
+
+.dag-open {
+  stroke: var(--status-blocked);
+}
+
+.dag-critical {
+  stroke: var(--status-warning);
+  stroke-width: 2.5;
+}
+
+.chart-arrow {
+  fill: var(--color-muted);
+}
