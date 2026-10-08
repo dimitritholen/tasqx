@@ -2,7 +2,8 @@
 //!
 //! Thin by design (DESIGN.md D160): the host owns the OS seam — the daemon
 //! socket on Unix, the named pipe on Windows — plus the one local file the
-//! graph's saved views live in, and nothing else. It never
+//! graph's saved views live in, and opening a tasqx release page in the
+//! browser, and nothing else. It never
 //! parses a frame, never knows a method name, and never applies a task rule.
 //! Lines go out as the frontend wrote them and come back as the daemon sent
 //! them, over the `tasqx://line` / `tasqx://closed` events.
@@ -253,6 +254,42 @@ fn graph_views_quarantine(app: AppHandle) -> Result<String, String> {
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
+/// The pages the newer-release notice links (D???), and the only URLs the host
+/// opens. A fixed prefix and a plain character set, so the string handed to
+/// the OS opener can only ever be one of those pages.
+const RELEASE_PAGES: &str = "https://github.com/dimitritholen/tasqx/releases/";
+
+fn release_page(url: &str) -> Option<&str> {
+    let rest = url.strip_prefix(RELEASE_PAGES)?;
+    let plain = !rest.is_empty()
+        && !rest.contains("..")
+        && rest
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b"._-/".contains(&b));
+    plain.then_some(url)
+}
+
+/// Open a tasqx release page in the default browser. The app never downloads
+/// or installs anything itself (D10); this is the whole of "update".
+#[tauri::command]
+fn open_release_page(url: String) -> Result<(), String> {
+    let url = release_page(&url).ok_or("not a tasqx release page")?;
+    #[cfg(target_os = "macos")]
+    let opener = "open";
+    #[cfg(windows)]
+    let opener = "explorer";
+    #[cfg(all(unix, not(target_os = "macos")))]
+    let opener = "xdg-open";
+    let mut child = std::process::Command::new(opener)
+        .arg(url)
+        .spawn()
+        .map_err(|e| e.to_string())?;
+    // Reaped off the command thread; the opener's exit status says nothing
+    // useful (explorer answers 1 on success).
+    std::thread::spawn(move || child.wait());
+    Ok(())
+}
+
 pub fn run() {
     tauri::Builder::default()
         .setup(|app| {
@@ -266,7 +303,8 @@ pub fn run() {
             daemon_disconnect,
             graph_views_read,
             graph_views_write,
-            graph_views_quarantine
+            graph_views_quarantine,
+            open_release_page
         ])
         .run(tauri::generate_context!())
         .expect("error while running tasqx desktop");
@@ -305,5 +343,21 @@ mod tests {
         assert_eq!(views_read_in(&dir).unwrap(), None);
 
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn only_a_plain_tasqx_release_page_is_opened() {
+        let page = "https://github.com/dimitritholen/tasqx/releases/tag/v0.16.0";
+        assert_eq!(release_page(page), Some(page));
+        for refused in [
+            "https://github.com/dimitritholen/tasqx/releases/",
+            "https://github.com/dimitritholen/tasqx/releases/../../evil",
+            "https://github.com/dimitritholen/tasqx/releases/tag/v1 & calc",
+            "https://github.com/dimitritholen/tasqx/releases/tag/v1?x=\"y\"",
+            "https://example.com/dimitritholen/tasqx/releases/tag/v1",
+            "file:///etc/passwd",
+        ] {
+            assert_eq!(release_page(refused), None, "{refused}");
+        }
     }
 }

@@ -10,6 +10,8 @@ import { OfflineBanner } from './shell/OfflineBanner';
 import { navigate, useRoute } from './shell/router';
 import type { Screen } from './shell/router';
 import { currentTheme, nextTheme, setTheme, useTheme } from './shell/theme';
+import { UpdateNotice } from './shell/UpdateNotice';
+import { useUpdateCheckOnStart } from './shell/updates';
 import { attachEvents } from './state/events';
 import { DashboardStore, StoreContext, useStore } from './state/store';
 import {
@@ -68,6 +70,7 @@ export function App({
 
 function ConnectedApp() {
   useTheme();
+  useUpdateCheckOnStart();
   const route = useRoute();
   const { state, controller } = useConnection();
   const { store } = useStore();
@@ -124,14 +127,17 @@ function ConnectedApp() {
           </>
         }
         banner={
-          state.offline && (
-            <OfflineBanner
-              nextRetryAt={state.nextRetryAt}
-              attempt={state.attempt}
-              onStop={() => void controller.stop()}
-              onRetryNow={() => void controller.retryNow()}
-            />
-          )
+          <>
+            {state.offline && (
+              <OfflineBanner
+                nextRetryAt={state.nextRetryAt}
+                attempt={state.attempt}
+                onStop={() => void controller.stop()}
+                onRetryNow={() => void controller.retryNow()}
+              />
+            )}
+            <UpdateNotice />
+          </>
         }
         inspector={
           route.screen === 'memory' ? (
