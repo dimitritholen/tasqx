@@ -756,6 +756,27 @@ mod tests {
     }
 
     #[test]
+    fn session_matches_falls_back_to_the_id_stamped_on_a_line_of_a_renamed_file() {
+        let dir = std::env::temp_dir().join(format!("tasqx-cc-sm-{}", crate::clock::uuid_v7()));
+        std::fs::create_dir_all(&dir).expect("create temp dir");
+        // The stem is not the session id (a renamed file); only a line's
+        // `sessionId` can vouch for it. The first line is unparseable and the
+        // id sits on the second, so the scan must skip and keep going.
+        let path = dir.join("renamed.jsonl");
+        let content = format!(
+            "not json\n{}\n",
+            r#"{"sessionId":"sess-1","timestamp":"2026-07-24T10:00:00Z"}"#
+        );
+        std::fs::write(&path, content).expect("write temp transcript");
+
+        assert!(session_matches(&path, "sess-1"), "an embedded id matches");
+        assert!(!session_matches(&path, "sess-2"), "a different id does not");
+        assert!(!session_matches(&path, ""), "an empty id never matches");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn samples_from_file_reads_a_real_file() {
         let path = std::env::temp_dir().join(format!("tasqx-cc-{}.jsonl", crate::clock::uuid_v7()));
         let content = assistant_line("2026-07-24T10:00:00Z", "msg_a", "claude-opus-4-7", 9, 9);

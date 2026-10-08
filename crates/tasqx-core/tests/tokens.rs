@@ -2074,6 +2074,133 @@ fn recompute_downgrades_when_the_transcript_is_gone() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// A pre-upgrade bank (no recorded sample ids) whose totals, confidence and
+/// tool already equal the re-derived measurement is NOT `unchanged`: the
+/// recompute must rewrite it once so the ids get recorded, and only then is it
+/// stable. Without the id conjunct the row reads as unchanged and nothing is
+/// ever backfilled.
+#[test]
+fn recompute_backfills_sample_ids_onto_an_otherwise_identical_bank() {
+    let dir = scratch_dir("backfill");
+    let transcript = dir.join("sess-bf.jsonl");
+    std::fs::write(
+        &transcript,
+        format!(
+            "{}\n",
+            claude_line("2026-07-25T09:47:00.000Z", "bf", 800, 900, 0, 0)
+        ),
+    )
+    .unwrap();
+    let path = transcript.to_string_lossy().into_owned();
+
+    let e = engine();
+    let t = e.task_add(&json!({ "title": "t" })).unwrap()["short_id"].clone();
+    e.task_done(&json!({ "ref": t, "client": "claude-code", "transcript_path": path }))
+        .unwrap();
+    let id = task_uuid(&e, &t);
+    pin_created(&e, &id, "2026-07-25T09:40:00Z");
+    pin_done(&e, &id, "2026-07-25T10:00:00Z", &path);
+    // No `session_id` on the done, so the re-derived confidence is medium and
+    // matches this row exactly; the only difference is the missing ids.
+    e.token_attribute(&json!({
+        "ref": t, "source": "log-parse", "tool": "claude-code", "confidence": "medium",
+        "samples": 1, "input_tokens": 800, "output_tokens": 900,
+    }))
+    .unwrap();
+
+    let action = |dry_run: bool| {
+        let r = dispatch(&e, "tokens.recompute", &json!({ "dry_run": dry_run })).unwrap();
+        r["tasks"][0]["action"].as_str().unwrap().to_string()
+    };
+    assert_eq!(
+        action(true),
+        "recomputed",
+        "ids are missing, so not unchanged"
+    );
+    assert_eq!(action(false), "recomputed");
+    let payload: String = e
+        .conn()
+        .query_row(
+            "SELECT payload FROM events WHERE op = 'tokens.attributed' ORDER BY rowid DESC LIMIT 1",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let v: serde_json::Value = serde_json::from_str(&payload).unwrap();
+    assert_eq!(v["sample_ids"], json!(["bf"]), "{v}");
+    assert_eq!(action(true), "unchanged", "the backfilled bank is stable");
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The recompute replays tasks in the order their live ticks banked. A marker
+/// from before `measurement` was recorded carries only non-zero `totals`; it
+/// still counts as the bank instant. Task Q's legacy marker (rowid 2) sits
+/// between P's empty marker (rowid 1) and P's own legacy bank (rowid 3), so Q
+/// replays first only if the legacy shape is recognised as a bank.
+#[test]
+fn recompute_orders_by_a_legacy_totals_only_marker() {
+    let dir = scratch_dir("legacy");
+    let e = engine();
+    let mut tasks = Vec::new();
+    for name in ["p", "q"] {
+        let transcript = dir.join(format!("{name}.jsonl"));
+        std::fs::write(
+            &transcript,
+            format!(
+                "{}\n",
+                claude_line("2026-07-25T09:47:00.000Z", name, 10, 20, 0, 0)
+            ),
+        )
+        .unwrap();
+        let path = transcript.to_string_lossy().into_owned();
+        let t = e.task_add(&json!({ "title": name })).unwrap()["short_id"].clone();
+        e.task_done(&json!({ "ref": t, "client": "claude-code", "transcript_path": path }))
+            .unwrap();
+        e.token_attribute(&json!({
+            "ref": t, "source": "log-parse", "tool": "claude-code", "confidence": "medium",
+            "samples": 1, "input_tokens": 10, "output_tokens": 20,
+        }))
+        .unwrap();
+        tasks.push(t);
+    }
+    let (p, q) = (tasks[0].clone(), tasks[1].clone());
+    let legacy =
+        json!({ "samples": 1, "totals": { "input_tokens": 10, "output_tokens": 20 } }).to_string();
+    let conn = e.conn();
+    // P's rowid-1 marker becomes an empty one, then P banks again, legacy
+    // shaped, after Q's.
+    conn.execute(
+        "INSERT INTO events (id, entity, entity_id, op, payload, ts, actor) \
+         SELECT 'legacy-p', entity, entity_id, op, ?1, ts, actor FROM events \
+         WHERE op = 'tokens.attributed' AND entity_id = ?2",
+        (&legacy, task_uuid(&e, &p)),
+    )
+    .unwrap();
+    conn.execute(
+        "UPDATE events SET payload = '{\"samples\":0}' WHERE op = 'tokens.attributed' \
+         AND entity_id = ?1 AND id != 'legacy-p'",
+        [task_uuid(&e, &p)],
+    )
+    .unwrap();
+    conn.execute(
+        "UPDATE events SET payload = ?1 WHERE op = 'tokens.attributed' AND entity_id = ?2",
+        (&legacy, task_uuid(&e, &q)),
+    )
+    .unwrap();
+
+    let r = dispatch(&e, "tokens.recompute", &json!({})).unwrap();
+    let order: Vec<_> = r["tasks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|t| t["task"].clone())
+        .collect();
+    assert_eq!(order, vec![q, p], "{r}");
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// #220: the `downgraded` arm strips confidence in place and used to record
 /// only `{"action":"downgraded","recompute":true}` — no measurement id, no
 /// previous confidence, no counts. `--apply` is a one-way door (undo refuses
