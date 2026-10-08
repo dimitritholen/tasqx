@@ -48,9 +48,11 @@ Prerequisite: the Xcode command line tools (`xcode-select --install`).
 
 Output: `macos/Tasqx Desktop.app` and `dmg/Tasqx Desktop_<version>_<arch>.dmg`.
 
-An unsigned bundle downloaded through a browser carries the quarantine
-attribute, and Gatekeeper refuses it (often as "damaged"). To run your own
-build, or a CI artifact you trust:
+The unsigned bundle is ad-hoc signed (`bundle.macOS.signingIdentity` is `"-"`
+in `tauri.conf.json`), so `codesign --verify --deep --strict` passes and the app
+is sealed, but it has no Developer ID and Gatekeeper still refuses a copy that
+came through a browser. Use **Open Anyway** under System Settings, Privacy &
+Security, or clear the quarantine attribute on a build you trust:
 
 ```console
 xattr -dr com.apple.quarantine "/Applications/Tasqx Desktop.app"

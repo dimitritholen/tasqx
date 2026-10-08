@@ -72,7 +72,9 @@ fi
 if [[ -n "${APPLE_SIGNING_IDENTITY:-}" ]]; then
     say "macos signing: on"
 else
-    say "macos signing: off (APPLE_SIGNING_IDENTITY not set)"
+    # tauri.conf.json's "-" ad-hoc signs and seals the bundle, so an unsigned
+    # download opens past Gatekeeper's "damaged" refusal; the variable wins.
+    say "macos signing: ad-hoc (APPLE_SIGNING_IDENTITY not set)"
 fi
 if [[ -n "${APPLE_ID:-}" && -n "${APPLE_PASSWORD:-}" && -n "${APPLE_TEAM_ID:-}" ]]; then
     say "macos notarization: on"
