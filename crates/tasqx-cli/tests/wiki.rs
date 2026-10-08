@@ -17,6 +17,8 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
+mod common;
+
 /// The wiki directory, two levels above this crate's manifest.
 fn wiki_dir() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs/wiki")
@@ -984,4 +986,50 @@ fn every_method_tool_and_config_key_the_docs_name_exists() {
         "only {} method, tool or config-key names found in docs/wiki and docs/guides",
         names.len()
     );
+}
+
+// ---- Output blocks are pieces of a capture (#706) --------------------------
+
+/// A ```console session under `<!-- fixture: NAME -->` keeps a short typed
+/// excerpt for the reader on GitHub, while the site and `tasqx docs` draw the
+/// captured screen NAME. The excerpt must be a piece of that capture, so the
+/// typed text can never drift from what the binary prints.
+#[test]
+fn every_fixture_excerpt_is_in_its_capture() {
+    let fixtures = wiki_dir().join("../../crates/tasqx-cli/docs-fixtures");
+    let mut seen = 0;
+    for (page, text) in wiki_and_guides() {
+        let lines: Vec<&str> = text.lines().collect();
+        for (i, line) in lines.iter().enumerate() {
+            let Some(name) = line
+                .trim()
+                .strip_prefix("<!-- fixture:")
+                .map(|r| r.trim_end_matches("-->").trim())
+            else {
+                continue;
+            };
+            let excerpt: Vec<&str> = lines[i + 1..]
+                .iter()
+                .skip(1) // the opening fence
+                .take_while(|l| !l.starts_with("```"))
+                .filter(|l| !l.starts_with("$ "))
+                .copied()
+                .collect();
+            let excerpt = excerpt.join("\n");
+            let path = fixtures.join(format!("{name}.ansi"));
+            let capture = common::strip_sgr(
+                &fs::read_to_string(&path)
+                    .unwrap_or_else(|e| panic!("{page}:{}: no capture {name}: {e}", i + 1)),
+            );
+            assert!(
+                !excerpt.is_empty() && capture.contains(&excerpt),
+                "{page}:{}: the typed excerpt is not a piece of the capture `{name}`.\n\
+                 excerpt:\n{excerpt}\ncapture:\n{capture}",
+                i + 1
+            );
+            seen += 1;
+        }
+    }
+    // Floor: three blocks were fixture-backed when this guard was written.
+    assert!(seen >= 3, "only {seen} fixture-backed blocks found");
 }

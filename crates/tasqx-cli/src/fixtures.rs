@@ -68,6 +68,7 @@ screens![
     "add-echo",
     "start-echo",
     "done-echo",
+    "done-unblock-echo",
     "annotate-echo",
     "api-task-list",
     "api-task-get",

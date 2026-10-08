@@ -1746,7 +1746,7 @@ mod tests {
     fn capturing_says_what_a_write_prints() {
         let page = render(&plain(), Some("capturing")).unwrap();
         assert!(
-            page.contains("started") && page.contains("#1"),
+            page.contains("started") && page.contains("#49"),
             "no write echo is shown:\n{page}"
         );
         // The SENTENCE, not the word: "bold" survives later in the
