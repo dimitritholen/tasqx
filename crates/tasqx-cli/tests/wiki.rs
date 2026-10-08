@@ -990,6 +990,21 @@ fn every_method_tool_and_config_key_the_docs_name_exists() {
 
 // ---- Output blocks are pieces of a capture (#706) --------------------------
 
+/// Whether the typed `excerpt` is a piece of `capture`. A Windows checkout
+/// (`core.autocrlf`) turns the `.ansi` capture into CRLF while the excerpt is
+/// joined with `\n` from `str::lines`, so the capture's line endings are
+/// normalised first.
+fn excerpt_in_capture(excerpt: &str, capture: &str) -> bool {
+    !excerpt.is_empty() && capture.replace("\r\n", "\n").contains(excerpt)
+}
+
+#[test]
+fn a_crlf_capture_still_holds_an_lf_excerpt() {
+    assert!(excerpt_in_capture("a\nb", "x\r\na\r\nb\r\n"));
+    assert!(!excerpt_in_capture("a\nc", "x\r\na\r\nb\r\n"));
+    assert!(!excerpt_in_capture("", "x"));
+}
+
 /// A ```console session under `<!-- fixture: NAME -->` keeps a short typed
 /// excerpt for the reader on GitHub, while the site and `tasqx docs` draw the
 /// captured screen NAME. The excerpt must be a piece of that capture, so the
@@ -1022,7 +1037,7 @@ fn every_fixture_excerpt_is_in_its_capture() {
                     .unwrap_or_else(|e| panic!("{page}:{}: no capture {name}: {e}", i + 1)),
             );
             assert!(
-                !excerpt.is_empty() && capture.contains(&excerpt),
+                excerpt_in_capture(&excerpt, &capture),
                 "{page}:{}: the typed excerpt is not a piece of the capture `{name}`.\n\
                  excerpt:\n{excerpt}\ncapture:\n{capture}",
                 i + 1
