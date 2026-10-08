@@ -409,6 +409,70 @@ mod tests {
         assert_eq!(samples[0].output_tokens, 10);
     }
 
+    /// One flattened api_response whose `input_token_count` is the raw JSON
+    /// value `v`; returns the parsed input count.
+    fn input_for(v: &str) -> u64 {
+        let content = format!(
+            r#"{{"event.name":"gemini_cli.api_response","event.timestamp":"2026-07-24T10:00:00Z","input_token_count":{v}}}"#
+        );
+        let samples = samples_from_file(&write_fixture(&content)).expect("parse");
+        assert_eq!(samples.len(), 1, "the record itself always parses");
+        samples[0].input_tokens
+    }
+
+    #[test]
+    fn counts_accept_integers_numeric_strings_and_non_negative_floats_only() {
+        assert_eq!(input_for("42"), 42);
+        // A numeric string, surrounding whitespace tolerated.
+        assert_eq!(input_for(r#""42""#), 42);
+        assert_eq!(input_for(r#"" 7 ""#), 7);
+        // A non-negative float truncates toward zero.
+        assert_eq!(input_for("12.9"), 12);
+        // Everything else reads as zero rather than failing the record.
+        assert_eq!(input_for("-5"), 0, "negative integer");
+        assert_eq!(input_for("-1.5"), 0, "negative float");
+        assert_eq!(input_for(r#""-5""#), 0, "negative string");
+        assert_eq!(input_for(r#""12.5""#), 0, "fractional string");
+        assert_eq!(input_for(r#""lots""#), 0, "non-numeric string");
+        assert_eq!(input_for("true"), 0, "boolean");
+        assert_eq!(input_for("null"), 0, "null");
+    }
+
+    #[test]
+    fn a_zero_usage_record_is_kept_as_an_all_zero_sample() {
+        // Unlike the Copilot parser, an api_response with no tokens is not
+        // dropped: it is a real, timestamped call that spent nothing, and it
+        // adds nothing to any total.
+        let path = write_fixture(&record("2026-07-24T10:00:00Z", 0, 0, 0, 0));
+        let samples = samples_from_file(&path).expect("parse");
+        assert_eq!(samples.len(), 1);
+        let s = &samples[0];
+        assert_eq!(
+            (
+                s.input_tokens,
+                s.output_tokens,
+                s.cache_read_tokens,
+                s.cache_creation_tokens
+            ),
+            (0, 0, 0, 0)
+        );
+    }
+
+    #[test]
+    fn identical_records_are_kept_as_separate_samples() {
+        // RULING: no dedupe, deliberately. Gemini's api_response carries no
+        // response id (samples have `id: None`), and the outfile is an
+        // append-only stream with one record per API call, so a repeat is not
+        // a documented re-emission. Two real calls can also share a timestamp
+        // and counts; collapsing on content would silently drop real spend.
+        // This pins that rule so a content-keyed dedupe cannot slip in.
+        let one = record("2026-07-24T10:00:00Z", 100, 40, 10, 5);
+        let path = write_fixture(&format!("{one}\n{one}\n"));
+        let samples = samples_from_file(&path).expect("parse");
+        assert_eq!(samples.len(), 2);
+        assert_eq!(samples[0], samples[1]);
+    }
+
     #[test]
     fn default_roots_honors_the_env_override() {
         // Guard the process-global env with serialized set/restore.

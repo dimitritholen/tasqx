@@ -1683,6 +1683,30 @@ fn classify_task(
 
 #[cfg(test)]
 mod tests {
+    /// The bound is `i64::MAX`: the largest value passes, one more is a
+    /// `bad_request` naming the key and the ceiling, not an `internal` SQL
+    /// binding failure.
+    #[test]
+    fn opt_token_count_accepts_i64_max_and_refuses_one_over() {
+        use super::opt_token_count;
+        use serde_json::json;
+        let at = json!({ "input_tokens": i64::MAX });
+        assert_eq!(
+            opt_token_count(&at, "input_tokens").unwrap(),
+            Some(i64::MAX)
+        );
+        assert_eq!(opt_token_count(&json!({}), "input_tokens").unwrap(), None);
+
+        let over = json!({ "input_tokens": i64::MAX as u64 + 1 });
+        let err = opt_token_count(&over, "input_tokens").unwrap_err();
+        assert_eq!(err.code, crate::error::ErrorCode::BadRequest);
+        assert_eq!(
+            err.message,
+            "`input_tokens` must fit a 64-bit signed integer, but 9223372036854775808 was given \
+             — send at most 9223372036854775807"
+        );
+    }
+
     /// `token_recompute` must take all of its database reads from ONE
     /// snapshot. Each statement otherwise reads its own (WAL), and the apply
     /// phase's `recompute_replace` deletes ALL of a task's log-parse rows —
