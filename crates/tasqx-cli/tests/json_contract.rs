@@ -414,7 +414,10 @@ fn theme_set_and_config_set_agree_under_json() {
 /// carve-out, so each one is driven through the binary and its note checked
 /// word for word. `daemon` is the one left out: it serves until interrupted.
 /// The rest end on their own here — EOF on stdin, or `watch` refusing
-/// `--no-daemon`.
+/// `--no-daemon`. None of them can reach the real store, daemon or config:
+/// `TASQX_DB` and `TASQX_CONFIG_DIR` point at scratch, `watch` refuses before
+/// it resolves a socket, and an ambient `TASQX_SOCK` is removed so `api` and
+/// `mcp serve` never probe a developer's daemon for their mismatch note.
 #[test]
 fn every_carve_out_states_its_reason() {
     for (name, why) in tasqx_cli::JSON_CARVE_OUTS {
@@ -445,6 +448,7 @@ fn every_carve_out_states_its_reason() {
             .map(|(_, why)| *why)
             .unwrap();
         let out = bin(&cfg, &db)
+            .env_remove("TASQX_SOCK")
             .arg("--json")
             .args(*args)
             .stdin(std::process::Stdio::null())
