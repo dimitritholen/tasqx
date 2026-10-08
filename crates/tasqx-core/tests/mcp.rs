@@ -648,6 +648,25 @@ fn temp_workdir(rel: &str) -> std::path::PathBuf {
     dir
 }
 
+/// `rel` is a git checkout (a `.git` directory at its root) under the temp
+/// dir; the session's project comes from its name (#810), not its ancestors.
+fn temp_repo(rel: &str) -> std::path::PathBuf {
+    let dir = temp_workdir(rel);
+    std::fs::create_dir_all(dir.join(".git")).expect("create .git");
+    dir
+}
+
+/// A linked worktree at `wt_rel` of the checkout `main`, laid out by hand
+/// (a `.git` file naming a gitdir whose `commondir` leads back).
+fn temp_worktree(main: &std::path::Path, wt_rel: &str) -> std::path::PathBuf {
+    let gitdir = main.join(".git").join("worktrees").join("wt");
+    std::fs::create_dir_all(&gitdir).unwrap();
+    std::fs::write(gitdir.join("commondir"), "../..\n").unwrap();
+    let wt = temp_workdir(wt_rel);
+    std::fs::write(wt.join(".git"), format!("gitdir: {}\n", gitdir.display())).unwrap();
+    wt
+}
+
 fn add_doc(engine: &Engine, title: &str, body: &str, project: Option<&str>, standing: bool) {
     engine
         .memory_add(&json!({
@@ -695,8 +714,12 @@ fn standing_rulings_follow_the_working_directory_before_the_default_project() {
     add_doc(&engine, "beta rule", "beta only", Some("beta"), true);
     add_doc(&engine, "global rule", "everywhere", None, true);
 
-    for rel in ["beta/sub", "worktrees/beta/96-something"] {
-        let server = McpServer::new(&engine, Scope::Write).with_workdir(Some(temp_workdir(rel)));
+    let repo = temp_repo("beta-repo/beta");
+    let sub = repo.join("sub");
+    std::fs::create_dir_all(&sub).unwrap();
+    let wt = temp_worktree(&repo, "worktrees/96-something");
+    for (rel, dir) in [("beta/sub", sub), ("worktree of beta", wt)] {
+        let server = McpServer::new(&engine, Scope::Write).with_workdir(Some(dir));
         let text = rulings_of(&server);
         assert!(
             text.starts_with("Standing rulings for project beta (working directory)."),
@@ -721,6 +744,43 @@ fn standing_rulings_follow_the_working_directory_before_the_default_project() {
         text.contains("alpha rule") && !text.contains("beta rule"),
         "{text}"
     );
+}
+
+/// #810: a project named after a directory ABOVE the repo (`home`, `work`,
+/// as on a GitHub runner's `/home/runner/work/<repo>/<repo>`) must not claim
+/// the session; the repo's own name, then the default project, decide.
+#[test]
+fn a_project_named_after_an_ancestor_directory_does_not_take_over_the_session() {
+    let _guard = RIPWIRE_PATH_ENV.lock().unwrap_or_else(|e| e.into_inner());
+    let engine = engine();
+    engine.project_create(&json!({ "name": "alpha" })).unwrap();
+    engine.project_create(&json!({ "name": "home" })).unwrap();
+    engine.project_create(&json!({ "name": "other" })).unwrap();
+    add_doc(&engine, "alpha rule", "default", Some("alpha"), true);
+    add_doc(&engine, "home rule", "ancestor", Some("home"), true);
+    add_doc(&engine, "other rule", "repo", Some("other"), true);
+    engine.project_use(&json!({ "name": "alpha" })).unwrap();
+
+    // `.../home/runner/repo/src`: `home` is an ancestor, `repo` the checkout.
+    let sub = temp_repo("home/runner/repo").join("src");
+    std::fs::create_dir_all(&sub).unwrap();
+    // A non-repo directory under `home` has only its own name to offer.
+    let plain = temp_workdir("home/plain/deep");
+    // A checkout whose own name IS a project still wins.
+    let own = temp_repo("home/runner/other");
+    for (what, dir, want) in [
+        ("ancestor of a repo", sub, "alpha"),
+        ("ancestor of a plain dir", plain, "alpha"),
+        ("the repo's own name", own, "other"),
+    ] {
+        let server = McpServer::new(&engine, Scope::Write).with_workdir(Some(dir));
+        let text = rulings_of(&server);
+        assert!(
+            text.contains(&format!("project {want} (")),
+            "{what}:\n{text}"
+        );
+        assert!(!text.contains("home rule"), "{what}:\n{text}");
+    }
 }
 
 #[test]
@@ -4517,7 +4577,7 @@ fn list_tasks_at_working_carries_the_rulings_block_a_plain_filter_does_not() {
         .task_add(&json!({ "title": "t", "project": "beta" }))
         .expect("task");
     let server =
-        McpServer::new(&engine, Scope::Write).with_workdir(Some(temp_workdir("beta/sub-186")));
+        McpServer::new(&engine, Scope::Write).with_workdir(Some(temp_repo("beta-186/beta")));
 
     let working = tool_json(&call(
         &server,
