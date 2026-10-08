@@ -21,5 +21,6 @@ DEPENDS ON
   #50  Rate-limit the /search endpoint  pending
 
 FROM MEMORY
-  release-process  docs/release.md  [api]
-    description How an SDK release is cut, tagged and announced Cut the…
+  Docs — 1 of 1
+    release-process  docs/release.md  [api]
+      description How an SDK release is cut, tagged and announced Cut the…
