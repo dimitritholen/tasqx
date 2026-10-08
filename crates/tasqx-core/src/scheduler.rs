@@ -256,6 +256,28 @@ mod tests {
         );
     }
 
+    /// Reminders sharing one instant pop in `short_id` order whichever way they
+    /// went in; without the tie-break in `Ord` the heap order is arbitrary (#75).
+    #[test]
+    fn reminders_at_one_instant_pop_in_short_id_order() {
+        let at = ts("2026-07-20T16:00:00Z");
+        let pending = |short_id: i64| Pending {
+            task_id: format!("id-{short_id}"),
+            short_id,
+            title: format!("t{short_id}"),
+            due: None,
+            at,
+        };
+        for order in [[1, 2, 3, 4, 5], [5, 4, 3, 2, 1], [3, 5, 1, 4, 2]] {
+            let mut s = ReminderScheduler::new();
+            for id in order {
+                s.heap.push(Reverse(pending(id)));
+            }
+            let ids: Vec<i64> = s.pop_ripe(at).iter().map(|p| p.short_id).collect();
+            assert_eq!(ids, vec![1, 2, 3, 4, 5], "inserted as {order:?}");
+        }
+    }
+
     #[test]
     fn pop_ripe_is_driven_entirely_by_the_injected_now() {
         let e = Engine::open_in_memory().unwrap();
