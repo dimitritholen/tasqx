@@ -187,13 +187,19 @@ esac
 ok "installed: $exe"
 
 # Launch, and give the webview time to come up and dial the daemon.
-unix_fds() { lsof -a -U -p "$daemon_pid" 2>/dev/null | tail -n +2 | wc -l | tr -d ' '; }
-before_fds="$(unix_fds)"
+# `|| true`: lsof exits 1 when it lists nothing, and under pipefail that
+# would end the script. Windows has no lsof at all, so it never calls this.
+unix_fds() { { lsof -a -U -p "$daemon_pid" 2>/dev/null || true; } | tail -n +2 | wc -l | tr -d ' '; }
+before_fds=0
+[[ "$os" == windows ]] || before_fds="$(unix_fds)"
 if [[ "$os" == linux ]]; then
     Xvfb :97 >/dev/null 2>&1 &
     xvfb_pid=$!
     sleep 1
-    DISPLAY=:97 "$exe" >"$scratch/app.log" 2>&1 &
+    # WebKitGTK on a GPU-less Xvfb can fail to render (and so never run the
+    # app's script); keep it off DMA-BUF, compositing and the GPU.
+    DISPLAY=:97 WEBKIT_DISABLE_DMABUF_RENDERER=1 WEBKIT_DISABLE_COMPOSITING_MODE=1 LIBGL_ALWAYS_SOFTWARE=1 \
+        "$exe" >"$scratch/app.log" 2>&1 &
 else
     "$exe" >"$scratch/app.log" 2>&1 &
 fi
@@ -211,7 +217,8 @@ for _ in $(seq 30); do
     fi
 done
 if [[ "$os" != windows ]]; then
-    $connected || fail "the app never connected to the scratch daemon in 30 s"
+    $connected || fail "the app never connected to the scratch daemon in 30 s; its output:
+$(tail -20 "$scratch/app.log")"
     ok "launched, and the app connected to the scratch daemon"
 else
     ok "launched and still running after 30 s"
