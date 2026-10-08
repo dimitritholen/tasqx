@@ -144,7 +144,9 @@ tasqx memory import docs/adr
   older spelling of the same file never removes it, but prints a `note:`
   line naming it so it can be retired by hand — as the same file when that
   doc recorded which file it came from, and only as a possibility when it
-  did not. A symlink pointing at another file in the same import
+  did not. A backslash folds to `/` in that comparison only on
+  Windows; on unix `docs/a\b.md` is its own file name, never a spelling of
+  `docs/a/b.md`. A symlink pointing at another file in the same import
   collapses onto it too — same `source` once resolved — so only the real file
   becomes a document, and the alias is named in a `note:` line instead of
   refusing the batch.

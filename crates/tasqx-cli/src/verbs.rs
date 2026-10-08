@@ -1775,9 +1775,13 @@ struct SupersededSource {
 /// they are equal outright. A bare file-name compare would flag `guides/a.md`
 /// as an older spelling of `docs/a.md`; a suffix compare on the WHOLE
 /// remaining path does not.
+///
+/// Backslashes fold to `/` on Windows only, where `\` is the separator; on
+/// unix it is legal inside one file name, and `docs/a\b.md` is its own key
+/// (#804, as `slash_joined` keeps it, #798).
 fn is_path_suffix_match(a: &str, b: &str) -> bool {
-    let a = a.replace('\\', "/");
-    let b = b.replace('\\', "/");
+    #[cfg(windows)]
+    let (a, b) = (a.replace('\\', "/"), b.replace('\\', "/"));
     let (a, b) = (a.trim_start_matches("./"), b.trim_start_matches("./"));
     a == b || a.ends_with(&format!("/{b}")) || b.ends_with(&format!("/{a}"))
 }
@@ -2710,6 +2714,22 @@ mod superseded_report_tests {
         );
         // Not a suffix at all: nothing.
         assert_eq!(superseded_matches("docs/README.md", None, &batch), None);
+    }
+
+    /// #804: on unix `\` is legal inside one file name, so `docs/a\b.md` is
+    /// its own key and not a spelling of `docs/a/b.md`, either way round.
+    #[cfg(unix)]
+    #[test]
+    fn a_unix_backslash_file_name_is_not_a_spelling_of_the_slashed_path() {
+        let slashed = vec![("repo/docs/a/b.md".to_string(), None)];
+        assert_eq!(superseded_matches(r"docs/a\b.md", None, &slashed), None);
+        let backslashed = vec![(r"repo/docs/a\b.md".to_string(), None)];
+        assert_eq!(superseded_matches("docs/a/b.md", None, &backslashed), None);
+        // The same literal name still matches itself as a suffix.
+        assert_eq!(
+            superseded_matches(r"docs/a\b.md", None, &backslashed),
+            Some((vec![r"repo/docs/a\b.md".to_string()], false))
+        );
     }
 
     /// One candidate whose `memory.get` fails (a doc removed between the
