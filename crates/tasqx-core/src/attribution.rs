@@ -2102,6 +2102,170 @@ mod tests {
         assert_eq!(totals.input, 10);
     }
 
+    fn model_sample(ts: &str, model: Option<&str>) -> UsageSample {
+        UsageSample {
+            model: model.map(str::to_string),
+            ..sample(ts, 1, 1)
+        }
+    }
+
+    #[test]
+    fn counted_samples_naming_different_models_agree_on_none() {
+        let window = ("2026-07-24T10:00:00Z", "2026-07-24T11:00:00Z");
+        let run = |samples: &[UsageSample]| {
+            totals_in_window_refusing(samples, window.0, window.1, &[], &HashSet::new()).4
+        };
+        // Agreement (an unnamed sample is silent, not a dissent) keeps the model.
+        assert_eq!(
+            run(&[
+                model_sample("2026-07-24T10:10:00Z", Some("m1")),
+                model_sample("2026-07-24T10:20:00Z", None),
+                model_sample("2026-07-24T10:30:00Z", Some("m1")),
+            ]),
+            Some("m1".to_string())
+        );
+        // One dissent anywhere, even after the first two agreed, voids it.
+        assert_eq!(
+            run(&[
+                model_sample("2026-07-24T10:10:00Z", Some("m1")),
+                model_sample("2026-07-24T10:20:00Z", Some("m1")),
+                model_sample("2026-07-24T10:30:00Z", Some("m2")),
+            ]),
+            None
+        );
+        // A dissenter that is not counted (contested) does not void it.
+        let foreign = [(
+            "2026-07-24T10:25:00Z".to_string(),
+            "2026-07-24T10:35:00Z".to_string(),
+        )];
+        let (_, n, contested, _, model) = totals_in_window_refusing(
+            &[
+                model_sample("2026-07-24T10:10:00Z", Some("m1")),
+                model_sample("2026-07-24T10:30:00Z", Some("m2")),
+            ],
+            window.0,
+            window.1,
+            &foreign,
+            &HashSet::new(),
+        );
+        assert_eq!((n, contested), (1, 1));
+        assert_eq!(model, Some("m1".to_string()));
+    }
+
+    #[test]
+    fn an_inverted_window_is_normalized_not_emptied() {
+        let samples = [
+            sample("2026-07-24T09:59:59Z", 1, 1),
+            sample("2026-07-24T10:30:00Z", 10, 20),
+            sample("2026-07-24T11:00:01Z", 1, 1),
+        ];
+        // `done` earlier than `start`: the same instants as the forward window.
+        let (totals, n, _, _, _) = totals_in_window_refusing(
+            &samples,
+            "2026-07-24T11:00:00Z",
+            "2026-07-24T10:00:00Z",
+            &[],
+            &HashSet::new(),
+        );
+        assert_eq!((n, totals.input, totals.output), (1, 10, 20));
+        assert_eq!(
+            parse_window("2026-07-24T11:00:00Z", "2026-07-24T10:00:00Z"),
+            parse_window("2026-07-24T10:00:00Z", "2026-07-24T11:00:00Z"),
+        );
+        // An inverted FOREIGN window still contests.
+        let foreign = [(
+            "2026-07-24T10:40:00Z".to_string(),
+            "2026-07-24T10:20:00Z".to_string(),
+        )];
+        let (_, n, contested, _, _) = totals_in_window_refusing(
+            &samples,
+            "2026-07-24T10:00:00Z",
+            "2026-07-24T11:00:00Z",
+            &foreign,
+            &HashSet::new(),
+        );
+        assert_eq!((n, contested), (0, 1));
+    }
+
+    fn scan_info(canon: &Path, client: &str, completed: &str) -> DoneInfo {
+        DoneInfo {
+            completed: completed.to_string(),
+            client: Some(client.to_string()),
+            transcript_path: Some(canon.to_string_lossy().into_owned()),
+            session_id: None,
+            self_reported: false,
+            attributed: true,
+            canon_path: Some(canon.to_path_buf()),
+            open: false,
+        }
+    }
+
+    #[test]
+    fn own_claims_scope_the_out_of_window_contest_count() {
+        let dir = std::env::temp_dir().join(format!("tasqx-attr-own-{}", crate::clock::uuid_v7()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("t.jsonl");
+        let line = |ts: &str, id: &str| {
+            format!(
+                r#"{{"timestamp":"{ts}","message":{{"id":"{id}","model":"m","usage":{{"input_tokens":1,"output_tokens":1}}}}}}"#
+            )
+        };
+        // `mine` is in task A's window. `taken` sits after it, inside B's
+        // window. `stray` sits there too but was never A's evidence.
+        let content = [
+            line("2026-07-24T10:30:00Z", "mine"),
+            line("2026-07-24T12:10:00Z", "taken"),
+            line("2026-07-24T12:20:00Z", "stray"),
+        ]
+        .join("\n");
+        std::fs::write(&path, content).unwrap();
+
+        let mut correlated = HashMap::new();
+        correlated.insert(
+            "a".to_string(),
+            scan_info(&path, "claude-code", "2026-07-24T11:00:00Z"),
+        );
+        correlated.insert(
+            "b".to_string(),
+            scan_info(&path, "claude-code", "2026-07-24T13:00:00Z"),
+        );
+        let scan = WindowScan {
+            correlated,
+            starts: HashMap::new(),
+            meta: HashMap::new(),
+            windows: vec![
+                (
+                    "a".into(),
+                    "2026-07-24T10:00:00Z".into(),
+                    "2026-07-24T11:00:00Z".into(),
+                ),
+                (
+                    "b".into(),
+                    "2026-07-24T12:00:00Z".into(),
+                    "2026-07-24T13:00:00Z".into(),
+                ),
+            ],
+        };
+        let ids = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<HashSet<_>>();
+        let contested = |own: &HashSet<String>| {
+            recompute_measurement(&scan, "a", &HashSet::new(), own)
+                .unwrap()
+                .contested
+        };
+
+        // A pre-upgrade bank (no recorded ids) gets the broad reading.
+        assert_eq!(contested(&HashSet::new()), 2);
+        // Only the ids the bank recorded can testify to a taking.
+        assert_eq!(contested(&ids(&["mine", "taken"])), 1);
+        assert_eq!(
+            contested(&ids(&["mine"])),
+            0,
+            "a never-banked sample is not contested"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn confidence_follows_the_documented_rule() {
         assert_eq!(confidence_for(true, true), CONFIDENCE_HIGH);
