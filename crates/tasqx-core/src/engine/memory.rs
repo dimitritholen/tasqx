@@ -2066,10 +2066,12 @@ impl Engine {
     /// inferred project, its standing docs plus the unscoped standing ones,
     /// and the project's own non-standing docs as topical fill.
     ///
-    /// The project is the nearest of `workdir` and its ancestors whose
-    /// directory name is a non-archived project — ancestors because a task
-    /// worktree (`worktrees/<repo>/<id>-<slug>`) never carries the project in
-    /// its own basename — else the store's default project, else none.
+    /// The project is the first of `workdir`'s own name, its git toplevel's
+    /// name, and the main checkout's name (`repo_dir`, for a linked task
+    /// worktree whose basename is `<id>-<slug>`) that is a non-archived
+    /// project — else the store's default project, else none. Never a bare
+    /// ancestor (#810): `/home/runner/work/<repo>` must not be claimed by a
+    /// project called `home` or `work`.
     /// Not a dispatched method: its one reader is the MCP handshake.
     pub fn session_rulings(
         &self,
@@ -2082,10 +2084,15 @@ impl Engine {
             .query_map([], |r| r.get(0))?
             .collect::<Result<_, _>>()?;
         let from_dir = workdir.and_then(|dir| {
-            dir.ancestors()
+            let top = crate::memory_doc::git_toplevel(&dir.join("_"));
+            let main = top.as_deref().map(crate::memory_doc::repo_dir);
+            let hit = [Some(dir), top.as_deref(), main.as_deref()]
+                .into_iter()
+                .flatten()
                 .filter_map(|a| a.file_name()?.to_str())
                 .find(|n| names.contains(*n))
-                .map(|n| (n.to_string(), "working directory"))
+                .map(|n| (n.to_string(), "working directory"));
+            hit
         });
         // PR #48 review: a default naming a project this same query just
         // proved archived (or gone) must not be trusted any further than
