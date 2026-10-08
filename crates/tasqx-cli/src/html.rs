@@ -1853,10 +1853,10 @@ pub(crate) fn palette(theme: &Theme) -> String {
     let light = format!(
         "--bg:#f7f8fa;--surface:#ffffff;--sunken:#eceff3;--fg:#1a1f29;--muted:#576071;--line:#dce1e8;--line-strong:#bcc4cf;\
          --accent:{};--warn:{};--danger:{};--good:{};--on-accent:#ffffff;--shadow:#1a1f2933;color-scheme:light;",
-        darkened_for_contrast(accent, white, 4.5).hex(),
-        darkened_for_contrast(warn, white, 4.5).hex(),
-        darkened_for_contrast(danger, white, 4.5).hex(),
-        darkened_for_contrast(good, white, 4.5).hex(),
+        adjusted_for_contrast(accent, white, 4.5).hex(),
+        adjusted_for_contrast(warn, white, 4.5).hex(),
+        adjusted_for_contrast(danger, white, 4.5).hex(),
+        adjusted_for_contrast(good, white, 4.5).hex(),
     );
     let b = bg.hex();
     let dark = format!(
@@ -2182,7 +2182,7 @@ fn parse_ts(s: &str) -> Option<jiff::Timestamp> {
 // verbatim, so `mono`'s white accent — 21:1 against its own dark background —
 // became 1:1 (invisible) on the light card, and every other built-in theme's
 // `warn` landed between 1.1:1 and 3.2:1 on white, all under the 4.5:1 WCAG AA
-// floor for text. These three functions compute that ratio and, where it
+// floor for text. These functions compute that ratio and, where it
 // fails, darken the color just enough to clear it — one algorithm covering
 // every current and future theme rather than a second hand-picked palette.
 
@@ -2206,50 +2206,27 @@ fn contrast_ratio(a: Rgb, b: Rgb) -> f64 {
     (hi + 0.05) / (lo + 0.05)
 }
 
-/// Darken `c` toward black just enough that it clears `min_contrast` against
-/// `bg` — `c` unchanged if it already does. Binary search over the mix
-/// fraction rather than a closed-form solve: contrast against a light `bg`
-/// rises monotonically as a color darkens toward black (which always clears
-/// AA against white/near-white), so 24 bisection steps land within
-/// 1/16-million of the mix ratio, far tighter than an 8-bit channel can
-/// represent — plenty for a value that only has to clear a threshold, not
-/// hit one exactly.
-fn darkened_for_contrast(c: Rgb, bg: Rgb, min_contrast: f64) -> Rgb {
-    let mix = |t: f64| -> Rgb {
-        let ch = |v: u8| -> u8 { (f64::from(v) * (1.0 - t)).round() as u8 };
-        Rgb::new(ch(c.r), ch(c.g), ch(c.b))
-    };
-    least_mix_clearing(c, bg, min_contrast, mix)
-}
-
-/// The mirror of `darkened_for_contrast` for a dark ground: lighten toward
-/// white just enough to clear `min_contrast`.
-fn lightened_for_contrast(c: Rgb, bg: Rgb, min_contrast: f64) -> Rgb {
-    let mix = |t: f64| -> Rgb {
-        let ch = |v: u8| -> u8 { (f64::from(v) + (255.0 - f64::from(v)) * t).round() as u8 };
-        Rgb::new(ch(c.r), ch(c.g), ch(c.b))
-    };
-    least_mix_clearing(c, bg, min_contrast, mix)
-}
-
-/// Move `c` toward whichever pole `bg` is not — a dark ground wants a
-/// lighter colour, a light ground a darker one — so one call covers a theme
-/// whose "dark" scheme is in fact light.
+/// Move `c` toward whichever pole `bg` is not — a dark ground wants a lighter
+/// colour, a light ground a darker one, so one call covers a theme whose
+/// "dark" scheme is in fact light — just far enough that it clears
+/// `min_contrast` against `bg`; `c` unchanged if it already does. Contrast
+/// rises monotonically as a colour nears the far pole (which always clears AA),
+/// so a bisection over the mix fraction finds the least mix that clears; 24
+/// steps land within 1/16-million of the ratio, far tighter than an 8-bit
+/// channel can represent.
 fn adjusted_for_contrast(c: Rgb, bg: Rgb, min_contrast: f64) -> Rgb {
-    if relative_luminance(bg) < 0.18 {
-        lightened_for_contrast(c, bg, min_contrast)
-    } else {
-        darkened_for_contrast(c, bg, min_contrast)
-    }
-}
-
-/// The smallest `t` in `[0, 1]` for which `mix(t)` clears `min_contrast`
-/// against `bg`, given that contrast rises monotonically with `t`; `c`
-/// itself when it already clears.
-fn least_mix_clearing(c: Rgb, bg: Rgb, min_contrast: f64, mix: impl Fn(f64) -> Rgb) -> Rgb {
     if contrast_ratio(c, bg) >= min_contrast {
         return c;
     }
+    let pole = if relative_luminance(bg) < 0.18 {
+        255.0
+    } else {
+        0.0
+    };
+    let mix = |t: f64| -> Rgb {
+        let ch = |v: u8| -> u8 { (f64::from(v) + (pole - f64::from(v)) * t).round() as u8 };
+        Rgb::new(ch(c.r), ch(c.g), ch(c.b))
+    };
     let (mut lo, mut hi) = (0.0f64, 1.0f64);
     for _ in 0..24 {
         let mid = (lo + hi) / 2.0;
