@@ -167,6 +167,11 @@ const NO_SCREEN: &[(&str, &str)] = &[
         "it redraws until you leave it, and it needs a running daemon to follow.",
     ),
     (
+        "board",
+        "it prints a URL and serves a browser page until you leave it, so there is no \
+         terminal screen to capture, and it needs a running daemon to follow.",
+    ),
+    (
         "sync",
         "it talks to a remote this machine has set up, which the demo store has none of.",
     ),

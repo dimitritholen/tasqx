@@ -102,6 +102,7 @@ help-why	pipe	100	-	why --help	-	-
 help-api	pipe	100	-	api --help	-	-
 help-daemon	pipe	100	-	daemon --help	-	-
 help-watch	pipe	100	-	watch --help	-	-
+help-board	pipe	100	-	board --help	-	-
 help-mcp	pipe	100	-	mcp --help	-	-
 help-docs	pipe	100	-	docs --help	-	-
 help-about	pipe	100	-	about --help	-	-

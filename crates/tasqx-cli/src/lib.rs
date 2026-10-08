@@ -16,6 +16,7 @@ mod about;
 pub mod ansi_html;
 mod argv;
 mod backend;
+mod board_page;
 mod chart;
 mod clock;
 pub mod cmddoc;
@@ -225,6 +226,10 @@ pub const JSON_CARVE_OUTS: &[(&str, &str)] = &[
     (
         "watch",
         "a live stream that re-renders until interrupted; it has no final result",
+    ),
+    (
+        "board",
+        "a web server: it prints a URL and serves a page until interrupted; it has no final result",
     ),
     (
         "manual",
@@ -777,6 +782,13 @@ fn execute(cli: Cli) -> Exit {
         return exit;
     }
 
+    // `board` is socket-only like `watch`: it serves a page until interrupted.
+    if let Some(Command::Board { port, no_open }) = &cli.command {
+        let exit = Exit::self_framed("board", cli.json);
+        run_board(cli.socket.as_deref(), cli.no_daemon, *port, *no_open, &ctx);
+        return exit;
+    }
+
     // `pick`'s TTY gate, HERE and not inside `run_pick`, because the ordering is
     // the property: `open_backend` a few lines down opens the store — and, if
     // there is none, CREATES and migrates one — for every command that reaches
@@ -1150,6 +1162,7 @@ fn execute(cli: Cli) -> Exit {
         Some(Command::Theme { .. }) => unreachable!("handled above"),
         Some(Command::Docs { .. }) => unreachable!("handled above"),
         Some(Command::Watch { .. }) => unreachable!("handled above"),
+        Some(Command::Board { .. }) => unreachable!("handled above"),
         Some(Command::Api) => unreachable!("handled above"),
         Some(Command::Daemon { .. }) => unreachable!("handled above"),
         Some(Command::Mcp { .. }) => unreachable!("handled above"),

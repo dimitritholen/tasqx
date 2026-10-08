@@ -675,8 +675,169 @@ pub(crate) fn mcp_stdio_loop(
     }
 }
 
+/// The board's secret: 32 random bytes as hex. With a fixed port it is kept in
+/// `board-token` beside `config.toml` (owner-only, 0600) and reused, so the URL
+/// a user bookmarked still works after a restart; with a free port it is new
+/// every run and never written.
+fn board_token(fixed_port: bool) -> Result<String, String> {
+    board_token_in(fixed_port, config::config_dir().as_deref())
+}
+
+fn board_token_in(fixed_port: bool, dir: Option<&std::path::Path>) -> Result<String, String> {
+    let path = fixed_port
+        .then(|| dir.map(|d| d.join("board-token")))
+        .flatten();
+    if let Some(p) = &path {
+        if let Ok(t) = std::fs::read_to_string(p) {
+            let t = t.trim();
+            if t.len() == 64 && t.bytes().all(|b| b.is_ascii_hexdigit()) {
+                return Ok(t.to_string());
+            }
+        }
+    }
+    let token = random_hex(32)?;
+    if let Some(p) = &path {
+        write_private(p, &token)
+            .map_err(|e| format!("cannot keep the token in {}: {e}", p.display()))?;
+    }
+    Ok(token)
+}
+
+fn random_hex(bytes: usize) -> Result<String, String> {
+    let mut buf = vec![0u8; bytes];
+    getrandom::fill(&mut buf).map_err(|e| format!("no randomness from the OS: {e}"))?;
+    Ok(buf.iter().map(|b| format!("{b:02x}")).collect())
+}
+
+/// Write `text` to `path`, readable by its owner alone from the first byte.
+fn write_private(path: &std::path::Path, text: &str) -> std::io::Result<()> {
+    use std::io::Write;
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    let mut opts = std::fs::OpenOptions::new();
+    opts.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+        opts.mode(0o600);
+        let mut f = opts.open(path)?;
+        // An older file keeps the mode it was created with.
+        f.set_permissions(std::fs::Permissions::from_mode(0o600))?;
+        f.write_all(text.as_bytes())
+    }
+    #[cfg(not(unix))]
+    {
+        opts.open(path)?.write_all(text.as_bytes())
+    }
+}
+
+/// `tasqx board`: bind 127.0.0.1, print the URL, open the browser, and serve
+/// until Ctrl-C. Needs a running daemon, like `watch`: the page is fed by its
+/// pushes and reads through it.
+pub(crate) fn run_board(
+    socket_flag: Option<&str>,
+    no_daemon: bool,
+    port_flag: Option<u16>,
+    no_open: bool,
+    ctx: &Ctx,
+) {
+    clock::refuse_to_serve_a_pin();
+    if no_daemon {
+        eprintln!("tasqx board: --no-daemon is set, but board requires a running daemon");
+        exit(1);
+    }
+    let socket = resolve_socket(socket_flag);
+    if daemon::try_connect(&socket).is_none() {
+        eprintln!("tasqx board: no daemon reachable at {socket}");
+        eprintln!("hint: start one with `tasqx daemon` (add `--socket {socket}` to match)");
+        exit(1);
+    }
+    let port = config_board_port(port_flag);
+    let made = board_token(port != 0).and_then(|token| Ok((token, random_hex(16)?)));
+    let (token, nonce) = match made {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!("tasqx board: {e}");
+            exit(1);
+        }
+    };
+    let page = board_page::page(&ctx.theme).replace(board_page::NONCE_SLOT, &nonce);
+    let shutdown = Arc::new(AtomicBool::new(false));
+    let board = match tasqx_core::board::Board::bind(
+        std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST),
+        port,
+        tasqx_core::board::BoardOptions {
+            socket: socket.clone(),
+            token,
+            nonce,
+            page,
+        },
+        shutdown.clone(),
+    ) {
+        Ok(b) => b,
+        Err(e) => {
+            eprintln!("tasqx board: cannot bind 127.0.0.1:{port}: {e}");
+            exit(1);
+        }
+    };
+    {
+        let sd = shutdown.clone();
+        if let Err(e) = ctrlc::set_handler(move || sd.store(true, Ordering::SeqCst)) {
+            eprintln!("tasqx board: could not install signal handler: {e}");
+        }
+    }
+    let url = board.url();
+    eprintln!(
+        "tasqx board: serving on 127.0.0.1:{} (Ctrl-C stops it)",
+        board.port()
+    );
+    println!("{url}");
+    if !no_open {
+        if let Err(e) = docs_open::open_in_browser(std::path::Path::new(&url)) {
+            eprintln!("tasqx board: could not open a browser ({e}); open the URL above");
+        }
+    }
+    board.serve();
+    eprintln!("tasqx board: stopped");
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_fixed_port_keeps_its_token_private_and_a_free_port_writes_none() {
+        let dir = std::env::temp_dir().join(format!("tasqx-pr637-token-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+
+        let free = board_token_in(false, Some(&dir)).unwrap();
+        assert_eq!(free.len(), 64);
+        assert!(
+            !dir.join("board-token").exists(),
+            "a free port persists nothing"
+        );
+        assert_ne!(
+            free,
+            board_token_in(false, Some(&dir)).unwrap(),
+            "new every run"
+        );
+
+        let first = board_token_in(true, Some(&dir)).unwrap();
+        assert_eq!(first, board_token_in(true, Some(&dir)).unwrap(), "reused");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(dir.join("board-token"))
+                .unwrap()
+                .permissions()
+                .mode();
+            assert_eq!(mode & 0o777, 0o600, "owner-only");
+        }
+        // A mangled file is replaced, not trusted.
+        std::fs::write(dir.join("board-token"), "short").unwrap();
+        assert_eq!(board_token_in(true, Some(&dir)).unwrap().len(), 64);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     use super::*;
     use crate::theme;
 

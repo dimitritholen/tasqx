@@ -273,6 +273,15 @@ pub(crate) fn config_otlp_port() -> u16 {
     })
 }
 
+/// `[board] port`, with `--port` over it: the port `tasqx board` binds, `0`
+/// meaning a free one.
+pub(crate) fn config_board_port(flag: Option<u16>) -> u16 {
+    let s = config::find("board.port").expect("board.port is a registered setting");
+    let flag = flag.map(|p| p.to_string());
+    let (v, _) = config::resolve(s, flag.as_deref(), config::toml_value(s).as_deref());
+    v.parse::<u16>().unwrap_or(0)
+}
+
 /// Read `[daemon] idle_timeout` from `config.toml` (D5): how long the daemon
 /// may sit with no clients and no work before it exits by itself.
 ///

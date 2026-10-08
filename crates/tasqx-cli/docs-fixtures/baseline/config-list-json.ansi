@@ -75,6 +75,14 @@
     {
       "default": "0",
       "home": "config.toml",
+      "key": "board.port",
+      "source": "default",
+      "summary": "TCP port `tasqx board` binds on 127.0.0.1; unset (0) takes a free port each run. A fixed port also keeps the board's token between runs, so a bookmark survives.",
+      "value": "0"
+    },
+    {
+      "default": "0",
+      "home": "config.toml",
       "key": "daemon.idle_timeout",
       "source": "default",
       "summary": "Minutes with no clients and no work after which `tasqx daemon` exits by itself; 0 stays up until Ctrl-C (D5).",
