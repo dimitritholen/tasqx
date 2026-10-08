@@ -118,6 +118,37 @@ export const GRAPH_CAPABILITIES: Capabilities = {
   },
 };
 
+/** `SCRIPTED_CAPABILITIES` plus the task writes the inspector offers (#694). */
+export const EDIT_CAPABILITIES: Capabilities = {
+  ...SCRIPTED_CAPABILITIES,
+  methods: [
+    ...SCRIPTED_CAPABILITIES.methods,
+    'task.add',
+    'task.modify',
+    'task.start',
+    'task.stop',
+    'task.done',
+    'task.reopen',
+    'check.add',
+    'check.set',
+    'dependency.add',
+    'annotation.add',
+  ],
+  params: {
+    ...SCRIPTED_CAPABILITIES.params,
+    'task.add': ['title', 'project', 'priority', 'due', 'tags'],
+    'task.modify': ['ref', 'set', 'expected_rev'],
+    'task.start': ['ref'],
+    'task.stop': ['ref'],
+    'task.done': ['ref'],
+    'task.reopen': ['ref'],
+    'check.add': ['ref', 'body'],
+    'check.set': ['ref', 'check_id', 'position', 'state', 'evidence'],
+    'dependency.add': ['ref', 'depends_on'],
+    'annotation.add': ['ref', 'body'],
+  },
+};
+
 export class ScriptedTransport extends FakeTransport {
   /** Every request, in the order it was written. `subscribe` is not one. */
   readonly calls: Call[] = [];

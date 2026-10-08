@@ -347,3 +347,75 @@
   font-size: var(--text-mono);
   text-align: center;
 }
+
+/* --- Task editing (#694) ------------------------------------------------ */
+.screen-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+}
+
+.task-editor,
+.new-task,
+.quick-add,
+.quick-adds {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.new-task {
+  max-width: 480px;
+  padding: var(--space-3);
+  border: var(--border-width) solid var(--color-border);
+  border-radius: var(--radius-panel);
+  background: var(--color-panel);
+}
+
+.quick-add {
+  gap: var(--space-1);
+}
+
+.edit-buttons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
+.edit-notice {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  border: var(--border-width) solid var(--color-warning);
+  border-radius: var(--radius-control);
+  background: var(--color-elevated);
+}
+
+.compare-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--text-secondary);
+}
+
+.compare-table th,
+.compare-table td {
+  padding: var(--space-1) var(--space-2);
+  border-bottom: var(--border-width) solid var(--color-border);
+  text-align: left;
+  overflow-wrap: anywhere;
+}
+
+.compare-table thead th {
+  color: var(--color-muted);
+  font-weight: normal;
+}
+
+.compare-clash th {
+  color: var(--color-danger);
+}
+
+button.check-glyph:enabled {
+  cursor: pointer;
+}
