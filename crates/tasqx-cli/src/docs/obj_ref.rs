@@ -37,6 +37,7 @@ use super::{
 };
 use crate::html::esc;
 use tasqx_core::docs::{self as d, FieldDoc};
+use tasqx_core::urgency::{AGE_CAP, AGE_PER_DAY, DUE_RAMP_DAYS, PRIORITY_TERMS};
 
 /// One object page.
 pub(super) struct Object {
@@ -618,21 +619,6 @@ fn task_lifecycle() -> String {
            <code>force</code> records the override (D150)."),
     )
 }
-
-/// The priority term per priority, as `urgency::breakdown_at` scores it. The
-/// page prints these, and a test holds them to the engine.
-const PRIORITY_TERMS: [(&str, Option<tasqx_core::Priority>, f64); 4] = [
-    ("H", Some(tasqx_core::Priority::H), 6.0),
-    ("M", Some(tasqx_core::Priority::M), 3.9),
-    ("L", Some(tasqx_core::Priority::L), 1.8),
-    ("none", None, 0.0),
-];
-
-/// Days of lead time the due term ramps over, and the age term's per-day rate
-/// and ceiling. Printed on the page; a test holds them to the engine.
-const DUE_RAMP_DAYS: f64 = 14.0;
-const AGE_PER_DAY: f64 = 0.01;
-const AGE_CAP: f64 = 1.0;
 
 fn task_urgency() -> String {
     let prio: Vec<String> = PRIORITY_TERMS
