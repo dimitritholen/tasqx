@@ -30,7 +30,7 @@ identical code. There is exactly one dispatch table.
 Adding, modifying, completing — each writes its row to an append-only `events`
 table inside the *same* SQLite transaction as the change itself. The log cannot
 drift from the data, because there is no window in which one exists without the
-other. That is what makes [charts](themes.md), [reminder dedupe](reminders.md),
+other. That is what makes [charts](Reports-and-Charts.md#tasqx-chart), [reminder dedupe](Dates-Reminders-and-Recurrence.md#it-fires-exactly-once),
 and a future sync possible without a migration.
 
 ## Where your data lives
@@ -40,7 +40,7 @@ and a future sync possible without a migration.
 | Store | `$TASQX_DB` if set, else the platform data dir: `%APPDATA%\tasqx\tasqx\data\tasks.db` on Windows (the doubled segment is what the `directories` crate produces from organization + application), `~/.local/share/tasqx/tasks.db` on Linux, `~/Library/Application Support/dev.tasqx.tasqx/tasks.db` on macOS |
 | Config | `$TASQX_CONFIG_DIR/config.toml`, else the platform config dir |
 | Themes | `$TASQX_CONFIG_DIR/themes/*.toml` |
-| Socket | `$TASQX_SOCK`, else a platform default (see [Daemon](daemon.md)) |
+| Socket | `$TASQX_SOCK`, else a platform default (see [Daemon](Dashboard-and-Live-View.md#socket-addresses)) |
 
 > **Note** Point `$TASQX_DB` at a scratch file to try anything in this guide
 > without touching your real store. Every example below was run exactly that

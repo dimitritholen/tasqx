@@ -4,6 +4,10 @@ Settings live in a TOML file, but you never have to hand-edit it — every read
 and write goes through a command, and there's a full-screen editor with live
 theme preview.
 
+Default output should be something you want to look at. Themes drive the
+terminal and the HTML report from the same palette, and degrade honestly when
+the terminal cannot keep up.
+
 ## tasqx config
 
 | Command | What it does |
@@ -44,3 +48,53 @@ file you drop in yourself. A one-off try is
 
 Output degrades cleanly from truecolor terminals down to terminals with no
 color at all, so themes are a nicety, never a requirement.
+
+### Themes
+
+Five built-ins. Resolution order: `--theme`, `$TASQX_THEME`, `config.toml`,
+default.
+
+```console
+$ tasqx theme list
+  THEME
+* nord
+  gruvbox
+  dracula
+  solarized
+  mono
+```
+
+The `*` marks the theme in effect. `tasqx theme show [name]` previews every
+role, a sample drawn in it beside its colour and emphasis, plus the urgency
+ramp's bands, rendered at your terminal's *real* capability. Set one
+permanently:
+
+```
+# config.toml
+[theme]
+name = "gruvbox"
+```
+
+Drop a `.toml` in `$TASQX_CONFIG_DIR/themes/` and it appears in `theme list`
+alongside the built-ins.
+
+> **Note** Capability is detected, not assumed. Pipe tasqx into `cat` and the
+> colour goes away; on a terminal without Unicode the block glyphs degrade to
+> ASCII rather than emitting mojibake. `mono` is there for when you want that
+> unconditionally.
+
+> **Note** Width is detected too. `tasqx list` sizes its columns to what is
+> actually in them and to the terminal it is printing into: a column no task
+> fills — `DUE` on a store with no due dates — is not drawn at all, and the
+> space goes to the titles. Through a pipe there is no width to detect, so the
+> table lays out for a fixed 100 columns and two runs of the same store stay
+> diffable.
+
+Four environment variables override the detection:
+
+| Variable | Effect |
+|---|---|
+| `NO_COLOR` | Set to anything: drop all colour, keep bold/underline. Wins over everything below. |
+| `CLICOLOR_FORCE` | Set to anything but `0`: force colour even through a pipe — for `less -R` and CI logs. |
+| `TASQX_FORCE_COLOR` | Set to anything: same as `CLICOLOR_FORCE`, scoped to tasqx. |
+| `COLUMNS` | How many columns wide to lay tables out. Beats both the terminal's own answer and the piped default — for a multiplexer that misreports its size, or to pin the width of captured output. Clamped to 40–160. |

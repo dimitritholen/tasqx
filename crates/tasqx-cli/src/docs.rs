@@ -3152,10 +3152,10 @@ mod tests {
     fn reports_section_states_which_statuses_count() {
         let doc = generate();
         let reports = doc
-            .split(&h3("Reports"))
+            .split("<span id=\"h-reports\"></span>")
             .nth(1)
             .expect("a Reports section")
-            .split("<h3")
+            .split("<h")
             .next()
             .unwrap();
         assert!(
@@ -4553,5 +4553,112 @@ mod tests {
             .split_once("@media (max-width: 40rem) {")
             .expect("no figure breakpoint");
         assert!(narrow.contains(".scrollhint { display: block;"));
+    }
+
+    /// One sidebar entry per topic (#699). The hand-written site pages and the
+    /// wiki once covered the same topics side by side under "Using tasqx", so
+    /// a reader could not tell which to open. Two labels in one section that
+    /// share a significant word are two entries for one topic.
+    ///
+    /// Scoped to `using`, where the two sets met. The Guides section reuses
+    /// "agent" across three guides that are about different things.
+    #[test]
+    fn no_two_using_pages_share_a_topic_word() {
+        const FILLER: [&str; 12] = [
+            "and", "the", "a", "an", "of", "on", "in", "with", "to", "for", "tasqx", "tasks",
+        ];
+        let mut seen: Vec<(String, String)> = Vec::new();
+        for pg in PAGES.iter().filter(|p| p.section == "using") {
+            let label = pg.label.replace("&amp;", " ").to_ascii_lowercase();
+            let words: std::collections::BTreeSet<&str> = label
+                .split(|c: char| !c.is_ascii_alphanumeric())
+                .filter(|w| !w.is_empty() && !FILLER.contains(w))
+                .collect();
+            for w in words {
+                if let Some((_, other)) = seen.iter().find(|(sw, _)| sw == w) {
+                    panic!(
+                        "`{}` and `{other}` both list `{w}` under Using tasqx — one topic, one page",
+                        pg.id
+                    );
+                }
+                seen.push((w.to_string(), pg.id.clone()));
+            }
+        }
+    }
+
+    /// Every id the five merged site pages ever shipped still resolves
+    /// (#699): the page ids to the page that absorbed them, and the `#h-…`
+    /// heading ids D226 froze to a heading somewhere on a page. The list is
+    /// typed here, not read from the tables that implement it, so deleting an
+    /// alias from them fails this instead of agreeing with itself.
+    #[test]
+    fn the_ids_of_the_merged_site_pages_still_resolve() {
+        const PAGE_IDS: [(&str, &str); 5] = [
+            ("scheduling", "wiki-dates-reminders-and-recurrence"),
+            ("reminders", "wiki-dates-reminders-and-recurrence"),
+            ("daemon", "wiki-dashboard-and-live-view"),
+            ("data", "wiki-import-and-export"),
+            ("themes", "wiki-settings-and-themes"),
+        ];
+        const HEADING_IDS: [&str; 28] = [
+            "h-the-four-date-fields",
+            "h-what-you-can-write",
+            "h-the-rules-that-resolve-ambiguity",
+            "h-a-leading-hyphen-needs-no-escaping",
+            "h-estimates",
+            "h-recurrence",
+            "h-missed-occurrences-collapse",
+            "h-month-end--precisely",
+            "h-the-two-forms",
+            "h-who-delivers-them",
+            "h-it-fires-exactly-once",
+            "h-delivery-never-fails",
+            "h-firing-one-by-hand",
+            "h-one-shot-or-daemon-",
+            "h-socket-addresses",
+            "h-running-it",
+            "h-watch",
+            "h-export",
+            "h-filtered-exports-and-dependency-edges",
+            "h-what-a-document-carries",
+            "h-import",
+            "h-a-field-the-schema-does-not-name-is-rejected",
+            "h-a-dangling-edge-is-rejected--not-repaired",
+            "h-recipes",
+            "h-themes",
+            "h-reports",
+            "h-charts",
+            "h-the-html-report",
+        ];
+        let doc = generate();
+        let page_of = |id: &str| -> String {
+            let at = doc
+                .find(&format!(" id=\"{id}\""))
+                .unwrap_or_else(|| panic!("no element carries the frozen id `{id}`"));
+            assert_eq!(
+                doc.matches(&format!(" id=\"{id}\"")).count(),
+                1,
+                "the frozen id `{id}` is on more than one element"
+            );
+            let before = &doc[..at];
+            let from = before
+                .rfind("<section class=\"page\" id=\"")
+                .expect("an id outside any page");
+            before[from + 26..]
+                .split('"')
+                .next()
+                .expect("a page id")
+                .to_string()
+        };
+        for (old, new) in PAGE_IDS {
+            assert_eq!(page_of(old), new, "`#{old}` no longer opens `{new}`");
+            assert!(
+                !PAGES.iter().any(|p| p.id == old),
+                "`{old}` is back in the sidebar beside the page that absorbed it"
+            );
+        }
+        for id in HEADING_IDS {
+            page_of(id);
+        }
     }
 }

@@ -301,11 +301,6 @@ body:not(:has(main :target)) nav a[data-page="overview"],
 body:has(#overview:target, #overview :target) nav a[data-page="overview"],
 body:has(#install:target, #install :target) nav a[data-page="install"],
 body:has(#filters:target, #filters :target) nav a[data-page="filters"],
-body:has(#scheduling:target, #scheduling :target) nav a[data-page="scheduling"],
-body:has(#reminders:target, #reminders :target) nav a[data-page="reminders"],
-body:has(#daemon:target, #daemon :target) nav a[data-page="daemon"],
-body:has(#data:target, #data :target) nav a[data-page="data"],
-body:has(#themes:target, #themes :target) nav a[data-page="themes"],
 body:has(#wiki-getting-started:target, #wiki-getting-started :target) nav a[data-page="wiki-getting-started"],
 body:has(#wiki-projects:target, #wiki-projects :target) nav a[data-page="wiki-projects"],
 body:has(#wiki-adding-and-editing-tasks:target, #wiki-adding-and-editing-tasks :target) nav a[data-page="wiki-adding-and-editing-tasks"],
@@ -357,7 +352,7 @@ pre.json { max-height: 26rem; overflow: auto; white-space: pre; }
 </style>
 </head>
 <body>
-<header class="top"><button id="navtoggle" type="button" aria-label="Toggle navigation" aria-expanded="false">Menu</button><div class="brand">tasqx <span class="muted">user guide</span></div><div class="ver muted">v0.15.0</div></header><div class="shell"><nav id="nav" aria-label="Guide"><div class="navsearch"><input id="navq" type="search" autocomplete="off" placeholder="Search the guide" aria-label="Search the guide"></div><div id="navhits" class="navhits" hidden></div><div id="navtree"><div class="navsec" data-section="get-started"><div class="navsec-h">Get started</div><a href="#overview" data-page="overview">Overview</a><a href="#install" data-page="install">Install &amp; quickstart</a></div><div class="navsec" data-section="using"><div class="navsec-h">Using tasqx</div><a href="#filters" data-page="filters">Filter grammar</a><a href="#scheduling" data-page="scheduling">Scheduling &amp; recurrence</a><a href="#reminders" data-page="reminders">Reminders</a><a href="#daemon" data-page="daemon">Daemon &amp; watch</a><a href="#data" data-page="data">Export &amp; import</a><a href="#themes" data-page="themes">Themes &amp; reports</a><a href="#wiki-getting-started" data-page="wiki-getting-started">Getting Started</a><a href="#wiki-projects" data-page="wiki-projects">Projects</a><a href="#wiki-adding-and-editing-tasks" data-page="wiki-adding-and-editing-tasks">Adding and Editing Tasks</a><a href="#wiki-finding-tasks" data-page="wiki-finding-tasks">Finding Tasks</a><a href="#wiki-working-on-tasks" data-page="wiki-working-on-tasks">Working on Tasks</a><a href="#wiki-dependencies" data-page="wiki-dependencies">Dependencies</a><a href="#wiki-dates-reminders-and-recurrence" data-page="wiki-dates-reminders-and-recurrence">Dates, Reminders and Recurrence</a><a href="#wiki-dashboard-and-live-view" data-page="wiki-dashboard-and-live-view">Dashboard and Live View</a><a href="#wiki-reports-and-charts" data-page="wiki-reports-and-charts">Reports and Charts</a><a href="#wiki-memory" data-page="wiki-memory">Memory</a><a href="#wiki-ai-agents-and-automation" data-page="wiki-ai-agents-and-automation">AI Agents and Automation</a><a href="#wiki-import-and-export" data-page="wiki-import-and-export">Import and Export</a><a href="#wiki-settings-and-themes" data-page="wiki-settings-and-themes">Settings and Themes</a><a href="#wiki-shell-completion" data-page="wiki-shell-completion">Shell Completion</a></div><div class="navsec" data-section="guides"><div class="navsec-h">Guides</div><a href="#guide-feature-development" data-page="guide-feature-development">Feature development with tasqx</a><a href="#guide-personal-gtd" data-page="guide-personal-gtd">Personal task management with tasqx</a><a href="#guide-standup-reporting" data-page="guide-standup-reporting">Standups, reviews and reports</a><a href="#guide-ai-agent-workflow" data-page="guide-ai-agent-workflow">Driving tasqx from an AI agent</a><a href="#guide-agent-starter-prompt" data-page="guide-agent-starter-prompt">Giving an agent memory in any client</a><a href="#guide-self-improving-agent" data-page="guide-self-improving-agent">A self-improving agent: a session-end retrospective</a><a href="#guide-token-accounting" data-page="guide-token-accounting">Counting AI token spend per task</a></div><div class="navsec" data-section="ref-cli"><div class="navsec-h">Reference: CLI</div><a href="#commands" data-page="commands">Commands</a></div><div class="navsec" data-section="ref-api"><div class="navsec-h">Reference: JSON API</div><a href="#api" data-page="api">JSON API</a></div><div class="navsec" data-section="ref-mcp"><div class="navsec-h">Reference: MCP</div><a href="#mcp" data-page="mcp">MCP</a></div><div class="navsec" data-section="objects"><div class="navsec-h">Objects</div><a href="#obj-task" data-page="obj-task">Task</a><a href="#obj-project" data-page="obj-project">Project</a><a href="#obj-annotation" data-page="obj-annotation">Annotation</a><a href="#obj-check" data-page="obj-check">Check</a><a href="#obj-dependency" data-page="obj-dependency">Dependency</a><a href="#obj-memory" data-page="obj-memory">Memory document</a><a href="#obj-link" data-page="obj-link">Link</a><a href="#obj-graph" data-page="obj-graph">Graph</a><a href="#obj-event" data-page="obj-event">Event</a><a href="#obj-measurement" data-page="obj-measurement">Token measurement</a></div></div></nav><main><section class="page" id="overview"><h2>What tasqx is</h2><p class="lead">tasqx is the organiser for your AI: a backlog, a memory and a brief for your
+<header class="top"><button id="navtoggle" type="button" aria-label="Toggle navigation" aria-expanded="false">Menu</button><div class="brand">tasqx <span class="muted">user guide</span></div><div class="ver muted">v0.15.0</div></header><div class="shell"><nav id="nav" aria-label="Guide"><div class="navsearch"><input id="navq" type="search" autocomplete="off" placeholder="Search the guide" aria-label="Search the guide"></div><div id="navhits" class="navhits" hidden></div><div id="navtree"><div class="navsec" data-section="get-started"><div class="navsec-h">Get started</div><a href="#overview" data-page="overview">Overview</a><a href="#install" data-page="install">Install &amp; quickstart</a></div><div class="navsec" data-section="using"><div class="navsec-h">Using tasqx</div><a href="#filters" data-page="filters">Filter grammar</a><a href="#wiki-getting-started" data-page="wiki-getting-started">Getting Started</a><a href="#wiki-projects" data-page="wiki-projects">Projects</a><a href="#wiki-adding-and-editing-tasks" data-page="wiki-adding-and-editing-tasks">Adding and Editing Tasks</a><a href="#wiki-finding-tasks" data-page="wiki-finding-tasks">Finding Tasks</a><a href="#wiki-working-on-tasks" data-page="wiki-working-on-tasks">Working on Tasks</a><a href="#wiki-dependencies" data-page="wiki-dependencies">Dependencies</a><a href="#wiki-dates-reminders-and-recurrence" data-page="wiki-dates-reminders-and-recurrence">Dates, Reminders and Recurrence</a><a href="#wiki-dashboard-and-live-view" data-page="wiki-dashboard-and-live-view">Dashboard and Live View</a><a href="#wiki-reports-and-charts" data-page="wiki-reports-and-charts">Reports and Charts</a><a href="#wiki-memory" data-page="wiki-memory">Memory</a><a href="#wiki-ai-agents-and-automation" data-page="wiki-ai-agents-and-automation">AI Agents and Automation</a><a href="#wiki-import-and-export" data-page="wiki-import-and-export">Import and Export</a><a href="#wiki-settings-and-themes" data-page="wiki-settings-and-themes">Settings and Themes</a><a href="#wiki-shell-completion" data-page="wiki-shell-completion">Shell Completion</a></div><div class="navsec" data-section="guides"><div class="navsec-h">Guides</div><a href="#guide-feature-development" data-page="guide-feature-development">Feature development with tasqx</a><a href="#guide-personal-gtd" data-page="guide-personal-gtd">Personal task management with tasqx</a><a href="#guide-standup-reporting" data-page="guide-standup-reporting">Standups, reviews and reports</a><a href="#guide-ai-agent-workflow" data-page="guide-ai-agent-workflow">Driving tasqx from an AI agent</a><a href="#guide-agent-starter-prompt" data-page="guide-agent-starter-prompt">Giving an agent memory in any client</a><a href="#guide-self-improving-agent" data-page="guide-self-improving-agent">A self-improving agent: a session-end retrospective</a><a href="#guide-token-accounting" data-page="guide-token-accounting">Counting AI token spend per task</a></div><div class="navsec" data-section="ref-cli"><div class="navsec-h">Reference: CLI</div><a href="#commands" data-page="commands">Commands</a></div><div class="navsec" data-section="ref-api"><div class="navsec-h">Reference: JSON API</div><a href="#api" data-page="api">JSON API</a></div><div class="navsec" data-section="ref-mcp"><div class="navsec-h">Reference: MCP</div><a href="#mcp" data-page="mcp">MCP</a></div><div class="navsec" data-section="objects"><div class="navsec-h">Objects</div><a href="#obj-task" data-page="obj-task">Task</a><a href="#obj-project" data-page="obj-project">Project</a><a href="#obj-annotation" data-page="obj-annotation">Annotation</a><a href="#obj-check" data-page="obj-check">Check</a><a href="#obj-dependency" data-page="obj-dependency">Dependency</a><a href="#obj-memory" data-page="obj-memory">Memory document</a><a href="#obj-link" data-page="obj-link">Link</a><a href="#obj-graph" data-page="obj-graph">Graph</a><a href="#obj-event" data-page="obj-event">Event</a><a href="#obj-measurement" data-page="obj-measurement">Token measurement</a></div></div></nav><main><section class="page" id="overview"><h2>What tasqx is</h2><p class="lead">tasqx is the organiser for your AI: a backlog, a memory and a brief for your
 coding agent, and a fast, terminal-first task manager for you. It is a headless
 Rust core engine that exposes one stable, versioned JSON API — and every surface
 you touch (the CLI, the MCP server, the HTML report, this guide) is a client of
@@ -409,13 +404,13 @@ identical code. There is exactly one dispatch table.</p>
 <p>Adding, modifying, completing — each writes its row to an append-only <code>events</code>
 table inside the <em>same</em> SQLite transaction as the change itself. The log cannot
 drift from the data, because there is no window in which one exists without the
-other. That is what makes <a href="#themes">charts</a>, <a href="#reminders">reminder dedupe</a>,
+other. That is what makes <a href="#wiki-reports-and-charts--tasqx-chart">charts</a>, <a href="#wiki-dates-reminders-and-recurrence--it-fires-exactly-once">reminder dedupe</a>,
 and a future sync possible without a migration.</p>
 <h3 id="h-where-your-data-lives">Where your data lives</h3><div class="tw"><table class="grid"><thead><tr><th id="overview-tbl1-h0">What</th><th id="overview-tbl1-h1">Where</th></tr></thead><tbody>
 <tr><td data-label="What" headers="overview-tbl1-h0">Store</td><td data-label="Where" headers="overview-tbl1-h1"><code>$TASQX_DB</code> if set, else the platform data dir: <code>%APPDATA%\tasqx\tasqx\data\tasks.db</code> on Windows (the doubled segment is what the <code>directories</code> crate produces from organization + application), <code>~/.local/share/tasqx/tasks.db</code> on Linux, <code>~/Library/Application Support/dev.tasqx.tasqx/tasks.db</code> on macOS</td></tr>
 <tr><td data-label="What" headers="overview-tbl1-h0">Config</td><td data-label="Where" headers="overview-tbl1-h1"><code>$TASQX_CONFIG_DIR/config.toml</code>, else the platform config dir</td></tr>
 <tr><td data-label="What" headers="overview-tbl1-h0">Themes</td><td data-label="Where" headers="overview-tbl1-h1"><code>$TASQX_CONFIG_DIR/themes/*.toml</code></td></tr>
-<tr><td data-label="What" headers="overview-tbl1-h0">Socket</td><td data-label="Where" headers="overview-tbl1-h1"><code>$TASQX_SOCK</code>, else a platform default (see <a href="#daemon">Daemon</a>)</td></tr>
+<tr><td data-label="What" headers="overview-tbl1-h0">Socket</td><td data-label="Where" headers="overview-tbl1-h1"><code>$TASQX_SOCK</code>, else a platform default (see <a href="#wiki-dashboard-and-live-view--socket-addresses">Daemon</a>)</td></tr>
 </tbody></table></div><div class="callout note"><span class="tag">Note</span>
 <p>Point <code>$TASQX_DB</code> at a scratch file to try anything in this guide
 without touching your real store. Every example below was run exactly that
@@ -512,8 +507,8 @@ tasqx done 1</code></pre><pre class="out"><code>▌ #1  Ship the v1 JSON API fre
 ▌ done today   work.tasqx   due Fri   +api +release   est 4h</code></pre></div><h3 id="h-where-to-go-next">Where to go next</h3><div class="tw"><table class="grid"><thead><tr><th id="install-tbl0-h0">If you want to…</th><th id="install-tbl0-h1">Read</th></tr></thead><tbody>
 <tr><td data-label="If you want to…" headers="install-tbl0-h0">Know every verb and flag</td><td data-label="Read" headers="install-tbl0-h1"><a href="#commands">Commands</a></td></tr>
 <tr><td data-label="If you want to…" headers="install-tbl0-h0">Ask precise questions of your store</td><td data-label="Read" headers="install-tbl0-h1"><a href="#filters">Filter grammar</a></td></tr>
-<tr><td data-label="If you want to…" headers="install-tbl0-h0">Say "friday" or "every 3 days"</td><td data-label="Read" headers="install-tbl0-h1"><a href="#scheduling">Scheduling &amp; recurrence</a></td></tr>
-<tr><td data-label="If you want to…" headers="install-tbl0-h0">Be told about a task before it is late</td><td data-label="Read" headers="install-tbl0-h1"><a href="#reminders">Reminders</a></td></tr>
+<tr><td data-label="If you want to…" headers="install-tbl0-h0">Say "friday" or "every 3 days"</td><td data-label="Read" headers="install-tbl0-h1"><a href="#wiki-dates-reminders-and-recurrence">Dates &amp; recurrence</a></td></tr>
+<tr><td data-label="If you want to…" headers="install-tbl0-h0">Be told about a task before it is late</td><td data-label="Read" headers="install-tbl0-h1"><a href="#wiki-dates-reminders-and-recurrence--reminders">Reminders</a></td></tr>
 <tr><td data-label="If you want to…" headers="install-tbl0-h0">Give an AI agent access</td><td data-label="Read" headers="install-tbl0-h1"><a href="#mcp">MCP</a></td></tr>
 <tr><td data-label="If you want to…" headers="install-tbl0-h0">Script tasqx from another language</td><td data-label="Read" headers="install-tbl0-h1"><a href="#api">JSON API</a></td></tr>
 </tbody></table></div><div class="pagenav"><a class="prev" href="#overview"><span class="pn-k">Previous</span><span class="pn-l">Overview</span></a><a class="next" href="#filters"><span class="pn-k">Next</span><span class="pn-l">Filter grammar</span></a></div></section><section class="page" id="filters"><h2>The filter grammar</h2><p class="lead">One small grammar, used everywhere a query is taken: <code>list</code>, <code>report</code>, <code>export</code>,
@@ -603,438 +598,9 @@ are made at runtime, so an unknown one simply matches no row.</p>
 </div><h3 id="h-where-the-grammar-stops">Where the grammar stops</h3>
 <p>On purpose, and permanently: no arithmetic, no computed expressions, no
 subqueries. A filter language that grows those becomes a query language nobody
-can predict. For anything beyond this, <a href="#data">export</a> to JSON and use a real
+can predict. For anything beyond this, <a href="#wiki-import-and-export">export</a> to JSON and use a real
 tool — <code>jq</code>, a script, whatever you like. The store is yours.</p>
-<div class="pagenav"><a class="prev" href="#install"><span class="pn-k">Previous</span><span class="pn-l">Install &amp; quickstart</span></a><a class="next" href="#scheduling"><span class="pn-k">Next</span><span class="pn-l">Scheduling &amp; recurrence</span></a></div></section><section class="page" id="scheduling"><h2>Dates and recurrence</h2><p class="lead">Every date field — <code>due</code>, <code>scheduled</code>, <code>wait</code> — takes the same natural-language
-grammar, through the flag or through the sugar. It resolves to RFC3339 at the
-moment you type it, and everything is <strong>UTC</strong>: a bare DATE resolves to midnight
-UTC, and a TIME with no offset of its own is a UTC clock — <code>due:17:00</code> means
-17:00 UTC whatever zone the machine is set to, and every screen prints it back
-as 17:00. Write an offset (<code>2026-07-20T17:00:00+02:00</code>) to mean another zone's
-clock.</p><h3 id="h-the-four-date-fields">The four date fields</h3><div class="tw"><table class="grid"><thead><tr><th id="scheduling-tbl0-h0">Field</th><th id="scheduling-tbl0-h1">Means</th></tr></thead><tbody>
-<tr><td data-label="Field" headers="scheduling-tbl0-h0"><code>due</code></td><td data-label="Means" headers="scheduling-tbl0-h1">The deadline. Drives urgency and is the anchor for relative reminders.</td></tr>
-<tr><td data-label="Field" headers="scheduling-tbl0-h0"><code>scheduled</code></td><td data-label="Means" headers="scheduling-tbl0-h1">When you intend to start. Not informational: a date still ahead holds the task in <code>backlog</code>, out of the <code>@working</code> set, until it passes.</td></tr>
-<tr><td data-label="Field" headers="scheduling-tbl0-h0"><code>wait</code></td><td data-label="Means" headers="scheduling-tbl0-h1">Hide this task until then — it stays out of the working set.</td></tr>
-<tr><td data-label="Field" headers="scheduling-tbl0-h0"><code>estimate</code></td><td data-label="Means" headers="scheduling-tbl0-h1">Not a date: an effort duration, totalled by <code>report</code>.</td></tr>
-</tbody></table></div><h3 id="h-what-you-can-write">What you can write</h3><div class="tw"><table class="grid"><thead><tr><th id="scheduling-tbl1-h0">Form</th><th id="scheduling-tbl1-h1">Examples</th></tr></thead><tbody>
-<tr><td data-label="Form" headers="scheduling-tbl1-h0">Absolute</td><td data-label="Examples" headers="scheduling-tbl1-h1"><code>2026-07-20</code>, <code>2026-07-20T17:00</code>, <code>"2026-07-20 17:00"</code>, any RFC3339</td></tr>
-<tr><td data-label="Form" headers="scheduling-tbl1-h0">Relative words</td><td data-label="Examples" headers="scheduling-tbl1-h1"><code>today</code>, <code>tomorrow</code>, <code>yesterday</code>, <code>now</code></td></tr>
-<tr><td data-label="Form" headers="scheduling-tbl1-h0">Weekdays</td><td data-label="Examples" headers="scheduling-tbl1-h1"><code>monday</code>…<code>sunday</code>, <code>mon</code>…<code>sun</code> — the next one after today. <code>"next friday"</code> is that day in the following Monday-to-Sunday week, <code>"next week"</code> that week's Monday; <code>this</code>/<code>last</code> are refused rather than guessed</td></tr>
-<tr><td data-label="Form" headers="scheduling-tbl1-h0">Long offsets</td><td data-label="Examples" headers="scheduling-tbl1-h1"><code>"in 3 days"</code>, <code>"in 2 weeks"</code>, <code>"in 1 month"</code></td></tr>
-<tr><td data-label="Form" headers="scheduling-tbl1-h0">Short offsets</td><td data-label="Examples" headers="scheduling-tbl1-h1"><code>3d</code>, <code>2w</code>, <code>1mo</code>, <code>1y</code> — signed: <code>+3d</code>, <code>-1d</code></td></tr>
-<tr><td data-label="Form" headers="scheduling-tbl1-h0">Boundaries</td><td data-label="Examples" headers="scheduling-tbl1-h1"><code>eom</code> / <code>"end of month"</code>, <code>eow</code> / <code>"end of week"</code> (ISO week ends Sunday)</td></tr>
-<tr><td data-label="Form" headers="scheduling-tbl1-h0">Trailing time</td><td data-label="Examples" headers="scheduling-tbl1-h1"><code>"friday 17:00"</code>, <code>"tomorrow 9am"</code>, <code>"monday 5pm"</code></td></tr>
-<tr><td data-label="Form" headers="scheduling-tbl1-h0">Leading filler</td><td data-label="Examples" headers="scheduling-tbl1-h1"><code>"at 6pm"</code>, <code>"on friday"</code>, <code>"by monday 5pm"</code> — <code>at</code>/<code>on</code>/<code>by</code>/<code>@</code> are ignored</td></tr>
-</tbody></table></div><h3 id="h-the-rules-that-resolve-ambiguity">The rules that resolve ambiguity</h3><div class="tw"><table class="grid"><thead><tr><th id="scheduling-tbl2-h0">Situation</th><th id="scheduling-tbl2-h1">Resolution</th></tr></thead><tbody>
-<tr><td data-label="Situation" headers="scheduling-tbl2-h0">A date with no time</td><td data-label="Resolution" headers="scheduling-tbl2-h1">00:00:00 UTC — the start of that day, whatever your zone.</td></tr>
-<tr><td data-label="Situation" headers="scheduling-tbl2-h0">A bare time (<code>9am</code>)</td><td data-label="Resolution" headers="scheduling-tbl2-h1">09:00 UTC today, or tomorrow if that UTC time already passed.</td></tr>
-<tr><td data-label="Situation" headers="scheduling-tbl2-h0">A weekday that <em>is</em> today</td><td data-label="Resolution" headers="scheduling-tbl2-h1">The next one — seven days out, not zero.</td></tr>
-<tr><td data-label="Situation" headers="scheduling-tbl2-h0">A naive date <em>with</em> a time</td><td data-label="Resolution" headers="scheduling-tbl2-h1">A UTC clock, whatever your zone. An explicit offset (<code>+02:00</code>) is honoured and converted to UTC instead.</td></tr>
-<tr><td data-label="Situation" headers="scheduling-tbl2-h0">The literal <code>now</code></td><td data-label="Resolution" headers="scheduling-tbl2-h1">This exact instant — not midnight, unlike every other keyword here. It is what <code>due.before:now</code> means, so it can find a task due earlier today.</td></tr>
-</tbody></table></div><div class="callout warn"><span class="tag">Careful</span>
-<p>Short offsets carry <strong>day</strong>-and-larger units only: <code>d</code>, <code>w</code>,
-<code>mo</code>, <code>y</code>. <code>-2h</code> is not a date — it is a reminder offset, and a different
-grammar. Feeding it to <code>--due</code> is a clean error, not a guess:</p>
-</div><div class="snip"><div class="snip-h"><span class="dollar">$</span><button class="copy" type="button">Copy</button></div><pre class="cmd"><code>tasqx add &quot;Overdue ping&quot; --due -2h</code></pre><pre class="out"><code>error [bad_request]: could not parse date: &quot;-2h&quot; (try e.g. tomorrow, friday, 2026-07-20, &quot;in 3 days&quot; (day/week/month/year offsets only, no hours/minutes), eom, or 2026-07-20T17:00)</code></pre></div><h3 id="h-a-leading-hyphen-needs-no-escaping">A leading hyphen needs no escaping</h3>
-<p><code>--due -1d</code> works. It looks like it should trip the argument parser into reading
-<code>-1d</code> as a flag — every date-taking flag opts out of that explicitly, so a
-signed offset is always a value:</p>
-<div class="snip"><div class="snip-h"><span class="dollar">$</span><button class="copy" type="button">Copy</button></div><pre class="cmd"><code>tasqx add &quot;Renew the TLS cert&quot; project:work.tasqx +ops --due -1d</code></pre><pre class="out"><code>▌ #3  Renew the TLS cert
-▌ added   - ▄▄▄▄ 12.0   work.tasqx   due yesterday   +ops</code></pre></div><h3 id="h-estimates">Estimates</h3>
-<p>Human durations, parsed at the edge and stored as ISO-8601 so <code>report</code> can total
-them. <code>4h</code>, <code>90m</code>, <code>1h30m</code>, <code>2d</code>, <code>1w</code>, or ISO <code>PT4H</code> directly.</p>
-<div class="snip"><div class="snip-h"><span class="dollar">$</span><button class="copy" type="button">Copy</button></div><pre class="cmd"><code>tasqx add &quot;Nail down the schema&quot; est:soon</code></pre><pre class="out"><code>error [bad_request]: could not parse duration: &quot;soon&quot; (try e.g. 4h, 90m, 1h30m, 2d, 1w, or ISO PT4H)</code></pre></div><h3 id="h-recurrence">Recurrence</h3>
-<p>A recurring task is a <strong>template</strong>. Completing an instance spawns the next one
-with its date advanced by the rule. Set it with <code>repeat:</code> / <code>every:</code> /
-<code>--repeat</code>, and stop it with <code>--clear recurrence</code>.</p>
-<div class="tw"><table class="grid"><thead><tr><th id="scheduling-tbl3-h0">Rule</th><th id="scheduling-tbl3-h1">Example</th></tr></thead><tbody>
-<tr><td data-label="Rule" headers="scheduling-tbl3-h0"><code>every N days|weeks|months</code></td><td data-label="Example" headers="scheduling-tbl3-h1"><code>"every 3 days"</code>, <code>"every week"</code></td></tr>
-<tr><td data-label="Rule" headers="scheduling-tbl3-h0"><code>weekly on &lt;days&gt;</code></td><td data-label="Example" headers="scheduling-tbl3-h1"><code>"weekly on mon,wed,fri"</code></td></tr>
-<tr><td data-label="Rule" headers="scheduling-tbl3-h0"><code>monthly on day &lt;D&gt;</code></td><td data-label="Example" headers="scheduling-tbl3-h1"><code>"monthly on day 15"</code></td></tr>
-<tr><td data-label="Rule" headers="scheduling-tbl3-h0"><code>monthly on the &lt;Nth&gt; &lt;weekday&gt;</code></td><td data-label="Example" headers="scheduling-tbl3-h1"><code>"monthly on the 2nd tuesday"</code>, <code>"monthly on the last friday"</code></td></tr>
-</tbody></table></div>
-<p>This is a deliberate subset — not full RRULE. Anything outside it is a clean
-error.</p>
-<div class="snip"><div class="snip-h"><span class="dollar">$</span><button class="copy" type="button">Copy</button></div><pre class="cmd"><code>tasqx add &quot;Water the plants project:home repeat:\&quot;every 3 days\&quot; due:today&quot;
-tasqx done 4
-tasqx show 5</code></pre><pre class="out"><code>▌ #4  Water the plants
-▌ added   - ▄▄▄▃ 11.4   home   due today 23:59   ↻ every 3 days
-▌ #4  Water the plants
-▌ done today   home   due today 23:59
-  #5  next, due Fri
-▌ #5  Water the plants
-▌
-▌ status      pending           urgency     - ▄▄▃▁ 8.9
-▌ project     home              due         Fri (in 4 days)
-▌ repeats     every 3 days      created     today 07:51 (just now)
-▌ modified    today 07:51 (just now)
-▌ rev         1</code></pre></div><h3 id="h-missed-occurrences-collapse">Missed occurrences collapse</h3>
-<p>If your machine was off for a week, a daily task does <em>not</em> hand you seven
-instances. The rule advances at least once and then skips every slot at or
-before now, so you get exactly one future instance. A backfill storm is never
-useful.</p>
-<h3 id="h-month-end--precisely">Month-end, precisely</h3>
-<p>The two monthly forms differ on purpose, and the difference matters at month
-boundaries:</p>
-<div class="tw"><table class="grid"><thead><tr><th id="scheduling-tbl4-h0">Rule</th><th id="scheduling-tbl4-h1">From Jan 31</th><th id="scheduling-tbl4-h2">Why</th></tr></thead><tbody>
-<tr><td data-label="Rule" headers="scheduling-tbl4-h0"><code>monthly on day 31</code></td><td data-label="From Jan 31" headers="scheduling-tbl4-h1">Jan 31 → Feb 28 → <strong>Mar 31</strong></td><td data-label="Why" headers="scheduling-tbl4-h2">Re-clamps against the stored target day every step, so month-end recovers.</td></tr>
-<tr><td data-label="Rule" headers="scheduling-tbl4-h0"><code>every 1 month</code></td><td data-label="From Jan 31" headers="scheduling-tbl4-h1">Jan 31 → Feb 28 → <strong>Mar 28</strong></td><td data-label="Why" headers="scheduling-tbl4-h2">Advances from the previous (already clamped) date, so it drifts and stays there.</td></tr>
-</tbody></table></div><div class="callout note"><span class="tag">Note</span>
-<p>Pick <code>monthly on day 31</code> when you mean "the last-ish day of every
-month". Pick <code>every 1 month</code> when you mean "same slot, one month on".</p>
-</div><div class="pagenav"><a class="prev" href="#filters"><span class="pn-k">Previous</span><span class="pn-l">Filter grammar</span></a><a class="next" href="#reminders"><span class="pn-k">Next</span><span class="pn-l">Reminders</span></a></div></section><section class="page" id="reminders"><h2>Reminders</h2><p class="lead">tasqx is quiet by default. A task notifies you only if you gave it a <code>remind</code>,
-and nothing else ever puts a task on the reminder heap.</p><h3 id="h-the-two-forms">The two forms</h3><div class="tw"><table class="grid"><thead><tr><th id="reminders-tbl0-h0">Form</th><th id="reminders-tbl0-h1">Example</th><th id="reminders-tbl0-h2">Behaviour</th></tr></thead><tbody>
-<tr><td data-label="Form" headers="reminders-tbl0-h0">Offset from <code>due</code></td><td data-label="Example" headers="reminders-tbl0-h1"><code>-1h</code>, <code>-30m</code>, <code>-2d</code>, <code>+15m</code></td><td data-label="Behaviour" headers="reminders-tbl0-h2">Stays symbolic in the store. Move <code>due</code> and the reminder moves with it.</td></tr>
-<tr><td data-label="Form" headers="reminders-tbl0-h0">Absolute instant</td><td data-label="Example" headers="reminders-tbl0-h1"><code>"friday 9am"</code>, <code>2026-07-20T17:00</code></td><td data-label="Behaviour" headers="reminders-tbl0-h2">Resolved once, at set time, through the same date grammar.</td></tr>
-</tbody></table></div>
-<p>The <strong>sign</strong> is what disambiguates them: a leading <code>-</code> or <code>+</code> means offset,
-anything else goes to the date parser. Without that rule <code>3d</code> would be ambiguous
-— "3 days before due" or "in 3 days"?</p>
-<p>Offsets take <code>s</code>, <code>m</code>, <code>h</code>, <code>d</code>, <code>w</code>. Negative is before due, which is what you
-almost always want.</p>
-<div class="snip"><div class="snip-h"><span class="dollar">$</span><button class="copy" type="button">Copy</button></div><pre class="cmd"><code>tasqx modify 1 --remind -1h
-tasqx show 1</code></pre><pre class="out"><code>▌ #1  Ship the v1 JSON API freeze
-▌ modified   remind -1h   H ▄▄▄▄ 15.7   work.tasqx   due Fri   +api +release   est 4h   rev 2
-▌ #1  Ship the v1 JSON API freeze
-▌
-▌ status      pending           urgency     H ▄▄▄▄ 15.7
-▌ project     work.tasqx        due         Fri (in 3 days)
-▌ remind      -1h               estimate    4h
-▌ tags        +api +release     created     today 07:51 (just now)
-▌ modified    today 07:51 (just now)
-▌ rev         2</code></pre></div><div class="callout note"><span class="tag">Note</span>
-<p>Notice <code>remind</code> shows as <code>-1h</code>, not as a resolved timestamp. That
-is the point: it is still an offset. Push <code>due</code> back a week and the reminder
-follows, with no second edit.</p>
-</div><h3 id="h-who-delivers-them">Who delivers them</h3>
-<p>The <a href="#daemon">daemon</a>. It keeps an in-memory min-heap of upcoming reminder
-instants, rebuilt from the store on start and whenever a task changes. A
-one-shot <code>tasqx</code> command never fires anything — there would be nobody to fire
-it.</p>
-<div class="snip"><div class="snip-h"><span class="dollar">$</span><button class="copy" type="button">Copy</button></div><pre class="cmd"><code>tasqx add &quot;Deploy the release&quot; --due &quot;2026-07-16T09:00&quot; --remind -1h
-tasqx daemon --socket tasqx-remdemo</code></pre><pre class="out"><code>▌ #1  Deploy the release
-▌ added   no project · set a default with tasqx use &lt;project&gt;   - ▄▄▄▂ 10.3   due Thu
-tasqx daemon: listening on tasqx-remdemo (Ctrl-C to stop)
-tasqx daemon: store ~/.local/share/tasqx/tasks.db
-tasqx reminder: [#1] Deploy the release (due 2026-07-16T09:00:00Z)</code></pre></div>
-<p>That reminder had already ripened (due 09:00, minus 1h, and it was past 08:00) —
-so it fired on the next daemon start. <strong>A reminder that ripened while the daemon
-was down still fires, once, on the next start.</strong> Sleeping your laptop does not
-lose it.</p>
-<h3 id="h-it-fires-exactly-once">It fires exactly once</h3>
-<p>Firing writes a <code>reminded</code> event, and that event row <em>is</em> the dedupe record.
-Restart the daemon and the same reminder does not come back:</p>
-<div class="snip"><div class="snip-h"><span class="dollar">$</span><button class="copy" type="button">Copy</button></div><pre class="cmd"><code>tasqx daemon --socket tasqx-remdemo   # second start, same store</code></pre><pre class="out"><code>tasqx daemon: listening on tasqx-remdemo (Ctrl-C to stop)
-tasqx daemon: store ~/.local/share/tasqx/tasks.db</code></pre></div>
-<p>Silence — correct. The key is the (task, <em>instant</em>) pair, not just the task:
-moving <code>due</code> moves a relative reminder to a genuinely new instant, which
-<em>should</em> fire again.</p>
-<h3 id="h-delivery-never-fails">Delivery never fails</h3>
-<p>The always-compiled backend writes one line to stderr and returns. That is the
-headless/CI-safe path: with no notification transport anywhere, delivery
-degrades to a logged line and exit 0 — never an error.</p>
-<p>Native OS toasts (Windows, macOS, Linux/D-Bus) live behind the off-by-default
-<code>notify-os</code> build feature <em>and</em> need an explicit opt-in:</p>
-<pre class="plain"><code># config.toml
-[notify]
-enabled = true</code></pre>
-<p>Even then the stderr line still comes first, so the verifiable surface never
-depends on which backend is live. Two opt-ins, both off by default — that is the
-quiet-by-default rule taken seriously.</p>
-<h3 id="h-firing-one-by-hand">Firing one by hand</h3>
-<p><code>reminder.fire</code> takes a <code>ref</code> and an <code>at</code> instant, and it is idempotent — the
-second call reports <code>fired: false</code> rather than notifying twice:</p>
-<div class="snip"><div class="snip-h"><span class="dollar">$</span><button class="copy" type="button">Copy</button></div><pre class="cmd"><code>echo &#39;{&quot;tasqx&quot;:&quot;1&quot;,&quot;id&quot;:&quot;r1&quot;,&quot;method&quot;:&quot;reminder.fire&quot;,&quot;params&quot;:{&quot;ref&quot;:&quot;1&quot;,&quot;at&quot;:&quot;2026-07-16T00:00:00Z&quot;}}&#39; | tasqx api
-echo &#39;{&quot;tasqx&quot;:&quot;1&quot;,&quot;id&quot;:&quot;r2&quot;,&quot;method&quot;:&quot;reminder.fire&quot;,&quot;params&quot;:{&quot;ref&quot;:&quot;1&quot;,&quot;at&quot;:&quot;2026-07-16T00:00:00Z&quot;}}&#39; | tasqx api</code></pre><pre class="out"><code>{&quot;id&quot;:&quot;r1&quot;,&quot;ok&quot;:true,&quot;result&quot;:{&quot;at&quot;:&quot;2026-07-16T00:00:00Z&quot;,&quot;fired&quot;:true,&quot;short_id&quot;:1},&quot;tasqx&quot;:&quot;1&quot;}
-{&quot;id&quot;:&quot;r2&quot;,&quot;ok&quot;:true,&quot;result&quot;:{&quot;at&quot;:&quot;2026-07-16T00:00:00Z&quot;,&quot;fired&quot;:false,&quot;short_id&quot;:1},&quot;tasqx&quot;:&quot;1&quot;}</code></pre></div>
-<p>And the event is in the log, where the dedupe check reads it:</p>
-<pre class="plain"><code>{
-  &quot;actor&quot;: &quot;user&quot;,
-  &quot;entity&quot;: &quot;task&quot;,
-  &quot;op&quot;: &quot;reminded&quot;,
-  &quot;payload&quot;: {
-    &quot;at&quot;: &quot;2026-07-16T00:00:00Z&quot;,
-    &quot;due&quot;: &quot;2026-07-17T00:00:00Z&quot;,
-    &quot;remind&quot;: &quot;-1h&quot;,
-    &quot;short_id&quot;: 1,
-    &quot;title&quot;: &quot;Deploy the release&quot;
-  },
-  &quot;ts&quot;: &quot;2026-07-16T08:52:35.4429051Z&quot;
-}</code></pre><div class="pagenav"><a class="prev" href="#scheduling"><span class="pn-k">Previous</span><span class="pn-l">Scheduling &amp; recurrence</span></a><a class="next" href="#daemon"><span class="pn-k">Next</span><span class="pn-l">Daemon &amp; watch</span></a></div></section><section class="page" id="daemon"><h2>The daemon and live watch</h2><p class="lead">The daemon is optional. It holds one database connection, serves the JSON API
-over a local socket to many concurrent clients, pushes change notifications, and
-runs the reminder scheduler. The CLI never requires it.</p><h3 id="h-one-shot-or-daemon-">One-shot or daemon?</h3><div class="tw"><table class="grid"><thead><tr><th id="daemon-tbl0-h0">Mode</th><th id="daemon-tbl0-h1">When</th><th id="daemon-tbl0-h2">Why</th></tr></thead><tbody>
-<tr><td data-label="Mode" headers="daemon-tbl0-h0">One-shot</td><td data-label="When" headers="daemon-tbl0-h1">The default. Scripts, cron, the HTML report.</td><td data-label="Why" headers="daemon-tbl0-h2">No process to manage. Open the DB, run one command, exit.</td></tr>
-<tr><td data-label="Mode" headers="daemon-tbl0-h0">Daemon</td><td data-label="When" headers="daemon-tbl0-h1">Long-lived clients: a TUI, a GUI, <code>watch</code>, reminders.</td><td data-label="Why" headers="daemon-tbl0-h2">One writer, warm caches, live push, and something to fire reminders.</td></tr>
-</tbody></table></div>
-<p>If a daemon is reachable, one-shot commands route through it automatically —
-single writer, live-update semantics for free. If not, they open the store
-in-process. <strong>Same command surface either way</strong>, and a missing or stale socket
-falls back immediately rather than hanging. <code>--no-daemon</code> forces the in-process
-path.</p>
-<p><code>$TASQX_DB</code> always wins over a daemon on another store. Naming the file the
-daemon serves, commands route through it as usual. Naming a different file, a
-daemon found on the default socket is passed over and the command runs
-in-process against <code>$TASQX_DB</code>; a daemon named by <code>--socket</code> or <code>$TASQX_SOCK</code> is
-refused with exit 2, naming both files (D204).</p>
-<p>Four surfaces never route through a daemon: <code>api</code>, <code>mcp serve</code>, <code>chart</code> and
-<code>report --html</code> open the store in-process, always. They refuse an explicit
-<code>--socket</code> rather than ignore it (D73), because a flag that names a daemon and
-is silently discarded aims your write at a different store than the one you
-asked for.</p>
-<h3 id="h-socket-addresses">Socket addresses</h3>
-<p>Resolution order: <code>--socket</code>, then <code>$TASQX_SOCK</code>, then the platform default.</p>
-<div class="tw"><table class="grid"><thead><tr><th id="daemon-tbl1-h0">Platform</th><th id="daemon-tbl1-h1">Default</th></tr></thead><tbody>
-<tr><td data-label="Platform" headers="daemon-tbl1-h0">Windows</td><td data-label="Default" headers="daemon-tbl1-h1">The named pipe <code>tasqx-default</code></td></tr>
-<tr><td data-label="Platform" headers="daemon-tbl1-h0">Linux</td><td data-label="Default" headers="daemon-tbl1-h1"><code>$XDG_RUNTIME_DIR/tasqx/tasqx.sock</code> (falls back to the data dir)</td></tr>
-<tr><td data-label="Platform" headers="daemon-tbl1-h0">macOS</td><td data-label="Default" headers="daemon-tbl1-h1"><code>&lt;data dir&gt;/tasqx.sock</code> — macOS has no runtime dir</td></tr>
-</tbody></table></div><h3 id="h-running-it">Running it</h3>
-<p>Diagnostics go to stderr; the socket carries the newline-delimited JSON API.
-Ctrl-C stops it cleanly, unwinding the accept loop and removing the socket file
-(a no-op for Windows named pipes). <code>--db</code> points it at a specific store.</p>
-<div class="snip"><div class="snip-h"><span class="dollar">$</span><button class="copy" type="button">Copy</button></div><pre class="cmd"><code>tasqx daemon --socket tasqx-docsdemo</code></pre><pre class="out"><code>tasqx daemon: listening on tasqx-docsdemo (Ctrl-C to stop)
-tasqx daemon: store ~/.local/share/tasqx/tasks.db</code></pre></div>
-<p>It stays until you stop it. Set <code>[daemon] idle_timeout</code> to a number of minutes
-and it will instead exit by itself once that long has passed with no client
-connected, no subscriber attached, no reminder about to ripen and no telemetry
-posted to its OTLP receiver — and it says so on stderr on the way out. <code>0</code>, the
-default, means it never does. Turning the receiver on does not hold it open:
-only exports that actually arrive count as work. An idle exit also leaves a note
-beside <code>config.toml</code>: the first command that then fails to reach the daemon
-reports the retirement and which store is no longer being served, because a
-daemon leaving changes where the same command line writes (D74).</p>
-<p>Now route a command through it — note this is the ordinary <code>add</code>, unchanged:</p>
-<div class="snip"><div class="snip-h"><span class="dollar">$</span><button class="copy" type="button">Copy</button></div><pre class="cmd"><code>tasqx --socket tasqx-docsdemo add &quot;Wire up the docs page +docs project:work.tasqx due:tomorrow&quot;</code></pre><pre class="out"><code>▌ #6  Wire up the docs page
-▌ added   - ▄▄▄▃ 11.4   work.tasqx   due tomorrow   +docs</code></pre></div><h3 id="h-watch">watch</h3>
-<p><code>watch</code> subscribes to a daemon and re-renders on every <code>task.changed</code> push. It
-takes a <a href="#filters">filter</a>, defaulting to the working set. It needs a running
-daemon and will never auto-spawn one — it hints instead:</p>
-<div class="snip"><div class="snip-h"><span class="dollar">$</span><button class="copy" type="button">Copy</button></div><pre class="cmd"><code>tasqx watch --socket nope</code></pre><pre class="out"><code>tasqx watch: no daemon reachable at nope
-hint: start one with `tasqx daemon` (add `--socket nope` to match)</code></pre></div>
-<p>On a terminal it clears the screen and repaints the table. Through a pipe it
-streams one line per event instead — so it composes with everything else in your
-shell:</p>
-<div class="snip"><div class="snip-h"><span class="dollar">$</span><button class="copy" type="button">Copy</button></div><pre class="cmd"><code>tasqx watch --socket tasqx-docsdemo | cat
-# ... meanwhile, in another shell:
-#   tasqx --socket tasqx-docsdemo add &quot;Wire up the docs page ...&quot;
-#   tasqx --socket tasqx-docsdemo done 3</code></pre><pre class="out"><code>4 tasks · 1 overdue
-
-  ID          URG  TASK                         PROJECT     DUE        TAGS
-   1  H ▄▄▄▄ 15.7  Ship the v1 JSON API freeze  work.tasqx  Fri        +api +release
-   3  - ▄▄▄▄ 12.0  Renew the TLS cert           work.tasqx  yesterday  +ops
-   5  - ▄▄▃▁  8.9  Water the plants             home        Fri
-   2  - ▄▄▂▁  7.1  Write the user guide         work.tasqx  Mon        +docs
-task.changed op=add short_id=6
-task.changed op=done short_id=3</code></pre></div><div class="pagenav"><a class="prev" href="#reminders"><span class="pn-k">Previous</span><span class="pn-l">Reminders</span></a><a class="next" href="#data"><span class="pn-k">Next</span><span class="pn-l">Export &amp; import</span></a></div></section><section class="page" id="data"><h2>Export and import</h2><p class="lead">Your data is yours. <code>export</code> emits canonical JSON — stable UUIDs, every field,
-sorted keys — that is git-diffable, greppable, and round-trips exactly.</p><h3 id="h-export">Export</h3>
-<p>With no filter you get everything. With a <a href="#filters">filter</a> you get a slice.
-Human output <em>is</em> the JSON array — there is no separate pretty mode to drift
-from it.</p>
-<div class="snip"><div class="snip-h"><span class="dollar">$</span><button class="copy" type="button">Copy</button></div><pre class="cmd"><code>tasqx export +api</code></pre><pre class="out"><code>[
-  {
-    &quot;_rev&quot;: 4,
-    &quot;annotations&quot;: [
-      {
-        &quot;body&quot;: &quot;Blocked on the D12 decision&quot;,
-        &quot;created&quot;: &quot;2026-07-16T08:51:09.6830568Z&quot;,
-        &quot;id&quot;: &quot;019f6a1f-62f3-75f0-bf57-e5ff9c7c452a&quot;
-      }
-    ],
-    &quot;completed&quot;: null,
-    &quot;created&quot;: &quot;2026-07-16T08:51:09.2509427Z&quot;,
-    &quot;depends_on&quot;: [],
-    &quot;due&quot;: &quot;2026-07-17T00:00:00Z&quot;,
-    &quot;estimate&quot;: &quot;PT4H&quot;,
-    &quot;id&quot;: &quot;019f6a1f-6142-70d3-be5b-e28dc6060e6c&quot;,
-    &quot;modified&quot;: &quot;2026-07-16T08:51:09.6830568Z&quot;,
-    &quot;priority&quot;: &quot;H&quot;,
-    &quot;project&quot;: &quot;work.tasqx&quot;,
-    &quot;recurrence&quot;: null,
-    &quot;remind&quot;: null,
-    &quot;scheduled&quot;: null,
-    &quot;short_id&quot;: 1,
-    &quot;status&quot;: &quot;pending&quot;,
-    &quot;tags&quot;: [
-      &quot;api&quot;,
-      &quot;release&quot;
-    ],
-    &quot;title&quot;: &quot;Ship the v1 JSON API freeze&quot;,
-    &quot;urgency&quot;: 17.5,
-    &quot;wait&quot;: null
-  }
-]</code></pre></div><h3 id="h-filtered-exports-and-dependency-edges">Filtered exports and dependency edges</h3>
-<p>A filter selects a subset, so a dependency pointing <em>out</em> of that subset cannot
-travel with it — the target is not in the document. Those edges are trimmed, and
-you are told, on <strong>stderr</strong>:</p>
-<div class="snip"><div class="snip-h"><span class="dollar">$</span><button class="copy" type="button">Copy</button></div><pre class="cmd"><code>tasqx export +docs &gt; slice.json</code></pre><pre class="out"><code>note: 1 dependency points outside the export, left out — widen the filter to keep it</code></pre></div><div class="callout note"><span class="tag">Note</span>
-<p>The note is on stderr <em>because</em> stdout is the JSON. A note there
-would corrupt every pipe. <code>tasqx export +docs &gt; slice.json</code> gives you a
-clean file and a visible warning, both.</p>
-</div>
-<p>The <code>--json</code> form reports the same thing as data — <code>dropped_dependencies</code> is
-always present, and is <code>0</code> for an unfiltered export:</p>
-<div class="snip"><div class="snip-h"><span class="dollar">$</span><button class="copy" type="button">Copy</button></div><pre class="cmd"><code>tasqx export +api --json</code></pre><pre class="out"><code>{
-  &quot;default_project&quot;: &quot;work&quot;,
-  &quot;docs&quot;: [ ... ],
-  &quot;dropped_dependencies&quot;: 0,
-  &quot;projects&quot;: [ ... ],
-  &quot;tasks&quot;: [ ... ]
-}</code></pre></div><h3 id="h-what-a-document-carries">What a document carries</h3>
-<p>An export is a <strong>self-contained document</strong>, and a project is part of it (D37):
-the <code>projects</code> array carries every project row — name, description, archived
-state, identity — and <code>default_project</code> names the project a bare <code>tasqx add</code>
-inherits. So are your <a href="#commands">memory docs</a> (D41): the <code>docs</code> array carries
-every knowledge document, all of them regardless of any filter — a filter
-selects tasks, and knowledge is not attached to a task. Restoring gives you back
-the store you exported, not just its tasks. These sections are <strong>optional on
-import</strong>, so a file written by an older tasqx still restores: with no <code>projects</code>
-section there is nothing to check a task’s <code>project</code> against, so the row is
-created from the tasks and <code>import</code> says which ones it made. With one, the
-document is authoritative — a task naming a project it does not define is
-refused, exactly as <code>tasqx add --project</code> refuses a name no <code>init</code> ever created.</p>
-<div class="callout note"><span class="tag">Note</span>
-<p>An import never moves your default. If the destination store
-already has one, the document’s is ignored and the result names the default
-that stands.</p>
-</div><h3 id="h-import">Import</h3>
-<p>Takes a file, or <code>-</code> for stdin. It accepts either the document <code>export</code> prints
-or a bare array of tasks (which is what every older <code>export</code> wrote). Import is
-an <strong>upsert on the UUID</strong> — re-importing the same document is a no-op, not a
-duplicate.</p>
-<div class="snip"><div class="snip-h"><span class="dollar">$</span><button class="copy" type="button">Copy</button></div><pre class="cmd"><code>tasqx import slice.json</code></pre><pre class="out"><code>imported   2 tasks · 1 project · 3 memory docs</code></pre></div><div class="snip"><div class="snip-h"><span class="dollar">$</span><button class="copy" type="button">Copy</button></div><pre class="cmd"><code>tasqx export +api | TASQX_DB=/tmp/other.db tasqx import -</code></pre><pre class="out"><code>imported   1 task · 1 project · no memory docs</code></pre></div><div class="callout note"><span class="tag">Note</span>
-<p>The doc count is printed even when it is zero, and a document with
-no <code>docs</code> section at all (written by a tasqx older than D41) says so
-explicitly: <code>note: the document carried no `docs` section, so no memory docs were restored</code>. Present-and-empty and absent used to print the
-identical line.</p>
-</div><h3 id="h-a-field-the-schema-does-not-name-is-rejected">A field the schema does not name is rejected</h3>
-<p>A task object may carry the keys below and nothing else:</p>
-<p><code>id</code>, <code>short_id</code>, <code>title</code>, <code>status</code>, <code>priority</code>, <code>project</code>, <code>tags</code>, <code>due</code>, <code>scheduled</code>, <code>wait</code>, <code>estimate</code>, <code>recurrence</code>, <code>remind</code>, <code>depends_on</code>, <code>annotations</code>, <code>tokens</code>, <code>urgency</code>, <code>created</code>, <code>modified</code>, <code>completed</code>, <code>_rev</code>, <code>status_unrecognized</code>, <code>tracked_seconds</code>, <code>tracked_adjustment_seconds</code>, <code>budget_tokens</code>, <code>active_since</code>, <code>checks</code>, <code>delivered_annotation_id</code>, <code>spawned_from</code></p>
-<p>An annotation may carry <code>id</code>, <code>body</code>, <code>created</code>. A key outside that set is a
-<code>bad_request</code> naming the task and the field, because the alternative is worse
-than an error: a misspelled <code>tags</code> used to import as <code>ok</code> with the tags silently
-gone, so the report said your data arrived when it had not.</p>
-<pre class="plain"><code>error [bad_request]: store.import: task 019f6a0f-99df-…, unknown task field `tag`
-  (accepted: id, short_id, title, …) — check the spelling or drop it; it was silently
-  ignored before, so the import reported success and the value never arrived</code></pre>
-<p>Two of those keys are accepted and deliberately <em>ignored</em>: <code>urgency</code> is
-recomputed on the way in (it is derived from priority, due date and age, so a
-supplied value could contradict the ranking rule) and <code>status_unrecognized</code> is a
-read-side flag rather than stored state. They are listed because <code>export</code> emits
-them and a round trip has to keep working.</p>
-<h3 id="h-a-dangling-edge-is-rejected--not-repaired">A dangling edge is rejected, not repaired</h3>
-<p>A dependency target must be in the payload <em>or</em> already in the store. Anything
-else fails with <code>bad_request</code> naming the id — and because the whole import is
-one transaction, a rejection writes <strong>nothing</strong>.</p>
-<pre class="plain"><code>error [bad_request]: store.import: task 019f6a0f-99df-… depends on 019f6a0f-99b5-…,
-  which is neither in the payload nor in the store (export the dependency too, or drop the edge)</code></pre>
-<p>That is a deliberate choice. An edge to an unknown id means the wrong slice was
-exported; repairing it quietly would hide exactly the mistake worth seeing.
-Payload order does not matter — tasks are written first, edges second, so a
-forward reference is fine.</p>
-<h3 id="h-recipes">Recipes</h3><div class="tw"><table class="grid"><thead><tr><th id="data-tbl0-h0">Want</th><th id="data-tbl0-h1">Do</th></tr></thead><tbody>
-<tr><td data-label="Want" headers="data-tbl0-h0">Back up</td><td data-label="Do" headers="data-tbl0-h1"><code>tasqx export &gt; backup.json</code></td></tr>
-<tr><td data-label="Want" headers="data-tbl0-h0">Version your tasks in git</td><td data-label="Do" headers="data-tbl0-h1"><code>tasqx export &gt; tasks.json &amp;&amp; git commit -am wip</code> — canonical output means clean diffs.</td></tr>
-<tr><td data-label="Want" headers="data-tbl0-h0">Move to another machine</td><td data-label="Do" headers="data-tbl0-h1"><code>tasqx export &gt; all.json</code>, copy, <code>tasqx import all.json</code></td></tr>
-<tr><td data-label="Want" headers="data-tbl0-h0">Hand one project to a colleague</td><td data-label="Do" headers="data-tbl0-h1"><code>tasqx export project:work.tasqx &gt; slice.json</code> — mind the edge note.</td></tr>
-<tr><td data-label="Want" headers="data-tbl0-h0">Query beyond the filter grammar</td><td data-label="Do" headers="data-tbl0-h1"><code>tasqx export | jq '[.[] | select(.urgency &gt; 15)]'</code></td></tr>
-</tbody></table></div><div class="pagenav"><a class="prev" href="#daemon"><span class="pn-k">Previous</span><span class="pn-l">Daemon &amp; watch</span></a><a class="next" href="#themes"><span class="pn-k">Next</span><span class="pn-l">Themes &amp; reports</span></a></div></section><section class="page" id="themes"><h2>Themes, charts and reports</h2><p class="lead">Default output should be something you want to look at. Themes drive the
-terminal and the HTML report from the same palette, and degrade honestly when
-the terminal cannot keep up.</p><h3 id="h-themes">Themes</h3>
-<p>Five built-ins. Resolution order: <code>--theme</code>, <code>$TASQX_THEME</code>, <code>config.toml</code>,
-default.</p>
-<div class="snip"><div class="snip-h"><span class="dollar">$</span><button class="copy" type="button">Copy</button></div><pre class="cmd"><code>tasqx theme list</code></pre><pre class="out"><code>  THEME
-* nord
-  gruvbox
-  dracula
-  solarized
-  mono</code></pre></div>
-<p>The <code>*</code> marks the theme in effect. <code>tasqx theme show [name]</code> previews every
-role, a sample drawn in it beside its colour and emphasis, plus the urgency
-ramp's bands, rendered at your terminal's <em>real</em> capability. Set one
-permanently:</p>
-<pre class="plain"><code># config.toml
-[theme]
-name = &quot;gruvbox&quot;</code></pre>
-<p>Drop a <code>.toml</code> in <code>$TASQX_CONFIG_DIR/themes/</code> and it appears in <code>theme list</code>
-alongside the built-ins.</p>
-<div class="callout note"><span class="tag">Note</span>
-<p>Capability is detected, not assumed. Pipe tasqx into <code>cat</code> and the
-colour goes away; on a terminal without Unicode the block glyphs degrade to
-ASCII rather than emitting mojibake. <code>mono</code> is there for when you want that
-unconditionally.</p>
-</div><div class="callout note"><span class="tag">Note</span>
-<p>Width is detected too. <code>tasqx list</code> sizes its columns to what is
-actually in them and to the terminal it is printing into: a column no task
-fills — <code>DUE</code> on a store with no due dates — is not drawn at all, and the
-space goes to the titles. Through a pipe there is no width to detect, so the
-table lays out for a fixed 100 columns and two runs of the same store stay
-diffable.</p>
-</div>
-<p>Four environment variables override the detection:</p>
-<div class="tw"><table class="grid"><thead><tr><th id="themes-tbl0-h0">Variable</th><th id="themes-tbl0-h1">Effect</th></tr></thead><tbody>
-<tr><td data-label="Variable" headers="themes-tbl0-h0"><code>NO_COLOR</code></td><td data-label="Effect" headers="themes-tbl0-h1">Set to anything: drop all colour, keep bold/underline. Wins over everything below.</td></tr>
-<tr><td data-label="Variable" headers="themes-tbl0-h0"><code>CLICOLOR_FORCE</code></td><td data-label="Effect" headers="themes-tbl0-h1">Set to anything but <code>0</code>: force colour even through a pipe — for <code>less -R</code> and CI logs.</td></tr>
-<tr><td data-label="Variable" headers="themes-tbl0-h0"><code>TASQX_FORCE_COLOR</code></td><td data-label="Effect" headers="themes-tbl0-h1">Set to anything: same as <code>CLICOLOR_FORCE</code>, scoped to tasqx.</td></tr>
-<tr><td data-label="Variable" headers="themes-tbl0-h0"><code>COLUMNS</code></td><td data-label="Effect" headers="themes-tbl0-h1">How many columns wide to lay tables out. Beats both the terminal's own answer and the piped default — for a multiplexer that misreports its size, or to pin the width of captured output. Clamped to 40–160.</td></tr>
-</tbody></table></div><h3 id="h-reports">Reports</h3>
-<p><code>tasqx report [group_by] [filter] [--all]</code> — group by <code>project</code> (default),
-<code>status</code>, or <code>priority</code>. Estimates total as ISO-8601 durations, which is why
-<a href="#scheduling"><code>est:</code></a> is parsed at the edge rather than stored as opaque text.</p>
-<p><strong>What counts.</strong> A report is an aggregation, so it leaves <em>cancelled</em> tasks out
-— tasqx has no hard delete, and without this every task you ever threw away
-would inflate your totals forever. <em>Done</em> tasks still count: completed work is
-real work, and it carries nearly all your tracked time. Two ways to override
-that: pass <code>--all</code> to count everything including cancelled, or name a status in
-the filter — <code>tasqx report status:cancelled</code> means what it says and is taken
-literally.</p>
-<div class="snip"><div class="snip-h"><span class="dollar">$</span><button class="copy" type="button">Copy</button></div><pre class="cmd"><code>tasqx report</code></pre><pre class="out"><code>PROJECT               COUNT         EST  OVERDUE     TRACKED        TOKENS
-home                      1        PT0S        1        PT0S             -
-work.tasqx                3     PT5H30M        1        PT0S   cacheR 1.2M</code></pre></div><div class="snip"><div class="snip-h"><span class="dollar">$</span><button class="copy" type="button">Copy</button></div><pre class="cmd"><code>tasqx report status</code></pre><pre class="out"><code>STATUS                COUNT         EST  OVERDUE     TRACKED        TOKENS
-pending                   4     PT5H30M        2        PT0S   cacheR 1.2M</code></pre></div>
-<p>TOKENS names the group's largest bucket with that bucket's own count — <code>cacheR 1.2M</code>, or <code>-</code> when nothing was spent. The four buckets are never blended into
-one figure; <code>--json</code> and the HTML report carry the full split (D48/D50).</p>
-<h3 id="h-charts">Charts</h3>
-<p>All three read the append-only event log, so they are history, not a snapshot —
-and they are pure reads that never touch your tasks.</p>
-<div class="snip"><div class="snip-h"><span class="dollar">$</span><button class="copy" type="button">Copy</button></div><pre class="cmd"><code>tasqx chart throughput --weeks 12</code></pre><pre class="out"><code>Weekly throughput   added [#]  done [#]
-  W27  added   0   done   0   net   0
-  W28  added   0   done   0   net   0
-  W29  added ##########  5   done ##  1   net  +4
-  &gt; 4-wk velocity 0.2 done/wk - WIP trending up</code></pre></div><div class="snip"><div class="snip-h"><span class="dollar">$</span><button class="copy" type="button">Copy</button></div><pre class="cmd"><code>tasqx chart heatmap --weeks 4</code></pre><pre class="out"><code>Completions - last 4 weeks   . 0  : 1-2  + 3-4  # 5+
-  Mon . . . . 
-      . . . . 
-  Wed . . . . 
-      . . . : 
-  Fri . . . . 
-      . . . . 
-  Sun . . . . 
-  &gt; 1 done - current streak 1 days - best 1</code></pre></div><div class="snip"><div class="snip-h"><span class="dollar">$</span><button class="copy" type="button">Copy</button></div><pre class="cmd"><code>tasqx chart burndown --days 7</code></pre><pre class="out"><code>Remaining open - all tasks
-    4  ______#
-    0  2026-07-10 -&gt; 2026-07-16
-  &gt; 4 left - up 4 over 7 days</code></pre></div><div class="tw"><table class="grid"><thead><tr><th id="themes-tbl1-h0">Chart</th><th id="themes-tbl1-h1">Flags</th></tr></thead><tbody>
-<tr><td data-label="Chart" headers="themes-tbl1-h0"><code>throughput</code></td><td data-label="Flags" headers="themes-tbl1-h1"><code>--weeks &lt;n&gt;</code> (default 12)</td></tr>
-<tr><td data-label="Chart" headers="themes-tbl1-h0"><code>heatmap</code></td><td data-label="Flags" headers="themes-tbl1-h1"><code>--weeks &lt;n&gt;</code> (default 12), <code>--year</code> (52 weeks)</td></tr>
-<tr><td data-label="Chart" headers="themes-tbl1-h0"><code>burndown</code></td><td data-label="Flags" headers="themes-tbl1-h1"><code>--days &lt;n&gt;</code> (default 30), <code>--project &lt;p&gt;</code></td></tr>
-</tbody></table></div><h3 id="h-the-html-report">The HTML report</h3>
-<p><code>tasqx report --html</code> emits a weekly review as one self-contained file — inline
-CSS, inline SVG charts, no external requests — themed from the same palette as
-your terminal. Exactly like the page you are reading.</p>
-<div class="snip"><div class="snip-h"><span class="dollar">$</span><button class="copy" type="button">Copy</button></div><pre class="cmd"><code>tasqx report --html --out review.html</code></pre><pre class="out"><code>Wrote self-contained HTML report → review.html</code></pre></div>
-<p>Without <code>--out</code> it writes to stdout. The page leads with what changed in the
-period — done, added, net backlog, blocked and overdue, each against the period
-before — then a standup (done yesterday, in progress, blocked and by what, the
-next five and why), a per-project grid, a net-flow chart and the outcomes
-<code>report --outcomes</code> counts. The period is the 7 days ending today; <code>--since</code> and
-<code>--until</code> choose another. Clicking a project scopes every section to it, a
-search covers every task in scope, and a task opens in an overlay with its
-dependencies by title. Annotation bodies stay out of the file unless you pass
-<code>--with-notes</code>; a filter naming one project makes a page about that project
-alone. One small inline script does the clicking; the page reads fully without
-it.</p>
-<div class="callout note"><span class="tag">Note</span>
-<p>Both HTML surfaces hold the same line: no CDN, no web fonts, no
-remote images, no scripts fetched from anywhere. Mail the file, commit it,
-open it on a plane — it renders the same.</p>
-</div><div class="pagenav"><a class="prev" href="#data"><span class="pn-k">Previous</span><span class="pn-l">Export &amp; import</span></a><a class="next" href="#wiki-getting-started"><span class="pn-k">Next</span><span class="pn-l">Getting Started</span></a></div></section><section class="page" id="wiki-getting-started"><h2>Getting Started</h2><p>tasqx is the organiser for your AI: a backlog, a memory and a brief for your
+<div class="pagenav"><a class="prev" href="#install"><span class="pn-k">Previous</span><span class="pn-l">Install &amp; quickstart</span></a><a class="next" href="#wiki-getting-started"><span class="pn-k">Next</span><span class="pn-l">Getting Started</span></a></div></section><section class="page" id="wiki-getting-started"><h2>Getting Started</h2><p>tasqx is the organiser for your AI: a backlog, a memory and a brief for your
 coding agent, and a task manager that lives in your terminal. Your tasks are
 stored in a single SQLite file on your own disk — no account, no cloud, works
 offline.</p>
@@ -1145,7 +711,7 @@ licence texts of the embedding model built into the binary for memory search.</p
 platform's data directory. <code>tasqx config store</code> tells you exactly which file a
 command would write to. Back it up any time with
 <a href="#wiki-import-and-export"><code>tasqx export</code></a>.</p>
-<div class="pagenav"><a class="prev" href="#themes"><span class="pn-k">Previous</span><span class="pn-l">Themes &amp; reports</span></a><a class="next" href="#wiki-projects"><span class="pn-k">Next</span><span class="pn-l">Projects</span></a></div></section><section class="page" id="wiki-projects"><h2>Projects</h2><p>A project in tasqx is just a name that groups tasks — <code>work</code>, <code>home</code>,
+<div class="pagenav"><a class="prev" href="#filters"><span class="pn-k">Previous</span><span class="pn-l">Filter grammar</span></a><a class="next" href="#wiki-projects"><span class="pn-k">Next</span><span class="pn-l">Projects</span></a></div></section><section class="page" id="wiki-projects"><h2>Projects</h2><p>A project in tasqx is just a name that groups tasks — <code>work</code>, <code>home</code>,
 <code>kitchen-remodel</code>. No folder is created, nothing appears on your disk. Tasks
 always belong to exactly one project.</p>
 <h3 id="wiki-projects--tasqx-init">tasqx init</h3>
@@ -1687,8 +1253,11 @@ tasqx dep 3 2</code></pre></div>
 <p>Now <code>tasqx next</code> walks you through the chain in order, one actionable task at
 a time — and an AI agent working through
 <a href="#wiki-ai-agents-and-automation">MCP</a> does exactly the same.</p>
-<div class="pagenav"><a class="prev" href="#wiki-working-on-tasks"><span class="pn-k">Previous</span><span class="pn-l">Working on Tasks</span></a><a class="next" href="#wiki-dates-reminders-and-recurrence"><span class="pn-k">Next</span><span class="pn-l">Dates, Reminders and Recurrence</span></a></div></section><section class="page" id="wiki-dates-reminders-and-recurrence"><h2>Dates, Reminders and Recurrence</h2><p>tasqx reads dates the way you'd say them, and four different date fields let
+<div class="pagenav"><a class="prev" href="#wiki-working-on-tasks"><span class="pn-k">Previous</span><span class="pn-l">Working on Tasks</span></a><a class="next" href="#wiki-dates-reminders-and-recurrence"><span class="pn-k">Next</span><span class="pn-l">Dates, Reminders and Recurrence</span></a></div></section><section class="page" id="wiki-dates-reminders-and-recurrence"><h2>Dates, Reminders and Recurrence</h2><span id="reminders"></span><span id="scheduling"></span><p>tasqx reads dates the way you'd say them, and four different date fields let
 you say four different things about <em>when</em>.</p>
+<p>Every date field — <code>due</code>, <code>scheduled</code>, <code>wait</code> — takes the same natural-language
+grammar, through the flag or through the sugar. It resolves to RFC3339 at the
+moment you type it.</p>
 <h3 id="wiki-dates-reminders-and-recurrence--writing-a-date">Writing a date</h3>
 <p>Anywhere a date is expected — <code>due:</code>, <code>--scheduled</code>, <code>wait:</code>, <code>remind:</code> — you
 can write:</p>
@@ -1702,37 +1271,151 @@ weekday in the following Monday-to-Sunday week (nine days out), and
 refused rather than guessed. A bare time that has already passed
 today rolls to tomorrow. Full RFC3339 works when you want to be exact.</p>
 <p>Everything is UTC. A bare date is midnight UTC, and a clock time is a UTC
-clock — <code>due:17:00</code> is 17:00 UTC wherever you type it, and every screen prints
-it back as 17:00. An offset you write yourself (<code>+02:00</code>, or a trailing <code>Z</code>)
-is honoured as written.</p>
-<div class="tw"><table class="grid"><thead><tr><th id="wiki-dates-reminders-and-recurrence-tbl0-h0">Form</th><th id="wiki-dates-reminders-and-recurrence-tbl0-h1">What you can write</th></tr></thead><tbody>
-<tr><td data-label="Form" headers="wiki-dates-reminders-and-recurrence-tbl0-h0">Relative days</td><td data-label="What you can write" headers="wiki-dates-reminders-and-recurrence-tbl0-h1"><code>today</code>, <code>tomorrow</code>, <code>yesterday</code>, <code>now</code>, <code>eom</code> (end of month), <code>eow</code> (end of week)</td></tr>
-<tr><td data-label="Form" headers="wiki-dates-reminders-and-recurrence-tbl0-h0">Weekday names</td><td data-label="What you can write" headers="wiki-dates-reminders-and-recurrence-tbl0-h1"><code>monday</code>..<code>sunday</code> or <code>mon</code>..<code>sun</code> — the next one after today</td></tr>
-<tr><td data-label="Form" headers="wiki-dates-reminders-and-recurrence-tbl0-h0">Counted spans</td><td data-label="What you can write" headers="wiki-dates-reminders-and-recurrence-tbl0-h1"><code>in 1 day</code>, <code>"in 3 days"</code>, <code>in 2 weeks</code>, <code>in 3 months</code> — days, weeks and months only; <code>in 2 hours</code> is rejected</td></tr>
-<tr><td data-label="Form" headers="wiki-dates-reminders-and-recurrence-tbl0-h0">Signed offsets</td><td data-label="What you can write" headers="wiki-dates-reminders-and-recurrence-tbl0-h1"><code>-1d</code>, <code>+3d</code>, <code>3d</code> (no sign means the future)</td></tr>
-<tr><td data-label="Form" headers="wiki-dates-reminders-and-recurrence-tbl0-h0">Times</td><td data-label="What you can write" headers="wiki-dates-reminders-and-recurrence-tbl0-h1"><code>17:00</code>, <code>5pm</code>, attached to a day with a space — <code>"tomorrow 17:00"</code>, <code>"friday 9am"</code> — or a full instant — <code>"2026-09-09 17:00"</code>, <code>2026-09-09T17:00:00+02:00</code> (an explicit offset is converted to UTC on the way in)</td></tr>
-</tbody></table></div><h3 id="wiki-dates-reminders-and-recurrence--the-four-date-fields">The four date fields</h3><div class="tw"><table class="grid"><thead><tr><th id="wiki-dates-reminders-and-recurrence-tbl1-h0">Field</th><th id="wiki-dates-reminders-and-recurrence-tbl1-h1">What it says</th><th id="wiki-dates-reminders-and-recurrence-tbl1-h2">Effect</th></tr></thead><tbody>
-<tr><td data-label="Field" headers="wiki-dates-reminders-and-recurrence-tbl1-h0"><code>due</code></td><td data-label="What it says" headers="wiki-dates-reminders-and-recurrence-tbl1-h1">When it must be finished</td><td data-label="Effect" headers="wiki-dates-reminders-and-recurrence-tbl1-h2">Drives urgency up as it approaches; overdue tasks stay loudly visible. A deadline with a time is overdue once it passes; a date without a time is due by the end of that day (UTC)</td></tr>
-<tr><td data-label="Field" headers="wiki-dates-reminders-and-recurrence-tbl1-h0"><code>scheduled</code></td><td data-label="What it says" headers="wiki-dates-reminders-and-recurrence-tbl1-h1">When you plan to start</td><td data-label="Effect" headers="wiki-dates-reminders-and-recurrence-tbl1-h2">A future value parks the task in the backlog until then</td></tr>
-<tr><td data-label="Field" headers="wiki-dates-reminders-and-recurrence-tbl1-h0"><code>wait</code></td><td data-label="What it says" headers="wiki-dates-reminders-and-recurrence-tbl1-h1">Hide it until this moment</td><td data-label="Effect" headers="wiki-dates-reminders-and-recurrence-tbl1-h2">Same parking, different intent: "not my problem yet"</td></tr>
-<tr><td data-label="Field" headers="wiki-dates-reminders-and-recurrence-tbl1-h0"><code>remind</code></td><td data-label="What it says" headers="wiki-dates-reminders-and-recurrence-tbl1-h1">When to nudge you</td><td data-label="Effect" headers="wiki-dates-reminders-and-recurrence-tbl1-h2">Fires a reminder; see below</td></tr>
+clock — <code>due:17:00</code> is 17:00 UTC wherever you type it, whatever zone the
+machine is set to, and every screen prints it back as 17:00. An offset you
+write yourself (<code>+02:00</code>, or a trailing <code>Z</code>) is honoured as written:
+<code>2026-07-20T17:00:00+02:00</code> means another zone's clock, and is converted to UTC
+on the way in.</p>
+<h4 id="wiki-dates-reminders-and-recurrence--what-you-can-write"><span id="h-what-you-can-write"></span>What you can write</h4><div class="tw"><table class="grid"><thead><tr><th id="wiki-dates-reminders-and-recurrence-tbl0-h0">Form</th><th id="wiki-dates-reminders-and-recurrence-tbl0-h1">What you can write</th></tr></thead><tbody>
+<tr><td data-label="Form" headers="wiki-dates-reminders-and-recurrence-tbl0-h0">Absolute</td><td data-label="What you can write" headers="wiki-dates-reminders-and-recurrence-tbl0-h1"><code>2026-07-20</code>, <code>2026-07-20T17:00</code>, <code>"2026-07-20 17:00"</code>, any RFC3339</td></tr>
+<tr><td data-label="Form" headers="wiki-dates-reminders-and-recurrence-tbl0-h0">Relative days</td><td data-label="What you can write" headers="wiki-dates-reminders-and-recurrence-tbl0-h1"><code>today</code>, <code>tomorrow</code>, <code>yesterday</code>, <code>now</code></td></tr>
+<tr><td data-label="Form" headers="wiki-dates-reminders-and-recurrence-tbl0-h0">Boundaries</td><td data-label="What you can write" headers="wiki-dates-reminders-and-recurrence-tbl0-h1"><code>eom</code> / <code>"end of month"</code>, <code>eow</code> / <code>"end of week"</code> (ISO week ends Sunday)</td></tr>
+<tr><td data-label="Form" headers="wiki-dates-reminders-and-recurrence-tbl0-h0">Weekday names</td><td data-label="What you can write" headers="wiki-dates-reminders-and-recurrence-tbl0-h1"><code>monday</code>..<code>sunday</code> or <code>mon</code>..<code>sun</code> — the next one after today. <code>"next friday"</code> is that day in the following Monday-to-Sunday week, <code>"next week"</code> that week's Monday; <code>this</code>/<code>last</code> are refused rather than guessed</td></tr>
+<tr><td data-label="Form" headers="wiki-dates-reminders-and-recurrence-tbl0-h0">Counted spans</td><td data-label="What you can write" headers="wiki-dates-reminders-and-recurrence-tbl0-h1"><code>in 1 day</code>, <code>"in 3 days"</code>, <code>"in 2 weeks"</code>, <code>"in 1 month"</code>, <code>in 3 months</code> — days, weeks and months only; <code>in 2 hours</code> is rejected</td></tr>
+<tr><td data-label="Form" headers="wiki-dates-reminders-and-recurrence-tbl0-h0">Signed offsets</td><td data-label="What you can write" headers="wiki-dates-reminders-and-recurrence-tbl0-h1"><code>-1d</code>, <code>+3d</code>, <code>3d</code> (no sign means the future); the units are <code>d</code>, <code>w</code>, <code>mo</code>, <code>y</code>, so <code>3d</code>, <code>2w</code>, <code>1mo</code> and <code>1y</code> all work</td></tr>
+<tr><td data-label="Form" headers="wiki-dates-reminders-and-recurrence-tbl0-h0">Times</td><td data-label="What you can write" headers="wiki-dates-reminders-and-recurrence-tbl0-h1"><code>17:00</code>, <code>5pm</code>, attached to a day with a space — <code>"tomorrow 17:00"</code>, <code>"friday 9am"</code>, <code>"tomorrow 9am"</code>, <code>"monday 5pm"</code> — or a full instant — <code>"2026-09-09 17:00"</code>, <code>2026-09-09T17:00:00+02:00</code> (an explicit offset is converted to UTC on the way in)</td></tr>
+<tr><td data-label="Form" headers="wiki-dates-reminders-and-recurrence-tbl0-h0">Leading filler</td><td data-label="What you can write" headers="wiki-dates-reminders-and-recurrence-tbl0-h1"><code>"at 6pm"</code>, <code>"on friday"</code>, <code>"by monday 5pm"</code> — <code>at</code>/<code>on</code>/<code>by</code>/<code>@</code> are ignored</td></tr>
+</tbody></table></div><h4 id="wiki-dates-reminders-and-recurrence--the-rules-that-resolve-ambiguity"><span id="h-the-rules-that-resolve-ambiguity"></span>The rules that resolve ambiguity</h4><div class="tw"><table class="grid"><thead><tr><th id="wiki-dates-reminders-and-recurrence-tbl1-h0">Situation</th><th id="wiki-dates-reminders-and-recurrence-tbl1-h1">Resolution</th></tr></thead><tbody>
+<tr><td data-label="Situation" headers="wiki-dates-reminders-and-recurrence-tbl1-h0">A date with no time</td><td data-label="Resolution" headers="wiki-dates-reminders-and-recurrence-tbl1-h1">00:00:00 UTC — the start of that day, whatever your zone.</td></tr>
+<tr><td data-label="Situation" headers="wiki-dates-reminders-and-recurrence-tbl1-h0">A bare time (<code>9am</code>)</td><td data-label="Resolution" headers="wiki-dates-reminders-and-recurrence-tbl1-h1">09:00 UTC today, or tomorrow if that UTC time already passed.</td></tr>
+<tr><td data-label="Situation" headers="wiki-dates-reminders-and-recurrence-tbl1-h0">A weekday that <em>is</em> today</td><td data-label="Resolution" headers="wiki-dates-reminders-and-recurrence-tbl1-h1">The next one — seven days out, not zero.</td></tr>
+<tr><td data-label="Situation" headers="wiki-dates-reminders-and-recurrence-tbl1-h0">A naive date <em>with</em> a time</td><td data-label="Resolution" headers="wiki-dates-reminders-and-recurrence-tbl1-h1">A UTC clock, whatever your zone. An explicit offset (<code>+02:00</code>) is honoured and converted to UTC instead.</td></tr>
+<tr><td data-label="Situation" headers="wiki-dates-reminders-and-recurrence-tbl1-h0">The literal <code>now</code></td><td data-label="Resolution" headers="wiki-dates-reminders-and-recurrence-tbl1-h1">This exact instant — not midnight, unlike every other keyword here. It is what <code>due.before:now</code> means, so it can find a task due earlier today.</td></tr>
+</tbody></table></div><div class="callout warn"><span class="tag">Careful</span>
+<p>Short offsets carry <strong>day</strong>-and-larger units only: <code>d</code>, <code>w</code>,
+<code>mo</code>, <code>y</code>. <code>-2h</code> is not a date — it is a reminder offset, and a different
+grammar. Feeding it to <code>--due</code> is a clean error, not a guess:</p>
+</div><div class="snip"><div class="snip-h"><span class="dollar">$</span><button class="copy" type="button">Copy</button></div><pre class="cmd"><code>tasqx add &quot;Overdue ping&quot; --due -2h</code></pre><pre class="out"><code>error [bad_request]: could not parse date: &quot;-2h&quot; (try e.g. tomorrow, friday, 2026-07-20, &quot;in 3 days&quot; (day/week/month/year offsets only, no hours/minutes), eom, or 2026-07-20T17:00)</code></pre></div><h4 id="wiki-dates-reminders-and-recurrence--a-leading-hyphen-needs-no-escaping"><span id="h-a-leading-hyphen-needs-no-escaping"></span>A leading hyphen needs no escaping</h4>
+<p><code>--due -1d</code> works. It looks like it should trip the argument parser into reading
+<code>-1d</code> as a flag — every date-taking flag opts out of that explicitly, so a
+signed offset is always a value:</p>
+<div class="snip"><div class="snip-h"><span class="dollar">$</span><button class="copy" type="button">Copy</button></div><pre class="cmd"><code>tasqx add &quot;Renew the TLS cert&quot; project:work.tasqx +ops --due -1d</code></pre><pre class="out"><code>▌ #3  Renew the TLS cert
+▌ added   - ▄▄▄▄ 12.0   work.tasqx   due yesterday   +ops</code></pre></div><h3 id="wiki-dates-reminders-and-recurrence--the-four-date-fields"><span id="h-the-four-date-fields"></span>The four date fields</h3><div class="tw"><table class="grid"><thead><tr><th id="wiki-dates-reminders-and-recurrence-tbl2-h0">Field</th><th id="wiki-dates-reminders-and-recurrence-tbl2-h1">What it says</th><th id="wiki-dates-reminders-and-recurrence-tbl2-h2">Effect</th></tr></thead><tbody>
+<tr><td data-label="Field" headers="wiki-dates-reminders-and-recurrence-tbl2-h0"><code>due</code></td><td data-label="What it says" headers="wiki-dates-reminders-and-recurrence-tbl2-h1">When it must be finished</td><td data-label="Effect" headers="wiki-dates-reminders-and-recurrence-tbl2-h2">The deadline. Drives urgency up as it approaches, and is the anchor for relative reminders; overdue tasks stay loudly visible. A deadline with a time is overdue once it passes; a date without a time is due by the end of that day (UTC)</td></tr>
+<tr><td data-label="Field" headers="wiki-dates-reminders-and-recurrence-tbl2-h0"><code>scheduled</code></td><td data-label="What it says" headers="wiki-dates-reminders-and-recurrence-tbl2-h1">When you plan to start</td><td data-label="Effect" headers="wiki-dates-reminders-and-recurrence-tbl2-h2">A future value parks the task in the backlog, out of the <code>@working</code> set, until it passes</td></tr>
+<tr><td data-label="Field" headers="wiki-dates-reminders-and-recurrence-tbl2-h0"><code>wait</code></td><td data-label="What it says" headers="wiki-dates-reminders-and-recurrence-tbl2-h1">Hide it until this moment</td><td data-label="Effect" headers="wiki-dates-reminders-and-recurrence-tbl2-h2">Same parking, different intent: "not my problem yet"</td></tr>
+<tr><td data-label="Field" headers="wiki-dates-reminders-and-recurrence-tbl2-h0"><code>remind</code></td><td data-label="What it says" headers="wiki-dates-reminders-and-recurrence-tbl2-h1">When to nudge you</td><td data-label="Effect" headers="wiki-dates-reminders-and-recurrence-tbl2-h2">Fires a reminder; see below</td></tr>
+<tr><td data-label="Field" headers="wiki-dates-reminders-and-recurrence-tbl2-h0"><code>estimate</code></td><td data-label="What it says" headers="wiki-dates-reminders-and-recurrence-tbl2-h1">How long it will take</td><td data-label="Effect" headers="wiki-dates-reminders-and-recurrence-tbl2-h2">Not a date: an effort duration, totalled by <code>report</code></td></tr>
 </tbody></table></div>
 <p><code>scheduled</code> and <code>wait</code> both keep a task out of your working set until their
 moment arrives — the difference is what you <em>mean</em>, and
 <a href="#wiki-finding-tasks--tasqx-agenda"><code>tasqx agenda</code></a> places tasks on <code>scheduled</code>
 (or <code>due</code>), never on <code>wait</code>.</p>
-<h3 id="wiki-dates-reminders-and-recurrence--reminders">Reminders</h3>
+<h4 id="wiki-dates-reminders-and-recurrence--estimates"><span id="h-estimates"></span>Estimates</h4>
+<p>Human durations, parsed at the edge and stored as ISO-8601 so <code>report</code> can total
+them. <code>4h</code>, <code>90m</code>, <code>1h30m</code>, <code>2d</code>, <code>1w</code>, or ISO <code>PT4H</code> directly.</p>
+<div class="snip"><div class="snip-h"><span class="dollar">$</span><button class="copy" type="button">Copy</button></div><pre class="cmd"><code>tasqx add &quot;Nail down the schema&quot; est:soon</code></pre><pre class="out"><code>error [bad_request]: could not parse duration: &quot;soon&quot; (try e.g. 4h, 90m, 1h30m, 2d, 1w, or ISO PT4H)</code></pre></div><h3 id="wiki-dates-reminders-and-recurrence--reminders">Reminders</h3>
 <p><code>remind:</code> takes an offset from the due date, or an absolute time:</p>
-<div class="tw"><table class="grid"><thead><tr><th id="wiki-dates-reminders-and-recurrence-tbl2-h0">Command</th><th id="wiki-dates-reminders-and-recurrence-tbl2-h1">What it does</th></tr></thead><tbody>
-<tr><td data-label="Command" headers="wiki-dates-reminders-and-recurrence-tbl2-h0"><code>tasqx add Call the bank due:"friday 9am" remind:-30m</code></td><td data-label="What it does" headers="wiki-dates-reminders-and-recurrence-tbl2-h1">30 minutes before</td></tr>
-<tr><td data-label="Command" headers="wiki-dates-reminders-and-recurrence-tbl2-h0"><code>tasqx add Water plants remind:"friday 8am"</code></td><td data-label="What it does" headers="wiki-dates-reminders-and-recurrence-tbl2-h1">At an exact time</td></tr>
+<div class="tw"><table class="grid"><thead><tr><th id="wiki-dates-reminders-and-recurrence-tbl3-h0">Command</th><th id="wiki-dates-reminders-and-recurrence-tbl3-h1">What it does</th></tr></thead><tbody>
+<tr><td data-label="Command" headers="wiki-dates-reminders-and-recurrence-tbl3-h0"><code>tasqx add Call the bank due:"friday 9am" remind:-30m</code></td><td data-label="What it does" headers="wiki-dates-reminders-and-recurrence-tbl3-h1">30 minutes before</td></tr>
+<tr><td data-label="Command" headers="wiki-dates-reminders-and-recurrence-tbl3-h0"><code>tasqx add Water plants remind:"friday 8am"</code></td><td data-label="What it does" headers="wiki-dates-reminders-and-recurrence-tbl3-h1">At an exact time</td></tr>
 </tbody></table></div>
 <p>The offset stays <em>symbolic</em>: move the due date and the reminder moves with it.</p>
 <p>Reminders fire only while <a href="#wiki-ai-agents-and-automation--tasqx-daemon"><code>tasqx daemon</code></a>
 is running, and they're quiet by default — the OS toast notification lives
-behind an off-by-default build feature (<code>notify-os</code>).</p>
-<h3 id="wiki-dates-reminders-and-recurrence--recurrence">Recurrence</h3>
-<p><code>repeat:</code> makes a task come back:</p>
+behind an off-by-default build feature (<code>notify-os</code>). tasqx is quiet by
+default: a task notifies you only if you gave it a <code>remind</code>, and nothing else
+ever puts a task on the reminder heap.</p>
+<h4 id="wiki-dates-reminders-and-recurrence--the-two-forms"><span id="h-the-two-forms"></span>The two forms</h4><div class="tw"><table class="grid"><thead><tr><th id="wiki-dates-reminders-and-recurrence-tbl4-h0">Form</th><th id="wiki-dates-reminders-and-recurrence-tbl4-h1">Example</th><th id="wiki-dates-reminders-and-recurrence-tbl4-h2">Behaviour</th></tr></thead><tbody>
+<tr><td data-label="Form" headers="wiki-dates-reminders-and-recurrence-tbl4-h0">Offset from <code>due</code></td><td data-label="Example" headers="wiki-dates-reminders-and-recurrence-tbl4-h1"><code>-1h</code>, <code>-30m</code>, <code>-2d</code>, <code>+15m</code></td><td data-label="Behaviour" headers="wiki-dates-reminders-and-recurrence-tbl4-h2">Stays symbolic in the store. Move <code>due</code> and the reminder moves with it.</td></tr>
+<tr><td data-label="Form" headers="wiki-dates-reminders-and-recurrence-tbl4-h0">Absolute instant</td><td data-label="Example" headers="wiki-dates-reminders-and-recurrence-tbl4-h1"><code>"friday 9am"</code>, <code>2026-07-20T17:00</code></td><td data-label="Behaviour" headers="wiki-dates-reminders-and-recurrence-tbl4-h2">Resolved once, at set time, through the same date grammar.</td></tr>
+</tbody></table></div>
+<p>The <strong>sign</strong> is what disambiguates them: a leading <code>-</code> or <code>+</code> means offset,
+anything else goes to the date parser. Without that rule <code>3d</code> would be ambiguous
+— "3 days before due" or "in 3 days"?</p>
+<p>Offsets take <code>s</code>, <code>m</code>, <code>h</code>, <code>d</code>, <code>w</code>. Negative is before due, which is what you
+almost always want.</p>
+<div class="snip"><div class="snip-h"><span class="dollar">$</span><button class="copy" type="button">Copy</button></div><pre class="cmd"><code>tasqx modify 1 --remind -1h
+tasqx show 1</code></pre><pre class="out"><code>▌ #1  Ship the v1 JSON API freeze
+▌ modified   remind -1h   H ▄▄▄▄ 15.7   work.tasqx   due Fri   +api +release   est 4h   rev 2
+▌ #1  Ship the v1 JSON API freeze
+▌
+▌ status      pending           urgency     H ▄▄▄▄ 15.7
+▌ project     work.tasqx        due         Fri (in 3 days)
+▌ remind      -1h               estimate    4h
+▌ tags        +api +release     created     today 07:51 (just now)
+▌ modified    today 07:51 (just now)
+▌ rev         2</code></pre></div><div class="callout note"><span class="tag">Note</span>
+<p>Notice <code>remind</code> shows as <code>-1h</code>, not as a resolved timestamp. That
+is the point: it is still an offset. Push <code>due</code> back a week and the reminder
+follows, with no second edit.</p>
+</div><h4 id="wiki-dates-reminders-and-recurrence--who-delivers-them"><span id="h-who-delivers-them"></span>Who delivers them</h4>
+<p>The <a href="#wiki-dashboard-and-live-view--running-it">daemon</a>. It keeps an
+in-memory min-heap of upcoming reminder instants, rebuilt from the store on
+start and whenever a task changes. A one-shot <code>tasqx</code> command never fires
+anything — there would be nobody to fire it.</p>
+<div class="snip"><div class="snip-h"><span class="dollar">$</span><button class="copy" type="button">Copy</button></div><pre class="cmd"><code>tasqx add &quot;Deploy the release&quot; --due &quot;2026-07-16T09:00&quot; --remind -1h
+tasqx daemon --socket tasqx-remdemo</code></pre><pre class="out"><code>▌ #1  Deploy the release
+▌ added   no project · set a default with tasqx use &lt;project&gt;   - ▄▄▄▂ 10.3   due Thu
+tasqx daemon: listening on tasqx-remdemo (Ctrl-C to stop)
+tasqx daemon: store ~/.local/share/tasqx/tasks.db
+tasqx reminder: [#1] Deploy the release (due 2026-07-16T09:00:00Z)</code></pre></div>
+<p>That reminder had already ripened (due 09:00, minus 1h, and it was past 08:00) —
+so it fired on the next daemon start. <strong>A reminder that ripened while the daemon
+was down still fires, once, on the next start.</strong> Sleeping your laptop does not
+lose it.</p>
+<h4 id="wiki-dates-reminders-and-recurrence--it-fires-exactly-once"><span id="h-it-fires-exactly-once"></span>It fires exactly once</h4>
+<p>Firing writes a <code>reminded</code> event, and that event row <em>is</em> the dedupe record.
+Restart the daemon and the same reminder does not come back:</p>
+<div class="snip"><div class="snip-h"><span class="dollar">$</span><button class="copy" type="button">Copy</button></div><pre class="cmd"><code>tasqx daemon --socket tasqx-remdemo   # second start, same store</code></pre><pre class="out"><code>tasqx daemon: listening on tasqx-remdemo (Ctrl-C to stop)
+tasqx daemon: store ~/.local/share/tasqx/tasks.db</code></pre></div>
+<p>Silence — correct. The key is the (task, <em>instant</em>) pair, not just the task:
+moving <code>due</code> moves a relative reminder to a genuinely new instant, which
+<em>should</em> fire again.</p>
+<h4 id="wiki-dates-reminders-and-recurrence--delivery-never-fails"><span id="h-delivery-never-fails"></span>Delivery never fails</h4>
+<p>The always-compiled backend writes one line to stderr and returns. That is the
+headless/CI-safe path: with no notification transport anywhere, delivery
+degrades to a logged line and exit 0 — never an error.</p>
+<p>Native OS toasts (Windows, macOS, Linux/D-Bus) live behind the off-by-default
+<code>notify-os</code> build feature <em>and</em> need an explicit opt-in:</p>
+<pre class="plain"><code># config.toml
+[notify]
+enabled = true</code></pre>
+<p>Even then the stderr line still comes first, so the verifiable surface never
+depends on which backend is live. Two opt-ins, both off by default — that is the
+quiet-by-default rule taken seriously.</p>
+<h4 id="wiki-dates-reminders-and-recurrence--firing-one-by-hand"><span id="h-firing-one-by-hand"></span>Firing one by hand</h4>
+<p><code>reminder.fire</code> takes a <code>ref</code> and an <code>at</code> instant, and it is idempotent — the
+second call reports <code>fired: false</code> rather than notifying twice:</p>
+<div class="snip"><div class="snip-h"><span class="dollar">$</span><button class="copy" type="button">Copy</button></div><pre class="cmd"><code>echo &#39;{&quot;tasqx&quot;:&quot;1&quot;,&quot;id&quot;:&quot;r1&quot;,&quot;method&quot;:&quot;reminder.fire&quot;,&quot;params&quot;:{&quot;ref&quot;:&quot;1&quot;,&quot;at&quot;:&quot;2026-07-16T00:00:00Z&quot;}}&#39; | tasqx api
+echo &#39;{&quot;tasqx&quot;:&quot;1&quot;,&quot;id&quot;:&quot;r2&quot;,&quot;method&quot;:&quot;reminder.fire&quot;,&quot;params&quot;:{&quot;ref&quot;:&quot;1&quot;,&quot;at&quot;:&quot;2026-07-16T00:00:00Z&quot;}}&#39; | tasqx api</code></pre><pre class="out"><code>{&quot;id&quot;:&quot;r1&quot;,&quot;ok&quot;:true,&quot;result&quot;:{&quot;at&quot;:&quot;2026-07-16T00:00:00Z&quot;,&quot;fired&quot;:true,&quot;short_id&quot;:1},&quot;tasqx&quot;:&quot;1&quot;}
+{&quot;id&quot;:&quot;r2&quot;,&quot;ok&quot;:true,&quot;result&quot;:{&quot;at&quot;:&quot;2026-07-16T00:00:00Z&quot;,&quot;fired&quot;:false,&quot;short_id&quot;:1},&quot;tasqx&quot;:&quot;1&quot;}</code></pre></div>
+<p>And the event is in the log, where the dedupe check reads it:</p>
+<pre class="plain"><code>{
+  &quot;actor&quot;: &quot;user&quot;,
+  &quot;entity&quot;: &quot;task&quot;,
+  &quot;op&quot;: &quot;reminded&quot;,
+  &quot;payload&quot;: {
+    &quot;at&quot;: &quot;2026-07-16T00:00:00Z&quot;,
+    &quot;due&quot;: &quot;2026-07-17T00:00:00Z&quot;,
+    &quot;remind&quot;: &quot;-1h&quot;,
+    &quot;short_id&quot;: 1,
+    &quot;title&quot;: &quot;Deploy the release&quot;
+  },
+  &quot;ts&quot;: &quot;2026-07-16T08:52:35.4429051Z&quot;
+}</code></pre><h3 id="wiki-dates-reminders-and-recurrence--recurrence"><span id="h-recurrence"></span>Recurrence</h3>
+<p><code>repeat:</code> makes a task come back. A recurring task is a <strong>template</strong>:
+completing an instance spawns the next one with its date advanced by the rule.
+Set it with <code>repeat:</code> / <code>every:</code> / <code>--repeat</code>, and stop it with
+<code>tasqx modify &lt;ref&gt; --clear recurrence</code>.</p>
+<div class="tw"><table class="grid"><thead><tr><th id="wiki-dates-reminders-and-recurrence-tbl5-h0">Rule</th><th id="wiki-dates-reminders-and-recurrence-tbl5-h1">Example</th></tr></thead><tbody>
+<tr><td data-label="Rule" headers="wiki-dates-reminders-and-recurrence-tbl5-h0"><code>every N days|weeks|months</code></td><td data-label="Example" headers="wiki-dates-reminders-and-recurrence-tbl5-h1"><code>"every 3 days"</code>, <code>"every week"</code></td></tr>
+<tr><td data-label="Rule" headers="wiki-dates-reminders-and-recurrence-tbl5-h0"><code>weekly on &lt;days&gt;</code></td><td data-label="Example" headers="wiki-dates-reminders-and-recurrence-tbl5-h1"><code>"weekly on mon,wed,fri"</code></td></tr>
+<tr><td data-label="Rule" headers="wiki-dates-reminders-and-recurrence-tbl5-h0"><code>monthly on day &lt;D&gt;</code></td><td data-label="Example" headers="wiki-dates-reminders-and-recurrence-tbl5-h1"><code>"monthly on day 15"</code></td></tr>
+<tr><td data-label="Rule" headers="wiki-dates-reminders-and-recurrence-tbl5-h0"><code>monthly on the &lt;Nth&gt; &lt;weekday&gt;</code></td><td data-label="Example" headers="wiki-dates-reminders-and-recurrence-tbl5-h1"><code>"monthly on the 2nd tuesday"</code>, <code>"monthly on the last friday"</code></td></tr>
+</tbody></table></div>
+<p>This is a deliberate subset — not full RRULE. Anything outside it is a clean
+error.</p>
 <div class="snip"><div class="snip-h"><span class="dollar">$</span><button class="copy" type="button">Copy</button></div><pre class="cmd"><code>tasqx add Water plants repeat:&quot;every 3 days&quot;
 tasqx add Standup repeat:&quot;weekly on mon,wed,fri&quot;
 tasqx add Pay rent due:&quot;2026-09-01&quot; repeat:&quot;monthly on day 1&quot;
@@ -1748,7 +1431,35 @@ quoting what the previous occurrence delivered.</li>
 <code>monthly on day 15</code> when the day of month matters.</li>
 <li>Stop a recurrence with <code>tasqx modify &lt;ref&gt; --clear recurrence</code>.</li>
 </ul>
-<div class="pagenav"><a class="prev" href="#wiki-dependencies"><span class="pn-k">Previous</span><span class="pn-l">Dependencies</span></a><a class="next" href="#wiki-dashboard-and-live-view"><span class="pn-k">Next</span><span class="pn-l">Dashboard and Live View</span></a></div></section><section class="page" id="wiki-dashboard-and-live-view"><h2>Dashboard and Live View</h2><p>Two ways to watch your work instead of querying it.</p>
+<div class="snip"><div class="snip-h"><span class="dollar">$</span><button class="copy" type="button">Copy</button></div><pre class="cmd"><code>tasqx add &quot;Water the plants project:home repeat:\&quot;every 3 days\&quot; due:today&quot;
+tasqx done 4
+tasqx show 5</code></pre><pre class="out"><code>▌ #4  Water the plants
+▌ added   - ▄▄▄▃ 11.4   home   due today 23:59   ↻ every 3 days
+▌ #4  Water the plants
+▌ done today   home   due today 23:59
+  #5  next, due Fri
+▌ #5  Water the plants
+▌
+▌ status      pending           urgency     - ▄▄▃▁ 8.9
+▌ project     home              due         Fri (in 4 days)
+▌ repeats     every 3 days      created     today 07:51 (just now)
+▌ modified    today 07:51 (just now)
+▌ rev         1</code></pre></div><h4 id="wiki-dates-reminders-and-recurrence--missed-occurrences-collapse"><span id="h-missed-occurrences-collapse"></span>Missed occurrences collapse</h4>
+<p>If the computer was off for a week, a daily task does <em>not</em> hand you seven
+instances. The rule advances at least once and then skips every slot at or
+before now, so you get exactly one future instance. A backfill storm is never
+useful.</p>
+<h4 id="wiki-dates-reminders-and-recurrence--month-end--precisely"><span id="h-month-end--precisely"></span>Month-end, precisely</h4>
+<p>The two monthly forms differ on purpose, and the difference matters at month
+boundaries:</p>
+<div class="tw"><table class="grid"><thead><tr><th id="wiki-dates-reminders-and-recurrence-tbl6-h0">Rule</th><th id="wiki-dates-reminders-and-recurrence-tbl6-h1">From Jan 31</th><th id="wiki-dates-reminders-and-recurrence-tbl6-h2">Why</th></tr></thead><tbody>
+<tr><td data-label="Rule" headers="wiki-dates-reminders-and-recurrence-tbl6-h0"><code>monthly on day 31</code></td><td data-label="From Jan 31" headers="wiki-dates-reminders-and-recurrence-tbl6-h1">Jan 31 → Feb 28 → <strong>Mar 31</strong></td><td data-label="Why" headers="wiki-dates-reminders-and-recurrence-tbl6-h2">Re-clamps against the stored target day every step, so month-end recovers.</td></tr>
+<tr><td data-label="Rule" headers="wiki-dates-reminders-and-recurrence-tbl6-h0"><code>every 1 month</code></td><td data-label="From Jan 31" headers="wiki-dates-reminders-and-recurrence-tbl6-h1">Jan 31 → Feb 28 → <strong>Mar 28</strong></td><td data-label="Why" headers="wiki-dates-reminders-and-recurrence-tbl6-h2">Advances from the previous (already clamped) date, so it drifts and stays there.</td></tr>
+</tbody></table></div><div class="callout note"><span class="tag">Note</span>
+<p>Pick <code>monthly on day 31</code> when you mean "the last-ish day of every
+month". Pick <code>every 1 month</code> when you mean "same slot, one month on".</p>
+</div><div class="pagenav"><a class="prev" href="#wiki-dependencies"><span class="pn-k">Previous</span><span class="pn-l">Dependencies</span></a><a class="next" href="#wiki-dashboard-and-live-view"><span class="pn-k">Next</span><span class="pn-l">Dashboard and Live View</span></a></div></section><section class="page" id="wiki-dashboard-and-live-view"><h2>Dashboard and Live View</h2><span id="daemon"></span><p>Two ways to watch your work instead of querying it, and the daemon that makes
+the live one possible.</p>
 <h3 id="wiki-dashboard-and-live-view--screens-and-pipes">Screens and pipes</h3>
 <p>Five commands open a screen instead of printing a table, and each answers a
 pipe in its own way. <code>tasqx pick</code>, <code>tasqx dashboard</code> and <code>tasqx config edit</code>
@@ -1802,17 +1513,36 @@ bare <code>tasqx</code> prints the plain task table instead. But an agent or har
 allocates a pty looks interactive, and a bare <code>tasqx</code> there opens a
 full-screen program that waits for a keypress. So in anything automated, spell
 the verb: <code>tasqx list</code> always means the table.</p>
-<h3 id="wiki-dashboard-and-live-view--tasqx-watch">tasqx watch</h3>
+<h3 id="wiki-dashboard-and-live-view--tasqx-watch"><span id="h-watch"></span>tasqx watch</h3>
 <p>A task list that redraws itself the moment anything changes — from another
 terminal, from an AI agent, from anywhere.</p>
 <div class="tw"><table class="grid"><thead><tr><th id="wiki-dashboard-and-live-view-tbl2-h0">Command</th><th id="wiki-dashboard-and-live-view-tbl2-h1">What it does</th></tr></thead><tbody>
 <tr><td data-label="Command" headers="wiki-dashboard-and-live-view-tbl2-h0"><code>tasqx daemon</code></td><td data-label="What it does" headers="wiki-dashboard-and-live-view-tbl2-h1">In one terminal: the server</td></tr>
 <tr><td data-label="Command" headers="wiki-dashboard-and-live-view-tbl2-h0"><code>tasqx watch project:work</code></td><td data-label="What it does" headers="wiki-dashboard-and-live-view-tbl2-h1">In another: the live view</td></tr>
 </tbody></table></div>
-<p><code>watch</code> needs a running <a href="#wiki-ai-agents-and-automation--tasqx-daemon">daemon</a>;
-the daemon pushes a change notification on every write, and <code>watch</code>
-re-renders. Any <a href="#wiki-finding-tasks--the-filter-language">filter</a> narrows what it
-follows. Ctrl-C stops it.</p>
+<p><code>watch</code> subscribes to a <a href="#wiki-ai-agents-and-automation--tasqx-daemon">daemon</a> and
+re-renders on every <code>task.changed</code> push; the daemon pushes a notification on
+every write. It takes a <a href="#wiki-finding-tasks--the-filter-language">filter</a>,
+defaulting to the working set, and any filter narrows what it follows. Ctrl-C
+stops it. It needs a running daemon and will never auto-spawn one — it hints
+instead:</p>
+<div class="snip"><div class="snip-h"><span class="dollar">$</span><button class="copy" type="button">Copy</button></div><pre class="cmd"><code>tasqx watch --socket nope</code></pre><pre class="out"><code>tasqx watch: no daemon reachable at nope
+hint: start one with `tasqx daemon` (add `--socket nope` to match)</code></pre></div>
+<p>On a terminal it clears the screen and repaints the table. Through a pipe it
+streams one line per event instead — so it composes with everything else in your
+shell:</p>
+<div class="snip"><div class="snip-h"><span class="dollar">$</span><button class="copy" type="button">Copy</button></div><pre class="cmd"><code>tasqx watch --socket tasqx-docsdemo | cat
+# ... meanwhile, in another shell:
+#   tasqx --socket tasqx-docsdemo add &quot;Wire up the docs page ...&quot;
+#   tasqx --socket tasqx-docsdemo done 3</code></pre><pre class="out"><code>4 tasks · 1 overdue
+
+  ID          URG  TASK                         PROJECT     DUE        TAGS
+   1  H ▄▄▄▄ 15.7  Ship the v1 JSON API freeze  work.tasqx  Fri        +api +release
+   3  - ▄▄▄▄ 12.0  Renew the TLS cert           work.tasqx  yesterday  +ops
+   5  - ▄▄▃▁  8.9  Water the plants             home        Fri
+   2  - ▄▄▂▁  7.1  Write the user guide         work.tasqx  Mon        +docs
+task.changed op=add short_id=6
+task.changed op=done short_id=3</code></pre></div>
 <p>Leave it open on a second monitor while an agent works through your backlog —
 you see every task start, complete and unblock as it happens.</p>
 <h3 id="wiki-dashboard-and-live-view--tasqx-board">tasqx board</h3>
@@ -1853,7 +1583,55 @@ and local. Put it behind a reverse proxy and authentication is the proxy's job.<
 <code>config.toml</code>, readable only by you, so a bookmark of the printed URL keeps
 working after a restart.</p>
 <p>The page is one self-contained file: nothing is fetched from the internet.</p>
-<div class="pagenav"><a class="prev" href="#wiki-dates-reminders-and-recurrence"><span class="pn-k">Previous</span><span class="pn-l">Dates, Reminders and Recurrence</span></a><a class="next" href="#wiki-reports-and-charts"><span class="pn-k">Next</span><span class="pn-l">Reports and Charts</span></a></div></section><section class="page" id="wiki-reports-and-charts"><h2>Reports and Charts</h2><p>What happened, what's left, and where the time and tokens went — in the
+<h3 id="wiki-dashboard-and-live-view--the-daemon">The daemon</h3>
+<p>The daemon is optional. It holds one database connection, serves the JSON API
+over a local socket to many concurrent clients, pushes change notifications, and
+runs the reminder scheduler. The CLI never requires it. The agents page covers
+the rest of it, including the OTLP receiver:
+<a href="#wiki-ai-agents-and-automation--tasqx-daemon"><code>tasqx daemon</code></a>.</p>
+<h4 id="wiki-dashboard-and-live-view--one-shot-or-daemon-"><span id="h-one-shot-or-daemon-"></span>One-shot or daemon?</h4><div class="tw"><table class="grid"><thead><tr><th id="wiki-dashboard-and-live-view-tbl4-h0">Mode</th><th id="wiki-dashboard-and-live-view-tbl4-h1">When</th><th id="wiki-dashboard-and-live-view-tbl4-h2">Why</th></tr></thead><tbody>
+<tr><td data-label="Mode" headers="wiki-dashboard-and-live-view-tbl4-h0">One-shot</td><td data-label="When" headers="wiki-dashboard-and-live-view-tbl4-h1">The default. Scripts, cron, the HTML report.</td><td data-label="Why" headers="wiki-dashboard-and-live-view-tbl4-h2">No process to manage. Open the DB, run one command, exit.</td></tr>
+<tr><td data-label="Mode" headers="wiki-dashboard-and-live-view-tbl4-h0">Daemon</td><td data-label="When" headers="wiki-dashboard-and-live-view-tbl4-h1">Long-lived clients: a TUI, a GUI, <code>watch</code>, reminders.</td><td data-label="Why" headers="wiki-dashboard-and-live-view-tbl4-h2">One writer, warm caches, live push, and something to fire reminders.</td></tr>
+</tbody></table></div>
+<p>If a daemon is reachable, one-shot commands route through it automatically —
+single writer, live-update semantics for free. If not, they open the store
+in-process. <strong>Same command surface either way</strong>, and a missing or stale socket
+falls back immediately rather than hanging. <code>--no-daemon</code> forces the in-process
+path.</p>
+<p><code>$TASQX_DB</code> always wins over a daemon on another store. Naming the file the
+daemon serves, commands route through it as usual. Naming a different file, a
+daemon found on the default socket is passed over and the command runs
+in-process against <code>$TASQX_DB</code>; a daemon named by <code>--socket</code> or <code>$TASQX_SOCK</code> is
+refused with exit 2, naming both files (D204).</p>
+<p>Four surfaces never route through a daemon: <code>api</code>, <code>mcp serve</code>, <code>chart</code> and
+<code>report --html</code> open the store in-process, always. They refuse an explicit
+<code>--socket</code> rather than ignore it (D73), because a flag that names a daemon and
+is silently discarded aims your write at a different store than the one you
+asked for.</p>
+<h4 id="wiki-dashboard-and-live-view--socket-addresses"><span id="h-socket-addresses"></span>Socket addresses</h4>
+<p>Resolution order: <code>--socket</code>, then <code>$TASQX_SOCK</code>, then the platform default.</p>
+<div class="tw"><table class="grid"><thead><tr><th id="wiki-dashboard-and-live-view-tbl5-h0">Platform</th><th id="wiki-dashboard-and-live-view-tbl5-h1">Default</th></tr></thead><tbody>
+<tr><td data-label="Platform" headers="wiki-dashboard-and-live-view-tbl5-h0">Windows</td><td data-label="Default" headers="wiki-dashboard-and-live-view-tbl5-h1">The named pipe <code>tasqx-default</code></td></tr>
+<tr><td data-label="Platform" headers="wiki-dashboard-and-live-view-tbl5-h0">Linux</td><td data-label="Default" headers="wiki-dashboard-and-live-view-tbl5-h1"><code>$XDG_RUNTIME_DIR/tasqx/tasqx.sock</code> (falls back to the data dir)</td></tr>
+<tr><td data-label="Platform" headers="wiki-dashboard-and-live-view-tbl5-h0">macOS</td><td data-label="Default" headers="wiki-dashboard-and-live-view-tbl5-h1"><code>&lt;data dir&gt;/tasqx.sock</code> — macOS has no runtime dir</td></tr>
+</tbody></table></div><h4 id="wiki-dashboard-and-live-view--running-it"><span id="h-running-it"></span>Running it</h4>
+<p>Diagnostics go to stderr; the socket carries the newline-delimited JSON API.
+Ctrl-C stops it cleanly, unwinding the accept loop and removing the socket file
+(a no-op for Windows named pipes). <code>--db</code> points it at a specific store.</p>
+<div class="snip"><div class="snip-h"><span class="dollar">$</span><button class="copy" type="button">Copy</button></div><pre class="cmd"><code>tasqx daemon --socket tasqx-docsdemo</code></pre><pre class="out"><code>tasqx daemon: listening on tasqx-docsdemo (Ctrl-C to stop)
+tasqx daemon: store ~/.local/share/tasqx/tasks.db</code></pre></div>
+<p>It stays until you stop it. Set <code>[daemon] idle_timeout</code> to a number of minutes
+and it will instead exit by itself once that long has passed with no client
+connected, no subscriber attached, no reminder about to ripen and no telemetry
+posted to its OTLP receiver — and it says so on stderr on the way out. <code>0</code>, the
+default, means it never does. Turning the receiver on does not hold it open:
+only exports that actually arrive count as work. An idle exit also leaves a note
+beside <code>config.toml</code>: the first command that then fails to reach the daemon
+reports the retirement and which store is no longer being served, because a
+daemon leaving changes where the same command line writes (D74).</p>
+<p>Now route a command through it — note this is the ordinary <code>add</code>, unchanged:</p>
+<div class="snip"><div class="snip-h"><span class="dollar">$</span><button class="copy" type="button">Copy</button></div><pre class="cmd"><code>tasqx --socket tasqx-docsdemo add &quot;Wire up the docs page +docs project:work.tasqx due:tomorrow&quot;</code></pre><pre class="out"><code>▌ #6  Wire up the docs page
+▌ added   - ▄▄▄▃ 11.4   work.tasqx   due tomorrow   +docs</code></pre></div><div class="pagenav"><a class="prev" href="#wiki-dates-reminders-and-recurrence"><span class="pn-k">Previous</span><span class="pn-l">Dates, Reminders and Recurrence</span></a><a class="next" href="#wiki-reports-and-charts"><span class="pn-k">Next</span><span class="pn-l">Reports and Charts</span></a></div></section><section class="page" id="wiki-reports-and-charts"><h2>Reports and Charts</h2><p>What happened, what's left, and where the time and tokens went — in the
 terminal, or as an HTML page you can send to someone.</p>
 <h3 id="wiki-reports-and-charts--tasqx-report">tasqx report</h3>
 <p>Summary counts, optionally grouped.</p>
@@ -1900,7 +1678,46 @@ self-reported counts on <code>task.done</code> (the primary source, via <code>to
 parsing local AI-tool transcripts when <code>tokens.enabled = true</code>, or by the
 daemon's OTLP receiver when <code>otlp.enabled = true</code>
 (<a href="#wiki-ai-agents-and-automation--tasqx-daemon"><code>tasqx daemon</code></a>).</p>
-<h3 id="wiki-reports-and-charts--tasqx-report---outcomes">tasqx report --outcomes</h3>
+<h4 id="wiki-reports-and-charts--grouping-and-what-counts"><span id="h-reports"></span>Grouping and what counts</h4>
+<p><code>tasqx report [group_by] [filter] [--all]</code> — group by <code>project</code> (default),
+<code>status</code>, or <code>priority</code>. Estimates total as ISO-8601 durations, which is why
+<a href="#wiki-dates-reminders-and-recurrence--estimates"><code>est:</code></a> is parsed at the edge rather
+than stored as opaque text.</p>
+<p><strong>What counts.</strong> A report is an aggregation, so it leaves <em>cancelled</em> tasks out
+— tasqx has no hard delete, and without this every task you ever threw away
+would inflate your totals forever. <em>Done</em> tasks still count: completed work is
+real work, and it carries nearly all your tracked time. Two ways to override
+that: pass <code>--all</code> to count everything including cancelled, or name a status in
+the filter — <code>tasqx report status:cancelled</code> means what it says and is taken
+literally.</p>
+<div class="snip"><div class="snip-h"><span class="dollar">$</span><button class="copy" type="button">Copy</button></div><pre class="cmd"><code>tasqx report</code></pre><pre class="out"><code>PROJECT               COUNT         EST  OVERDUE     TRACKED        TOKENS
+home                      1        PT0S        1        PT0S             -
+work.tasqx                3     PT5H30M        1        PT0S   cacheR 1.2M</code></pre></div><div class="snip"><div class="snip-h"><span class="dollar">$</span><button class="copy" type="button">Copy</button></div><pre class="cmd"><code>tasqx report status</code></pre><pre class="out"><code>STATUS                COUNT         EST  OVERDUE     TRACKED        TOKENS
+pending                   4     PT5H30M        2        PT0S   cacheR 1.2M</code></pre></div>
+<p>TOKENS names the group's largest bucket with that bucket's own count — <code>cacheR 1.2M</code>, or <code>-</code> when nothing was spent. The four buckets are never blended into
+one figure; <code>--json</code> and the HTML report carry the full split (D48/D50).</p>
+<h4 id="wiki-reports-and-charts--the-html-report"><span id="h-the-html-report"></span>The HTML report</h4>
+<p><code>tasqx report --html</code> emits a weekly review as one self-contained file — inline
+CSS, inline SVG charts, no external requests — themed from the same palette as
+your terminal. Exactly like the <code>tasqx docs</code> guide.</p>
+<div class="snip"><div class="snip-h"><span class="dollar">$</span><button class="copy" type="button">Copy</button></div><pre class="cmd"><code>tasqx report --html --out review.html</code></pre><pre class="out"><code>Wrote self-contained HTML report → review.html</code></pre></div>
+<p>Without <code>--out</code> it writes to stdout. The page leads with what changed in the
+period — done, added, net backlog, blocked and overdue, each against the period
+before — then a standup (done yesterday, in progress, blocked and by what, the
+next five and why), a per-project grid, a net-flow chart and the outcomes
+<code>report --outcomes</code> counts. The period is the 7 days ending today; <code>--since</code> and
+<code>--until</code> choose another. Clicking a project scopes every section to it, a
+search covers every task in scope, and a task opens in an overlay with its
+dependencies by title. Annotation bodies stay out of the file unless you pass
+<code>--with-notes</code>; a filter naming one project makes a page about that project
+alone. One small inline script does the clicking; the page reads fully without
+it.</p>
+<div class="callout note"><span class="tag">Note</span>
+<p>Both HTML surfaces — this report and the <code>tasqx docs</code> guide — hold
+the same line: no CDN, no web fonts, no
+remote images, no scripts fetched from anywhere. Mail the file, commit it,
+open it on a plane — it renders the same.</p>
+</div><h3 id="wiki-reports-and-charts--tasqx-report---outcomes">tasqx report --outcomes</h3>
 <p><code>tasqx report</code> says what the work cost. <code>--outcomes</code> says how it went.</p>
 <div class="snip"><div class="snip-h"><span class="dollar">$</span><button class="copy" type="button">Copy</button></div><pre class="cmd"><code>tasqx report --outcomes</code></pre></div><pre class="plain"><code>PROJECT  CLOSED  DONE  REWORK  FORCED  SILENT     CALIB  DROPPED  OVER  UNPROVEN  UNBRIEFED               TOKENS
 api           7     6     0/6     0/6     0/6  ×1.17 n3      1/7   1/2         -        6/6  cacheR 7.0M ~medium
@@ -1948,7 +1765,29 @@ scoped to one slice of the store:</p>
 <code>project:work</code> on the filter is the more general form, since it combines with
 a second predicate (<code>tasqx chart burndown project:work +urgent</code>).</p>
 <p>The charts degrade cleanly from truecolor terminals down to no color at all.</p>
-<h3 id="wiki-reports-and-charts--tasqx-why">tasqx why</h3>
+<h4 id="wiki-reports-and-charts--chart-samples"><span id="h-charts"></span>Chart samples</h4>
+<p>All three read the append-only event log, so they are history, not a snapshot —
+and they are pure reads that never touch your tasks.</p>
+<div class="snip"><div class="snip-h"><span class="dollar">$</span><button class="copy" type="button">Copy</button></div><pre class="cmd"><code>tasqx chart throughput --weeks 12</code></pre><pre class="out"><code>Weekly throughput   added [#]  done [#]
+  W27  added   0   done   0   net   0
+  W28  added   0   done   0   net   0
+  W29  added ##########  5   done ##  1   net  +4
+  &gt; 4-wk velocity 0.2 done/wk - WIP trending up</code></pre></div><div class="snip"><div class="snip-h"><span class="dollar">$</span><button class="copy" type="button">Copy</button></div><pre class="cmd"><code>tasqx chart heatmap --weeks 4</code></pre><pre class="out"><code>Completions - last 4 weeks   . 0  : 1-2  + 3-4  # 5+
+  Mon . . . . 
+      . . . . 
+  Wed . . . . 
+      . . . : 
+  Fri . . . . 
+      . . . . 
+  Sun . . . . 
+  &gt; 1 done - current streak 1 days - best 1</code></pre></div><div class="snip"><div class="snip-h"><span class="dollar">$</span><button class="copy" type="button">Copy</button></div><pre class="cmd"><code>tasqx chart burndown --days 7</code></pre><pre class="out"><code>Remaining open - all tasks
+    4  ______#
+    0  2026-07-10 -&gt; 2026-07-16
+  &gt; 4 left - up 4 over 7 days</code></pre></div><div class="tw"><table class="grid"><thead><tr><th id="wiki-reports-and-charts-tbl4-h0">Chart</th><th id="wiki-reports-and-charts-tbl4-h1">Flags</th></tr></thead><tbody>
+<tr><td data-label="Chart" headers="wiki-reports-and-charts-tbl4-h0"><code>throughput</code></td><td data-label="Flags" headers="wiki-reports-and-charts-tbl4-h1"><code>--weeks &lt;n&gt;</code> (default 12)</td></tr>
+<tr><td data-label="Chart" headers="wiki-reports-and-charts-tbl4-h0"><code>heatmap</code></td><td data-label="Flags" headers="wiki-reports-and-charts-tbl4-h1"><code>--weeks &lt;n&gt;</code> (default 12), <code>--year</code> (52 weeks)</td></tr>
+<tr><td data-label="Chart" headers="wiki-reports-and-charts-tbl4-h0"><code>burndown</code></td><td data-label="Flags" headers="wiki-reports-and-charts-tbl4-h1"><code>--days &lt;n&gt;</code> (default 30), <code>--project &lt;p&gt;</code></td></tr>
+</tbody></table></div><h3 id="wiki-reports-and-charts--tasqx-why">tasqx why</h3>
 <p>Not a report, but the same spirit: <code>tasqx why &lt;ref&gt;</code> breaks a task's urgency
 score into its components, so the ordering of every list stays explainable.
 See <a href="#wiki-finding-tasks--tasqx-why">Finding Tasks</a>.</p>
@@ -2422,9 +2261,11 @@ ever read and the task simply reports zero tokens.</p>
 full-screen <a href="#wiki-dashboard-and-live-view--tasqx-dashboard">dashboard</a> and waits
 for a key. Harnesses that allocate a pty look interactive. So in scripts and
 agent tooling, always spell the verb: <code>tasqx list</code>, never bare <code>tasqx</code>.</p>
-<div class="pagenav"><a class="prev" href="#wiki-memory"><span class="pn-k">Previous</span><span class="pn-l">Memory</span></a><a class="next" href="#wiki-import-and-export"><span class="pn-k">Next</span><span class="pn-l">Import and Export</span></a></div></section><section class="page" id="wiki-import-and-export"><h2>Import and Export</h2><p>Your data, in and out, as plain JSON. This is the backup story, the migration
+<div class="pagenav"><a class="prev" href="#wiki-memory"><span class="pn-k">Previous</span><span class="pn-l">Memory</span></a><a class="next" href="#wiki-import-and-export"><span class="pn-k">Next</span><span class="pn-l">Import and Export</span></a></div></section><section class="page" id="wiki-import-and-export"><h2>Import and Export</h2><span id="data"></span><p>Your data, in and out, as plain JSON. This is the backup story, the migration
 story, and the "way back" for anything archived.</p>
-<h3 id="wiki-import-and-export--tasqx-export">tasqx export</h3>
+<p>Your data is yours. <code>export</code> emits canonical JSON — stable UUIDs, every field,
+sorted keys — that is git-diffable, greppable, and round-trips exactly.</p>
+<h3 id="wiki-import-and-export--tasqx-export"><span id="h-export"></span>tasqx export</h3>
 <p>Dump tasks as canonical JSON to stdout, or to a file with <code>--out</code>.</p>
 <ul>
 <li><code>tasqx export project:work &gt; work.json</code>: any filter narrows it</li>
@@ -2462,13 +2303,93 @@ it is among the projects the filter kept, so a filtered export whose
 scope drops it comes back with no default rather than a document
 <code>tasqx import</code> would refuse.</li>
 </ul>
-<div class="snip"><div class="snip-h"><span class="dollar">$</span><button class="copy" type="button">Copy</button></div><pre class="cmd"><code>tasqx export project:work --include-unscoped &gt; work-and-global.json</code></pre></div><h3 id="wiki-import-and-export--tasqx-import">tasqx import</h3>
+<div class="snip"><div class="snip-h"><span class="dollar">$</span><button class="copy" type="button">Copy</button></div><pre class="cmd"><code>tasqx export project:work --include-unscoped &gt; work-and-global.json</code></pre></div>
+<p>With no filter you get everything. With a
+<a href="#wiki-finding-tasks--the-filter-language">filter</a> you get a slice. Human output <em>is</em> the JSON array — there is no separate
+pretty mode to drift from it.</p>
+<div class="snip"><div class="snip-h"><span class="dollar">$</span><button class="copy" type="button">Copy</button></div><pre class="cmd"><code>tasqx export +api</code></pre><pre class="out"><code>[
+  {
+    &quot;_rev&quot;: 4,
+    &quot;annotations&quot;: [
+      {
+        &quot;body&quot;: &quot;Blocked on the D12 decision&quot;,
+        &quot;created&quot;: &quot;2026-07-16T08:51:09.6830568Z&quot;,
+        &quot;id&quot;: &quot;019f6a1f-62f3-75f0-bf57-e5ff9c7c452a&quot;
+      }
+    ],
+    &quot;completed&quot;: null,
+    &quot;created&quot;: &quot;2026-07-16T08:51:09.2509427Z&quot;,
+    &quot;depends_on&quot;: [],
+    &quot;due&quot;: &quot;2026-07-17T00:00:00Z&quot;,
+    &quot;estimate&quot;: &quot;PT4H&quot;,
+    &quot;id&quot;: &quot;019f6a1f-6142-70d3-be5b-e28dc6060e6c&quot;,
+    &quot;modified&quot;: &quot;2026-07-16T08:51:09.6830568Z&quot;,
+    &quot;priority&quot;: &quot;H&quot;,
+    &quot;project&quot;: &quot;work.tasqx&quot;,
+    &quot;recurrence&quot;: null,
+    &quot;remind&quot;: null,
+    &quot;scheduled&quot;: null,
+    &quot;short_id&quot;: 1,
+    &quot;status&quot;: &quot;pending&quot;,
+    &quot;tags&quot;: [
+      &quot;api&quot;,
+      &quot;release&quot;
+    ],
+    &quot;title&quot;: &quot;Ship the v1 JSON API freeze&quot;,
+    &quot;urgency&quot;: 17.5,
+    &quot;wait&quot;: null
+  }
+]</code></pre></div><h4 id="wiki-import-and-export--filtered-exports-and-dependency-edges"><span id="h-filtered-exports-and-dependency-edges"></span>Filtered exports and dependency edges</h4>
+<p>A filter selects a subset, so a dependency pointing <em>out</em> of that subset cannot
+travel with it — the target is not in the document. Those edges are trimmed, and
+you are told, on <strong>stderr</strong>:</p>
+<div class="snip"><div class="snip-h"><span class="dollar">$</span><button class="copy" type="button">Copy</button></div><pre class="cmd"><code>tasqx export +docs &gt; slice.json</code></pre><pre class="out"><code>note: 1 dependency points outside the export, left out — widen the filter to keep it</code></pre></div><div class="callout note"><span class="tag">Note</span>
+<p>The note is on stderr <em>because</em> stdout is the JSON. A note there
+would corrupt every pipe. <code>tasqx export +docs &gt; slice.json</code> gives you a
+clean file and a visible warning, both.</p>
+</div>
+<p>The <code>--json</code> form reports the same thing as data — <code>dropped_dependencies</code> is
+always present, and is <code>0</code> for an unfiltered export:</p>
+<div class="snip"><div class="snip-h"><span class="dollar">$</span><button class="copy" type="button">Copy</button></div><pre class="cmd"><code>tasqx export +api --json</code></pre><pre class="out"><code>{
+  &quot;default_project&quot;: &quot;work&quot;,
+  &quot;docs&quot;: [ ... ],
+  &quot;dropped_dependencies&quot;: 0,
+  &quot;projects&quot;: [ ... ],
+  &quot;tasks&quot;: [ ... ]
+}</code></pre></div><h4 id="wiki-import-and-export--what-a-document-carries"><span id="h-what-a-document-carries"></span>What a document carries</h4>
+<p>An export is a <strong>self-contained document</strong>, and a project is part of it (D37):
+the <code>projects</code> array carries every project row — name, description, archived
+state, identity — and <code>default_project</code> names the project a bare <code>tasqx add</code>
+inherits. So are your <a href="#wiki-memory">memory docs</a> (D41): the <code>docs</code> array carries
+every knowledge document, all of them regardless of any filter — a filter
+selects tasks, and knowledge is not attached to a task. Restoring gives you back
+the store you exported, not just its tasks. These sections are <strong>optional on
+import</strong>, so a file written by an older tasqx still restores: with no <code>projects</code>
+section there is nothing to check a task’s <code>project</code> against, so the row is
+created from the tasks and <code>import</code> says which ones it made. With one, the
+document is authoritative — a task naming a project it does not define is
+refused, exactly as <code>tasqx add</code> refuses a <code>--project</code> no <code>init</code> ever created.</p>
+<div class="callout note"><span class="tag">Note</span>
+<p>An import never moves your default. If the destination store
+already has one, the document’s is ignored and the result names the default
+that stands.</p>
+</div><h3 id="wiki-import-and-export--tasqx-import"><span id="h-import"></span>tasqx import</h3>
 <p>Load tasks from a JSON file, or from stdin with <code>-</code>.</p>
 <ul>
 <li><code>tasqx export | tasqx import -</code>: round-trip</li>
 </ul>
 <div class="snip"><div class="snip-h"><span class="dollar">$</span><button class="copy" type="button">Copy</button></div><pre class="cmd"><code>tasqx import backup.json
 tasqx export | tasqx import -</code></pre></div>
+<p>Takes a file, or <code>-</code> for stdin. It accepts either the document <code>export</code> prints
+or a bare array of tasks (which is what every older <code>export</code> wrote). Import is
+an <strong>upsert on the UUID</strong> — re-importing the same document is a no-op, not a
+duplicate.</p>
+<div class="snip"><div class="snip-h"><span class="dollar">$</span><button class="copy" type="button">Copy</button></div><pre class="cmd"><code>tasqx import slice.json</code></pre><pre class="out"><code>imported   2 tasks · 1 project · 3 memory docs</code></pre></div><div class="snip"><div class="snip-h"><span class="dollar">$</span><button class="copy" type="button">Copy</button></div><pre class="cmd"><code>tasqx export +api | TASQX_DB=/tmp/other.db tasqx import -</code></pre><pre class="out"><code>imported   1 task · 1 project · no memory docs</code></pre></div><div class="callout note"><span class="tag">Note</span>
+<p>The doc count is printed even when it is zero, and a document with
+no <code>docs</code> section at all (written by a tasqx older than D41) says so
+explicitly: <code>note: the document carried no `docs` section, so no memory docs were restored</code>. Present-and-empty and absent used to print the
+identical line.</p>
+</div>
 <p>A task whose number is already taken by a <em>different</em> task in this store keeps
 its id and gets the next free number instead of refusing the import; every move
 is listed under <code>renumbered</code>, with the number it came in as and the one it took.
@@ -2550,6 +2471,32 @@ in the same place. If the two copies were wired into opposite ends of one
 dependency chain, the survivor's edge that would close the loop is dropped and
 the note names it. Completing a task again after reopening it does not spawn a
 second next occurrence for the same date.</p>
+<h4 id="wiki-import-and-export--a-field-the-schema-does-not-name-is-rejected"><span id="h-a-field-the-schema-does-not-name-is-rejected"></span>A field the schema does not name is rejected</h4>
+<p>A task object may carry only the keys the schema names, and nothing else (the
+site's page lists them, generated from the code; <code>tasqx docs</code> opens it):</p>
+<p><code>id</code>, <code>short_id</code>, <code>title</code>, <code>status</code>, <code>priority</code>, <code>project</code>, <code>tags</code>, <code>due</code>, <code>scheduled</code>, <code>wait</code>, <code>estimate</code>, <code>recurrence</code>, <code>remind</code>, <code>depends_on</code>, <code>annotations</code>, <code>tokens</code>, <code>urgency</code>, <code>created</code>, <code>modified</code>, <code>completed</code>, <code>_rev</code>, <code>status_unrecognized</code>, <code>tracked_seconds</code>, <code>tracked_adjustment_seconds</code>, <code>budget_tokens</code>, <code>active_since</code>, <code>checks</code>, <code>delivered_annotation_id</code>, <code>spawned_from</code></p>
+<p>An annotation may carry <code>id</code>, <code>body</code>, <code>created</code>. A key outside that set is a
+<code>bad_request</code> naming the task and the field, because the alternative is worse
+than an error: a misspelled <code>tags</code> used to import as <code>ok</code> with the tags silently
+gone, so the report said your data arrived when it had not.</p>
+<pre class="plain"><code>error [bad_request]: store.import: task 019f6a0f-99df-…, unknown task field `tag`
+  (accepted: id, short_id, title, …) — check the spelling or drop it; it was silently
+  ignored before, so the import reported success and the value never arrived</code></pre>
+<p>Two of those keys are accepted and deliberately <em>ignored</em>: <code>urgency</code> is
+recomputed on the way in (it is derived from priority, due date and age, so a
+supplied value could contradict the ranking rule) and <code>status_unrecognized</code> is a
+read-side flag rather than stored state. They are listed because <code>export</code> emits
+them and a round trip has to keep working.</p>
+<h4 id="wiki-import-and-export--a-dangling-edge-is-rejected--not-repaired"><span id="h-a-dangling-edge-is-rejected--not-repaired"></span>A dangling edge is rejected, not repaired</h4>
+<p>A dependency target must be in the payload <em>or</em> already in the store. Anything
+else fails with <code>bad_request</code> naming the id — and because the whole import is
+one transaction, a rejection writes <strong>nothing</strong>.</p>
+<pre class="plain"><code>error [bad_request]: store.import: task 019f6a0f-99df-… depends on 019f6a0f-99b5-…,
+  which is neither in the payload nor in the store (export the dependency too, or drop the edge)</code></pre>
+<p>That is a deliberate choice. An edge to an unknown id means the wrong slice was
+exported; repairing it quietly would hide exactly the mistake worth seeing.
+Payload order does not matter — tasks are written first, edges second, so a
+forward reference is fine.</p>
 <h3 id="wiki-import-and-export--checking-a-restore">Checking a restore</h3>
 <p>A store exported and imported into an empty one comes back with every task,
 project, memory doc, link, check, tag, dependency, timer and note, and the
@@ -2609,15 +2556,24 @@ passphrase (or reads <code>TASQX_SYNC_PASSPHRASE</code> when there is no termina
 every machine that syncs with the remote the same one. Lose it and the
 remote's snapshots cannot be read, though each machine's own store is
 untouched.</p>
-<h3 id="wiki-import-and-export--good-habits">Good habits</h3>
+<h3 id="wiki-import-and-export--recipes"><span id="h-recipes"></span>Recipes</h3><div class="tw"><table class="grid"><thead><tr><th id="wiki-import-and-export-tbl0-h0">Want</th><th id="wiki-import-and-export-tbl0-h1">Do</th></tr></thead><tbody>
+<tr><td data-label="Want" headers="wiki-import-and-export-tbl0-h0">Back up</td><td data-label="Do" headers="wiki-import-and-export-tbl0-h1"><code>tasqx export &gt; backup.json</code></td></tr>
+<tr><td data-label="Want" headers="wiki-import-and-export-tbl0-h0">Version your tasks in git</td><td data-label="Do" headers="wiki-import-and-export-tbl0-h1"><code>tasqx export &gt; tasks.json &amp;&amp; git commit -am wip</code> — canonical output means clean diffs.</td></tr>
+<tr><td data-label="Want" headers="wiki-import-and-export-tbl0-h0">Move to another machine</td><td data-label="Do" headers="wiki-import-and-export-tbl0-h1"><code>tasqx export &gt; all.json</code>, copy, <code>tasqx import all.json</code></td></tr>
+<tr><td data-label="Want" headers="wiki-import-and-export-tbl0-h0">Hand one project to a colleague</td><td data-label="Do" headers="wiki-import-and-export-tbl0-h1"><code>tasqx export project:work.tasqx &gt; slice.json</code> — mind the edge note.</td></tr>
+<tr><td data-label="Want" headers="wiki-import-and-export-tbl0-h0">Query beyond the filter grammar</td><td data-label="Do" headers="wiki-import-and-export-tbl0-h1"><code>tasqx export | jq '[.[] | select(.urgency &gt; 15)]'</code></td></tr>
+</tbody></table></div><h3 id="wiki-import-and-export--good-habits">Good habits</h3>
 <p>A dated backup, in one line:</p>
 <div class="snip"><div class="snip-h"><span class="dollar">$</span><button class="copy" type="button">Copy</button></div><pre class="cmd"><code>tasqx export --out &quot;backup-$(date +%F).json&quot;</code></pre></div>
 <p>The store itself is a single SQLite file (<code>tasqx config store</code> prints its
 path), so file-level backups work too — but the JSON export is
 human-readable, diff-able, and version-control friendly.</p>
-<div class="pagenav"><a class="prev" href="#wiki-ai-agents-and-automation"><span class="pn-k">Previous</span><span class="pn-l">AI Agents and Automation</span></a><a class="next" href="#wiki-settings-and-themes"><span class="pn-k">Next</span><span class="pn-l">Settings and Themes</span></a></div></section><section class="page" id="wiki-settings-and-themes"><h2>Settings and Themes</h2><p>Settings live in a TOML file, but you never have to hand-edit it — every read
+<div class="pagenav"><a class="prev" href="#wiki-ai-agents-and-automation"><span class="pn-k">Previous</span><span class="pn-l">AI Agents and Automation</span></a><a class="next" href="#wiki-settings-and-themes"><span class="pn-k">Next</span><span class="pn-l">Settings and Themes</span></a></div></section><section class="page" id="wiki-settings-and-themes"><h2>Settings and Themes</h2><span id="themes"></span><p>Settings live in a TOML file, but you never have to hand-edit it — every read
 and write goes through a command, and there's a full-screen editor with live
 theme preview.</p>
+<p>Default output should be something you want to look at. Themes drive the
+terminal and the HTML report from the same palette, and degrade honestly when
+the terminal cannot keep up.</p>
 <h3 id="wiki-settings-and-themes--tasqx-config">tasqx config</h3><div class="tw"><table class="grid"><thead><tr><th id="wiki-settings-and-themes-tbl0-h0">Command</th><th id="wiki-settings-and-themes-tbl0-h1">What it does</th></tr></thead><tbody>
 <tr><td data-label="Command" headers="wiki-settings-and-themes-tbl0-h0"><code>tasqx config list</code></td><td data-label="What it does" headers="wiki-settings-and-themes-tbl0-h1">Every setting: value, source, default</td></tr>
 <tr><td data-label="Command" headers="wiki-settings-and-themes-tbl0-h0"><code>tasqx config get theme.name</code></td><td data-label="What it does" headers="wiki-settings-and-themes-tbl0-h1">One resolved value</td></tr>
@@ -2651,7 +2607,44 @@ file you drop in yourself. A one-off try is
 <code>tasqx --theme dracula list</code>, and <code>$TASQX_THEME</code> sets it per environment.</p>
 <p>Output degrades cleanly from truecolor terminals down to terminals with no
 color at all, so themes are a nicety, never a requirement.</p>
-<div class="pagenav"><a class="prev" href="#wiki-import-and-export"><span class="pn-k">Previous</span><span class="pn-l">Import and Export</span></a><a class="next" href="#wiki-shell-completion"><span class="pn-k">Next</span><span class="pn-l">Shell Completion</span></a></div></section><section class="page" id="wiki-shell-completion"><h2>Shell Completion</h2><p>Tab completion for bash, zsh, fish, elvish and PowerShell — the same five
+<h4 id="wiki-settings-and-themes--themes"><span id="h-themes"></span>Themes</h4>
+<p>Five built-ins. Resolution order: <code>--theme</code>, <code>$TASQX_THEME</code>, <code>config.toml</code>,
+default.</p>
+<div class="snip"><div class="snip-h"><span class="dollar">$</span><button class="copy" type="button">Copy</button></div><pre class="cmd"><code>tasqx theme list</code></pre><pre class="out"><code>  THEME
+* nord
+  gruvbox
+  dracula
+  solarized
+  mono</code></pre></div>
+<p>The <code>*</code> marks the theme in effect. <code>tasqx theme show [name]</code> previews every
+role, a sample drawn in it beside its colour and emphasis, plus the urgency
+ramp's bands, rendered at your terminal's <em>real</em> capability. Set one
+permanently:</p>
+<pre class="plain"><code># config.toml
+[theme]
+name = &quot;gruvbox&quot;</code></pre>
+<p>Drop a <code>.toml</code> in <code>$TASQX_CONFIG_DIR/themes/</code> and it appears in <code>theme list</code>
+alongside the built-ins.</p>
+<div class="callout note"><span class="tag">Note</span>
+<p>Capability is detected, not assumed. Pipe tasqx into <code>cat</code> and the
+colour goes away; on a terminal without Unicode the block glyphs degrade to
+ASCII rather than emitting mojibake. <code>mono</code> is there for when you want that
+unconditionally.</p>
+</div><div class="callout note"><span class="tag">Note</span>
+<p>Width is detected too. <code>tasqx list</code> sizes its columns to what is
+actually in them and to the terminal it is printing into: a column no task
+fills — <code>DUE</code> on a store with no due dates — is not drawn at all, and the
+space goes to the titles. Through a pipe there is no width to detect, so the
+table lays out for a fixed 100 columns and two runs of the same store stay
+diffable.</p>
+</div>
+<p>Four environment variables override the detection:</p>
+<div class="tw"><table class="grid"><thead><tr><th id="wiki-settings-and-themes-tbl2-h0">Variable</th><th id="wiki-settings-and-themes-tbl2-h1">Effect</th></tr></thead><tbody>
+<tr><td data-label="Variable" headers="wiki-settings-and-themes-tbl2-h0"><code>NO_COLOR</code></td><td data-label="Effect" headers="wiki-settings-and-themes-tbl2-h1">Set to anything: drop all colour, keep bold/underline. Wins over everything below.</td></tr>
+<tr><td data-label="Variable" headers="wiki-settings-and-themes-tbl2-h0"><code>CLICOLOR_FORCE</code></td><td data-label="Effect" headers="wiki-settings-and-themes-tbl2-h1">Set to anything but <code>0</code>: force colour even through a pipe — for <code>less -R</code> and CI logs.</td></tr>
+<tr><td data-label="Variable" headers="wiki-settings-and-themes-tbl2-h0"><code>TASQX_FORCE_COLOR</code></td><td data-label="Effect" headers="wiki-settings-and-themes-tbl2-h1">Set to anything: same as <code>CLICOLOR_FORCE</code>, scoped to tasqx.</td></tr>
+<tr><td data-label="Variable" headers="wiki-settings-and-themes-tbl2-h0"><code>COLUMNS</code></td><td data-label="Effect" headers="wiki-settings-and-themes-tbl2-h1">How many columns wide to lay tables out. Beats both the terminal's own answer and the piped default — for a multiplexer that misreports its size, or to pin the width of captured output. Clamped to 40–160.</td></tr>
+</tbody></table></div><div class="pagenav"><a class="prev" href="#wiki-import-and-export"><span class="pn-k">Previous</span><span class="pn-l">Import and Export</span></a><a class="next" href="#wiki-shell-completion"><span class="pn-k">Next</span><span class="pn-l">Shell Completion</span></a></div></section><section class="page" id="wiki-shell-completion"><h2>Shell Completion</h2><p>Tab completion for bash, zsh, fish, elvish and PowerShell — the same five
 shells on Linux, macOS and Windows. It completes more than most tools: verbs,
 flags, value sets, file paths, <em>your actual task ids</em>, project and tag names,
 the capture sugar (<code>+tag</code>, <code>project:x</code>, <code>!high</code>) and the whole filter grammar.</p>

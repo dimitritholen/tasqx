@@ -91,5 +91,5 @@ matching nothing.
 
 On purpose, and permanently: no arithmetic, no computed expressions, no
 subqueries. A filter language that grows those becomes a query language nobody
-can predict. For anything beyond this, [export](data.md) to JSON and use a real
+can predict. For anything beyond this, [export](Import-and-Export.md) to JSON and use a real
 tool — `jq`, a script, whatever you like. The store is yours.
