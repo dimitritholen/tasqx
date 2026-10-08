@@ -2622,7 +2622,7 @@ mod tests {
     /// Opt-in default-off (DESIGN §10): with no explicit `otlp_port`, the serve
     /// loop's `if let Some(port)` guard spawns no receiver thread. Encoding the
     /// default here pins "disabled config => no listener" at the one seam the CLI
-    /// wires (`config_otlp_enabled().then(config_otlp_port)` yields `None`).
+    /// wires (`config_is_enabled("otlp.enabled").then(config_otlp_port)` yields `None`).
     #[test]
     fn otlp_receiver_is_off_by_default() {
         assert!(

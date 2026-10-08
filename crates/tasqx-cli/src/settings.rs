@@ -130,7 +130,7 @@ pub(crate) fn effective_setting(
 /// distinct classes, both silent until now: `config::read_table_strict`
 /// already existed for `tasqx config`'s OWN reads (`file_value`), but nothing
 /// called it from the render path, so every OTHER verb read through the silent
-/// `toml_value_in` and never learned the file failed to parse at all. An
+/// `toml_value` and never learned the file failed to parse at all. An
 /// unknown key is a different failure mode again — `coerce` only rejects a
 /// value of the wrong TYPE, so a key nothing declares is simply never looked
 /// up, and even `config list` (which reads strictly) had nothing to say about
@@ -139,16 +139,22 @@ pub(crate) fn config_file_warnings_in(dir: &std::path::Path) -> Vec<String> {
     match config::read_table_strict(dir) {
         Err(e) => vec![e.message],
         Ok(None) => Vec::new(),
-        Ok(Some(table)) => table
-            .iter()
-            .filter_map(|(section, value)| value.as_table().map(|t| (section, t)))
-            .flat_map(|(section, inner)| {
-                inner.keys().filter_map(move |key| {
-                    let dotted = format!("{section}.{key}");
-                    (config::find(&dotted).is_none()).then(|| unknown_key(&dotted).message)
-                })
-            })
-            .collect(),
+        Ok(Some(doc)) => {
+            let mut unknown: Vec<(&str, &str)> = doc
+                .iter()
+                .filter_map(|(section, item)| item.as_table_like().map(|t| (section, t)))
+                .flat_map(|(section, inner)| inner.iter().map(move |(key, _)| (section, key)))
+                .filter(|(section, key)| config::find(&format!("{section}.{key}")).is_none())
+                .collect();
+            // Sorted, as the `toml::Table` this was read through before #737
+            // iterated: a warning's place must not depend on where in the file
+            // the stray key sits.
+            unknown.sort_unstable();
+            unknown
+                .into_iter()
+                .map(|(section, key)| unknown_key(&format!("{section}.{key}")).message)
+                .collect()
+        }
     }
 }
 
@@ -210,25 +216,16 @@ pub(crate) fn themes_dir() -> Option<PathBuf> {
         .map(|dirs| dirs.config_dir().join("themes"))
 }
 
-/// Read `[notify] enabled` from `config.toml` (DESIGN.md §9).
+/// Whether a `Kind::Bool` setting — `notify.enabled` (DESIGN.md §9),
+/// `tokens.enabled` (#17), `otlp.enabled` (#18) — is on.
 ///
-/// Native OS toasts are opt-in: absent config means `false`, so every failure
-/// mode here — no config dir, no file, malformed TOML, wrong type — lands on
-/// "don't notify", never on "notify anyway", and a fresh install is quiet.
-pub(crate) fn config_notify_enabled() -> bool {
-    let s = config::find("notify.enabled").expect("notify.enabled is a registered setting");
-    let (v, _) = config::resolve(s, None, config::toml_value(s).as_deref());
-    v == "true"
-}
-
-/// Read `[tokens] enabled` from `config.toml` (#17, DESIGN §10).
-///
-/// Off by default: like [`config_notify_enabled`], every failure mode — no
-/// config dir, no file, malformed TOML, wrong type — lands on "don't attribute",
-/// so a fresh install never parses AI tool transcripts until the user opts in.
-pub(crate) fn config_tokens_enabled() -> bool {
-    let s = config::find("tokens.enabled").expect("tokens.enabled is a registered setting");
-    let (v, _) = config::resolve(s, None, config::toml_value(s).as_deref());
+/// All three are opt-in, so every failure mode — no config dir, no file,
+/// malformed TOML, wrong type — lands on off, and a fresh install neither
+/// notifies, parses AI tool transcripts nor opens a local telemetry port until
+/// the user asks.
+pub(crate) fn config_is_enabled(key: &str) -> bool {
+    let s = config::find(key).unwrap_or_else(|| panic!("{key} is a registered setting"));
+    let (v, _) = config::resolve(s, None, config::toml_value(None, s).as_deref());
     v == "true"
 }
 
@@ -236,12 +233,12 @@ pub(crate) fn config_tokens_enabled() -> bool {
 ///
 /// Falls back to `Both` on every failure — no config dir, no file, malformed
 /// TOML, or a value the registry would have refused had it come through
-/// `config set` — matching how [`config_tokens_enabled`] treats its own failure
+/// `config set` — matching how [`config_is_enabled`] treats its own failure
 /// modes. A hand-edited `config.toml` is the one path that reaches the writer's
 /// validation, so this side must not trust what it reads.
 pub(crate) fn config_detail_time_format() -> TimeFormat {
     let s = config::find("detail.time_format").expect("detail.time_format is a registered setting");
-    let (v, _) = config::resolve(s, None, config::toml_value(s).as_deref());
+    let (v, _) = config::resolve(s, None, config::toml_value(None, s).as_deref());
     match v.as_str() {
         "iso" => TimeFormat::Iso,
         "relative" => TimeFormat::Relative,
@@ -249,23 +246,12 @@ pub(crate) fn config_detail_time_format() -> TimeFormat {
     }
 }
 
-/// Read `[otlp] enabled` from `config.toml` (#18, DESIGN §10).
-///
-/// Off by default: like [`config_tokens_enabled`], every failure mode lands on
-/// "don't listen", so a fresh install never opens a local telemetry port until
-/// the user opts in.
-pub(crate) fn config_otlp_enabled() -> bool {
-    let s = config::find("otlp.enabled").expect("otlp.enabled is a registered setting");
-    let (v, _) = config::resolve(s, None, config::toml_value(s).as_deref());
-    v == "true"
-}
-
 /// Read `[otlp] port` from `config.toml` (#18), falling back to the registered
 /// default (4318). The registry already validated the range, so a parse failure
 /// here can only be the default, which is a valid `u16`.
 pub(crate) fn config_otlp_port() -> u16 {
     let s = config::find("otlp.port").expect("otlp.port is a registered setting");
-    let (v, _) = config::resolve(s, None, config::toml_value(s).as_deref());
+    let (v, _) = config::resolve(s, None, config::toml_value(None, s).as_deref());
     v.parse::<u16>().unwrap_or_else(|_| {
         s.default
             .parse()
@@ -278,7 +264,7 @@ pub(crate) fn config_otlp_port() -> u16 {
 pub(crate) fn config_board_port(flag: Option<u16>) -> u16 {
     let s = config::find("board.port").expect("board.port is a registered setting");
     let flag = flag.map(|p| p.to_string());
-    let (v, _) = config::resolve(s, flag.as_deref(), config::toml_value(s).as_deref());
+    let (v, _) = config::resolve(s, flag.as_deref(), config::toml_value(None, s).as_deref());
     v.parse::<u16>().unwrap_or(0)
 }
 
@@ -286,14 +272,14 @@ pub(crate) fn config_board_port(flag: Option<u16>) -> u16 {
 /// may sit with no clients and no work before it exits by itself.
 ///
 /// Off unless the user asked for it, and every failure mode lands on off — the
-/// same direction [`config_notify_enabled`] and [`config_tokens_enabled`] fall
+/// same direction [`config_is_enabled`] falls
 /// in, for a sharper reason: the surprise here is not a missing toast but a
 /// background process that vanishes mid-session, and nothing in a daemon's
 /// output would explain it after the fact.
 pub(crate) fn config_daemon_idle_timeout() -> Option<Duration> {
     let s =
         config::find("daemon.idle_timeout").expect("daemon.idle_timeout is a registered setting");
-    let (v, _) = config::resolve(s, None, config::toml_value(s).as_deref());
+    let (v, _) = config::resolve(s, None, config::toml_value(None, s).as_deref());
     idle_timeout_from_minutes(&v)
 }
 
@@ -675,50 +661,14 @@ pub(crate) fn run_theme(ctx: &Ctx, action: &ThemeAction) -> CmdOutcome {
 pub(crate) fn set_setting(key: &str, value: &str) -> CmdOutcome {
     let s = config::find(key).ok_or_else(|| unknown_key(key))?;
     validate_setting(s.key, value)?;
-    let path = config::write_value(s, value)?;
+    let path = config::write_value(None, s, value)?;
     let mut text = format!("{} = {}  ({})\n", s.key, value, path.display());
     if let Some(p) = theme_pointer(s.key) {
         text.push_str(&format!("{p}\n"));
     }
-    if let Some(w) = otlp_daemon_warning(s.key, value) {
-        eprintln!("{w}");
-    }
     Ok((
         json!({ "key": s.key, "value": value, "path": path.to_string_lossy() }),
         text,
-    ))
-}
-
-/// #76.3: `otlp.enabled = true` used to persist with no complaint even when no
-/// daemon was running to act on it. The receiver only binds inside `tasqx
-/// daemon` (`serve.rs`: `config_otlp_enabled().then(config_otlp_port)`), so a
-/// store with the flag on and no daemon looked, from `config get`, identical
-/// to one actually receiving — the flag was true either way. Surfaced at
-/// set-time rather than left for `config get` to explain later, since that is
-/// when the mistake is cheapest to notice and correct.
-///
-/// Liveness is checked the same way [`open_backend`] decides whether to route
-/// a command through a daemon at all: a live connection to the resolved
-/// socket. `--socket`/`$TASQX_SOCK` are not in scope here (`config set` takes
-/// no socket flag), so this reads the same default/env resolution the
-/// daemon-routing path uses when neither is passed.
-pub(crate) fn otlp_daemon_warning(key: &str, value: &str) -> Option<String> {
-    otlp_daemon_warning_at(key, value, &resolve_socket(None))
-}
-
-/// The decision behind [`otlp_daemon_warning`] with the socket named by the
-/// caller, so a test can point it at an address nothing listens on instead
-/// of asserting about whatever daemon the machine happens to be running.
-pub(crate) fn otlp_daemon_warning_at(key: &str, value: &str, target: &str) -> Option<String> {
-    if key != "otlp.enabled" || value != "true" {
-        return None;
-    }
-    if daemon::try_connect(target).is_some() {
-        return None;
-    }
-    Some(format!(
-        "warning: otlp.enabled = true, but no daemon is reachable at {target}; the OTLP/HTTP \
-         receiver only binds inside `tasqx daemon`, so nothing will listen until one is running"
     ))
 }
 
@@ -807,7 +757,7 @@ pub(crate) fn unknown_key(key: &str) -> ApiError {
 /// `toml_value_strict` directly, so a new read site cannot quietly re-acquire
 /// the silence this replaced.
 pub(crate) fn file_value(s: &config::Setting) -> Result<Option<String>, ApiError> {
-    let read = config::toml_value_strict(s)?;
+    let read = config::toml_value_strict(None, s)?;
     if let Some(m) = &read.mismatch {
         eprintln!("warning: {m}");
     }
@@ -956,7 +906,7 @@ pub(crate) fn run_config(
         ConfigAction::Set { key, value } => set_setting(key, value),
         ConfigAction::Unset { key } => {
             let s = config::find(key).ok_or_else(|| unknown_key(key))?;
-            let existed = config::clear_value(s)?;
+            let existed = config::clear_value(None, s)?;
             let text = if existed {
                 format!("{} unset; now {} (default)\n", s.key, s.default)
             } else {
@@ -1134,7 +1084,7 @@ pub(crate) fn apply_save(
             // say so instead of reporting a change the user's next command will
             // not show.
             let flag = setting_flag_value(s, theme_flag);
-            let (v, src) = config::resolve(s, flag, config::toml_value(s).as_deref());
+            let (v, src) = config::resolve(s, flag, config::toml_value(None, s).as_deref());
             app.refresh(key, v, src.label(s));
             saved.retain(|(k, _)| k != key);
             saved.push((key.to_string(), value.to_string()));
@@ -1171,7 +1121,7 @@ pub(crate) fn settings_loop(
             Some(tui::settings::Action::Quit) => return Ok(saved),
             Some(tui::settings::Action::Save { key, value }) => {
                 apply_save(app, key, &value, theme_flag, &mut saved, |s, v| {
-                    config::write_value(s, v).map(|_| ())
+                    config::write_value(None, s, v).map(|_| ())
                 });
             }
             None => {}

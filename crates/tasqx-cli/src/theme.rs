@@ -846,81 +846,106 @@ pub struct UserTheme {
 /// role keys (`priority.H`, `urgency.ramp`) arrive nested under `[roles]`; we
 /// flatten them back to literal role names.
 pub fn parse_user_theme(src: &str) -> Result<UserTheme, String> {
-    let val: toml::Table = src
+    let doc: toml_edit::DocumentMut = src
         .parse()
         .map_err(|e| format!("invalid theme TOML: {e}"))?;
     let mut ut = UserTheme {
-        name: val.get("name").and_then(|v| v.as_str()).map(str::to_string),
-        extends: val
+        name: doc.get("name").and_then(|v| v.as_str()).map(str::to_string),
+        extends: doc
             .get("extends")
             .and_then(|v| v.as_str())
             .map(str::to_string),
         ..Default::default()
     };
 
-    if let Some(pal) = val.get("palette").and_then(|v| v.as_table()) {
-        for (k, v) in pal {
+    if let Some(pal) = doc.get("palette").and_then(|v| v.as_table_like()) {
+        for (k, v) in sorted(pal) {
             match v.as_str().and_then(Rgb::parse_hex) {
                 Some(hex) => {
-                    ut.palette.insert(k.clone(), hex);
+                    ut.palette.insert(k.to_string(), hex);
                 }
                 // A `filter_map` here left `#gggggg` as a parse-clean file whose
                 // color simply never applies — the quietest failure in the whole
                 // theme path, with nothing on stderr to connect the missing color
                 // to the typo that caused it.
-                None => ut
-                    .dropped
-                    .push(format!("palette.{k} = {v} is not #rrggbb; ignored")),
+                None => ut.dropped.push(format!(
+                    "palette.{k} = {} is not #rrggbb; ignored",
+                    plain(v)
+                )),
             }
         }
     }
 
-    if let Some(roles) = val.get("roles").and_then(|v| v.as_table()) {
+    if let Some(roles) = doc.get("roles").and_then(|v| v.as_table_like()) {
         flatten_roles("", roles, &mut ut);
     }
 
     Ok(ut)
 }
 
+/// A table's entries in key order — the order the `toml::Table` this was read
+/// through before #737 iterated in, so which of two arrays becomes the ramp and
+/// the order of the dropped-value notes do not move with the file's layout.
+fn sorted(t: &dyn toml_edit::TableLike) -> Vec<(&str, &toml_edit::Item)> {
+    let mut entries: Vec<_> = t.iter().collect();
+    entries.sort_unstable_by_key(|(k, _)| *k);
+    entries
+}
+
+/// A value as TOML spells it, without the file's own spacing, comments or
+/// quoting: `'lit'` is quoted back as `"lit"`, as the old parser printed it.
+fn plain(v: &toml_edit::Item) -> String {
+    let Some(v) = v.as_value() else {
+        return v.to_string().trim().to_string();
+    };
+    let mut v = match v {
+        toml_edit::Value::String(s) => toml_edit::Value::from(s.value().as_str()),
+        toml_edit::Value::Integer(n) => toml_edit::Value::from(*n.value()),
+        toml_edit::Value::Float(f) => toml_edit::Value::from(*f.value()),
+        other => other.clone(),
+    };
+    v.decor_mut().clear();
+    v.to_string()
+}
+
 /// Recursively flatten a `[roles]` table into literal `a.b` role names,
 /// separating style tables from the `urgency.ramp` array.
-fn flatten_roles(prefix: &str, table: &toml::Table, ut: &mut UserTheme) {
-    for (k, v) in table {
+fn flatten_roles(prefix: &str, table: &dyn toml_edit::TableLike, ut: &mut UserTheme) {
+    for (k, v) in sorted(table) {
         let name = if prefix.is_empty() {
-            k.clone()
+            k.to_string()
         } else {
             format!("{prefix}.{k}")
         };
-        match v {
-            toml::Value::Array(arr) => {
-                let ramp: Vec<String> = arr
-                    .iter()
-                    .filter_map(|x| x.as_str().map(str::to_string))
-                    .collect();
-                // Any array role is treated as the (single) urgency ramp.
-                ut.ramp = Some(ramp);
+        if let Some(arr) = v.as_array() {
+            let ramp: Vec<String> = arr
+                .iter()
+                .filter_map(|x| x.as_str().map(str::to_string))
+                .collect();
+            // Any array role is treated as the (single) urgency ramp.
+            ut.ramp = Some(ramp);
+        } else if v.is_array_of_tables() {
+            // An array of tables holds no strings, so it is an empty ramp.
+            ut.ramp = Some(Vec::new());
+        } else if let Some(t) = v.as_table_like() {
+            if is_style_table(t) {
+                ut.roles.insert(name, style_from_table(t));
+            } else {
+                flatten_roles(&name, t, ut);
             }
-            toml::Value::Table(t) => {
-                if is_style_table(t) {
-                    ut.roles.insert(name, style_from_table(t));
-                } else {
-                    flatten_roles(&name, t, ut);
-                }
-            }
-            _ => {}
         }
     }
 }
 
 /// A style table holds only scalar style keys; a namespace table holds sub-tables.
-fn is_style_table(t: &toml::Table) -> bool {
-    t.values()
-        .all(|v| v.is_str() || v.as_bool().is_some() || v.is_integer())
-        && t.keys()
-            .any(|k| matches!(k.as_str(), "fg" | "bold" | "dim" | "underline"))
+fn is_style_table(t: &dyn toml_edit::TableLike) -> bool {
+    t.iter()
+        .all(|(_, v)| v.is_str() || v.as_bool().is_some() || v.is_integer())
+        && t.iter()
+            .any(|(k, _)| matches!(k, "fg" | "bold" | "dim" | "underline"))
 }
 
-fn style_from_table(t: &toml::Table) -> StyleSpec {
+fn style_from_table(t: &dyn toml_edit::TableLike) -> StyleSpec {
     // `None` for an absent key so merge() inherits that attribute from the base
     // role; only keys the user actually wrote override.
     StyleSpec {
@@ -1768,6 +1793,72 @@ urgency.ramp = ["#000000", "#ffffff"]
              user learns why it could not be read: {msg}"
         );
         assert_eq!(loaded.theme.name, DEFAULT_THEME, "falls back, as before");
+    }
+
+    /// #737: theme files moved from the `toml` crate onto `toml_edit`. The
+    /// overlay read from a file using every shape a role or palette entry
+    /// takes must be the one the old parser produced, down to the order and
+    /// spelling of the dropped-value notes (`toml::Table` iterated sorted).
+    #[test]
+    fn a_theme_file_parses_to_the_same_overlay_on_one_parser() {
+        let src = r##"
+name = "mine"
+extends = "nord"  # trailing comment
+
+[palette]
+zz = "#gggggg"
+danger = "#ff0000"
+aa = 5
+mm = 'lit'
+ff = 1.0
+
+[roles]
+tag = { fg = "danger", underline = true, }
+priority.H = { fg = "#123456", bold = true }
+urgency.ramp = ["#000000", 7, "#ffffff"]
+
+[roles.status]
+done = { dim = true }
+note = "not a style"
+
+[roles.header]
+fg = "#abcdef"
+bold = false
+"##;
+        let user = parse_user_theme(src).expect("parse");
+        assert_eq!(user.name.as_deref(), Some("mine"));
+        assert_eq!(user.extends.as_deref(), Some("nord"));
+        assert_eq!(
+            user.palette.into_iter().collect::<Vec<_>>(),
+            vec![("danger".to_string(), Rgb::new(0xff, 0, 0))]
+        );
+        assert_eq!(
+            user.dropped,
+            vec![
+                "palette.aa = 5 is not #rrggbb; ignored",
+                "palette.ff = 1.0 is not #rrggbb; ignored",
+                "palette.mm = \"lit\" is not #rrggbb; ignored",
+                "palette.zz = \"#gggggg\" is not #rrggbb; ignored",
+            ]
+        );
+        assert_eq!(
+            format!("{:?}", user.roles),
+            "{\"header\": StyleSpec { fg: Some(\"#abcdef\"), bold: Some(false), dim: None, \
+             underline: None }, \"priority.H\": StyleSpec { fg: Some(\"#123456\"), \
+             bold: Some(true), dim: None, underline: None }, \"status.done\": StyleSpec { \
+             fg: None, bold: None, dim: Some(true), underline: None }, \"tag\": StyleSpec { \
+             fg: Some(\"danger\"), bold: None, dim: None, underline: Some(true) }}"
+        );
+        assert_eq!(
+            user.ramp,
+            Some(vec!["#000000".to_string(), "#ffffff".to_string()])
+        );
+        let err = parse_user_theme("[palette\n").unwrap_err();
+        assert_eq!(
+            err,
+            "invalid theme TOML: TOML parse error at line 1, column 9\n  |\n1 | [palette\n  \
+             |         ^\nunclosed table, expected `]`\n"
+        );
     }
 
     #[test]

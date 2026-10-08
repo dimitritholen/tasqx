@@ -206,8 +206,23 @@ fn mcp_entry(tool: &Tool, home: &Path) -> Option<Value> {
                 .cloned()
         }
         Config::Toml(f) => {
-            let t: toml::Table = std::fs::read_to_string(home.join(f)).ok()?.parse().ok()?;
-            serde_json::to_value(t.get("mcp_servers")?.get("tasqx")?).ok()
+            let doc: toml_edit::DocumentMut =
+                std::fs::read_to_string(home.join(f)).ok()?.parse().ok()?;
+            let e = doc.get("mcp_servers")?.get("tasqx")?;
+            // Only the two keys `is_ours` reads; tasqx's one TOML parser
+            // (D229) carries no serde. A non-string `args` element stays
+            // unequal to `SERVE`, as it was through serde.
+            let mut m = serde_json::Map::new();
+            if let Some(c) = e.get("command").and_then(|c| c.as_str()) {
+                m.insert("command".into(), c.into());
+            }
+            if let Some(a) = e.get("args").and_then(|a| a.as_array()) {
+                let args = a
+                    .iter()
+                    .map(|x| x.as_str().map_or(Value::Null, Value::from));
+                m.insert("args".into(), args.collect());
+            }
+            Some(Value::Object(m))
         }
     }
 }

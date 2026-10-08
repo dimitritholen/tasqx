@@ -106,12 +106,12 @@ pub(crate) fn dashboard_active(
 /// is where the precedence lives.
 pub(crate) fn dashboard_enabled() -> bool {
     let s = config::find("dashboard.enabled").expect("dashboard.enabled is registered");
-    dashboard_enabled_with(config::toml_value(s).as_deref())
+    dashboard_enabled_with(config::toml_value(None, s).as_deref())
 }
 
 /// [`dashboard_enabled`] over an explicit file value.
 ///
-/// Split for the reason `config::toml_value_in` is: the file half must be
+/// Split for the reason `config::toml_value` takes a directory: the file half must be
 /// testable without mutating process-global env, which cargo's parallel test
 /// threads make racy.
 pub(crate) fn dashboard_enabled_with(file: Option<&str>) -> bool {
@@ -139,7 +139,7 @@ pub(crate) fn dashboard_enabled_in(
 /// back the default. What arrives is either the user's list or the built-in one.
 pub(crate) fn dashboard_panels() -> Vec<tui::dashboard::model::PanelId> {
     let s = config::find("dashboard.panels").expect("dashboard.panels is registered");
-    let (v, _) = config::resolve(s, None, config::toml_value(s).as_deref());
+    let (v, _) = config::resolve(s, None, config::toml_value(None, s).as_deref());
     parse_panel_list(&v)
 }
 
@@ -173,7 +173,7 @@ pub(crate) fn parse_panel_list(v: &str) -> Vec<tui::dashboard::model::PanelId> {
 /// start from somewhere the config never asked for.
 pub(crate) fn dashboard_window_days() -> usize {
     let s = config::find("dashboard.window").expect("dashboard.window is registered");
-    let (v, _) = config::resolve(s, None, config::toml_value(s).as_deref());
+    let (v, _) = config::resolve(s, None, config::toml_value(None, s).as_deref());
     tui::dashboard::WINDOW_CHOICES
         .iter()
         .find(|(name, _)| *name == v)
@@ -184,7 +184,7 @@ pub(crate) fn dashboard_window_days() -> usize {
 /// Read `dashboard.refresh` — whether the screen re-reads on a timer.
 pub(crate) fn dashboard_auto_refresh() -> bool {
     let s = config::find("dashboard.refresh").expect("dashboard.refresh is registered");
-    let (v, _) = config::resolve(s, None, config::toml_value(s).as_deref());
+    let (v, _) = config::resolve(s, None, config::toml_value(None, s).as_deref());
     v != "manual"
 }
 

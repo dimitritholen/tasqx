@@ -166,18 +166,19 @@ const VERSION: &str = concat!(env!("CARGO_PKG_VERSION"), " (", env!("TASQX_BUILD
 /// the result set this CLI refuses. `filter.rs` already has the right words
 /// (name the flag, say a tag exclusion takes one dash, list the tokens that
 /// work), so they are borrowed rather than copied and left to drift.
-fn exit_on_parse_error(e: &clap::Error, filter_command: bool, argv: &[std::ffi::OsString]) -> ! {
+fn exit_on_parse_error(e: &clap::Error, filter_command: bool) -> ! {
     if filter_command && e.kind() == ErrorKind::UnknownArgument {
         if let Some(ContextValue::String(offender)) = e.get(ContextKind::InvalidArg) {
             // #130: `--output` one edit away from `--out` fell straight to the
             // filter-DSL explanation below ("a tag exclusion takes one dash…"),
             // which is correct grammar but the wrong story — the token is not
-            // a mistyped filter token, it is a mistyped FLAG NAME. Checked
-            // first and only for `--xxx`-shaped offenders close to a real flag
-            // this subcommand declares; anything else still falls through.
-            if let Some(hint) = argv::nearest_long_flag(offender, &argv::known_long_flags(argv)) {
+            // a mistyped filter token, it is a mistyped FLAG NAME. clap has
+            // already found the nearest flag this subcommand declares (its
+            // `suggestions` feature, the "tip: a similar argument exists");
+            // anything with no near flag still falls through.
+            if let Some(ContextValue::String(hint)) = e.get(ContextKind::SuggestedArg) {
                 let err = ApiError::bad_request(format!(
-                    "unknown flag {offender:?} — did you mean \"--{hint}\"?"
+                    "unknown flag {offender:?} — did you mean \"{hint}\"?"
                 ));
                 eprintln!("error [{}]: {}", code_str(&err), err.message);
                 exit(err.exit_code());
@@ -487,11 +488,6 @@ pub fn run() {
     // and the only way to keep that from disarming clap's flag handling is to
     // hide the dash before clap looks. See `argv`.
     let pre = argv::prepass(std::env::args_os());
-    // Cloned once for the error path only (#130's flag-typo hint needs the
-    // subcommand's own argv to look up its declared flags); the happy path
-    // never pays for it beyond the clone itself, and `try_get_matches_from`
-    // still consumes the original below.
-    let pre_argv = pre.argv.clone();
     // Not `Cli::try_parse_from`: that builds straight off `Cli::command()`,
     // whose subcommands still carry clap's hyphen-joined `-V` display names
     // (#228.7). `cli_command()` is the same command tree with those flattened
@@ -501,7 +497,7 @@ pub fn run() {
         Cli::from_arg_matches(&m)
     }) {
         Ok(cli) => cli,
-        Err(e) => exit_on_parse_error(&e, pre.filter_command, &pre_argv),
+        Err(e) => exit_on_parse_error(&e, pre.filter_command),
     };
     // Put the dashes back, in ONE place, before any filter value is read.
     unescape_filter_tail(&mut cli);
@@ -559,77 +555,7 @@ pub fn run() {
 
 /// Run the parsed command, yielding whatever the terminal in [`run`] should do
 /// with it. Every `return` in here owes an [`Exit`].
-/// The static verb name for a subcommand this crate's inert-flag notes ever
-/// name — a small, closed set, not a mirror of clap's whole `Command` enum.
-fn verb_name(command: &Option<Command>) -> Option<&'static str> {
-    match command {
-        Some(Command::Api) => Some("api"),
-        Some(Command::Docs { .. }) => Some("docs"),
-        Some(Command::About { .. }) => Some("about"),
-        Some(Command::Manual { .. }) => Some("manual"),
-        Some(Command::Completions { .. }) => Some("completions"),
-        Some(Command::Setup { .. }) => Some("setup"),
-        _ => None,
-    }
-}
-
 fn execute(cli: Cli) -> Exit {
-    // #229 item 6: `--json`'s carve-out note (`JSON_CARVE_OUTS`, D31) explains
-    // when the flag is accepted and ignored; `--theme` and `--socket` did the
-    // ignoring silently, on the same class of verb — every subcommand's
-    // `--help` lists all four globals regardless of whether the verb reads
-    // them, so a reader has no way to tell "ignored" from "does something"
-    // short of a note like this one. Narrower than a fully generic
-    // per-flag-per-verb table: only the combinations the finding names,
-    // mirroring `--json`'s wording so the two read as one family of note.
-    //
-    // `--no-daemon` is deliberately EXEMPT, unlike the finding's suggestion:
-    // it is documented as "the escape hatch for scripts" (`command.rs`), and
-    // this repo's own convention — `CLAUDE.md`'s isolation rule, and every
-    // fixture in `tests/completion.rs` — is to pass it on EVERY invocation
-    // defensively, `completions`/`docs`/`manual` included, so a caller never
-    // has to know per-verb whether it matters. A note firing on that pattern
-    // would make the safe default noisy rather than making the noise
-    // informative, which is the opposite of what `--json`'s note is for.
-    let note_inert = |verb: &str, flag: &str, why: &str| {
-        eprintln!("note: `{verb}` does not honour {flag} — {why}");
-    };
-    if cli.theme.is_some() {
-        let why = match &cli.command {
-            Some(Command::Api) => {
-                Some("already speaks the JSON API envelope; there is no themed output")
-            }
-            Some(Command::Completions { .. }) => {
-                Some("prints a shell registration line; there is no themed output")
-            }
-            _ => None,
-        };
-        if let (Some(why), Some(name)) = (why, verb_name(&cli.command)) {
-            note_inert(name, "--theme", why);
-        }
-    }
-    if cli.socket.is_some() {
-        let why = match &cli.command {
-            Some(Command::Docs { .. }) => Some("static content; it opens no store and no daemon"),
-            Some(Command::Manual { .. }) => {
-                Some("a reading surface; it opens no store and no daemon")
-            }
-            Some(Command::About { .. }) => Some(
-                "a credits screen; it names the store's path and opens neither it nor a daemon",
-            ),
-            Some(Command::Completions { .. }) => {
-                Some("prints a shell registration line; it opens no store and no daemon")
-            }
-            Some(Command::Setup { .. }) => {
-                Some("installs files under your home directory; it opens no store and no daemon")
-            }
-            _ => None,
-        };
-        if let (Some(why), Some(name)) = (why, verb_name(&cli.command)) {
-            note_inert(name, "--socket", why);
-        }
-    }
-
     // `--socket` names a daemon to route through, and these verbs open the
     // store without ever consulting it: `api` and `mcp serve` host their own
     // transport over an in-process engine (D73), and charts and the HTML
@@ -1181,7 +1107,7 @@ fn build_ctx(flag: Option<&str>) -> Ctx {
     // One chain for every setting (config::resolve), rather than a per-setting
     // fold. The env layer is read inside the resolver so a caller cannot forget it.
     let s = config::find("theme.name").expect("theme.name is a registered setting");
-    let (name, _, warning) = effective_setting(s, flag, config::toml_value(s).as_deref());
+    let (name, _, warning) = effective_setting(s, flag, config::toml_value(None, s).as_deref());
     // Every layer, not just the ones typed for THIS run. The older rule warned
     // for `--theme`/`$TASQX_THEME` only and left a hand-edited `config.toml` to
     // `tasqx config` — but `config` was reporting the file's value as though it
@@ -2464,7 +2390,7 @@ mod tests {
 
     /// #192 — a broken or misspelled `config.toml` must earn a warning
     /// wherever `config_file_warnings_in` is asked, independent of the
-    /// per-setting readers (`toml_value_in`/`toml_value_strict_in`), which
+    /// per-setting readers (`toml_value`/`toml_value_strict`), which
     /// stay silent or narrowly scoped for their own reasons.
     #[test]
     fn config_file_warnings_name_a_parse_error_and_every_unknown_key() {
@@ -2510,12 +2436,12 @@ mod tests {
     /// The one conversion between `[daemon] idle_timeout` and what the daemon
     /// takes (D5), including both spellings of "never".
     ///
-    /// The junk case is not hypothetical: `write_value_in` only guards
+    /// The junk case is not hypothetical: `write_value` only guards
     /// `config set`, so a hand-edited `idle_timeout = "soon"` reaches this
     /// function as whatever the resolver handed back, and the wrong answer here
     /// is a daemon that exits at some invented deadline the file never asked
     /// for. Every failure lands on "never", the same direction
-    /// `config_notify_enabled` falls in.
+    /// `config_is_enabled` falls in.
     #[test]
     fn an_idle_timeout_of_zero_or_junk_is_never_and_minutes_become_a_duration() {
         assert_eq!(idle_timeout_from_minutes("0"), None, "0 means never");
@@ -3790,85 +3716,6 @@ mod tests {
             "`tasqx --json config get {key}` must carry the setting's own \
              summary: {result:?}"
         );
-    }
-
-    /// #76.3: `otlp.enabled = true` persisted with no complaint even when no
-    /// daemon was reachable to act on it — the receiver only binds inside
-    /// `tasqx daemon`, so the config alone does nothing. `otlp_daemon_warning`
-    /// is the pure decision `set_setting` prints on stderr; this pins it
-    /// directly rather than through a spawned binary, at a socket path nothing
-    /// listens on: the ambient socket is whatever daemon the MACHINE runs, and
-    /// a developer with the real one up saw this test fail for that alone.
-    #[test]
-    fn otlp_daemon_warning_fires_only_for_enabling_with_no_daemon_reachable() {
-        let dead =
-            std::env::temp_dir().join(format!("tasqx-no-daemon-{}.sock", std::process::id()));
-        let dead = dead.to_str().expect("utf-8 path");
-        // Setting it true with nothing listening on the socket: warn, and
-        // name both the key/value and why it matters.
-        let w = otlp_daemon_warning_at("otlp.enabled", "true", dead)
-            .expect("nothing listens on a fresh tempdir path");
-        assert!(w.contains("otlp.enabled"), "{w}");
-        assert!(
-            w.contains("tasqx daemon"),
-            "must say where the receiver actually binds: {w}"
-        );
-
-        // Turning it OFF needs no daemon and gets no warning.
-        assert_eq!(
-            otlp_daemon_warning_at("otlp.enabled", "false", dead),
-            None,
-            "disabling otlp needs no daemon and must stay silent"
-        );
-        // An unrelated key's value must never trip this check.
-        assert_eq!(
-            otlp_daemon_warning_at("tokens.enabled", "true", dead),
-            None,
-            "the check is scoped to otlp.enabled, not every boolean setting"
-        );
-    }
-
-    /// Something IS listening at the probed socket, so the warning stays silent.
-    /// A real `daemon::serve` covers the Unix socket and the Windows pipe alike.
-    #[test]
-    fn otlp_daemon_warning_is_silent_when_something_answers_at_the_probed_socket() {
-        let stem = format!(
-            "tasqx-live-daemon-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        );
-        let live = std::env::temp_dir().join(format!("{stem}.sock"));
-        let live = live.to_str().expect("utf-8 path").to_string();
-
-        let shutdown = Arc::new(AtomicBool::new(false));
-        let sd = shutdown.clone();
-        let sock = live.clone();
-        std::thread::spawn(move || {
-            let engine = tasqx_core::Engine::open_in_memory().expect("open engine");
-            daemon::serve(engine, &sock, sd).expect("serve");
-        });
-
-        // Wait until the listener is up rather than assuming the thread won
-        // the race (matches the wait loop `tasqx-core/tests/daemon.rs` uses).
-        let deadline = std::time::Instant::now() + Duration::from_secs(20);
-        while std::time::Instant::now() < deadline {
-            if let Some(c) = daemon::try_connect(&live) {
-                drop(c);
-                break;
-            }
-            std::thread::sleep(Duration::from_millis(10));
-        }
-
-        assert_eq!(
-            otlp_daemon_warning_at("otlp.enabled", "true", &live),
-            None,
-            "a daemon answering at the probed socket must suppress the warning"
-        );
-
-        shutdown.store(true, Ordering::Relaxed);
     }
 
     /// `config get` on a key nobody registered must say so and list the valid
