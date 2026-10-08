@@ -250,6 +250,20 @@ fn abandonment_is_work_that_was_started_and_then_cancelled() {
 }
 
 #[test]
+fn a_started_task_that_is_still_open_is_neither_closed_nor_abandoned() {
+    let e = engine();
+    let open = add(&e, "started, never closed", json!({}));
+    call(&e, "task.start", json!({ "ref": open })).expect("start");
+
+    let out = call(&e, "report.outcomes", json!({ "metrics": ["abandonment"] })).expect("outcomes");
+    let groups = out["groups"].as_array().unwrap();
+    assert!(
+        groups.is_empty(),
+        "open work is not an outcome yet, got {groups:?}"
+    );
+}
+
+#[test]
 fn a_cancellation_driven_through_modify_is_counted_like_task_cancel() {
     let e = engine();
     let a = add(&e, "modify-cancelled", json!({}));
@@ -470,6 +484,90 @@ fn the_window_bounds_when_the_work_closed_not_when_the_task_was_made() {
         "the window is echoed like `filter`"
     );
     assert!(out["until"].is_string());
+}
+
+/// Pin the instant `sid`'s `done` event was stamped at, so a window edge can
+/// be set exactly on it.
+fn stamp_done(e: &Engine, sid: i64, at: &str) {
+    let n = e
+        .conn()
+        .execute(
+            "UPDATE events SET ts = ?1 WHERE op = 'done' AND entity_id = \
+             (SELECT id FROM tasks WHERE short_id = ?2)",
+            rusqlite::params![at, sid],
+        )
+        .unwrap();
+    assert_eq!(n, 1, "one done event to move");
+}
+
+fn completions_in(e: &Engine, window: Value) -> usize {
+    let mut params = json!({ "metrics": ["rework"] });
+    for (k, v) in window.as_object().unwrap() {
+        params[k] = v.clone();
+    }
+    let out = call(e, "report.outcomes", params).expect("outcomes");
+    out["groups"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|g| g["rework"]["n"].as_u64().unwrap() as usize)
+        .sum()
+}
+
+#[test]
+fn a_completion_inside_the_window_is_counted_since_inclusive_until_exclusive() {
+    let e = engine();
+    let a = add(&e, "closed at a fixed instant", json!({}));
+    call(&e, "task.done", json!({ "ref": a })).expect("done");
+    stamp_done(&e, a, "2024-03-01T12:00:00Z");
+
+    let n = |w: Value| completions_in(&e, w);
+    assert_eq!(
+        n(json!({ "since": "2024-03-01T00:00:00Z", "until": "2024-03-02T00:00:00Z" })),
+        1,
+        "a completion inside the window is counted"
+    );
+    assert_eq!(
+        n(json!({ "since": "2024-03-01T12:00:00Z" })),
+        1,
+        "`since` is inclusive: a completion at the edge is in"
+    );
+    assert_eq!(
+        n(json!({ "since": "2024-03-01T12:00:01Z" })),
+        0,
+        "a completion before `since` is out"
+    );
+    assert_eq!(
+        n(json!({ "until": "2024-03-01T12:00:00Z" })),
+        0,
+        "`until` is exclusive: a completion at the edge is out"
+    );
+    assert_eq!(
+        n(json!({ "until": "2024-03-01T12:00:01Z" })),
+        1,
+        "a completion before `until` is in"
+    );
+}
+
+#[test]
+fn since_must_come_before_until_in_both_reports() {
+    let e = engine();
+    add(&e, "anything", json!({}));
+    for method in ["report.summary", "report.outcomes"] {
+        for (since, until) in [
+            ("2024-03-02T00:00:00Z", "2024-03-01T00:00:00Z"),
+            ("2024-03-01T00:00:00Z", "2024-03-01T00:00:00Z"),
+        ] {
+            let err = call(&e, method, json!({ "since": since, "until": until }))
+                .expect_err("an empty or inverted window is refused");
+            assert_eq!(err.code, ErrorCode::BadRequest, "{method} {since}..{until}");
+            assert!(
+                err.message.contains("must be after"),
+                "{method}: {}",
+                err.message
+            );
+        }
+    }
 }
 
 #[test]
