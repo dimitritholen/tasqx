@@ -500,13 +500,19 @@ fn a_daemon_routed_recompute_surfaces_the_in_process_refusal_verbatim() {
         let engine = tasqx_core::Engine::open(&db).expect("open scratch daemon store");
         tasqx_core::daemon::serve(engine, &sk, sd).expect("serve scratch daemon");
     });
-    // Wait for one of the two things that can happen, not for a wall-clock
-    // budget: the socket accepts, or the server thread ends (it only ends by
-    // panicking before `shutdown` is set). The old 20 s deadline was the one
-    // wall-clock assertion here, so a slow-but-healthy `Engine::open` under
-    // parallel load could fail it, and a daemon that died early sat out the
-    // whole budget and then reported "never became connectable" instead of
-    // its own panic (#1140).
+    // Wait for one of the two things that can happen: the socket accepts, or
+    // the server thread ends (it only ends by panicking before `shutdown` is
+    // set), whose panic is re-raised at once. The old 20 s deadline was the
+    // only check, so a slow-but-healthy `Engine::open` under parallel load
+    // could fail it, and a daemon that died early sat out the whole budget and
+    // then reported "never became connectable" instead of its own panic
+    // (#1140).
+    //
+    // Only separates slow from broken; the thread-exit check catches a dead
+    // daemon at once. Without it a daemon that hangs before binding would hang
+    // the test until the CI job times out, with no message.
+    const READY_LIMIT: Duration = Duration::from_secs(60);
+    let deadline = std::time::Instant::now() + READY_LIMIT;
     loop {
         if let Some(c) = tasqx_core::daemon::try_connect(&sock) {
             drop(c);
@@ -518,6 +524,10 @@ fn a_daemon_routed_recompute_surfaces_the_in_process_refusal_verbatim() {
                 Ok(()) => panic!("scratch daemon returned before it was connectable"),
             }
         }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "scratch daemon at {sock} neither bound its socket nor exited within {READY_LIMIT:?}"
+        );
         std::thread::sleep(Duration::from_millis(10));
     }
 
