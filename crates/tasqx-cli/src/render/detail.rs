@@ -461,23 +461,13 @@ pub(crate) enum DetailField {
     Urgency,
     Due,
     Remind,
-    Scheduled,
-    Wait,
     Repeats,
-    Estimate,
-    Completed,
-    Tracked,
     Blocked,
     Tags,
-    DependsOn,
-    Blocks,
-    Created,
-    Modified,
-    Rev,
-    Budget,
-    Tokens,
     Check,
     Annotation,
+    /// A fact neither layout emphasises.
+    Plain,
 }
 
 /// One row of a task detail: the label spelling both layouts print, the
@@ -609,21 +599,15 @@ pub(crate) fn detail_rows(ctx: &Ctx, result: &Value, now: Timestamp) -> Vec<Deta
     if !s(result, "project").is_empty() {
         row("project", DetailField::Project, s(result, "project"));
     }
-    if !s(result, "due").is_empty() {
-        row("due", DetailField::Due, fmt_i(&s(result, "due")));
-    }
-    if !s(result, "remind").is_empty() {
-        row("remind", DetailField::Remind, fmt_i(&s(result, "remind")));
-    }
-    if !s(result, "scheduled").is_empty() {
-        row(
-            "scheduled",
-            DetailField::Scheduled,
-            fmt_i(&s(result, "scheduled")),
-        );
-    }
-    if !s(result, "wait").is_empty() {
-        row("wait", DetailField::Wait, fmt_i(&s(result, "wait")));
+    for (key, field) in [
+        ("due", DetailField::Due),
+        ("remind", DetailField::Remind),
+        ("scheduled", DetailField::Plain),
+        ("wait", DetailField::Plain),
+    ] {
+        if !s(result, key).is_empty() {
+            row(key, field, fmt_i(&s(result, key)));
+        }
     }
     if !s(result, "recurrence").is_empty() {
         // D170: a spawn names the occurrence it came from.
@@ -636,7 +620,7 @@ pub(crate) fn detail_rows(ctx: &Ctx, result: &Value, now: Timestamp) -> Vec<Deta
     if !s(result, "estimate").is_empty() {
         row(
             "estimate",
-            DetailField::Estimate,
+            DetailField::Plain,
             fmt_d(&s(result, "estimate")),
         );
     }
@@ -649,7 +633,7 @@ pub(crate) fn detail_rows(ctx: &Ctx, result: &Value, now: Timestamp) -> Vec<Deta
     if !s(result, "completed").is_empty() {
         row(
             "completed",
-            DetailField::Completed,
+            DetailField::Plain,
             fmt_i(&s(result, "completed")),
         );
     }
@@ -666,7 +650,7 @@ pub(crate) fn detail_rows(ctx: &Ctx, result: &Value, now: Timestamp) -> Vec<Deta
             Some(m) => format!("{} (adjusted -{})", fmt_d(&tracked), fmt_d(m)),
             None => format!("{} (adjusted +{})", fmt_d(&tracked), fmt_d(&adj)),
         };
-        row("tracked", DetailField::Tracked, value);
+        row("tracked", DetailField::Plain, value);
     }
     if let Some(tags) = result.get("tags").and_then(Value::as_array) {
         if !tags.is_empty() {
@@ -690,7 +674,7 @@ pub(crate) fn detail_rows(ctx: &Ctx, result: &Value, now: Timestamp) -> Vec<Deta
                 .filter_map(Value::as_i64)
                 .map(|n| format!("#{n}"))
                 .collect();
-            row("depends_on", DetailField::DependsOn, refs.join(" "));
+            row("depends_on", DetailField::Plain, refs.join(" "));
         }
     }
     // The reverse edge (tasqx audit #159): `depends_on` names what blocks
@@ -704,7 +688,7 @@ pub(crate) fn detail_rows(ctx: &Ctx, result: &Value, now: Timestamp) -> Vec<Deta
                 .filter_map(Value::as_i64)
                 .map(|n| format!("#{n}"))
                 .collect();
-            row("blocks", DetailField::Blocks, refs.join(" "));
+            row("blocks", DetailField::Plain, refs.join(" "));
         }
     }
     // D139: the gauge, and only when a threshold was set — `fresh_tokens`
@@ -720,7 +704,7 @@ pub(crate) fn detail_rows(ctx: &Ctx, result: &Value, now: Timestamp) -> Vec<Deta
         let over = result.get("over").and_then(Value::as_bool).unwrap_or(false);
         row(
             "budget",
-            DetailField::Budget,
+            DetailField::Plain,
             format!(
                 "{} / {} fresh{}",
                 crate::tokens::compact(fresh),
@@ -734,19 +718,15 @@ pub(crate) fn detail_rows(ctx: &Ctx, result: &Value, now: Timestamp) -> Vec<Deta
     // and `_rev` are never the noisy zero a reader would want hidden, and
     // `_rev` in particular is the value `--expected-rev` needs, which used to
     // force a `--json` round trip just to read it back (audit #188).
-    row(
-        "created",
-        DetailField::Created,
-        fmt_i(&s(result, "created")),
-    );
+    row("created", DetailField::Plain, fmt_i(&s(result, "created")));
     row(
         "modified",
-        DetailField::Modified,
+        DetailField::Plain,
         fmt_i(&s(result, "modified")),
     );
     row(
         "rev",
-        DetailField::Rev,
+        DetailField::Plain,
         result
             .get("_rev")
             .and_then(Value::as_i64)
@@ -783,7 +763,7 @@ pub(crate) fn detail_rows(ctx: &Ctx, result: &Value, now: Timestamp) -> Vec<Deta
             };
             row(
                 "tokens",
-                DetailField::Tokens,
+                DetailField::Plain,
                 format!("{}{confidence_suffix}", token_figures(sum)),
             );
         }
