@@ -85,6 +85,12 @@ Run commands from the worktree, one plain command per call.
      fix it on the branch, in the worktree, and push. Auto-merge stays armed
      on the new head; confirm `autoMergeRequest` is not null.
    - CONFLICTING → `rebase-tasqx-pr`, then arm the replacement PR (step 3).
+   - `CLOSED` unmerged → find out why: `gh pr view <n> --json closedAt,comments`
+     and the timeline (`gh api repos/{owner}/{repo}/issues/<n>/timeline`). If
+     `rebase-tasqx-pr` replaced it, follow the replacement and arm it (step 3).
+     Otherwise show the user and ask whether to reopen it with
+     `gh pr reopen <n>`; leave the task open. Never delete the branch or
+     worktree while the PR is CLOSED and unmerged.
    - Checks still running → leave it for the next boundary.
 
 5. **Leave the worktree, then reinstall and verify from the primary
