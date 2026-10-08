@@ -2015,15 +2015,9 @@ fn undo_puts_a_removed_tag_back_and_says_what_it_undid() {
     assert_eq!(logged["events"][0]["payload"]["reverted_op"], "tag.remove");
 }
 
-/// The other three inverses, each end to end. One test rather than three
-/// because the property is identical — the effect is gone from the store and the
-/// answer names it — and because a per-op test that only ever ran for `tag.remove`
-/// would leave three quarters of the closed set unproven.
-#[test]
-fn undo_reverses_every_operation_the_closed_set_claims() {
-    // stop: the interval reopens and the seconds it folded in come back off.
-    let e = engine();
-    let (task, _blocker) = undo_fixture(&e);
+/// A pending task with a closed, backdated interval, and the `stop` answer.
+fn undo_stopped_fixture(e: &Engine) -> Value {
+    let (task, _) = undo_fixture(e);
     let by_ref = json!({ "ref": task["short_id"].clone() });
     e.task_start(&by_ref).expect("start");
     e.conn()
@@ -2032,28 +2026,37 @@ fn undo_reverses_every_operation_the_closed_set_claims() {
             params![task["short_id"].as_i64().unwrap()],
         )
         .expect("backdate the interval so it has measurable length");
-    let stopped = e.task_stop(&by_ref).expect("stop");
-    let tracked_after_stop: i64 = e
-        .conn()
-        .query_row(
-            "SELECT tracked_seconds FROM tasks WHERE short_id = ?1",
-            params![task["short_id"].as_i64().unwrap()],
-            |r| r.get(0),
-        )
-        .unwrap();
+    e.task_stop(&by_ref).expect("stop")
+}
+
+/// stop: the interval reopens, the seconds it folded in come back off, and the
+/// interval starts where it did before — `event_ts - tracked`.
+#[test]
+fn undo_reopens_the_interval_a_stop_closed() {
+    let e = engine();
+    let stopped = undo_stopped_fixture(&e);
     assert!(
-        tracked_after_stop > 0,
+        count(
+            &e,
+            "SELECT tracked_seconds FROM tasks WHERE title = 'Ship v1'"
+        ) > 0,
         "precondition: the stop tracked time"
     );
 
     let out = e.event_revert().expect("undo the stop");
     assert_eq!(out["reverted"]["op"], "stop");
     assert_eq!(out["restored"]["tracked"], stopped["tracked"]);
-    let got = e.task_get(&by_ref).unwrap();
-    assert_eq!(got["status"], "active", "the interval must be open again");
+    // The interval was backdated to this instant, so event_ts - tracked must land
+    // exactly on it; a sign flip lands years away.
+    assert_eq!(out["restored"]["interval_started"], "2020-01-01T00:00:00Z");
+    assert_eq!(
+        e.task_get(&json!({ "ref": out["short_id"].clone() }))
+            .unwrap()["status"],
+        "active",
+        "the interval must be open again"
+    );
     // Read straight out of the column rather than off the rendered `tracked`
-    // string: the whole claim is that the stored seconds return to their
-    // pre-stop value exactly, and an ISO duration would round that claim.
+    // string: an ISO duration would round the claim.
     assert_eq!(
         count(
             &e,
@@ -2063,8 +2066,61 @@ fn undo_reverses_every_operation_the_closed_set_claims() {
         "the seconds `stop` folded into the total must come back off, exactly — \
          that is the number every report reads"
     );
+}
 
-    // dependency.remove: the edge goes back, named by the blocker's short_id.
+/// `undo` of a stop only makes sense on the pending task stop left behind.
+#[test]
+fn undo_of_a_stop_refuses_when_the_task_is_no_longer_pending() {
+    let e = engine();
+    undo_stopped_fixture(&e);
+    e.conn()
+        .execute(
+            "UPDATE tasks SET status = 'active' WHERE title = 'Ship v1'",
+            [],
+        )
+        .expect("reopen outside the log");
+    let events_before = count(&e, "SELECT COUNT(*) FROM events");
+
+    let err = e
+        .event_revert()
+        .expect_err("undo must refuse a non-pending task");
+    assert_eq!(err.code, ErrorCode::Conflict, "{}", err.message);
+    assert!(
+        err.message.contains("is active"),
+        "the refusal must name the status it found: {}",
+        err.message
+    );
+    assert_eq!(count(&e, "SELECT COUNT(*) FROM events"), events_before);
+}
+
+/// Taking the interval back must not leave a negative total.
+#[test]
+fn undo_of_a_stop_refuses_when_it_would_leave_a_negative_total() {
+    let e = engine();
+    undo_stopped_fixture(&e);
+    e.conn()
+        .execute(
+            "UPDATE tasks SET tracked_seconds = 0 WHERE title = 'Ship v1'",
+            [],
+        )
+        .expect("edit the total outside the log");
+    let events_before = count(&e, "SELECT COUNT(*) FROM events");
+
+    let err = e
+        .event_revert()
+        .expect_err("undo must refuse a negative total");
+    assert_eq!(err.code, ErrorCode::Conflict, "{}", err.message);
+    assert!(
+        err.message.contains("negative total"),
+        "the refusal must say why: {}",
+        err.message
+    );
+    assert_eq!(count(&e, "SELECT COUNT(*) FROM events"), events_before);
+}
+
+/// dependency.remove: the edge goes back, named by the blocker's short_id.
+#[test]
+fn undo_puts_a_removed_dependency_edge_back() {
     let e = engine();
     let (task, blocker) = undo_fixture(&e);
     let by_ref = json!({ "ref": task["short_id"].clone() });
@@ -2082,8 +2138,44 @@ fn undo_reverses_every_operation_the_closed_set_claims() {
     let got = e.task_get(&by_ref).unwrap();
     assert_eq!(got["depends_on"], json!([blocker["short_id"].clone()]));
     assert_eq!(got["blocked"], true, "the edge is load-bearing again");
+}
 
-    // annotation.add: the note is gone, and the answer shows the text that went.
+/// An edge put back by something other than the log must be refused, not
+/// reported as restored.
+#[test]
+fn undo_of_a_dependency_removal_refuses_when_the_edge_is_back_already() {
+    let e = engine();
+    let (task, blocker) = undo_fixture(&e);
+    let edge = json!({
+        "ref": task["short_id"].clone(),
+        "depends_on": blocker["short_id"].clone(),
+    });
+    e.dependency_add(&edge).expect("dependency.add");
+    e.dependency_remove(&edge).expect("dependency.remove");
+    e.conn()
+        .execute(
+            "INSERT INTO dependencies (task_id, depends_on_id) \
+             SELECT t.id, b.id FROM tasks t, tasks b WHERE t.title = 'Ship v1' AND b.title = 'blocker'",
+            [],
+        )
+        .expect("re-attach the edge outside the log");
+    let events_before = count(&e, "SELECT COUNT(*) FROM events");
+
+    let err = e
+        .event_revert()
+        .expect_err("undo must refuse an edge already present");
+    assert_eq!(err.code, ErrorCode::Conflict, "{}", err.message);
+    assert!(
+        err.message.contains("already depends on"),
+        "the refusal must say the edge is back already: {}",
+        err.message
+    );
+    assert_eq!(count(&e, "SELECT COUNT(*) FROM events"), events_before);
+}
+
+/// annotation.add: the note is gone, and the answer shows the text that went.
+#[test]
+fn undo_removes_an_added_annotation_and_shows_its_text() {
     let e = engine();
     let (task, _blocker) = undo_fixture(&e);
     let by_ref = json!({ "ref": task["short_id"].clone() });
@@ -2106,6 +2198,31 @@ fn undo_reverses_every_operation_the_closed_set_claims() {
         0,
         "the FTS row must go with it, or `memory search` keeps finding a note that is not there"
     );
+}
+
+/// A note already gone must be refused: answering with an empty body would claim
+/// a removal undo did not make.
+#[test]
+fn undo_of_an_annotation_add_refuses_when_the_note_is_already_gone() {
+    let e = engine();
+    let (task, _) = undo_fixture(&e);
+    e.annotation_add(&json!({ "ref": task["short_id"].clone(), "body": "wrong task" }))
+        .expect("annotation.add");
+    e.conn()
+        .execute("DELETE FROM annotations", [])
+        .expect("delete the note outside the log");
+    let events_before = count(&e, "SELECT COUNT(*) FROM events");
+
+    let err = e
+        .event_revert()
+        .expect_err("undo must refuse a missing note");
+    assert_eq!(err.code, ErrorCode::Conflict, "{}", err.message);
+    assert!(
+        err.message.contains("already gone"),
+        "the refusal must say the note is gone: {}",
+        err.message
+    );
+    assert_eq!(count(&e, "SELECT COUNT(*) FROM events"), events_before);
 }
 
 /// #422: the newest event is the row written last, not the row whose id sorts
