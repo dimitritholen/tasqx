@@ -1,21 +1,11 @@
 // @vitest-environment node
-import { execFileSync, spawn, type ChildProcess } from 'node:child_process';
-import { randomUUID } from 'node:crypto';
-import { once } from 'node:events';
-import { existsSync, mkdtempSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join, resolve } from 'node:path';
-// Imported rather than taken off the globals: `types` in tsconfig.json
-// deliberately does not carry "node", so app code cannot reach them.
-import { env as processEnv, platform } from 'node:process';
-import { fileURLToPath } from 'node:url';
-
 import { loadBaseline } from '../../api/baseline';
 import { ConnectionController } from '../../api/connection';
 import type { EventFrame } from '../../api/envelope';
 import { attachEvents } from '../../state/events';
 import { DashboardStore, selectCards } from '../../state/store';
 import { NodeSocketTransport } from '../nodeTransport';
+import { ScratchDaemon, until } from '../scratchDaemon';
 
 /**
  * The one test that talks to a real daemon: the real ApiClient, the real
@@ -29,18 +19,7 @@ import { NodeSocketTransport } from '../nodeTransport';
  * binary is a broken pipeline and not an excuse.
  */
 
-const HERE = fileURLToPath(import.meta.url);
-const REPO_ROOT = resolve(HERE, '../../../../../..');
-const BIN = join(REPO_ROOT, 'target', 'debug', platform === 'win32' ? 'tasqx.exe' : 'tasqx');
-
-let scratch = '';
-let db = '';
-/** What the daemon is told to bind: a socket path, or a Windows pipe NAME. */
-let socketArg = '';
-/** What `net.createConnection` is given, which on Windows is the pipe's path. */
-let socketAddress = '';
-let env: Record<string, string | undefined> = {};
-let daemon: ChildProcess | null = null;
+let daemon: ScratchDaemon | null = null;
 let controller: ConnectionController | null = null;
 /**
  * Why the daemon never came up, if it did not. Held rather than thrown so the
@@ -49,73 +28,14 @@ let controller: ConnectionController | null = null;
  */
 let startupFailure = '';
 
-/** A one-shot CLI call, in-process against the scratch store — never the real one. */
-function cli(...args: string[]): void {
-  execFileSync(BIN, ['--no-daemon', ...args], { env, encoding: 'utf8' });
-}
-
-async function until(what: string, ready: () => boolean, budgetMs: number): Promise<void> {
-  const deadline = Date.now() + budgetMs;
-  while (!ready()) {
-    if (Date.now() > deadline) throw new Error(`timed out waiting for ${what}`);
-    await new Promise((done) => setTimeout(done, 50));
-  }
-}
-
-/** Up means a connection actually completes — a socket file can exist unbound. */
-async function waitForListener(budgetMs: number): Promise<void> {
-  const deadline = Date.now() + budgetMs;
-  for (;;) {
-    const probe = new NodeSocketTransport(socketAddress);
-    try {
-      await probe.connect();
-      await probe.close();
-      return;
-    } catch {
-      // Not accepting yet.
-    }
-    if (Date.now() > deadline) {
-      throw new Error(
-        `daemon never listened on ${socketAddress} (exited: ${daemon?.exitCode ?? 'no'})`,
-      );
-    }
-    await new Promise((done) => setTimeout(done, 100));
-  }
-}
-
-async function startDaemon(): Promise<void> {
-  if (!existsSync(BIN)) {
-    execFileSync('cargo', ['build', '-p', 'tasqx-cli'], { cwd: REPO_ROOT, stdio: 'inherit' });
-  }
-  if (!existsSync(BIN)) throw new Error(`no tasqx binary at ${BIN} — build tasqx-cli first`);
-
-  scratch = mkdtempSync(join(tmpdir(), 'tasqx-desktop-'));
-  db = join(scratch, 'tasks.db');
-  // Windows has no socket file: the daemon takes a bare pipe name (anything
-  // path-shaped gets sanitized and hashed, so the test could not name it) and
-  // Node connects to it under \\.\pipe\.
-  const pipe = `tasqx-desktop-${randomUUID().slice(0, 8)}`;
-  socketArg = platform === 'win32' ? pipe : join(scratch, 'd.sock');
-  socketAddress = platform === 'win32' ? `\\\\.\\pipe\\${pipe}` : socketArg;
-  // Both are set on every child: the daemon and the CLI must be incapable of
-  // reaching the developer's own store or the default socket.
-  env = { ...processEnv, TASQX_DB: db, TASQX_SOCK: socketArg };
-
-  cli('add', 'Alpha', '--priority', 'H');
-  cli('add', 'Beta');
-  cli('add', 'Gamma');
-
-  daemon = spawn(BIN, ['--socket', socketArg, 'daemon', '--db', db], {
-    env,
-    stdio: ['ignore', 'ignore', 'pipe'],
-  });
-  await waitForListener(20_000);
-}
-
 describe('a real daemon over a real socket', { timeout: 60_000 }, () => {
   beforeAll(async () => {
     try {
-      await startDaemon();
+      daemon = new ScratchDaemon();
+      daemon.cli(['add', 'Alpha', '--priority', 'H']);
+      daemon.cli(['add', 'Beta']);
+      daemon.cli(['add', 'Gamma']);
+      await daemon.start();
     } catch (err) {
       startupFailure = err instanceof Error ? err.message : String(err);
     }
@@ -125,26 +45,7 @@ describe('a real daemon over a real socket', { timeout: 60_000 }, () => {
     // Stop before killing: a dropped transport would otherwise put the
     // controller on its retry ladder and keep the process alive.
     await controller?.stop();
-    if (daemon && daemon.exitCode === null && daemon.signalCode === null) {
-      daemon.kill('SIGTERM');
-      // Windows still holds tasks.db open until the process is actually gone,
-      // so rmSync below has to wait for it — but bounded, so a daemon that
-      // ignores SIGTERM can never hang teardown.
-      const exited = once(daemon, 'exit');
-      const timedOut = await Promise.race([
-        exited.then(() => false),
-        new Promise<boolean>((resolve) => setTimeout(() => resolve(true), 5_000)),
-      ]);
-      if (timedOut) {
-        daemon.kill('SIGKILL');
-        await once(daemon, 'exit');
-      }
-    }
-    // maxRetries/retryDelay: the OS can lag a beat behind the exit event in
-    // releasing its handle on tasks.db.
-    if (scratch !== '') {
-      rmSync(scratch, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
-    }
+    await daemon?.dispose();
   });
 
   it('loads the baseline live and follows a task the CLI adds behind it', async () => {
@@ -152,7 +53,7 @@ describe('a real daemon over a real socket', { timeout: 60_000 }, () => {
 
     const store = new DashboardStore();
     controller = new ConnectionController({
-      transport: new NodeSocketTransport(socketAddress),
+      transport: new NodeSocketTransport(daemon!.socketAddress),
       loadBaseline: (client) => loadBaseline(client, store),
     });
     const events: EventFrame[] = [];
@@ -174,7 +75,7 @@ describe('a real daemon over a real socket', { timeout: 60_000 }, () => {
 
     // A write the daemon did not serve: its poller notices the external commit
     // and broadcasts it, which is the path the desktop actually lives on.
-    cli('add', 'Delta');
+    daemon!.cli(['add', 'Delta']);
 
     await until('the task.changed push', () => events.length > 0, 30_000);
     await until(
