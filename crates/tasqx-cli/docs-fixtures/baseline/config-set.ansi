@@ -1,0 +1,2 @@
+theme.name = nord  ($TASQX_CONFIG_DIR/config.toml)
+See it with `tasqx theme show`.
