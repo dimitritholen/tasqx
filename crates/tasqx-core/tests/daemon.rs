@@ -516,6 +516,47 @@ fn subscriber_receives_push_from_external_write() {
     let _ = std::fs::remove_file(&db);
 }
 
+/// Every request pumps, reads included (#738), so what keeps a subscriber from
+/// seeing one write twice is the shared watermark alone: reads between two
+/// writes must push nothing, and the next push must be the second write.
+#[test]
+fn reads_after_a_write_push_nothing_until_the_next_write() {
+    let (db, sock) = unique_target();
+    let shutdown = start_daemon(&db, &sock);
+    let rx = subscribe_events(&sock);
+
+    let mut client = daemon::try_connect(&sock).expect("connect client");
+    let first = client
+        .request("task.add", &json!({ "title": "first" }))
+        .unwrap();
+    let first_id = ok(&first).get("short_id").and_then(Value::as_i64).unwrap();
+    assert_eq!(wait_for_op(&rx, "add")["data"]["short_id"], json!(first_id));
+
+    for (method, params) in [
+        ("task.list", json!({})),
+        ("task.get", json!({ "ref": first_id })),
+        ("core.capabilities", json!({})),
+    ] {
+        ok(&client.request(method, &params).unwrap());
+    }
+
+    let second = client
+        .request("task.add", &json!({ "title": "second" }))
+        .unwrap();
+    let second_id = ok(&second).get("short_id").and_then(Value::as_i64).unwrap();
+    let next = rx
+        .recv_timeout(Duration::from_secs(5))
+        .expect("the second write's push");
+    assert_eq!(
+        (next["data"]["op"].clone(), next["data"]["short_id"].clone()),
+        (json!("add"), json!(second_id)),
+        "a read re-pushed an event the watermark had already passed"
+    );
+
+    shutdown.store(true, Ordering::Relaxed);
+    let _ = std::fs::remove_file(&db);
+}
+
 // ---- §9: reminders over the daemon ------------------------------------------
 
 /// Subscribe and return a receiver of every event push (drained off-thread).

@@ -2011,15 +2011,13 @@ fn handle_conn(stream: Stream, sh: Shared, _permit: ClientPermit) {
                 if out_tx.send(out).is_err() {
                     break;
                 }
-                // Low-latency push for a write we just committed (idempotent with
-                // the poller via the shared watermark). Skip it for pure reads:
-                // they emit no events, so pumping only re-locks watermark+engine
-                // and runs the JOIN for nothing.
-                if !is_read_method(trimmed) {
-                    if let Err(e) = pump(&sh) {
-                        report_fatal(&sh, "event pump", &e);
-                        break;
-                    }
+                // Low-latency push for a write we just committed. Every request
+                // pumps, reads included: the shared watermark makes a pump that
+                // finds no new rows a no-op, so a read classifier would only
+                // be a second verb table to keep in step with `dispatch::PARAMS`.
+                if let Err(e) = pump(&sh) {
+                    report_fatal(&sh, "event pump", &e);
+                    break;
                 }
             }
             Err(e)
@@ -2163,28 +2161,6 @@ fn read_frame_capped<R: BufRead>(
         bytes.extend_from_slice(available);
         reader.consume(n);
     }
-}
-
-/// True if `line` is a request whose method never appends to the `events` log,
-/// so the post-dispatch `pump` can be skipped. Anything unrecognized (including
-/// unparseable input) is treated as a potential writer and still pumps.
-fn is_read_method(line: &str) -> bool {
-    serde_json::from_str::<Value>(line)
-        .ok()
-        .and_then(|v| v.get("method").and_then(Value::as_str).map(str::to_string))
-        .map(|m| {
-            matches!(
-                m.as_str(),
-                "task.list"
-                    | "task.get"
-                    | "project.list"
-                    | "report.summary"
-                    | "store.export"
-                    | "event.list"
-                    | "core.capabilities"
-            )
-        })
-        .unwrap_or(false)
 }
 
 /// The transport-level refusal for `tokens.recompute` (D50 Decision 3): the
@@ -4201,7 +4177,7 @@ mod tests {
         );
     }
 
-    // ---- read_frame_capped / MAX_FRAME_BYTES / is_read_method (#77) -------------
+    // ---- read_frame_capped / MAX_FRAME_BYTES (#77) -------------------------------
 
     /// Run one capped read; `Ok` carries the frame text, `Err` the error kind.
     fn capped<R: BufRead>(r: &mut R, max: usize) -> Result<(usize, String), io::ErrorKind> {
@@ -4300,52 +4276,5 @@ mod tests {
         assert_eq!(capped(&mut r, 8), Ok((6, "abcdef".to_string())));
         let mut over = BufReader::with_capacity(4, &b"abcdefghi"[..]);
         assert_eq!(capped(&mut over, 8), Err(io::ErrorKind::InvalidData));
-    }
-
-    const READ_METHODS: [&str; 7] = [
-        "task.list",
-        "task.get",
-        "project.list",
-        "report.summary",
-        "store.export",
-        "event.list",
-        "core.capabilities",
-    ];
-
-    fn request(method: &str) -> String {
-        json!({ "id": 1, "method": method, "params": {} }).to_string()
-    }
-
-    #[test]
-    fn every_read_method_skips_the_pump() {
-        for m in READ_METHODS {
-            assert!(is_read_method(&request(m)), "{m} is a read");
-        }
-    }
-
-    #[test]
-    fn no_other_method_in_the_api_is_classed_as_a_read() {
-        let methods: Vec<&str> = crate::dispatch::PARAMS.iter().map(|(m, _, _)| *m).collect();
-        for m in READ_METHODS {
-            assert!(methods.contains(&m), "{m} is not an API method any more");
-        }
-        for m in methods.iter().filter(|m| !READ_METHODS.contains(m)) {
-            assert!(!is_read_method(&request(m)), "{m} may write; it must pump");
-        }
-    }
-
-    #[test]
-    fn unrecognised_or_unparseable_input_is_treated_as_a_write() {
-        for line in [
-            "",
-            "not json",
-            "{}",
-            r#"{"id":1}"#,
-            r#"{"method":7}"#,
-            r#"{"method":"task.list.extra"}"#,
-            r#"{"method":"TASK.LIST"}"#,
-        ] {
-            assert!(!is_read_method(line), "{line:?}");
-        }
     }
 }
