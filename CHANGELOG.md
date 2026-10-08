@@ -4,6 +4,35 @@ What changed in each tasqx release, newest first. Every release also lists its
 commits on the [releases page](https://github.com/dimitritholen/tasqx/releases),
 where the binaries, checksums and installers are.
 
+## 0.15.0
+
+A filter finds a task by its words, `tasqx sync` keeps stores in step through a
+storage connector, and memory search ranks by meaning as well as words. This
+release also trims tasqx-core's public API, which is why it is a minor bump.
+
+### Changed
+
+- **tasqx-core: the title terms are public** (D210, #815). `Pred::AnyStatus`,
+  `Pred::Title`, `MatchCtx::title` and `Vocabulary::Text` (with `title:` in
+  `VALUE_PREFIXES`) are now part of the filter API, and `Filter::matches` evaluates
+  title terms. A bare word in a filter is a title term, and `status:any` means every
+  status.
+- **tasqx-core: `daemon::serve_with_notifier` and `Filter::matches_titled` are
+  removed.** The first had no callers; use `serve_with_options` with
+  `DaemonOptions::notifier`. For the second, set `MatchCtx::title` and call `matches`.
+  Code that builds a `MatchCtx` by hand, or matches `Pred` or `Vocabulary`
+  exhaustively, needs the new field and variants.
+
+### Added
+
+- **`tasqx sync`** pulls, merges and pushes a store's snapshot through a
+  `tasqx-remote-<name>` connector (folder and Cloudflare R2 ship), sealed with
+  XChaCha20-Poly1305 under a key from the store's passphrase (D198-D202).
+- **Memory search ranks by meaning beside words**, fused by reciprocal rank, and every
+  hit says why it matched (D196).
+- **`undo` reaches done, cancel, tag and modify; `tasqx unarchive`** (D215). Notes can
+  be named by position or id prefix and moved to another task (D211).
+
 ## 0.14.0
 
 Token spend is now measured, not guessed. A task done in Claude Code gets its
