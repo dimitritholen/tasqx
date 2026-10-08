@@ -26,8 +26,9 @@ use std::collections::HashMap;
 
 use ratatui::layout::Rect;
 use ratatui::style::Style as RtStyle;
+use ratatui::symbols;
 use ratatui::text::{Line, Span};
-use ratatui::widgets::Paragraph;
+use ratatui::widgets::{Block, Paragraph};
 use ratatui::Frame;
 
 use crate::render;
@@ -67,15 +68,6 @@ pub enum Action {
     /// to, so tearing the terminal down for it would flicker the whole
     /// dashboard to show one card.
     Detail(i64),
-    /// `⏎` on a PROJECTS row (#204): leave the screen and print the working
-    /// set filtered to this project, the same way [`Action::List`] prints it
-    /// unfiltered for `l`.
-    ///
-    /// D62's scope strip is the eventual answer — Enter would set the header's
-    /// scope instead of leaving — but that strip does not exist yet, and a row
-    /// cursor `?` advertises `enter` for and that does nothing is worse than no
-    /// cursor at all.
-    ListProject(String),
 }
 
 /// The screen's state. A pure state machine: keys in, intents out, no terminal.
@@ -536,7 +528,15 @@ impl App {
             // already uses unfiltered.
             KeyCode::Enter if self.focus == PanelId::Projects => {
                 match model::project_at(&self.dash, self.focus, self.cursor_of(self.focus)) {
-                    Some(Some(name)) => Some(Action::ListProject(name.to_string())),
+                    // `filter::quote` and not a raw `{name}`: a project name
+                    // may hold a space or a quote (the same composition
+                    // `chart burndown --project` does). The D62 scope strip
+                    // is the eventual answer; until it lands `⏎` leaves and
+                    // prints the working set filtered to the row (#204).
+                    Some(Some(name)) => Some(Action::List(vec![format!(
+                        "project:{}",
+                        tasqx_core::filter::quote(name)
+                    )])),
                     // The "(none)" bucket: a real row, but `project:VALUE`
                     // cannot select "no project", so there is nothing to
                     // filter to either.
@@ -1098,36 +1098,30 @@ fn draw_overlay(lines: Vec<Line>, area: Rect, theme: &Theme, caps: &Caps, frame:
     // the dashboard having come apart: the panels around it keep their rules,
     // and the blank region in the middle looks like damage rather than like
     // something drawn on top.
-    let rule = if caps.unicode { '─' } else { '-' };
-    let side = if caps.unicode { '│' } else { '|' };
-    let (tl, tr, bl, br) = if caps.unicode {
-        ('┌', '┐', '└', '┘')
+    let set = if caps.unicode {
+        symbols::border::PLAIN
     } else {
-        ('+', '+', '+', '+')
+        symbols::border::Set {
+            top_left: "+",
+            top_right: "+",
+            bottom_left: "+",
+            bottom_right: "+",
+            vertical_left: "|",
+            vertical_right: "|",
+            horizontal_top: "-",
+            horizontal_bottom: "-",
+        }
     };
-    let inner = w.saturating_sub(2) as usize;
-    let mut framed: Vec<Line> = Vec::with_capacity(lines.len() + 2);
-    framed.push(Line::from(Span::styled(
-        format!("{tl}{}{tr}", rule.to_string().repeat(inner)),
-        muted,
-    )));
-    for l in lines {
-        // Cut to the box, not clipped by it: a card holds an annotation body
-        // nobody wrote to fit, and ratatui's own clip would lose the ellipsis
-        // that says something was cut.
-        let text = render::truncate(&l.to_string(), inner, caps.unicode);
-        let pad = inner.saturating_sub(render::width(&text));
-        framed.push(Line::from(vec![
-            Span::styled(side.to_string(), muted),
-            Span::raw(format!("{text}{}", " ".repeat(pad))),
-            Span::styled(side.to_string(), muted),
-        ]));
-    }
-    framed.push(Line::from(Span::styled(
-        format!("{bl}{}{br}", rule.to_string().repeat(inner)),
-        muted,
-    )));
-    frame.render_widget(Paragraph::new(framed), rect);
+    let block = Block::bordered().border_set(set).border_style(muted);
+    let inner = block.inner(rect).width as usize;
+    // Cut to the box, not clipped by it: a card holds an annotation body
+    // nobody wrote to fit, and ratatui's own clip would lose the ellipsis
+    // that says something was cut.
+    let body: Vec<Line> = lines
+        .iter()
+        .map(|l| Line::raw(render::truncate(&l.to_string(), inner, caps.unicode)))
+        .collect();
+    frame.render_widget(Paragraph::new(body).block(block), rect);
 }
 
 /// The detail overlay: one `task.get`, and the `depends_on` that is the only

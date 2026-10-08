@@ -24,6 +24,7 @@ use std::collections::{HashMap, HashSet};
 use jiff::civil::Date;
 use jiff::tz::TimeZone;
 use jiff::Timestamp;
+use ratatui::layout::{Constraint, Layout, Rect};
 use serde_json::Value;
 
 use crate::chart;
@@ -1199,7 +1200,6 @@ pub enum Rung {
     S,
     M,
     L,
-    Xl,
 }
 
 /// Which rung a terminal of this size lands on.
@@ -1220,9 +1220,7 @@ pub fn rung_for(width: u16, height: u16) -> Rung {
         .find(|(_, min)| width >= *min)
         .map(|(r, _)| *r)
         .unwrap_or(Rung::Xs);
-    let by_height = if height >= 40 {
-        Rung::Xl
-    } else if height >= 32 {
+    let by_height = if height >= 32 {
         Rung::L
     } else if height >= 28 {
         Rung::M
@@ -1278,25 +1276,20 @@ pub(crate) const MIN_COLUMN: u16 = 34;
 const CHROME_ROWS: u16 = 3;
 
 /// Each column's `(x, width)`, left to right, covering the full width with no
-/// gap — the last one absorbs the remainder of an uneven division.
+/// gap, an uneven division's remainder spread by ratatui's `Fill`. (Equal columns
+/// are the one split here that `Layout` does right; the vertical fit above is
+/// the one it does not.)
 ///
 /// Extracted so the chrome compositor and [`layout`] cannot disagree about
 /// where a column boundary is. They did not have to: the same three lines
 /// existed in both, and a boundary the chrome drew one cell away from the
 /// panel edge would put a seam glyph through a task title on every row.
 pub(crate) fn column_extents(width: u16, columns: u16) -> Vec<(u16, u16)> {
-    let mut out = Vec::with_capacity(columns as usize);
-    let mut x = 0u16;
-    for i in 0..columns {
-        let w = if i + 1 == columns {
-            width - x
-        } else {
-            width / columns
-        };
-        out.push((x, w));
-        x += w;
-    }
-    out
+    Layout::horizontal(vec![Constraint::Fill(1); columns as usize])
+        .split(Rect::new(0, 0, width, 1))
+        .iter()
+        .map(|r| (r.x, r.width))
+        .collect()
 }
 
 /// The floor below which the alternate screen is never entered (D58).
@@ -1379,7 +1372,7 @@ fn column_table(rung: Rung) -> Vec<Vec<PanelId>> {
         // where the work is, how it is burning down, what it has cost — shares
         // the other. That is D80's
         // arrangement.
-        Rung::Xl | Rung::L => vec![
+        Rung::L => vec![
             vec![
                 PanelId::Projects,
                 PanelId::Burndown,
@@ -1412,8 +1405,7 @@ pub(crate) fn columns_for(r: Rung) -> u16 {
 /// The narrowest terminal that can reach each rung — the other half of the
 /// breakpoint table, exposed so a test can prove the two agree rather than
 /// re-typing the numbers beside them.
-pub(crate) const RUNG_MIN_WIDTH: [(Rung, u16); 5] = [
-    (Rung::Xl, 150),
+pub(crate) const RUNG_MIN_WIDTH: [(Rung, u16); 4] = [
     (Rung::L, 120),
     (Rung::M, 96),
     (Rung::S, 72),
