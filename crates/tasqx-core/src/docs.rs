@@ -1050,7 +1050,7 @@ pub const GRAPH_NODE: &[FieldDoc] = &[
     n("summary", "string", "The second line: `#<short_id> · <status> · <priority>` for a task, the source for a document, the owning task for a note, the description for a project. Null when a project has no description."),
     n("project", "string", "The project this node is filed under, or null — including on a project node, which is not filed under itself."),
     n("status", "string", "A task's status, read the way every other surface reads it (a future `wait` shows `backlog`). Null on every other kind of node."),
-    n("modified", "string", "When the node last changed: `modified` for a task or a document, `created` for a note, which is never edited. Null for a project, which carries no such column — so the date window cannot exclude one."),
+    n("modified", "string", "When the node last changed: `modified` for a task or a document, `created` for a note, which carries no modified time, so an edit does not move it. Null for a project, which carries no such column — so the date window cannot exclude one."),
     n("short_id", "integer", "The small number a human types for a task. Null on every other kind of node."),
     n("task", "string", "The node id of the task a note is written on. Null on every other kind of node."),
 ];
@@ -1144,6 +1144,7 @@ pub const MEMORY_HIT_ROW: &[FieldDoc] = &[
     n("standing", "boolean", "For a doc hit, whether it is a standing ruling (D156); null on an annotation hit, which has no such flag."),
     n("project", "string", "Which project this hit is scoped to — a doc's own column, or the annotation's task's — or null for global knowledge (#657)."),
     n("stale", "boolean", "true when the doc's origin file no longer matches what was imported; null for annotations and docs with no origin (D180)."),
+    f("modified", "string", "When the entry last changed: a doc's `modified`, an annotation's `created` (annotations carry no modified time, so an edit does not move it, the same rule `graph.query` uses for a node) — what a date window filters hits on (D219)."),
     f("via", "string", "Which side found it: `lexical` (words — all of them, which `matched` explains, or only some, which `partial` says and `matched_any` explains), `semantic` (meaning; `similarity` explains it) or `both` (D196)."),
     n("similarity", "number", "Its best chunk's cosine to the query, to three decimals — also on a hit the words found, when the entry has a vector; null when it has none or the semantic side did not run."),
     f("score", "number", "The fused score: Σ weight/(20 + rank) over the lists it is on — every word 1.0, any word 0.35, meaning 1.3 (D196, #838). Higher is better."),

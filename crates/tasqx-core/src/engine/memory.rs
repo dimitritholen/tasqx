@@ -1685,14 +1685,14 @@ impl Engine {
                  snippet(docs_fts, 1, '', '', '…', {SNIPPET_TOKENS}) AS snip, \
                  0.0 AS score, d.standing AS standing, d.project AS project, \
                  d.origin_path AS origin_path, d.origin_mtime AS origin_mtime, \
-                 d.origin_size AS origin_size, d.body AS body"
+                 d.origin_size AS origin_size, d.body AS body, d.modified AS modified"
             ),
             &format!(
                 "a.id AS id, 'annotation' AS kind, t.title AS title, \
                  'task:#' || t.short_id AS source, \
                  snippet(annotations_fts, 0, '', '', '…', {SNIPPET_TOKENS}) AS snip, \
                  0.0 AS score, NULL AS standing, t.project AS project, \
-                 NULL AS origin_path, NULL AS origin_mtime, NULL AS origin_size, NULL AS body"
+                 NULL AS origin_path, NULL AS origin_mtime, NULL AS origin_size, NULL AS body, a.created AS modified"
             ),
             (
                 " AND d.id IN (SELECT value FROM json_each(:ids))",
@@ -1756,6 +1756,10 @@ impl Engine {
             // knowledge.
             "project": r.get::<_, Option<String>>(7)?,
             "stale": stale,
+            // #807: a doc's `modified`, an annotation's `created`:
+            // annotations carry no modified time, so an edit does not move
+            // it (the rule graph.query uses). A date filter can place every hit.
+            "modified": r.get::<_, String>(12)?,
         });
         Ok((HitKey::parse(&kind, id), row))
     }
@@ -1770,11 +1774,11 @@ impl Engine {
         let sql = match key.kind {
             vectors::Kind::Doc => {
                 "SELECT d.id, 'doc', d.title, d.source, '', 0.0, d.standing, d.project, \
-                 d.origin_path, d.origin_mtime, d.origin_size, d.body FROM docs d WHERE d.id = ?1"
+                 d.origin_path, d.origin_mtime, d.origin_size, d.body, d.modified FROM docs d WHERE d.id = ?1"
             }
             vectors::Kind::Annotation => {
                 "SELECT a.id, 'annotation', t.title, 'task:#' || t.short_id, '', 0.0, NULL, \
-                 t.project, NULL, NULL, NULL, NULL FROM annotations a \
+                 t.project, NULL, NULL, NULL, NULL, a.created FROM annotations a \
                  JOIN tasks t ON t.id = a.task_id WHERE a.id = ?1 AND a.removed IS NULL"
             }
         };

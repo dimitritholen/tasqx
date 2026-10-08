@@ -2114,6 +2114,53 @@ fn a_search_hit_echoes_standing_on_docs_and_null_on_annotations() {
     );
 }
 
+/// #807: the Memory Explorer's date filter needs a date on every hit. A doc
+/// hit carries the doc's `modified`; an annotation, which has no
+/// modified time, its `created` — the way `graph.query` dates a node.
+#[test]
+fn a_search_hit_carries_modified_on_docs_and_annotations() {
+    let e = engine();
+    let d = call(
+        &e,
+        "memory.add",
+        json!({ "title": "the ruling", "body": "the shibboleth is here" }),
+    )
+    .unwrap();
+    let t = call(&e, "task.add", json!({ "title": "Ship" })).unwrap();
+    let a = call(
+        &e,
+        "annotation.add",
+        json!({ "ref": t["short_id"], "body": "the shibboleth again" }),
+    )
+    .unwrap();
+    let doc = call(&e, "memory.get", json!({ "id": d["id"] })).unwrap();
+
+    let found = call(&e, "memory.search", json!({ "query": "shibboleth" })).expect("search");
+    let hits = found["hits"].as_array().expect("hits");
+    let doc_hit = hits.iter().find(|h| h["kind"] == "doc").expect("a doc hit");
+    let ann_hit = hits
+        .iter()
+        .find(|h| h["kind"] == "annotation")
+        .expect("an annotation hit");
+    assert_eq!(doc_hit["modified"], doc["modified"], "{doc_hit}");
+    assert!(
+        ann_hit["modified"].as_str().is_some_and(|m| !m.is_empty()),
+        "{ann_hit} ({a})"
+    );
+
+    // A hit only meaning finds is read by id and dated the same way.
+    let by_meaning = call(
+        &e,
+        "memory.search",
+        json!({ "query": "shibboleth", "mode": "semantic" }),
+    );
+    if let Ok(r) = by_meaning {
+        for h in r["hits"].as_array().into_iter().flatten() {
+            assert!(h["modified"].is_string(), "{h}");
+        }
+    }
+}
+
 /// `memory.import` replaces by `source` (#178/#198), and a re-imported
 /// directory carries no opinion about whether a doc is standing — the flag
 /// was set by a person through `memory.update`, and a re-run that silently

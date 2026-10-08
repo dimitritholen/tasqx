@@ -191,14 +191,14 @@ export function MemoryScreen() {
             ))}
           </select>
         </Field>
-        <Field label="Modified after" hint={filters.query.trim() !== '' ? 'Browsing only' : undefined}>
+        <Field label="Modified after">
           <input
             type="date"
             value={filters.modifiedAfter ?? ''}
             onChange={(event) => patch({ modifiedAfter: event.target.value || null })}
           />
         </Field>
-        <Field label="Modified before" hint={filters.query.trim() !== '' ? 'Browsing only' : undefined}>
+        <Field label="Modified before">
           <input
             type="date"
             value={filters.modifiedBefore ?? ''}

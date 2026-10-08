@@ -166,6 +166,8 @@ export interface MemoryHit {
   standing: boolean | null;
   project: string | null;
   stale: boolean | null;
+  /** A doc's modified, an annotation's created (D219). Absent on a daemon older than that. */
+  modified?: string;
 }
 
 export interface MemorySearchResult {
