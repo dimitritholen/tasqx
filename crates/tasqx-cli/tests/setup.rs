@@ -1,7 +1,8 @@
 //! `tasqx setup` through the real binary (D159).
 //!
 //! Every case points `--home` at a scratch directory, so nothing here reads or
-//! writes the developer's own `~/.claude`, and `TASQX_DB` at a path that must
+//! writes the developer's own `~/.claude`, `~/.codex` or `~/.gemini`, and `PATH`
+//! at a directory holding at most fake CLIs, and `TASQX_DB` at a path that must
 //! still not exist afterwards: setup is gated ahead of the store open.
 
 use std::path::{Path, PathBuf};
@@ -21,8 +22,12 @@ fn scratch(tag: &str) -> PathBuf {
 
 /// The binary with `--home <dir>/home`, its store and config inside `dir`.
 fn bin(dir: &Path) -> Command {
+    // An empty PATH: which of codex and gemini the developer has installed
+    // must not change what a case sees. Cases that want a CLI replace it.
+    std::fs::create_dir_all(dir.join("nopath")).unwrap();
     let mut c = Command::new(env!("CARGO_BIN_EXE_tasqx"));
-    c.env("TASQX_CONFIG_DIR", dir.join("cfg"))
+    c.env("PATH", dir.join("nopath"))
+        .env("TASQX_CONFIG_DIR", dir.join("cfg"))
         .env("TASQX_DB", dir.join("tasks.db"))
         .arg("--no-daemon")
         .args(["setup", "--home"])
@@ -231,17 +236,17 @@ fn an_unknown_only_name_exits_2_naming_the_valid_ones() {
     );
 }
 
-/// A PATH holding only a fake `claude`. Each call appends its argv, space
-/// joined, as one line of `calls.txt`, and writes the `$HOME` it saw to
-/// `home.txt`, then runs the shell line `then`.
+/// A PATH holding only fake CLIs. Each call to `name` appends its argv, space
+/// joined, as one line of `<name>-calls.txt`, and writes the `$HOME` it saw to
+/// `<name>-home.txt`, then runs the shell line `then`.
 #[cfg(unix)]
-fn fake_claude(dir: &Path, then: &str) -> (PathBuf, PathBuf, PathBuf) {
+fn fake_cli(dir: &Path, name: &str, then: &str) -> (PathBuf, PathBuf, PathBuf) {
     use std::os::unix::fs::PermissionsExt;
     let bin_dir = dir.join("bin");
     std::fs::create_dir_all(&bin_dir).unwrap();
-    let calls = dir.join("calls.txt");
-    let home = dir.join("home.txt");
-    let script = bin_dir.join("claude");
+    let calls = dir.join(format!("{name}-calls.txt"));
+    let home = dir.join(format!("{name}-home.txt"));
+    let script = bin_dir.join(name);
     std::fs::write(
         &script,
         format!(
@@ -253,6 +258,11 @@ fn fake_claude(dir: &Path, then: &str) -> (PathBuf, PathBuf, PathBuf) {
     .unwrap();
     std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
     (bin_dir, calls, home)
+}
+
+#[cfg(unix)]
+fn fake_claude(dir: &Path, then: &str) -> (PathBuf, PathBuf, PathBuf) {
+    fake_cli(dir, "claude", then)
 }
 
 #[cfg(unix)]
@@ -377,4 +387,156 @@ fn without_ripwire_on_path_setup_prints_the_install_hint_and_exits_0() {
         out.contains("install it from https://github.com/redhat-et/ripwire and put it on PATH"),
         "{out}"
     );
+}
+
+/// Only tools whose binary is on PATH are offered, besides Claude Code; the
+/// table names them and the items carry the `<tool>:` prefix.
+#[cfg(unix)]
+#[test]
+fn list_offers_codex_and_gemini_only_when_found_on_path() {
+    let dir = scratch("found");
+    let (code, out, _) = run(bin(&dir).arg("--list"));
+    assert_eq!(code, 0);
+    assert!(
+        out.contains("Claude Code") && !out.contains("codex:"),
+        "{out}"
+    );
+    assert!(!out.contains("Gemini") && !out.contains("gemini:"), "{out}");
+
+    let (path, ..) = fake_cli(&dir, "codex", "");
+    let (code, out, _) = run(bin(&dir).env("PATH", &path).args(["--list"]));
+    assert_eq!(code, 0);
+    assert!(row(&out, "codex:mcp").contains("not installed"), "{out}");
+    assert!(row(&out, "mcp").contains("not installed"), "{out}");
+    assert!(row(&out, "Codex").contains("on PATH"), "{out}");
+    assert!(!out.contains("gemini:"), "{out}");
+
+    let (code, out, _) = run(bin(&dir).env("PATH", &path).args(["--list", "--json"]));
+    assert_eq!(code, 0);
+    let v: serde_json::Value = serde_json::from_str(&out).expect("JSON");
+    let ids: Vec<&str> = v["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|t| t["id"].as_str().unwrap())
+        .collect();
+    assert_eq!(ids, ["claude", "codex"]);
+}
+
+#[cfg(unix)]
+#[test]
+fn only_naming_a_tool_that_is_not_on_path_exits_2() {
+    let dir = scratch("gone");
+    let (code, _, err) = run(bin(&dir).args(["--yes", "--only", "gemini:mcp"]));
+    assert_eq!(code, 2);
+    assert!(err.contains("gemini") && err.contains("PATH"), "{err}");
+    // `claude:` is an accepted spelling of the bare name.
+    let (code, out, _) = run(bin(&dir).args(["--list", "--only", "claude:retro"]));
+    assert_eq!(code, 0);
+    assert!(row(&out, "retro").contains("not installed"), "{out}");
+}
+
+/// The argv the real CLIs accepted (see `setup::Tool`), received by fakes,
+/// each under the `--home` it was given.
+#[cfg(unix)]
+#[test]
+fn yes_registers_mcp_through_codex_and_gemini_with_their_own_argv() {
+    let dir = scratch("others");
+    let (path, codex_calls, codex_home) = fake_cli(&dir, "codex", "");
+    let (_, gemini_calls, gemini_home) = fake_cli(&dir, "gemini", "");
+    let (code, out, err) = run(bin(&dir).env("PATH", &path).args([
+        "--yes",
+        "--only",
+        "codex:mcp",
+        "--only",
+        "gemini:mcp",
+    ]));
+    assert_eq!(code, 0, "stdout: {out}\nstderr: {err}");
+    let lines = |p: &Path| -> Vec<String> {
+        std::fs::read_to_string(p)
+            .unwrap()
+            .lines()
+            .map(String::from)
+            .collect()
+    };
+    assert_eq!(
+        lines(&codex_calls),
+        ["mcp add tasqx -- tasqx mcp serve --scope write"]
+    );
+    assert_eq!(
+        lines(&gemini_calls),
+        ["mcp add --scope user tasqx tasqx -- mcp serve --scope write"]
+    );
+    for h in [codex_home, gemini_home] {
+        assert_eq!(
+            std::fs::read_to_string(h).unwrap(),
+            dir.join("home").display().to_string()
+        );
+    }
+    assert!(row(&out, "codex:mcp").contains("installed"), "{out}");
+    assert!(row(&out, "gemini:mcp").contains("installed"), "{out}");
+    assert!(!dir.join("home/.codex").exists() && !dir.join("home/.gemini").exists());
+}
+
+#[cfg(unix)]
+#[test]
+fn codex_and_gemini_registrations_are_read_from_their_own_config_files() {
+    let dir = scratch("readcfg");
+    let (path, calls, _) = fake_cli(&dir, "codex", "");
+    fake_cli(&dir, "gemini", "");
+    std::fs::create_dir_all(dir.join("home/.codex")).unwrap();
+    std::fs::create_dir_all(dir.join("home/.gemini")).unwrap();
+    std::fs::write(
+        dir.join("home/.codex/config.toml"),
+        "[mcp_servers.tasqx]\ncommand = \"tasqx\"\nargs = [\"mcp\", \"serve\", \"--scope\", \"write\"]\n",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("home/.gemini/settings.json"),
+        r#"{"mcpServers":{"tasqx":{"command":"tasqx","args":["mcp","serve"]}}}"#,
+    )
+    .unwrap();
+    let (_, out, _) = run(bin(&dir).env("PATH", &path).args(["--list"]));
+    let line = row(&out, "codex:mcp");
+    assert!(
+        line.contains("installed") && !line.contains("not installed"),
+        "{out}"
+    );
+    assert!(row(&out, "gemini:mcp").contains("differs"), "{out}");
+
+    // A kept codex registration never calls codex.
+    let (code, out, _) = run(bin(&dir)
+        .env("PATH", &path)
+        .args(["--yes", "--only", "codex:mcp"]));
+    assert_eq!(code, 0);
+    assert!(
+        row(&out, "codex:mcp").contains("already installed"),
+        "{out}"
+    );
+    assert!(!calls.exists());
+}
+
+#[cfg(unix)]
+#[test]
+fn codex_and_gemini_skills_go_under_their_own_directories() {
+    let dir = scratch("otherskills");
+    let (path, ..) = fake_cli(&dir, "codex", "");
+    fake_cli(&dir, "gemini", "");
+    let (code, out, err) = run(bin(&dir).env("PATH", &path).args([
+        "--yes",
+        "--only",
+        "codex:retro",
+        "--only",
+        "gemini:tasqx-workflow",
+    ]));
+    assert_eq!(code, 0, "stdout: {out}\nstderr: {err}");
+    assert_eq!(
+        std::fs::read(dir.join("home/.codex/skills/retro/SKILL.md")).unwrap(),
+        repo_skill("retro")
+    );
+    assert_eq!(
+        std::fs::read(dir.join("home/.gemini/skills/tasqx-workflow/SKILL.md")).unwrap(),
+        repo_skill("tasqx-workflow")
+    );
+    assert!(!skill_path(&dir, "retro").exists());
 }

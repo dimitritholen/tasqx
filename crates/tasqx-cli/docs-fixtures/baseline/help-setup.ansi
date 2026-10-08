@@ -1,6 +1,6 @@
-Install the Claude Code integration: the MCP server and the bundled skills.
+Install the Claude Code, Codex and Gemini integrations: the MCP server and the bundled skills.
 
-On a terminal it opens a checklist of what is installed: tick what you want and press enter. Piped, or with `--list`, it prints that list. The skills are compiled into this binary, and the MCP server is registered through `claude mcp add`. Needs no store.
+On a terminal it opens a checklist of what is installed: tick what you want and press enter. Piped, or with `--list`, it prints that list. The skills are compiled into this binary, and the MCP server is registered through each tool's own `mcp add`. Needs no store.
 
 Usage: tasqx setup [OPTIONS]
 
@@ -27,10 +27,10 @@ Options:
           Never route through a daemon; always run one-shot in-process (the pre-daemon behaviour). Escape hatch for scripts
 
       --only <NAME>
-          Only this item (mcp, tasqx-workflow, retro); repeat for more
+          Only this item (mcp, tasqx-workflow, retro, codex:mcp, gemini:retro, ...); repeat for more
 
       --home <DIR>
-          Treat DIR as the home directory, the one holding `.claude`
+          Treat DIR as the home directory, the one holding `.claude`, `.codex` and `.gemini`
 
   -h, --help
           Print help (see a summary with '-h')
@@ -44,9 +44,10 @@ EXAMPLES
   tasqx setup --yes    # installs everything not installed, and keeps a skill you edited
   tasqx setup --yes --force --only retro    # replaces the retro skill with the copy this build carries
 
-NOTE  Three items: `mcp` registers `tasqx mcp serve --scope write` with Claude Code at user scope by running `claude mcp add`; `tasqx-workflow` and `retro` are skills written to `~/.claude/skills/<name>/SKILL.md` from copies compiled into this binary, so they match the tasqx you run (D159).
+NOTE  Three items per tool: `mcp` registers `tasqx mcp serve --scope write` at user level by running the tool's own `mcp add`; `tasqx-workflow` and `retro` are skills written to `~/.claude/skills`, `~/.codex/skills` or `~/.gemini/skills` (`<name>/SKILL.md`) from copies compiled into this binary, so they match the tasqx you run (D159).
+      Claude Code is always offered; Codex and Gemini CLI only when `codex` or `gemini` is on PATH. Their items are named `codex:mcp`, `gemini:retro` and so on for --only; Claude's stay bare (`mcp`, `retro`).
       A skill that exists and is not byte-equal to the bundled copy reads `differs` — an older copy and your own edit look the same — and is kept unless you pass --force or tick it on the screen. So is an MCP registration that runs anything else, such as the read-only `tasqx mcp serve`; replacing it runs `claude mcp remove` first.
-      It never writes `~/.claude.json` itself. Without the `claude` command on PATH, the mcp item prints the exact command to run instead. Piped, with no flags, it prints the list and exits 0.
+      It never writes a tool's config file itself (`~/.claude.json`, `~/.codex/config.toml`, `~/.gemini/settings.json`). Without the `claude` command on PATH, the mcp item prints the exact command to run instead. Piped, with no flags, it prints the list and exits 0.
       ripwire not found on PATH: install it from https://github.com/redhat-et/ripwire and put it on PATH.
 
 See also: mcp        Full manual: tasqx manual

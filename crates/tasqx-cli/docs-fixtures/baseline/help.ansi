@@ -49,7 +49,7 @@ Commands:
   about        Who made tasqx, where to find it, and what build this is. Prints the author, two links, this build's version and commit, and the store it would open. Needs no store and no network
   manual       Browse the complete manual in your terminal: a themed, navigable guide. `tasqx manual` prints the table of contents; `tasqx manual <command|topic>` opens that page, or both where a name is a command and a topic (`projects`, `daemon`). Needs no store and no network
   completions  Print the line that turns on Tab completion for tasqx
-  setup        Install the Claude Code integration: the MCP server and the bundled skills
+  setup        Install the Claude Code, Codex and Gemini integrations: the MCP server and the bundled skills
 
 Options:
       --json             Print the raw JSON API result instead of the human table

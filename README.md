@@ -65,7 +65,7 @@ Windows (the first statement lets older PowerShell negotiate TLS at all):
 ```
 
 **2. Connect your agent.** One command registers the MCP server with Claude
-Code and installs the `tasqx-workflow` and `retro` skills:
+Code, Codex CLI and Gemini CLI (each one it finds) and installs the `tasqx-workflow` and `retro` skills:
 
 ```console
 tasqx setup
@@ -257,10 +257,12 @@ cd tasqx
 cargo install --path crates/tasqx-cli --force
 ```
 
-To wire the MCP server into Claude Code by hand, without the skills `tasqx setup` adds:
+To wire the MCP server in by hand, without the skills `tasqx setup` adds:
 
 ```console
 claude mcp add --scope user tasqx -- tasqx mcp serve --scope write
+codex mcp add tasqx -- tasqx mcp serve --scope write
+gemini mcp add --scope user tasqx tasqx -- mcp serve --scope write
 ```
 
 ## Built to be trusted

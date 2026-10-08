@@ -85,7 +85,9 @@ tasqx setup --only retro
 
 The skill text is compiled into tasqx, so each release installs the version
 that matches it — read it at
-[`.claude/skills/retro/SKILL.md`](../../.claude/skills/retro/SKILL.md). A
+[`.claude/skills/retro/SKILL.md`](../../.claude/skills/retro/SKILL.md). With
+Codex or Gemini on your PATH it also installs `~/.codex/skills/retro` and
+`~/.gemini/skills/retro` (`--only codex:retro`, `--only gemini:retro`). A
 `~/.claude/skills/retro/SKILL.md` that differs from it, your own edit or an
 older copy, is kept; `tasqx setup --yes --only retro --force` replaces it. It
 runs once per session, on request (`/retro`), over every task the session
