@@ -1,4 +1,4 @@
-import { buildCfd, buildDag, buildTreemap, criticalPath, estimateMinutes, layoutDag, layoutTreemap } from './charts';
+import { buildCfd, buildDag, buildSky, SKY_STAR_CAP, buildTreemap, criticalPath, estimateMinutes, layoutDag, layoutTreemap } from './charts';
 import type { TreeNode } from './charts';
 import type { EventRow } from '../api/types';
 import { taskRow } from '../test/scripted';
@@ -137,5 +137,34 @@ describe('cfd', () => {
     );
     expect(cfd.bucket).toBe('day');
     expect(cfd.rows).toHaveLength(2);
+  });
+});
+
+describe('sky', () => {
+  const tasks = [
+    t(1, 'done', [], { project: 'a', urgency: 0.2 }),
+    t(2, 'pending', [1], { project: 'a', urgency: 9 }),
+    t(3, 'pending', [2, 99], { project: 'b', urgency: 3 }),
+  ];
+
+  test('a star per project sized by its open tasks, a node per task sized by urgency', () => {
+    const { nodes } = buildSky(tasks);
+    expect(nodes.filter((n) => !n.task).map((n) => [n.id, n.val])).toEqual([['p:a', 7], ['p:b', 7]]);
+    expect(nodes.find((n) => n.id === 't:2')?.val).toBe(9);
+    expect(nodes.find((n) => n.id === 't:1')?.val).toBe(1);
+  });
+
+  test('orbit links to the star, dependency links only between tasks on screen', () => {
+    const { links } = buildSky(tasks);
+    expect(links.filter((l) => l.kind === 'orbit')).toHaveLength(3);
+    expect(links.filter((l) => l.kind === 'dep')).toEqual([
+      { source: 't:1', target: 't:2', kind: 'dep', open: false },
+      { source: 't:2', target: 't:3', kind: 'dep', open: true },
+    ]);
+  });
+
+  test('a star never grows past the cap', () => {
+    const many = Array.from({ length: 200 }, (_, i) => t(i + 1, 'pending', [], { project: 'big' }));
+    expect(buildSky(many).nodes.find((n) => n.id === 'p:big')?.val).toBe(SKY_STAR_CAP);
   });
 });

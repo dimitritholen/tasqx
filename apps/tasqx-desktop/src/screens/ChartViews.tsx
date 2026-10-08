@@ -17,7 +17,7 @@ const detail = (task: TaskRow) =>
   (task.estimate ? ` · est ${task.estimate}` : '') +
   (task.tags.length ? `\n${task.tags.join(', ')}` : '');
 
-function Figure({ id, title, children, table }: { id: string; title: string; children: ReactNode; table: ReactNode }) {
+export function Figure({ id, title, children, table }: { id: string; title: string; children: ReactNode; table: ReactNode }) {
   return (
     <figure className="chart" aria-labelledby={`${id}-cap`}>
       <figcaption id={`${id}-cap`}>{title}</figcaption>
@@ -30,7 +30,7 @@ function Figure({ id, title, children, table }: { id: string; title: string; chi
   );
 }
 
-function SelectButton({ task, onSelect }: { task: TaskRow; onSelect(shortId: number): void }) {
+export function SelectButton({ task, onSelect }: { task: TaskRow; onSelect(shortId: number): void }) {
   return (
     <button type="button" className="link-btn" onClick={() => onSelect(task.short_id)}>
       {label(task)}
@@ -76,7 +76,7 @@ export function DagChart({ layout, onSelect }: { layout: DagLayout; onSelect(sho
       <div className="chart-scroll">
         <svg role="group" aria-label={title} width={layout.width} height={layout.height}>
           <defs>
-            <marker id="dag-arrow" viewBox="0 0 10 10" refX="10" refY="5" markerWidth="6" markerHeight="6" orient="auto">
+            <marker id="dag-arrow" viewBox="0 0 10 10" refX="10" refY="5" markerWidth="8" markerHeight="8" markerUnits="userSpaceOnUse" orient="auto">
               <path d="M0,0L10,5L0,10z" className="chart-arrow" />
             </marker>
           </defs>

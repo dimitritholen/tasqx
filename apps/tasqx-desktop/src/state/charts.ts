@@ -368,3 +368,52 @@ export function buildCfd(events: EventRow[], ids: Set<string>): Cfd {
   }
   return { rows, bucket, used: own.length };
 }
+
+// ---- Sky ------------------------------------------------------------------
+
+/** A project star is capped, or one huge node pushes every task off-camera. */
+export const SKY_STAR_CAP = 60;
+/** Even an empty project is a visible star. */
+const STAR_BASE = 6;
+
+export interface SkyNode {
+  id: string;
+  name: string;
+  /** Sphere volume: a star's open count plus a base (capped), a task's urgency (at least 1). */
+  val: number;
+  task?: TaskRow;
+}
+export interface SkyLink {
+  source: string;
+  target: string;
+  kind: 'orbit' | 'dep';
+  /** A dependency whose blocker is still open. */
+  open: boolean;
+}
+
+/** Projects as stars, tasks orbiting them, dependencies between the tasks. */
+export function buildSky(tasks: TaskRow[]): { nodes: SkyNode[]; links: SkyLink[] } {
+  const star = (project: string) => `p:${project}`;
+  const stars = new Map<string, number>();
+  for (const task of tasks) {
+    const key = task.project ?? '(none)';
+    stars.set(key, (stars.get(key) ?? 0) + (isOpen(task) ? 1 : 0));
+  }
+  const nodes: SkyNode[] = [...stars].map(([name, open]) => ({
+    id: star(name),
+    name,
+    val: Math.min(SKY_STAR_CAP, STAR_BASE + open),
+  }));
+  const links: SkyLink[] = [];
+  const open = new Map(tasks.map((t) => [t.short_id, isOpen(t)]));
+  for (const task of tasks) {
+    nodes.push({ id: `t:${task.short_id}`, name: label(task), val: Math.max(1, task.urgency), task });
+    links.push({ source: `t:${task.short_id}`, target: star(task.project ?? '(none)'), kind: 'orbit', open: false });
+    for (const dep of task.depends_on ?? []) {
+      if (open.has(dep)) links.push({ source: `t:${dep}`, target: `t:${task.short_id}`, kind: 'dep', open: open.get(dep) === true });
+    }
+  }
+  return { nodes, links };
+}
+
+const label = (task: TaskRow) => `#${task.short_id} ${task.title}`;

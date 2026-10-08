@@ -16,6 +16,7 @@
   },
   "dependencies": {
     "@tauri-apps/api": "^2",
+    "3d-force-graph": "^1.80.1",
     "graphology": "^0.26.0",
     "graphology-layout-forceatlas2": "^0.10.1",
     "react": "^19",

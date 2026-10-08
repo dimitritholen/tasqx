@@ -849,7 +849,7 @@
 
 .chart svg .tree-label {
   stroke: var(--color-canvas);
-  stroke-width: 4px;
+  stroke-width: 2px;
   paint-order: stroke;
 }
 
@@ -888,4 +888,17 @@
 
 .chart-arrow {
   fill: var(--color-muted);
+}
+
+.sky-frame {
+  height: 520px;
+  border: var(--border-width) solid var(--color-border);
+  border-radius: var(--radius-panel);
+  background: var(--color-canvas);
+  overflow: hidden;
+}
+
+.sky-host {
+  width: 100%;
+  height: 100%;
 }
