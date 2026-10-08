@@ -1015,7 +1015,7 @@ The report generator is *just another client* — anything it shows, a plugin or
 | `tasqx docs --no-open` | Write the temp file, print the path. |
 | `tasqx docs --stdout` | Write the HTML to stdout. |
 
-**Pages**, each a `<section id>` shown one at a time by the stylesheet's `:target` — the page the hash names, or the page holding the heading or row it names, or the first page when it names neither. Every page of prose is a markdown file rendered at generation time: `docs/site` (overview, install & quickstart, filter grammar, scheduling & recurrence, reminders, daemon & watch, export & import, themes & reports), then the wiki and the guides; the commands, JSON API, MCP and object pages are generated references. Light or dark follows `prefers-color-scheme`, with no switch of the page's own (**D226**).
+**Pages**, each a `<section id>` shown one at a time by the stylesheet's `:target` — the page the hash names, or the page holding the heading or row it names, or the first page when it names neither. Every page of prose is a markdown file rendered at generation time: `docs/site` (overview, install & quickstart, filter grammar), then the wiki and the guides — one sidebar page per topic, so scheduling, reminders, the daemon, export & import and themes are sections of the wiki pages that cover them, and their old page ids and `#h-…` heading ids stay as anchors inside those pages; the commands, JSON API, MCP and object pages are generated references. Light or dark follows `prefers-color-scheme`, with no switch of the page's own (**D226**).
 
 **Three properties the tests hold** (`docs.rs`):
 

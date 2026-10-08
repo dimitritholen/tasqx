@@ -597,7 +597,10 @@ fn topic_source(t: Topic) -> &'static [(&'static str, &'static [&'static str])] 
         ],
         Topic::Filters => &[("Finding-Tasks.md", &["The filter language"])],
         Topic::Screens => &[
-            ("Dashboard-and-Live-View.md", &[]),
+            (
+                "Dashboard-and-Live-View.md",
+                &["", "Screens and pipes", "tasqx dashboard", "tasqx watch"],
+            ),
             ("Working-on-Tasks.md", &["tasqx pick"]),
         ],
         Topic::Reminders => &[("Dates-Reminders-and-Recurrence.md", &["Reminders"])],
@@ -607,7 +610,7 @@ fn topic_source(t: Topic) -> &'static [(&'static str, &'static [&'static str])] 
         ],
         Topic::Daemon => &[
             ("AI-Agents-and-Automation.md", &["tasqx daemon"]),
-            ("Dashboard-and-Live-View.md", &["tasqx watch"]),
+            ("Dashboard-and-Live-View.md", &["The daemon", "tasqx watch"]),
         ],
         Topic::Automation => &[(
             "AI-Agents-and-Automation.md",
