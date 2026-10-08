@@ -50,11 +50,20 @@ const CACHE_CREATION_ATTRS: &[&str] = &[
 /// Directories where Copilot CLI writes session token data. `~/.copilot/otel`
 /// plus, if the file-level exporter override is set, that file's parent dir.
 pub fn default_roots() -> Vec<PathBuf> {
+    roots_from(
+        home_dir().as_deref(),
+        std::env::var(OTEL_EXPORTER_PATH_ENV).ok().as_deref(),
+    )
+}
+
+/// Pure core of [`default_roots`], taking the two env values so it is testable
+/// without mutating process env.
+fn roots_from(home: Option<&Path>, exporter_path: Option<&str>) -> Vec<PathBuf> {
     let mut roots = Vec::new();
-    if let Some(home) = home_dir() {
+    if let Some(home) = home {
         roots.push(home.join(".copilot").join("otel"));
     }
-    if let Some(dir) = exporter_override_dir() {
+    if let Some(dir) = exporter_path.and_then(exporter_override_dir) {
         if !roots.contains(&dir) {
             roots.push(dir);
         }
@@ -196,9 +205,9 @@ fn home_dir() -> Option<PathBuf> {
     env_path("HOME").or_else(|| env_path("USERPROFILE"))
 }
 
-/// Parent directory of the file-level exporter override, if configured.
-fn exporter_override_dir() -> Option<PathBuf> {
-    let raw = std::env::var(OTEL_EXPORTER_PATH_ENV).ok()?;
+/// Parent directory of the file-level exporter override `raw`, or `None`
+/// when it is blank.
+fn exporter_override_dir(raw: &str) -> Option<PathBuf> {
     let trimmed = raw.trim();
     if trimmed.is_empty() {
         return None;
@@ -339,18 +348,12 @@ fn first_attr(attributes: &Map<String, Value>, keys: &[&str]) -> Option<String> 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::tokens::TempFixture;
 
-    /// Write `content` to a unique temp file and return its path. Synthetic,
-    /// hand-written fixtures only — never real session logs (private data).
-    fn write_fixture(content: &str) -> PathBuf {
-        let mut path = std::env::temp_dir();
-        path.push(format!(
-            "tasqx-copilot-test-{}-{}.jsonl",
-            std::process::id(),
-            crate::clock::uuid_v7()
-        ));
-        std::fs::write(&path, content).expect("write temp fixture");
-        path
+    /// Write `content` to a temp fixture. Synthetic, hand-written fixtures
+    /// only — never real session logs (private data).
+    fn write_fixture(content: &str) -> TempFixture {
+        TempFixture::new("copilot", "jsonl", content)
     }
 
     fn millis_of(ts: &str) -> i64 {
@@ -371,7 +374,6 @@ mod tests {
         );
         let path = write_fixture(content);
         let samples = samples_from_file(&path).expect("parse");
-        std::fs::remove_file(&path).ok();
 
         assert_eq!(samples.len(), 2);
         // input reported as 1000 but includes 300 cache-read → fresh input 700.
@@ -397,7 +399,6 @@ mod tests {
         );
         let path = write_fixture(content);
         let samples = samples_from_file(&path).expect("parse");
-        std::fs::remove_file(&path).ok();
 
         assert_eq!(samples.len(), 2);
         assert_eq!(samples[0].input_tokens, 10);
@@ -417,7 +418,6 @@ mod tests {
         );
         let path = write_fixture(content);
         let samples = samples_from_file(&path).expect("parse");
-        std::fs::remove_file(&path).ok();
 
         assert!(samples.is_empty());
     }
@@ -436,7 +436,6 @@ mod tests {
         );
         let path = write_fixture(content);
         let samples = samples_from_file(&path).expect("parse");
-        std::fs::remove_file(&path).ok();
 
         assert_eq!(samples.len(), 3);
         assert_eq!(millis_of(&samples[0].ts), 1_700_000_000_500);
@@ -456,7 +455,6 @@ mod tests {
         );
         let path = write_fixture(content);
         let samples = samples_from_file(&path).expect("parse");
-        std::fs::remove_file(&path).ok();
 
         assert!(samples.is_empty());
     }
@@ -473,7 +471,6 @@ mod tests {
         );
         let path = write_fixture(content);
         let samples = samples_from_file(&path).expect("parse");
-        std::fs::remove_file(&path).ok();
 
         assert_eq!(samples.len(), 1);
         assert_eq!(samples[0].input_tokens, 100);
@@ -490,7 +487,6 @@ mod tests {
         );
         let path = write_fixture(content);
         let samples = samples_from_file(&path).expect("parse");
-        std::fs::remove_file(&path).ok();
 
         assert_eq!(samples.len(), 1);
         assert_eq!(samples[0].input_tokens, 600); // 800 - 200 cache-read
@@ -512,7 +508,6 @@ mod tests {
         );
         let path = write_fixture(content);
         let samples = samples_from_file(&path).expect("parse");
-        std::fs::remove_file(&path).ok();
 
         assert_eq!(samples.len(), 1);
         assert_eq!(samples[0].input_tokens, 10);
@@ -528,7 +523,6 @@ mod tests {
         );
         let path = write_fixture(content);
         let samples = samples_from_file(&path).expect("parse");
-        std::fs::remove_file(&path).ok();
 
         assert_eq!(samples.len(), 1);
         let s = &samples[0];
@@ -544,6 +538,26 @@ mod tests {
     }
 
     #[test]
+    fn the_cache_write_spelling_is_accepted_and_the_first_positive_one_wins() {
+        // `w`: only the `cache_write` spelling. `both`: both spellings
+        // positive, `cache_write` is listed first and wins. `zero`: a zero
+        // `cache_write` falls through to the positive `cache_creation`.
+        let content = concat!(
+            r#"{"attributes":{"gen_ai.response.id":"w","gen_ai.usage.input_tokens":100,"gen_ai.usage.cache_write.input_tokens":32},"hrTime":[1700000000,0]}"#,
+            "\n",
+            r#"{"attributes":{"gen_ai.response.id":"both","gen_ai.usage.input_tokens":100,"gen_ai.usage.cache_write.input_tokens":16,"gen_ai.usage.cache_creation.input_tokens":64},"hrTime":[1700000001,0]}"#,
+            "\n",
+            r#"{"attributes":{"gen_ai.response.id":"zero","gen_ai.usage.input_tokens":100,"gen_ai.usage.cache_write.input_tokens":0,"gen_ai.usage.cache_creation.input_tokens":8},"hrTime":[1700000002,0]}"#,
+            "\n",
+        );
+        let path = write_fixture(content);
+        let samples = samples_from_file(&path).expect("parse");
+
+        let creation: Vec<u64> = samples.iter().map(|s| s.cache_creation_tokens).collect();
+        assert_eq!(creation, vec![32, 16, 8]);
+    }
+
+    #[test]
     fn cache_only_record_is_kept_with_zero_input() {
         // A record whose only usage is cache-read (input == cache-read) still
         // carries real, billable tokens and must not be dropped.
@@ -553,7 +567,6 @@ mod tests {
         );
         let path = write_fixture(content);
         let samples = samples_from_file(&path).expect("parse");
-        std::fs::remove_file(&path).ok();
 
         assert_eq!(samples.len(), 1);
         assert_eq!(samples[0].input_tokens, 0);
@@ -575,7 +588,6 @@ mod tests {
         );
         let path = write_fixture(content);
         let samples = samples_from_file(&path).expect("parse");
-        std::fs::remove_file(&path).ok();
 
         assert_eq!(samples.len(), 1);
         assert_eq!(samples[0].input_tokens, 700);
@@ -596,15 +608,8 @@ mod tests {
         bytes.extend_from_slice(b"{\xff not utf8}\n");
         bytes.extend_from_slice(good.as_bytes());
         bytes.push(b'\n');
-        let mut path = std::env::temp_dir();
-        path.push(format!(
-            "tasqx-copilot-utf8-{}-{}.jsonl",
-            std::process::id(),
-            crate::clock::uuid_v7()
-        ));
-        std::fs::write(&path, &bytes).expect("write fixture");
+        let path = TempFixture::new("copilot-utf8", "jsonl", &bytes);
         let samples = samples_from_file(&path).expect("non-utf8 must not error");
-        std::fs::remove_file(&path).ok();
 
         assert_eq!(samples.len(), 1);
         assert_eq!(samples[0].input_tokens, 10);
@@ -624,21 +629,34 @@ mod tests {
 
     #[test]
     fn default_roots_include_the_otel_dir() {
-        // Exercised only when HOME is set (it is, in CI and locally); assert the
-        // canonical `.copilot/otel` root appears. Holds the lock the
-        // attribution tests take while they point HOME at a scratch dir.
-        let _guard = crate::tokens::DISCOVERY_ENV
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
-        if home_dir().is_some() {
-            let roots = default_roots();
-            assert!(
-                roots
-                    .iter()
-                    .any(|r| r.ends_with("otel")
-                        && r.parent().is_some_and(|p| p.ends_with(".copilot"))),
-                "roots must include ~/.copilot/otel: {roots:?}"
-            );
-        }
+        let home = Path::new("/home/someone");
+        assert_eq!(
+            roots_from(Some(home), None),
+            vec![PathBuf::from("/home/someone/.copilot/otel")]
+        );
+        assert!(roots_from(None, None).is_empty());
+    }
+
+    #[test]
+    fn the_exporter_override_contributes_its_parent_dir_once() {
+        let home = Path::new("/home/someone");
+        assert_eq!(
+            roots_from(Some(home), Some("/var/otel/export.jsonl")),
+            vec![
+                PathBuf::from("/home/someone/.copilot/otel"),
+                PathBuf::from("/var/otel"),
+            ]
+        );
+        // An override inside the default dir does not repeat it.
+        assert_eq!(
+            roots_from(Some(home), Some("/home/someone/.copilot/otel/x.jsonl")),
+            vec![PathBuf::from("/home/someone/.copilot/otel")]
+        );
+        // A bare filename lives in the current directory; a blank one is unset.
+        assert_eq!(
+            roots_from(None, Some(" export.jsonl ")),
+            vec![PathBuf::from(".")]
+        );
+        assert!(roots_from(None, Some("   ")).is_empty());
     }
 }

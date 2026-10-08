@@ -1022,16 +1022,17 @@ fn add_dependency_foreign_keys_if_missing(conn: &Connection) -> Result<(), ApiEr
 
 /// Add `col` to `table` when it isn't there yet — the additive-migration
 /// primitive for stores created by an older build. SQLite has no
-/// `ADD COLUMN IF NOT EXISTS`, so the column list is checked first. Returns
-/// whether it added the column. No caller gates on that today: D135's
-/// `docs.search_body` backfill selects the rows still at the default (`''`)
-/// on every open, so it needs no signal that the column is new.
+/// `ADD COLUMN IF NOT EXISTS`, so the column list is checked first. It
+/// reports nothing back: D135's `docs.search_body` backfill selects the rows
+/// still at the default (`''`) on every open (see [`migrate_memory`]), so no
+/// caller needs a signal that the column is new, and none may gate a backfill
+/// on one.
 fn add_column_if_missing(
     conn: &Connection,
     table: &str,
     col: &str,
     decl: &str,
-) -> Result<bool, ApiError> {
+) -> Result<(), ApiError> {
     let mut stmt = conn.prepare(&format!("PRAGMA table_info({table})"))?;
     let present = stmt
         .query_map([], |r| r.get::<_, String>(1))?
@@ -1040,7 +1041,7 @@ fn add_column_if_missing(
     if !present {
         conn.execute_batch(&format!("ALTER TABLE {table} ADD COLUMN {col} {decl}"))?;
     }
-    Ok(!present)
+    Ok(())
 }
 
 /// Allocate the next monotonic `short_id` inside `tx`. Never recycles: the

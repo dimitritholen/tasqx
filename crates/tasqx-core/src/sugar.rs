@@ -98,10 +98,8 @@ pub fn tag_of(tok: &str) -> Option<&str> {
 /// claimed by its branch and then dropped, exactly like the bare `+`.
 ///
 /// The key is resolved ONCE, by first prefix match against [`VALUE_KEYS`], and
-/// only then judged. Chaining `strip_prefix` per alias instead — the shape this
-/// replaced — re-tested the shorter alias against a token the longer one had
-/// already declined, so `project::config` failed `project:` and then matched
-/// `proj:`, setting the project to `ect::config`.
+/// only then judged, so a token one key declines never falls through to
+/// another.
 pub fn split_key(tok: &str) -> Option<(ValueKey, &str)> {
     let (key, value) = VALUE_KEYS
         .iter()

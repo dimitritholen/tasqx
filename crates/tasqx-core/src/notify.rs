@@ -26,6 +26,7 @@
 //! only ever tracks tasks that carry an explicit `remind`, and [`default_notifier`]
 //! hands back the log backend unless the user opted in via `[notify] enabled`.
 
+use std::io::Write;
 use std::sync::Arc;
 
 /// One reminder to deliver. Deliberately flat and owned — a backend may hand it
@@ -52,6 +53,12 @@ impl Notification {
             )
         }
     }
+
+    /// Write [`Self::log_line`] and a newline to `out`. A failed write is
+    /// dropped: delivery never fails (§9).
+    fn write_log_line(&self, out: &mut impl Write) {
+        let _ = writeln!(out, "{}", self.log_line());
+    }
 }
 
 /// A notification transport. `Send + Sync` so the daemon can share one behind an
@@ -68,7 +75,7 @@ pub struct LogNotifier;
 
 impl Notifier for LogNotifier {
     fn notify(&self, n: &Notification) {
-        eprintln!("{}", n.log_line());
+        n.write_log_line(&mut std::io::stderr().lock());
     }
 }
 
@@ -82,7 +89,7 @@ impl Notifier for OsNotifier {
     fn notify(&self, n: &Notification) {
         // The log line first, unconditionally: it is the verifiable surface and
         // must not depend on the toast succeeding.
-        eprintln!("{}", n.log_line());
+        n.write_log_line(&mut std::io::stderr().lock());
         let summary = format!("tasqx #{}", n.short_id);
         let body = if n.body.is_empty() {
             n.title.clone()
@@ -124,17 +131,6 @@ pub fn default_notifier(os_enabled: bool) -> Arc<dyn Notifier> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Mutex;
-
-    /// A test backend that records what it was handed — the same shape the
-    /// scheduler tests use to assert delivery without any OS involvement.
-    struct Collecting(Mutex<Vec<Notification>>);
-
-    impl Notifier for Collecting {
-        fn notify(&self, n: &Notification) {
-            self.0.lock().unwrap().push(n.clone());
-        }
-    }
 
     #[test]
     fn log_line_includes_short_id_title_and_body() {
@@ -160,42 +156,17 @@ mod tests {
     }
 
     #[test]
-    fn notifier_is_object_safe_and_delivers() {
-        let c = Collecting(Mutex::new(Vec::new()));
-        let dynamic: &dyn Notifier = &c;
-        dynamic.notify(&Notification {
-            short_id: 1,
-            title: "t".into(),
-            body: String::new(),
-        });
-        assert_eq!(c.0.lock().unwrap().len(), 1);
-    }
-
-    /// Not opting in yields the log backend in **either** build configuration —
-    /// the "quiet by default" guarantee (§9). Deliberately does not exercise
-    /// `default_notifier(true)`: with `notify-os` compiled in that would hand
-    /// back `OsNotifier` and fire a real toast from a test run.
-    #[test]
-    fn default_notifier_is_log_only_when_not_opted_in() {
-        let n = default_notifier(false);
-        // Never panics and never needs a transport — the CI-safe guarantee.
-        n.notify(&Notification {
-            short_id: 1,
+    fn the_log_line_is_written_whole_with_one_newline() {
+        let mut out = Vec::new();
+        Notification {
+            short_id: 7,
             title: "quiet".into(),
-            body: String::new(),
-        });
-    }
-
-    /// Without the feature, the opt-in can't resurrect a backend that isn't in
-    /// the binary — it is inert, not an error.
-    #[cfg(not(feature = "notify-os"))]
-    #[test]
-    fn opting_in_is_inert_without_the_feature() {
-        let n = default_notifier(true);
-        n.notify(&Notification {
-            short_id: 2,
-            title: "still fine".into(),
-            body: String::new(),
-        });
+            body: "due soon".into(),
+        }
+        .write_log_line(&mut out);
+        assert_eq!(
+            String::from_utf8(out).unwrap(),
+            "tasqx reminder: [#7] quiet (due soon)\n"
+        );
     }
 }

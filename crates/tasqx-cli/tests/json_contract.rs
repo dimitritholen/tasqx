@@ -409,12 +409,52 @@ fn theme_set_and_config_set_agree_under_json() {
 /// A carve-out must be a deliberate, documented decision — not the absence of
 /// one. Every listed command carries a reason, and the reason is what a future
 /// reader will weigh when they wonder why the contract has a hole in it.
+///
+/// The reason is also what `--json` prints on stderr when it reaches a
+/// carve-out, so each one is driven through the binary and its note checked
+/// word for word. `daemon` is the one left out: it serves until interrupted.
+/// The rest end on their own here — EOF on stdin, or `watch` refusing
+/// `--no-daemon`.
 #[test]
 fn every_carve_out_states_its_reason() {
     for (name, why) in tasqx_cli::JSON_CARVE_OUTS {
         assert!(
             why.len() > 20,
             "carve-out `{name}` needs a real reason, got {why:?}"
+        );
+    }
+
+    let driven: &[(&str, &[&str])] = &[
+        ("about", &["about"]),
+        ("api", &["api"]),
+        ("mcp", &["mcp", "serve"]),
+        ("watch", &["watch"]),
+        ("manual", &["manual"]),
+    ];
+    let mut names: Vec<&str> = driven.iter().map(|(n, _)| *n).chain(["daemon"]).collect();
+    let mut carved: Vec<&str> = tasqx_cli::JSON_CARVE_OUTS.iter().map(|(n, _)| *n).collect();
+    names.sort_unstable();
+    carved.sort_unstable();
+    assert_eq!(names, carved, "drive every new carve-out here too");
+
+    let (cfg, db) = scratch("carve-out-notes");
+    for (name, args) in driven {
+        let why = tasqx_cli::JSON_CARVE_OUTS
+            .iter()
+            .find(|(n, _)| n == name)
+            .map(|(_, why)| *why)
+            .unwrap();
+        let out = bin(&cfg, &db)
+            .arg("--json")
+            .args(*args)
+            .stdin(std::process::Stdio::null())
+            .output()
+            .unwrap_or_else(|e| panic!("run `tasqx --json {name}`: {e}"));
+        let err = String::from_utf8_lossy(&out.stderr);
+        let note = format!("note: `{name}` does not honour --json — {why}");
+        assert!(
+            err.lines().any(|l| l == note),
+            "`tasqx --json {name}` must print {note:?} on stderr, got:\n{err}"
         );
     }
 }
