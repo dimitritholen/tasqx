@@ -377,6 +377,16 @@ fn max_body_bytes_schema() -> Value {
     })
 }
 
+/// The optional `expected_rev` the lifecycle tools forward (#638). Unlike
+/// `tasqx_modify_task`, nothing pins it when omitted: these verbs ran
+/// unconditionally before it existed, and an agent's start must not start
+/// failing because a note landed in between. Type only, no description: it
+/// is the board's guard, not an agent's, and `tasqx_complete_task` sits at
+/// D155's per-tool byte cap; the API page describes it (`PARAM_DOCS`).
+fn lifecycle_rev_schema() -> Value {
+    json!({ "type": "integer" })
+}
+
 /// Schema fragment for a `ref` argument (short_id int OR full UUID string).
 fn ref_schema() -> Value {
     json!({
@@ -1236,6 +1246,7 @@ fn build_tool_specs() -> Vec<ToolSpec> {
                 "type": "object",
                 "properties": {
                     "ref": ref_schema(),
+                    "expected_rev": lifecycle_rev_schema(),
                     "tool": {
                         "type": "string",
                         "description": "The AI tool doing the work, free-form (e.g. \
@@ -1287,9 +1298,9 @@ fn build_tool_specs() -> Vec<ToolSpec> {
                     "view": {
                         "type": "string",
                         "enum": enum_of(["markdown", "card"]),
-                        "description": "Default \"markdown\": the plain JSON result. \"card\" \
-                            leads with the D146 box card of the task AS COMPLETED, in a text \
-                            fence, the JSON unchanged behind it, for a PERSON deciding on it (D164)."
+                        "description": "\"card\" puts the D146 box card of the task AS \
+                            COMPLETED, in a text fence, before the JSON, for a PERSON deciding \
+                            on it (D164). Default \"markdown\": the JSON alone."
                     },
                     "include_retro": {
                         "type": "boolean",
@@ -1310,12 +1321,12 @@ fn build_tool_specs() -> Vec<ToolSpec> {
             // schema names no status enum, so the reachable path was
             // reachable in principle and undiscoverable in practice.
             description: "Cancel a task: backlog, pending or active moves to cancelled. The \
-                row is kept and stops counting in reports. Returns the tasks the cancellation \
-                newly unblocked (D11: cancelling a blocker resolves it, like completing one). \
+                row is kept and stops counting in reports. Returns the tasks it newly \
+                unblocked, as a completion does (D11). \
                 A task already closed is a conflict, not a no-op.",
             schema: json!({
                 "type": "object",
-                "properties": { "ref": ref_schema() },
+                "properties": { "ref": ref_schema(), "expected_rev": lifecycle_rev_schema() },
                 "required": ["ref"]
             }),
         },
@@ -1330,12 +1341,11 @@ fn build_tool_specs() -> Vec<ToolSpec> {
             // status:cancelled` (§7). Both were reachable and neither could be
             // taken back, which is the additive-only shape D67 removes.
             description: "Reopen a closed task: done or cancelled goes back to pending, and \
-                the completion timestamp is cleared so the task stops counting in the week it \
-                is no longer finished in. A task that is not closed is a conflict, not a \
-                no-op.",
+                its completion timestamp is cleared, so no week counts it as finished. A task \
+                that is not closed is a conflict, not a no-op.",
             schema: json!({
                 "type": "object",
-                "properties": { "ref": ref_schema() },
+                "properties": { "ref": ref_schema(), "expected_rev": lifecycle_rev_schema() },
                 "required": ["ref"]
             }),
         },
@@ -1351,6 +1361,7 @@ fn build_tool_specs() -> Vec<ToolSpec> {
                 "type": "object",
                 "properties": {
                     "ref": ref_schema(),
+                    "expected_rev": lifecycle_rev_schema(),
                     "keep": {
                         "type": "boolean",
                         "description": "Keep other active tasks running (opt out of single-active)."
@@ -1383,7 +1394,7 @@ fn build_tool_specs() -> Vec<ToolSpec> {
                 closed) and `tracked` (the task's running total, matching `tasqx_get_task`).",
             schema: json!({
                 "type": "object",
-                "properties": { "ref": ref_schema() },
+                "properties": { "ref": ref_schema(), "expected_rev": lifecycle_rev_schema() },
                 "required": ["ref"]
             }),
         },

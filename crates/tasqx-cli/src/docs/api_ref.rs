@@ -1241,6 +1241,55 @@ const PARAM_DOCS: &[(&str, &str, &str, &str, &str)] = &[
         "",
         "The instant the reminder is recorded against. Firing the same instant twice is a no-op.",
     ),
+    (
+        "task.start",
+        "expected_rev",
+        "integer",
+        "",
+        "Optimistic-concurrency guard, as on `task.modify`: the task's `_rev` as you read it. A stale one is a `conflict` carrying the current rev, and nothing is written (#638).",
+    ),
+    (
+        "task.stop",
+        "expected_rev",
+        "integer",
+        "",
+        "Optimistic-concurrency guard, as on `task.modify`: the task's `_rev` as you read it. A stale one is a `conflict` carrying the current rev, and nothing is written (#638).",
+    ),
+    (
+        "task.done",
+        "expected_rev",
+        "integer",
+        "",
+        "Optimistic-concurrency guard, as on `task.modify`: the task's `_rev` as you read it. A stale one is a `conflict` carrying the current rev, and nothing is written (#638).",
+    ),
+    (
+        "task.cancel",
+        "expected_rev",
+        "integer",
+        "",
+        "Optimistic-concurrency guard, as on `task.modify`: the task's `_rev` as you read it. A stale one is a `conflict` carrying the current rev, and nothing is written (#638).",
+    ),
+    (
+        "task.reopen",
+        "expected_rev",
+        "integer",
+        "",
+        "Optimistic-concurrency guard, as on `task.modify`: the task's `_rev` as you read it. A stale one is a `conflict` carrying the current rev, and nothing is written (#638).",
+    ),
+    (
+        "event.revert",
+        "ref",
+        "integer or string",
+        "",
+        "Undo only if the newest event is this task's; otherwise `conflict`, and nothing is undone (#638).",
+    ),
+    (
+        "event.revert",
+        "expected_rev",
+        "integer",
+        "",
+        "With `ref`: undo only if the task is still at this rev, so undoing your own last write cannot take back a later one. Needs `ref`.",
+    ),
 ];
 
 /// One request/response pair per method.

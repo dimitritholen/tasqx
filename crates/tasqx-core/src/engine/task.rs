@@ -613,8 +613,10 @@ impl Engine {
     /// one was the truth.
     pub fn task_start(&self, p: &Value) -> Result<Value, ApiError> {
         let command = commands::parse_start_task(p)?;
+        let expected_rev = opt_i64(p, "expected_rev")?;
         let tx = self.begin_mutation()?;
         let task = self.resolve_ref_value_on(&tx, &command.target)?;
+        guard_rev(expected_rev, &task)?;
 
         match task.status {
             Status::Active => {
@@ -766,8 +768,10 @@ impl Engine {
     /// is no interval to close and reporting success would say there was.
     pub fn task_stop(&self, p: &Value) -> Result<Value, ApiError> {
         let target = ref_param(p)?.clone();
+        let expected_rev = opt_i64(p, "expected_rev")?;
         let tx = self.begin_mutation()?;
         let task = self.resolve_ref_value_on(&tx, &target)?;
+        guard_rev(expected_rev, &task)?;
         if task.status != Status::Active {
             return Err(ApiError::conflict(format!(
                 "cannot stop {} {} task (only active -> pending)",
@@ -903,8 +907,10 @@ impl Engine {
         // Absent is false, and false is the same thing as absent — there is no
         // "force: false" that means anything different from not asking.
         let force = opt_bool(p, "force")?.unwrap_or(false);
+        let expected_rev = opt_i64(p, "expected_rev")?;
         let tx = self.begin_mutation()?;
         let task = self.resolve_ref_on(&tx, p)?;
+        guard_rev(expected_rev, &task)?;
         match task.status {
             Status::Pending | Status::Active => {}
             Status::Backlog => {
@@ -3470,8 +3476,10 @@ impl Engine {
     /// reports ([`Status::counts_in_reports`]).
     pub fn task_cancel(&self, p: &Value) -> Result<Value, ApiError> {
         let target = ref_param(p)?.clone();
+        let expected_rev = opt_i64(p, "expected_rev")?;
         let tx = self.begin_mutation()?;
         let task = self.resolve_ref_value_on(&tx, &target)?;
+        guard_rev(expected_rev, &task)?;
         match task.status {
             Status::Backlog | Status::Pending | Status::Active => {}
             other => {
@@ -3525,8 +3533,10 @@ impl Engine {
     /// finished in.
     pub fn task_reopen(&self, p: &Value) -> Result<Value, ApiError> {
         let target = ref_param(p)?.clone();
+        let expected_rev = opt_i64(p, "expected_rev")?;
         let tx = self.begin_mutation()?;
         let task = self.resolve_ref_value_on(&tx, &target)?;
+        guard_rev(expected_rev, &task)?;
         match task.status {
             Status::Done | Status::Cancelled => {}
             other => {
@@ -3691,6 +3701,17 @@ pub(super) fn stale_rev(exp: i64, task: &Task) -> ApiError {
             "task": { "short_id": task.short_id, "title": task.title },
         })),
     )
+}
+
+/// #638: `task.modify`'s optimistic-concurrency guard for the lifecycle verbs
+/// (`start`, `stop`, `done`, `cancel`, `reopen`), checked against the row read
+/// under the write lock, so a board drag never lands on a task somebody else
+/// changed since the card was drawn.
+pub(super) fn guard_rev(expected: Option<i64>, task: &Task) -> Result<(), ApiError> {
+    match expected {
+        Some(exp) if exp != task.rev => Err(stale_rev(exp, task)),
+        _ => Ok(()),
+    }
 }
 
 /// One `SELECT id, body, created FROM annotations` row as the ANNOTATION
