@@ -95,8 +95,9 @@ description always wins over the payload's, which is dropped and reported
 under `project_description_conflicts`; a local description that is empty, or
 a project this store has never seen, takes the payload's.
 
+<!-- fixture: import-conflict-echo -->
 ```console
-note: project "tasqx" kept its description here; the import's was "B's tasqx description"
+note: project "api" kept its description here; the import's was "B's api description"
 ```
 
 `tasqx import backup.json --dry-run` runs the whole import against this store

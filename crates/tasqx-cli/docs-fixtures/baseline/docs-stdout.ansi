@@ -1609,15 +1609,90 @@ way out is named at every width.</p>
 <p><code>s</code> is the only key that writes. A filter can list work that is done or
 cancelled, and <code>s</code> on such a row is refused on the key bar's own row with the
 screen still open.</p>
-<p>Captured on a terminal at 64 columns, since this screen cannot be piped:</p>
-<pre class="plain" data-lang="text"><code>pick   @working   3 tasks · 1 overdue · #1 running
+<p>Captured on a terminal 120 columns wide, since this screen cannot be piped:</p>
+<div class="snip"><pre class="term"> <span style="color:#88c0d0;font-weight:700">pick</span>   <span style="color:#4c566a;opacity:.6">@working</span>   <span style="font-weight:700">14 tasks</span> <span style="color:#4c566a;opacity:.6">·</span> <span style="color:#bf616a;font-weight:700">1 overdue</span> <span style="color:#4c566a;opacity:.6">·</span> <span style="color:#ebcb8b">1 due today</span> <span style="color:#4c566a;opacity:.6">·</span> <span style="color:#a3be8c">▶ #48 running</span>
 
-       ID          URG  TASK                  PROJECT  DUE
- ▸      4  H ▄▄▄▄ 18.0  Renew the TLS certi…  work     yesterday
-   ▶    1  H ▄▄▄▄ 16.7  Ship the v2 pricing…  work     Mon
-        3  - ▁▁▁▁  0.0  Write the migration…  work
+   <span style="color:#8a8a8a">    ID          URG  TASK                                           PROJECT  DUE             TAGS</span>
+ <span style="color:#88c0d0">▸</span>   <span style="color:#88c0d0">  47</span>  <span style="color:#bf616a;font-weight:700">H</span> <span style="color:#bf616a;font-weight:700">▄▄▄▄</span> <span style="color:#bf616a;font-weight:700">18.1</span>  <span style="color:#88c0d0;font-weight:700">Renew the TLS certificate for api.example.dev</span>  <span style="color:#81a1c1;opacity:.6">infra</span>    <span style="color:#bf616a;font-weight:700">2d ago</span>          <span style="color:#b48ead">+ops</span>
+ <span style="color:#88c0d0"> </span> <span style="color:#a3be8c">▶</span>   48  <span style="color:#bf616a;font-weight:700">H</span> <span style="color:#bf616a;font-weight:700">▄▄▄▄</span> <span style="color:#bf616a;font-weight:700">17.8</span>  Ship the v2 pricing page                       <span style="color:#81a1c1;opacity:.6">website</span>  today 17:00     <span style="color:#b48ead">+launch</span>
+ <span style="color:#88c0d0"> </span>     49  <span style="color:#bf616a;font-weight:700">H</span> <span style="color:#bf616a;font-weight:700">▄▄▄▄</span> <span style="color:#bf616a;font-weight:700">17.0</span>  Fix token refresh race on Android              <span style="color:#81a1c1;opacity:.6">mobile</span>   tomorrow 17:00  <span style="color:#b48ead">+bug</span>
+ <span style="color:#88c0d0"> </span>     50  <span style="color:#bf616a;font-weight:700">H</span> <span style="color:#bf616a;font-weight:700">▄▄▄▄</span> <span style="color:#bf616a;font-weight:700">15.9</span>  Rate-limit the /search endpoint                <span style="color:#81a1c1;opacity:.6">api</span>      Sat             <span style="color:#b48ead">+perf</span>
+ <span style="color:#88c0d0"> </span>     58  <span style="color:#4c566a;opacity:.6">L</span> <span style="color:#ebcb8b">▄▄▄</span><span style="color:#4c566a;opacity:.6">▁</span> <span style="color:#ebcb8b"> 9.4</span>  Book the dentist                               <span style="color:#81a1c1;opacity:.6">home</span>     Tue
+ <span style="color:#88c0d0"> </span>     52  <span style="color:#ebcb8b">M</span> <span style="color:#ebcb8b">▄▄▃</span><span style="color:#4c566a;opacity:.6">▁</span> <span style="color:#ebcb8b"> 8.6</span>  Dark mode for the settings screen              <span style="color:#81a1c1;opacity:.6">mobile</span>   25 Sep          <span style="color:#b48ead">+ui</span>
+ <span style="color:#88c0d0"> </span>     56  <span style="color:#ebcb8b">M</span> <span style="color:#ebcb8b">▄▄</span><span style="color:#4c566a;opacity:.6">▁▁</span> <span style="color:#ebcb8b"> 6.0</span>  Accessibility pass on the signup flow          <span style="color:#81a1c1;opacity:.6">website</span>  28 Sep          <span style="color:#b48ead">+a11y</span>
+ <span style="color:#88c0d0"> </span>     54  <span style="color:#ebcb8b">M</span> <span style="color:#8a8a8a">▄▂</span><span style="color:#4c566a;opacity:.6">▁▁</span> <span style="color:#8a8a8a"> 4.3</span>  Cut build time under five minutes              <span style="color:#81a1c1;opacity:.6">infra</span>                    <span style="color:#b48ead">+ci</span>
+ <span style="color:#88c0d0"> </span>     53  <span style="color:#ebcb8b">M</span> <span style="color:#8a8a8a">▄▂</span><span style="color:#4c566a;opacity:.6">▁▁</span> <span style="color:#8a8a8a"> 4.2</span>  Move nightly backups to object storage         <span style="color:#81a1c1;opacity:.6">infra</span>                    <span style="color:#b48ead">+ops</span>
+ <span style="color:#88c0d0"> </span>     55  <span style="color:#ebcb8b">M</span> <span style="color:#8a8a8a">▄▂</span><span style="color:#4c566a;opacity:.6">▁▁</span> <span style="color:#8a8a8a"> 4.0</span>  Add OpenAPI examples for every endpoint        <span style="color:#81a1c1;opacity:.6">api</span>                      <span style="color:#b48ead">+docs</span>
+ <span style="color:#88c0d0"> </span>     57  <span style="color:#4c566a;opacity:.6">L</span> <span style="color:#8a8a8a">▃</span><span style="color:#4c566a;opacity:.6">▁▁▁</span> <span style="color:#8a8a8a"> 2.0</span>  Replace the carousel on the home page          <span style="color:#81a1c1;opacity:.6">website</span>                  <span style="color:#b48ead">+ui</span>
+ <span style="color:#88c0d0"> </span>     59  <span style="color:#4c566a;opacity:.6">L</span> <span style="color:#8a8a8a">▃</span><span style="color:#4c566a;opacity:.6">▁▁▁</span> <span style="color:#8a8a8a"> 2.0</span>  Archive last year&#39;s analytics dashboards       <span style="color:#81a1c1;opacity:.6">website</span>
+ <span style="color:#88c0d0"> </span>     61  <span style="color:#4c566a;opacity:.6">-</span> <span style="color:#4c566a;opacity:.6">▁▁▁▁</span> <span style="color:#8a8a8a"> 0.4</span>  Sketch ideas for the Q4 offsite                <span style="color:#81a1c1;opacity:.6">home</span>
+ <span style="color:#88c0d0"> </span>     60  <span style="color:#4c566a;opacity:.6">-</span> <span style="color:#4c566a;opacity:.6">▁▁▁▁</span> <span style="color:#8a8a8a"> 0.1</span>  Investigate flaky checkout test                <span style="color:#81a1c1;opacity:.6">mobile</span>                   <span style="color:#b48ead">+bug +ci</span>
 
- j/k move   / search   enter open   s start   q leave</code></pre>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+ <span style="color:#88c0d0">j/k</span><span style="color:#4c566a;opacity:.6"> move   </span><span style="color:#88c0d0">/</span><span style="color:#4c566a;opacity:.6"> search   </span><span style="color:#88c0d0">enter</span><span style="color:#4c566a;opacity:.6"> open   </span><span style="color:#88c0d0">s</span><span style="color:#4c566a;opacity:.6"> start   </span><span style="color:#88c0d0">g/G</span><span style="color:#4c566a;opacity:.6"> ends   </span><span style="color:#88c0d0">q</span><span style="color:#4c566a;opacity:.6"> leave   </span>
+</pre></div>
+<p>The key bar is the screen's bottom row, below the rest of the list:</p>
+<div class="snip"><pre class="term"> <span style="color:#88c0d0;font-weight:700">pick</span>   <span style="color:#4c566a;opacity:.6">@working</span>   <span style="font-weight:700">14 tasks</span> <span style="color:#4c566a;opacity:.6">·</span> <span style="color:#bf616a;font-weight:700">1 overdue</span> <span style="color:#4c566a;opacity:.6">·</span> <span style="color:#ebcb8b">1 due today</span> <span style="color:#4c566a;opacity:.6">·</span> <span style="color:#a3be8c">▶ #48 running</span>
+
+   <span style="color:#8a8a8a">    ID          URG  TASK                                           PROJECT  DUE             TAGS</span>
+ <span style="color:#88c0d0">▸</span>   <span style="color:#88c0d0">  47</span>  <span style="color:#bf616a;font-weight:700">H</span> <span style="color:#bf616a;font-weight:700">▄▄▄▄</span> <span style="color:#bf616a;font-weight:700">18.1</span>  <span style="color:#88c0d0;font-weight:700">Renew the TLS certificate for api.example.dev</span>  <span style="color:#81a1c1;opacity:.6">infra</span>    <span style="color:#bf616a;font-weight:700">2d ago</span>          <span style="color:#b48ead">+ops</span>
+ <span style="color:#88c0d0"> </span> <span style="color:#a3be8c">▶</span>   48  <span style="color:#bf616a;font-weight:700">H</span> <span style="color:#bf616a;font-weight:700">▄▄▄▄</span> <span style="color:#bf616a;font-weight:700">17.8</span>  Ship the v2 pricing page                       <span style="color:#81a1c1;opacity:.6">website</span>  today 17:00     <span style="color:#b48ead">+launch</span>
+ <span style="color:#88c0d0"> </span>     49  <span style="color:#bf616a;font-weight:700">H</span> <span style="color:#bf616a;font-weight:700">▄▄▄▄</span> <span style="color:#bf616a;font-weight:700">17.0</span>  Fix token refresh race on Android              <span style="color:#81a1c1;opacity:.6">mobile</span>   tomorrow 17:00  <span style="color:#b48ead">+bug</span>
+ <span style="color:#88c0d0"> </span>     50  <span style="color:#bf616a;font-weight:700">H</span> <span style="color:#bf616a;font-weight:700">▄▄▄▄</span> <span style="color:#bf616a;font-weight:700">15.9</span>  Rate-limit the /search endpoint                <span style="color:#81a1c1;opacity:.6">api</span>      Sat             <span style="color:#b48ead">+perf</span>
+ <span style="color:#88c0d0"> </span>     58  <span style="color:#4c566a;opacity:.6">L</span> <span style="color:#ebcb8b">▄▄▄</span><span style="color:#4c566a;opacity:.6">▁</span> <span style="color:#ebcb8b"> 9.4</span>  Book the dentist                               <span style="color:#81a1c1;opacity:.6">home</span>     Tue
+ <span style="color:#88c0d0"> </span>     52  <span style="color:#ebcb8b">M</span> <span style="color:#ebcb8b">▄▄▃</span><span style="color:#4c566a;opacity:.6">▁</span> <span style="color:#ebcb8b"> 8.6</span>  Dark mode for the settings screen              <span style="color:#81a1c1;opacity:.6">mobile</span>   25 Sep          <span style="color:#b48ead">+ui</span>
+ <span style="color:#88c0d0"> </span>     56  <span style="color:#ebcb8b">M</span> <span style="color:#ebcb8b">▄▄</span><span style="color:#4c566a;opacity:.6">▁▁</span> <span style="color:#ebcb8b"> 6.0</span>  Accessibility pass on the signup flow          <span style="color:#81a1c1;opacity:.6">website</span>  28 Sep          <span style="color:#b48ead">+a11y</span>
+ <span style="color:#88c0d0"> </span>     54  <span style="color:#ebcb8b">M</span> <span style="color:#8a8a8a">▄▂</span><span style="color:#4c566a;opacity:.6">▁▁</span> <span style="color:#8a8a8a"> 4.3</span>  Cut build time under five minutes              <span style="color:#81a1c1;opacity:.6">infra</span>                    <span style="color:#b48ead">+ci</span>
+ <span style="color:#88c0d0"> </span>     53  <span style="color:#ebcb8b">M</span> <span style="color:#8a8a8a">▄▂</span><span style="color:#4c566a;opacity:.6">▁▁</span> <span style="color:#8a8a8a"> 4.2</span>  Move nightly backups to object storage         <span style="color:#81a1c1;opacity:.6">infra</span>                    <span style="color:#b48ead">+ops</span>
+ <span style="color:#88c0d0"> </span>     55  <span style="color:#ebcb8b">M</span> <span style="color:#8a8a8a">▄▂</span><span style="color:#4c566a;opacity:.6">▁▁</span> <span style="color:#8a8a8a"> 4.0</span>  Add OpenAPI examples for every endpoint        <span style="color:#81a1c1;opacity:.6">api</span>                      <span style="color:#b48ead">+docs</span>
+ <span style="color:#88c0d0"> </span>     57  <span style="color:#4c566a;opacity:.6">L</span> <span style="color:#8a8a8a">▃</span><span style="color:#4c566a;opacity:.6">▁▁▁</span> <span style="color:#8a8a8a"> 2.0</span>  Replace the carousel on the home page          <span style="color:#81a1c1;opacity:.6">website</span>                  <span style="color:#b48ead">+ui</span>
+ <span style="color:#88c0d0"> </span>     59  <span style="color:#4c566a;opacity:.6">L</span> <span style="color:#8a8a8a">▃</span><span style="color:#4c566a;opacity:.6">▁▁▁</span> <span style="color:#8a8a8a"> 2.0</span>  Archive last year&#39;s analytics dashboards       <span style="color:#81a1c1;opacity:.6">website</span>
+ <span style="color:#88c0d0"> </span>     61  <span style="color:#4c566a;opacity:.6">-</span> <span style="color:#4c566a;opacity:.6">▁▁▁▁</span> <span style="color:#8a8a8a"> 0.4</span>  Sketch ideas for the Q4 offsite                <span style="color:#81a1c1;opacity:.6">home</span>
+ <span style="color:#88c0d0"> </span>     60  <span style="color:#4c566a;opacity:.6">-</span> <span style="color:#4c566a;opacity:.6">▁▁▁▁</span> <span style="color:#8a8a8a"> 0.1</span>  Investigate flaky checkout test                <span style="color:#81a1c1;opacity:.6">mobile</span>                   <span style="color:#b48ead">+bug +ci</span>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+ <span style="color:#88c0d0">j/k</span><span style="color:#4c566a;opacity:.6"> move   </span><span style="color:#88c0d0">/</span><span style="color:#4c566a;opacity:.6"> search   </span><span style="color:#88c0d0">enter</span><span style="color:#4c566a;opacity:.6"> open   </span><span style="color:#88c0d0">s</span><span style="color:#4c566a;opacity:.6"> start   </span><span style="color:#88c0d0">g/G</span><span style="color:#4c566a;opacity:.6"> ends   </span><span style="color:#88c0d0">q</span><span style="color:#4c566a;opacity:.6"> leave   </span>
+</pre></div>
 <p><code>pick</code> needs a real terminal (it draws a screen), so in scripts use
 <code>tasqx next</code> to ask the same question and <code>tasqx start &lt;ref&gt;</code> to act on it.</p>
 <p>Leaving without starting a task exits 0: reading your tasks and starting none
@@ -1908,11 +1983,18 @@ daemon's OTLP receiver when <code>otlp.enabled = true</code>
 (<a href="#wiki-ai-agents-and-automation--tasqx-daemon"><code>tasqx daemon</code></a>).</p>
 <h3 id="wiki-reports-and-charts--tasqx-report---outcomes">tasqx report --outcomes</h3>
 <p><code>tasqx report</code> says what the work cost. <code>--outcomes</code> says how it went.</p>
-<div class="snip"><div class="snip-h"><span class="dollar">$</span><button class="copy" type="button">Copy</button></div><pre class="cmd"><code>tasqx report --outcomes</code></pre></div><pre class="plain"><code>PROJECT  CLOSED  DONE  REWORK  FORCED  SILENT     CALIB  DROPPED  OVER  UNPROVEN  UNBRIEFED               TOKENS
-api           7     6     0/6     0/6     0/6  ×1.17 n3      1/7   1/2         -        6/6  cacheR 7.0M ~medium
-infra         9     8     0/8     0/8     1/8  ×1.00 n4      1/9   1/1       1/2        8/8  cacheR 2.8M ~medium
-mobile       15    13    2/13    0/13    0/13  ×1.35 n2     2/15   1/3       1/3      13/13  cacheR 7.7M ~medium
-website      15    13    0/13    1/13    2/13  ×1.58 n9     2/15   0/2       0/5      13/13  cacheR 2.4M ~medium</code></pre><div class="tw"><table class="grid"><thead><tr><th id="wiki-reports-and-charts-tbl2-h0">Column</th><th id="wiki-reports-and-charts-tbl2-h1">What it counts</th></tr></thead><tbody>
+<div class="snip"><div class="snip-h"><span class="dollar">$</span></div><pre class="cmd"><code>tasqx report --outcomes</code></pre><pre class="term"><span style="color:#8a8a8a">PROJECT  CLOSED  DONE  REWORK  FORCED  SILENT     CALIB  DROPPED  OVER  UNPROVEN  UNBRIEFED               TOKENS</span>
+<span style="color:#81a1c1;opacity:.6">api</span>           7     6     <span style="color:#4c566a;opacity:.6">0/6</span>     0/6     0/6  ×1.17 n3      1/7   1/2         -        6/6  cacheR 7.0M ~medium
+<span style="color:#81a1c1;opacity:.6">infra</span>         9     8     <span style="color:#4c566a;opacity:.6">0/8</span>     0/8     1/8  ×1.00 n4      1/9   1/1       1/2        8/8  cacheR 2.8M ~medium
+<span style="color:#81a1c1;opacity:.6">mobile</span>       15    13    <span style="color:#ebcb8b">2/13</span>    0/13    0/13  ×1.35 n2     2/15   1/3       1/3      13/13  cacheR 7.7M ~medium
+<span style="color:#81a1c1;opacity:.6">website</span>      15    13    <span style="color:#4c566a;opacity:.6">0/13</span>    1/13    2/13  ×1.58 n9     2/15   0/2       0/5      13/13  cacheR 2.4M ~medium
+
+<span style="color:#4c566a;opacity:.6">REWORK / FORCED / SILENT / DROPPED / OVER / UNPROVEN / UNBRIEFED read count over the completions or</span>
+<span style="color:#4c566a;opacity:.6">closings they were counted against — a rate with no denominator beside it is not a rate. OVER counts</span>
+<span style="color:#4c566a;opacity:.6">only the completions that had a budget and UNPROVEN only those that had acceptance criteria.</span>
+<span style="color:#4c566a;opacity:.6">UNBRIEFED counts completions of a task no brief or memory-carrying start was ever read for. CALIB is</span>
+<span style="color:#4c566a;opacity:.6">the median tracked-over-estimate ratio and the number of completions carrying both figures.</span>
+</pre></div><div class="tw"><table class="grid"><thead><tr><th id="wiki-reports-and-charts-tbl2-h0">Column</th><th id="wiki-reports-and-charts-tbl2-h1">What it counts</th></tr></thead><tbody>
 <tr><td data-label="Column" headers="wiki-reports-and-charts-tbl2-h0">REWORK</td><td data-label="What it counts" headers="wiki-reports-and-charts-tbl2-h1">Completions that were later reopened</td></tr>
 <tr><td data-label="Column" headers="wiki-reports-and-charts-tbl2-h0">FORCED</td><td data-label="What it counts" headers="wiki-reports-and-charts-tbl2-h1">Completions that overrode open blockers</td></tr>
 <tr><td data-label="Column" headers="wiki-reports-and-charts-tbl2-h0">SILENT</td><td data-label="What it counts" headers="wiki-reports-and-charts-tbl2-h1">Completions carrying no annotation</td></tr>
@@ -2506,7 +2588,9 @@ later-wins comparison to make, only a present-vs-absent one. A non-empty local
 description always wins over the payload's, which is dropped and reported
 under <code>project_description_conflicts</code>; a local description that is empty, or
 a project this store has never seen, takes the payload's.</p>
-<div class="snip"><div class="snip-h"><span class="dollar">$</span><button class="copy" type="button">Copy</button></div><pre class="cmd"><code>note: project &quot;tasqx&quot; kept its description here; the import&#39;s was &quot;B&#39;s tasqx description&quot;</code></pre></div>
+<div class="snip"><pre class="term"><span style="font-weight:700">imported</span>   no tasks · 1 project · no memory docs
+<span style="color:#8a8a8a">note:</span> project &quot;api&quot; kept its description here; the import&#39;s was &quot;B&#39;s api description&quot;
+</pre></div>
 <p><code>tasqx import backup.json --dry-run</code> runs the whole import against this store
 and rolls it back instead of keeping it: every renumbering, merge and refusal
 prints exactly as a real import would, and the run ends with <code>nothing was written</code>. There is no separate preview logic — it is the same import, undone.</p>
