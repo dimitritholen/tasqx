@@ -21,6 +21,19 @@ weekday in the following Monday-to-Sunday week (nine days out), and
 refused rather than guessed. A bare time that has already passed
 today rolls to tomorrow. Full RFC3339 works when you want to be exact.
 
+Everything is UTC. A bare date is midnight UTC, and a clock time is a UTC
+clock — `due:17:00` is 17:00 UTC wherever you type it, and every screen prints
+it back as 17:00. An offset you write yourself (`+02:00`, or a trailing `Z`)
+is honoured as written.
+
+| Form | What you can write |
+|---|---|
+| Relative days | `today`, `tomorrow`, `yesterday`, `now`, `eom` (end of month), `eow` (end of week) |
+| Weekday names | `monday`..`sunday` or `mon`..`sun` — the next one after today |
+| Counted spans | `in 1 day`, `"in 3 days"`, `in 2 weeks`, `in 3 months` — days, weeks and months only; `in 2 hours` is rejected |
+| Signed offsets | `-1d`, `+3d`, `3d` (no sign means the future) |
+| Times | `17:00`, `5pm`, attached to a day with a space — `"tomorrow 17:00"`, `"friday 9am"` — or a full instant — `"2026-09-09 17:00"`, `2026-09-09T17:00:00+02:00` (an explicit offset is converted to UTC on the way in) |
+
 ## The four date fields
 
 | Field | What it says | Effect |

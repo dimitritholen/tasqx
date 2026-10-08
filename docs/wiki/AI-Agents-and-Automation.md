@@ -271,11 +271,16 @@ out on stdout.
 echo '{"tasqx":"1","method":"task.list","params":{"filter":"@working"}}' | tasqx api
 ```
 
-Every method the engine has is callable this way — `tasqx docs` carries the
-full method table. Exit codes mirror the error model: `0` ok, `2` bad request,
+Method and params go in; a result or an error comes out. Every method the
+engine has is callable this way — `tasqx docs` carries the full method table. Exit codes mirror the error model: `0` ok, `2` bad request,
 `4` not found, `5` conflict, `6` unsupported API version — plus `1` for
 `internal`, or for a failure beneath the request such as a store that would
 not open.
+
+`token.add` self-reports a turn's token counts against a task — the primary
+source the TOKENS column reads ([`tasqx tokens`](#tasqx-tokens)). And
+[`tasqx export` / `tasqx import`](Import-and-Export.md) round-trip the store as
+canonical JSON.
 
 ## tasqx daemon
 
@@ -304,6 +309,25 @@ different file, a daemon found on the default socket is passed over and the
 command runs in-process against `$TASQX_DB`. A daemon you named yourself, with
 `--socket` or `$TASQX_SOCK`, that serves a different file is a contradiction:
 the command is refused with exit 2, naming both files.
+
+`otlp.enabled = true` (in `config.toml`) starts a local OTLP/HTTP receiver in
+the daemon on 127.0.0.1 (`otlp.port`, default 4318), capturing an AI tool's own
+token telemetry live instead of parsing its transcript after the fact. For
+Claude Code:
+
+```console
+export CLAUDE_CODE_ENABLE_TELEMETRY=1
+export OTEL_LOGS_EXPORTER=otlp
+export OTEL_EXPORTER_OTLP_PROTOCOL=http/json
+export OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:4318
+```
+
+Gemini CLI takes the same two `OTEL_EXPORTER_OTLP_*` variables, and Codex the
+`[otel]` table in `~/.codex/config.toml`. The receiver is independent of
+`tokens.enabled`: self-reported counts (`task.done`, `token.add`) work with
+both settings off. The
+[token accounting guide](../guides/token-accounting.md#the-otlp-receiver) has
+the rest.
 
 ## tasqx tokens
 

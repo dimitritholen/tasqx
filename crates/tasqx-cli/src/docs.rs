@@ -51,6 +51,7 @@ use crate::html::esc;
 mod api_ref;
 mod cli_ref;
 mod markdown;
+pub(crate) use markdown::wiki_source;
 mod mcp_ref;
 mod obj_ref;
 

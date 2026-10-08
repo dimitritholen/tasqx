@@ -27,9 +27,11 @@ tasqx add Ship the release due:friday +api !high est:4h
 | `project:work` (or `proj:work`) | file it under `work` |
 | `!high` / `!med` / `!low` | priority |
 | `due:friday` | due date — natural language is fine |
-| `est:4h` | effort estimate (`90m`, `1h30m`, `2d` also work) |
-| `repeat:"every monday"` | recurrence rule |
-| `remind:-1h` | remind me one hour before it's due |
+| `scheduled:friday` (or `sched:`) | when you can start — parks the task in backlog until then |
+| `wait:monday` | hide it until then — also parks it in backlog |
+| `est:4h` (or `estimate:4h`) | effort estimate (`90m`, `1h30m`, `2d` also work) |
+| `repeat:"every monday"` (or `every:` / `recur:`) | recurrence rule |
+| `remind:-1h` | remind me one hour before it's due, or at a time you name |
 
 Every shortcut also exists as a flag (`--due friday`, `--tag api`,
 `--priority H`, …) — same result, pick whichever reads better in your scripts.
@@ -61,6 +63,37 @@ tasqx modify 42 --clear due --clear remind
 `--clear` works for: `project`, `priority`, `due`, `scheduled`, `wait`,
 `remind`, `recurrence`, `estimate`, `tracked`, `budget_tokens`. Tags are the
 exception — a tag comes off by name, with [`tasqx untag`](#tasqx-untag).
+
+A task's status is not a field you set: it moves through `start`, `stop`,
+`done`, `cancel` and `reopen` — see [Working on Tasks](Working-on-Tasks.md).
+
+## What a write prints
+
+Every write answers with the same card: the task it named, then the outcome
+and what changed, then the rest of that row. Bold is the write's own mark — it
+says THIS is what changed, and nothing else wears it, because bold is the one
+emphasis that survives `NO_COLOR`.
+
+```console
+$ tasqx start 1
+▌ #1  Ship the v2 pricing page
+▶ started   H ▄▄▄▄ 16.7   work   due Mon   +launch
+```
+
+The rail at the left carries the state: `▶` while the task runs, `⊘` while it
+is blocked, `▌` otherwise. Another task the write moved gets a line of its own
+under the card:
+
+```console
+$ tasqx done 1
+▌ #1  Ship the v2 pricing page
+▌ done today   tracked 5m   work   due Mon   +launch
+  #2  unblocked · Rate-limit the search endpoint
+```
+
+Through a pipe the same words print, unfitted: the rail spells itself `*` for
+running and `B` for blocked, and the gauge and the `▌` go. `--json` is
+unchanged.
 
 ## tasqx check
 

@@ -57,6 +57,16 @@ Cancelled tasks are not counted unless you pass `--all` or your filter names a
 status explicitly — a report about work shouldn't be padded by work you
 decided not to do.
 
+The TOKENS column names a group's largest bucket with that bucket's own count
+(`cacheR 1.2M`), or `-` when nothing was spent. The four buckets — in, out,
+cacheR (cache read) and cacheW (cache creation) — are never blended into one
+figure; `--json` and `report --html` carry the full split. They are filled by
+self-reported counts on `task.done` (the primary source, via `token.add` — see
+[`tasqx tokens`](AI-Agents-and-Automation.md#tasqx-tokens)), falling back to
+parsing local AI-tool transcripts when `tokens.enabled = true`, or by the
+daemon's OTLP receiver when `otlp.enabled = true`
+([`tasqx daemon`](AI-Agents-and-Automation.md#tasqx-daemon)).
+
 ## tasqx report --outcomes
 
 `tasqx report` says what the work cost. `--outcomes` says how it went.

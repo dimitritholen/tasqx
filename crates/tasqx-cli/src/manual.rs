@@ -1,7 +1,8 @@
 //! `tasqx manual` — the complete guide, in the terminal, themed and navigable.
 //!
-//! Renders from [`crate::cmddoc::COMMAND_REF`] (per-command reference) plus a
-//! handful of concept sections. Navigation is the table of contents plus
+//! Renders from [`crate::cmddoc::COMMAND_REF`] (per-command reference) plus
+//! twelve concept topics, each read out of the `docs/wiki` pages the HTML
+//! guide renders too ([`topic_source`]). Navigation is the table of contents plus
 //! `tasqx manual <name>`; there is no pager (kept dependency-free and portable).
 //! For the exhaustive browser guide, `tasqx docs`.
 //!
@@ -427,16 +428,16 @@ fn topic_section(ctx: &Ctx, t: Topic) -> String {
 }
 
 /// A topic's body, fitted to the terminal rather than to the width its source
-/// happened to be typed at. The source is written in four shapes, told apart
-/// by how a line starts:
+/// happened to be typed at. [`shapes`] writes it in four shapes, told apart by
+/// how a line starts:
 ///
 /// - **prose**, at the margin. Consecutive lines are one paragraph, reflowed
 ///   to the measure by `wrap_prose`, which keeps inline code whole.
 /// - a **heading**: a margin line with no lowercase letter in it.
 /// - a **row**, `  term\tdefinition`. Consecutive rows are one two-column
 ///   table, fitted by `columns::fit`, with the definition wrapped in its own
-///   column: it is prose, and this page is the only copy of it. A row with no
-///   term, `  \ttext`, adds a line to the row above, kept as written.
+///   column: it is prose. A row with no term, `  \ttext`, adds a line to the
+///   row above, kept as written.
 /// - **code**: any other indented line, printed as written. A reader copies
 ///   it, so it is never wrapped or cut.
 ///
@@ -565,401 +566,243 @@ fn unknown(name: &str) -> String {
     )
 }
 
-/// Each topic's text, in the four shapes [`body`] reads: prose at the margin,
-/// a heading in capitals, `  term\tdefinition` rows, and indented code.
-fn topic_body(t: Topic) -> &'static str {
+/// Where each topic's text lives: `(wiki page, sections)`, a section named by
+/// its `## ` heading and `""` standing for the page's opening above the first
+/// one. No sections named means the whole page.
+///
+/// The wiki is the one copy of this prose: the site renders the same files,
+/// so the terminal and the browser cannot tell a reader two different things.
+fn topic_source(t: Topic) -> &'static [(&'static str, &'static [&'static str])] {
     match t {
-        Topic::GettingStarted => {
-            "\
-tasqx is the organiser for your AI: a backlog, a memory and a brief
-for your coding agent, and a fast, terminal-first task manager for you.
+        Topic::GettingStarted => &[(
+            "Getting-Started.md",
+            &[
+                "",
+                "The whole loop is four commands",
+                "Getting help",
+                "Where your data lives",
+            ],
+        )],
+        Topic::Projects => &[("Projects.md", &[])],
+        Topic::Capturing => &[(
+            "Adding-and-Editing-Tasks.md",
+            &["", "tasqx add", "tasqx modify", "What a write prints"],
+        )],
+        Topic::Dates => &[
+            (
+                "Dates-Reminders-and-Recurrence.md",
+                &["", "Writing a date", "The four date fields", "Recurrence"],
+            ),
+            ("Finding-Tasks.md", &["tasqx agenda"]),
+        ],
+        Topic::Filters => &[("Finding-Tasks.md", &["The filter language"])],
+        Topic::Screens => &[
+            ("Dashboard-and-Live-View.md", &[]),
+            ("Working-on-Tasks.md", &["tasqx pick"]),
+        ],
+        Topic::Reminders => &[("Dates-Reminders-and-Recurrence.md", &["Reminders"])],
+        Topic::Reports => &[
+            ("Reports-and-Charts.md", &[]),
+            ("Settings-and-Themes.md", &["tasqx theme"]),
+        ],
+        Topic::Daemon => &[
+            ("AI-Agents-and-Automation.md", &["tasqx daemon"]),
+            ("Dashboard-and-Live-View.md", &["tasqx watch"]),
+        ],
+        Topic::Automation => &[(
+            "AI-Agents-and-Automation.md",
+            &[
+                "",
+                "tasqx setup",
+                "tasqx mcp",
+                "tasqx api",
+                "One rule for anything automated",
+            ],
+        )],
+        Topic::JsonApi => &[(
+            "AI-Agents-and-Automation.md",
+            &["tasqx api", "tasqx tokens"],
+        )],
+        Topic::Completion => &[("Shell-Completion.md", &[])],
+    }
+}
 
-The whole loop is four commands:
-  tasqx init <project>\tcreate a project (just a name)
-  tasqx add <title>\tcapture a task into the default project
-  tasqx next\tsee the one thing to do now
-  tasqx done <ref>\tcomplete it
+/// Each topic's text, in the four shapes [`body`] reads — prose at the
+/// margin, a heading in capitals, `  term\tdefinition` rows, and indented
+/// code — read out of the wiki pages [`topic_source`] names. Parsed once.
+fn topic_body(t: Topic) -> &'static str {
+    static BODIES: std::sync::LazyLock<Vec<String>> =
+        std::sync::LazyLock::new(|| Topic::ALL.iter().map(|t| read_topic(*t)).collect());
+    let i = Topic::ALL
+        .iter()
+        .position(|x| *x == t)
+        .expect("every topic is in Topic::ALL");
+    &BODIES[i]
+}
 
-A project is just a name in the store — no folder is created.
-The store lives at $TASQX_DB, else your platform data dir.
+fn read_topic(t: Topic) -> String {
+    let mut out = String::new();
+    for (file, sections) in topic_source(t) {
+        let src = crate::docs::wiki_source(file);
+        out.push_str(&shapes(&wiki_sections(file, src, sections)));
+    }
+    out.truncate(out.trim_end().len());
+    out.push('\n');
+    out
+}
 
-Deeper: `tasqx manual capturing` for the add grammar, or
-`tasqx docs` for the full browser guide."
+/// The named sections of a wiki page, whole: each from its `## ` heading to
+/// the next one. Panics on a name the page does not have, which is a typo in
+/// [`topic_source`] or a heading renamed under it.
+fn wiki_sections(file: &str, src: &str, wanted: &[&str]) -> String {
+    // `(heading, text)`, the opening first under `""`. A `#` inside a fence
+    // is code, not a heading.
+    let mut parts: Vec<(String, String)> = vec![(String::new(), String::new())];
+    let mut fenced = false;
+    for line in src.lines() {
+        if line.starts_with("```") {
+            fenced = !fenced;
         }
-
-        Topic::Projects => {
-            "\
-A project is just a name in the store — no folder, no path.
-
-  tasqx init <name>\tclaim a new project name
-  tasqx use <name>\tmake it the default for bare adds
-  tasqx projects\tlist them; the default is marked `*`
-  tasqx archive <name>\tretire one; --all still lists it
-
-A bare `tasqx add …` lands in the default project. The default
-is claimed only if the store had none yet; archiving the default
-project clears it, so a later add has no home until you `use`
-another one.
-
-Archiving keeps the tasks and takes the project out of rotation:
-`use` and any `add`/`modify` naming it are refused. There is no
-`unarchive` — importing a saved export is the way back."
+        if !fenced && line.starts_with("# ") {
+            continue;
         }
-
-        Topic::Capturing => {
-            "\
-Capture with a title plus inline sugar:
-  tasqx add Ship it due:friday +api !high project:work
-
-Inline sugar:
-  +tag\tadd a tag
-  project:p\t(or proj:p) set the project
-  !high\tpriority (!high / !med / !low)
-  due:…\ta due date (natural language)
-  scheduled:…\t(or sched:…) when you can start — parks the task in backlog until then
-  wait:…\thide until this instant — also parks it in backlog
-  est:4h\t(or estimate:4h) an effort estimate
-  repeat:…\ta recurrence rule (or every:… / recur:…)
-  remind:…\ta reminder offset or time
-
-`tasqx modify <ref>` sets fields; `--clear <field>` removes them.
-
-Lifecycle: start · stop · done · cancel · reopen.
-
-WHAT A WRITE PRINTS
-
-Every write answers with the same card: the task it named, then the
-outcome and what changed, then the rest of that row. Bold is the write's
-own mark — it says THIS is what changed, and nothing else wears it,
-because bold is the one emphasis that survives `NO_COLOR`.
-
-  tasqx start 1
-  ▌ #1  Ship the v2 pricing page
-  ▶ started   H ▄▄▄▄ 16.7   work   due Mon   +launch
-
-The rail at the left carries the state: `▶` while the task runs, `⊘`
-while it is blocked, `▌` otherwise. Another task the write moved gets a
-line of its own under the card:
-
-  tasqx done 1
-  ▌ #1  Ship the v2 pricing page
-  ▌ done today   tracked 5m   work   due Mon   +launch
-    #2  unblocked · Rate-limit the search endpoint
-
-Through a pipe the same words print, unfitted: the rail spells itself
-`*` for running and `B` for blocked, and the gauge and the `▌` go.
-`--json` is unchanged."
+        if !fenced {
+            if let Some(h) = line.strip_prefix("## ") {
+                parts.push((h.trim().to_string(), String::new()));
+            }
         }
+        let text = &mut parts.last_mut().expect("never empty").1;
+        text.push_str(line);
+        text.push('\n');
+    }
+    if wanted.is_empty() {
+        return parts.into_iter().map(|(_, text)| text).collect();
+    }
+    wanted
+        .iter()
+        .map(|w| {
+            parts
+                .iter()
+                .find(|(h, _)| h == w)
+                .map(|(_, text)| text.clone())
+                .unwrap_or_else(|| panic!("docs/wiki/{file} has no section `## {w}`"))
+        })
+        .collect()
+}
 
-        Topic::Dates => {
-            "\
-Dates take natural language. Everything is UTC: a bare date is
-midnight UTC, and a clock time is a UTC clock — `due:17:00` is 17:00
-UTC wherever you type it, and every screen prints it back as 17:00.
-An offset you write yourself (`+02:00`, or a trailing `Z`) is
-honoured as written.
-
-  Relative days\t`today`, `tomorrow`, `yesterday`, `now`, `eom` (end of month), `eow` (end of week).
-  Weekday names\t`monday`..`sunday` or `mon`..`sat` — the next occurrence, today included if it IS that day.
-  Counted spans\t`in 1 day`, `\"in 3 days\"`, `in 2 weeks`, `in 3 months` — days, weeks and months only; `in 2 hours` is not in this family and is rejected.
-  Signed offsets\t`-1d`, `+3d`, `3d` (no sign defaults to future).
-  Times\t`17:00`, `5pm`, attached to a day with a space — `\"tomorrow 17:00\"`, `\"friday 9am\"` — or a full instant — `\"2026-09-09 17:00\"`, `2026-09-09T17:00:00+02:00` (an explicit offset is honoured and converted to UTC on the way in).
-
-Four date fields carry meaning:
-  due\twhen it's due
-  scheduled\twhen you can start
-  wait\thide until this instant
-  remind\twhen to nudge you
-
-Recurrence forms:
-  repeat:\"every 3 days\"
-  repeat:\"weekly on mon,wed,fri\"
-  repeat:\"monthly on day 15\"
-
-Missed occurrences collapse to a single next one. `every N
-months` can drift across short months — anchor by day of month.
-
-`tasqx agenda` reads those dates back: it is `list` ordered by
-time and grouped by day, placing each task on the EARLIER of
-its `due` and `scheduled` and saying which of the two that was.
-Overdue rows come first and are always shown; the window ahead
-is 14 days (`--days N`). It leaves out tasks with neither date
-and tasks past the horizon — and counts both under the table,
-naming the exact `--days` that would reach the furthest one,
-or saying `tasqx list` when it is further out than `--days`
-goes.
-
-Days are UTC days: a bare date is midnight UTC, so a day groups the
-same way the store holds it."
+/// Markdown, rewritten into [`body`]'s four shapes. A heading is its text in
+/// capitals; a paragraph is one line at the margin, its inline code kept in
+/// backticks; a table row is `term\tdefinition` (a term that is one code span
+/// loses its backticks, a third column joins the definition after an em
+/// dash); a list item is a row under `-`; a fence is code, its `$ ` prompts
+/// dropped as everywhere else in the manual. Links keep their text.
+fn shapes(md: &str) -> String {
+    use pulldown_cmark::{Event, Options, Parser, Tag, TagEnd};
+    let mut lines: Vec<String> = Vec::new();
+    let mut text = String::new();
+    let mut cells: Vec<String> = Vec::new();
+    let mut code: Option<String> = None;
+    let mut in_head = false;
+    let mut items: Vec<Option<u64>> = Vec::new();
+    for ev in Parser::new_ext(md, Options::ENABLE_TABLES) {
+        if let Some(buf) = code.as_mut() {
+            match ev {
+                Event::Text(t) => buf.push_str(&t),
+                Event::End(TagEnd::CodeBlock) => {
+                    for line in buf.trim_end_matches('\n').lines() {
+                        let line = line
+                            .strip_prefix("$ ")
+                            .unwrap_or(line)
+                            .replace('\t', "    ");
+                        lines.push(if line.is_empty() {
+                            line
+                        } else {
+                            format!("  {line}")
+                        });
+                    }
+                    lines.push(String::new());
+                    code = None;
+                }
+                _ => {}
+            }
+            continue;
         }
-
-        Topic::Filters => {
-            "\
-Filters narrow any list:
-  project:work   status:pending   +api
-  due.before:friday   due.after:monday
-
-Combine with boolean `or` and group with parentheses:
-  tasqx list \"project:work and (+api or +ui)\"
-
-Double-quote a value containing a space, and the quotes also
-hide parentheses and the and/or keywords, as a shell does.
-The quotes must REACH tasqx, so protect them from your shell —
-wrap the whole token in single quotes (or backslash-escape it):
-  tasqx list 'project:\"Home Renovation\"' +paint
-
-tasqx does not guess where a value ended. Letting the shell eat
-the quotes leaves `project:Home Renovation`, which is
-`project:Home` plus a stray word, and that is refused with the
-spelling above rather than answered with the wrong rows. The
-same rule is what lets you pass a whole expression as one
-argument: `tasqx list \"+api or +web\"` is the expression.
-
-`add`/`modify` sugar is split by the same scanner, but the
-write side ALSO honours the argument boundary your shell drew,
-so an unquoted multi-word value that would be refused on the
-read side instead either `not_found`s (no project named by the
-leading word) or — worse, once a project happens to be named
-exactly that leading word — silently files the task there and
-welds the remainder onto the title: `tasqx add \"paint\"
-project:Home Renovation` becomes project `Home`, title \"paint
-Renovation\". Use the quoted spelling on BOTH sides and this
-cannot happen:
-  tasqx add \"paint\" project:\"Home Renovation\"
-
-Write `\\\"` for a literal quote and
-`\\\\` for a literal backslash — a name holding a quote needs
-that form on both sides:
-  tasqx add \"paint\" project:\"My \\\"Big\\\" Project\"
-
-`due` is compared as an instant, not a calendar day. A bare
-`tasqx` (or `tasqx list`) shows the working set."
-        }
-
-        Topic::Screens => {
-            "\
-Five commands open a screen instead of printing a table, and each
-answers a pipe in its own way. `tasqx pick`, `tasqx dashboard` and
-`tasqx config edit` refuse one outright rather than write escape codes
-into it. `tasqx memory list` prints its one-line-per-doc table instead,
-and `tasqx watch` prints each update as it arrives rather than
-repainting a screen — it needs a running daemon either way.
-
-  tasqx pick\tbrowse tasks, search them, read one, start one
-  tasqx dashboard\tthe overview, and what a bare `tasqx` opens
-  tasqx config edit\tsettings, previewing a theme as you move over it
-  tasqx memory list\tyour docs, with the one under the cursor beside them
-  tasqx watch\ta table repainted on every change (needs a daemon)
-
-`tasqx list` never opens a screen. It is the verb that always prints the
-table, on a terminal and through a pipe alike.
-
-BROWSING WITH PICK
-
-`tasqx pick [filter…]` lists the rows `tasqx list` prints and lets you
-work down them:
-
-  j/k\tmove, as do the arrows; `g`/`G` jump to the ends
-  /\tsearch as you type: `wac` finds `Write API conformance tests`
-  enter\topen that task's card, the one `tasqx show` prints
-  s\tstart the task under the cursor, from the list or from its card
-  q\tleave; `esc` clears a search first, and only then leaves
-
-The bar along the bottom names the keys that can do something where you
-are, so it is shorter on an empty list, on a card, and on a narrow
-terminal — the way out is named at every width.
-
-`s` is the only key that writes. A filter can list work that is done or
-cancelled, and `s` on such a row is refused on the key bar's own row
-with the screen still open.
-
-Captured on a terminal at 64 columns, since this screen cannot be piped:
-
-  pick   @working   3 tasks · 1 overdue · #1 running
-
-         ID          URG  TASK                  PROJECT  DUE
-   ▸      4  H ▄▄▄▄ 18.0  Renew the TLS certi…  work     yesterday
-     ▶    1  H ▄▄▄▄ 16.7  Ship the v2 pricing…  work     Mon
-          3  - ▁▁▁▁  0.0  Write the migration…  work
-
-   j/k move   / search   enter open   s start   q leave
-
-Leaving without starting a task exits 0: a browser you close is not a
-failed run, so `tasqx pick && …` and a prompt indicator survive `q`. A
-filter that matches no task still exits 4, and so does an empty working
-set — that is a question tasqx could not answer, not a session you
-ended."
-        }
-
-        Topic::Reminders => {
-            "\
-`remind:` takes a signed offset (`-1h`, `-30m`) kept symbolic:
-moving `due` moves the reminder with it. An absolute time is
-also accepted.
-
-Reminders fire only while the daemon is running (`tasqx daemon`).
-They are quiet by default — the OS toast lives behind the
-off-by-default `notify-os` build feature."
-        }
-
-        Topic::Reports => {
-            "  tasqx report [group_by]\tcounts, optionally grouped (project | status | priority)
-  tasqx report --html\tone self-contained HTML review of a period
-  tasqx report --html --with-notes\tthe same, with annotation bodies in the file
-  tasqx chart throughput\tcompletions over time
-  tasqx chart heatmap\tactivity calendar
-  tasqx chart burndown\tremaining work over time
-  tasqx why <ref>\texplain a task's urgency score
-  tasqx theme list / show\tbrowse and preview themes
-
-The TOKENS column names a group's largest bucket with that
-bucket's own count (`cacheR 1.2M`), or `-` when nothing was
-spent. The four buckets — in, out, cacheR (cache read) and
-cacheW (cache creation) — are never blended into one figure;
-`--json` and `report --html` carry the full split.
-Populated by self-reported counts on `task.done` (the primary
-source, via `token.add` — see `tasqx manual json-api`), falling
-back to parsing local AI-tool transcripts when
-`tokens.enabled = true`, or by the daemon's OTLP receiver when
-`otlp.enabled = true` (`tasqx manual daemon`)."
-        }
-
-        Topic::Daemon => {
-            "\
-`tasqx daemon` binds a local socket (a named pipe on Windows)
-and serves the one JSON API as the single writer.
-
-One-shot commands auto-route through a running daemon, so your
-edits serialize safely. `tasqx watch` is a live view fed by the
-daemon's push stream. `--no-daemon` is the escape hatch: run a
-command directly against the store instead.
-
-`otlp.enabled = true` (config.toml) starts a local OTLP/HTTP
-receiver in the daemon on 127.0.0.1 (`otlp.port`, default
-4318), capturing an AI tool's own token telemetry live instead
-of parsing its transcript after the fact:
-  Claude Code\tCLAUDE_CODE_ENABLE_TELEMETRY=1
-  \tOTEL_LOGS_EXPORTER=otlp
-  \tOTEL_EXPORTER_OTLP_PROTOCOL=http/json
-  \tOTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:4318
-  Gemini CLI\tsame two OTEL_EXPORTER_OTLP_* variables
-  Codex\tthe [otel] table in ~/.codex/config.toml
-
-The receiver is independent of `tokens.enabled`: self-reported
-counts (`task.done`, `token.add`) work with both settings off."
-        }
-
-        Topic::Automation => {
-            "\
-Every surface is a client of the one JSON API.
-
-  tasqx mcp serve\tstdio JSON-RPC for AI agents; read-only by default
-  tasqx mcp serve --scope write\texplicitly expose write tools
-  tasqx api\tone JSON envelope in → one out
-
-Scope configures this local process; it is not authentication."
-        }
-
-        Topic::JsonApi => {
-            "\
-Everything speaks one envelope:
-  {\"tasqx\":\"1\",\"id\":\"1\",\"method\":\"task.list\",\"params\":{}}
-
-method + params go in; a result or an error comes out. Exit
-codes mirror the error model: 0 ok, 2 bad_request, 4 not_found,
-5 conflict.
-
-`token.add` self-reports a turn's token counts against a task —
-the primary source `tasqx report`'s TOKENS column reads
-(`tasqx manual reports`).
-
-`tasqx export` / `tasqx import` round-trip canonical JSON. See
-`tasqx docs` for the full method table."
-        }
-
-        Topic::Completion => {
-            "\
-Tab completion for bash, zsh, fish, elvish and PowerShell — the
-same five on Linux, macOS and Windows.
-
-  tasqx completions <shell>\tprint the line for your startup file
-  tasqx completions bash >> ~/.bashrc\tadd it, for bash
-
-tasqx never edits a startup file itself; add the line yourself.
-
-The line, and the file it belongs in:
-
-  bash\t`~/.bashrc`
-  \tsource <(TASQX_COMPLETE=bash tasqx)
-  zsh\t`~/.zshrc`, AFTER your compinit line
-  \tsource <(TASQX_COMPLETE=zsh tasqx)
-  fish\t`~/.config/fish/completions/tasqx.fish`
-  \tTASQX_COMPLETE=fish tasqx | source
-  elvish\t`~/.elvish/rc.elv`
-  \teval (E:TASQX_COMPLETE=elvish tasqx | slurp)
-  powershell\t`$PROFILE`
-  \t$env:TASQX_COMPLETE = \"powershell\"; tasqx | Out-String | Invoke-Expression; Remove-Item Env:\\TASQX_COMPLETE
-
-With no shell named, tasqx reads $SHELL. No Windows shell sets
-it, so name the shell there. In PowerShell, let the shell
-expand its own profile path:
-  tasqx completions powershell >> $PROFILE
-
-The zsh ordering is not a nicety. That registration ends in
-`compdef`, which exists only once `compinit` has run — source it
-earlier and zsh prints `command not found: compdef`, registers
-nothing, and carries on at exit 0. oh-my-zsh and prezto run
-`compinit` for you; a hand-written .zshrc may not.
-
-PowerShell must also be allowed to RUN $PROFILE. A stock Windows
-client sets the execution policy to Restricted, and then the
-profile never executes: the line sits in the right file, nothing
-errors, and completion simply never turns on. `Get-ExecutionPolicy`
-tells you; `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned`
-is the minimum that runs it.
-
-Any other shell is refused, naming the five above.
-
-What completes: verbs and flags, closed value sets
-(`--priority`, `--scope`, `status:`), file paths, your task ids,
-project and tag names, the capture sugar (`+tag`, `project:x`,
-`!high`) and the whole filter grammar including `-tag` exclusions.
-
-Task ids carry their TITLES in zsh, fish and PowerShell. bash and
-elvish show bare ids: their registrations write candidate values
-only, so there is nowhere for a title to go. That is upstream's
-protocol, not a tasqx setting.
-
-Two details that are not what you would guess. An alias only
-surfaces when no canonical name claims the prefix: `ls<TAB>`
-gives `ls`, `mod<TAB>` gives `modify`. And the id menu is EVERY
-task by urgency, not only the open ones — `reopen` and `why`
-want the closed ones, and a menu that hid them would look like
-an answer.
-
-BEFORE YOU SWITCH IT ON
-
-The variable is TASQX_COMPLETE, deliberately not the generic
-COMPLETE that clap tools usually take. The protocol cannot tell
-a callback from a real command: with a recognised shell name in
-that variable, `tasqx add -- \"a real task\"` writes nothing,
-exits 0, and does not add the task. A tasqx-specific name makes
-that state improbable rather than impossible, so do not export
-it by hand. COMPLETE on its own does nothing to tasqx.
-
-A Tab press READS your store — a running daemon if there is
-one, else the SQLite file opened read-only — inside a 150 ms
-budget, and answers with no candidates rather than an error
-whenever any of that fails, because a message on stderr lands
-in the middle of the line you are typing. That read leaves
-tasks.db-shm and tasks.db-wal beside your store: SQLite's
-doing, and an ordinary `tasqx list` creates the same two and
-removes them again. Your database is not altered — no
-migration, not a byte. Set TASQX_NO_COMPLETE_LOOKUP=1 to turn
-the value lookups off; verbs, flags and value sets still
-complete."
+        match ev {
+            Event::Text(t) => text.push_str(&t),
+            Event::Code(c) => {
+                text.push('`');
+                text.push_str(&c);
+                text.push('`');
+            }
+            Event::SoftBreak | Event::HardBreak => text.push(' '),
+            Event::Start(Tag::CodeBlock(_)) => code = Some(String::new()),
+            Event::End(TagEnd::Heading(_)) => {
+                lines.push(text.replace('`', "").trim().to_uppercase());
+                lines.push(String::new());
+                text.clear();
+            }
+            Event::End(TagEnd::Paragraph) if items.is_empty() => {
+                lines.push(text.trim().to_string());
+                lines.push(String::new());
+                text.clear();
+            }
+            Event::End(TagEnd::Paragraph) => text.push(' '),
+            Event::Start(Tag::TableHead) => in_head = true,
+            Event::End(TagEnd::TableHead) => {
+                in_head = false;
+                cells.clear();
+            }
+            Event::End(TagEnd::TableCell) => {
+                cells.push(text.trim().to_string());
+                text.clear();
+            }
+            Event::End(TagEnd::TableRow) if !in_head => {
+                let term = match cells.first().map(String::as_str).unwrap_or_default() {
+                    t if t.len() > 1
+                        && t.starts_with('`')
+                        && t.ends_with('`')
+                        && t.matches('`').count() == 2 =>
+                    {
+                        t[1..t.len() - 1].to_string()
+                    }
+                    t => t.to_string(),
+                };
+                lines.push(format!("  {term}\t{}", cells[1..].join(" — ")));
+                cells.clear();
+            }
+            Event::End(TagEnd::Table) => lines.push(String::new()),
+            Event::Start(Tag::List(first)) => {
+                if !text.trim().is_empty() {
+                    lines.push(format!("  -\t{}", text.trim()));
+                }
+                text.clear();
+                items.push(first);
+            }
+            Event::End(TagEnd::Item) => {
+                let mark = match items.last_mut() {
+                    Some(Some(n)) => {
+                        *n += 1;
+                        format!("{}.", *n - 1)
+                    }
+                    _ => "-".to_string(),
+                };
+                if !text.trim().is_empty() {
+                    lines.push(format!("  {mark}\t{}", text.trim()));
+                }
+                text.clear();
+            }
+            Event::End(TagEnd::List(_)) => {
+                items.pop();
+                if items.is_empty() {
+                    lines.push(String::new());
+                }
+            }
+            _ => {}
         }
     }
+    let mut out = lines.join("\n").trim_end().to_string();
+    out.push_str("\n\n");
+    out
 }
 
 #[cfg(test)]
@@ -1065,7 +908,9 @@ mod tests {
                     Some((term, kept)) if term.trim().is_empty() => {
                         copied.push(kept.trim().to_string())
                     }
-                    Some(_) => {}
+                    // A term is what gets typed, so `table` prints it whole
+                    // on its own line where it is wider than the terminal.
+                    Some((term, _)) => copied.push(term.trim().to_string()),
                 }
             }
         }
@@ -1082,12 +927,15 @@ mod tests {
     }
 
     /// A line that is exactly one inline code span, and at most the
-    /// punctuation that closes its sentence: `` `tasqx list --sort due …`. ``.
-    /// That is code a reader copies, so when it is wider than the line it
-    /// stands alone and overflows rather than being split. Nothing else is
-    /// exempt: not a long word, not a line with a span in it.
+    /// punctuation that opens and closes it: `` `tasqx list --sort due …`. ``,
+    /// `` (`17 open · 1 active`). ``. That is code a reader copies, so when it
+    /// is wider than the line it stands alone and overflows rather than being
+    /// split. Nothing else is exempt: not a long word, not a line with a span
+    /// in it.
     fn a_whole_code_span(line: &str) -> bool {
-        let t = line.trim();
+        let t = line
+            .trim()
+            .trim_start_matches(|c: char| c.is_ascii_punctuation() && c != '`');
         let Some(rest) = t.strip_prefix('`') else {
             return false;
         };
@@ -1266,6 +1114,7 @@ mod tests {
     #[test]
     fn every_page_fits_the_terminal_except_what_is_copied() {
         let copied = copied_lines();
+        let kept_rows = kept_row_lines();
         let mut over = Vec::new();
         for cols in Ctx::MIN_COLS..=Ctx::MAX_COLS {
             for (name, page) in every_page(&at(cols)) {
@@ -1282,7 +1131,7 @@ mod tests {
                     // not hold it.
                     let verbatim =
                         copied.iter().any(|c| c == line.trim()) || a_whole_code_span(line);
-                    let kept = kept_row_lines().iter().any(|c| c == line.trim());
+                    let kept = kept_rows.iter().any(|c| c == line.trim());
                     let holdable = render::width(line.trim()) <= cols.saturating_sub(INDENT + HANG);
                     let exempt = if kept { !holdable } else { verbatim };
                     if render::width(line) > cols && !exempt {
@@ -2122,6 +1971,35 @@ mod tests {
                     d.verb
                 );
             }
+        }
+    }
+
+    /// Markdown becomes the four shapes `body` reads: a heading in capitals,
+    /// a paragraph at the margin with its code kept in backticks, a table row
+    /// and a list item as `term\tdefinition` rows, a fence as code with its
+    /// prompt dropped.
+    #[test]
+    fn markdown_becomes_the_four_shapes() {
+        let src = "## tasqx add\n\nUse `due:` and [links](X.md).\n\n\
+                   | Command | What |\n|---|---|\n| `tasqx list` | the table |\n\n\
+                   - one\n- two\n\n```console\n$ tasqx next\nnext #1\n```\n";
+        assert_eq!(
+            shapes(src),
+            "TASQX ADD\n\nUse `due:` and links.\n\n  tasqx list\tthe table\n\n\
+             \x20 -\tone\n  -\ttwo\n\n  tasqx next\n  next #1\n\n"
+        );
+    }
+
+    /// Every topic is read out of the wiki, and every section it names is
+    /// there: a renamed heading is a panic here, not an empty page.
+    #[test]
+    fn every_topic_reads_its_wiki_sections() {
+        for t in Topic::ALL {
+            assert!(
+                topic_body(t).len() > 200,
+                "topic {} read almost nothing out of the wiki",
+                t.slug()
+            );
         }
     }
 
