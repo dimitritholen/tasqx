@@ -2967,7 +2967,7 @@ fn undo_reaches_past_a_command_that_answered_ok_without_recording_anything() {
 /// machine-readable form: a `ref` here would silently reach past whatever
 /// happened elsewhere, so the published contract has to say there is none.
 #[test]
-fn event_revert_is_reachable_through_dispatch_and_takes_no_params() {
+fn event_revert_is_reachable_through_dispatch_and_takes_only_its_guard() {
     let e = engine();
     let (task, _) = undo_fixture(&e);
     e.tag_remove(&json!({ "ref": task["short_id"].clone(), "tags": ["api"] }))
@@ -2986,11 +2986,15 @@ fn event_revert_is_reachable_through_dispatch_and_takes_no_params() {
         "a method a client cannot feature-detect is a method it will not call: {}",
         caps["methods"]
     );
-    assert_eq!(caps["params"]["event.revert"], json!([]));
+    // #638: the optional guard, and nothing else.
+    assert_eq!(
+        caps["params"]["event.revert"],
+        json!(["ref", "expected_rev"])
+    );
 
-    let err = dispatch(&e, "event.revert", &json!({ "ref": 1 })).unwrap_err();
+    let err = dispatch(&e, "event.revert", &json!({ "limit": 1 })).unwrap_err();
     assert_eq!(err.code, ErrorCode::BadRequest);
-    assert!(err.message.contains("ref"), "{}", err.message);
+    assert!(err.message.contains("limit"), "{}", err.message);
 }
 
 // ---- D69: three results that name their own scope ---------------------------
@@ -3245,5 +3249,131 @@ fn depends_on_is_projectable_from_task_list_and_absent_by_default() {
     assert!(
         default_row.get("blocked").is_some(),
         "`blocked` is still on every row"
+    );
+}
+
+// ---- #638: the board's guarded writes ---------------------------------------
+
+fn rev(e: &Engine, sid: i64) -> i64 {
+    e.task_get(&json!({ "ref": sid })).unwrap()["_rev"]
+        .as_i64()
+        .unwrap()
+}
+
+/// The lifecycle verbs take `task.modify`'s `expected_rev`: a stale one is a
+/// `conflict` that writes nothing, a current one lands and moves the rev by
+/// exactly one — the step the board's Undo counts on.
+#[test]
+fn every_lifecycle_verb_honours_expected_rev() {
+    let e = engine();
+    let sid = e.task_add(&json!({ "title": "guarded" })).unwrap()["short_id"]
+        .as_i64()
+        .unwrap();
+    type Verb = fn(&Engine, &Value) -> Result<Value, tasqx_core::ApiError>;
+    let steps: [(&str, Verb); 5] = [
+        ("start", Engine::task_start),
+        ("stop", Engine::task_stop),
+        ("done", Engine::task_done),
+        ("reopen", Engine::task_reopen),
+        ("cancel", Engine::task_cancel),
+    ];
+    for (name, verb) in steps {
+        let at = rev(&e, sid);
+        let events = count(&e, "SELECT COUNT(*) FROM events");
+        let err = verb(&e, &json!({ "ref": sid, "expected_rev": at - 1 }))
+            .expect_err(&format!("{name} with a stale rev must refuse"));
+        assert_eq!(err.code, ErrorCode::Conflict, "{name}");
+        assert_eq!(err.data.as_ref().unwrap()["current"], json!(at), "{name}");
+        assert_eq!(
+            count(&e, "SELECT COUNT(*) FROM events"),
+            events,
+            "{name}: nothing written"
+        );
+        verb(&e, &json!({ "ref": sid, "expected_rev": at }))
+            .unwrap_or_else(|err| panic!("{name} at the current rev: {}", err.message));
+        assert_eq!(rev(&e, sid), at + 1, "{name} moves the rev by one");
+    }
+}
+
+/// `event.revert {ref, expected_rev}` undoes only when the newest event is that
+/// task's and the task is still at that rev, so a board's Undo can never take
+/// back somebody else's later write.
+#[test]
+fn a_guarded_undo_refuses_when_anything_happened_since() {
+    let e = engine();
+    let a = e.task_add(&json!({ "title": "mine" })).unwrap()["short_id"].clone();
+    let b = e.task_add(&json!({ "title": "theirs" })).unwrap()["short_id"].clone();
+    e.task_modify(&json!({ "ref": a, "set": { "priority": "H" } }))
+        .unwrap();
+    let mine = rev(&e, a.as_i64().unwrap());
+
+    let stale = e
+        .event_revert_with(&json!({ "ref": a, "expected_rev": mine - 1 }))
+        .expect_err("a stale rev refuses");
+    assert_eq!(stale.code, ErrorCode::Conflict);
+
+    e.task_modify(&json!({ "ref": b, "set": { "priority": "L" } }))
+        .unwrap();
+    let other = e
+        .event_revert_with(&json!({ "ref": a, "expected_rev": mine }))
+        .expect_err("the newest event is another task's");
+    assert_eq!(other.code, ErrorCode::Conflict);
+    assert_eq!(
+        e.task_get(&json!({ "ref": b })).unwrap()["priority"],
+        "L",
+        "the other task's write stands"
+    );
+
+    let lone = e
+        .event_revert_with(&json!({ "expected_rev": mine }))
+        .expect_err("expected_rev needs its ref");
+    assert_eq!(lone.code, ErrorCode::BadRequest);
+
+    let fresh = e.task_add(&json!({ "title": "undo me" })).unwrap()["short_id"].clone();
+    e.task_modify(&json!({ "ref": fresh, "set": { "priority": "M" } }))
+        .unwrap();
+    let at = rev(&e, fresh.as_i64().unwrap());
+    let out = e
+        .event_revert_with(&json!({ "ref": fresh, "expected_rev": at }))
+        .expect("the newest event is this task's, at this rev");
+    assert_eq!(out["reverted"]["op"], "modify");
+    assert!(e.task_get(&json!({ "ref": fresh })).unwrap()["priority"].is_null());
+}
+
+/// The envelope's `actor` lands in the `events.actor` column of every event the
+/// call writes; without one the column says `user`, as it always has.
+#[test]
+fn the_envelope_actor_is_written_to_the_events_it_causes() {
+    let e = engine();
+    let out = handle_envelope(
+        &e,
+        r#"{"tasqx":"1","id":1,"actor":"board","method":"task.add","params":{"title":"dragged"}}"#,
+    );
+    assert_eq!(out["ok"], json!(true), "{out}");
+    handle_envelope(
+        &e,
+        r#"{"tasqx":"1","id":2,"method":"task.add","params":{"title":"typed"}}"#,
+    );
+    let actors: Vec<String> = e
+        .conn()
+        .prepare("SELECT actor FROM events ORDER BY rowid")
+        .unwrap()
+        .query_map([], |r| r.get(0))
+        .unwrap()
+        .map(Result::unwrap)
+        .collect();
+    assert_eq!(actors, ["board", "user"]);
+
+    for bad in [r#""""#, "7", &format!("\"{}\"", "x".repeat(65))] {
+        let env = format!(
+            r#"{{"tasqx":"1","id":3,"actor":{bad},"method":"task.add","params":{{"title":"x"}}}}"#
+        );
+        let out = handle_envelope(&e, &env);
+        assert_eq!(out["ok"], json!(false), "actor {bad} must refuse: {out}");
+    }
+    assert_eq!(
+        count(&e, "SELECT COUNT(*) FROM events"),
+        2,
+        "nothing written"
     );
 }

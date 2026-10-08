@@ -121,10 +121,12 @@ pub const PARAMS: &[(&str, &[&str], bool)] = &[
             // which the attribution engine reads to match telemetry — this one
             // is only ever compared with itself.
             "actor",
+            // #638: the lifecycle verbs take `task.modify`'s guard too.
+            "expected_rev",
         ],
         false,
     ),
-    ("task.stop", &["ref"], false),
+    ("task.stop", &["ref", "expected_rev"], false),
     // D166: an auditable correction to tracked time, undoable by `undo`.
     ("task.adjust_tracked", &["ref", "delta", "reason"], false),
     // task.done additionally takes the #13 self-report params: any present
@@ -152,12 +154,13 @@ pub const PARAMS: &[(&str, &[&str], bool)] = &[
             "cache_creation_tokens",
             // D167: one unsplit count, for a harness that reports only that.
             "total_tokens",
+            "expected_rev",
         ],
         false,
     ),
     ("task.modify", &["ref", "set", "expected_rev"], false),
-    ("task.cancel", &["ref"], false),
-    ("task.reopen", &["ref"], false),
+    ("task.cancel", &["ref", "expected_rev"], false),
+    ("task.reopen", &["ref", "expected_rev"], false),
     ("tag.add", &["ref", "tags"], false),
     ("tag.remove", &["ref", "tags"], false),
     ("annotation.add", &["ref", "body"], false),
@@ -337,7 +340,9 @@ pub const PARAMS: &[(&str, &[&str], bool)] = &[
     // that is the only position from which the inverse is exact rather than
     // plausible (see engine/undo.rs). A `ref` here would look like a courtesy
     // and would silently reach past whatever happened elsewhere.
-    ("event.revert", &[], false),
+    // #638: `ref` + `expected_rev` make undo conditional on nothing having
+    // happened since the caller's own write.
+    ("event.revert", &["ref", "expected_rev"], false),
     ("reminder.fire", &["ref", "at"], false),
     ("core.capabilities", &[], false),
     // #222: read-only visibility into the opt-in OTLP receiver's buffer — no
@@ -455,7 +460,7 @@ pub fn dispatch(engine: &Engine, method: &str, params: &Value) -> Result<Value, 
         "store.export" => engine.store_export(params),
         "store.import" => engine.store_import(params),
         "event.list" => engine.event_list(params),
-        "event.revert" => engine.event_revert(),
+        "event.revert" => engine.event_revert_with(params),
         "reminder.fire" => engine.reminder_fire(params),
         "core.capabilities" => engine.capabilities(),
         "otlp.status" => engine.otlp_status(),
@@ -486,7 +491,7 @@ pub fn capabilities() -> Value {
 /// out. Never returns Err — transport/validation failures become error
 /// envelopes so the caller always has a well-formed response to emit.
 pub fn handle_envelope(engine: &Engine, input: &str) -> Value {
-    let req: ApiRequest = match serde_json::from_str(input) {
+    let Envelope { req, actor } = match serde_json::from_str(input) {
         Ok(r) => r,
         Err(e) => {
             return error_envelope(
@@ -509,11 +514,34 @@ pub fn handle_envelope(engine: &Engine, input: &str) -> Value {
         );
     }
 
+    let actor = match actor {
+        None | Some(Value::Null) => None,
+        Some(Value::String(a)) if !a.is_empty() && a.len() <= 64 => Some(a),
+        Some(_) => {
+            return error_envelope(
+                id,
+                &ApiError::bad_request("`actor` must be a string of 1 to 64 bytes"),
+            )
+        }
+    };
     let params = req.params.unwrap_or_else(|| json!({}));
-    match dispatch(engine, &req.method, &params) {
+    match crate::storage::as_actor(actor, || dispatch(engine, &req.method, &params)) {
         Ok(result) => success_envelope(id, result),
         Err(e) => error_envelope(id, &e),
     }
+}
+
+/// The wire envelope: [`ApiRequest`] plus the optional `actor` (#638, D232),
+/// who is writing, recorded in the `actor` column of every event the call
+/// appends; absent is `user`. Attribution, not authentication: it is whatever
+/// the client says (DESIGN §7). Kept off `ApiRequest` so that public struct
+/// gains no field (a semver break for anyone building one by literal).
+#[derive(serde::Deserialize)]
+struct Envelope {
+    #[serde(flatten)]
+    req: ApiRequest,
+    #[serde(default)]
+    actor: Option<Value>,
 }
 
 fn success_envelope(id: Value, result: Value) -> Value {

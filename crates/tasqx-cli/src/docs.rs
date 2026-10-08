@@ -251,7 +251,8 @@ const METHODS: [(&str, &str, &str); 52] = [
     (
         "task.start",
         "<code>ref</code>, <code>keep?</code>, <code>session_id?</code>, \
-         <code>transcript_path?</code>, <code>client?</code>, <code>actor?</code>",
+         <code>transcript_path?</code>, <code>client?</code>, <code>actor?</code>, \
+         <code>expected_rev?</code>",
         "The task, timer running. Correlation params land in the start event. \
          <code>auto_stopped</code> lists whichever other task D6's single-active \
          rule just stopped to make room for this one — empty unless <code>keep</code> \
@@ -263,7 +264,7 @@ const METHODS: [(&str, &str, &str); 52] = [
     ),
     (
         "task.stop",
-        "<code>ref</code>",
+        "<code>ref</code>, <code>expected_rev?</code>",
         "<code>{status, interval, tracked}</code>. <code>interval</code> is the duration just \
          closed; <code>tracked</code> is the running total, the same word <code>task.get</code> \
          uses for it.",
@@ -282,7 +283,8 @@ const METHODS: [(&str, &str, &str); 52] = [
          <code>transcript_path?</code>, <code>client?</code>, <code>tool?</code>, \
          <code>model?</code>, <code>input_tokens?</code>, <code>output_tokens?</code>, \
          <code>cache_read_tokens?</code>, <code>cache_creation_tokens?</code>, \
-         <code>total_tokens?</code>, <code>checks_passed?</code>, <code>evidence?</code>",
+         <code>total_tokens?</code>, <code>checks_passed?</code>, <code>evidence?</code>, \
+         <code>expected_rev?</code>",
         "The task; plus the spawned next instance if recurring. Correlation params \
          land in the done event, and so do <code>tool</code> and <code>model</code> on \
          their own (D65) — a caller that cannot count its tokens still records who did \
@@ -307,12 +309,15 @@ const METHODS: [(&str, &str, &str); 52] = [
     ),
     (
         "task.cancel",
-        "<code>ref</code>",
-        "<code>{short_id, status}</code>.",
+        "<code>ref</code>, <code>expected_rev?</code>",
+        "<code>{short_id, status}</code>. Like <code>task.start</code>, <code>stop</code>, \
+         <code>done</code> and <code>reopen</code>, it takes <code>task.modify</code>'s \
+         <code>expected_rev</code>: a stale one is a <code>conflict</code> carrying the \
+         current rev, and nothing is written.",
     ),
     (
         "task.reopen",
-        "<code>ref</code>",
+        "<code>ref</code>, <code>expected_rev?</code>",
         "<code>{short_id, status, blocked}</code>. <code>blocked</code> names the open dependents \
          this reopen put back — the mirror of <code>unblocked</code> on <code>task.done</code>.",
     ),
@@ -708,7 +713,7 @@ const METHODS: [(&str, &str, &str); 52] = [
     ),
     (
         "event.revert",
-        "—",
+        "<code>ref?</code>, <code>expected_rev?</code>",
         "<code>{reverted, short_id, title, restored}</code> — <code>reverted</code> carries \
          the event id, its op and its timestamp. Undoes the <em>newest</em> event by \
          APPENDING a compensating one, so the reversed event stays in the log. Seven ops are \
@@ -716,7 +721,10 @@ const METHODS: [(&str, &str, &str); 52] = [
          <code>annotation.add</code>, <code>annotation.update</code>, <code>annotation.move</code>, <code>adjust_tracked</code>); every other one is <code>conflict</code> naming itself \
          and what does take it back. The newest <em>event</em>, not the last call you made: a \
          call that changed nothing writes no event, so undo reaches past it — which is why the \
-         answer names what it undid instead of saying ok.",
+         answer names what it undid instead of saying ok. With <code>ref</code> the newest \
+         event must be that task's, and with <code>expected_rev</code> the task must still \
+         be at that rev; otherwise it is <code>conflict</code> and nothing is undone, so a \
+         client undoing its own last write cannot take back a later one.",
     ),
     (
         "reminder.fire",

@@ -326,6 +326,23 @@ impl Engine {
     /// is outside [`UNDOABLE_OPS`], and with `not_found` when there is no event
     /// at all.
     pub fn event_revert(&self) -> Result<Value, ApiError> {
+        self.event_revert_with(&json!({}))
+    }
+
+    /// `event.revert {ref?, expected_rev?}` — [`Engine::event_revert`], made
+    /// conditional (#638). With `ref`, the newest event must be that task's;
+    /// with `expected_rev` too, the task must still be at that rev. Either
+    /// miss is a `conflict` and nothing is undone, so a client undoing its own
+    /// last write (the board's toast) can never take back a write somebody
+    /// made after it. Without them it is the unconditional undo it always was.
+    pub fn event_revert_with(&self, p: &Value) -> Result<Value, ApiError> {
+        let expected_rev = opt_i64(p, "expected_rev")?;
+        let guarded = p.get("ref").is_some_and(|r| !r.is_null());
+        if expected_rev.is_some() && !guarded {
+            return Err(ApiError::bad_request(
+                "`expected_rev` names a task's rev, so it needs that task's `ref`",
+            ));
+        }
         // Everything happens inside one IMMEDIATE transaction: the read of "the
         // newest event" is the whole basis for the inverses being exact, so it
         // has to be taken under the write lock. Reading it first and locking
@@ -405,6 +422,23 @@ impl Engine {
                     (event_id, entity_id, op, payload, event_ts) = p;
                 }
             }
+        }
+
+        if guarded {
+            let mine = self.resolve_ref_on(&tx, p)?;
+            if mine.id != entity_id {
+                return Err(ApiError::new(
+                    crate::ErrorCode::Conflict,
+                    format!(
+                        "the newest event is not on #{}: something else was written since, so \
+                         undoing now would take back that instead; nothing was undone",
+                        mine.short_id
+                    ),
+                    Some(json!({ "current": mine.rev,
+                                 "task": { "short_id": mine.short_id, "title": mine.title } })),
+                ));
+            }
+            super::task::guard_rev(expected_rev, &mine)?;
         }
 
         if !UNDOABLE_OPS.contains(&op.as_str()) {

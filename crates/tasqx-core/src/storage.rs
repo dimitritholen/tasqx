@@ -1139,10 +1139,40 @@ pub fn insert_event(
             op,
             payload.to_string(),
             now(),
-            "user",
+            ACTOR
+                .with_borrow(|a| a.clone())
+                .as_deref()
+                .unwrap_or("user"),
         ],
     )?;
     Ok(())
+}
+
+thread_local! {
+    /// The envelope's `actor` (#638) for the call running on this thread.
+    // ponytail: a thread-local rather than an `actor` argument on every
+    // `insert_event` caller; it holds because a call dispatches on the thread
+    // that received it (stdio, and the daemon's per-connection reader under
+    // the engine lock). Thread it through `MutationContext` if a write ever
+    // moves to another thread.
+    static ACTOR: std::cell::RefCell<Option<String>> = const { std::cell::RefCell::new(None) };
+}
+
+/// Run `f` with every event it writes on this thread attributed to `actor`
+/// (`None` is `user`), restoring the previous actor afterwards.
+pub fn as_actor<T>(actor: Option<String>, f: impl FnOnce() -> T) -> T {
+    let prev = ACTOR.with_borrow_mut(|a| std::mem::replace(a, actor));
+    // Restored on unwind too: the daemon catches a panicking dispatch and
+    // keeps the thread.
+    struct Restore(Option<String>);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            let prev = self.0.take();
+            ACTOR.with_borrow_mut(|a| *a = prev);
+        }
+    }
+    let _restore = Restore(prev);
+    f()
 }
 
 /// The lowest `events.id` that can sort at or below any event written at or

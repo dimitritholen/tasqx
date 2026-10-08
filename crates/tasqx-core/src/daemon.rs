@@ -2310,14 +2310,28 @@ impl Conn {
     /// retaining event pushes and responses for other IDs that arrive while
     /// waiting. Safe to call on a subscribed connection.
     pub fn request(&mut self, method: &str, params: &Value) -> io::Result<Value> {
+        self.request_as(None, method, params)
+    }
+
+    /// [`Conn::request`] with the envelope's `actor` set, so the events the
+    /// call writes name who made it (#638: the board sends `board`).
+    pub fn request_as(
+        &mut self,
+        actor: Option<&str>,
+        method: &str,
+        params: &Value,
+    ) -> io::Result<Value> {
         self.id += 1;
         let request_id = json!(self.id);
-        let env = json!({
+        let mut env = json!({
             "tasqx": crate::API_VERSION,
             "id": request_id,
             "method": method,
             "params": params,
         });
+        if let Some(a) = actor {
+            env["actor"] = json!(a);
+        }
         self.send_line(&env.to_string())?;
 
         if let Some(i) = self
