@@ -1738,11 +1738,7 @@ fn start_connection_watchdog(
             if may_cut_write {
                 cancel_io(send_handle);
             }
-            // Parked, not slept: `handle_conn` unparks this thread once the
-            // connection is done, so the teardown waits for nothing. A sleep
-            // made every closing connection hold its admission slot for up to
-            // one interval after the client had gone (#1168).
-            thread::park_timeout(CLIENT_WATCHDOG_INTERVAL);
+            thread::sleep(CLIENT_WATCHDOG_INTERVAL);
         }
     })
 }
@@ -2054,11 +2050,6 @@ fn handle_conn(stream: Stream, sh: Shared, _permit: ClientPermit) {
     drop(out_tx); // closes the channel → writer thread exits.
     let _ = writer.join();
     io_state.done.store(true, Ordering::Release);
-    // Wake the watchdog now instead of letting it finish its interval: the
-    // permit drops only after this join, and a slot still held by a client
-    // that has already disconnected refuses the next one (#1168).
-    #[cfg(windows)]
-    watchdog.thread().unpark();
     #[cfg(windows)]
     let _ = watchdog.join();
 }
@@ -2770,42 +2761,6 @@ mod tests {
              write too, so cancelling on `stopping` alone discards a response \
              whose transaction already committed"
         );
-    }
-
-    /// A closed connection must give back its admission slot when it closes,
-    /// not up to one [`CLIENT_WATCHDOG_INTERVAL`] later.
-    ///
-    /// The permit drops after `watchdog.join()`, so a watchdog that sleeps out
-    /// its interval kept the slot of a client that had already gone: on
-    /// Windows a client that disconnected and was followed by 64 fresh ones
-    /// got the 64th refused at the limit (#1168). Windows-only code, so it is
-    /// pinned by source scan for the platforms that cannot run it.
-    #[test]
-    fn the_watchdog_is_woken_before_its_join_instead_of_slept_out() {
-        let production = include_str!("daemon.rs")
-            .split_once("\nmod tests {")
-            .expect("daemon.rs keeps its unit tests in a trailing `mod tests`")
-            .0;
-        let body = |name: &str| {
-            production
-                .split_once(&format!("fn {name}("))
-                .expect("function still exists")
-                .1
-                .split_once("\nfn ")
-                .map_or("", |(body, _)| body)
-        };
-        let watchdog = body("start_connection_watchdog");
-        assert!(
-            watchdog.contains("thread::park_timeout(CLIENT_WATCHDOG_INTERVAL)")
-                && !watchdog.contains("thread::sleep("),
-            "the watchdog must wait in a park the connection can cut short"
-        );
-        let conn = body("handle_conn");
-        let unpark = conn
-            .find("watchdog.thread().unpark()")
-            .expect("handle_conn must wake the watchdog");
-        let join = conn.find("watchdog.join()").expect("handle_conn joins it");
-        assert!(unpark < join, "the wake must come before the join");
     }
 
     /// The premise the whole cancel policy rests on, asserted rather than
