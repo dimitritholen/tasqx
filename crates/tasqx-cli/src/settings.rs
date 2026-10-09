@@ -1148,11 +1148,8 @@ pub(crate) fn settings_loop(
                 Ok(info) => app.sync_setup_ok(info),
                 Err(e) => app.sync_setup_failed(e.message),
             },
-            Some(tui::settings::Action::SyncNow) => match sync::run(be, ctx) {
-                Ok((_json, text)) => {
-                    let one_line = text.lines().next().unwrap_or("synced").to_string();
-                    app.sync_now_done(sync_info(be), one_line);
-                }
+            Some(tui::settings::Action::SyncNow) => match sync_now_line(be, ctx) {
+                Ok(one_line) => app.sync_now_done(sync_info(be), one_line),
                 Err(e) => app.sync_now_failed(e.message),
             },
             Some(tui::settings::Action::SyncDisconnect) => match disconnect_sync(be) {
@@ -1209,6 +1206,15 @@ pub(crate) fn describe_connector(
         .describe()
         .map_err(|e| ApiError::internal(format!("sync: {e}")))?;
     Ok(description.fields)
+}
+
+/// `s` (sync now): the first line `tasqx sync` prints, rendered without
+/// color. The line lands in a ratatui span, which draws an SGR escape as
+/// literal text (`[1msynced[0m`), so the terminal's caps must not reach it.
+pub(crate) fn sync_now_line(be: &mut Backend, ctx: &Ctx) -> Result<String, ApiError> {
+    let plain = Ctx::new(ctx.theme.clone(), Caps::PLAIN).with_cols(ctx.cols);
+    let (_json, text) = sync::run(be, &plain)?;
+    Ok(text.lines().next().unwrap_or("synced").to_string())
 }
 
 /// The form's submit: the SAME write `tasqx sync setup` performs
