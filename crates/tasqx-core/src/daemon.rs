@@ -2250,6 +2250,28 @@ pub fn try_connect(socket: &str) -> Option<Conn> {
     })
 }
 
+/// On Windows a dropped client closes its pipe now, not whenever interprocess's
+/// linger pool gets to it (#1168).
+///
+/// interprocess 2.4.2's local-socket `flush` is a no-op on Windows (its
+/// `named_pipe/local_socket/stream.rs`), so a handle that has written anything
+/// is still marked unflushed at drop and is handed to the process-wide linger
+/// pool. That pool closes handles in turn, each after a `FlushFileBuffers` that
+/// waits for the peer to read everything. One peer that has stopped reading
+/// stalls every close queued behind it, and until this client's close lands the
+/// daemon's reader sees no EOF and keeps the client's admission slot.
+///
+/// Nothing is lost by skipping the wait: [`Conn::request`] returns only after
+/// the daemon answered, which it does only after reading the frame, and a
+/// connection the daemon refused or hung up on is never read again anyway.
+#[cfg(windows)]
+impl Drop for Conn {
+    fn drop(&mut self) {
+        let SendHalf::NamedPipe(send) = &self.writer;
+        send.as_ref().assume_flushed();
+    }
+}
+
 impl Conn {
     /// Write one framed line (appends the newline if absent).
     pub fn send_line(&mut self, line: &str) -> io::Result<()> {
@@ -2797,6 +2819,60 @@ mod tests {
              is holding shutdown back for nothing"
         );
         drop(client.join().expect("client thread"));
+    }
+
+    /// A dropped [`Conn`] reaches the server as EOF even while interprocess's
+    /// linger pool is stuck, which is what frees the daemon's admission slot.
+    ///
+    /// The pool is stalled on purpose first: a server end that wrote a line its
+    /// client never reads is dirty at drop (the local-socket flush is a no-op on
+    /// Windows), so the pool's `FlushFileBuffers` on it waits for that client.
+    /// Before the `Drop for Conn` a dropped client queued behind it, and on CI
+    /// the probe connection of `wait_until_serving` kept one of the 64 slots
+    /// for as long as the excess-clients test ran (#1168).
+    #[cfg(windows)]
+    #[test]
+    fn a_dropped_client_reaches_the_server_as_eof_while_the_linger_pool_is_stuck() {
+        let stall_socket = client_test_socket("linger-stall");
+        let stall_listener = bind(&stall_socket).expect("bind");
+        let unread_client = thread::spawn({
+            let socket = stall_socket.clone();
+            move || connect_stream(&socket).expect("connect")
+        });
+        let mut stalled = stall_listener.accept().expect("accept");
+        let unread_client = unread_client.join().expect("client thread");
+        writeln!(stalled, "never read").expect("write");
+        drop(stalled);
+
+        let socket = client_test_socket("linger-bypass");
+        let listener = bind(&socket).expect("bind");
+        let client = thread::spawn({
+            let socket = socket.clone();
+            move || {
+                let mut conn = try_connect(&socket).expect("connect");
+                conn.send_line("ping").expect("send");
+                conn.read_line().expect("read").expect("an answer");
+            }
+        });
+        let mut server = BufReader::new(listener.accept().expect("accept"));
+        let mut line = String::new();
+        server.read_line(&mut line).expect("the request");
+        writeln!(server.get_mut(), "pong").expect("answer");
+        client.join().expect("client thread");
+
+        let (eof_tx, eof_rx) = mpsc::channel();
+        thread::spawn(move || {
+            line.clear();
+            let _ = eof_tx.send(server.read_line(&mut line).map_err(|e| e.kind()));
+        });
+        let eof = eof_rx.recv_timeout(Duration::from_secs(5));
+        // Unstalls the pool for every other test in this binary.
+        drop(unread_client);
+        assert_eq!(
+            eof,
+            Ok(Ok(0)),
+            "the dropped client's pipe must close at drop, not wait in the linger pool"
+        );
     }
 
     /// A send half that fails its first write, standing in for the real thing:
