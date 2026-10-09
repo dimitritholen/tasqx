@@ -2808,12 +2808,15 @@ mod tests {
     /// `CARGO_BIN_EXE_*` to find it by.
     fn workspace_connector(name: &str) -> Option<PathBuf> {
         let exe = std::env::current_exe().ok()?;
-        // This test binary lives in `<target>/<profile>/deps/`; a sibling
-        // package's binary is one level up, in `<target>/<profile>/`.
-        let dir = exe.parent()?.parent()?;
+        // A sibling package's binary sits in `<target>/<profile>/`. This test
+        // binary is usually one level below, in `deps/`, but under a separate
+        // build dir (cargo-llvm-cov's `build/tasqx-cli/<hash>/out/`) it sits
+        // deeper, so the nearest ancestor holding the binary wins.
         let file = format!("{name}{}", std::env::consts::EXE_SUFFIX);
-        let path = dir.join(file);
-        path.is_file().then_some(path)
+        exe.ancestors()
+            .skip(1)
+            .map(|dir| dir.join(&file))
+            .find(|path| path.is_file())
     }
 
     /// A `PATH` of this test's own, with `tasqx-remote-dir` on it under its
