@@ -947,3 +947,59 @@ fn a_stale_rev_refuses_every_panel_write() {
     assert_eq!(t["_rev"], json!(now), "nothing was written");
     assert!(t["due"].is_null());
 }
+
+/// The page counts on `rev + 1` after each of its writes (`act` keeps the
+/// panel's `_rev`, and Undo sends it): every panel write moves the rev by
+/// exactly one, and Undo at that rev succeeds for the undoable ones. Editing
+/// the day of a due date that has a time keeps the time.
+#[test]
+fn panel_writes_bump_the_rev_by_one_and_undo_at_that_rev() {
+    let r = rig();
+    let (sid, _) = add(&r.socket, "revs");
+    let (blocker, _) = add(&r.socket, "blocker");
+    let check = {
+        let mut c = daemon::try_connect(&r.socket).unwrap();
+        c.request("check.add", &json!({ "ref": sid, "body": "c" }))
+            .unwrap()["result"]["check"]["id"]
+            .clone()
+    };
+    let at = || task(&r.socket, sid)["_rev"].as_i64().unwrap();
+    let step = |method: &str, params: Value| -> i64 {
+        let rev = at();
+        let mut p = params;
+        p["ref"] = json!(sid);
+        p["expected_rev"] = json!(rev);
+        let env = envelope(&write(r.port, method, p));
+        assert_eq!(env["ok"], json!(true), "{method}: {env}");
+        assert_eq!(at(), rev + 1, "{method} bumps the rev by exactly one");
+        rev + 1
+    };
+    let undo = |rev: i64, op: &str| {
+        let env = envelope(&write(
+            r.port,
+            "event.revert",
+            json!({ "ref": sid, "expected_rev": rev }),
+        ));
+        assert_eq!(env["ok"], json!(true), "undo {op}: {env}");
+    };
+    step("check.set", json!({ "check_id": check, "state": "passed" }));
+    let rev = step("annotation.add", json!({ "body": "undo me" }));
+    undo(rev, "annotation.add");
+    step("dependency.add", json!({ "depends_on": blocker }));
+    let rev = step("dependency.remove", json!({ "depends_on": blocker }));
+    undo(rev, "dependency.remove");
+    assert_eq!(task(&r.socket, sid)["depends_on"], json!([blocker]));
+
+    // The time of day survives a date edit made the way the page makes it.
+    step(
+        "task.modify",
+        json!({ "set": { "due": "2031-01-02T17:00:00Z" } }),
+    );
+    let rev = step(
+        "task.modify",
+        json!({ "set": { "due": "2031-01-05T17:00:00Z" } }),
+    );
+    assert_eq!(task(&r.socket, sid)["due"], "2031-01-05T17:00:00Z");
+    undo(rev, "task.modify");
+    assert_eq!(task(&r.socket, sid)["due"], "2031-01-02T17:00:00Z");
+}
