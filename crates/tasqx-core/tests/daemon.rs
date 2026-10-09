@@ -128,21 +128,50 @@ fn start_daemon_with_options(
         };
         daemon::serve_with_options(engine, &sk, sd, options).expect("serve");
     });
-    // Wait until the listener is up. Healthy runs connect on the first or
-    // second try, so the deadline costs nothing when things work — but it used
-    // to be a hard 2s (200 × 10ms), which the coverage job's instrumented
-    // build on a busy CI runner overran on 2026-07-21 with the daemon code
-    // untouched. A generous wall-clock budget makes "slow" and "broken"
-    // distinguishable; only "broken" should be red.
-    let deadline = std::time::Instant::now() + Duration::from_secs(20);
+    wait_until_serving(sock);
+    shutdown
+}
+
+/// How long a daemon gets to come up or to stop. Healthy runs need a few
+/// milliseconds, so the budget costs nothing when things work — but it used to
+/// be a hard 2s, which the coverage job's instrumented build on a busy CI
+/// runner overran on 2026-07-21 with the daemon code untouched. A generous
+/// wall-clock budget makes "slow" and "broken" distinguishable; only "broken"
+/// should be red.
+const SLOW_NOT_BROKEN: Duration = Duration::from_secs(20);
+
+/// Block until the daemon at `sock` has ANSWERED a request, not merely until
+/// its socket accepts a connection.
+///
+/// `serve_with_options` binds before it reads the event watermark and spawns
+/// the poller and the reminder scheduler, and the kernel completes a connect
+/// into the listen backlog as soon as the bind is done. A bare connect was
+/// therefore proof of nothing: under load a test that damaged the store right
+/// after it could beat `serve` to its first `max_event_rowid` and get
+/// "event watermark initialization failed" instead of the component failure
+/// it was asserting on (#1150). The same window sits inside `bind` itself,
+/// between creating the socket and narrowing it to 0600, which is what
+/// `unix_socket_is_owner_only_even_for_a_custom_path` read as 0755 under load
+/// (#1151). A response comes from the accept loop, which runs only after all
+/// of that setup.
+///
+/// A daemon that closes the connection unanswered has already left `serve`:
+/// its setup is over either way, and why it left (an idle timeout shorter
+/// than a loaded machine's accept latency, or a failure) is `serve`'s return
+/// value for the caller to judge, not this wait's.
+fn wait_until_serving(sock: &str) {
+    let deadline = std::time::Instant::now() + SLOW_NOT_BROKEN;
     while std::time::Instant::now() < deadline {
-        if let Some(c) = daemon::try_connect(sock) {
-            drop(c);
-            return shutdown;
+        if let Some(mut c) = daemon::try_connect(sock) {
+            match c.request("core.capabilities", &json!({})) {
+                Ok(_) => return,
+                Err(e) if e.kind() == io::ErrorKind::UnexpectedEof => return,
+                Err(e) => panic!("daemon at {sock} accepted but did not answer: {e}"),
+            }
         }
         thread::sleep(Duration::from_millis(10));
     }
-    panic!("daemon never became connectable at {sock} within 20s");
+    panic!("daemon never became connectable at {sock} within {SLOW_NOT_BROKEN:?}");
 }
 
 /// [`start_daemon_with_options`], with `serve`'s result handed back over a
@@ -204,17 +233,8 @@ fn start_daemon_observing_result(
         let result = daemon::serve_with_options(engine, &sk, sd, options);
         let _ = result_tx.send(result);
     });
-    // Same generous connect budget as `start_daemon_with_options`, for the same
-    // reason: an instrumented coverage build on a busy runner is slow, not broken.
-    let deadline = std::time::Instant::now() + Duration::from_secs(20);
-    while std::time::Instant::now() < deadline {
-        if let Some(c) = daemon::try_connect(sock) {
-            drop(c);
-            return (shutdown, result_rx, server);
-        }
-        thread::sleep(Duration::from_millis(10));
-    }
-    panic!("daemon never became connectable at {sock} within 20s");
+    wait_until_serving(sock);
+    (shutdown, result_rx, server)
 }
 
 /// Wait for `serve` to return, assert it returned a *failure*, and yield the
@@ -225,7 +245,7 @@ fn fatal_message(
     shutdown: &Arc<AtomicBool>,
     server: thread::JoinHandle<()>,
 ) -> String {
-    let observed = result_rx.recv_timeout(Duration::from_secs(10));
+    let observed = result_rx.recv_timeout(SLOW_NOT_BROKEN);
     // Flagged only AFTER the recv: setting it first would let a daemon that
     // ignored the fault still return `Ok`, and the test would read that as a
     // pass. On the timeout path it is the only way to reap the thread.
