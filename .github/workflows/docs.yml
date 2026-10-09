@@ -1,11 +1,24 @@
 name: docs
 
 # The offline guide (`tasqx docs`) and the public site are the same HTML file.
-# This publishes it to GitHub Pages on every push to `main`, so the published
-# page never drifts from what the binary in that commit renders.
+# This publishes it to GitHub Pages on every push to `main` that touches what
+# the page is built from — the crates (the guide is `include_str!`ed into the
+# binary), the docs, the files the build embeds and this workflow — so the
+# published page never drifts from what the binary in that commit renders.
 on:
   push:
     branches: [main]
+    paths:
+      - 'crates/**'
+      - 'docs/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'DESIGN.md'
+      - 'CHANGELOG.md'
+      - 'README.md'
+      - 'NOTICE'
+      - '.claude/skills/**'
+      - '.github/workflows/docs.yml'
   workflow_dispatch:
 
 # Only one Pages deployment may be in flight at a time; queue rather than

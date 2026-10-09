@@ -278,7 +278,7 @@ gemini mcp add --scope user tasqx tasqx -- mcp serve --scope write
 
 There is one JSON API; the CLI, the MCP server and the HTML report are all
 clients of the same dispatch, so where surfaces overlap they behave
-identically. CI runs the suite on Linux, Windows and macOS on every push, and
+identically. CI runs the suite on Linux, Windows and macOS on every pull request, and
 a good chunk of it is drift guards: tests that break the build when docs and
 code disagree — every flag must appear in its usage line, every in-binary doc
 example must parse, and the safe ones are executed for real. `cargo mutants`

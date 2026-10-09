@@ -12,6 +12,20 @@ on:
   schedule:
     - cron: '0 4 * * 1' # Mondays, 04:00 UTC
 
+# A newer push to a pull request cancels that PR's run still in flight: only
+# the newest commit's checks can gate the merge. Every other event (a push to
+# main, the schedule, a manual dispatch) groups on its own run id, so it never
+# shares a group and is never cancelled or replaced while pending.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+# What a push to main runs. main takes changes only through a pull request with
+# linear history, so the full suite has already passed on the PR's merge ref.
+# The push run is a slim sanity pass — rustfmt, clippy + rustdoc, the ubuntu
+# test leg and the captured screens — and every other job carries
+# `if: github.event_name != 'push'`. The weekly schedule still runs everything.
+
 env:
   CARGO_TERM_COLOR: always
 
@@ -60,6 +74,8 @@ jobs:
         # limit and the absent runtime dir are all real behavioural differences
         # this suite touches.
         os: [ubuntu-latest, windows-latest, macos-latest]
+        # A push to main runs the ubuntu leg only (see the note at the top).
+        exclude: ${{ github.event_name == 'push' && fromJSON('[{"os":"windows-latest"},{"os":"macos-latest"}]') || fromJSON('[]') }}
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -116,6 +132,7 @@ jobs:
   shell-completion:
     name: zsh + fish activation lines (executed)
     runs-on: ubuntu-latest
+    if: github.event_name != 'push'
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -170,6 +187,7 @@ jobs:
   notify-feature:
     name: build --features notify-os
     runs-on: ubuntu-latest
+    if: github.event_name != 'push'
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -220,6 +238,8 @@ jobs:
   coverage:
     name: line + branch coverage (report only)
     runs-on: ubuntu-latest
+    # Report only, so weekly with the mutation sweep rather than on every PR.
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     steps:
       - uses: actions/checkout@v4
       # cargo-llvm-cov branch instrumentation is currently nightly-only. Keep
@@ -256,10 +276,12 @@ jobs:
             coverage-summary.txt
             target/llvm-cov/html/
           if-no-files-found: error
+          retention-days: 7
 
   supply-chain:
     name: advisories + licenses + sources
     runs-on: ubuntu-latest
+    if: github.event_name != 'push'
     steps:
       - uses: actions/checkout@v4
       # v2.1.1 embeds cargo-deny 0.20.2; both the action and tool are pinned.
@@ -380,6 +402,7 @@ jobs:
         with:
           name: mutants-report
           path: mutants.out/
+          retention-days: 7
 
   # The two installers, EXECUTED rather than read.
   #
@@ -408,6 +431,7 @@ jobs:
   installers:
     name: installers (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
+    if: github.event_name != 'push'
     strategy:
       fail-fast: false
       matrix:
@@ -675,6 +699,7 @@ jobs:
   machete:
     name: unused dependencies
     runs-on: ubuntu-latest
+    if: github.event_name != 'push'
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -692,6 +717,7 @@ jobs:
   semver-checks:
     name: semver-checks
     runs-on: ubuntu-latest
+    if: github.event_name != 'push'
     steps:
       - uses: actions/checkout@v4
         with:
@@ -708,10 +734,12 @@ jobs:
   # time. continue-on-error because we do NOT gate on it — the tree carries too
   # many findings for that to be useful. The point is the trend: each de-bloat
   # PR that lands should move the number down. Publish the count to
-  # GITHUB_STEP_SUMMARY so it appears on every PR.
+  # GITHUB_STEP_SUMMARY on the weekly run.
   pedantic-report:
     name: clippy pedantic + nursery + cargo (report only)
     runs-on: ubuntu-latest
+    # Report only, so weekly with the mutation sweep rather than on every PR.
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     continue-on-error: true
     steps:
       - uses: actions/checkout@v4
@@ -731,10 +759,12 @@ jobs:
   # Binary bloat report: run cargo-bloat on the release binary to track shipped
   # code size and ensure de-bloat work actually reduces the binary rather than
   # just the source. continue-on-error because we do NOT gate on it — the point
-  # is the trend. Published to GITHUB_STEP_SUMMARY so it appears on every PR.
+  # is the trend. Published to GITHUB_STEP_SUMMARY on the weekly run.
   bloat-report:
     name: binary bloat (report only)
     runs-on: ubuntu-latest
+    # Report only, so weekly with the mutation sweep rather than on every PR.
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     continue-on-error: true
     steps:
       - uses: actions/checkout@v4

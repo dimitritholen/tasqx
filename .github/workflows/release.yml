@@ -186,6 +186,9 @@ jobs:
             tasqx-*.tar.gz*
             tasqx-*.zip*
           if-no-files-found: error
+          # The publish job below downloads these in the same run, minutes later;
+          # seven days is ample for that and for a re-run.
+          retention-days: 7
 
   # Publishing is done with the preinstalled `gh` CLI rather than a release
   # action — the same reasoning the mutants job applies to cargo-mutants: one
