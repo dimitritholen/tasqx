@@ -75,13 +75,19 @@ pub const WRITE_METHODS: &[(&str, &[&str])] = &[
     ("task.cancel", &["ref", "expected_rev"]),
     ("task.reopen", &["ref", "expected_rev"]),
     ("task.modify", &["ref", "expected_rev", "set"]),
+    // The card panel (#639): one check, one note, one edge, one dated field.
+    ("check.set", &["ref", "expected_rev", "check_id", "state"]),
+    ("annotation.add", &["ref", "expected_rev", "body"]),
+    ("dependency.add", &["ref", "expected_rev", "depends_on"]),
+    ("dependency.remove", &["ref", "expected_rev", "depends_on"]),
     // Undo: the core refuses unless the newest event is this task's, at this rev.
     ("event.revert", &["ref", "expected_rev"]),
 ];
 
-/// The fields a board `task.modify` may `set`: the priority tray, and the
-/// Backlog/Ready drops (`wait`, `scheduled`). Nothing else is editable here.
-pub const SET_FIELDS: &[&str] = &["priority", "wait", "scheduled"];
+/// The fields a board `task.modify` may `set`: the priority tray, the
+/// Backlog/Ready drops (`wait`, `scheduled`) and the panel's `due` and
+/// `estimate`. Titles, tags and project moves stay with the CLI.
+pub const SET_FIELDS: &[&str] = &["priority", "wait", "scheduled", "due", "estimate"];
 
 /// The `actor` the events table records for every board write.
 pub const ACTOR: &str = "board";

@@ -17,7 +17,7 @@ use crate::theme::Theme;
 
 /// The script's ceiling in bytes, so growth is a red test rather than drift.
 #[cfg(test)]
-const SCRIPT_BUDGET: usize = 16 * 1024;
+const SCRIPT_BUDGET: usize = 24 * 1024;
 
 /// Where the per-run nonce goes; the listener's CSP allows only that script.
 pub(crate) const NONCE_SLOT: &str = "__NONCE__";
@@ -125,6 +125,11 @@ body[data-writes="0"] .w{display:none}
 .toast button{background:none;border:1px solid var(--bg);border-radius:6px;padding:4px 10px;color:inherit;cursor:pointer}
 .acts{display:flex;flex-wrap:wrap;gap:6px;margin:0 0 12px}
 .acts button{min-height:36px;padding:4px 12px;background:var(--sunken);border:1px solid var(--line-strong);border-radius:6px;cursor:pointer}
+.edit .fld{display:grid;gap:4px;margin:0 0 10px}.edit label{color:var(--muted);font-size:13px}
+.edit input,.edit textarea{padding:6px 8px;background:var(--sunken);border:1px solid var(--line-strong);border-radius:6px;width:100%}
+.edit button,.panel li button{min-height:32px;padding:2px 10px;background:var(--sunken);border:1px solid var(--line-strong);border-radius:6px;cursor:pointer}
+.chk{list-style:none;padding-left:0}.chk input{width:18px;height:18px;vertical-align:middle}
+.rev{color:var(--muted);font-size:12px;font-variant-numeric:tabular-nums;margin:12px 0 0}
 @media (max-width:760px){.cols{grid-template-columns:1fr;overflow-x:visible}.keys{display:none}}
 @media (prefers-reduced-motion:no-preference){.card{transition:border-color .15s}}
 @media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important;scroll-behavior:auto!important}}
@@ -137,7 +142,7 @@ const $=id=>document.getElementById(id);
 const el=(t,c,x)=>{const e=document.createElement(t);if(c)e.className=c;if(x!=null)e.textContent=x;return e};
 const W=document.body.dataset.writes==="1";
 const state={data:{},byId:{},q:"",lanes:"none",sel:null,live:false,drag:null};
-let timer=0,seq=0,ttimer=0;
+let timer=0,seq=0,ttimer=0,draft="";
 async function api(method,params){
  const r=await fetch("/api",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({tasqx:"1",id:"1",method,params}),credentials:"same-origin"});
  let env;try{env=await r.json()}catch(e){throw new Error("HTTP "+r.status)}
@@ -215,8 +220,10 @@ function move(dx,dy){
  for(let j=cs.indexOf(col)+dx;j>=0&&j<cs.length;j+=dx){const f=cs[j].querySelector(".card");if(f){f.focus();return}}
 }
 async function open(id){
- state.sel=id;const p=$("panel");p.hidden=false;$("ptitle").textContent="#"+id;$("pbody").replaceChildren(el("p","","Loading…"));
- $("pclose").focus();
+ const p=$("panel"),same=state.sel===id&&!p.hidden,fid=same&&p.contains(document.activeElement)?document.activeElement.id:"";
+ if(!same)draft="";
+ state.sel=id;p.hidden=false;
+ if(!same){$("ptitle").textContent="#"+id;$("pbody").replaceChildren(el("p","","Loading…"));$("pclose").focus()}
  try{
   const t=await api("task.get",{ref:id,annotations_limit:1,max_body_bytes:600});
   if(state.sel!==id)return;
@@ -224,18 +231,19 @@ async function open(id){
   const dl=el("dl");
   const row=(k,v)=>{if(v==null||v==="")return;dl.append(el("dt","",k),el("dd","",v))};
   row("Status",t.status+(t.blocked?" (blocked)":""));row("Project",t.project);row("Priority",t.priority);
-  row("Urgency",String(t.urgency));row("Due",t.due&&day(t.due));row("Estimate",t.estimate);
-  row("Tags",(t.tags||[]).map(g=>"+"+g).join(" "));
-  row("Blocked by",(t.depends_on||[]).map(d=>"#"+d).join(" "));
-  row("Notes",String(t.annotations_total||0));row("Revision",String(t._rev));
+  row("Urgency",String(t.urgency));row("Tags",(t.tags||[]).map(g=>"+"+g).join(" "));
+  if(!W){row("Due",t.due&&day(t.due));row("Estimate",t.estimate);row("Blocked by",(t.depends_on||[]).map(d=>"#"+d).join(" "))}
+  row("Notes",String(t.annotations_total||0));
   const b=$("pbody");b.replaceChildren(dl);
   if((t.checks||[]).length){
    const done=t.checks.filter(c=>c.state==="passed").length;
    b.append(el("h3","","Checks "+done+"/"+t.checks.length));
-   const ul=el("ul");t.checks.forEach(c=>ul.append(el("li","",(c.state==="passed"?"[x] ":"[ ] ")+c.body)));b.append(ul);
+   const ul=el("ul","chk");t.checks.forEach(c=>ul.append(W?tick(t,c):el("li","",(c.state==="passed"?"[x] ":"[ ] ")+c.body)));b.append(ul);
   }
-  if(W)b.append(acts(t));
+  if(W)b.append(acts(t),edits(t));
   if(t.first_annotation){b.append(el("h3","","Opening note"),el("p","",t.first_annotation.body))}
+  const rv=el("p","rev","rev "+t._rev);rv.id="prev";b.append(rv);
+  if(fid&&$(fid))$(fid).focus();
  }catch(e){$("pbody").replaceChildren(el("p","err",e.message))}
 }
 function close(){
@@ -282,7 +290,11 @@ function drop(id,from,to){
 }
 function said(m,p,r,id){
  const n="#"+id;
+ if(m==="check.set")return(p.state==="passed"?"Ticked":"Unticked")+" a check on "+n;
+ if(m==="annotation.add")return"Added a note to "+n;
+ if(m.startsWith("dependency."))return n+(m==="dependency.add"?" now waits on #":" no longer waits on #")+p.depends_on+(r.blocked?" · Blocked":" · not blocked");
  if(m==="task.modify"){const s=p.set;
+  if("due" in s||"estimate" in s||("scheduled" in s&&!("wait" in s))||("wait" in s&&!("scheduled" in s)&&s.wait!=="+1w"))return(Object.values(s)[0]==null?"Cleared ":"Set ")+Object.keys(s)[0]+" on "+n;
   if("priority" in s)return s.priority?"Priority "+s.priority+" on "+n:"Cleared the priority on "+n;
   return s.wait?n+" waits a week (Backlog)":n+" is ready: wait and scheduled cleared";}
  let x=verbs[m]+" "+n;
@@ -296,8 +308,10 @@ async function act(t,m,p){
  try{
   const r=await api(m,Object.assign({ref:id,expected_rev:rev},p||{}));
   const x=said(m,p,r,id);
+  t._rev=rev+1;if(m==="annotation.add")draft="";
   // start and reopen are outside undo's exact set (D54): drag it back instead.
   if(m==="task.start"||m==="task.reopen")toast(x+". Drag it back to undo.");
+  else if(m==="check.set"||m==="dependency.add")toast(x+". Change it back to undo.");
   else toast(x,()=>undo(id,rev+1));
  }catch(e){
   if(e.code==="conflict"&&/expected_rev/.test(e.message)){
@@ -328,6 +342,35 @@ function acts(t){
  if(t.priority)b("Clear priority","task.modify",{set:{priority:null}});
  if(s!=="done"&&s!=="cancelled")b("Cancel","task.cancel");
  return d;
+}
+function tick(t,c){
+ const li=el("li"),i=el("input");i.type="checkbox";i.id="c-"+c.id;i.checked=c.state==="passed";
+ i.addEventListener("change",()=>act(t,"check.set",{check_id:c.id,state:i.checked?"passed":"open"}));
+ const l=el("label","",c.body);l.htmlFor=i.id;li.append(i," ",l);return li;
+}
+function field(t,id,label,type,val,key){
+ const w=el("div","fld"),l=el("label","",label),i=el("input");l.htmlFor=id;i.id=id;i.type=type;i.value=val||"";
+ i.addEventListener("change",()=>{const v=i.value.trim();act(t,"task.modify",{set:{[key]:v||null}})});
+ w.append(l,i);return w;
+}
+function edits(t){
+ const f=el("div","edit"),sl=v=>v?v.slice(0,10):"";
+ f.append(el("h3","","Edit"),field(t,"e-due","Due","date",sl(t.due),"due"),field(t,"e-est","Estimate (2h, 1d)","text",iso(t.estimate).replace("t",""),"estimate"),field(t,"e-wait","Wait until","date",sl(t.wait),"wait"),field(t,"e-sched","Scheduled","date",sl(t.scheduled),"scheduled"));
+ f.append(el("h3","","Blocked by"));
+ const ul=el("ul");(t.depends_on||[]).forEach(d=>{
+  const li=el("li","","#"+d+" "),b=el("button","","Remove");b.type="button";b.id="r-"+d;b.setAttribute("aria-label","Stop waiting on #"+d);
+  b.addEventListener("click",()=>act(t,"dependency.remove",{depends_on:d}));li.append(b);ul.append(li);
+ });
+ f.append(ul);
+ const dw=el("div","fld"),dl=el("label","","Wait on task #"),di=el("input"),db=el("button","","Add dependency");
+ dl.htmlFor=di.id="e-dep";di.type="number";di.min="1";db.type="button";db.id="e-depadd";
+ db.addEventListener("click",()=>{const n=parseInt(di.value,10);if(n>0)act(t,"dependency.add",{depends_on:n});else toast("Type the number of the task to wait on.")});
+ dw.append(dl,di,db);f.append(dw);
+ const nw=el("div","fld"),nl=el("label","","Add a note"),nt=el("textarea"),nb=el("button","","Add note");
+ nl.htmlFor=nt.id="e-note";nt.rows=3;nt.value=draft;nt.placeholder="Notes are indexed for memory search: name files and symbols.";
+ nt.addEventListener("input",()=>{draft=nt.value});nb.type="button";nb.id="e-noteadd";
+ nb.addEventListener("click",()=>{const b=nt.value.trim();if(b)act(t,"annotation.add",{body:b});else toast("Write the note first.")});
+ nw.append(nl,nt,nb);f.append(nw);return f;
 }
 // Drag: a mouse or pen moves a ghost; touch scrolls, and uses the panel.
 function grab(e,li){
@@ -468,10 +511,62 @@ mod tests {
         assert!(SCRIPT.contains("const W=document.body.dataset.writes===\"1\""));
         for gate in [
             "if(W)li.addEventListener",
-            "if(W)b.append(acts(t))",
+            "if(W)b.append(acts(t),edits(t))",
+            "W?tick(t,c)",
             "else if(W&&",
         ] {
             assert!(SCRIPT.contains(gate), "the write path is not gated: {gate}");
+        }
+    }
+
+    /// The panel's edit controls (#639): every input is named by a `<label for>`
+    /// (the check boxes, the four date/estimate fields, the dependency number
+    /// and the note), the note says it is indexed, and a re-render hands focus
+    /// back to the control that was in use, so a keyboard user is not thrown to
+    /// the close button after each edit.
+    #[test]
+    fn the_panel_controls_are_labelled_and_keep_focus() {
+        for (id, label) in [
+            ("e-due", "\"Due\""),
+            ("e-est", "\"Estimate (2h, 1d)\""),
+            ("e-wait", "\"Wait until\""),
+            ("e-sched", "\"Scheduled\""),
+            ("e-dep", "\"Wait on task #\""),
+            ("e-note", "\"Add a note\""),
+        ] {
+            assert!(SCRIPT.contains(id) && SCRIPT.contains(label), "{id}");
+        }
+        // `field` labels its input; the other three set `htmlFor` themselves.
+        assert!(SCRIPT.contains("l.htmlFor=id"));
+        assert!(SCRIPT.contains("l.htmlFor=i.id"), "check boxes");
+        assert!(SCRIPT.contains("dl.htmlFor=di.id=\"e-dep\""));
+        assert!(SCRIPT.contains("nl.htmlFor=nt.id=\"e-note\""));
+        assert!(
+            SCRIPT.contains("name files and symbols"),
+            "the note says it is indexed"
+        );
+        assert!(
+            SCRIPT.contains("b.setAttribute(\"aria-label\",\"Stop waiting on #\"+d)"),
+            "a Remove button names its dependency"
+        );
+        assert!(SCRIPT.contains("if(fid&&$(fid))$(fid).focus()"));
+        assert!(SCRIPT.contains("nt.addEventListener(\"input\",()=>{draft=nt.value})"));
+    }
+
+    /// Every panel write sends the panel's current `_rev` (via `act`), and the
+    /// footer shows the revision the last fetch returned.
+    #[test]
+    fn panel_writes_carry_the_rev_and_the_footer_shows_it() {
+        assert!(SCRIPT.contains("Object.assign({ref:id,expected_rev:rev},p||{})"));
+        assert!(SCRIPT.contains("t._rev=rev+1"));
+        assert!(SCRIPT.contains("\"rev \"+t._rev"));
+        for m in [
+            "check.set",
+            "annotation.add",
+            "dependency.add",
+            "dependency.remove",
+        ] {
+            assert!(SCRIPT.contains(&format!("\"{m}\"")), "{m}");
         }
     }
 

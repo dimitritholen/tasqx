@@ -40,7 +40,7 @@ EXAMPLES
   tasqx board --scope read    # a wall screen: every change refused
 
 NOTE  Serves one page on 127.0.0.1 only, behind a secret token and an Origin check, and repaints from the daemon's pushes. Single-user and local: behind a reverse proxy, authentication is the proxy's job.
-      A drag sends the verb you would type (start, stop, done, reopen, cancel, or a priority, wait or scheduled change) with the card's revision, so a task changed elsewhere since is refused rather than overwritten. Events record `board` as the actor. --scope read refuses every write server-side.
+      A drag sends the verb you would type (start, stop, done, reopen, cancel, or a priority, wait or scheduled change) with the card's revision. The card's panel edits checks, notes, due, estimate, wait, scheduled and dependencies the same way, so a task changed elsewhere since is refused rather than overwritten. Events record `board` as the actor. --scope read refuses every write server-side.
       `--port` or `board.port` fixes the port and keeps the token between runs, so a bookmark survives; otherwise a free port and a new token each run.
 
 See also: watch · daemon        Full manual: tasqx manual
