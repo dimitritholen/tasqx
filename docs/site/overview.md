@@ -61,3 +61,7 @@ written, which is the one thing editing `config.toml` by hand cannot do.
 `default_project` is shown there but not editable — it lives in the store and is
 set with `tasqx use`. Piped or redirected, `config edit` refuses and exits 2
 instead of writing escape codes into your pipe; scripts should use `config set`.
+A Sync section sits below the settings: `c` connects a `tasqx-remote-*`
+connector found on `PATH` through a form (the connector's own fields, then the
+sync passphrase, twice), `s` runs `tasqx sync`, and `d` disconnects after
+confirming — the remote itself is untouched either way.
