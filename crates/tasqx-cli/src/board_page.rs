@@ -349,13 +349,14 @@ function tick(t,c){
  const l=el("label","",c.body);l.htmlFor=i.id;li.append(i," ",l);return li;
 }
 function field(t,id,label,type,val,key){
- const w=el("div","fld"),l=el("label","",label),i=el("input");l.htmlFor=id;i.id=id;i.type=type;i.value=val||"";
- i.addEventListener("change",()=>{const v=i.value.trim();act(t,"task.modify",{set:{[key]:v||null}})});
+ const w=el("div","fld"),l=el("label","",label),i=el("input");const d=type==="date",orig=val||"";l.htmlFor=id;i.id=id;i.type=type;i.value=d?orig.slice(0,10):orig;
+ // A date input holds a day only: keep the time the field had (due tomorrow 17:00).
+ i.addEventListener("change",()=>{const v=i.value.trim();act(t,"task.modify",{set:{[key]:v?(d?v+orig.slice(10):v):null}})});
  w.append(l,i);return w;
 }
 function edits(t){
- const f=el("div","edit"),sl=v=>v?v.slice(0,10):"";
- f.append(el("h3","","Edit"),field(t,"e-due","Due","date",sl(t.due),"due"),field(t,"e-est","Estimate (2h, 1d)","text",iso(t.estimate).replace("t",""),"estimate"),field(t,"e-wait","Wait until","date",sl(t.wait),"wait"),field(t,"e-sched","Scheduled","date",sl(t.scheduled),"scheduled"));
+ const f=el("div","edit");
+ f.append(el("h3","","Edit"),field(t,"e-due","Due","date",t.due,"due"),field(t,"e-est","Estimate (2h, 1d)","text",iso(t.estimate).replace("t",""),"estimate"),field(t,"e-wait","Wait until","date",t.wait,"wait"),field(t,"e-sched","Scheduled","date",t.scheduled,"scheduled"));
  f.append(el("h3","","Blocked by"));
  const ul=el("ul");(t.depends_on||[]).forEach(d=>{
   const li=el("li","","#"+d+" "),b=el("button","","Remove");b.type="button";b.id="r-"+d;b.setAttribute("aria-label","Stop waiting on #"+d);
@@ -555,6 +556,22 @@ mod tests {
 
     /// Every panel write sends the panel's current `_rev` (via `act`), and the
     /// footer shows the revision the last fetch returned.
+    /// A date field keeps the time its value had: the input shows the day, and
+    /// a change sends the new day plus the original suffix, so editing the date
+    /// of "tomorrow 17:00" does not drop the 17:00. A cleared field sends null.
+    #[test]
+    fn a_date_edit_keeps_the_time_of_day() {
+        assert!(SCRIPT.contains("i.value=d?orig.slice(0,10):orig"));
+        assert!(SCRIPT.contains("v?(d?v+orig.slice(10):v):null"));
+        for f in [
+            "t.due,\"due\"",
+            "t.wait,\"wait\"",
+            "t.scheduled,\"scheduled\"",
+        ] {
+            assert!(SCRIPT.contains(f), "{f} must pass the full value");
+        }
+    }
+
     #[test]
     fn panel_writes_carry_the_rev_and_the_footer_shows_it() {
         assert!(SCRIPT.contains("Object.assign({ref:id,expected_rev:rev},p||{})"));
