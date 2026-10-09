@@ -760,6 +760,8 @@ const PLACEHOLDERS: &[(&str, &str)] = &[
     ("<shell>", "bash"),
     ("<topic>", "filters"),
     ("<command>", "add"),
+    // `tasqx sync setup <name>`: a connector, `tasqx-remote-<name>` on PATH.
+    ("<name>", "dir"),
 ];
 
 /// `text` with every [`PLACEHOLDERS`] entry substituted. Done before
