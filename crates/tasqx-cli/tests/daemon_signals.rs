@@ -11,12 +11,15 @@
 //! apply to).
 #![cfg(unix)]
 
+use std::os::unix::net::UnixStream;
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
+/// Ready means a connect succeeds: `bind(2)` creates the socket file before
+/// `listen(2)` lets anyone in (#1152).
 fn wait_for_socket(path: &std::path::Path, deadline: Instant) -> bool {
     while Instant::now() < deadline {
-        if path.exists() {
+        if UnixStream::connect(path).is_ok() {
             return true;
         }
         std::thread::sleep(Duration::from_millis(10));
@@ -46,7 +49,7 @@ fn sigterm_stops_the_daemon_and_removes_the_socket() {
     let deadline = Instant::now() + Duration::from_secs(10);
     assert!(
         wait_for_socket(&sock, deadline),
-        "daemon never created its socket at {sock:?}"
+        "daemon never accepted a connection at {sock:?}"
     );
 
     // The real signal, not the ctrlc crate's own test hook: `kill(2)` with
