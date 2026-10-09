@@ -95,7 +95,11 @@ impl FakeS3 {
 }
 
 fn serve(stream: TcpStream, port: u16, state: &Mutex<State>) {
-    let mut reader = BufReader::new(stream.try_clone().unwrap());
+    // Read and write through one handle. A `try_clone` duplicate is
+    // inheritable on Windows, so a connector another test spawns meanwhile
+    // keeps the socket open; when it exits Windows resets the connection and
+    // the client loses the reply it has not read yet (#1173).
+    let mut reader = BufReader::new(&stream);
     let mut line = String::new();
     if reader.read_line(&mut line).unwrap_or(0) == 0 {
         return;
@@ -126,7 +130,7 @@ fn serve(stream: TcpStream, port: u16, state: &Mutex<State>) {
         body,
     };
     let (status, extra, reply) = answer(&seen, port, state);
-    let mut out = stream;
+    let mut out = &stream;
     let mut head = format!(
         "HTTP/1.1 {status} X\r\nContent-Length: {}\r\nConnection: close\r\n",
         reply.len()
