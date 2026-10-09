@@ -2922,6 +2922,20 @@ mod tests {
                 .mode();
             assert_eq!(mode & 0o777, 0o600, "{mode:o}");
         }
+
+        // `s` on a colour terminal: the line the Sync section shows carries
+        // no SGR escape, which ratatui would draw as text.
+        let colour = Ctx::new(
+            theme::load("nord", None),
+            theme::Caps {
+                depth: theme::ColorDepth::Truecolor,
+                ansi: true,
+                unicode: true,
+            },
+        );
+        let line = sync_now_line(&mut be, &colour).expect("sync now");
+        assert!(line.starts_with("synced"), "{line:?}");
+        assert!(!line.contains('\x1b'), "{line:?}");
     }
 
     /// `d`, confirmed, removes both files and leaves the remote untouched —
