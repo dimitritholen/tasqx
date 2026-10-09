@@ -163,7 +163,7 @@ pub const PARAMS: &[(&str, &[&str], bool)] = &[
     ("task.reopen", &["ref", "expected_rev"], false),
     ("tag.add", &["ref", "tags"], false),
     ("tag.remove", &["ref", "tags"], false),
-    ("annotation.add", &["ref", "body"], false),
+    ("annotation.add", &["ref", "body", "expected_rev"], false),
     // D138: acceptance criteria. `ref` + a child id, the shape D113 settled
     // for annotations and for the same reason — naming it `check_id` says
     // which child row a `ref`-scoped call means.
@@ -172,7 +172,15 @@ pub const PARAMS: &[(&str, &[&str], bool)] = &[
     // alternative to `check_id`; exactly one of the two.
     (
         "check.set",
-        &["ref", "check_id", "position", "state", "evidence"],
+        &[
+            "ref",
+            "check_id",
+            "position",
+            "state",
+            "evidence",
+            // #639: the card panel's writes take `task.modify`'s guard.
+            "expected_rev",
+        ],
         false,
     ),
     ("check.remove", &["ref", "check_id", "position"], false),
@@ -209,8 +217,16 @@ pub const PARAMS: &[(&str, &[&str], bool)] = &[
     // The corrective half of `token.add` (#210): a measurement is deleted by
     // its own globally-unique id, so there is no `ref` to name.
     ("token.remove", &["measurement_id"], false),
-    ("dependency.add", &["ref", "depends_on"], false),
-    ("dependency.remove", &["ref", "depends_on"], false),
+    (
+        "dependency.add",
+        &["ref", "depends_on", "expected_rev"],
+        false,
+    ),
+    (
+        "dependency.remove",
+        &["ref", "depends_on", "expected_rev"],
+        false,
+    ),
     // D160's explicit graph edges. `from`/`to` are NODE references, not task
     // refs — a link spans tasks, memory docs, annotations and projects — which
     // is why they are not spelled `ref`/`depends_on` like the pair above.
