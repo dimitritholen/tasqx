@@ -43,6 +43,17 @@ release also trims tasqx-core's public API, which is why it is a minor bump.
 - **`tasqx sync`** pulls, merges and pushes a store's snapshot through a
   `tasqx-remote-<name>` connector (folder and Cloudflare R2 ship), sealed with
   XChaCha20-Poly1305 under a key from the store's passphrase (D198-D202).
+- **`tasqx config edit` has a Sync section.** `c` connects a `tasqx-remote-*`
+  connector found on PATH through a form of its own fields and the sync passphrase,
+  `s` runs `tasqx sync`, and `d` disconnects, leaving the remote untouched. It saves
+  through the same write as `tasqx sync setup` (D233, #1177).
+- **Every release archive carries `tasqx-remote-dir` and `tasqx-remote-r2`**, and
+  the Homebrew formula and Scoop manifest install both, so `tasqx sync setup` finds
+  a connector without building one (#1177).
+- **Syncing Between Machines and Writing a Connector.** A wiki page walks through
+  a shared-folder start, Cloudflare R2 setup, what merges and wins, and headless
+  use; a guide documents the connector protocol for a storage backend of your own
+  (#1177).
 - **Memory search ranks by meaning beside words**, fused by reciprocal rank, and every
   hit says why it matched (D196).
 - **`undo` reaches done, cancel, tag and modify; `tasqx unarchive`** (D215). Notes can

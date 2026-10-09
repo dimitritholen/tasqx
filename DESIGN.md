@@ -1190,7 +1190,7 @@ decision lands in §12, walk the phase tables.
 
 | Surface | Ships |
 |---|---|
-| **Sync** | As an *event-log consumer*: git-based backend first (export → commit → merge), then optional self-hostable server; per-field LWW → CRDT-per-field upgrade path. Where a snapshot is kept is a connector's business, not core's (**D198**): the protocol, its runner, the folder connector `tasqx-remote-dir` and the Cloudflare R2 connector `tasqx-remote-r2` (**D199**) have shipped; so has the `tasqx sync` loop over them (**D201**); releasing the connectors beside `tasqx` has not. |
+| **Sync** | As an *event-log consumer*: git-based backend first (export → commit → merge), then optional self-hostable server; per-field LWW → CRDT-per-field upgrade path. Where a snapshot is kept is a connector's business, not core's (**D198**): the protocol, its runner, the folder connector `tasqx-remote-dir` and the Cloudflare R2 connector `tasqx-remote-r2` (**D199**) have shipped; so have the `tasqx sync` loop over them (**D201**), its `config edit` section (**D233**) and the connectors in every release archive beside `tasqx`. |
 | **Core / API** | Additive growth (new methods/fields only; major stays `"1"`); attachments / larger annotations, saved-filter storage, richer query grammar. |
 | **Extensibility** | Hooks + git-style custom subcommands (process invocation — no ABI, no credentials), then the plugin capability/permission model once a second consumer exists to design the trust boundary against. Moved here from v1; see §6 and §11a. |
 | **Ecosystem** | Importers (Taskwarrior/Todoist/GitHub), webhook bridge, templates, semantic task search (over D196's model), AI estimate suggestion, bi-directional GitHub sync. |
