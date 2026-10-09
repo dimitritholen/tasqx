@@ -65,7 +65,11 @@ cat <<EOF
         }
     },
     "extract_dir": "tasqx-${TAG}-${TARGET}",
-    "bin": "tasqx.exe",
+    "bin": [
+        "tasqx.exe",
+        "tasqx-remote-dir.exe",
+        "tasqx-remote-r2.exe"
+    ],
     "checkver": {
         "github": "https://github.com/${REPO}"
     },

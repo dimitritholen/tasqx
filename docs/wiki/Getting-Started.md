@@ -39,6 +39,15 @@ Prebuilt binaries for Linux, macOS and Windows are also on the
 [Releases page](https://github.com/dimitritholen/tasqx/releases), and you can
 build from source with `cargo install --path crates/tasqx-cli`.
 
+Each release archive, the Homebrew formula and the Scoop manifest also carry
+`tasqx-remote-dir` and `tasqx-remote-r2`, the connectors [Syncing Between
+Machines](Syncing-Between-Machines.md) uses. `brew install` and `scoop install`
+put both on PATH for you; the curl/`irm` installers above only place `tasqx`
+itself, so a connector from the archive needs copying onto PATH by hand, or
+building it from source:
+`cargo install --path crates/tasqx-remote-dir` and
+`cargo install --path crates/tasqx-remote-r2`.
+
 ## Install fine print
 
 Both installer scripts pick the newest release, resolve your target triple,

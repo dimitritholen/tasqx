@@ -85,6 +85,11 @@ class Tasqx < Formula
 
   def install
     bin.install "tasqx"
+    # Connectors for `tasqx sync`: it shells out to `tasqx-remote-<name>` on
+    # PATH, so leaving them out of `bin` would make `brew install tasqx` a
+    # `tasqx sync setup` that can never find a remote.
+    bin.install "tasqx-remote-dir"
+    bin.install "tasqx-remote-r2"
 
     # Generated HERE, by the binary brew has just installed, and deliberately
     # NOT copied out of the archive's own \`completions/\` directory.
