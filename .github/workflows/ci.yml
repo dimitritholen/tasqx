@@ -732,9 +732,9 @@ jobs:
   # Pedantic clippy report: run clippy with pedantic, nursery and cargo lints
   # to track hidden complexity, dependency issues and potential trouble over
   # time. continue-on-error because we do NOT gate on it — the tree carries too
-  # many findings for that to be useful. The point is the trend: each de-bloat
-  # PR that lands should move the number down. Publish the count to
-  # GITHUB_STEP_SUMMARY on the weekly run.
+  # many findings for that to be useful. The point is the trend: the de-bloat
+  # PRs merged in a week should move the number down. Publish the count to
+  # GITHUB_STEP_SUMMARY on the weekly run; dispatch CI by hand to read it now.
   pedantic-report:
     name: clippy pedantic + nursery + cargo (report only)
     runs-on: ubuntu-latest
