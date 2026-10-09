@@ -172,6 +172,7 @@ jobs:
         with:
           name: tasqx-desktop-${{ matrix.os }}
           path: apps/tasqx-desktop/src-tauri/target/release/bundle
+          retention-days: 7
 
       # The release checks (scripts/desktop-release-check.sh): one version
       # across the workspace, the app and a tag; the bundles exist; then the
