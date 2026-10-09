@@ -257,6 +257,15 @@ cd tasqx
 cargo install --path crates/tasqx-cli --force
 ```
 
+Syncing between machines needs one of two small connectors on PATH —
+`brew`/`scoop` installs put them there for you, and a release archive carries
+both — or build either from source:
+
+```console
+cargo install --path crates/tasqx-remote-dir --force
+cargo install --path crates/tasqx-remote-r2 --force
+```
+
 To wire the MCP server in by hand, without the skills `tasqx setup` adds:
 
 ```console
@@ -296,6 +305,7 @@ The worked guides each take five minutes and end with commands you can paste:
 - [Personal task management](docs/guides/personal-gtd.md) — frictionless capture and a five-minute weekly review.
 - [Standups and reports](docs/guides/standup-reporting.md) — yesterday's output, terminal charts, an HTML review you can send.
 - [Token accounting](docs/guides/token-accounting.md) — what agent work costs, and who pays.
+- [Writing a connector](docs/guides/writing-a-connector.md) — the sync protocol, on your own storage backend.
 
 ## License
 
