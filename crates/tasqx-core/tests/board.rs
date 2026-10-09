@@ -434,6 +434,23 @@ fn a_param_outside_the_allowlist_is_refused() {
         ),
         ("task.modify", json!({ "ref": sid, "expected_rev": rev })),
         ("task.stop", json!([sid, rev])),
+        // The panel's writes (#639): no evidence, position, tombstone or title.
+        (
+            "check.set",
+            json!({ "ref": sid, "expected_rev": rev, "check_id": "c", "state": "passed", "evidence": "x" }),
+        ),
+        (
+            "annotation.add",
+            json!({ "ref": sid, "expected_rev": rev, "body": "b", "created": "x" }),
+        ),
+        (
+            "dependency.add",
+            json!({ "ref": sid, "expected_rev": rev, "depends_on": 1, "force": true }),
+        ),
+        (
+            "task.modify",
+            json!({ "ref": sid, "expected_rev": rev, "set": { "tags": ["x"] } }),
+        ),
     ] {
         let rep = write(r.port, method, params.clone());
         assert_eq!(rep.status, 400, "{method} {params}: {}", rep.body);
@@ -535,7 +552,10 @@ fn every_listed_method_and_param_is_a_real_api_one() {
             "{m} must carry expected_rev"
         );
     }
-    assert_eq!(SET_FIELDS, ["priority", "wait", "scheduled"]);
+    assert_eq!(
+        SET_FIELDS,
+        ["priority", "wait", "scheduled", "due", "estimate"]
+    );
 }
 
 // ---- function: the read path and the live stream -----------------------------
@@ -822,4 +842,108 @@ fn a_board_is_read_only_until_writes_are_asked_for() {
     assert_eq!(rep.status, 403, "{}", rep.body);
     assert!(rep.body.contains("--scope read"), "{}", rep.body);
     shutdown.store(true, Ordering::SeqCst);
+}
+
+// ---- function: the card panel's writes (#639) --------------------------------
+
+/// Each panel control lands through the closed allowlist, carries the card's
+/// rev, is attributed to the board, and leaves the live rev one higher so the
+/// panel footer can show it. A note is then found by memory search, and a
+/// dependency change is reflected in the answer the page re-derives Blocked from.
+#[test]
+fn each_panel_edit_lands_attributed_and_a_note_is_searchable() {
+    let r = rig();
+    let (sid, _) = add(&r.socket, "edited in the panel");
+    let (blocker, _) = add(&r.socket, "the blocker");
+    let check = {
+        let mut c = daemon::try_connect(&r.socket).unwrap();
+        let out = c
+            .request("check.add", &json!({ "ref": sid, "body": "it works" }))
+            .unwrap();
+        out["result"]["check"]["id"].clone()
+    };
+    let at = || task(&r.socket, sid)["_rev"].as_i64().unwrap();
+    let before = events(&r.socket).len();
+    let send = |method: &str, params: Value| {
+        let rev = at();
+        let mut p = params;
+        p["ref"] = json!(sid);
+        p["expected_rev"] = json!(rev);
+        let env = envelope(&write(r.port, method, p));
+        assert_eq!(env["ok"], json!(true), "{method}: {env}");
+        assert_eq!(at(), rev + 1, "{method} leaves the rev one higher");
+        env["result"].clone()
+    };
+
+    let out = send("check.set", json!({ "check_id": check, "state": "passed" }));
+    assert_eq!(out["state"], "passed");
+    assert_eq!(task(&r.socket, sid)["checks"][0]["state"], "passed");
+    send("check.set", json!({ "check_id": check, "state": "open" }));
+    send(
+        "task.modify",
+        json!({ "set": { "due": "2031-01-02", "estimate": "2h", "wait": "2031-01-01", "scheduled": "2031-01-01", "priority": "M" } }),
+    );
+    let t = task(&r.socket, sid);
+    assert_eq!(t["estimate"], "PT2H");
+    assert!(t["due"].as_str().unwrap().starts_with("2031-01-02"), "{t}");
+    let out = send("dependency.add", json!({ "depends_on": blocker }));
+    assert_eq!(out["blocked"], json!(true));
+    assert_eq!(out["depends_on"], json!([blocker]));
+    let out = send("dependency.remove", json!({ "depends_on": blocker }));
+    assert_eq!(out["blocked"], json!(false));
+    send(
+        "annotation.add",
+        json!({ "body": "the zeroth quokka lives in crates/tasqx-core/src/board.rs" }),
+    );
+
+    let written = &events(&r.socket)[before..];
+    assert!(written.len() >= 6, "{written:?}");
+    for ev in written {
+        assert_eq!(ev["actor"], "board", "{ev}");
+    }
+    let mut c = daemon::try_connect(&r.socket).unwrap();
+    let hits = c
+        .request("memory.search", &json!({ "query": "zeroth quokka" }))
+        .unwrap();
+    let hits = hits["result"]["hits"].as_array().unwrap().clone();
+    assert!(
+        hits.iter().any(|h| h.to_string().contains("task:#")),
+        "a note added on the board is found by memory search: {hits:?}"
+    );
+}
+
+/// A stale rev on any panel write is a `conflict` carrying the current rev, and
+/// the other session's change stands.
+#[test]
+fn a_stale_rev_refuses_every_panel_write() {
+    let r = rig();
+    let (sid, rev) = add(&r.socket, "contested");
+    let (blocker, _) = add(&r.socket, "blocker");
+    let check = {
+        let mut c = daemon::try_connect(&r.socket).unwrap();
+        c.request("check.add", &json!({ "ref": sid, "body": "c" }))
+            .unwrap()["result"]["check"]["id"]
+            .clone()
+    };
+    // check.add moved the rev; `rev` is now stale for everything below.
+    let now = task(&r.socket, sid)["_rev"].as_i64().unwrap();
+    assert!(now > rev);
+    for (method, params) in [
+        ("check.set", json!({ "check_id": check, "state": "passed" })),
+        ("annotation.add", json!({ "body": "lost" })),
+        ("dependency.add", json!({ "depends_on": blocker })),
+        ("dependency.remove", json!({ "depends_on": blocker })),
+        ("task.modify", json!({ "set": { "due": "2031-01-02" } })),
+        ("task.modify", json!({ "set": { "estimate": "1h" } })),
+    ] {
+        let mut p = params;
+        p["ref"] = json!(sid);
+        p["expected_rev"] = json!(rev);
+        let env = envelope(&write(r.port, method, p));
+        assert_eq!(env["error"]["code"], "conflict", "{method}: {env}");
+        assert_eq!(env["error"]["data"]["current"], json!(now), "{method}");
+    }
+    let t = task(&r.socket, sid);
+    assert_eq!(t["_rev"], json!(now), "nothing was written");
+    assert!(t["due"].is_null());
 }
