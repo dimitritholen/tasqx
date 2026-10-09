@@ -1699,9 +1699,9 @@ over a local socket to many concurrent clients, pushes change notifications, and
 runs the reminder scheduler. The CLI never requires it. The agents page covers
 the rest of it, including the OTLP receiver:
 <a href="#wiki-ai-agents-and-automation--tasqx-daemon"><code>tasqx daemon</code></a>.</p>
-<h4 id="wiki-dashboard-and-live-view--one-shot-or-daemon-"><span id="h-one-shot-or-daemon-"></span>One-shot or daemon?</h4><div class="tw"><table class="grid"><thead><tr><th id="wiki-dashboard-and-live-view-tbl4-h0">Mode</th><th id="wiki-dashboard-and-live-view-tbl4-h1">When</th><th id="wiki-dashboard-and-live-view-tbl4-h2">Why</th></tr></thead><tbody>
-<tr><td data-label="Mode" headers="wiki-dashboard-and-live-view-tbl4-h0">One-shot</td><td data-label="When" headers="wiki-dashboard-and-live-view-tbl4-h1">The default. Scripts, cron, the HTML report.</td><td data-label="Why" headers="wiki-dashboard-and-live-view-tbl4-h2">No process to manage. Open the DB, run one command, exit.</td></tr>
-<tr><td data-label="Mode" headers="wiki-dashboard-and-live-view-tbl4-h0">Daemon</td><td data-label="When" headers="wiki-dashboard-and-live-view-tbl4-h1">Long-lived clients: a TUI, a GUI, <code>watch</code>, reminders.</td><td data-label="Why" headers="wiki-dashboard-and-live-view-tbl4-h2">One writer, warm caches, live push, and something to fire reminders.</td></tr>
+<h4 id="wiki-dashboard-and-live-view--one-shot-or-daemon-"><span id="h-one-shot-or-daemon-"></span>One-shot or daemon?</h4><div class="tw"><table class="grid"><thead><tr><th id="wiki-dashboard-and-live-view-tbl5-h0">Mode</th><th id="wiki-dashboard-and-live-view-tbl5-h1">When</th><th id="wiki-dashboard-and-live-view-tbl5-h2">Why</th></tr></thead><tbody>
+<tr><td data-label="Mode" headers="wiki-dashboard-and-live-view-tbl5-h0">One-shot</td><td data-label="When" headers="wiki-dashboard-and-live-view-tbl5-h1">The default. Scripts, cron, the HTML report.</td><td data-label="Why" headers="wiki-dashboard-and-live-view-tbl5-h2">No process to manage. Open the DB, run one command, exit.</td></tr>
+<tr><td data-label="Mode" headers="wiki-dashboard-and-live-view-tbl5-h0">Daemon</td><td data-label="When" headers="wiki-dashboard-and-live-view-tbl5-h1">Long-lived clients: a TUI, a GUI, <code>watch</code>, reminders.</td><td data-label="Why" headers="wiki-dashboard-and-live-view-tbl5-h2">One writer, warm caches, live push, and something to fire reminders.</td></tr>
 </tbody></table></div>
 <p>If a daemon is reachable, one-shot commands route through it automatically —
 single writer, live-update semantics for free. If not, they open the store
@@ -1720,10 +1720,10 @@ is silently discarded aims your write at a different store than the one you
 asked for.</p>
 <h4 id="wiki-dashboard-and-live-view--socket-addresses"><span id="h-socket-addresses"></span>Socket addresses</h4>
 <p>Resolution order: <code>--socket</code>, then <code>$TASQX_SOCK</code>, then the platform default.</p>
-<div class="tw"><table class="grid"><thead><tr><th id="wiki-dashboard-and-live-view-tbl5-h0">Platform</th><th id="wiki-dashboard-and-live-view-tbl5-h1">Default</th></tr></thead><tbody>
-<tr><td data-label="Platform" headers="wiki-dashboard-and-live-view-tbl5-h0">Windows</td><td data-label="Default" headers="wiki-dashboard-and-live-view-tbl5-h1">The named pipe <code>tasqx-default</code></td></tr>
-<tr><td data-label="Platform" headers="wiki-dashboard-and-live-view-tbl5-h0">Linux</td><td data-label="Default" headers="wiki-dashboard-and-live-view-tbl5-h1"><code>$XDG_RUNTIME_DIR/tasqx/tasqx.sock</code> (falls back to the data dir)</td></tr>
-<tr><td data-label="Platform" headers="wiki-dashboard-and-live-view-tbl5-h0">macOS</td><td data-label="Default" headers="wiki-dashboard-and-live-view-tbl5-h1"><code>&lt;data dir&gt;/tasqx.sock</code> — macOS has no runtime dir</td></tr>
+<div class="tw"><table class="grid"><thead><tr><th id="wiki-dashboard-and-live-view-tbl6-h0">Platform</th><th id="wiki-dashboard-and-live-view-tbl6-h1">Default</th></tr></thead><tbody>
+<tr><td data-label="Platform" headers="wiki-dashboard-and-live-view-tbl6-h0">Windows</td><td data-label="Default" headers="wiki-dashboard-and-live-view-tbl6-h1">The named pipe <code>tasqx-default</code></td></tr>
+<tr><td data-label="Platform" headers="wiki-dashboard-and-live-view-tbl6-h0">Linux</td><td data-label="Default" headers="wiki-dashboard-and-live-view-tbl6-h1"><code>$XDG_RUNTIME_DIR/tasqx/tasqx.sock</code> (falls back to the data dir)</td></tr>
+<tr><td data-label="Platform" headers="wiki-dashboard-and-live-view-tbl6-h0">macOS</td><td data-label="Default" headers="wiki-dashboard-and-live-view-tbl6-h1"><code>&lt;data dir&gt;/tasqx.sock</code> — macOS has no runtime dir</td></tr>
 </tbody></table></div><h4 id="wiki-dashboard-and-live-view--running-it"><span id="h-running-it"></span>Running it</h4>
 <p>Diagnostics go to stderr; the socket carries the newline-delimited JSON API.
 Ctrl-C stops it cleanly, unwinding the accept loop and removing the socket file
