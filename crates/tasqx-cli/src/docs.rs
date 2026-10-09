@@ -335,8 +335,8 @@ const METHODS: [(&str, &str, &str); 52] = [
     ),
     (
         "annotation.add",
-        "<code>ref</code>, <code>body</code>",
-        "The annotation.",
+        "<code>ref</code>, <code>body</code>, <code>expected_rev?</code>",
+        "The annotation. Takes <code>task.modify</code>'s <code>expected_rev</code>: a stale one is a <code>conflict</code> and nothing is written.",
     ),
     (
         "check.add",
@@ -350,14 +350,14 @@ const METHODS: [(&str, &str, &str); 52] = [
     (
         "check.set",
         "<code>ref</code>, <code>check_id</code> or <code>position</code>, <code>state</code>, \
-         <code>evidence?</code>",
+         <code>evidence?</code>, <code>expected_rev?</code>",
         "<code>{short_id, check_id, state}</code>. <code>state</code> is \
          <code>open|passed|failed</code>; <code>failed</code> is a normal outcome, not an error. \
          <code>evidence</code> is optional — some criteria are met by something nobody can \
          quote, and inventing a citation is worse than an unproven pass. Name the check by \
          exactly one of <code>check_id</code> or <code>position</code> (1-based, in the order \
          <code>task.get</code> lists them); an unknown one is <code>not_found</code> listing the \
-         task's checks.",
+         task's checks. A stale <code>expected_rev</code> is a <code>conflict</code>.",
     ),
     (
         "check.remove",
@@ -418,13 +418,13 @@ const METHODS: [(&str, &str, &str); 52] = [
     ),
     (
         "dependency.add",
-        "<code>ref</code>, <code>depends_on</code>",
-        "Dep state + <code>blocked</code>.",
+        "<code>ref</code>, <code>depends_on</code>, <code>expected_rev?</code>",
+        "Dep state + <code>blocked</code>. Takes <code>task.modify</code>'s <code>expected_rev</code>: a stale one is a <code>conflict</code> and nothing is written.",
     ),
     (
         "dependency.remove",
-        "<code>ref</code>, <code>depends_on</code>",
-        "Dep state + <code>blocked</code>.",
+        "<code>ref</code>, <code>depends_on</code>, <code>expected_rev?</code>",
+        "Dep state + <code>blocked</code>. Takes <code>task.modify</code>'s <code>expected_rev</code>: a stale one is a <code>conflict</code> and nothing is written.",
     ),
     (
         "link.add",

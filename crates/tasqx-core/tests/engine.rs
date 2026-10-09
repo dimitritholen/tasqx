@@ -3377,3 +3377,55 @@ fn the_envelope_actor_is_written_to_the_events_it_causes() {
         "nothing written"
     );
 }
+
+// ---- #639: the card panel's guarded writes ----------------------------------
+
+/// `check.set`, `annotation.add`, `dependency.add` and `dependency.remove` take
+/// the same `expected_rev`: stale is a `conflict` that writes nothing, current
+/// lands and moves the rev by exactly one.
+#[test]
+fn the_panel_writes_honour_expected_rev() {
+    let e = engine();
+    let sid = e.task_add(&json!({ "title": "edited" })).unwrap()["short_id"]
+        .as_i64()
+        .unwrap();
+    let other = e.task_add(&json!({ "title": "blocker" })).unwrap()["short_id"].clone();
+    let check = e
+        .check_add(&json!({ "ref": sid, "body": "it works" }))
+        .unwrap()["check"]["id"]
+        .clone();
+    let calls: [(&str, Value); 5] = [
+        (
+            "check.set",
+            json!({ "ref": sid, "check_id": check, "state": "passed" }),
+        ),
+        (
+            "annotation.add",
+            json!({ "ref": sid, "body": "names crates/x.rs" }),
+        ),
+        ("dependency.add", json!({ "ref": sid, "depends_on": other })),
+        (
+            "dependency.remove",
+            json!({ "ref": sid, "depends_on": other }),
+        ),
+        ("dependency.add", json!({ "ref": sid, "depends_on": other })),
+    ];
+    for (method, params) in calls {
+        let at = rev(&e, sid);
+        let events = count(&e, "SELECT COUNT(*) FROM events");
+        let mut stale = params.clone();
+        stale["expected_rev"] = json!(at - 1);
+        let err = dispatch(&e, method, &stale).expect_err("a stale rev must refuse");
+        assert_eq!(err.code, ErrorCode::Conflict, "{method}");
+        assert_eq!(err.data.as_ref().unwrap()["current"], json!(at), "{method}");
+        assert_eq!(
+            count(&e, "SELECT COUNT(*) FROM events"),
+            events,
+            "{method}: nothing written"
+        );
+        let mut fresh = params;
+        fresh["expected_rev"] = json!(at);
+        dispatch(&e, method, &fresh).unwrap_or_else(|err| panic!("{method}: {}", err.message));
+        assert_eq!(rev(&e, sid), at + 1, "{method} moves the rev by one");
+    }
+}

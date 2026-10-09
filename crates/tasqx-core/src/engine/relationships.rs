@@ -227,9 +227,11 @@ impl Engine {
             )));
         }
         let evidence = opt_str_nonempty(p, "evidence")?;
+        let expected_rev = opt_i64(p, "expected_rev")?;
         let ts = now();
         let tx = self.begin_mutation()?;
         let task = self.resolve_ref_on(&tx, p)?;
+        super::task::guard_rev(expected_rev, &task)?;
         let check_id = check_id_on(&tx, &task, named)?;
         tx.execute(
             "UPDATE checks SET state = ?1, evidence = COALESCE(?2, evidence), modified = ?3 \
@@ -288,11 +290,13 @@ impl Engine {
     pub fn annotation_add(&self, p: &Value) -> Result<Value, ApiError> {
         let _ = ref_param(p)?;
         let body = req_str(p, "body")?;
+        let expected_rev = opt_i64(p, "expected_rev")?;
 
         let id = crate::clock::uuid_v7().to_string();
         let ts = now();
         let tx = self.begin_mutation()?;
         let task = self.resolve_ref_on(&tx, p)?;
+        super::task::guard_rev(expected_rev, &task)?;
         tx.execute(
             "INSERT INTO annotations (id, task_id, body, created) VALUES (?1, ?2, ?3, ?4)",
             params![id, task.id, body, ts],
@@ -625,8 +629,10 @@ impl Engine {
         let dep = p
             .get("depends_on")
             .ok_or_else(|| ApiError::bad_request("missing required field: depends_on"))?;
+        let expected_rev = opt_i64(p, "expected_rev")?;
         let tx = self.begin_mutation()?;
         let task = self.resolve_ref_on(&tx, p)?;
+        super::task::guard_rev(expected_rev, &task)?;
         let target = self.resolve_ref_value_on(&tx, dep)?;
 
         if task.id == target.id {
@@ -698,8 +704,10 @@ impl Engine {
         let dep = p
             .get("depends_on")
             .ok_or_else(|| ApiError::bad_request("missing required field: depends_on"))?;
+        let expected_rev = opt_i64(p, "expected_rev")?;
         let tx = self.begin_mutation()?;
         let task = self.resolve_ref_on(&tx, p)?;
+        super::task::guard_rev(expected_rev, &task)?;
         let target = self.resolve_ref_value_on(&tx, dep)?;
         let ts = now();
         let removed = tx.execute(
