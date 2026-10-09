@@ -90,6 +90,10 @@ fn main() {
             connectors_are_found_on_path,
         ),
         (
+            "every_connector_on_path_is_listed_deduped_and_sorted",
+            connectors_are_listed_on_path,
+        ),
+        (
             "a_connector_name_that_is_not_a_slug_is_refused",
             bad_names_are_refused,
         ),
@@ -471,6 +475,48 @@ fn connectors_are_found_on_path() {
     let found = tasqx_core::remote::find_in("dir", &path).expect("on the second entry");
     assert_eq!(found, b.join(&file));
     assert!(tasqx_core::remote::find_in("s3", &path).is_none());
+}
+
+/// `list_on` finds every connector on `PATH`, skips a non-executable
+/// candidate the same way `find_in` does, dedupes a name that appears on more
+/// than one directory, and sorts the result.
+fn connectors_are_listed_on_path() {
+    let dir = scratch("list");
+    let (a, b) = (dir.join("a"), dir.join("b"));
+    std::fs::create_dir_all(&a).unwrap();
+    std::fs::create_dir_all(&b).unwrap();
+    let exe = |name: &str| format!("tasqx-remote-{name}{}", std::env::consts::EXE_SUFFIX);
+    std::fs::write(a.join(exe("dir")), b"").unwrap();
+    make_executable(&a.join(exe("dir")));
+    std::fs::write(a.join(exe("r2")), b"").unwrap();
+    make_executable(&a.join(exe("r2")));
+    // The same name again, in a later directory: listed once.
+    std::fs::write(b.join(exe("dir")), b"").unwrap();
+    make_executable(&b.join(exe("dir")));
+    // Not executable: must not be listed.
+    std::fs::write(b.join(exe("noexec")), b"").unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(
+            b.join(exe("noexec")),
+            std::fs::Permissions::from_mode(0o644),
+        )
+        .unwrap();
+    }
+    // Not the right prefix at all.
+    std::fs::write(b.join("something-else"), b"").unwrap();
+    make_executable(&b.join("something-else"));
+
+    let path = std::env::join_paths([&a, &b]).unwrap();
+    let names = tasqx_core::remote::list_on(&path);
+    #[cfg(unix)]
+    assert_eq!(names, vec!["dir".to_string(), "r2".to_string()]);
+    #[cfg(not(unix))]
+    assert_eq!(
+        names,
+        vec!["dir".to_string(), "noexec".to_string(), "r2".to_string()]
+    );
 }
 
 /// Give `path` its owner's execute bit; nothing to do on Windows, where the
