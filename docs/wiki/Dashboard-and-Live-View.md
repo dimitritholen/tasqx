@@ -171,6 +171,17 @@ says "another session changed it" and shows the task as it now is. Every change
 the board makes is recorded with `board` as its actor, so `tasqx api
 event.list` tells a drag apart from a command or an agent.
 
+**Editing a card.** The panel is a form too. Tick or untick a check, add a note,
+change the due date, estimate, wait or scheduled date, set the priority, and add
+or remove a dependency; each change is one command with the card's revision, so
+a task changed elsewhere since is refused rather than overwritten, and the
+footer always shows the revision as it now is. A note goes into the same search
+as every annotation (`tasqx memory search`), so name files and symbols in it.
+Adding or removing a dependency moves the card between **Blocked** and its
+other column without a drag. Titles and project moves stay with the CLI. Undo
+covers a note, a removed dependency and a field change; a tick or an added
+dependency is changed back by hand.
+
 `--scope read` serves the board for a wall screen or a standup: no drag, no
 buttons, and the server refuses any change that is sent anyway.
 
