@@ -22,6 +22,21 @@ release also trims tasqx-core's public API, which is why it is a minor bump.
   `DaemonOptions::notifier`. For the second, set `MatchCtx::title` and call `matches`.
   Code that builds a `MatchCtx` by hand, or matches `Pred` or `Vocabulary`
   exhaustively, needs the new field and variants.
+- **`tasqx setup --list` shows only the agent tools found on PATH**, Claude Code
+  included, and a one-line hint says how to install one when none is (D224, #1149).
+- **One TOML parser.** `config.toml` and theme files are read with `toml_edit`, the
+  parser that already wrote them, so a file `config set` accepts always reads back
+  (TOML 1.1). The hand-rolled flag-suggestion and settings extras are gone (D229,
+  #737).
+- **The docs have one page per topic.** The site's scheduling, reminders, daemon,
+  data and themes pages merge into the wiki pages that cover them (old links still
+  resolve), the manual's twelve topics render from the wiki, and every console
+  excerpt in the wiki names the capture it comes from (D226, D231, #699, #706, #733).
+- **API: the lifecycle verbs take `expected_rev`.** `task.start`, `stop`, `done`,
+  `cancel` and `reopen`, and now `check.set`, `annotation.add`, `dependency.add` and
+  `dependency.remove`, answer `conflict` when the task has moved on. `event.revert`
+  can be made conditional on the caller's own last write, and a request envelope
+  takes an optional `actor` that lands in `events.actor` (D232, #638, #639).
 
 ### Added
 
@@ -38,6 +53,35 @@ release also trims tasqx-core's public API, which is why it is a minor bump.
 - **`tasqx setup` covers Codex CLI and Gemini CLI** as well as Claude Code: for each one
   on PATH it registers the MCP server through its own `mcp add` and installs the skills
   (`codex:mcp`, `gemini:retro` and so on for `--only`) (D224).
+- **`tasqx board` opens a live kanban in the browser.** Five state columns by
+  urgency, search, lanes and a detail panel, repainted when the daemon pushes a
+  change. It binds 127.0.0.1 only and hands its token over once as a cookie;
+  `board.port` or `--port` fixes the port (D228, #637).
+- **The board edits too.** Drag a card to start, stop, complete, reopen, cancel or
+  set its priority; the card panel edits checks, notes, due, estimate, wait,
+  scheduled and dependencies. Every write carries the card's rev and `actor=board`,
+  a stale card gets a conflict instead of overwriting, and `--scope read` refuses
+  every write (D232, #638, #639).
+- **`graph.query` answers whole-store questions**: `root: null` with
+  `select: blocked` or `orphans` (D225, #809).
+- **`report.outcomes` gains `unbriefed`.** `task.brief` and the memory half of
+  `tasqx_start_timer` record a `briefed` event, and the report counts completions
+  that never read a brief (D227, #99).
+- **Tasqx Desktop** edits a task from the inspector (with `expected_rev`, the draft
+  kept through conflicts and reconnects), starts, stops, completes and reopens,
+  ticks checks, adds notes, checks, blockers and tasks, and offers an opt-in notice
+  when a newer release exists. It never downloads or installs anything (D10, D230,
+  #694, #695).
+
+### Fixed
+
+- **Windows: a dropped client frees the daemon's admission slot** at once instead
+  of lingering in the pipe pool (#1168).
+- **Desktop: a row with no dependencies shows a dash in Blockers, not 0**, and an
+  event for the open task re-reads the inspector without losing an open draft
+  (#694, #1142).
+- **Test-suite flakes**: daemon and watch tests wait for an answered request, and
+  the setup tests run on every OS (#1149-#1153).
 
 ## 0.14.0
 
