@@ -1290,6 +1290,34 @@ const PARAM_DOCS: &[(&str, &str, &str, &str, &str)] = &[
         "",
         "With `ref`: undo only if the task is still at this rev, so undoing your own last write cannot take back a later one. Needs `ref`.",
     ),
+    (
+        "check.set",
+        "expected_rev",
+        "integer",
+        "",
+        "Optimistic-concurrency guard, as on `task.modify`: the task's `_rev` as you read it. A stale one is a `conflict` carrying the current rev, and nothing is written (#639).",
+    ),
+    (
+        "annotation.add",
+        "expected_rev",
+        "integer",
+        "",
+        "Optimistic-concurrency guard, as on `task.modify`: the task's `_rev` as you read it. A stale one is a `conflict` carrying the current rev, and nothing is written (#639).",
+    ),
+    (
+        "dependency.add",
+        "expected_rev",
+        "integer",
+        "",
+        "Optimistic-concurrency guard, as on `task.modify`: the task's `_rev` as you read it. A stale one is a `conflict` carrying the current rev, and nothing is written (#639).",
+    ),
+    (
+        "dependency.remove",
+        "expected_rev",
+        "integer",
+        "",
+        "Optimistic-concurrency guard, as on `task.modify`: the task's `_rev` as you read it. A stale one is a `conflict` carrying the current rev, and nothing is written (#639).",
+    ),
 ];
 
 /// One request/response pair per method.

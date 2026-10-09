@@ -1485,6 +1485,7 @@ fn build_tool_specs() -> Vec<ToolSpec> {
                 "properties": {
                     "ref": ref_schema(),
                     "check_id": { "type": "string", "description": "The check's id, from `tasqx_get_task` or the add." },
+                    "expected_rev": lifecycle_rev_schema(),
                     "position": { "type": "integer", "description": "Or its 1-based place in tasqx_get_task's list." },
                     "state": {
                         "type": "string",
@@ -1529,13 +1530,13 @@ fn build_tool_specs() -> Vec<ToolSpec> {
             description: "Attach a timestamped note to a task. The body is stored verbatim, \
                 newlines and markdown included, so long-form context lives here. The response \
                 echoes the body back as proof of that, or `{id, created, body_bytes}` under \
-                `include_body: false`. `tasqx_remove_annotation` on that `id` is the only way \
-                to take a note back.",
+                `include_body: false`. `tasqx_remove_annotation` takes a note back.",
             schema: json!({
                 "type": "object",
                 "properties": {
                     "ref": ref_schema(),
                     "body": { "type": "string", "description": "Note text, stored verbatim. Multi-line markdown is fine." },
+                    "expected_rev": lifecycle_rev_schema(),
                     "include_body": {
                         "type": "boolean",
                         "description": "Echo the stored body back. Default true (D72/D75): \
@@ -1664,8 +1665,7 @@ fn build_tool_specs() -> Vec<ToolSpec> {
             idempotent: true,
             description: "Make one task depend on another: `ref` is blocked until \
                 `depends_on` is done or cancelled, and a `ref` already closed is never \
-                blocked. Returns the resulting dependency list and blocked state. A cycle is \
-                refused as a conflict.",
+                blocked. Returns the dependency list and blocked state. A cycle is a conflict.",
             schema: json!({
                 "type": "object",
                 "properties": {
@@ -1673,7 +1673,8 @@ fn build_tool_specs() -> Vec<ToolSpec> {
                     "depends_on": {
                         "type": ["integer", "string"],
                         "description": "The task `ref` must wait for: short_id or UUID."
-                    }
+                    },
+                    "expected_rev": lifecycle_rev_schema()
                 },
                 "required": ["ref", "depends_on"]
             }),
@@ -1685,8 +1686,7 @@ fn build_tool_specs() -> Vec<ToolSpec> {
             destructive: true,
             idempotent: true,
             description: "Cut a dependency edge: `ref` stops waiting on `depends_on`. Returns \
-                the remaining dependency list and blocked state, so the answer says whether \
-                the task is actionable now or still waiting on something else.",
+                the remaining dependency list and blocked state.",
             schema: json!({
                 "type": "object",
                 "properties": {
@@ -1694,7 +1694,8 @@ fn build_tool_specs() -> Vec<ToolSpec> {
                     "depends_on": {
                         "type": ["integer", "string"],
                         "description": "The blocker to stop waiting for: short_id or UUID."
-                    }
+                    },
+                    "expected_rev": lifecycle_rev_schema()
                 },
                 "required": ["ref", "depends_on"]
             }),
