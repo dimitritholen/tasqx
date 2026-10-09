@@ -10,15 +10,19 @@
 #![cfg(unix)]
 
 use std::io::{BufRead, BufReader};
+use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 use std::sync::mpsc;
 use std::thread;
 use std::time::{Duration, Instant};
 
+/// Ready means a connect succeeds, not that the file exists: `bind(2)`
+/// creates the socket file before `listen(2)` lets anyone in, and a `watch`
+/// started in that window is refused with "no daemon reachable" (#1152).
 fn wait_for_socket(path: &str, deadline: Instant) -> bool {
     while Instant::now() < deadline {
-        if std::path::Path::new(path).exists() {
+        if UnixStream::connect(path).is_ok() {
             return true;
         }
         thread::sleep(Duration::from_millis(10));
@@ -39,7 +43,7 @@ fn spawn_daemon(sock: &str, db: &PathBuf) -> Child {
         .expect("spawn tasqx daemon");
     assert!(
         wait_for_socket(sock, Instant::now() + Duration::from_secs(10)),
-        "daemon never created its socket at {sock}"
+        "daemon never accepted a connection at {sock}"
     );
     child
 }
@@ -95,9 +99,6 @@ fn watch_reconnects_after_its_daemon_dies_instead_of_exiting() {
     // rather than leaving it half-open.
     let _ = daemon1.kill();
     let _ = daemon1.wait();
-    // A SIGKILLed daemon leaves its socket file behind, so wait_for_socket
-    // would otherwise return before daemon 2 is actually listening.
-    let _ = std::fs::remove_file(&sock);
 
     // While nothing is listening, the fixed `watch` must still be running —
     // the pre-fix behaviour was `exit(1)` the instant the read failed.
