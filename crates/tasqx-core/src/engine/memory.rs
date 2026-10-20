@@ -2221,7 +2221,9 @@ impl Engine {
         &self,
         workdir: Option<&std::path::Path>,
     ) -> Result<SessionRulings, ApiError> {
-        let project = self.session_project(workdir)?;
+        // D235: the toplevel is resolved once; the project is read off it.
+        let top = workdir.and_then(crate::memory_doc::RefRoot::at);
+        let project = self.project_for(workdir, top.as_ref())?;
         let name = project.as_ref().map(|(n, _)| n.as_str());
 
         // D235: a standing ruling citing code that is gone from the
@@ -2232,7 +2234,6 @@ impl Engine {
         // — the gist this feeds is the first paragraph, cut at 240 bytes,
         // and 4 KB comfortably covers a frontmatter block ahead of it
         // without loading a doc whole.
-        let top = workdir.and_then(crate::memory_doc::RefRoot::at);
         let docs = |sql: &str, check: bool| -> Result<Vec<SessionDoc>, ApiError> {
             let mut stmt = self.conn.prepare(sql)?;
             let rows = stmt.query_map(params![name], |r| {
@@ -2305,32 +2306,35 @@ impl Engine {
         &self,
         workdir: Option<&std::path::Path>,
     ) -> Result<Option<(String, &'static str)>, ApiError> {
+        let top = workdir.and_then(crate::memory_doc::RefRoot::at);
+        self.project_for(workdir, top.as_ref())
+    }
+
+    /// [`Engine::session_project`] given `workdir`'s toplevel, already
+    /// resolved: inside a repo its names (the toplevel's, then the main
+    /// checkout's), outside one the workdir's own name.
+    fn project_for(
+        &self,
+        workdir: Option<&std::path::Path>,
+        top: Option<&crate::memory_doc::RefRoot>,
+    ) -> Result<Option<(String, &'static str)>, ApiError> {
         let mut stmt = self
             .conn
             .prepare("SELECT name FROM projects WHERE archived = 0")?;
         let names: HashSet<String> = stmt
             .query_map([], |r| r.get(0))?
             .collect::<Result<_, _>>()?;
-        let from_dir = workdir.and_then(|dir| {
-            // `git_toplevel` takes a FILE and starts at its parent: `_` is a
-            // placeholder so the search starts at `dir` itself.
-            let top = crate::memory_doc::git_toplevel(&dir.join("_"));
-            let main = top.as_deref().map(crate::memory_doc::repo_dir);
-            let candidates = if top.is_some() {
-                [top.as_deref(), main.as_deref()]
-            } else {
-                [Some(dir), None]
-            };
-            // Bound before the block ends: the iterator's temporary borrows
-            // `top`/`main`, which drop first (E0597) as a tail expression.
-            let hit = candidates
-                .into_iter()
-                .flatten()
-                .filter_map(|a| a.file_name()?.to_str())
-                .find(|n| names.contains(*n))
-                .map(|n| (n.to_string(), "working directory"));
-            hit
-        });
+        let own = workdir
+            .and_then(|d| d.file_name()?.to_str())
+            .map(String::from);
+        let candidates: Vec<String> = match top {
+            Some(top) => top.names().to_vec(),
+            None => own.into_iter().collect(),
+        };
+        let from_dir = candidates
+            .into_iter()
+            .find(|n| names.contains(n))
+            .map(|n| (n, "working directory"));
         // PR #48 review: a default naming a project this same query just
         // proved archived (or gone) must not be trusted any further than
         // `from_dir` is — checked against the same non-archived `names` set

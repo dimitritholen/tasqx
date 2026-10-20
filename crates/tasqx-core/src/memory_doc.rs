@@ -181,12 +181,11 @@ const CODE_EXTENSIONS: &[&str] = &[
     "scss", "sql", "lock", "txt", "xml", "svelte", "vue",
 ];
 
-/// `s` as a repo-relative path, or `None` when it does not look like one:
+/// `s` as a repo-relative path, or `None` when it cannot be one:
 /// whitespace, a placeholder, ellipsis or URL character, an absolute or home
 /// path, or a segment of dots alone (`..` would leave the toplevel, `...` is
-/// an elision). A leading `./` and a trailing `/` are cut. It needs a `/` or
-/// a known extension, which the flag says it has.
-fn path_like(s: &str) -> Option<(String, bool)> {
+/// an elision). A leading `./` and a trailing `/` are cut.
+fn clean_path(s: &str) -> Option<String> {
     let s = s.strip_prefix("./").unwrap_or(s).trim_end_matches('/');
     if s.is_empty()
         || s.contains("...")
@@ -199,13 +198,20 @@ fn path_like(s: &str) -> Option<(String, bool)> {
     {
         return None;
     }
+    Some(s.to_string())
+}
+
+/// A body span as a path: [`clean_path`], plus a `/` or a known extension,
+/// which the flag says it has.
+fn path_like(s: &str) -> Option<(String, bool)> {
+    let s = clean_path(s)?;
     let slash = s.contains('/');
     let ext = s
         .rsplit('/')
         .next()
         .and_then(|name| name.rsplit_once('.'))
         .is_some_and(|(stem, ext)| !stem.is_empty() && CODE_EXTENSIONS.contains(&ext));
-    (slash || ext).then(|| (s.to_string(), ext))
+    (slash || ext).then_some((s, ext))
 }
 
 /// One backticked span as a ref: `path`, `path:line`, `path:line:col` or
@@ -342,7 +348,9 @@ pub fn extract_refs(source: Option<&str>, body: &str) -> DocRefs {
                 && repo
                     .chars()
                     .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'));
-            if let (true, Some((path, true))) = (repo_ok, path_like(rest)) {
+            // Any D203 key names its repo and a file, extension or not
+            // (`tasqx/Dockerfile`): the key is a path by construction.
+            if let (true, Some(path)) = (repo_ok, clean_path(rest)) {
                 out.repo = Some(repo.to_string());
                 let r = CodeRef {
                     path,
@@ -386,6 +394,10 @@ pub fn extract_refs(source: Option<&str>, body: &str) -> DocRefs {
 pub struct RefRoot {
     toplevel: std::path::PathBuf,
     names: Vec<String>,
+    /// Top-level entries the root `.gitignore` ignores (`target`,
+    /// `node_modules`): build artifacts a doc may cite that a fresh checkout
+    /// lacks, so a ref into one gets no verdict.
+    ignored: Vec<String>,
     /// Each cited file's text for a symbol search, read at most once per
     /// root, so a request's docs citing one file read it once. `None` is a
     /// file that cannot prove a symbol absent ([`scannable_text`]).
@@ -409,9 +421,13 @@ impl RefRoot {
                 }
             }
         }
+        let ignored = std::fs::read_to_string(toplevel.join(".gitignore"))
+            .map(|t| ignored_top_level(&t))
+            .unwrap_or_default();
         Some(RefRoot {
             toplevel,
             names,
+            ignored,
             texts: Default::default(),
             #[cfg(test)]
             reads: Default::default(),
@@ -436,6 +452,36 @@ impl RefRoot {
     pub fn toplevel(&self) -> &Path {
         &self.toplevel
     }
+
+    /// The names a doc's repo may go by here: the toplevel's own, then its
+    /// main checkout's ([`repo_dir`]) when that differs.
+    pub fn names(&self) -> &[String] {
+        &self.names
+    }
+
+    /// Forget the files read so far: a `memory verify` sweep clears it
+    /// between docs, so a whole store's cited files are never held at once.
+    pub fn clear_cache(&self) {
+        self.texts.borrow_mut().clear();
+    }
+}
+
+/// The top-level names a root `.gitignore` ignores: a pattern naming one
+/// entry, with or without a leading or trailing `/` (`/target`, `target/`,
+/// `node_modules`). Comments, negations and anything with an inner `/` or a
+/// glob character are passed over.
+// ponytail: root .gitignore, plain names only. Nested .gitignore files,
+// globs and .git/info/exclude are not parsed; a ref into what they ignore
+// is still checked. Shell out to `git check-ignore` if that ever matters.
+fn ignored_top_level(gitignore: &str) -> Vec<String> {
+    gitignore
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty() && !l.starts_with('#') && !l.starts_with('!'))
+        .map(|l| l.trim_start_matches('/').trim_end_matches('/'))
+        .filter(|l| !l.is_empty() && !l.contains(['/', '*', '?', '[', '\\']))
+        .map(String::from)
+        .collect()
 }
 
 /// A doc's verdict from [`verify_refs`] (D235).
@@ -514,7 +560,7 @@ pub fn verify_refs(
             break;
         }
         let first = r.path.split('/').next().unwrap_or_default();
-        if !r.anchored && !top.join(first).exists() {
+        if (!r.anchored && !top.join(first).exists()) || root.ignored.iter().any(|i| i == first) {
             continue;
         }
         checked += 1;
@@ -600,14 +646,26 @@ mod tests {
                 Some("tasqx"),
                 vec![r("docs/a.md", None, true)],
             ),
-            // A fragment is cut; a source that is not a file path is no ref.
+            // A fragment is cut; a key with no extension is a path too.
             (
                 Some("klustaken/src/reminders.js#shape"),
                 "",
                 Some("klustaken"),
                 vec![r("src/reminders.js", None, true)],
             ),
-            (Some("hubq/ORC-01/intake"), "", None, vec![]),
+            (
+                Some("tasqx/Dockerfile"),
+                "",
+                Some("tasqx"),
+                vec![r("Dockerfile", None, true)],
+            ),
+            (
+                Some("hubq/ORC-01/intake"),
+                "",
+                Some("hubq"),
+                vec![r("ORC-01/intake", None, true)],
+            ),
+            // Not a D203 key: no repo, no ref.
             (Some("task:#12"), "", None, vec![]),
             (Some("SPEC.md (#2277)"), "", None, vec![]),
             (Some("/abs/path/x.md"), "", None, vec![]),
@@ -808,6 +866,24 @@ mod tests {
         }
         // A ref with no extension whose first segment exists IS checked.
         assert_eq!(check(None, "`src/gone`").status, RefStatus::MissingPath);
+        // An extensionless D203 source is checked as a path.
+        let docker = check(Some("proj/Dockerfile"), "");
+        assert_eq!(docker.stale_refs, vec!["Dockerfile".to_string()]);
+        // A build artifact the root .gitignore ignores gets no verdict, even
+        // with its directory present: a fresh checkout would not have it.
+        std::fs::create_dir_all(root.join("target")).unwrap();
+        std::fs::write(
+            root.join(".gitignore"),
+            "# build\n/target\nnode_modules/\n*.log\n",
+        )
+        .unwrap();
+        let ignoring = RefRoot::at(&root).unwrap();
+        let artifact = verify_refs(None, "`target/debug/tasqx`", Some("proj"), Some(&ignoring));
+        assert_eq!(artifact.status, RefStatus::Unverifiable);
+        assert_eq!(
+            ignored_top_level("# c\n/target\nnode_modules/\n!keep\n*.log\na/b\n"),
+            vec!["target".to_string(), "node_modules".to_string()]
+        );
         // DESIGN.md's crate-relative "Where" style names no top-level
         // segment, so it is skipped, not cried missing; a real path beside
         // it still is checked.
