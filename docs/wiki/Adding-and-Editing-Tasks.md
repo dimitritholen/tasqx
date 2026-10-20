@@ -42,6 +42,10 @@ More on dates, recurrence and reminders:
 A task without a project lands in your default project
 ([`tasqx use`](Projects.md#tasqx-use) changes which one that is).
 
+When an open task in the same project already reads like the new one, `add`
+still adds it and prints a `note:` line naming that task, up to three of
+them. `--json` carries them as `similar`, an empty list when there are none.
+
 ## tasqx modify
 
 *Aliases: `mod`, `m`, `edit`*

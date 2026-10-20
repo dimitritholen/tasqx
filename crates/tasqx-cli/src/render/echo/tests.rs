@@ -1790,3 +1790,29 @@ fn a_check_write_echoes_the_one_check_and_the_tally() {
         assert!(!out.contains("proof"), "{out}");
     }
 }
+
+/// D237: one `note:` line per candidate `similar` names, a task by its short
+/// id and a doc by its id, and nothing when the list is empty or absent.
+#[test]
+fn similar_notes_name_each_candidate() {
+    let task = json!({ "similar": [
+        { "id": "u1", "short_id": 12, "title": "Flaky\ttest", "similarity": 0.734 },
+        { "id": "u2", "short_id": 7, "title": "Other", "similarity": 0.7 },
+    ]});
+    assert_eq!(
+        similar_notes(&task),
+        vec![
+            "note: looks like open task #12 \"Flaky test\" (similarity 0.734)",
+            "note: looks like open task #7 \"Other\" (similarity 0.7)",
+        ]
+    );
+    let doc = json!({ "similar": [
+        { "id": "01a0-doc", "title": "Ruling", "similarity": 0.81 },
+    ]});
+    assert_eq!(
+        similar_notes(&doc),
+        vec!["note: looks like doc 01a0-doc \"Ruling\" (similarity 0.81)"]
+    );
+    assert!(similar_notes(&json!({ "similar": [] })).is_empty());
+    assert!(similar_notes(&json!({})).is_empty());
+}

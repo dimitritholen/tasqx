@@ -141,6 +141,9 @@ pub(crate) fn run_add(
     fallback["title"] = Value::String(parsed.title.clone());
     let task = read_back(be, &result).unwrap_or(fallback);
     let text = render::added(ctx, &task, crate::clock::now());
+    render::similar_notes(&result)
+        .into_iter()
+        .for_each(crate::note_after_output);
     Ok((result, text))
 }
 
@@ -1361,6 +1364,9 @@ pub(crate) fn run_memory(be: &mut Backend, ctx: &Ctx, action: &MemoryAction) -> 
                 text.push_str(&render::san(hint));
                 text.push('\n');
             }
+            render::similar_notes(&result)
+                .into_iter()
+                .for_each(crate::note_after_output);
             Ok((result, text))
         }
         MemoryAction::Search {

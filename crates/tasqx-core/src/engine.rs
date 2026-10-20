@@ -15,6 +15,7 @@ mod memory;
 mod merge_removals;
 mod projects;
 mod relationships;
+mod similar;
 
 /// D138's check-state vocabulary, re-exported beside the other closed
 /// vocabularies this module publishes ([`SUMMARY_GROUP_BY`],
@@ -1614,6 +1615,7 @@ macro_rules! engine_sources {
                 include_str!("engine/recur_dedupe.rs"),
             ),
             ("engine/reports.rs", include_str!("engine/reports.rs")),
+            ("engine/similar.rs", include_str!("engine/similar.rs")),
             ("engine/task.rs", include_str!("engine/task.rs")),
             ("engine/tokens.rs", include_str!("engine/tokens.rs")),
             ("engine/transfer.rs", include_str!("engine/transfer.rs")),

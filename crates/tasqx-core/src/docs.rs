@@ -171,6 +171,22 @@ pub const R_TASK_ADD: &[FieldDoc] = &[
     o("checks", "array", "Present only when the call named `checks` (D213): the criteria created with the task, each `{id, body, state, position}` — the ids `check.set` takes."),
     o("depends_on", "array", "Present only when the call named `depends_on` (D213): the short ids the task now waits on, deduplicated."),
     o("blocked", "boolean", "Present with `depends_on`: whether any of those prerequisites is still open."),
+    f("similar", "array", "Always present: up to three open tasks of the same project that look like this one, best first, each `{id, short_id, title, similarity}`; empty when none does. A warning only — the task was added either way (D237)."),
+];
+
+/// One near-duplicate in `task.add`'s `similar` (D237).
+pub const TASK_ADD_SIMILAR: &[FieldDoc] = &[
+    f("id", "string", "The open task's uuid."),
+    f("short_id", "integer", "The open task's short id."),
+    f("title", "string", "The open task's title."),
+    f("similarity", "number", "How alike the two read, as the cosine of their embeddings rounded to three decimals; at or above the threshold D237 tuned."),
+];
+
+/// One near-duplicate in `memory.add`'s `similar` (D237).
+pub const MEMORY_ADD_SIMILAR: &[FieldDoc] = &[
+    f("id", "string", "The existing doc's uuid — what `memory.get` takes."),
+    f("title", "string", "The existing doc's title."),
+    f("similarity", "number", "How alike the two read: the new doc's embedding against the existing doc's closest chunk, rounded to three decimals; at or above the threshold D237 tuned."),
 ];
 
 /// One created criterion in `task.add`'s `checks`.
@@ -1105,6 +1121,11 @@ pub const R_MEMORY_ADD: &[FieldDoc] = &[
         "string",
         "Present only when this add pushed its scope past the soft cap on standing docs: a nudge to merge or retract one. Test for the key, not its value (D156).",
     ),
+    f(
+        "similar",
+        "array",
+        "Always present: up to three docs of the same project or none that look like this one, best first, each `{id, title, similarity}`; empty when none does. A warning only — the doc was stored either way (D237).",
+    ),
 ];
 
 /// `memory.search`'s result.
@@ -1704,7 +1725,11 @@ pub fn result_shape(method: &str) -> &'static [(&'static str, &'static [FieldDoc
         "project.use" => &[("result", R_PROJECT_USE)],
         "project.archive" => &[("result", R_PROJECT_ARCHIVE)],
         "project.unarchive" => &[("result", R_PROJECT_UNARCHIVE)],
-        "task.add" => &[("result", R_TASK_ADD), ("result.checks[]", TASK_ADD_CHECK)],
+        "task.add" => &[
+            ("result", R_TASK_ADD),
+            ("result.checks[]", TASK_ADD_CHECK),
+            ("result.similar[]", TASK_ADD_SIMILAR),
+        ],
         "task.next" => &[
             ("result", R_TASK_NEXT),
             ("result.task", TASK_CORE),
@@ -1850,7 +1875,10 @@ pub fn result_shape(method: &str) -> &'static [(&'static str, &'static [FieldDoc
             ("result.nodes[]", GRAPH_NODE),
             ("result.edges[]", GRAPH_EDGE),
         ],
-        "memory.add" => &[("result", R_MEMORY_ADD)],
+        "memory.add" => &[
+            ("result", R_MEMORY_ADD),
+            ("result.similar[]", MEMORY_ADD_SIMILAR),
+        ],
         "memory.search" => &[
             ("result", R_MEMORY_SEARCH),
             ("result.hits[]", MEMORY_HIT_ROW),

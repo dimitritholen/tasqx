@@ -360,6 +360,9 @@ fn three_docs(s: &Scratch) -> (Engine, Connection, [String; 3]) {
         add_doc(&a, "Two", GIRAFFE),
         add_doc(&a, "Three", GIRAFFE),
     ];
+    // Each add's duplicate check (D237) embeds inside its own transaction
+    // and keeps nothing; these tests count what searches embed.
+    a.vectors.borrow_mut().embedded = 0;
     (a, Connection::open(s.db()).unwrap(), docs)
 }
 

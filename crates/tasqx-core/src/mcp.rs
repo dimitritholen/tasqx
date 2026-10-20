@@ -1145,7 +1145,8 @@ fn build_tool_specs() -> Vec<ToolSpec> {
                 resolved `scheduled`, so an ambiguous date or sugar captured into the title \
                 can be checked against what was stored. A title carrying CLI sugar adds a \
                 `warnings` entry naming it. `checks` and `depends_on` are created in the same \
-                transaction (D213) and echoed as `checks[]` (with ids) and `depends_on`.",
+                transaction (D213) and echoed as `checks[]` (with ids) and `depends_on`. \
+                `similar` lists up to three open look-alike tasks (D237).",
             schema: json!({
                 "type": "object",
                 "properties": {
@@ -1721,7 +1722,8 @@ fn build_tool_specs() -> Vec<ToolSpec> {
             idempotent: false,
             description: "Store a knowledge document in memory: patterns, documentation, \
                 decisions worth finding again. The body is stored verbatim (markdown fine) \
-                and becomes searchable through tasqx_search_memory.",
+                and becomes searchable through tasqx_search_memory. `similar` lists up to \
+                three look-alike docs (D237).",
             schema: json!({
                 "type": "object",
                 "properties": {
