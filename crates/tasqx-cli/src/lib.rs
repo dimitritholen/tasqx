@@ -909,7 +909,7 @@ fn execute(cli: Cli) -> Exit {
     }
 
     Exit::Out(match cli.command {
-        None => run_list(&mut backend, &ctx, &[], &[], None, None, &[]),
+        None => run_list(&mut backend, &ctx, &[], &[], None, None, &[], None),
         // Only the `--json` spelling reaches here: the screen leaves as
         // `SelfFramed` above, for the same D57-hint reason the bare invocation
         // does.
@@ -990,7 +990,17 @@ fn execute(cli: Cli) -> Exit {
             limit,
             offset,
             fields,
-        }) => run_list(&mut backend, &ctx, &filter, &sort, limit, offset, &fields),
+            holder,
+        }) => run_list(
+            &mut backend,
+            &ctx,
+            &filter,
+            &sort,
+            limit,
+            offset,
+            &fields,
+            holder,
+        ),
         Some(Command::Agenda { filter, days }) => run_agenda(&mut backend, &ctx, &filter, days),
         Some(Command::Start {
             r#ref,
@@ -1102,8 +1112,9 @@ fn execute(cli: Cli) -> Exit {
             filter,
             card,
             ascii,
-        }) => run_next(&mut backend, &ctx, &filter, card, ascii),
-        Some(Command::Pick { filter }) => run_pick(&mut backend, &ctx, &filter),
+            holder,
+        }) => run_next(&mut backend, &ctx, &filter, card, ascii, holder),
+        Some(Command::Pick { filter, holder }) => run_pick(&mut backend, &ctx, &filter, holder),
         Some(Command::Why { r#ref, card, ascii }) => {
             run_why(&mut backend, &ctx, r#ref, card, ascii)
         }

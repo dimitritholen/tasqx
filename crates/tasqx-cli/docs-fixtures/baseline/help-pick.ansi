@@ -15,6 +15,9 @@ Arguments:
           Hyphen-tolerant via the `argv` pre-pass so `-tag` is typable; see `List::filter` for why the pre-pass and not `allow_hyphen_values`. Being named `filter` is what puts this positional under `argv::tests::every_filter_positional_is_registered`, which fails the build unless `pick` is in `FILTER_COMMANDS` too — and, since that guard reads only the escaping half, under `every_filter_command_gets_its_dashes_back`, which is what makes the sentence above true rather than intended. It was intended and not true when this verb shipped: `pick` was registered for escaping and missing from [`Command::filter_tail_mut`], so `tasqx pick -api` filtered on `"\u{1}api"`.
 
 Options:
+      --holder <ID>
+          Whose claims count as yours: a task claimed by anyone else is left out of `@working`, and `s` starts as this holder (D236). Default `user`, the shell
+
       --json
           Print the raw JSON API result instead of the human table
 

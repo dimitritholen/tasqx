@@ -505,6 +505,10 @@ pub(super) enum Command {
         /// `fields`; an unknown name is refused by the engine, same as above.
         #[arg(long, value_delimiter = ',')]
         fields: Vec<String>,
+        /// Whose claims count as yours: a task claimed by anyone else is left out of
+        /// `@working` (D236). Default `user`, the shell.
+        #[arg(long, value_name = "ID")]
+        holder: Option<String>,
     },
     /// What is coming up, when (maps to task.list). `list` ordered by time and
     /// grouped by day, instead of by urgency.
@@ -553,7 +557,8 @@ pub(super) enum Command {
         /// Keep other active tasks running (opt out of single-active).
         #[arg(long)]
         keep: bool,
-        /// Start as this holder, to start a task claimed with `claim --holder` (D236).
+        /// Start as this claim holder, to start a task claimed with `claim --holder`.
+        /// The clock itself stays anonymous, as a shell's always was (D236).
         #[arg(long, value_name = "ID")]
         holder: Option<String>,
         #[command(flatten)]
@@ -1079,6 +1084,10 @@ pub(super) enum Command {
         /// With --card: draw the borders with + - | instead of box-drawing characters.
         #[arg(long, requires = "card")]
         ascii: bool,
+        /// Whose claims count as yours: a task claimed by anyone else is left out of
+        /// `@working` (D236). Default `user`, the shell.
+        #[arg(long, value_name = "ID")]
+        holder: Option<String>,
     },
     /// Open the dashboard: an overview screen over the working set, deadlines,
     /// blocked work, projects, burndown and token spend (DESIGN.md §12-D58).
@@ -1136,6 +1145,10 @@ pub(super) enum Command {
         /// filtered on `"\u{1}api"`.
         #[arg(add = crate::complete::candidates::filter_words())]
         filter: Vec<String>,
+        /// Whose claims count as yours: a task claimed by anyone else is left out of
+        /// `@working`, and `s` starts as this holder (D236). Default `user`, the shell.
+        #[arg(long, value_name = "ID")]
+        holder: Option<String>,
     },
     /// Explain a task's urgency breakdown (maps to task.get + the D1 formula).
     #[command(after_help = crate::cmddoc::after_help("why"))]
@@ -1324,7 +1337,7 @@ impl Command {
             Command::List { filter, .. }
             | Command::Export { filter, .. }
             | Command::Watch { filter }
-            | Command::Pick { filter }
+            | Command::Pick { filter, .. }
             | Command::Next { filter, .. }
             // `..` because `agenda` carries `--days` beside its tail; the dash
             // restoration is about the tail and nothing else.

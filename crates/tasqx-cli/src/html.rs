@@ -90,7 +90,9 @@ fn generate_at(
     )?;
     // Blocked and startable are the engine's answers, not a re-derivation.
     let blocked = short_ids(engine, filter, "@blocked")?;
-    let working = short_ids(engine, filter, "@working")?;
+    // D236: a task someone else has claimed is still ready work in a report a
+    // person reads; the row names its holder.
+    let working = short_ids(engine, filter, "(@working or (@claimed status:pending))")?;
     let members = chart::members_of(&export);
     let model = Model::new(&export, &members, &blocked, &working, now, period);
     let page = Page {
@@ -1027,8 +1029,20 @@ impl<'a> Page<'a> {
         let next_rows = list(&next_ids, "Nothing ready.", |i| {
             let x = t(i);
             let over = x.due.is_some_and(|d| d < now);
+            // D236: whose it is, when someone else holds a live claim on it.
+            let held = match (
+                x.v.get("claimed_by").and_then(Value::as_str),
+                x.v.get("claim_expires")
+                    .and_then(Value::as_str)
+                    .and_then(parse_ts),
+            ) {
+                (Some(by), Some(until)) if until > now && by != "user" => {
+                    format!("claimed by {} · ", esc(by))
+                }
+                _ => String::new(),
+            };
             format!(
-                "<li class=\"{}\">{}<span class=\"meta\">{}<b>{}</b></span></li>",
+                "<li class=\"{}\">{}<span class=\"meta\">{}{held}<b>{}</b></span></li>",
                 if over { "st-over" } else { "" },
                 tlink(x),
                 pj(i),

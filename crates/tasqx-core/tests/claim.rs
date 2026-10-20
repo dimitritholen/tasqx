@@ -380,3 +380,93 @@ fn a_zero_lease_is_refused_as_a_lease() {
     assert!(err.message.contains("lease"), "{}", err.message);
     assert!(!err.message.contains("estimate"), "{}", err.message);
 }
+
+/// Review 2 #1: every `MatchCtx` reader defaults to `user`, so a report or an
+/// export over `@working` keeps the shell's own claim.
+#[test]
+fn report_and_export_over_working_keep_the_shells_claim() {
+    let e = engine();
+    let t = add(&e, "shell work");
+    call(&e, "task.claim", json!({ "ref": t })).unwrap();
+    let summary = call(&e, "report.summary", json!({ "filter": "@working" })).unwrap();
+    assert!(summary.to_string().contains("\"count\":1"), "{summary}");
+    let doc = call(&e, "store.export", json!({ "filter": "@working" })).unwrap();
+    assert_eq!(doc["tasks"].as_array().unwrap().len(), 1, "{doc}");
+}
+
+/// Review 2 #3: the holder asking to start its running task again renews.
+#[test]
+fn the_holders_restart_of_a_running_task_renews_the_lease() {
+    let e = engine();
+    let t = add(&e, "long haul");
+    claim(&e, t, "agent-1").unwrap();
+    call(&e, "task.start", json!({ "ref": t, "actor": "agent-1" })).unwrap();
+    call(
+        &e,
+        "task.claim",
+        json!({ "ref": t, "actor": "agent-1", "lease": "1m" }),
+    )
+    .unwrap();
+    let again = call(&e, "task.start", json!({ "ref": t, "actor": "agent-1" })).unwrap();
+    assert_eq!(again["already_running"], true, "{again}");
+    let got = call(&e, "task.get", json!({ "ref": t })).unwrap();
+    let expires: jiff::Timestamp = got["claim_expires"].as_str().unwrap().parse().unwrap();
+    assert!(
+        expires.duration_since(jiff::Timestamp::now()).as_secs() > 25 * 60,
+        "{got}"
+    );
+}
+
+/// Review 2 #5: the ISO spelling of nothing is no lease either.
+#[test]
+fn an_iso_zero_lease_is_refused() {
+    let e = engine();
+    let t = add(&e, "iso");
+    let err = call(&e, "task.claim", json!({ "ref": t, "lease": "PT0S" })).unwrap_err();
+    assert_eq!(err.message, "a lease must be greater than zero");
+}
+
+/// Review 2 #6: a row imported closed carries no claim, and `@claimed` never
+/// lists a closed task.
+#[test]
+fn a_done_row_imported_with_a_claim_holds_none() {
+    let e = engine();
+    call(
+        &e,
+        "store.import",
+        json!({ "tasks": [{
+            "id": "019f0000-0000-7000-8000-000000000001", "short_id": 1,
+            "title": "closed", "status": "done",
+            "completed": "2026-01-01T00:00:00Z",
+            "claimed_by": "agent-1", "claim_expires": "2099-01-01T00:00:00Z",
+        }]}),
+    )
+    .expect("import");
+    let got = call(&e, "task.get", json!({ "ref": 1 })).unwrap();
+    assert_eq!(got["claimed_by"], Value::Null, "{got}");
+    let claimed = call(&e, "task.list", json!({ "filter": "@claimed" })).unwrap();
+    assert_eq!(claimed["total"], 0, "{claimed}");
+}
+
+/// Review 2 #8: an expired claim is anyone's to clear, without `force`.
+#[test]
+fn anyone_releases_an_expired_claim_and_it_is_logged_expired() {
+    let e = engine();
+    let t = add(&e, "lapsed");
+    claim(&e, t, "agent-1").unwrap();
+    e.conn()
+        .execute(
+            "UPDATE tasks SET claim_expires = '2020-01-01T00:00:00Z'",
+            [],
+        )
+        .unwrap();
+    let out = call(&e, "task.release", json!({ "ref": t, "actor": "agent-2" })).unwrap();
+    assert_eq!(out["forced"], false, "{out}");
+    let ev = events(&e, t)
+        .into_iter()
+        .find(|ev| ev["op"] == "release")
+        .expect("a release event");
+    assert_eq!(ev["payload"]["expired"], true, "{ev}");
+    assert!(ev["payload"].get("forced").is_none(), "{ev}");
+    assert_eq!(ev["payload"]["holder"], "agent-1", "{ev}");
+}

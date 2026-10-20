@@ -33,6 +33,9 @@ Options:
       --no-daemon
           Never route through a daemon; always run one-shot in-process (the pre-daemon behaviour). Escape hatch for scripts
 
+      --holder <ID>
+          Whose claims count as yours: a task claimed by anyone else is left out of `@working` (D236). Default `user`, the shell
+
   -h, --help
           Print help (see a summary with '-h')
 

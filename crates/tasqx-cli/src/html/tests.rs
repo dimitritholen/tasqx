@@ -697,3 +697,38 @@ fn mono_keeps_good_and_bad_apart_without_colour() {
         "the fixture has a worsening figure"
     );
 }
+
+/// D236: a task someone else has claimed is still ready work in a report a
+/// person reads, and its row names the holder.
+#[test]
+fn a_task_someone_else_claimed_stays_next_and_names_its_holder() {
+    let e = engine();
+    let listed = dispatch(
+        &e,
+        "task.list",
+        &json!({ "filter": "\"Alpha blocker task\"" }),
+    )
+    .unwrap();
+    let id = listed["tasks"][0]["short_id"].clone();
+    dispatch(
+        &e,
+        "task.claim",
+        &json!({ "ref": id, "actor": "agent-9", "lease": "24h" }),
+    )
+    .expect("claim");
+    let th = theme::builtin("nord").unwrap();
+    let doc = generate_at(
+        &e,
+        &th,
+        &json!({ "group_by": "project" }),
+        Options::default(),
+        now(),
+    )
+    .expect("the page renders");
+    let su = block(&doc, "standup", "*");
+    let next = &su[su.find("Next").expect("a Next list")..];
+    assert!(
+        next.contains("Alpha blocker task") && next.contains("claimed by agent-9"),
+        "{next}"
+    );
+}

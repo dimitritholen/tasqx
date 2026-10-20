@@ -86,6 +86,7 @@ function downgrade(db: string): void {
   }
   // Nor a column a trigger reads: D236's claim columns came with this one.
   sql.exec('DROP TRIGGER IF EXISTS tasks_claim_ends_on_close');
+  sql.exec('DROP TRIGGER IF EXISTS tasks_claim_ends_on_closed_insert');
   for (const column of LATER_TASK_COLUMNS) sql.exec(`ALTER TABLE tasks DROP COLUMN ${column}`);
   sql.close();
 }

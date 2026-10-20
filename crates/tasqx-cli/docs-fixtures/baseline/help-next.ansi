@@ -21,6 +21,9 @@ Options:
       --theme <THEME>
           Theme name (built-in nord|gruvbox|dracula|solarized|mono, or a user file). Overrides $TASQX_THEME and the config file (DESIGN.md §8)
 
+      --holder <ID>
+          Whose claims count as yours: a task claimed by anyone else is left out of `@working` (D236). Default `user`, the shell
+
       --socket <SOCKET>
           Local socket / named-pipe address of a tasqx daemon. Overrides $TASQX_SOCK. When a daemon is reachable, one-shot commands route through it (single writer); otherwise they run in-process. A set $TASQX_DB naming a different store than that daemon's is refused. Also selects the address for `daemon` and `watch`
 

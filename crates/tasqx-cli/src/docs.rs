@@ -258,7 +258,7 @@ const METHODS: [(&str, &str, &str); 54] = [
         "task.start",
         "<code>ref</code>, <code>keep?</code>, <code>session_id?</code>, \
          <code>transcript_path?</code>, <code>client?</code>, <code>actor?</code>, \
-         <code>expected_rev?</code>",
+         <code>holder?</code>, <code>expected_rev?</code>",
         "The task, timer running. Correlation params land in the start event. \
          <code>auto_stopped</code> lists whichever other task D6's single-active \
          rule just stopped to make room for this one — empty unless <code>keep</code> \

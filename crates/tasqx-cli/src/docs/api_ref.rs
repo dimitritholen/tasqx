@@ -878,6 +878,13 @@ const PARAM_DOCS: &[(&str, &str, &str, &str, &str)] = &[
         "The project to archive. Archiving hides it from the list; it removes nothing.",
     ),
     (
+        "task.start",
+        "holder",
+        "string",
+        "",
+        "The claim holder this start acts as, when it is not `actor` (D236): the CLI's `start --holder`, which leaves the clock's D140 actor anonymous. Absent, the holder is `actor`, else `user`. Not on the MCP tool, where `actor` is both.",
+    ),
+    (
         "project.unarchive",
         "name",
         "string",

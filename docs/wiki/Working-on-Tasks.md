@@ -80,8 +80,9 @@ naming the holder and when the lease runs out, and the task drops out of their
 `tasqx show` names the holder and the expiry.
 
 Without `--holder` the shell holds the claim as `user`, and `tasqx next` and
-`@working` from the same shell still show it. `start --holder` starts a task
-claimed under a named holder:
+`@working` from the same shell still show it. `next`, `list` and `pick` take
+`--holder` to see a named holder's claims as yours, and `start --holder` starts
+a task claimed under a named holder (the timer itself stays the shell's):
 
 ```console
 tasqx start 42 --holder builder-2
@@ -97,7 +98,8 @@ Claim, renew, release and takeover each land in the event log with the holder.
 Give a claim up. Only its holder can: a task with no claim, or someone else's,
 exits 5. `done` and `cancel` end a claim without it. `--force` releases a claim
 someone else holds — one left by an agent that crashed or reconnected under a
-new id — and the log records it as forced.
+new id — and the log records it as forced. A claim whose lease has run out can
+be released by anyone, no `--force` needed.
 
 ```console
 tasqx release 42 --holder builder-2

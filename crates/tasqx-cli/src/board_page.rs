@@ -28,7 +28,9 @@ pub(crate) const NONCE_SLOT: &str = "__NONCE__";
 const COLUMNS: [(&str, &str, &str); 5] = [
     ("backlog", "Backlog", "status:backlog"),
     ("blocked", "Blocked", "@blocked"),
-    ("ready", "Ready", "@working"),
+    // D236: a task claimed by someone else is still ready work on a board a
+    // person reads, so the column adds it back (with its holder on the card).
+    ("ready", "Ready", "@working or (@claimed status:pending)"),
     ("active", "Active", "status:active"),
     ("done", "Done", "completed.after:-7d"),
 ];
@@ -101,6 +103,7 @@ select{background:var(--sunken);border:1px solid var(--line-strong);border-radiu
 .ttl{margin:2px 0 4px;overflow-wrap:anywhere}
 .meta{font-size:12px;color:var(--muted);display:flex;flex-wrap:wrap;gap:2px 10px}
 .meta .late{color:var(--danger);font-weight:600}
+.meta .held{font-style:italic}
 .gauge{height:4px;border-radius:2px;background:var(--line);margin-top:6px;overflow:hidden}
 .gauge i{display:block;height:100%;background:var(--muted)}
 .gauge.warn i{background:var(--warn)}.gauge.danger i{background:var(--danger)}
@@ -137,7 +140,7 @@ body[data-writes="0"] .w{display:none}
 
 const SCRIPT: &str = r###"(()=>{
 "use strict";
-const COLS=[["backlog","Backlog","status:backlog"],["blocked","Blocked","@blocked"],["ready","Ready","@working"],["active","Active","status:active"],["done","Done","completed.after:-7d"]];
+const COLS=[["backlog","Backlog","status:backlog"],["blocked","Blocked","@blocked"],["ready","Ready","@working or (@claimed status:pending)"],["active","Active","status:active"],["done","Done","completed.after:-7d"]];
 const $=id=>document.getElementById(id);
 const el=(t,c,x)=>{const e=document.createElement(t);if(c)e.className=c;if(x!=null)e.textContent=x;return e};
 const W=document.body.dataset.writes==="1";
@@ -181,6 +184,7 @@ function card(t,col){
  if(col==="done"&&t.completed)m.append(el("span","","done "+day(t.completed)));
  else if(t.due){const late=new Date(t.due)<new Date();m.append(el("span",late?"late":"",(late?"overdue ":"due ")+day(t.due)))}
  (t.tags||[]).forEach(g=>m.append(el("span","","+"+g)));
+ if(t.claimed_by&&t.claimed_by!=="user")m.append(el("span","held","claimed by "+t.claimed_by));
  li.append(m);
  if(col!=="done"){
   const u=t.urgency||0,g=el("div","gauge "+band(u));g.setAttribute("role","img");
@@ -196,7 +200,7 @@ function paint(){
  const keep=state.sel,main=$("cols"),had=document.activeElement&&document.activeElement.dataset&&document.activeElement.dataset.id;
  main.replaceChildren();state.byId={};
  COLS.forEach(c=>{
-  const rows=(state.data[c[0]]||[]).filter(t=>(c[0]!=="ready"||t.status!=="active")&&hit(t));
+  const rows=(state.data[c[0]]||[]).filter(t=>(c[0]!=="ready"||(t.status!=="active"&&!t.blocked))&&hit(t));
   const s=el("section","col");s.setAttribute("aria-labelledby","h-"+c[0]);s.dataset.col=c[0];
   const h=el("header"),h2=el("h2");const nm=el("span","",c[1]);nm.id="h-"+c[0];
   h2.append(nm,el("span","n",String(rows.length)));h.append(h2,el("code","",c[2]));s.append(h);
@@ -424,6 +428,27 @@ mod tests {
 
     fn built() -> String {
         page(&crate::theme::builtin("nord").expect("nord ships"), true)
+    }
+
+    /// D236: the Ready column's query, run through the engine as the board
+    /// runs it (no actor, so `user`), keeps a pending task someone else has
+    /// claimed, and the card names the holder.
+    #[test]
+    fn a_task_claimed_by_someone_else_is_ready_with_its_holder() {
+        use tasqx_core::{dispatch, Engine};
+        let e = Engine::open_in_memory().expect("store");
+        dispatch(&e, "task.add", &serde_json::json!({ "title": "held" })).expect("add");
+        dispatch(
+            &e,
+            "task.claim",
+            &serde_json::json!({ "ref": 1, "actor": "agent-9" }),
+        )
+        .expect("claim");
+        let (_, _, ready) = COLUMNS[2];
+        let rows = dispatch(&e, "task.list", &serde_json::json!({ "filter": ready }))
+            .expect("the Ready query parses");
+        assert_eq!(rows["tasks"][0]["claimed_by"], "agent-9", "{rows}");
+        assert!(SCRIPT.contains("\"claimed by \"+t.claimed_by"));
     }
 
     #[test]

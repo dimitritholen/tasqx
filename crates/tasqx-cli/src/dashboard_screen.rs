@@ -421,10 +421,10 @@ pub(crate) fn run_dashboard(be: &mut Backend, ctx: &Ctx) -> Result<Option<String
         match want {
             // `l` is the one key that means "leave", so it does.
             Some(Action::List(scope)) => {
-                return run_list(be, ctx, &scope, &[], None, None, &[]).map(|(_, r)| Some(r))
+                return run_list(be, ctx, &scope, &[], None, None, &[], None).map(|(_, r)| Some(r))
             }
             Some(Action::Pick(scope)) => {
-                if let Some(said) = after_pick(run_pick(be, ctx, &scope), &mut picked)? {
+                if let Some(said) = after_pick(run_pick(be, ctx, &scope, None), &mut picked)? {
                     app.say(said);
                 }
                 // Whatever happened, the screen shows it: a started task turns

@@ -502,7 +502,8 @@ fn eval_pred(p: &Pred, ctx: &MatchCtx) -> bool {
                 && !ctx.blocked
                 && (ctx.claimed_by.is_none() || ctx.claimed_by == ctx.caller)
         }
-        Pred::Claimed => ctx.claimed_by.is_some(),
+        // A closed task holds no claim (D236), whatever a row says.
+        Pred::Claimed => ctx.claimed_by.is_some() && !ctx.status.is_terminal(),
         Pred::Blocked => ctx.blocked,
         Pred::DueBefore(bound) => instant_cmp(ctx.due, *bound, true),
         Pred::DueAfter(bound) => instant_cmp(ctx.due, *bound, false),

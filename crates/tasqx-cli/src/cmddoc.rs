@@ -206,7 +206,7 @@ pub const COMMAND_REF: &[CmdDoc] = &[
         aliases: &["ls", "l"],
         method: "task.list",
         summary: "List tasks matching a filter.",
-        usage: "tasqx list [filter…] [--sort key]… [--limit N] [--offset N] [--fields f,…]",
+        usage: "tasqx list [filter…] [--sort key]… [--limit N] [--offset N] [--fields f,…] [--holder ID]",
         examples: &[
             ex("tasqx list"),
             ex("tasqx list project:work status:pending +api"),
@@ -255,7 +255,7 @@ pub const COMMAND_REF: &[CmdDoc] = &[
         aliases: &[],
         method: "task.next",
         summary: "The one highest-urgency unblocked task.",
-        usage: "tasqx next [filter…] [--card [--ascii]]",
+        usage: "tasqx next [filter…] [--card [--ascii]] [--holder ID]",
         examples: &[
             ex("tasqx next"),
             ex("tasqx next project:work"),
@@ -306,7 +306,7 @@ pub const COMMAND_REF: &[CmdDoc] = &[
         aliases: &["p", "fzf"],
         method: "task.list + task.get + task.start",
         summary: "Browse tasks on a full-screen list: read one, search them, start one.",
-        usage: "tasqx pick [filter…]",
+        usage: "tasqx pick [filter…] [--holder ID]",
         examples: &[
             // `NoRun`, like `config edit`, and for the same reason rather than
             // out of caution: the executable-examples guard runs each Safe
@@ -411,7 +411,7 @@ pub const COMMAND_REF: &[CmdDoc] = &[
             ex_norun("tasqx claim 12 --holder builder-2 --lease 2h", "renew it for two hours"),
         ],
         notes: &[
-            "A claim is a lease (D236): 30m unless `--lease` names another length, at most 24h. Claiming again as the same holder renews it. Without `--holder` the shell holds it as `user`; over MCP the holder is the connection. `tasqx start --holder` starts a task claimed under a named holder.",
+            "A claim is a lease (D236): 30m unless `--lease` names another length, at most 24h. Claiming again as the same holder renews it. Without `--holder` the shell holds it as `user`; over MCP the holder is the connection. `tasqx start --holder` starts a task claimed under a named holder, the timer itself staying the shell's; `next`, `list` and `pick` take `--holder` to see that holder's claims as yours.",
             "While the lease is live, a claim or `start` by anyone else exits 5 naming the holder and the expiry, and the task leaves their `next` and `@working`. `tasqx list @claimed` lists every live claim.",
             "Nothing sweeps an expired lease: it is read against the clock, so once it runs out anyone can claim the task, and that claim is logged as a takeover. `done` and `cancel` end a claim; `tasqx release` gives one up.",
         ],
