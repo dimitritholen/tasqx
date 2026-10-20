@@ -526,9 +526,6 @@ pub struct SessionDoc {
     pub title: String,
     /// The doc's whole body, frontmatter included.
     pub body: String,
-    /// D235: the refs the doc cites that are gone from the session's working
-    /// tree; computed for standing docs only, empty for topical fill.
-    pub stale_refs: Vec<String>,
 }
 
 /// D174: a doc's `source` is its identity — the key `memory.import` replaces
@@ -2221,6 +2218,17 @@ impl Engine {
         &self,
         workdir: Option<&std::path::Path>,
     ) -> Result<SessionRulings, ApiError> {
+        Ok(self.session_rulings_with_refs(workdir)?.0)
+    }
+
+    /// [`Engine::session_rulings`] plus, per standing doc in order, the refs
+    /// it cites that are gone from the session's working tree (D235). Kept
+    /// beside the public type rather than on it, so `SessionDoc` gains no
+    /// field until a minor release (#815).
+    pub(crate) fn session_rulings_with_refs(
+        &self,
+        workdir: Option<&std::path::Path>,
+    ) -> Result<(SessionRulings, Vec<Vec<String>>), ApiError> {
         // D235: the toplevel is resolved once; the project is read off it.
         let top = workdir.and_then(crate::memory_doc::RefRoot::at);
         let project = self.project_for(workdir, top.as_ref())?;
@@ -2234,7 +2242,7 @@ impl Engine {
         // — the gist this feeds is the first paragraph, cut at 240 bytes,
         // and 4 KB comfortably covers a frontmatter block ahead of it
         // without loading a doc whole.
-        let docs = |sql: &str, check: bool| -> Result<Vec<SessionDoc>, ApiError> {
+        let docs = |sql: &str, check: bool| -> Result<Vec<(SessionDoc, Vec<String>)>, ApiError> {
             let mut stmt = self.conn.prepare(sql)?;
             let rows = stmt.query_map(params![name], |r| {
                 let body: String = r.get(1)?;
@@ -2250,11 +2258,13 @@ impl Engine {
                     }
                     _ => Vec::new(),
                 };
-                Ok(SessionDoc {
-                    title: r.get(0)?,
-                    body,
+                Ok((
+                    SessionDoc {
+                        title: r.get(0)?,
+                        body,
+                    },
                     stale_refs,
-                })
+                ))
             })?;
             Ok(rows.collect::<Result<_, _>>()?)
         };
@@ -2279,24 +2289,31 @@ impl Engine {
         // 256 is well above the most entries a 3,072-byte section could ever
         // render, since every rendered entry is at least 4 bytes ("\n- " plus
         // a title).
+        let (standing, stale): (Vec<SessionDoc>, Vec<Vec<String>>) = standing.into_iter().unzip();
         let topical = docs(
             "SELECT title, substr(body, 1, 4096) FROM docs \
              WHERE standing = 0 AND project = ?1 \
              ORDER BY rtrim(modified, 'Z') DESC, id DESC \
              LIMIT 256",
             false,
-        )?;
+        )?
+        .into_iter()
+        .map(|(d, _)| d)
+        .collect();
         let topical_total: i64 = self.conn.query_row(
             "SELECT COUNT(*) FROM docs WHERE standing = 0 AND project = ?1",
             params![name],
             |r| r.get(0),
         )?;
-        Ok(SessionRulings {
-            project,
-            standing,
-            topical,
-            topical_total: topical_total as usize,
-        })
+        Ok((
+            SessionRulings {
+                project,
+                standing,
+                topical,
+                topical_total: topical_total as usize,
+            },
+            stale,
+        ))
     }
 
     /// The session's project and how it was inferred (D157, D218), with no
