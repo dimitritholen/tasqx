@@ -507,6 +507,9 @@ pub struct SessionDoc {
     pub title: String,
     /// The doc's whole body, frontmatter included.
     pub body: String,
+    /// D235: the refs the doc cites that are gone from the session's working
+    /// tree; computed for standing docs only, empty for topical fill.
+    pub stale_refs: Vec<String>,
 }
 
 /// D174: a doc's `source` is its identity — the key `memory.import` replaces
@@ -1802,11 +1805,21 @@ impl Engine {
         } else {
             None
         };
+        let source: Option<String> = r.get(3)?;
+        let project: Option<String> = r.get(7)?;
+        // D235: an annotation cites nothing a doc's `source` keys, so null.
+        let stale_refs = (kind == "doc").then(|| {
+            self.stale_refs(
+                &json!(source),
+                &json!(body.as_deref().unwrap_or("")),
+                &json!(project),
+            )
+        });
         let row = json!({
             "id": id,
             "kind": kind,
             "title": title,
-            "source": r.get::<_, Option<String>>(3)?,
+            "source": source,
             "snippet": r.get::<_, String>(4)?,
             "rank": r.get::<_, f64>(5)?,
             // #101: a doc hit says whether it is standing; an annotation hit
@@ -1814,8 +1827,9 @@ impl Engine {
             "standing": r.get::<_, Option<i64>>(6)?.map(|n| n != 0),
             // #657: which project this hit belongs to — `null` for global
             // knowledge.
-            "project": r.get::<_, Option<String>>(7)?,
+            "project": project,
             "stale": stale,
+            "stale_refs": stale_refs,
             // #807: a doc's `modified`, an annotation's `created`:
             // annotations carry no modified time, so an edit does not move
             // it (the rule graph.query uses). A date filter can place every hit.
@@ -1857,6 +1871,19 @@ impl Engine {
             }
         }
         Ok(Some(row))
+    }
+
+    /// D235: the refs a doc cites that are gone from the working tree this
+    /// process checks against ([`Engine::refs_toplevel`]); empty when every
+    /// ref holds or none can be checked.
+    fn stale_refs(&self, source: &Value, body: &Value, project: &Value) -> Vec<String> {
+        crate::memory_doc::verify_refs(
+            source.as_str(),
+            body.as_str().unwrap_or_default(),
+            project.as_str(),
+            self.refs_toplevel().as_deref(),
+        )
+        .stale_refs
     }
 
     // ---- memory.get ----------------------------------------------------------
@@ -1919,7 +1946,10 @@ impl Engine {
                 },
             )
             .optional()?;
-        if let Some(doc) = found {
+        if let Some(mut doc) = found {
+            // D235: the cited code that is gone, read at this read.
+            doc["stale_refs"] =
+                json!(self.stale_refs(&doc["source"], &doc["body"], &doc["project"]));
             return Ok(doc);
         }
         // The id might be a real annotation, which `memory.search` returns
@@ -2182,23 +2212,44 @@ impl Engine {
         };
         let name = project.as_ref().map(|(n, _)| n.as_str());
 
+        // D235: a standing ruling citing code that is gone from the
+        // session's working tree says so; topical fill is not checked.
+        let top = workdir.and_then(|d| crate::memory_doc::git_toplevel(&d.join("_")));
         let docs = |sql: &str| -> Result<Vec<SessionDoc>, ApiError> {
             let mut stmt = self.conn.prepare(sql)?;
             let rows = stmt.query_map(params![name], |r| {
+                let body: String = r.get(1)?;
+                let source: Option<String> = r.get(2)?;
+                let project: Option<String> = r.get(4)?;
+                let stale_refs = match (r.get::<_, bool>(3)?, &top) {
+                    (true, Some(top)) => {
+                        crate::memory_doc::verify_refs(
+                            source.as_deref(),
+                            &body,
+                            project.as_deref(),
+                            Some(top),
+                        )
+                        .stale_refs
+                    }
+                    _ => Vec::new(),
+                };
                 Ok(SessionDoc {
                     title: r.get(0)?,
-                    body: r.get(1)?,
+                    body,
+                    stale_refs,
                 })
             })?;
             Ok(rows.collect::<Result<_, _>>()?)
         };
         // D144's newest-modified key. `project = NULL` matches nothing, so
         // with no project inferred only the unscoped standing docs remain.
-        // PR #48 review: `substr(body, 1, 4096)` — the gist this feeds is
-        // the first paragraph, cut at 240 bytes, and 4 KB comfortably covers
-        // a frontmatter block ahead of it without loading a doc whole.
+        // A standing body is read whole (D235: a ref can sit anywhere in it;
+        // D156's soft cap keeps them few). PR #48 review: topical fill reads
+        // `substr(body, 1, 4096)` — the gist this feeds is the first
+        // paragraph, cut at 240 bytes, and 4 KB comfortably covers a
+        // frontmatter block ahead of it without loading a doc whole.
         let standing = docs(
-            "SELECT title, substr(body, 1, 4096) FROM docs \
+            "SELECT title, body, source, 1, project FROM docs \
              WHERE standing = 1 AND (project = ?1 OR project IS NULL) \
              ORDER BY project IS NULL, rtrim(modified, 'Z') DESC, id DESC",
         )?;
@@ -2209,7 +2260,7 @@ impl Engine {
         // render, since every rendered entry is at least 4 bytes ("\n- " plus
         // a title).
         let topical = docs(
-            "SELECT title, substr(body, 1, 4096) FROM docs \
+            "SELECT title, substr(body, 1, 4096), NULL, 0, NULL FROM docs \
              WHERE standing = 0 AND project = ?1 \
              ORDER BY rtrim(modified, 'Z') DESC, id DESC \
              LIMIT 256",

@@ -790,6 +790,32 @@ fn a_project_named_after_an_ancestor_directory_does_not_take_over_the_session() 
     }
 }
 
+/// D235: a standing ruling citing code that is gone from the session's
+/// working tree says so in the handshake, naming what is missing; one whose
+/// citations all hold carries no marker.
+#[test]
+fn a_standing_ruling_citing_missing_code_is_marked_stale_refs() {
+    let _guard = RIPWIRE_PATH_ENV.lock().unwrap_or_else(|e| e.into_inner());
+    let engine = engine();
+    let repo = temp_repo("stale-refs/repo");
+    std::fs::create_dir_all(repo.join("src")).unwrap();
+    std::fs::write(repo.join("src/live.rs"), "fn kept() {}").unwrap();
+    add_doc(&engine, "gone rule", "see `src/gone.rs`", None, true);
+    add_doc(&engine, "live rule", "see `src/live.rs::kept`", None, true);
+    let text = rulings_of(&McpServer::new(&engine, Scope::Write).with_workdir(Some(repo)));
+    let line = |t: &str| {
+        text.lines()
+            .find(|l| l.contains(t))
+            .unwrap_or_default()
+            .to_string()
+    };
+    assert!(
+        line("gone rule").contains("[stale_refs: src/gone.rs]"),
+        "{text}"
+    );
+    assert!(!line("live rule").contains("stale_refs"), "{text}");
+}
+
 #[test]
 fn with_no_project_inferred_only_unscoped_standing_docs_are_shown() {
     let _guard = RIPWIRE_PATH_ENV.lock().unwrap_or_else(|e| e.into_inner());

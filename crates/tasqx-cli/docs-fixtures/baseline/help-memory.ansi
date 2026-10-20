@@ -8,6 +8,7 @@ Commands:
   update  Correct a doc in place (maps to memory.update)
   search  Search docs + annotations by meaning and words (maps to memory.search)
   show    Show one doc whole, by id (maps to memory.get)
+  verify  Check the files and symbols docs cite against this git checkout (D235): ok, missing_path, missing_symbol or unverifiable per doc
   rm      Remove a doc by id (maps to memory.remove)
   import  Import markdown files as docs: one doc per file (maps to memory.add)
 
@@ -28,6 +29,7 @@ EXAMPLES
   tasqx memory import docs/adr    # one doc per .md file; title from the first # heading
   tasqx memory import docs/adr --project ledger    # scopes every doc in the batch; a re-import naming a different project moves it (#657)
   tasqx memory import --refresh    # re-reads every imported doc whose file changed; takes no path
+  tasqx memory verify    # flags docs citing files or functions gone from this checkout (D235)
   tasqx memory update 019f8422-7b3e-7c41-a2d9-6f1b0e5c8a12 --body "corrected text"    # in-place correction; add/remove leave the stale doc searchable or lose it for good
   tasqx memory rm 019f8422-7b3e-7c41-a2d9-6f1b0e5c8a12    # by the id search printed
 
