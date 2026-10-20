@@ -257,6 +257,7 @@ pub static TASK_FIELDS: LazyLock<Vec<String>> = LazyLock::new(|| {
         &probe,
         &[],
         false,
+        None,
         Some(&[]),
         Some(&Value::Null),
         Timestamp::UNIX_EPOCH,
@@ -353,7 +354,8 @@ impl<'a> From<&'a TaskSnapshot> for MatchCtx<'a> {
                 .as_ref()
                 .filter(|_| snapshot.claim_live)
                 .map(|(by, _)| by.as_str()),
-            caller: None,
+            // D236: a reader naming no actor is the shell, holder `user`.
+            caller: Some("user"),
         }
     }
 }
@@ -1322,12 +1324,16 @@ fn list_row_json(
     t: &Task,
     tags: &[String],
     blocked: bool,
+    claimed_by: Option<&str>,
     depends_on: Option<&[i64]>,
     tokens: Option<&Value>,
     now: Timestamp,
 ) -> Value {
     let mut v = task_to_json(t, tags, now);
     v["blocked"] = json!(blocked);
+    // D236: the live claim's holder, null when there is none — what a board
+    // or a list needs to say whose a task is without a `task.get` per row.
+    v["claimed_by"] = json!(claimed_by);
     // Emitted only when the caller projected it (D70). It is a name
     // `TASK_FIELDS` publishes and `parse_fields` accepts, and it is absent from
     // the default row on purpose: the edge list costs a statement and a

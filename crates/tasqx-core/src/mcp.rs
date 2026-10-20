@@ -578,6 +578,12 @@ const PINNED_ARGS: &[(&str, &str, &str)] = &[
         "a grade the reporter sets for itself grades nothing: an agent's count is \
          `medium`, exactly what `tasqx_complete_task` records (D50, D167).",
     ),
+    (
+        "tasqx_start_timer",
+        "holder",
+        "over MCP the claim holder and the clock's actor are one value, `actor` (D236); \
+         `holder` exists for the CLI, whose `--holder` must leave the clock anonymous.",
+    ),
 ];
 
 /// Tool arguments this server READS AND DOES NOT FORWARD, each with the reason

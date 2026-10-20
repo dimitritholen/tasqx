@@ -18,6 +18,10 @@ pub(super) struct StartTask {
     /// have the store searching telemetry for a session id no exporter ever
     /// emitted. This one is only ever compared with itself.
     pub(super) actor: Option<String>,
+    /// D236: the claim holder this start acts as, when it is not `actor`.
+    /// The CLI's `--holder` sends this so the D140 clock actor stays
+    /// anonymous; over MCP the two are one value and this stays absent.
+    pub(super) holder: Option<String>,
 }
 
 /// Correlation metadata captured at the moment work starts or completes
@@ -58,6 +62,7 @@ pub(super) fn parse_start_task(p: &Value) -> Result<StartTask, ApiError> {
         keep: opt_bool(p, "keep")?.unwrap_or(false),
         correlation: parse_correlation(p)?,
         actor: opt_str_nonempty(p, "actor")?,
+        holder: opt_str_nonempty(p, "holder")?,
     })
 }
 

@@ -497,6 +497,9 @@ const TASK_ANNOTATION_PAGE: &[Field] = &[
 
 const TASK_BLOCKED: &[Field] = &[req("blocked", Ty::Bool)];
 
+/// D236: a list row names the live claim's holder, null when there is none.
+const TASK_LIST_CLAIM: &[Field] = &[nul("claimed_by", Ty::Str)];
+
 /// #150: the terms `urgency` sums (D1) — absent unless `explain: true` is
 /// asked for, so the default `task.get` shape every existing caller reads is
 /// unchanged. `total` duplicates the top-level `urgency` deliberately: a
@@ -744,7 +747,13 @@ const R_TASK_LIST: Shape = &[&[
     req_of(
         "tasks",
         Ty::Array,
-        &[TASK_CORE, TASK_LIVE_TIME, TASK_BLOCKED, TASK_STATUS_FLAG],
+        &[
+            TASK_CORE,
+            TASK_LIVE_TIME,
+            TASK_BLOCKED,
+            TASK_LIST_CLAIM,
+            TASK_STATUS_FLAG,
+        ],
     ),
 ]];
 
@@ -1403,7 +1412,13 @@ const R_TASK_NEXT: Shape = &[&[
     nul_of(
         "task",
         Ty::Object,
-        &[TASK_CORE, TASK_LIVE_TIME, TASK_BLOCKED, TASK_STATUS_FLAG],
+        &[
+            TASK_CORE,
+            TASK_LIVE_TIME,
+            TASK_BLOCKED,
+            TASK_LIST_CLAIM,
+            TASK_STATUS_FLAG,
+        ],
     ),
     nul("summary", Ty::Str),
     req("store_empty", Ty::Bool),

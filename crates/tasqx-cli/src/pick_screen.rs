@@ -36,7 +36,12 @@ pub(crate) const PICK_NEEDS_A_TERMINAL: &str =
 /// already said yes; `pick_refuses_a_piped_stdout_with_a_nonzero_exit` asserts
 /// the ordering by pointing `$TASQX_DB` at a path that must still not exist
 /// afterwards.
-pub(crate) fn run_pick(be: &mut Backend, ctx: &Ctx, filter: &[String]) -> CmdOutcome {
+pub(crate) fn run_pick(
+    be: &mut Backend,
+    ctx: &Ctx,
+    filter: &[String],
+    holder: Option<String>,
+) -> CmdOutcome {
     // The same default and the same argv-preserving parse as `list`: `pick` is
     // a chooser over the working set, so the set it offers must be the set
     // `tasqx` shows, token for token.
@@ -45,7 +50,7 @@ pub(crate) fn run_pick(be: &mut Backend, ctx: &Ctx, filter: &[String]) -> CmdOut
     } else {
         tasqx_core::filter::from_argv(filter)
     };
-    let listed = pick_candidates(be, &filter_str)?;
+    let listed = pick_candidates(be, &filter_str, holder.as_deref())?;
     let rows = pick_rows(&listed);
     if rows.is_empty() {
         return Err(no_candidates(&filter_str));
@@ -58,10 +63,12 @@ pub(crate) fn run_pick(be: &mut Backend, ctx: &Ctx, filter: &[String]) -> CmdOut
     let Some(short_id) = chosen else {
         return nothing_picked();
     };
-    let result = be.call(
-        "task.start",
-        &json!({ "ref": short_id.to_string(), "keep": false }),
-    )?;
+    // D236: started as the claim holder the pick ran as, the clock anonymous.
+    let mut start = json!({ "ref": short_id.to_string(), "keep": false });
+    if let Some(h) = &holder {
+        start["holder"] = json!(h);
+    }
+    let result = be.call("task.start", &start)?;
     // The same read-back and the same displaced-task titles `tasqx start`
     // gathers (D124: the summary IS `start`'s echo, not a second rendering).
     let task = verbs::read_back(be, &result).unwrap_or_else(|| result.clone());
@@ -129,11 +136,21 @@ pub(crate) fn no_candidates(filter: &str) -> ApiError {
 /// bounds at 100 rows, so on a larger working set the task the reader was
 /// searching for could simply not be there, and the header counted the page
 /// as though it were the set.
-pub(crate) fn pick_candidates(be: &mut Backend, filter: &str) -> Result<Value, ApiError> {
+pub(crate) fn pick_candidates(
+    be: &mut Backend,
+    filter: &str,
+    holder: Option<&str>,
+) -> Result<Value, ApiError> {
     // D110's ceiling, so the common store is read in one call: `task.list`
     // scans the whole store each time (D58), and a small page made opening
     // the screen cost one scan per page.
-    candidates_in_pages(be, filter, 10_000)
+    let mut base = json!({ "filter": filter, "sort": ["-urgency"], "limit": 10_000 });
+    // D236: whose claims stay in the working set; absent is the engine's `user`.
+    if let Some(h) = holder {
+        base["actor"] = json!(h);
+    }
+    let pages = task_list_pages(|p| be.call("task.list", p), base)?;
+    Ok(merge_pages(&pages))
 }
 
 /// [`pick_candidates`] with the page size named, so a test can make the loop

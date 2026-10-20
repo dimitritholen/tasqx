@@ -127,6 +127,9 @@ pub const PARAMS: &[(&str, &[&str], bool)] = &[
             // which the attribution engine reads to match telemetry — this one
             // is only ever compared with itself.
             "actor",
+            // D236: the claim holder, when it is not `actor` — the CLI's
+            // `--holder`, which leaves the clock's actor anonymous.
+            "holder",
             // #638: the lifecycle verbs take `task.modify`'s guard too.
             "expected_rev",
         ],

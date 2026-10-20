@@ -348,6 +348,7 @@ pub(crate) fn run_list(
     limit: Option<u64>,
     offset: Option<u64>,
     fields: &[String],
+    holder: Option<String>,
 ) -> CmdOutcome {
     // Bare `tasqx` (and `tasqx list` with no filter) => the working set.
     // Otherwise `from_argv`, never `join(" ")`: the shell's argument boundaries
@@ -387,6 +388,10 @@ pub(crate) fn run_list(
     }
     if !fields.is_empty() {
         params["fields"] = json!(fields);
+    }
+    // D236: whose claims `@working` keeps; absent is the engine's `user`.
+    if let Some(h) = holder {
+        params["actor"] = json!(h);
     }
     let result = be.call("task.list", &params)?;
     if result["count"] == 0 {
@@ -558,10 +563,10 @@ pub(crate) fn run_start(
     correlation: &command::CorrelationArgs,
 ) -> CmdOutcome {
     let mut params = json!({ "ref": r#ref, "keep": keep });
-    // D236: the holder a claim was taken under. Absent stays absent, so a
-    // shell keeps D140's anonymous auto-stop.
+    // D236: `--holder` names the claim holder only (`holder`, not `actor`),
+    // so the clock stays anonymous and a shell keeps D140's auto-stop.
     if let Some(h) = holder {
-        params["actor"] = json!(h);
+        params["holder"] = json!(h);
     }
     apply_correlation(&mut params, correlation);
     let result = be.call("task.start", &params)?;
@@ -2548,6 +2553,7 @@ pub(crate) fn run_next(
     filter: &[String],
     card: bool,
     ascii: bool,
+    holder: Option<String>,
 ) -> CmdOutcome {
     // D213: the pick is `task.next`'s, the one implementation `tasqx_next`
     // shares; the caller's words become its `filter`, and it ANDs them onto
@@ -2555,6 +2561,10 @@ pub(crate) fn run_next(
     let mut params = json!({});
     if !filter.is_empty() {
         params["filter"] = json!(tasqx_core::filter::from_argv(filter));
+    }
+    // D236: whose claims stay in the pick; absent is the engine's `user`.
+    if let Some(h) = holder {
+        params["actor"] = json!(h);
     }
     let next = be.call("task.next", &params)?;
     // Re-wrapped as the `task.list` envelope this command has always answered

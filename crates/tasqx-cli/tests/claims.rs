@@ -206,3 +206,57 @@ fn two_processes_racing_for_one_task_have_exactly_one_winner() {
         assert_eq!((won, lost), (1, 1), "round {round}: exit codes {wins:?}");
     }
 }
+
+/// Review 2 #4: a CLI agent naming its holder sees its own claims in `next`
+/// and `list`, and the shell, holding none of them, does not.
+#[test]
+fn next_and_list_take_the_holder_a_cli_agent_claims_under() {
+    let s = Store::new("holdernext");
+    s.api(T0, "task.add", json!({ "title": "agent work" }));
+    let run = |args: &[&str]| -> Output { s.bin(T0).args(args).output().expect("run") };
+    assert!(run(&["claim", "1", "--holder", "agent-1"]).status.success());
+
+    let mine = run(&["--json", "next", "--holder", "agent-1"]);
+    assert!(String::from_utf8_lossy(&mine.stdout).contains("agent work"));
+    let listed = run(&["--json", "list", "--holder", "agent-1"]);
+    assert!(String::from_utf8_lossy(&listed.stdout).contains("agent work"));
+    let shell = run(&["--json", "next"]);
+    assert!(!String::from_utf8_lossy(&shell.stdout).contains("agent work"));
+}
+
+/// Review 2 #10: `start --holder` names the claim holder only. The clock stays
+/// anonymous, so a plain shell `start` elsewhere auto-stops it as D140 always
+/// let a shell do, rather than being refused as another actor's clock.
+#[test]
+fn start_holder_leaves_the_clock_anonymous() {
+    let s = Store::new("anonclock");
+    for i in 1..=9 {
+        s.api(T0, "task.add", json!({ "title": format!("task {i}") }));
+    }
+    let run = |args: &[&str]| -> Output { s.bin(T0).args(args).output().expect("run") };
+    assert!(run(&["claim", "4", "--holder", "bot"]).status.success());
+    let started = run(&["start", "4", "--holder", "bot"]);
+    assert!(
+        started.status.success(),
+        "{}",
+        String::from_utf8_lossy(&started.stderr)
+    );
+
+    let plain = run(&["start", "9"]);
+    assert!(
+        plain.status.success(),
+        "{}",
+        String::from_utf8_lossy(&plain.stderr)
+    );
+    let four = s.api(T0, "task.get", json!({ "ref": 4 }));
+    assert_eq!(
+        four["result"]["status"], "pending",
+        "#4 was auto-stopped: {four}"
+    );
+
+    // The sharper half: had `--holder` named the clock's actor, a NAMED actor
+    // starting elsewhere would be refused (D140). It is not.
+    assert!(run(&["start", "4", "--holder", "bot"]).status.success());
+    let named = s.api(T0, "task.start", json!({ "ref": 8, "actor": "agent-2" }));
+    assert_eq!(named["ok"], true, "{named}");
+}

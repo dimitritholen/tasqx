@@ -310,6 +310,13 @@ pub const TASK_BLOCKED: &[FieldDoc] = &[f(
     "Whether an unmet dependency is holding this task back.",
 )];
 
+/// D236: a list row's live claim holder.
+pub const TASK_LIST_CLAIM: &[FieldDoc] = &[n(
+    "claimed_by",
+    "string",
+    "Who holds a live claim on this task (D236), or null. `task.get` adds when the lease runs out.",
+)];
+
 /// The flag a row carries when its stored `status` is text this build does not recognize.
 pub const TASK_STATUS_FLAG: &[FieldDoc] = &[
     o("status_unrecognized", "boolean", "Present, and true, only on a row whose `status` no writer of this build could have produced — a store an older import wrote unvalidated, or a hand-edited one. `store.import` now refuses such a status."),
@@ -1808,6 +1815,7 @@ pub fn result_shape(method: &str) -> &'static [(&'static str, &'static [FieldDoc
             ("result.task", TASK_CORE),
             ("result.task", TASK_LIVE_TIME),
             ("result.task", TASK_BLOCKED),
+            ("result.task", TASK_LIST_CLAIM),
             ("result.task", TASK_STATUS_FLAG),
             ("result.active[]", NEXT_ROW),
             ("result.active[]", NEXT_ACTIVE_ROW),
@@ -1820,6 +1828,7 @@ pub fn result_shape(method: &str) -> &'static [(&'static str, &'static [FieldDoc
             ("result.tasks[]", TASK_CORE),
             ("result.tasks[]", TASK_LIVE_TIME),
             ("result.tasks[]", TASK_BLOCKED),
+            ("result.tasks[]", TASK_LIST_CLAIM),
             ("result.tasks[]", TASK_STATUS_FLAG),
         ],
         "task.get" => &[

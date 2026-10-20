@@ -442,6 +442,10 @@ fn migrate(conn: &Connection) -> Result<(), ApiError> {
         "CREATE TRIGGER IF NOT EXISTS tasks_claim_ends_on_close \
          AFTER UPDATE OF status ON tasks \
          WHEN NEW.status IN ('done', 'cancelled') AND NEW.claimed_by IS NOT NULL \
+         BEGIN UPDATE tasks SET claimed_by = NULL, claim_expires = NULL WHERE id = NEW.id; END; \
+         CREATE TRIGGER IF NOT EXISTS tasks_claim_ends_on_closed_insert \
+         AFTER INSERT ON tasks \
+         WHEN NEW.status IN ('done', 'cancelled') AND NEW.claimed_by IS NOT NULL \
          BEGIN UPDATE tasks SET claimed_by = NULL, claim_expires = NULL WHERE id = NEW.id; END;",
     )?;
 
