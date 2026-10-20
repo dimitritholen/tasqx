@@ -242,7 +242,11 @@ want to act on:
   their `tasqx_start_timer` on it is refused naming the holder and the expiry.
   Claim again to renew; `tasqx_release_task`, completing or cancelling gives it
   up; an expired lease is anyone's. Claim before you start when more than one
-  agent works the same store.
+  agent works the same store. The connection id changes when the server
+  restarts, so an agent that may reconnect should pass its own stable `actor`
+  (its session id) to claim, start and release; a claim stranded by a dead
+  session is freed by `force: true` on `tasqx_release_task` or by its lease
+  running out.
 - **`tasqx_remove_annotation` redacts the event too.** It overwrites the body
   in the annotation row *and* in the original write's audit event, in one
   transaction, so a secret pasted into a note is also gone from an export.

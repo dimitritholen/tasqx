@@ -4708,6 +4708,26 @@ mod tests {
         assert_eq!(entry["from_payload"], json!(["due"]), "{r}");
     }
 
+    /// D236: A claims the task; B, which never saw the claim, starts it later.
+    /// A start is not a write of the claim (a renewing start logs its own
+    /// `renew`), so the merge keeps A's claim in both directions.
+    #[test]
+    fn store_import_merge_keeps_a_claim_over_a_later_unclaimed_start() {
+        let (a, b, id, sid) = one_task_on_two_machines();
+        tick(&[&a, &b]);
+        a.task_claim(&json!({ "ref": sid, "actor": "agent-1" }))
+            .expect("claim on a");
+        tick(&[&a, &b]);
+        b.task_start(&json!({ "ref": sid })).expect("start on b");
+
+        merge_into(&a, &b);
+        let row = exported_row(&a, &id);
+        assert_eq!(row["claimed_by"], json!("agent-1"), "{row}");
+        assert_eq!(row["status"], json!("active"), "B's start stands: {row}");
+        merge_into(&b, &a);
+        assert_eq!(exported_row(&b, &id)["claimed_by"], json!("agent-1"));
+    }
+
     /// D189: one field edited on both machines goes to the later event, in
     /// either direction of the merge.
     #[test]

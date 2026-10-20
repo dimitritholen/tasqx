@@ -135,7 +135,8 @@ pub const PARAMS: &[(&str, &[&str], bool)] = &[
     ("task.stop", &["ref", "expected_rev"], false),
     // D236: a lease on a task; the holder is D140's `actor`, `user` when absent.
     ("task.claim", &["ref", "lease", "actor"], false),
-    ("task.release", &["ref", "actor"], false),
+    // D236: `force` releases a claim the caller does not hold.
+    ("task.release", &["ref", "actor", "force"], false),
     // D166: an auditable correction to tracked time, undoable by `undo`.
     ("task.adjust_tracked", &["ref", "delta", "reason"], false),
     // task.done additionally takes the #13 self-report params: any present

@@ -466,6 +466,7 @@ const R_TASK_RELEASE: Shape = &[&[
     req("short_id", Ty::Int),
     req("title", Ty::Str),
     req("released_by", Ty::Str),
+    req("forced", Ty::Bool),
     req("_rev", Ty::Int),
 ]];
 

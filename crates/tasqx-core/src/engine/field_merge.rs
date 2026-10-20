@@ -100,10 +100,10 @@ fn group_of(field: &str) -> Option<&'static str> {
 fn touches(ev: &LoggedEvent, group: &str) -> bool {
     match ev.op.as_str() {
         "add" => true,
-        "start" | "stop" | "done" | "cancel" | "reopen" => {
-            // D236: `start` may renew the claim, and `done`/`cancel` end it.
-            group == "status" || (group == "claim" && ev.op != "stop" && ev.op != "reopen")
-        }
+        "start" | "stop" | "reopen" => group == "status",
+        // D236: `done`/`cancel` end a claim. A start that renews one writes
+        // its own `renew` event, so `start` itself does not touch the group.
+        "done" | "cancel" => group == "status" || group == "claim",
         "claim" | "renew" | "release" | "takeover" => group == "claim",
         // D215: an undone `done` or `cancel` writes the status group back like
         // an undone `stop`; an undone `modify` writes the groups it restored.

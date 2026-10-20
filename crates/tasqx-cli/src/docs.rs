@@ -220,7 +220,7 @@ const METHODS: [(&str, &str, &str); 54] = [
          and <code>recent</code> (the five open tasks annotated most recently, each with the \
          first 200 characters of its newest note and when it was written). A task under \
          another holder's live claim is skipped; <code>actor</code> names whose claims are \
-         yours (D236).",
+         yours, <code>user</code> when omitted (D236).",
     ),
     (
         "task.list",
@@ -233,7 +233,7 @@ const METHODS: [(&str, &str, &str); 54] = [
          defaults to 100; a named <code>limit</code> is clamped to 10,000. \
          <code>fields</code> may include <code>depends_on</code>, which no other projection emits. \
          <code>@working</code> leaves out tasks under a live claim held by anyone but \
-         <code>actor</code> (D236).",
+         <code>actor</code>, <code>user</code> when omitted (D236).",
     ),
     (
         "task.get",
@@ -277,8 +277,9 @@ const METHODS: [(&str, &str, &str); 54] = [
     ),
     (
         "task.release",
-        "<code>ref</code>, <code>actor?</code>",
-        "<code>{short_id, title, released_by, _rev}</code> (D236). Only the holder releases.",
+        "<code>ref</code>, <code>actor?</code>, <code>force?</code>",
+        "<code>{short_id, title, released_by, forced, _rev}</code> (D236). Only the holder \
+         releases, unless <code>force</code> takes a claim another holder left behind.",
     ),
     (
         "task.stop",

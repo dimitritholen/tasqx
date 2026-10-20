@@ -15,6 +15,9 @@ Options:
       --json
           Print the raw JSON API result instead of the human table
 
+      --force
+          Release a claim someone else holds, e.g. one a dead session left behind
+
       --theme <THEME>
           Theme name (built-in nord|gruvbox|dracula|solarized|mono, or a user file). Overrides $TASQX_THEME and the config file (DESIGN.md §8)
 
@@ -34,5 +37,6 @@ EXAMPLES
   tasqx release 12 --holder builder-2    # builder-2 is done with #12 without finishing it
 
 NOTE  Only the holder releases (D236): a task with no claim, or another holder's, exits 5. Completing or cancelling a task ends its claim without this.
+      `--force` releases a claim someone else holds — one left by an agent that crashed or reconnected under a new id — and the log records it as forced, under your holder.
 
 See also: claim        Full manual: tasqx manual

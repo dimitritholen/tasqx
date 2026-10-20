@@ -554,9 +554,15 @@ pub(crate) fn run_start(
     ctx: &Ctx,
     r#ref: String,
     keep: bool,
+    holder: Option<String>,
     correlation: &command::CorrelationArgs,
 ) -> CmdOutcome {
     let mut params = json!({ "ref": r#ref, "keep": keep });
+    // D236: the holder a claim was taken under. Absent stays absent, so a
+    // shell keeps D140's anonymous auto-stop.
+    if let Some(h) = holder {
+        params["actor"] = json!(h);
+    }
     apply_correlation(&mut params, correlation);
     let result = be.call("task.start", &params)?;
     let task = read_back(be, &result).unwrap_or_else(|| result.clone());
@@ -595,8 +601,9 @@ pub(crate) fn run_release(
     ctx: &Ctx,
     r#ref: String,
     holder: Option<String>,
+    force: bool,
 ) -> CmdOutcome {
-    let params = json!({ "ref": r#ref, "actor": holder });
+    let params = json!({ "ref": r#ref, "actor": holder, "force": force });
     let result = be.call("task.release", &params)?;
     let task = read_back(be, &result).unwrap_or_else(|| result.clone());
     let text = render::claim_released(ctx, &result, &task, crate::clock::now());

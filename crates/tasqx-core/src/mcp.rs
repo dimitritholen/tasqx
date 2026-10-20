@@ -1392,8 +1392,8 @@ fn build_tool_specs() -> Vec<ToolSpec> {
                         "type": "string",
                         "description": "Who is asking for the clock (D140); filled in with \
                             this connection's id when omitted. Starting while ANOTHER actor \
-                            holds an active clock is a `conflict`, not a silent stop of their \
-                            timer; pass `keep: true` to run both."
+                            holds an active clock or a claim (D236) is a `conflict`, not a \
+                            silent stop of their timer; pass `keep: true` to run both. Reconnecting? Pass a stable id."
                     },
                     "include_memory": {
                         "type": "boolean",
@@ -1419,7 +1419,10 @@ fn build_tool_specs() -> Vec<ToolSpec> {
                 "properties": {
                     "ref": ref_schema(),
                     "lease": { "type": "string", "description": "Default 30m, max 24h." },
-                    "actor": { "type": "string", "description": "The holder (D140)." }
+                    "actor": {
+                        "type": "string",
+                        "description": "The holder; default this connection. Reconnecting? Pass a stable id."
+                    }
                 },
                 "required": ["ref"]
             }),
@@ -1435,7 +1438,14 @@ fn build_tool_specs() -> Vec<ToolSpec> {
                 "type": "object",
                 "properties": {
                     "ref": ref_schema(),
-                    "actor": { "type": "string", "description": "The holder (D140)." }
+                    "actor": {
+                        "type": "string",
+                        "description": "The holder; default this connection. Reconnecting? Pass a stable id."
+                    },
+                    "force": {
+                        "type": "boolean",
+                        "description": "Free another holder's claim; logged as forced."
+                    }
                 },
                 "required": ["ref"]
             }),
