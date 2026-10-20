@@ -191,7 +191,10 @@ A document cites code through its `source` (a `<repo>/<path>` key) and every
 backticked `path`, `path:line` or `path::symbol` in its body. Run from inside
 a git checkout, `verify` checks those against the checkout's working tree:
 each path must exist, and each symbol must appear as a whole word in the file
-it names. Each document gets one status:
+it names. A path in the body is checked only when its first folder or file
+exists at the top of the checkout, so a branch name or a path written
+relative to a subfolder is skipped rather than reported missing. Each
+document gets one status:
 
 - `ok`: every cited path and symbol is there.
 - `missing_path`: a cited file or directory is gone, for example renamed.

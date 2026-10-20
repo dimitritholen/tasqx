@@ -89,6 +89,15 @@ fn search_hits_and_get_carry_stale_refs_for_cited_code_that_is_gone() {
     // A relative `workdir` would resolve against the engine's directory.
     let err = call(&e, "memory.get", json!({ "id": stale, "workdir": "src" })).unwrap_err();
     assert_eq!(err.code, ErrorCode::BadRequest);
+    // ...and it is the request's fault before the store is asked: a bad
+    // `workdir` beside an id nobody holds is bad_request, not not_found.
+    let err = call(
+        &e,
+        "memory.get",
+        json!({ "id": "00000000-0000-7000-8000-000000000000", "workdir": "src" }),
+    )
+    .unwrap_err();
+    assert_eq!(err.code, ErrorCode::BadRequest);
     let _ = std::fs::remove_dir_all(&base);
 }
 

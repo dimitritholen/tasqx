@@ -236,6 +236,8 @@ pub fn memory_hits(
             /// #838: the hit holds only some of the words, on a page where
             /// others hold them all.
             some_words: bool,
+            /// D235: cited files and symbols gone from this checkout.
+            gone: Vec<String>,
         }
         let rows: Vec<Hit> = hits
             .iter()
@@ -265,6 +267,7 @@ pub fn memory_hits(
                         .then(|| h.get("similarity").and_then(Value::as_f64))
                         .flatten(),
                     some_words: mixed && is_partial(h),
+                    gone: stale_refs(h),
                 }
             })
             .collect();
@@ -328,6 +331,15 @@ pub fn memory_hits(
                     None if r.some_words => format!("{SOME_WORDS}  {}", r.snippet),
                     None => r.snippet.clone(),
                 };
+                out.push_str(&format!(
+                    "    {}\n",
+                    ctx.paint(
+                        "muted",
+                        &truncate(&line, ctx.cols.saturating_sub(4), ctx.caps.unicode)
+                    )
+                ));
+            }
+            if let Some(line) = stale_refs_line(&r.gone) {
                 out.push_str(&format!(
                     "    {}\n",
                     ctx.paint(
@@ -508,6 +520,20 @@ pub fn memory_hits(
 /// page where others hold them all.
 /// #790/D180: the word on a doc hit whose origin file has changed since import.
 const STALE: &str = "stale";
+
+/// D235: a doc's `stale_refs`, the cited files and symbols gone from the
+/// caller's checkout — empty when null, absent or none.
+pub(crate) fn stale_refs(doc: &Value) -> Vec<String> {
+    doc.get("stale_refs")
+        .and_then(Value::as_array)
+        .map(|a| a.iter().filter_map(Value::as_str).map(san).collect())
+        .unwrap_or_default()
+}
+
+/// D235: the line naming them, `None` when nothing is gone.
+pub(crate) fn stale_refs_line(gone: &[String]) -> Option<String> {
+    (!gone.is_empty()).then(|| format!("stale: {}", gone.join(", ")))
+}
 const SOME_WORDS: &str = "some words";
 
 /// D196's mark for a hit found by meaning alone: `≈`, or `~` where the
