@@ -208,23 +208,36 @@ fn path_like(s: &str) -> Option<(String, bool)> {
     (slash || ext).then(|| (s.to_string(), ext))
 }
 
-/// One backticked span as a ref: `path`, `path:line` or `path::symbol`.
+/// One backticked span as a ref: `path`, `path:line`, `path:line:col` or
+/// `path::A::b`. A symbol whose segments are not all identifiers (a call
+/// with arguments, a generic) is dropped and the path kept.
 fn span_ref(span: &str) -> Option<CodeRef> {
     let (path, symbol) = match span.split_once("::") {
         Some((path, rest)) => {
-            let last = rest.rsplit("::").next()?.trim_end_matches("()");
-            let ok = !last.is_empty() && last.chars().all(|c| c.is_alphanumeric() || c == '_');
-            (path, ok.then(|| last.to_string()))
+            let rest = rest.trim_end_matches("()");
+            let ok = rest
+                .split("::")
+                .all(|seg| !seg.is_empty() && seg.chars().all(|c| c.is_alphanumeric() || c == '_'));
+            (path, ok.then(|| rest.to_string()))
         }
-        None => match span.rsplit_once(':') {
-            Some((path, line))
-                if !line.is_empty() && line.chars().all(|c| c.is_ascii_digit() || c == '-') =>
-            {
-                (path, None)
+        None => {
+            // Up to two trailing `:N` parts: a line, then a column.
+            let mut path = span;
+            for _ in 0..2 {
+                match path.rsplit_once(':') {
+                    Some((p, n))
+                        if !n.is_empty() && n.chars().all(|c| c.is_ascii_digit() || c == '-') =>
+                    {
+                        path = p
+                    }
+                    _ => break,
+                }
             }
-            Some(_) => return None,
-            None => (span, None),
-        },
+            if path.contains(':') {
+                return None;
+            }
+            (path, None)
+        }
     };
     let (path, _) = path_like(path)?;
     Some(CodeRef {
@@ -284,6 +297,15 @@ fn code_spans(line: &str) -> Vec<&str> {
 /// A fence opener or closer: the fence character and the run's length, when
 /// `line` starts (after indentation) with three or more backticks or tildes.
 fn fence(line: &str) -> Option<(char, usize)> {
+    // Four columns of indentation make an indented code line, not a fence.
+    let indent: usize = line
+        .chars()
+        .take_while(|c| matches!(c, ' ' | '\t'))
+        .map(|c| if c == '\t' { 4 } else { 1 })
+        .sum();
+    if indent >= 4 {
+        return None;
+    }
     let t = line.trim_start();
     let c = t.chars().next().filter(|c| matches!(c, '`' | '~'))?;
     let n = t.chars().take_while(|x| *x == c).count();
@@ -364,6 +386,14 @@ pub fn extract_refs(source: Option<&str>, body: &str) -> DocRefs {
 pub struct RefRoot {
     toplevel: std::path::PathBuf,
     names: Vec<String>,
+    /// Each cited file's text for a symbol search, read at most once per
+    /// root, so a request's docs citing one file read it once. `None` is a
+    /// file that cannot prove a symbol absent ([`scannable_text`]).
+    texts:
+        std::cell::RefCell<std::collections::HashMap<std::path::PathBuf, Option<std::rc::Rc<str>>>>,
+    /// How many files were actually read, for the test that pins the cache.
+    #[cfg(test)]
+    reads: std::cell::Cell<usize>,
 }
 
 impl RefRoot {
@@ -379,7 +409,27 @@ impl RefRoot {
                 }
             }
         }
-        Some(RefRoot { toplevel, names })
+        Some(RefRoot {
+            toplevel,
+            names,
+            texts: Default::default(),
+            #[cfg(test)]
+            reads: Default::default(),
+        })
+    }
+
+    /// `file`'s text, read on first ask and kept for the root's lifetime.
+    fn text(&self, file: &Path) -> Option<std::rc::Rc<str>> {
+        if let Some(t) = self.texts.borrow().get(file) {
+            return t.clone();
+        }
+        #[cfg(test)]
+        self.reads.set(self.reads.get() + 1);
+        let t = scannable_text(file).map(std::rc::Rc::from);
+        self.texts
+            .borrow_mut()
+            .insert(file.to_path_buf(), t.clone());
+        t
     }
 
     /// The toplevel directory.
@@ -424,10 +474,13 @@ pub struct RefCheck {
 
 /// Check a doc's refs against `root`'s working tree (D235).
 ///
-/// Existence and text checks only, nothing cached or indexed (D182): a path
-/// is `exists()`, a symbol is a word-boundary match of its last segment in
-/// the named file (`symbol_missing`). `root` is `None` outside a git work
-/// tree. The doc's repo is the one its D203 source names, else its
+/// Existence and text checks only, nothing indexed (D182): a path is
+/// `exists()`; a symbol is a word-boundary match of every one of its `::`
+/// segments in the named file (`mentions`), each file read at most once per
+/// root. Segments are matched apart, so a symbol whose parts all survive
+/// elsewhere in the file (`Engine` still there, its `open` moved to another
+/// type that also has one) is not flagged. `root` is `None` outside a git
+/// work tree. The doc's repo is the one its D203 source names, else its
 /// `project`; a doc naming neither (a global doc with no repo source) is
 /// `unverifiable`, never checked against whichever repo the reader is in,
 /// and so is one naming another repo than `root`'s, or with nothing left to
@@ -468,8 +521,10 @@ pub fn verify_refs(
         let file = top.join(&r.path);
         if !file.exists() {
             missing_path.push(r.label());
-        } else if let Some(sym) = &r.symbol {
-            if symbol_missing(&file, sym) {
+        } else if let (Some(sym), Some(text)) = (&r.symbol, root.text(&file)) {
+            // Every segment must be there: a removed `Engine` is caught even
+            // while an unrelated `open` survives.
+            if sym.split("::").any(|seg| !mentions(&text, seg)) {
                 missing_symbol.push(r.label());
             }
         }
@@ -490,29 +545,28 @@ pub fn verify_refs(
     }
 }
 
-/// Is `word` provably absent from `file` — no occurrence with an identifier
-/// character on neither side? Only a regular file of at most
-/// [`SYMBOL_SCAN_CAP`] bytes that reads cleanly can prove it; a directory, a
-/// FIFO, a larger file or a read error counts as present-unverified, so the
-/// check never reads a pipe or a huge file and never cries missing for what
-/// it could not look at.
-fn symbol_missing(file: &Path, word: &str) -> bool {
+/// `file`'s text when it can prove a symbol absent: a regular file of at
+/// most [`SYMBOL_SCAN_CAP`] bytes that reads cleanly. A directory, a FIFO, a
+/// larger file or a read error is `None`, its symbols present-unverified, so
+/// the check never reads a pipe or a huge file and never cries missing for
+/// what it could not look at.
+fn scannable_text(file: &Path) -> Option<String> {
     use std::io::Read;
-    let Ok(meta) = std::fs::metadata(file) else {
-        return false;
-    };
+    let meta = std::fs::metadata(file).ok()?;
     if !meta.is_file() || meta.len() > SYMBOL_SCAN_CAP {
-        return false;
+        return None;
     }
     let mut bytes = Vec::new();
-    let read =
-        std::fs::File::open(file).and_then(|f| f.take(SYMBOL_SCAN_CAP + 1).read_to_end(&mut bytes));
-    if read.is_err() || bytes.len() as u64 > SYMBOL_SCAN_CAP {
-        return false;
-    }
-    let text = String::from_utf8_lossy(&bytes);
+    std::fs::File::open(file)
+        .and_then(|f| f.take(SYMBOL_SCAN_CAP + 1).read_to_end(&mut bytes))
+        .ok()?;
+    (bytes.len() as u64 <= SYMBOL_SCAN_CAP).then(|| String::from_utf8_lossy(&bytes).into_owned())
+}
+
+/// Does `text` hold `word` with no identifier character on either side?
+fn mentions(text: &str, word: &str) -> bool {
     let ident = |c: char| c.is_alphanumeric() || c == '_';
-    !text.match_indices(word).any(|(i, _)| {
+    text.match_indices(word).any(|(i, _)| {
         !text[..i].chars().next_back().is_some_and(ident)
             && !text[i + word.len()..].chars().next().is_some_and(ident)
     })
@@ -566,7 +620,7 @@ mod tests {
                 vec![
                     r("crates/a/src/b.rs", None, false),
                     r("crates/a/src/c.rs", None, false),
-                    r("crates/a/src/d.rs", Some("open"), false),
+                    r("crates/a/src/d.rs", Some("Engine::open"), false),
                 ],
             ),
             (
@@ -601,6 +655,25 @@ mod tests {
                     r("out/a.rs", None, false),
                     r("out/b.rs", None, false),
                     r("out/c.rs", None, false),
+                ],
+            ),
+            // `path:line:col` strips both numbers; a third colon part, or a
+            // non-numeric one, is no path.
+            (
+                None,
+                "`src/a.rs:12:4` `src/b.rs:1:2:3` `src/c.rs:x`",
+                None,
+                vec![r("src/a.rs", None, false)],
+            ),
+            // A fence line indented four columns is code, not a fence: it
+            // opens nothing, so the span after it is read.
+            (
+                None,
+                "    ```\n`after/indented.rs`\n\t~~~\n`after/tab.rs`",
+                None,
+                vec![
+                    r("after/indented.rs", None, false),
+                    r("after/tab.rs", None, false),
                 ],
             ),
             // A root-level source file is a ref too.
@@ -685,6 +758,35 @@ mod tests {
             ]
         );
 
+        // Every `::` segment must be there: `Engine::open` is gone when
+        // `Engine` is, although another type's `open` survives.
+        std::fs::write(
+            root.join("src/engine.rs"),
+            "struct Other;\nimpl Other { fn open() {} }",
+        )
+        .unwrap();
+        let gone = check(None, "`src/engine.rs::Engine::open()`");
+        assert_eq!(gone.status, RefStatus::MissingSymbol);
+        assert_eq!(
+            gone.stale_refs,
+            vec!["src/engine.rs::Engine::open".to_string()]
+        );
+        // The limit, by design: segments are matched apart, so with both
+        // words still in the file the moved method is not flagged.
+        std::fs::write(
+            root.join("src/engine.rs"),
+            "struct Engine;\nstruct Other;\nimpl Other { fn open() {} }",
+        )
+        .unwrap();
+        let rr2 = RefRoot::at(&root).unwrap();
+        let limit = verify_refs(
+            None,
+            "`src/engine.rs::Engine::open`",
+            Some("proj"),
+            Some(&rr2),
+        );
+        assert_eq!(limit.status, RefStatus::Ok);
+
         // A missing path outranks a missing symbol.
         let both = check(None, "`src/live.rs::removed` `src/gone.rs`");
         assert_eq!(both.status, RefStatus::MissingPath);
@@ -764,6 +866,17 @@ mod tests {
             check("`src/live.rs::nowhere_fn`").status,
             RefStatus::MissingSymbol
         );
+        // One root reads each file once, however many docs and symbols cite
+        // it: three docs over `src/live.rs` add one read to the one above.
+        let before = rr.reads.get();
+        for body in [
+            "`src/live.rs::kept_fn`",
+            "`src/live.rs::kept_fn_two` `src/live.rs::gone_fn`",
+            "`src/live.rs::kept_fn`",
+        ] {
+            check(body);
+        }
+        assert_eq!(rr.reads.get(), before, "src/live.rs was already read");
         let _ = std::fs::remove_dir_all(root.parent().unwrap());
     }
 

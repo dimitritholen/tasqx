@@ -2224,10 +2224,12 @@ impl<'e> McpServer<'e> {
             }
             // D235: cited code gone from this working tree is named, even on
             // the title-only fallback, so a ruling about it is not followed blind.
-            let stale = if d.stale_refs.is_empty() {
-                String::new()
-            } else {
-                format!(" [stale_refs: {}]", d.stale_refs.join(", "))
+            // The title-only fallback counts them instead of naming them,
+            // so it stays a list of titles inside the budget.
+            let stale = match (d.stale_refs.len(), with_gist) {
+                (0, _) => String::new(),
+                (_, true) => format!(" [stale_refs: {}]", d.stale_refs.join(", ")),
+                (n, false) => format!(" [stale_refs: {n}]"),
             };
             if with_gist && !gist.is_empty() {
                 format!("\n- {title}{stale}: {gist}")
@@ -2482,8 +2484,11 @@ impl<'e> McpServer<'e> {
         // D235: `stale_refs` is checked in the session's checkout, the
         // directory this server was launched in, never one a caller names.
         if spec.method == "memory.search" || spec.method == "memory.get" {
-            if let (Some(obj), Some(dir)) = (args.as_object_mut(), &self.workdir) {
-                obj.insert("workdir".to_string(), json!(dir.to_string_lossy()));
+            // A directory that is not UTF-8 cannot be named in JSON without
+            // loss; it sends none, and `stale_refs` stays null.
+            let dir = self.workdir.as_deref().and_then(std::path::Path::to_str);
+            if let (Some(obj), Some(dir)) = (args.as_object_mut(), dir) {
+                obj.insert("workdir".to_string(), json!(dir));
             }
         }
 
@@ -2921,11 +2926,13 @@ impl<'e> McpServer<'e> {
                         .and_then(Value::as_str)
                         .is_some_and(|f| f.contains("@working"))
                 {
+                    // D235: the project alone — no standing doc is read
+                    // or verified for a task list.
                     let project = self
                         .engine
-                        .session_rulings(self.workdir.as_deref())
+                        .session_project(self.workdir.as_deref())
                         .ok()
-                        .and_then(|r| r.project)
+                        .flatten()
                         .map(|(name, _)| name);
                     let titles = self.rulings_titles(project.as_deref());
                     if !titles.is_empty() {
