@@ -24,7 +24,7 @@ tasqx memory add "Deploy runbook" "Deploys go through the blue-green pipeline"
   goes for `update --source`.
 
 When a doc of the same project, or an unscoped one, already reads like the
-new doc, `add` still stores it and prints a `note:` line naming that doc, up
+new doc (once a search has indexed it), `add` still stores it and prints a `note:` line naming that doc, up
 to three of them, so you can update or remove one instead of keeping both.
 `--json` carries them as `similar`, an empty list when there are none.
 

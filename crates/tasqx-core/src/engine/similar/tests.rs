@@ -31,6 +31,11 @@ fn ok(e: &Engine, method: &str, params: Value) -> Value {
     dispatch(e, method, &params).unwrap_or_else(|err| panic!("{method} {params}: {err:?}"))
 }
 
+/// Have the D196 index store a vector for every doc, as a search does.
+fn index(e: &Engine) {
+    ok(e, "memory.search", json!({ "query": "anything" }));
+}
+
 /// The pair's similarity, as the add of its `new` side would compute it
 /// against its `existing` side.
 fn score(pair: &Value) -> f64 {
@@ -51,7 +56,8 @@ fn score(pair: &Value) -> f64 {
                     json!({ "ref": t["short_id"], "body": d }),
                 );
             }
-            e.similar_tasks("new", new["title"].as_str().unwrap(), Some("tasqx"), -1.0)
+            e.similar_tasks(new["title"].as_str().unwrap(), Some("tasqx"), -1.0)
+                .unwrap()
         }
         "doc" => {
             ok(
@@ -59,13 +65,14 @@ fn score(pair: &Value) -> f64 {
                 "memory.add",
                 json!({ "title": old["title"], "body": old["body"], "project": "tasqx" }),
             );
+            index(&e);
             e.similar_docs(
-                "new",
                 new["title"].as_str().unwrap(),
                 new["body"].as_str().unwrap(),
                 Some("tasqx"),
                 -1.0,
             )
+            .unwrap()
         }
         k => panic!("unknown kind {k}"),
     };
@@ -153,4 +160,81 @@ fn the_threshold_holds_its_precision_and_recall_on_the_labelled_pairs() {
         }
     }
     assert!(failures.is_empty(), "{failures:?}");
+}
+
+/// An add embeds the new doc and nothing else: no doc the index lacks is
+/// embedded on its behalf, so N adds embed N texts however many there are.
+#[test]
+fn n_doc_adds_embed_exactly_n_texts() {
+    let e = Engine::open_in_memory().unwrap();
+    let before = e.similar.borrow().embedded;
+    for i in 0..5 {
+        ok(
+            &e,
+            "memory.add",
+            json!({ "title": format!("doc {i}"), "body": "the same body each time" }),
+        );
+    }
+    assert_eq!(e.similar.borrow().embedded - before, 5);
+}
+
+/// A doc the index has not stored a vector for is not a candidate; once a
+/// search has stored it, it is.
+#[test]
+fn only_indexed_docs_are_candidates() {
+    let e = Engine::open_in_memory().unwrap();
+    let doc = json!({ "title": "release checklist", "body": "bump, changelog, tag, push" });
+    ok(&e, "memory.add", doc.clone());
+    assert_eq!(ok(&e, "memory.add", doc.clone())["similar"], json!([]));
+    index(&e);
+    let third = ok(&e, "memory.add", doc);
+    assert_eq!(third["similar"].as_array().unwrap().len(), 2, "{third}");
+}
+
+/// A long-lived engine embeds an open task once: an add embeds its own
+/// title and whatever changed since the last add, not every open task.
+#[test]
+fn an_add_embeds_only_the_open_tasks_that_changed() {
+    let e = Engine::open_in_memory().unwrap();
+    for i in 0..10 {
+        ok(&e, "task.add", json!({ "title": format!("task {i}") }));
+    }
+    let before = e.similar.borrow().embedded;
+    ok(&e, "task.add", json!({ "title": "one more" }));
+    // Its title, and task 9's (task 9's own add ran before it existed).
+    assert_eq!(e.similar.borrow().embedded - before, 2);
+    let before = e.similar.borrow().embedded;
+    ok(
+        &e,
+        "task.modify",
+        json!({ "ref": 3, "set": { "title": "renamed" } }),
+    );
+    ok(&e, "task.add", json!({ "title": "and another" }));
+    // Its title, "one more", and the renamed task 3.
+    assert_eq!(e.similar.borrow().embedded - before, 3);
+}
+
+/// An embedding that panics leaves the add standing, with nothing in
+/// `similar`.
+#[test]
+fn a_panicking_embedding_answers_an_empty_similar() {
+    let e = Engine::open_in_memory().unwrap();
+    ok(&e, "task.add", json!({ "title": "the same task" }));
+    ok(&e, "memory.add", json!({ "title": "same", "body": "same" }));
+    index(&e);
+    e.similar.borrow_mut().fail = true;
+    let t = ok(&e, "task.add", json!({ "title": "the same task" }));
+    assert!(t["short_id"].is_i64());
+    assert_eq!(t["similar"], json!([]));
+    let d = ok(&e, "memory.add", json!({ "title": "same", "body": "same" }));
+    assert!(d["id"].is_string());
+    assert_eq!(d["similar"], json!([]));
+}
+
+/// The description is the note's first paragraph, `\r\n` or `\n`.
+#[test]
+fn the_description_is_the_first_paragraph_with_either_line_ending() {
+    assert_eq!(opening_summary("one\r\ntwo\r\n\r\nthree"), "one two");
+    assert_eq!(opening_summary("\n\none\ntwo\n\nthree"), "one two");
+    assert_eq!(opening_summary("one\n \nthree"), "one");
 }

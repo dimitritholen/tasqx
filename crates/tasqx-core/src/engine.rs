@@ -272,6 +272,8 @@ pub struct Engine {
     conn: Connection,
     /// D196: this process's copy of the semantic index (`engine/vectors.rs`).
     vectors: vectors::VectorCell,
+    /// D237: the open tasks embedded so far, so an add embeds only what changed.
+    similar: similar::SimilarCell,
 }
 
 /// Owns one serialized mutation from `BEGIN IMMEDIATE` through commit. The
@@ -351,6 +353,7 @@ impl Engine {
         Ok(Engine {
             conn: storage::open(path)?,
             vectors: Default::default(),
+            similar: Default::default(),
         })
     }
 
@@ -367,6 +370,7 @@ impl Engine {
         Ok(Engine {
             conn: storage::open_read_only(path)?,
             vectors: Default::default(),
+            similar: Default::default(),
         })
     }
 
@@ -375,6 +379,7 @@ impl Engine {
         Ok(Engine {
             conn: storage::open_in_memory()?,
             vectors: Default::default(),
+            similar: Default::default(),
         })
     }
 

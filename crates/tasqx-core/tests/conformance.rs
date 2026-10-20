@@ -2375,6 +2375,8 @@ fn cases() -> Vec<Case> {
             |e| {
                 e.memory_add(&json!({ "title": "the freeze", "body": "v1 is stable" }))
                     .expect("seed a look-alike (D237)");
+                e.memory_search(&json!({ "query": "index the look-alike" }))
+                    .expect("a search stores its vector");
                 json!({ "title": "the freeze", "body": "v1 is stable", "source": "DESIGN.md" })
             },
             R_MEMORY_ADD,
@@ -2397,6 +2399,8 @@ fn cases() -> Vec<Case> {
                 }
                 e.memory_add(&json!({ "title": "one too many", "body": "the line over the cap" }))
                     .expect("seed a look-alike (D237)");
+                e.memory_search(&json!({ "query": "index the look-alike" }))
+                    .expect("a search stores its vector");
                 json!({ "title": "one too many", "body": "the line over the cap", "standing": true })
             },
             R_MEMORY_ADD,

@@ -800,6 +800,14 @@ impl Engine {
 
         let id = crate::clock::uuid_v7().to_string();
         let ts = now();
+        // D237: compared before the write lock is taken, against the vectors
+        // already stored; only the new doc is embedded.
+        let similar = self.similar_docs(
+            &title,
+            &search_body,
+            project.as_deref(),
+            super::similar::DOC_THRESHOLD,
+        )?;
         let tx = self.begin_mutation()?;
         refuse_source_held_elsewhere(&tx, source.as_deref(), &id)?;
         tx.execute(
@@ -838,18 +846,8 @@ impl Engine {
                 ));
             }
         }
-        // D237: inside the transaction, where the semantic index computes
-        // what it lacks for this call alone and writes nothing (D196), so an
-        // add stores no vector; a comparison never errors, so it cannot fail
-        // the add either.
-        out["similar"] = self.similar_docs(
-            &id,
-            &title,
-            &search_body,
-            project.as_deref(),
-            super::similar::DOC_THRESHOLD,
-        );
         tx.commit()?;
+        out["similar"] = similar;
         Ok(out)
     }
 
