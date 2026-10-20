@@ -1030,11 +1030,12 @@ impl<'a> Page<'a> {
             // D236: whose it is, when someone else holds a live claim on it.
             let held = match (
                 x.v.get("claimed_by").and_then(Value::as_str),
-                x.v.get("claim_expires")
-                    .and_then(Value::as_str)
-                    .and_then(parse_ts),
+                x.v.get("claim_expires").and_then(Value::as_str),
             ) {
-                (Some(by), Some(until)) if until > now && by != "user" => {
+                (Some(by), Some(until))
+                    if tasqx_core::engine::task::lease_is_live(until, now)
+                        && by != tasqx_core::engine::task::SHELL_HOLDER =>
+                {
                     format!("claimed by {} · ", esc(by))
                 }
                 _ => String::new(),

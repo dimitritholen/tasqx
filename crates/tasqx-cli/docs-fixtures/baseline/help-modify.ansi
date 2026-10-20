@@ -67,6 +67,12 @@ Options:
       --expected-rev <REV>
           Optimistic concurrency: fail with `conflict` (exit 5) unless the task is still at this rev, so a concurrent edit is reported instead of clobbered. `tasqx show <ref> --json` reports the current `_rev`, and every successful modify prints the new one
 
+      --holder <ID>
+          Act as this claim holder, for a task claimed with `claim --holder` (D236)
+
+      --force-claim
+          Override another holder's live claim; the event records whose (D236)
+
   -h, --help
           Print help (see a summary with '-h')
 

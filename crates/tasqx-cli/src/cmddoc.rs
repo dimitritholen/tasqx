@@ -186,7 +186,7 @@ pub const COMMAND_REF: &[CmdDoc] = &[
         aliases: &["mod", "m", "edit"],
         method: "task.modify",
         summary: "Change a task — set fields or --clear them.",
-        usage: "tasqx modify <ref> [words/sugar…] [--project p] [--due d] [--scheduled s] [--wait w] [-p H|M|L] [-t tag]… [--repeat r] [--remind r] [-e est] [--tracked t] [--budget-tokens n] [--clear <field>]… [--expected-rev N]",
+        usage: "tasqx modify <ref> [words/sugar…] [--project p] [--due d] [--scheduled s] [--wait w] [-p H|M|L] [-t tag]… [--repeat r] [--remind r] [-e est] [--tracked t] [--budget-tokens n] [--clear <field>]… [--expected-rev N] [--holder ID] [--force-claim]",
         examples: &[
             ex_norun("tasqx modify 42 due:friday !high est:4h", "set fields"),
             ex_norun("tasqx modify 42 --clear due --clear remind", "clear fields"),
@@ -391,7 +391,7 @@ pub const COMMAND_REF: &[CmdDoc] = &[
         aliases: &["st"],
         method: "task.stop",
         summary: "Pause an active task.",
-        usage: "tasqx stop <ref>",
+        usage: "tasqx stop <ref> [--holder ID] [--force-claim]",
         examples: &[ex_norun_plain("tasqx stop 1")],
         notes: &[],
         see_also: &["start", "done", "adjust"],
@@ -423,14 +423,14 @@ pub const COMMAND_REF: &[CmdDoc] = &[
         aliases: &[],
         method: "task.release",
         summary: "Give a claim up.",
-        usage: "tasqx release <ref> [--holder ID] [--force]",
+        usage: "tasqx release <ref> [--holder ID] [--force-claim]",
         examples: &[ex_norun(
             "tasqx release 12 --holder builder-2",
             "builder-2 is done with #12 without finishing it",
         )],
         notes: &[
             "Only the holder releases (D236): a task with no claim, or another holder's, exits 5. Completing or cancelling a task ends its claim without this.",
-            "`--force` releases a claim someone else holds — one left by an agent that crashed or reconnected under a new id — and the log records it as forced, under your holder.",
+            "`--force-claim` releases a claim someone else holds — one left by an agent that crashed or reconnected under a new id — and the log records it as forced, under your holder.",
         ],
         see_also: &["claim"],
         topic: Topic::Capturing,
@@ -467,7 +467,7 @@ pub const COMMAND_REF: &[CmdDoc] = &[
         aliases: &["d", "x", "complete"],
         method: "task.done",
         summary: "Complete a task.",
-        usage: "tasqx done <ref> [--force] [--holder ID] [--client TOOL] [--session-id ID] \
+        usage: "tasqx done <ref> [--force] [--holder ID] [--force-claim] [--client TOOL] [--session-id ID] \
                 [--transcript-path PATH] [--tool TOOL] [--model MODEL] \
                 [--input-tokens N] [--output-tokens N] [--cache-read-tokens N] \
                 [--cache-creation-tokens N] [--total-tokens N]",
@@ -510,7 +510,7 @@ pub const COMMAND_REF: &[CmdDoc] = &[
         aliases: &["delete", "del", "rm"],
         method: "task.cancel",
         summary: "Cancel a task.",
-        usage: "tasqx cancel <ref> [--holder ID] [--force]",
+        usage: "tasqx cancel <ref> [--holder ID] [--force-claim]",
         examples: &[
             ex_norun("tasqx cancel 1", "a cancelled dependency releases its dependents (D11)"),
             ex_norun("tasqx delete 1", "same thing — tasqx has no hard delete; reverse it with `reopen`"),

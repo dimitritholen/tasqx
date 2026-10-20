@@ -1248,7 +1248,7 @@ fn build_tool_specs() -> Vec<ToolSpec> {
                     },
                     "expected_rev": { "type": "integer", "description": "Optimistic-concurrency guard. Supplied by the server from the task's current `_rev` when omitted; pass it to pin a rev you read earlier. There is no last-writer-wins mode." },
                     "actor": { "type": "string", "description": "Holder (D236)." },
-                    "force": { "type": "boolean", "description": "Cancel past another holder's claim." }
+                    "force_claim": { "type": "boolean", "description": "Override another holder's claim." }
                 },
                 "required": ["ref", "set"]
             }),
@@ -1264,8 +1264,8 @@ fn build_tool_specs() -> Vec<ToolSpec> {
                 you only know one number (D167): a transcript measurement wins when tasqx finds \
                 the session that ran this task, and self-report is the fallback, graded `medium` \
                 because nothing can check it (D50, D188). `tool`/`model` are recorded on the \
-                event even with no count. Open dependencies, or another holder's claim (D236), are a `conflict`; \
-                `force: true` completes it anyway, counted by `tasqx_outcomes` (D150). \
+                event even with no count. Open dependencies are a `conflict` unless `force` (D150, counted by \
+                `tasqx_outcomes`); another holder's claim, unless `force_claim` (D236). \
                 `view: \"card\"` leads with the task's box card (D153), for a person deciding on \
                 it; a routine completion needs none (D164).",
             // The token-count fields carry no `minimum`: the numeric-minimum
@@ -1322,9 +1322,12 @@ fn build_tool_specs() -> Vec<ToolSpec> {
                     },
                     "force": {
                         "type": "boolean",
-                        "description": "Complete anyway (D150, D236)."
+                        "description": "Past open dependencies (D150)."
                     },
-                    "actor": { "type": "string", "description": "Holder (D236)." },
+                    "actor": { "type": "string" },
+                    // D155's per-tool cap: these two are described in the tool's
+                    // description and in the API page's fallback table.
+                    "force_claim": { "type": "boolean" },
                     "view": {
                         "type": "string",
                         "enum": enum_of(["markdown", "card"]),
@@ -1360,7 +1363,7 @@ fn build_tool_specs() -> Vec<ToolSpec> {
                     "ref": ref_schema(),
                     "expected_rev": lifecycle_rev_schema(),
                     "actor": { "type": "string", "description": "Holder (D236)." },
-                    "force": { "type": "boolean", "description": "Cancel past another holder's claim." }
+                    "force_claim": { "type": "boolean", "description": "Override another holder's claim." }
                 },
                 "required": ["ref"]
             }),
@@ -1425,8 +1428,10 @@ fn build_tool_specs() -> Vec<ToolSpec> {
             write: true,
             destructive: false,
             idempotent: false,
-            description: "Lease a task so parallel agents skip it and cannot start it (D236). \
-                Claim again to renew.",
+            description: "Lease a task so parallel agents skip it and cannot start, stop or \
+                close it (D236). Claim again to renew. The default holder is this connection, \
+                and a restarted server is a NEW holder locked out of its old claims: pass a \
+                stable `actor` if you may reconnect, or `force_claim` past a stranded claim.",
             schema: json!({
                 "type": "object",
                 "properties": {
@@ -1455,10 +1460,7 @@ fn build_tool_specs() -> Vec<ToolSpec> {
                         "type": "string",
                         "description": "The holder; default this connection. Reconnecting? Pass a stable id."
                     },
-                    "force": {
-                        "type": "boolean",
-                        "description": "Free another holder's claim; logged as forced."
-                    }
+                    "force_claim": { "type": "boolean", "description": "Override another holder's claim." }
                 },
                 "required": ["ref"]
             }),
@@ -1473,7 +1475,12 @@ fn build_tool_specs() -> Vec<ToolSpec> {
                 closed) and `tracked` (the task's running total, matching `tasqx_get_task`).",
             schema: json!({
                 "type": "object",
-                "properties": { "ref": ref_schema(), "expected_rev": lifecycle_rev_schema() },
+                "properties": {
+                    "ref": ref_schema(),
+                    "expected_rev": lifecycle_rev_schema(),
+                    "actor": { "type": "string", "description": "Holder (D236)." },
+                    "force_claim": { "type": "boolean", "description": "Override another holder's claim." }
+                },
                 "required": ["ref"]
             }),
         },
@@ -2728,14 +2735,16 @@ impl<'e> McpServer<'e> {
         // D140, the same pattern one field over: a caller that names its own
         // `actor` is respected as-is (a fleet with stable agent ids has better
         // names than a connection), and one that names none is stamped with
-        // this connection's. `task.done` is not stamped, because it takes no
-        // `actor` — only starting a clock can collide with one.
-        // D236: the same key is a claim's holder, and `task.list`/`task.next`
-        // read it to keep this connection's own claims in `@working`.
-        // D236: and the one that closes or cancels a task, against a claim.
+        // this connection's. D236: the same key is a claim's holder — for the
+        // claim calls, for the reads that choose work, and for every call that
+        // stops or closes a task another holder may have claimed. A restarted
+        // server mints a new id, so its old claims are another holder's; an
+        // agent that may reconnect passes a stable `actor`, and `force_claim`
+        // is the way past a claim a dead connection left.
         if matches!(
             spec.method,
             "task.start"
+                | "task.stop"
                 | "task.claim"
                 | "task.release"
                 | "task.list"

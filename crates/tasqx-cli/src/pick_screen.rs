@@ -50,7 +50,11 @@ pub(crate) fn run_pick(
     } else {
         tasqx_core::filter::from_argv(filter)
     };
-    let listed = pick_candidates(be, &filter_str, holder.as_deref())?;
+    // D236: `pick` chooses work, as `next` does, so it always names a chooser.
+    let chooser = holder
+        .as_deref()
+        .unwrap_or(tasqx_core::engine::task::SHELL_HOLDER);
+    let listed = pick_candidates(be, &filter_str, Some(chooser))?;
     let rows = pick_rows(&listed);
     if rows.is_empty() {
         return Err(no_candidates(&filter_str));

@@ -456,6 +456,12 @@ pub(super) enum Command {
         /// every successful modify prints the new one.
         #[arg(long, value_name = "REV")]
         expected_rev: Option<i64>,
+        /// Act as this claim holder, for a task claimed with `claim --holder` (D236).
+        #[arg(long, value_name = "ID")]
+        holder: Option<String>,
+        /// Override another holder's live claim; the event records whose (D236).
+        #[arg(long)]
+        force_claim: bool,
     },
     /// List tasks (maps to task.list). Bare `tasqx` shows the working set.
     #[command(alias = "ls", alias = "l", after_help = crate::cmddoc::after_help("list"))]
@@ -505,8 +511,8 @@ pub(super) enum Command {
         /// `fields`; an unknown name is refused by the engine, same as above.
         #[arg(long, value_delimiter = ',')]
         fields: Vec<String>,
-        /// Whose claims count as yours: a task claimed by anyone else is left out of
-        /// `@working` (D236). Default `user`, the shell.
+        /// Choose work as this holder: `@working` leaves out tasks anyone else has
+        /// claimed (D236). Without it the list is a view and shows every claim.
         #[arg(long, value_name = "ID")]
         holder: Option<String>,
     },
@@ -570,6 +576,12 @@ pub(super) enum Command {
         /// short_id or UUID.
         #[arg(add = crate::complete::candidates::task_ids())]
         r#ref: String,
+        /// Act as this claim holder, for a task claimed with `claim --holder` (D236).
+        #[arg(long, value_name = "ID")]
+        holder: Option<String>,
+        /// Override another holder's live claim; the event records whose (D236).
+        #[arg(long)]
+        force_claim: bool,
     },
     /// Claim a task so other agents skip it (maps to task.claim).
     ///
@@ -601,7 +613,7 @@ pub(super) enum Command {
         holder: Option<String>,
         /// Release a claim someone else holds, e.g. one a dead session left behind.
         #[arg(long)]
-        force: bool,
+        force_claim: bool,
     },
     /// Correct a task's tracked time by a signed duration (maps to task.adjust_tracked).
     #[command(after_help = crate::cmddoc::after_help("adjust"))]
@@ -623,13 +635,15 @@ pub(super) enum Command {
         #[arg(add = crate::complete::candidates::task_ids())]
         r#ref: String,
         /// Complete the task even though some of its dependencies are still
-        /// open (recorded; `report --outcomes` counts it under FORCED), or
-        /// another holder has claimed it (D236).
+        /// open (recorded; `report --outcomes` counts it under FORCED).
         #[arg(long)]
         force: bool,
         /// The claim holder completing it, for a task claimed with `claim --holder` (D236).
         #[arg(long, value_name = "ID")]
         holder: Option<String>,
+        /// Override another holder's live claim; the event records whose (D236).
+        #[arg(long)]
+        force_claim: bool,
         #[command(flatten)]
         correlation: CorrelationArgs,
         #[command(flatten)]
@@ -686,7 +700,7 @@ pub(super) enum Command {
         holder: Option<String>,
         /// Cancel it although another holder has a live claim on it (D236).
         #[arg(long)]
-        force: bool,
+        force_claim: bool,
     },
     /// Reopen a done/cancelled task (maps to task.reopen).
     #[command(after_help = crate::cmddoc::after_help("reopen"))]

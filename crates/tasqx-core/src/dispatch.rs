@@ -135,11 +135,16 @@ pub const PARAMS: &[(&str, &[&str], bool)] = &[
         ],
         false,
     ),
-    ("task.stop", &["ref", "expected_rev"], false),
+    // D236: `actor` and `force_claim` stop a task under another holder's claim.
+    (
+        "task.stop",
+        &["ref", "expected_rev", "actor", "force_claim"],
+        false,
+    ),
     // D236: a lease on a task; the holder is D140's `actor`, `user` when absent.
     ("task.claim", &["ref", "lease", "actor"], false),
-    // D236: `force` releases a claim the caller does not hold.
-    ("task.release", &["ref", "actor", "force"], false),
+    // D236: `force_claim` releases a claim the caller does not hold.
+    ("task.release", &["ref", "actor", "force_claim"], false),
     // D166: an auditable correction to tracked time, undoable by `undo`.
     ("task.adjust_tracked", &["ref", "delta", "reason"], false),
     // task.done additionally takes the #13 self-report params: any present
@@ -168,20 +173,23 @@ pub const PARAMS: &[(&str, &[&str], bool)] = &[
             // D167: one unsplit count, for a harness that reports only that.
             "total_tokens",
             "expected_rev",
-            // D236: who is completing, against a live claim.
+            // D236: who is completing, against a live claim, and the flag
+            // that overrides another holder's (`force` stays D150's).
             "actor",
+            "force_claim",
         ],
         false,
     ),
-    // D236: `actor` and `force` close a task under another holder's claim.
+    // D236: `actor` and `force_claim` close a task under another holder's
+    // claim.
     (
         "task.modify",
-        &["ref", "set", "expected_rev", "actor", "force"],
+        &["ref", "set", "expected_rev", "actor", "force_claim"],
         false,
     ),
     (
         "task.cancel",
-        &["ref", "expected_rev", "actor", "force"],
+        &["ref", "expected_rev", "actor", "force_claim"],
         false,
     ),
     ("task.reopen", &["ref", "expected_rev"], false),

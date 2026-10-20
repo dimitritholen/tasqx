@@ -35,10 +35,14 @@ pub const DEFAULT_LEASE_SECS: i64 = 30 * 60;
 /// D236: the longest lease one call may ask for. A longer job renews.
 pub const MAX_LEASE_SECS: i64 = 24 * 60 * 60;
 
-/// The claim holder a call names: D140's actor key, `user` when it names none
-/// (the shell), so a claim always has a holder to show and compare.
+/// D236: the claim holder a call naming no `actor` is — the shell. One
+/// spelling for every comparison and every surface that names it.
+pub const SHELL_HOLDER: &str = "user";
+
+/// The claim holder a call names: D140's actor key, [`SHELL_HOLDER`] when it
+/// names none, so a claim always has a holder to show and compare.
 fn claim_holder(p: &Value) -> Result<String, ApiError> {
-    Ok(opt_str_nonempty(p, "actor")?.unwrap_or_else(|| "user".to_string()))
+    Ok(opt_str_nonempty(p, "actor")?.unwrap_or_else(|| SHELL_HOLDER.to_string()))
 }
 
 /// `now + secs`, the instant a lease granted at `now` runs out.
@@ -83,7 +87,9 @@ fn parse_lease(raw: &str) -> Result<i64, ApiError> {
 
 /// The holder's own start renews its live lease to at least
 /// [`DEFAULT_LEASE_SECS`] from `now`, never shortening it (D236). One helper
-/// for the fresh start and the already-running answer.
+/// for the fresh start and the already-running answer. `bump` is the
+/// already-running answer, which writes only once less than half the default
+/// lease is left, so repeating a start in quick succession changes nothing.
 fn renew_on_start(
     tx: &rusqlite::Transaction,
     task: &Task,
@@ -93,7 +99,7 @@ fn renew_on_start(
     bump: bool,
 ) -> Result<bool, ApiError> {
     let renewed = lease_end(now, DEFAULT_LEASE_SECS);
-    if renewed <= until {
+    if renewed <= until || (bump && lease_end(now, DEFAULT_LEASE_SECS / 2) <= until) {
         return Ok(false);
     }
     write_claim(tx, task, holder, &renewed.to_string(), "renew", None, bump)?;
@@ -108,25 +114,26 @@ fn live_claim_on(
     now: Timestamp,
 ) -> Result<Option<(String, Timestamp)>, ApiError> {
     Ok(Engine::claim_on(conn, task_id)?
-        .and_then(|(by, until)| parse_ts(&until).map(|u| (by, u)))
-        .filter(|(_, until)| *until > now))
+        .filter(|(_, until)| lease_is_live(until, now))
+        .and_then(|(by, until)| parse_ts(&until).map(|u| (by, u))))
 }
 
-/// D236: closing (done, cancel, a modify to cancelled) a task under another
-/// holder's live claim is `conflict` unless `force`; with it, the holder it
-/// overrode, for the event.
+/// D236: stopping or closing (stop, done, cancel, a modify to cancelled) a
+/// task under another holder's live claim is `conflict` unless
+/// `force_claim`; with it, the holder it overrode, for the event.
 fn claim_close_guard(
     tx: &rusqlite::Transaction,
     task: &Task,
     actor: Option<&str>,
-    force: bool,
+    force_claim: bool,
 ) -> Result<Option<String>, ApiError> {
-    let caller = actor.unwrap_or("user");
+    let caller = actor.unwrap_or(SHELL_HOLDER);
     match live_claim_on(tx, &task.id, crate::clock::now())? {
         Some((by, _)) if by == caller => Ok(None),
-        Some((by, until)) if !force => Err(ApiError::conflict(format!(
-            "#{} is claimed by {by} until {until}; force:true (or --force) closes it anyway, \
-             and the event records whose claim it overrode (D236)",
+        Some((by, until)) if !force_claim => Err(ApiError::conflict(format!(
+            "#{} is claimed by {by} until {until}; act as that holder (`actor`, or --holder on \
+             the CLI), or force_claim:true (--force-claim) to override it — the event records \
+             whose claim it overrode (D236)",
             task.short_id
         ))),
         Some((by, _)) => Ok(Some(by)),
@@ -134,9 +141,11 @@ fn claim_close_guard(
     }
 }
 
-/// Whether a stored expiry is still in the future at `now` (D236, read-time
-/// liveness in D29's manner). An unreadable expiry is not live.
-pub(crate) fn lease_is_live(expires: &str, now: Timestamp) -> bool {
+/// Whether a stored claim expiry is still in the future at `now` (D236,
+/// read-time liveness in D29's manner). An unreadable expiry is not live. The
+/// one liveness rule: every reader of `claim_expires`, in this crate and out
+/// of it, asks this.
+pub fn lease_is_live(expires: &str, now: Timestamp) -> bool {
     parse_ts(expires).is_some_and(|t| t > now)
 }
 
@@ -832,7 +841,7 @@ impl Engine {
             .holder
             .as_deref()
             .or(command.actor.as_deref())
-            .unwrap_or("user");
+            .unwrap_or(SHELL_HOLDER);
         if let Some((by, until)) = &live_claim {
             if by != starter {
                 return Err(claimed_elsewhere(task.short_id, by, &until.to_string()));
@@ -842,7 +851,8 @@ impl Engine {
         match task.status {
             Status::Active => {
                 // Idempotent: already running. D236: the holder asking again
-                // still renews its lease, the one write this answer makes.
+                // renews its lease once less than half of it is left — the one
+                // write this answer can make.
                 if let Some((by, until)) = &live_claim {
                     if renew_on_start(&tx, &task, by, *until, claim_now, true)? {
                         tx.commit()?;
@@ -1024,9 +1034,13 @@ impl Engine {
     pub fn task_stop(&self, p: &Value) -> Result<Value, ApiError> {
         let target = ref_param(p)?.clone();
         let expected_rev = opt_i64(p, "expected_rev")?;
+        // D236: stopping another holder's claimed task needs `force_claim`.
+        let actor = opt_str_nonempty(p, "actor")?;
+        let force_claim = opt_bool(p, "force_claim")?.unwrap_or(false);
         let tx = self.begin_mutation()?;
         let task = self.resolve_ref_value_on(&tx, &target)?;
         guard_rev(expected_rev, &task)?;
+        let claim_forced = claim_close_guard(&tx, &task, actor.as_deref(), force_claim)?;
         if task.status != Status::Active {
             return Err(ApiError::conflict(format!(
                 "cannot stop {} {} task (only active -> pending)",
@@ -1051,7 +1065,16 @@ impl Engine {
             "stop",
             // D189: the interval this closes, so a merge can place the close
             // after its start whatever the two machines' clocks said.
-            &json!({ "tracked": iso_duration(elapsed), "interval_started": task.active_since }),
+            &{
+                let mut stop = json!({
+                    "tracked": iso_duration(elapsed),
+                    "interval_started": task.active_since,
+                });
+                if let Some(by) = &claim_forced {
+                    stop["claim_forced"] = json!(by);
+                }
+                stop
+            },
         )?;
         tx.commit()?;
 
@@ -1149,7 +1172,7 @@ impl Engine {
     pub fn task_release(&self, p: &Value) -> Result<Value, ApiError> {
         let target = ref_param(p)?.clone();
         let holder = claim_holder(p)?;
-        let force = opt_bool(p, "force")?.unwrap_or(false);
+        let force_claim = opt_bool(p, "force_claim")?.unwrap_or(false);
         let tx = self.begin_mutation()?;
         let task = self.resolve_ref_value_on(&tx, &target)?;
         let Some((by, until)) = Self::claim_on(&tx, &task.id)? else {
@@ -1158,13 +1181,14 @@ impl Engine {
                 task.short_id
             )));
         };
-        // An expired lease is anyone's to clear, no `force` needed; a live one
-        // is the holder's, or `force`'s.
+        // An expired lease is anyone's to clear, no `force_claim` needed; a
+        // live one is the holder's, or `force_claim`'s.
         let live = lease_is_live(&until, crate::clock::now());
-        if live && by != holder && !force {
+        if live && by != holder && !force_claim {
             return Err(ApiError::conflict(format!(
                 "#{} is claimed by {by} until {until}, not by {holder}; only the holder \
-                 releases a claim, or `force` takes it from a holder that is gone",
+                 releases a claim, or force_claim:true (--force-claim) takes it from a holder \
+                 that is gone",
                 task.short_id
             )));
         }
@@ -1174,7 +1198,7 @@ impl Engine {
             payload["expired"] = json!(true);
         }
         if forced {
-            payload["forced"] = json!(true);
+            payload["claim_forced"] = json!(by);
         }
         if by != holder {
             payload["by"] = json!(holder);
@@ -1315,11 +1339,14 @@ impl Engine {
         // "force: false" that means anything different from not asking.
         let force = opt_bool(p, "force")?.unwrap_or(false);
         let expected_rev = opt_i64(p, "expected_rev")?;
+        // D236: `force` stays D150's (open dependencies); a claim is
+        // overridden by its own flag.
         let actor = opt_str_nonempty(p, "actor")?;
+        let force_claim = opt_bool(p, "force_claim")?.unwrap_or(false);
         let tx = self.begin_mutation()?;
         let task = self.resolve_ref_on(&tx, p)?;
         guard_rev(expected_rev, &task)?;
-        let claim_forced = claim_close_guard(&tx, &task, actor.as_deref(), force)?;
+        let claim_forced = claim_close_guard(&tx, &task, actor.as_deref(), force_claim)?;
         match task.status {
             Status::Pending | Status::Active => {}
             Status::Backlog => {
@@ -1915,7 +1942,7 @@ impl Engine {
         let expected_rev = opt_i64(p, "expected_rev")?;
         // D236: who is modifying, and whether a cancel may go past a claim.
         let actor = opt_str_nonempty(p, "actor")?;
-        let force = opt_bool(p, "force")?.unwrap_or(false);
+        let force_claim = opt_bool(p, "force_claim")?.unwrap_or(false);
 
         // Store-dependent validation starts only after BEGIN IMMEDIATE. Another
         // process may have changed the row after request parsing but before this
@@ -2180,7 +2207,7 @@ impl Engine {
         // are not in `assignments`, so they are named here too. First reading
         // wins: the original value, whichever branch writes it first.
         let claim_forced = if cancelling {
-            claim_close_guard(&tx, &task, actor.as_deref(), force)?
+            claim_close_guard(&tx, &task, actor.as_deref(), force_claim)?
         } else {
             None
         };
@@ -3324,7 +3351,7 @@ impl Engine {
             "filter": working, "sort": ["-urgency"], "limit": 1,
             // D236: `next` chooses work for its caller, so another holder's
             // claim is always left out; no actor is the shell, `user`.
-            "actor": opt_str_nonempty(p, "actor")?.unwrap_or_else(|| "user".to_string()),
+            "actor": claim_holder(p)?,
         }))?;
         let task = listed["tasks"].get(0).cloned().unwrap_or(Value::Null);
         let summary = match task["short_id"].as_i64() {
@@ -3934,11 +3961,11 @@ impl Engine {
         let target = ref_param(p)?.clone();
         let expected_rev = opt_i64(p, "expected_rev")?;
         let actor = opt_str_nonempty(p, "actor")?;
-        let force = opt_bool(p, "force")?.unwrap_or(false);
+        let force_claim = opt_bool(p, "force_claim")?.unwrap_or(false);
         let tx = self.begin_mutation()?;
         let task = self.resolve_ref_value_on(&tx, &target)?;
         guard_rev(expected_rev, &task)?;
-        let claim_forced = claim_close_guard(&tx, &task, actor.as_deref(), force)?;
+        let claim_forced = claim_close_guard(&tx, &task, actor.as_deref(), force_claim)?;
         match task.status {
             Status::Backlog | Status::Pending | Status::Active => {}
             other => {

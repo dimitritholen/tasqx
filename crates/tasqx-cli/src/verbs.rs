@@ -196,6 +196,9 @@ pub(crate) fn ids_in(result: &Value, key: &str, inner: Option<&str>) -> Vec<i64>
 /// tasks row and `task.modify` has no `tags` field, so tags are applied with a
 /// follow-up `tag.add`. Dropping them silently to preserve the purity of the
 /// mapping would be the worse trade — the user typed `+tag` and meant it.
+// The D236 pair (`--holder`, `--force-claim`) is the eighth argument; a
+// struct for one call site would be the abstraction with one user.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn run_modify(
     be: &mut Backend,
     ctx: &Ctx,
@@ -204,6 +207,7 @@ pub(crate) fn run_modify(
     flags: sugar::AddFlags,
     clear: &[String],
     expected_rev: Option<i64>,
+    (holder, force_claim): (Option<String>, bool),
 ) -> CmdOutcome {
     let parsed = sugar::parse_add(&rest, flags, sugar::ParseContext::Modify)?;
     // Taken before the fields are moved into `set`; see `name_the_cut`.
@@ -295,6 +299,7 @@ pub(crate) fn run_modify(
         if let Some(rev) = expected_rev {
             params["expected_rev"] = Value::from(rev);
         }
+        claim_params(&mut params, holder, force_claim);
         result = be
             .call("task.modify", &params)
             .map_err(|e| name_the_cut(e, cut.as_deref()))?;
@@ -576,8 +581,26 @@ pub(crate) fn run_start(
     Ok((result, text))
 }
 
-pub(crate) fn run_stop(be: &mut Backend, ctx: &Ctx, r#ref: String) -> CmdOutcome {
-    let params = json!({ "ref": r#ref });
+/// D236: `--holder` as the call's `actor` and `--force-claim` as
+/// `force_claim`, for the verbs that stop or close a task.
+fn claim_params(params: &mut Value, holder: Option<String>, force_claim: bool) {
+    if let Some(h) = holder {
+        params["actor"] = json!(h);
+    }
+    if force_claim {
+        params["force_claim"] = json!(true);
+    }
+}
+
+pub(crate) fn run_stop(
+    be: &mut Backend,
+    ctx: &Ctx,
+    r#ref: String,
+    holder: Option<String>,
+    force_claim: bool,
+) -> CmdOutcome {
+    let mut params = json!({ "ref": r#ref });
+    claim_params(&mut params, holder, force_claim);
     let result = be.call("task.stop", &params)?;
     let task = read_back(be, &result).unwrap_or_else(|| result.clone());
     let text = render::stopped(ctx, &result, &task, crate::clock::now());
@@ -606,9 +629,9 @@ pub(crate) fn run_release(
     ctx: &Ctx,
     r#ref: String,
     holder: Option<String>,
-    force: bool,
+    force_claim: bool,
 ) -> CmdOutcome {
-    let params = json!({ "ref": r#ref, "actor": holder, "force": force });
+    let params = json!({ "ref": r#ref, "actor": holder, "force_claim": force_claim });
     let result = be.call("task.release", &params)?;
     let task = read_back(be, &result).unwrap_or_else(|| result.clone());
     let text = render::claim_released(ctx, &result, &task, crate::clock::now());
@@ -659,7 +682,7 @@ pub(crate) fn run_done(
     be: &mut Backend,
     ctx: &Ctx,
     r#ref: String,
-    force: bool,
+    (force, force_claim): (bool, bool),
     holder: Option<String>,
     correlation: &command::CorrelationArgs,
     self_report: &command::SelfReportArgs,
@@ -668,10 +691,7 @@ pub(crate) fn run_done(
     if force {
         params["force"] = json!(true);
     }
-    // D236: the holder closing its own claim.
-    if let Some(h) = holder {
-        params["actor"] = json!(h);
-    }
+    claim_params(&mut params, holder, force_claim);
     apply_correlation(&mut params, correlation);
     apply_self_report(&mut params, self_report);
     let result = be.call("task.done", &params)?;

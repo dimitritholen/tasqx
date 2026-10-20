@@ -34,7 +34,7 @@ Options:
           Never route through a daemon; always run one-shot in-process (the pre-daemon behaviour). Escape hatch for scripts
 
       --holder <ID>
-          Whose claims count as yours: a task claimed by anyone else is left out of `@working` (D236). Default `user`, the shell
+          Choose work as this holder: `@working` leaves out tasks anyone else has claimed (D236). Without it the list is a view and shows every claim
 
   -h, --help
           Print help (see a summary with '-h')

@@ -335,7 +335,7 @@ fn force_releases_another_holders_claim_and_logs_it() {
     let out = call(
         &e,
         "task.release",
-        json!({ "ref": t, "actor": "agent-2", "force": true }),
+        json!({ "ref": t, "actor": "agent-2", "force_claim": true }),
     )
     .unwrap();
     assert_eq!(out["forced"], true, "{out}");
@@ -344,7 +344,7 @@ fn force_releases_another_holders_claim_and_logs_it() {
         .find(|ev| ev["op"] == "release")
         .expect("a release event");
     assert_eq!(ev["actor"], "agent-2", "{ev}");
-    assert_eq!(ev["payload"]["forced"], true, "{ev}");
+    assert_eq!(ev["payload"]["claim_forced"], "mcp:dead", "{ev}");
     assert_eq!(ev["payload"]["holder"], "mcp:dead", "{ev}");
     claim(&e, t, "agent-2").expect("free again");
 }
@@ -475,7 +475,7 @@ fn closing_another_holders_claimed_task_needs_force() {
     }
     for (method, params) in closes {
         let mut forced = params;
-        forced["force"] = json!(true);
+        forced["force_claim"] = json!(true);
         call(&e, method, forced).unwrap_or_else(|e| panic!("{method}: {}", e.message));
     }
     for (t, op) in [(a, "done"), (b, "cancel"), (c, "modify")] {
@@ -569,6 +569,55 @@ fn anyone_releases_an_expired_claim_and_it_is_logged_expired() {
         .find(|ev| ev["op"] == "release")
         .expect("a release event");
     assert_eq!(ev["payload"]["expired"], true, "{ev}");
-    assert!(ev["payload"].get("forced").is_none(), "{ev}");
+    assert!(ev["payload"].get("claim_forced").is_none(), "{ev}");
     assert_eq!(ev["payload"]["holder"], "agent-1", "{ev}");
+}
+
+/// Review 4 #2/#3: stopping another holder's running claimed task needs
+/// `force_claim`, and D150's `force` is not a way past a claim.
+#[test]
+fn stop_needs_force_claim_and_force_is_only_for_dependencies() {
+    let e = engine();
+    let (a, b) = (add(&e, "running"), add(&e, "done"));
+    claim(&e, a, "agent-1").unwrap();
+    claim(&e, b, "agent-1").unwrap();
+    call(&e, "task.start", json!({ "ref": a, "actor": "agent-1" })).unwrap();
+
+    let err = call(&e, "task.stop", json!({ "ref": a })).unwrap_err();
+    assert_eq!(err.code, ErrorCode::Conflict, "{}", err.message);
+    assert!(err.message.contains("--force-claim"), "{}", err.message);
+    call(&e, "task.stop", json!({ "ref": a, "actor": "agent-1" })).expect("the holder stops");
+
+    let err = call(&e, "task.done", json!({ "ref": b, "force": true })).unwrap_err();
+    assert_eq!(
+        err.code,
+        ErrorCode::Conflict,
+        "force is D150's: {}",
+        err.message
+    );
+    call(&e, "task.done", json!({ "ref": b, "force_claim": true })).expect("force_claim");
+    let ev = events(&e, b)
+        .into_iter()
+        .find(|ev| ev["op"] == "done")
+        .expect("done");
+    assert_eq!(ev["payload"]["claim_forced"], "agent-1", "{ev}");
+    assert!(
+        ev["payload"].get("forced").is_none(),
+        "no dependency was forced: {ev}"
+    );
+}
+
+/// Review 4 #5: re-starting a running claimed task in quick succession writes
+/// nothing; only a lease past half-spent is renewed by it.
+#[test]
+fn quick_restarts_of_a_running_claimed_task_leave_the_rev_alone() {
+    let e = engine();
+    let t = add(&e, "steady");
+    claim(&e, t, "agent-1").unwrap();
+    call(&e, "task.start", json!({ "ref": t, "actor": "agent-1" })).unwrap();
+    let rev = |e: &Engine| call(e, "task.get", json!({ "ref": t })).unwrap()["_rev"].clone();
+    let before = rev(&e);
+    call(&e, "task.start", json!({ "ref": t, "actor": "agent-1" })).unwrap();
+    call(&e, "task.start", json!({ "ref": t, "actor": "agent-1" })).unwrap();
+    assert_eq!(rev(&e), before);
 }

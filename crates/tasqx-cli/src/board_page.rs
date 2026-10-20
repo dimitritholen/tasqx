@@ -36,11 +36,14 @@ const COLUMNS: [(&str, &str, &str); 5] = [
 /// The page, with [`NONCE_SLOT`] still in it. `writes` is `--scope write`.
 pub(crate) fn page(theme: &Theme, writes: bool) -> String {
     format!(
-        "<!doctype html>\n<html lang=\"en\"><head><meta charset=\"utf-8\">\
+        "<!doctype html>\n<html lang=\"en\" data-shell-holder=\"{}\"><head><meta charset=\"utf-8\">\
          <meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">\
          <meta name=\"color-scheme\" content=\"light dark\">\
          <title>tasqx board</title><style>{}{}</style></head><body data-writes=\"{}\">{}\
          <script nonce=\"{NONCE_SLOT}\">{}</script></body></html>\n",
+        // D236: the holder a call naming no actor is, so the page names any
+        // OTHER holder on a card without a literal of its own.
+        tasqx_core::engine::task::SHELL_HOLDER,
         crate::html::palette(theme),
         CSS,
         u8::from(writes),
@@ -141,7 +144,7 @@ const SCRIPT: &str = r###"(()=>{
 const COLS=[["backlog","Backlog","status:backlog"],["blocked","Blocked","@blocked"],["ready","Ready","@working"],["active","Active","status:active"],["done","Done","completed.after:-7d"]];
 const $=id=>document.getElementById(id);
 const el=(t,c,x)=>{const e=document.createElement(t);if(c)e.className=c;if(x!=null)e.textContent=x;return e};
-const W=document.body.dataset.writes==="1";
+const W=document.body.dataset.writes==="1",SHELL=document.documentElement.dataset.shellHolder;
 const state={data:{},byId:{},q:"",lanes:"none",sel:null,live:false,drag:null};
 let timer=0,seq=0,ttimer=0,draft="";
 async function api(method,params){
@@ -182,7 +185,7 @@ function card(t,col){
  if(col==="done"&&t.completed)m.append(el("span","","done "+day(t.completed)));
  else if(t.due){const late=new Date(t.due)<new Date();m.append(el("span",late?"late":"",(late?"overdue ":"due ")+day(t.due)))}
  (t.tags||[]).forEach(g=>m.append(el("span","","+"+g)));
- if(t.claimed_by&&t.claimed_by!=="user")m.append(el("span","held","claimed by "+t.claimed_by));
+ if(t.claimed_by&&t.claimed_by!==SHELL)m.append(el("span","held","claimed by "+t.claimed_by));
  li.append(m);
  if(col!=="done"){
   const u=t.urgency||0,g=el("div","gauge "+band(u));g.setAttribute("role","img");
@@ -447,6 +450,10 @@ mod tests {
             .expect("the Ready query parses");
         assert_eq!(rows["tasks"][0]["claimed_by"], "agent-9", "{rows}");
         assert!(SCRIPT.contains("\"claimed by \"+t.claimed_by"));
+        assert!(built().contains(&format!(
+            "data-shell-holder=\"{}\"",
+            tasqx_core::engine::task::SHELL_HOLDER
+        )));
     }
 
     #[test]
