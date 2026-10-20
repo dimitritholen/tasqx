@@ -1124,7 +1124,7 @@ pub const R_MEMORY_ADD: &[FieldDoc] = &[
     f(
         "similar",
         "array",
-        "Always present: up to three docs of the same project or none that look like this one, best first, each `{id, title, similarity}`; empty when none does. A warning only — the doc was stored either way (D237).",
+        "Always present: up to three docs of the same project or none, already indexed by a search, that look like this one, best first, each `{id, title, similarity}`; empty when none does. A warning only — the doc was stored either way (D237).",
     ),
 ];
 

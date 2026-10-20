@@ -60,6 +60,10 @@ release also trims tasqx-core's public API, which is why it is a minor bump.
   carry `stale_refs`. Existence and text checks only, nothing indexed (D235, #2332).
 - **Memory search ranks by meaning beside words**, fused by reciprocal rank, and every
   hit says why it matched (D196).
+- **`add` and `memory add` warn about near-duplicates.** Up to three open tasks of
+  the same project, or indexed docs, that read like the new one are named on a
+  `note:` line, and as `similar` in `--json` and over MCP (always present, empty
+  when none). The write happens either way (D237, #2341).
 - **`undo` reaches done, cancel, tag and modify; `tasqx unarchive`** (D215). Notes can
   be named by position or id prefix and moved to another task (D211).
 - **A byte-identical `memory import` is a no-op** (the doc keeps its rev, modified and

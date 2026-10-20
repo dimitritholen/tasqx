@@ -16,6 +16,12 @@ fn ok(e: &Engine, method: &str, params: Value) -> Value {
     dispatch(e, method, &params).unwrap_or_else(|err| panic!("{method} {params}: {err:?}"))
 }
 
+/// Have the D196 index store a vector for every doc, as any search does:
+/// a doc without one is not a candidate (D237).
+fn index(e: &Engine) {
+    ok(e, "memory.search", json!({ "query": "anything" }));
+}
+
 fn add_task(e: &Engine, title: &str, project: &str) -> Value {
     ok(e, "task.add", json!({ "title": title, "project": project }))
 }
@@ -112,6 +118,7 @@ fn memory_add_names_a_live_near_duplicate_doc() {
     );
     assert_eq!(similar_ids(&other, "id"), Vec::<Value>::new());
 
+    index(&e);
     let again = ok(
         &e,
         "memory.add",
@@ -123,6 +130,7 @@ fn memory_add_names_a_live_near_duplicate_doc() {
 
     // A removed doc is gone, and so is the warning.
     ok(&e, "memory.remove", json!({ "id": first["id"] }));
+    index(&e);
     let third = ok(
         &e,
         "memory.add",
@@ -144,6 +152,7 @@ fn memory_add_compares_its_own_project_and_unscoped_docs_only() {
         "memory.add",
         json!({ "title": RULING, "body": RULING_BODY, "project": "other" }),
     );
+    index(&e);
     let again = ok(
         &e,
         "memory.add",
@@ -206,26 +215,47 @@ fn task_add_on_five_thousand_open_tasks_stays_within_its_budget() {
     e.conn()
         .execute("UPDATE tasks SET status = 'pending'", [])
         .unwrap();
-    let mut took: Vec<std::time::Duration> = (0..40)
-        .map(|i| {
-            let t0 = std::time::Instant::now();
-            let out = add_task(&e, &format!("{AGAIN} {i}"), "tasqx");
-            let d = t0.elapsed();
-            assert!(out["similar"].is_array());
-            park(&out["id"]);
-            d
+    let db = dir.join("tasks.db").to_string_lossy().into_owned();
+    let time_add = |e: &Engine, i: usize| {
+        let t0 = std::time::Instant::now();
+        let out = add_task(e, &format!("{AGAIN} {i}"), "tasqx");
+        let d = t0.elapsed();
+        assert!(out["similar"].is_array());
+        e.conn()
+            .execute(
+                "UPDATE tasks SET status = 'done' WHERE id = ?1",
+                [out["id"].as_str().unwrap()],
+            )
+            .unwrap();
+        d
+    };
+    // Cold: a fresh engine per add, as a one-shot `tasqx add` runs.
+    let cold: Vec<std::time::Duration> = (0..20)
+        .map(|i| time_add(&Engine::open(&db).unwrap(), i))
+        .collect();
+    // Warm: one engine, as the daemon and `mcp serve` run, after its first add.
+    time_add(&e, 100);
+    let warm: Vec<std::time::Duration> = (0..40).map(|i| time_add(&e, 200 + i)).collect();
+    let p95s: Vec<std::time::Duration> = [("cold", cold), ("warm", warm)]
+        .into_iter()
+        .map(|(kind, mut took)| {
+            took.sort();
+            let p50 = took[took.len() / 2];
+            let p95 = took[took.len() * 95 / 100];
+            println!(
+                "task.add on 5,000 open tasks, {kind}: p50 {p50:?}, p95 {p95:?}, max {:?}",
+                took[took.len() - 1]
+            );
+            p95
         })
         .collect();
-    took.sort();
-    let p50 = took[took.len() / 2];
-    let p95 = took[took.len() * 95 / 100];
-    println!(
-        "task.add on 5,000 open tasks: p50 {p50:?}, p95 {p95:?}, max {:?}",
-        took[took.len() - 1]
-    );
     drop(e);
     let _ = std::fs::remove_dir_all(&dir);
     if !cfg!(debug_assertions) {
-        assert!(p95 < std::time::Duration::from_millis(50), "p95 {p95:?}");
+        assert!(
+            p95s.iter()
+                .all(|p| *p < std::time::Duration::from_millis(50)),
+            "p95 {p95s:?}"
+        );
     }
 }

@@ -43,6 +43,18 @@ fn cut_chars(s: &str, max: usize) -> String {
     }
 }
 
+/// A note's opening summary: its first paragraph — up to the first blank
+/// line, `\r\n` or `\n` alike — on one line and cut at
+/// [`NEXT_SUMMARY_CHARS`]. `task.next`'s summary, and D237's description.
+pub(super) fn opening_summary(body: &str) -> String {
+    let para: Vec<&str> = body
+        .lines()
+        .skip_while(|l| l.trim().is_empty())
+        .take_while(|l| !l.trim().is_empty())
+        .collect();
+    cut_chars(&one_line(&para.join(" ")), NEXT_SUMMARY_CHARS)
+}
+
 /// Which optional side tables a bulk snapshot load should read.
 ///
 /// The bulk loader exists so no reader drifts back to point queries, but
@@ -400,6 +412,16 @@ impl Engine {
         let ts = now_ts.to_string();
         let urg = urgency::score_at(priority, due.as_deref(), &ts, now_ts);
 
+        // D237: compared before the write lock is taken, in the project the
+        // transaction below resolves; a race between the two moves only the
+        // warning.
+        let landing = match &explicit_project {
+            Some(name) => Some(name.clone()),
+            None => get_config(&self.conn, DEFAULT_PROJECT_KEY)?,
+        };
+        let similar =
+            self.similar_tasks(&title, landing.as_deref(), super::similar::TASK_THRESHOLD)?;
+
         let tx = self.begin_mutation()?;
         // Resolve both explicit and inherited routing inside the IMMEDIATE
         // transaction. Otherwise an archive can clear/retire the default after
@@ -554,13 +576,7 @@ impl Engine {
             out["blocked"] = json!(blocked);
         }
         with_title_warning(&mut out, &title);
-        // D237: after the commit, so a comparison can never fail the add.
-        out["similar"] = self.similar_tasks(
-            &id,
-            &title,
-            project.as_deref(),
-            super::similar::TASK_THRESHOLD,
-        );
+        out["similar"] = similar;
         Ok(out)
     }
 
@@ -2915,10 +2931,7 @@ impl Engine {
                 |r| r.get(0),
             )
             .optional()?;
-        Ok(body.map(|b| {
-            let para = b.trim_start().split("\n\n").next().unwrap_or("");
-            cut_chars(&one_line(para), NEXT_SUMMARY_CHARS)
-        }))
+        Ok(body.as_deref().map(opening_summary))
     }
 
     /// `task.next`'s resume half: active tasks, then the open ones with the
