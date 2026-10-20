@@ -10,19 +10,32 @@ fn engine() -> Engine {
 }
 
 /// D235: a doc hit and `memory.get` carry `stale_refs`, the cited paths and
-/// symbols that are gone from the working tree — always an array on a doc,
-/// empty when nothing is missing; null on an annotation hit.
+/// symbols gone from the caller's `workdir` checkout — an array on a doc,
+/// empty when nothing is missing; null on an annotation hit or with no
+/// `workdir`.
 #[test]
 fn search_hits_and_get_carry_stale_refs_for_cited_code_that_is_gone() {
-    let root = std::env::temp_dir().join(format!("tasqx-stale-refs-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&root);
+    // The engine's own process directory is this crate, inside the tasqx
+    // checkout; the caller's `workdir` is a different checkout, and it alone
+    // decides (D235, never the engine's cwd).
+    let base = std::env::temp_dir().join(format!("tasqx-stale-refs-{}", std::process::id()));
+    let root = base.join("staleproj");
+    let _ = std::fs::remove_dir_all(&base);
     std::fs::create_dir_all(root.join(".git")).unwrap();
     std::fs::create_dir_all(root.join("src")).unwrap();
     std::fs::write(root.join("src/live.rs"), "pub fn kept() {}").unwrap();
-    let mut e = engine();
-    e.set_refs_workdir(root.join("src"));
+    // Exists in the engine's cwd checkout, not in the caller's: under the
+    // engine's cwd this ref would pass.
+    assert!(std::path::Path::new("src/engine/memory.rs").exists());
+    let e = engine();
+    call(&e, "project.create", json!({ "name": "staleproj" })).unwrap();
     let add = |e: &Engine, title: &str, body: &str| {
-        call(e, "memory.add", json!({ "title": title, "body": body })).unwrap()["id"]
+        call(
+            e,
+            "memory.add",
+            json!({ "title": title, "body": body, "project": "staleproj" }),
+        )
+        .unwrap()["id"]
             .as_str()
             .unwrap()
             .to_string()
@@ -30,7 +43,7 @@ fn search_hits_and_get_carry_stale_refs_for_cited_code_that_is_gone() {
     let stale = add(
         &e,
         "zebra ruling",
-        "zebra lives in `src/gone.rs` and `src/live.rs::removed`",
+        "zebra lives in `src/gone.rs`, `src/live.rs::removed` and `src/engine/memory.rs`",
     );
     let fine = add(&e, "yak ruling", "yak lives in `src/live.rs::kept`");
     let task = call(&e, "task.add", json!({ "title": "t" })).unwrap();
@@ -41,27 +54,42 @@ fn search_hits_and_get_carry_stale_refs_for_cited_code_that_is_gone() {
     )
     .unwrap();
 
-    let want = json!(["src/gone.rs", "src/live.rs::removed"]);
-    let got = call(&e, "memory.get", json!({ "id": stale })).unwrap();
-    assert_eq!(got["stale_refs"], want);
-    let got = call(&e, "memory.get", json!({ "id": fine })).unwrap();
-    assert_eq!(got["stale_refs"], json!([]));
-
-    let search = |q: &str| {
-        call(
-            &e,
-            "memory.search",
-            json!({ "query": q, "mode": "lexical" }),
-        )
-        .unwrap()["hits"][0]
-            .clone()
+    let workdir = root.join("src").to_string_lossy().to_string();
+    let want = json!([
+        "src/gone.rs",
+        "src/engine/memory.rs",
+        "src/live.rs::removed"
+    ]);
+    let get = |id: &str, wd: Option<&str>| {
+        let mut p = json!({ "id": id });
+        if let Some(wd) = wd {
+            p["workdir"] = json!(wd);
+        }
+        call(&e, "memory.get", p).unwrap()["stale_refs"].clone()
     };
-    assert_eq!(search("zebra")["stale_refs"], want);
-    assert_eq!(search("yak")["stale_refs"], json!([]));
-    let note = search("walrus");
+    assert_eq!(get(&stale, Some(&workdir)), want);
+    assert_eq!(get(&fine, Some(&workdir)), json!([]));
+    // No `workdir`, no check: null, never the engine's own directory.
+    assert!(get(&stale, None).is_null());
+
+    let search = |q: &str, wd: Option<&str>| {
+        let mut p = json!({ "query": q, "mode": "lexical" });
+        if let Some(wd) = wd {
+            p["workdir"] = json!(wd);
+        }
+        call(&e, "memory.search", p).unwrap()["hits"][0].clone()
+    };
+    assert_eq!(search("zebra", Some(&workdir))["stale_refs"], want);
+    assert_eq!(search("yak", Some(&workdir))["stale_refs"], json!([]));
+    assert!(search("zebra", None)["stale_refs"].is_null());
+    let note = search("walrus", Some(&workdir));
     assert_eq!(note["kind"], "annotation");
     assert!(note["stale_refs"].is_null(), "{note}");
-    let _ = std::fs::remove_dir_all(&root);
+
+    // A relative `workdir` would resolve against the engine's directory.
+    let err = call(&e, "memory.get", json!({ "id": stale, "workdir": "src" })).unwrap_err();
+    assert_eq!(err.code, ErrorCode::BadRequest);
+    let _ = std::fs::remove_dir_all(&base);
 }
 
 fn call(e: &Engine, method: &str, params: Value) -> Result<Value, tasqx_core::ApiError> {

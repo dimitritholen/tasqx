@@ -197,8 +197,9 @@ it names. Each document gets one status:
 - `missing_path`: a cited file or directory is gone, for example renamed.
 - `missing_symbol`: the files are there, but a cited function or type is not.
 - `unverifiable`: nothing could be checked. The document cites no code, its
-  source or its project names a different repository, or you are not in a
-  git checkout. This is never reported as `ok`.
+  source or its project names a different repository, it is a global
+  document whose source names no repository, or you are not in a git
+  checkout. This is never reported as `ok`.
 
 The text output lists the stale documents with the references that are gone,
 then a count per status; `--json` lists every document. `--project` checks
@@ -206,7 +207,9 @@ one project's documents. The command exits 0 even when documents are stale,
 because it is a report. Nothing is indexed: it is a file check and a text
 search, run when you ask for it (D235).
 
-A search hit and `memory show --json` carry the same check as `stale_refs`,
+A symbol is looked for only in a regular file of at most 4 MB; anything else
+counts as present. A search hit and `memory show --json` carry the same check
+as `stale_refs`, run in the directory you call them from,
 and an agent's session start marks a standing ruling whose cited code is gone.
 Run `verify` after a rename or a large refactor, and correct what it names
 with [`tasqx memory update`](#tasqx-memory-update).

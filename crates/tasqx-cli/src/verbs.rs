@@ -1387,12 +1387,21 @@ pub(crate) fn run_memory(be: &mut Backend, ctx: &Ctx, action: &MemoryAction) -> 
             if let Some(f) = min_similarity {
                 params["min_similarity"] = json!(f);
             }
+            // D235: `stale_refs` is checked in this shell's checkout.
+            if let Ok(dir) = std::env::current_dir() {
+                params["workdir"] = json!(dir.to_string_lossy());
+            }
             let result = be.call("memory.search", &params)?;
             let text = render::memory_hits(ctx, &result, &query.join(" "), *raw, scope.as_deref());
             Ok((result, text))
         }
         MemoryAction::Show { id } => {
-            let result = be.call("memory.get", &json!({ "id": id }))?;
+            let mut params = json!({ "id": id });
+            // D235: `stale_refs` is checked in this shell's checkout.
+            if let Ok(dir) = std::env::current_dir() {
+                params["workdir"] = json!(dir.to_string_lossy());
+            }
+            let result = be.call("memory.get", &params)?;
             let source = result["source"].as_str().unwrap_or("—");
             // D135: `body` in the JSON result is exactly what was stored —
             // `--json` on this same command must show the fence, if any, so
@@ -1652,27 +1661,23 @@ pub(crate) fn run_memory_import(
     Ok((result, text))
 }
 
-/// `tasqx memory import --refresh` (#789): the sweep over what is already
-/// imported, rather than a directory read again.
-///
-/// No path, because the store already records which file each doc came from
-/// (D180). The engine does the comparing; this prints one line per doc it
-/// re-read and one per file it could not, then the four counts. A missing
-/// file is NOT an error — the sweep found it and said so, the doc is still
-/// there, and exiting non-zero would make a routine `--refresh` in a script
-/// fail over a file somebody moved.
 /// `tasqx memory verify [id] [--project P]` (D235): each doc's cited files and
 /// symbols against the git toplevel of THIS process's working directory —
 /// checked here, not by the engine, so a daemon's own directory never stands
 /// in for the caller's. Docs are read through `memory.list` and `memory.get`;
 /// no method of its own. Every doc is in `--json`; the text names the stale
 /// ones (or the one asked for) and a count per status.
+///
+/// A sweep is a report: a doc whose read fails mid-sweep (removed by another
+/// writer, say) is reported as `error` with the message and the sweep goes
+/// on, exiting 0. A doc named by id that cannot be read is the command's own
+/// failure, with that error's exit code.
 pub(crate) fn run_memory_verify(
     be: &mut Backend,
     id: Option<&str>,
     project: Option<&str>,
 ) -> CmdOutcome {
-    use tasqx_core::memory_doc::{git_toplevel, verify_refs, RefStatus};
+    use tasqx_core::memory_doc::{verify_refs, RefRoot, RefStatus};
     let ids: Vec<String> = match id {
         Some(id) => vec![id.to_string()],
         None => {
@@ -1689,24 +1694,36 @@ pub(crate) fn run_memory_verify(
                 .collect()
         }
     };
-    let top = std::env::current_dir()
-        .ok()
-        .and_then(|d| git_toplevel(&d.join("_")));
+    let root = std::env::current_dir().ok().and_then(|d| RefRoot::at(&d));
     let statuses = [
         RefStatus::Ok,
         RefStatus::MissingPath,
         RefStatus::MissingSymbol,
         RefStatus::Unverifiable,
     ];
-    let mut counts = [0usize; 4];
+    let (mut counts, mut errors) = ([0usize; 4], 0usize);
     let (mut docs, mut text) = (Vec::new(), String::new());
+    let sweep = id.is_none();
     for id in &ids {
-        let doc = be.call("memory.get", &json!({ "id": id }))?;
+        let doc = match be.call("memory.get", &json!({ "id": id })) {
+            Ok(doc) => doc,
+            Err(e) if sweep => {
+                errors += 1;
+                text.push_str(&format!(
+                    "error  {}  {}\n",
+                    render::san(id),
+                    render::san(&e.message)
+                ));
+                docs.push(json!({ "id": id, "status": "error", "error": e.message }));
+                continue;
+            }
+            Err(e) => return Err(e),
+        };
         let check = verify_refs(
             doc["source"].as_str(),
             doc["body"].as_str().unwrap_or_default(),
             doc["project"].as_str(),
-            top.as_deref(),
+            root.as_ref(),
         );
         counts[statuses
             .iter()
@@ -1735,21 +1752,33 @@ pub(crate) fn run_memory_verify(
             "stale_refs": check.stale_refs,
         }));
     }
-    let summary: Vec<String> = statuses
+    let mut summary: Vec<String> = statuses
         .iter()
         .zip(counts)
         .map(|(s, n)| format!("{n} {}", s.as_str()))
         .collect();
-    let root = top.as_deref().map(|p| p.display().to_string());
+    if errors > 0 {
+        summary.push(format!("{errors} error"));
+    }
+    let top = root.as_ref().map(|r| r.toplevel().display().to_string());
     text.push_str(&format!(
         "{} checked against {}: {}\n",
         ids.len(),
-        render::san(root.as_deref().unwrap_or("no git checkout")),
+        render::san(top.as_deref().unwrap_or("no git checkout")),
         summary.join(", "),
     ));
-    Ok((json!({ "root": root, "docs": docs }), text))
+    Ok((json!({ "root": top, "docs": docs }), text))
 }
 
+/// `tasqx memory import --refresh` (#789): the sweep over what is already
+/// imported, rather than a directory read again.
+///
+/// No path, because the store already records which file each doc came from
+/// (D180). The engine does the comparing; this prints one line per doc it
+/// re-read and one per file it could not, then the four counts. A missing
+/// file is NOT an error — the sweep found it and said so, the doc is still
+/// there, and exiting non-zero would make a routine `--refresh` in a script
+/// fail over a file somebody moved.
 pub(crate) fn run_memory_refresh(be: &mut Backend, ctx: &Ctx) -> CmdOutcome {
     let result = be.call("memory.refresh", &json!({}))?;
     let rows = |key: &str| -> Vec<Value> { result[key].as_array().cloned().unwrap_or_default() };

@@ -794,6 +794,20 @@ pub(super) fn describe(text: &str) -> String {
 /// is none to state.
 const PARAM_DOCS: &[(&str, &str, &str, &str, &str)] = &[
     (
+        "memory.search",
+        "workdir",
+        "string",
+        "",
+        "The caller's working directory, absolute. Each doc hit's `stale_refs` is checked against its git toplevel; omitted, `stale_refs` is null (D235). The MCP server passes its own.",
+    ),
+    (
+        "memory.get",
+        "workdir",
+        "string",
+        "",
+        "The caller's working directory, absolute. `stale_refs` is checked against its git toplevel; omitted, it is null (D235). The MCP server passes its own.",
+    ),
+    (
         "project.create",
         "name",
         "string",

@@ -271,9 +271,6 @@ pub struct Engine {
     conn: Connection,
     /// D196: this process's copy of the semantic index (`engine/vectors.rs`).
     vectors: vectors::VectorCell,
-    /// D235: the directory whose git toplevel cited code is checked against;
-    /// `None` reads the process's working directory at each check.
-    refs_workdir: Option<std::path::PathBuf>,
 }
 
 /// Owns one serialized mutation from `BEGIN IMMEDIATE` through commit. The
@@ -353,7 +350,6 @@ impl Engine {
         Ok(Engine {
             conn: storage::open(path)?,
             vectors: Default::default(),
-            refs_workdir: None,
         })
     }
 
@@ -370,7 +366,6 @@ impl Engine {
         Ok(Engine {
             conn: storage::open_read_only(path)?,
             vectors: Default::default(),
-            refs_workdir: None,
         })
     }
 
@@ -379,26 +374,7 @@ impl Engine {
         Ok(Engine {
             conn: storage::open_in_memory()?,
             vectors: Default::default(),
-            refs_workdir: None,
         })
-    }
-
-    /// Check the code memory docs cite against `dir`'s git toplevel instead
-    /// of the process's working directory (D235). A test seam: every real
-    /// caller's working directory is the right one.
-    pub fn set_refs_workdir(&mut self, dir: std::path::PathBuf) {
-        self.refs_workdir = Some(dir);
-    }
-
-    /// The git toplevel cited code is checked against (D235), or `None`
-    /// outside a work tree.
-    pub(crate) fn refs_toplevel(&self) -> Option<std::path::PathBuf> {
-        let dir = match &self.refs_workdir {
-            Some(d) => d.clone(),
-            None => std::env::current_dir().ok()?,
-        };
-        // `git_toplevel` takes a FILE and starts at its parent.
-        crate::memory_doc::git_toplevel(&dir.join("_"))
     }
 
     /// Direct read access to the connection (read-only helpers, tests).

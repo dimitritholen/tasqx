@@ -155,7 +155,7 @@ impl CodeRef {
 }
 
 /// What a doc cites: the repo its `source` names (D203's `<repo>/<path>`),
-/// if any, and its refs, capped at [`MAX_REFS`].
+/// if any, and its refs in citation order, deduplicated.
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct DocRefs {
     /// The `<repo>` segment of a D203 source, when the source is a file key.
@@ -164,8 +164,14 @@ pub struct DocRefs {
     pub refs: Vec<CodeRef>,
 }
 
-/// The most refs one doc is checked for (D235): a stat per ref per hit.
+/// The most refs one doc is checked for (D235): a stat per ref per hit. A
+/// loose ref [`verify_refs`] skips does not count against it, so junk spans
+/// cannot crowd out the real ones.
 pub const MAX_REFS: usize = 20;
+
+/// The bytes of a file a symbol is looked for in (D235). A larger file is
+/// not read, and its symbol counts as present: unverified, never missing.
+pub const SYMBOL_SCAN_CAP: u64 = 4 * 1024 * 1024;
 
 /// The extensions that make a span read as a file name.
 const CODE_EXTENSIONS: &[&str] = &[
@@ -175,18 +181,20 @@ const CODE_EXTENSIONS: &[&str] = &[
 ];
 
 /// `s` as a repo-relative path, or `None` when it does not look like one:
-/// whitespace, a placeholder or URL character, an absolute or home path, or a
-/// `..` segment that would leave the toplevel. A leading `./` and a trailing
-/// `/` are cut. The flag says whether it is half path-like ([`CodeRef::loose`]).
+/// whitespace, a placeholder, ellipsis or URL character, an absolute or home
+/// path, or a segment of dots alone (`..` would leave the toplevel, `...` is
+/// an elision). A leading `./` and a trailing `/` are cut. The flag says
+/// whether it is half path-like ([`CodeRef::loose`]).
 fn path_like(s: &str) -> Option<(String, bool)> {
     let s = s.strip_prefix("./").unwrap_or(s).trim_end_matches('/');
     if s.is_empty()
+        || s.contains("...")
         || !s
             .chars()
             .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-' | '/'))
         || s.starts_with('/')
         || s.split('/')
-            .any(|seg| seg.is_empty() || seg == "." || seg == "..")
+            .any(|seg| seg.is_empty() || seg.chars().all(|c| c == '.'))
     {
         return None;
     }
@@ -225,19 +233,33 @@ fn span_ref(span: &str) -> Option<CodeRef> {
     })
 }
 
+/// A fence opener or closer: the fence character and the run's length, when
+/// `line` starts (after indentation) with three or more backticks or tildes.
+fn fence(line: &str) -> Option<(char, usize)> {
+    let t = line.trim_start();
+    let c = t.chars().next().filter(|c| matches!(c, '`' | '~'))?;
+    let n = t.chars().take_while(|x| *x == c).count();
+    // A backtick fence's info string holds no backtick: "```x```" is inline.
+    let inline = c == '`' && t[n..].contains('`');
+    (n >= 3 && !inline).then_some((c, n))
+}
+
 /// The paths and symbols a doc cites (D235): its `source` when that is a
 /// D203 `<repo>/<path>` key naming a file (the repo segment stripped and
 /// returned), plus every backticked span in the body, outside fenced blocks,
 /// that reads as `path`, `path:line` or `path::symbol`. Deduplicated, in
-/// order, capped at [`MAX_REFS`]. Pure: nothing is read from disk here.
+/// order; [`verify_refs`] applies [`MAX_REFS`]. Pure: nothing is read from
+/// disk here.
+///
+/// A fence closes, as CommonMark has it, only on a line of the opening
+/// character at least as long as the opener and carrying nothing else.
 pub fn extract_refs(source: Option<&str>, body: &str) -> DocRefs {
     let mut out = DocRefs::default();
     let push = |r: CodeRef, out: &mut DocRefs| {
-        if out.refs.len() < MAX_REFS
-            && !out
-                .refs
-                .iter()
-                .any(|o| o.path == r.path && o.symbol == r.symbol)
+        if !out
+            .refs
+            .iter()
+            .any(|o| o.path == r.path && o.symbol == r.symbol)
         {
             out.refs.push(r);
         }
@@ -261,15 +283,22 @@ pub fn extract_refs(source: Option<&str>, body: &str) -> DocRefs {
             }
         }
     }
-    let mut fenced = false;
+    let mut open: Option<(char, usize)> = None;
     for line in body.lines() {
-        let t = line.trim_start();
-        if t.starts_with("```") || t.starts_with("~~~") {
-            fenced = !fenced;
-            continue;
-        }
-        if fenced {
-            continue;
+        match (open, fence(line)) {
+            (None, Some(f)) => {
+                open = Some(f);
+                continue;
+            }
+            (Some((c, n)), Some((c2, n2))) => {
+                let rest = line.trim_start().trim_start_matches(c2);
+                if c2 == c && n2 >= n && rest.trim().is_empty() {
+                    open = None;
+                }
+                continue;
+            }
+            (Some(_), None) => continue,
+            (None, None) => {}
         }
         let parts: Vec<&str> = line.split('`').collect();
         for i in (1..parts.len().saturating_sub(1)).step_by(2) {
@@ -279,6 +308,37 @@ pub fn extract_refs(source: Option<&str>, body: &str) -> DocRefs {
         }
     }
     out
+}
+
+/// The working tree cited code is checked against (D235): a git toplevel and
+/// the names a doc's repo may go by there — the toplevel's own and its main
+/// checkout's ([`repo_dir`]). Resolved once per request, not per doc.
+#[derive(Debug, Clone)]
+pub struct RefRoot {
+    toplevel: std::path::PathBuf,
+    names: Vec<String>,
+}
+
+impl RefRoot {
+    /// The git toplevel at or above `workdir`, or `None` outside a work tree.
+    pub fn at(workdir: &Path) -> Option<RefRoot> {
+        // `git_toplevel` takes a FILE and starts at its parent.
+        let toplevel = git_toplevel(&workdir.join("_"))?;
+        let mut names = Vec::new();
+        for dir in [toplevel.clone(), repo_dir(&toplevel)] {
+            if let Some(n) = dir.file_name().and_then(|n| n.to_str()) {
+                if !names.iter().any(|x| x == n) {
+                    names.push(n.to_string());
+                }
+            }
+        }
+        Some(RefRoot { toplevel, names })
+    }
+
+    /// The toplevel directory.
+    pub fn toplevel(&self) -> &Path {
+        &self.toplevel
+    }
 }
 
 /// A doc's verdict from [`verify_refs`] (D235).
@@ -315,48 +375,51 @@ pub struct RefCheck {
     pub stale_refs: Vec<String>,
 }
 
-/// Check a doc's refs against `toplevel`'s working tree (D235).
+/// Check a doc's refs against `root`'s working tree (D235).
 ///
 /// Existence and text checks only, nothing cached or indexed (D182): a path
 /// is `exists()`, a symbol is a word-boundary match of its last segment in
-/// the named file. `toplevel` is `None` outside a git work tree. A doc whose
-/// source names another repo than `toplevel` (its own name or its main
-/// checkout's, [`repo_dir`]) is `unverifiable` — and so is one with no such
-/// source whose `project` is not that name, since D218 names a session's
-/// project after the toplevel — as is one with nothing left to check, never a
-/// bare `ok`.
+/// the named file (`symbol_missing`). `root` is `None` outside a git work
+/// tree. The doc's repo is the one its D203 source names, else its
+/// `project`; a doc naming neither (a global doc with no repo source) is
+/// `unverifiable`, never checked against whichever repo the reader is in,
+/// and so is one naming another repo than `root`'s, or with nothing left to
+/// check. Never a bare `ok`. At most [`MAX_REFS`] refs are checked; a loose
+/// ref whose first segment is absent is skipped without counting.
 pub fn verify_refs(
     source: Option<&str>,
     body: &str,
     project: Option<&str>,
-    toplevel: Option<&Path>,
+    root: Option<&RefRoot>,
 ) -> RefCheck {
     let unverifiable = RefCheck {
         status: RefStatus::Unverifiable,
         stale_refs: Vec::new(),
     };
-    let Some(root) = toplevel else {
+    let Some(root) = root else {
         return unverifiable;
     };
     let doc = extract_refs(source, body);
-    if let Some(repo) = doc.repo.as_deref().or(project) {
-        let named = |p: &Path| p.file_name().and_then(|n| n.to_str()) == Some(repo);
-        if !named(root) && !named(&repo_dir(root)) {
-            return unverifiable;
-        }
+    match doc.repo.as_deref().or(project) {
+        Some(repo) if root.names.iter().any(|n| n == repo) => {}
+        _ => return unverifiable,
     }
+    let top = root.toplevel();
     let (mut checked, mut missing_path, mut missing_symbol) = (0, Vec::new(), Vec::new());
     for r in &doc.refs {
+        if checked == MAX_REFS {
+            break;
+        }
         let first = r.path.split('/').next().unwrap_or_default();
-        if r.loose && !root.join(first).exists() {
+        if r.loose && !top.join(first).exists() {
             continue;
         }
         checked += 1;
-        let file = root.join(&r.path);
+        let file = top.join(&r.path);
         if !file.exists() {
             missing_path.push(r.label());
         } else if let Some(sym) = &r.symbol {
-            if !mentions(&file, sym) {
+            if symbol_missing(&file, sym) {
                 missing_symbol.push(r.label());
             }
         }
@@ -377,15 +440,29 @@ pub fn verify_refs(
     }
 }
 
-/// Does `file` contain `word` with no identifier character on either side?
-/// An unreadable file (a directory, a permission error) does not.
-fn mentions(file: &Path, word: &str) -> bool {
-    let Ok(bytes) = std::fs::read(file) else {
+/// Is `word` provably absent from `file` — no occurrence with an identifier
+/// character on neither side? Only a regular file of at most
+/// [`SYMBOL_SCAN_CAP`] bytes that reads cleanly can prove it; a directory, a
+/// FIFO, a larger file or a read error counts as present-unverified, so the
+/// check never reads a pipe or a huge file and never cries missing for what
+/// it could not look at.
+fn symbol_missing(file: &Path, word: &str) -> bool {
+    use std::io::Read;
+    let Ok(meta) = std::fs::metadata(file) else {
         return false;
     };
+    if !meta.is_file() || meta.len() > SYMBOL_SCAN_CAP {
+        return false;
+    }
+    let mut bytes = Vec::new();
+    let read =
+        std::fs::File::open(file).and_then(|f| f.take(SYMBOL_SCAN_CAP + 1).read_to_end(&mut bytes));
+    if read.is_err() || bytes.len() as u64 > SYMBOL_SCAN_CAP {
+        return false;
+    }
     let text = String::from_utf8_lossy(&bytes);
     let ident = |c: char| c.is_alphanumeric() || c == '_';
-    text.match_indices(word).any(|(i, _)| {
+    !text.match_indices(word).any(|(i, _)| {
         !text[..i].chars().next_back().is_some_and(ident)
             && !text[i + word.len()..].chars().next().is_some_and(ident)
     })
@@ -409,6 +486,8 @@ mod tests {
     /// D235: one table over every span shape the extractor reads or refuses.
     #[test]
     fn extract_refs_reads_source_and_backticked_paths() {
+        let branches: String = (0..20).map(|i| format!("`origin/b{i}` ")).collect();
+        let after_branches = format!("{branches}`src/real.rs`");
         let cases: &[Case] = &[
             // D203 source: the repo segment is stripped and remembered.
             (
@@ -450,14 +529,29 @@ mod tests {
                     r("docs/wiki", None, true),
                 ],
             ),
-            // Refused: no path shape, a URL, a placeholder, an escape, a
-            // rust path, whitespace, an absolute or home path, a fenced block.
+            // Refused: no path shape, a URL, a placeholder, an escape, an
+            // elision, a rust path, whitespace, an absolute or home path, a
+            // fenced block.
             (
                 None,
-                "`foo` `https://x.y/z.md` `task/<id>` `../x.rs` `crate::memory_doc::read_doc` \
+                "`foo` `https://x.y/z.md` `task/<id>` `../x.rs` `crates/.../engine.rs` \
+                 `a/.../b` `.../x.rs` `crates/…/x.rs` `crate::memory_doc::read_doc` \
                  `a b.rs` `/etc/x.rs` `~/.claude/x.md`\n```\n`in/fence.rs`\n```\n`after/fence.rs`",
                 None,
                 vec![r("after/fence.rs", None, false)],
+            ),
+            // CommonMark fences: a ```` block holds a ``` line, a ``` block
+            // holds a ~~~ line, and neither closes it.
+            (
+                None,
+                "````\n```\n`in/a.rs`\n```\n`in/b.rs`\n````\n`out/a.rs`\n\
+                 ```\n~~~\n`in/c.rs`\n~~~\n```\n`out/b.rs`\n```x```\n`out/c.rs`",
+                None,
+                vec![
+                    r("out/a.rs", None, false),
+                    r("out/b.rs", None, false),
+                    r("out/c.rs", None, false),
+                ],
             ),
             // Duplicates fold.
             (
@@ -472,16 +566,16 @@ mod tests {
             assert_eq!(got.repo.as_deref(), *repo, "repo of {source:?} / {body:?}");
             assert_eq!(&got.refs, refs, "refs of {source:?} / {body:?}");
         }
-        let many: String = (0..30).map(|i| format!("`d/f{i}.rs` ")).collect();
-        assert_eq!(extract_refs(None, &many).refs.len(), MAX_REFS);
+        // No cap at extraction: twenty branch names cannot crowd out a path.
+        let got = extract_refs(None, &after_branches);
+        assert_eq!(got.refs.last(), Some(&r("src/real.rs", None, false)));
     }
 
-    /// D235's fixtures: a renamed file is flagged, an existing one passes,
-    /// a removed function in a file that still exists is flagged, and a doc
-    /// with nothing to check is `unverifiable`, never a bare ok.
-    #[test]
-    fn verify_refs_flags_renamed_files_and_removed_symbols() {
-        let root = std::env::temp_dir().join(format!("tasqx-verify-refs-{}", std::process::id()));
+    /// A temp git checkout named `proj`, with `src/live.rs`.
+    fn fixture_repo(tag: &str) -> std::path::PathBuf {
+        let root = std::env::temp_dir()
+            .join(format!("tasqx-verify-{tag}-{}", std::process::id()))
+            .join("proj");
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(root.join(".git")).unwrap();
         std::fs::create_dir_all(root.join("src")).unwrap();
@@ -491,8 +585,19 @@ mod tests {
             "pub fn kept_fn() {}\nfn kept_fn_two() {}",
         )
         .unwrap();
-        let top = Some(root.as_path());
-        let check = |source: Option<&str>, body: &str| verify_refs(source, body, None, top);
+        root
+    }
+
+    /// D235's fixtures: a renamed file is flagged, an existing one passes,
+    /// a removed function in a file that still exists is flagged, and a doc
+    /// with nothing to check is `unverifiable`, never a bare ok.
+    #[test]
+    fn verify_refs_flags_renamed_files_and_removed_symbols() {
+        let root = fixture_repo("refs");
+        let rr = RefRoot::at(&root.join("src")).expect("a toplevel");
+        assert_eq!(rr.toplevel(), root.as_path());
+        let top = Some(&rr);
+        let check = |source: Option<&str>, body: &str| verify_refs(source, body, Some("proj"), top);
 
         let renamed = check(None, "lives in `src/old_name.rs`");
         assert_eq!(renamed.status, RefStatus::MissingPath);
@@ -519,13 +624,15 @@ mod tests {
         assert_eq!(both.status, RefStatus::MissingPath);
 
         // Nothing to check: no refs, only loose refs whose first segment is
-        // absent, another repo's source or project, or no toplevel at all.
+        // absent, another repo's source or project, a global doc naming no
+        // repo at all, or no toplevel.
         for (source, body, project, root) in [
-            (None, "no refs here", None, top),
-            (None, "`origin/main` `lib.rs`", None, top),
-            (Some("otherrepo/src/live.rs"), "", None, top),
-            (None, "`src/live.rs`", Some("otherrepo"), top),
-            (None, "`src/live.rs`", None, None),
+            (None, "no refs here", Some("proj"), top),
+            (None, "`origin/main` `lib.rs`", Some("proj"), top),
+            (Some("otherrepo/src/live.rs"), "", Some("proj"), top),
+            (None, "`src/gone.rs`", Some("otherrepo"), top),
+            (None, "`src/gone.rs`", None, top),
+            (None, "`src/gone.rs`", Some("proj"), None),
         ] {
             let got = verify_refs(source, body, project, root);
             assert_eq!(got.status, RefStatus::Unverifiable, "{source:?} {body:?}");
@@ -533,17 +640,54 @@ mod tests {
         }
         // A loose ref whose first segment exists IS checked.
         assert_eq!(check(None, "`src/gone`").status, RefStatus::MissingPath);
-        // The toplevel's own name is the repo a source may name.
-        let name = root.file_name().unwrap().to_str().unwrap().to_string();
-        let own = format!("{name}/src/live.rs");
-        assert_eq!(check(Some(&own), "").status, RefStatus::Ok);
-        // A doc scoped to the project the toplevel names is checked, and a
-        // source naming this repo outranks a project naming another.
-        let scoped = verify_refs(None, "`src/gone.rs`", Some(&name), top);
-        assert_eq!(scoped.status, RefStatus::MissingPath);
-        let sourced = verify_refs(Some(&own), "", Some("otherrepo"), top);
+        // A source naming this repo is checked even for a global doc, and
+        // outranks a project naming another.
+        let sourced = verify_refs(Some("proj/src/live.rs"), "", None, top);
         assert_eq!(sourced.status, RefStatus::Ok);
-        let _ = std::fs::remove_dir_all(&root);
+        let sourced = verify_refs(Some("proj/src/live.rs"), "", Some("otherrepo"), top);
+        assert_eq!(sourced.status, RefStatus::Ok);
+
+        // MAX_REFS counts checked refs only: twenty skipped branch names
+        // before a real missing path do not hide it, and the cap holds.
+        let branches: String = (0..20).map(|i| format!("`origin/b{i}` ")).collect();
+        let got = check(None, &format!("{branches}`src/gone.rs`"));
+        assert_eq!(got.stale_refs, vec!["src/gone.rs".to_string()]);
+        let many: String = (0..30).map(|i| format!("`src/f{i}.rs` ")).collect();
+        assert_eq!(check(None, &many).stale_refs.len(), MAX_REFS);
+        let _ = std::fs::remove_dir_all(root.parent().unwrap());
+    }
+
+    /// D235: a symbol is looked for only in a regular file under the scan
+    /// cap. A directory, a FIFO or a file past the cap is present-unverified,
+    /// never missing, and the FIFO is never opened (a read would block).
+    #[test]
+    fn a_symbol_in_a_non_regular_or_oversized_file_is_never_missing() {
+        let root = fixture_repo("sym");
+        std::fs::create_dir_all(root.join("src/dir.rs")).unwrap();
+        let big = root.join("src/big.rs");
+        let mut text = "x".repeat(SYMBOL_SCAN_CAP as usize);
+        text.push_str("\nfn absent_fn() {}");
+        std::fs::write(&big, text).unwrap();
+        let rr = RefRoot::at(&root).unwrap();
+        let check = |body: &str| verify_refs(None, body, Some("proj"), Some(&rr));
+        assert_eq!(check("`src/big.rs::nowhere_fn`").status, RefStatus::Ok);
+        assert_eq!(check("`src/dir.rs::nowhere_fn`").status, RefStatus::Ok);
+        #[cfg(unix)]
+        {
+            let made = std::process::Command::new("mkfifo")
+                .arg(root.join("src/pipe.rs"))
+                .status()
+                .is_ok_and(|s| s.success());
+            if made {
+                assert_eq!(check("`src/pipe.rs::nowhere_fn`").status, RefStatus::Ok);
+            }
+        }
+        // The control: a regular small file without the symbol is missing.
+        assert_eq!(
+            check("`src/live.rs::nowhere_fn`").status,
+            RefStatus::MissingSymbol
+        );
+        let _ = std::fs::remove_dir_all(root.parent().unwrap());
     }
 
     /// Review findings on `memory import`: a UTF-8 BOM defeated the `# `

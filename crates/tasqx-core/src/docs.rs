@@ -1145,7 +1145,7 @@ pub const MEMORY_HIT_ROW: &[FieldDoc] = &[
     n("standing", "boolean", "For a doc hit, whether it is a standing ruling (D156); null on an annotation hit, which has no such flag."),
     n("project", "string", "Which project this hit is scoped to — a doc's own column, or the annotation's task's — or null for global knowledge (#657)."),
     n("stale", "boolean", "true when the doc's origin file no longer matches what was imported; null for annotations and docs with no origin (D180)."),
-    n("stale_refs", "array", "For a doc hit, the paths and `path::symbol` refs it cites that are gone from the git toplevel of the reader's working directory; empty when none are, or none can be checked. Null on an annotation hit (D235)."),
+    n("stale_refs", "array", "For a doc hit, the paths and `path::symbol` refs it cites that are gone from the git toplevel of the caller's `workdir`; empty when none are, or none can be checked. Null on an annotation hit and when no `workdir` was given (D235)."),
     f("modified", "string", "When the entry last changed: a doc's `modified`, an annotation's `created` (annotations carry no modified time, so an edit does not move it, the same rule `graph.query` uses for a node) — what a date window filters hits on (D219)."),
     f("via", "string", "Which side found it: `lexical` (words — all of them, which `matched` explains, or only some, which `partial` says and `matched_any` explains), `semantic` (meaning; `similarity` explains it) or `both` (D196)."),
     n("similarity", "number", "Its best chunk's cosine to the query, to three decimals — also on a hit the words found, when the entry has a vector; null when it has none or the semantic side did not run."),
@@ -1172,7 +1172,7 @@ pub const DOC_EXPORT_ROW: &[FieldDoc] = &[
 /// What `memory.get` adds to [`DOC_EXPORT_ROW`]: a read-time check, so not
 /// part of the row a backup carries (D235).
 pub const MEMORY_GET_REFS: &[FieldDoc] = &[
-    f("stale_refs", "array", "The paths and `path::symbol` refs the doc cites that are gone from the git toplevel of the reader's working directory; empty when none are, or none can be checked (D235)."),
+    n("stale_refs", "array", "The paths and `path::symbol` refs the doc cites that are gone from the git toplevel of the caller's `workdir`; empty when none are, or none can be checked; null when no `workdir` was given (D235)."),
 ];
 
 /// `memory.remove`'s result.
