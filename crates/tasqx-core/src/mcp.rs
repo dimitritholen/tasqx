@@ -1003,7 +1003,8 @@ fn build_tool_specs() -> Vec<ToolSpec> {
                 `mode: lexical` forces exact words; an id like `D41` is matched by words alone. \
                 A hit is an excerpt: `tasqx_get_memory` reads a doc whole, `tasqx_get_task` an \
                 annotation. `hits` is sorted best-first (LOWER `rank` is better); `total` and \
-                `has_more` say what `limit` cut. A doc hit adds `stale` (D180).",
+                `has_more` say what `limit` cut. A doc hit adds `stale` (D180) and \
+                `stale_refs` (D235).",
             schema: json!({
                 "type": "object",
                 "properties": {
@@ -2209,10 +2210,17 @@ impl<'e> McpServer<'e> {
                 gist.truncate(cut);
                 gist.push('…');
             }
-            if with_gist && !gist.is_empty() {
-                format!("\n- {title}: {gist}")
+            // D235: cited code gone from this working tree is named, even on
+            // the title-only fallback, so a ruling about it is not followed blind.
+            let stale = if d.stale_refs.is_empty() {
+                String::new()
             } else {
-                format!("\n- {title}")
+                format!(" [stale_refs: {}]", d.stale_refs.join(", "))
+            };
+            if with_gist && !gist.is_empty() {
+                format!("\n- {title}{stale}: {gist}")
+            } else {
+                format!("\n- {title}{stale}")
             }
         };
 

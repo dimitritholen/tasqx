@@ -876,7 +876,7 @@ pub const COMMAND_REF: &[CmdDoc] = &[
         // slash-joined token unbreakable past a 40-column manual page.
         method: "memory.search + get/add/remove/list/update + memory.import + memory.refresh",
         summary: "Store and search knowledge: docs, patterns, and your task annotations (D41).",
-        usage: "tasqx memory <add <title> <body> [--source s] [--project p] [--standing]|search <words…> [--limit n] [--scope s] [--mode m] [--min-similarity n] [--raw]|list [--limit n] [--offset n] [--project p] [--standing]|show <id>|update <id> [--title t] [--body b] [--source s] [--project p] [--standing true|false] [--expected-rev n]|rm <id>|import <path> [--project p]|import --refresh>",
+        usage: "tasqx memory <add <title> <body> [--source s] [--project p] [--standing]|search <words…> [--limit n] [--scope s] [--mode m] [--min-similarity n] [--raw]|list [--limit n] [--offset n] [--project p] [--standing]|show <id>|update <id> [--title t] [--body b] [--source s] [--project p] [--standing true|false] [--expected-rev n]|rm <id>|import <path> [--project p]|import --refresh|verify [<id>] [--project p]>",
         examples: &[
             ex("tasqx memory add \"Deploy runbook\" \"deploys go through the blue-green pipeline\""),
             ex("tasqx memory search blue-green"),
@@ -900,6 +900,10 @@ pub const COMMAND_REF: &[CmdDoc] = &[
             ex_norun(
                 "tasqx memory import --refresh",
                 "re-reads every imported doc whose file changed; takes no path",
+            ),
+            ex_norun(
+                "tasqx memory verify",
+                "flags docs citing files or functions gone from this checkout (D235)",
             ),
             ex_norun(
                 "tasqx memory update 019f8422-7b3e-7c41-a2d9-6f1b0e5c8a12 --body \"corrected text\"",

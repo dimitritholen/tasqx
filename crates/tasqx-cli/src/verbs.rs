@@ -1409,6 +1409,9 @@ pub(crate) fn run_memory(be: &mut Backend, ctx: &Ctx, action: &MemoryAction) -> 
             );
             Ok((result, text))
         }
+        MemoryAction::Verify { id, project } => {
+            run_memory_verify(be, id.as_deref(), project.as_deref())
+        }
         MemoryAction::Rm { id } => {
             let result = be.call("memory.remove", &json!({ "id": id }))?;
             let text = format!("Removed {}\n", render::san(id));
@@ -1658,6 +1661,95 @@ pub(crate) fn run_memory_import(
 /// file is NOT an error — the sweep found it and said so, the doc is still
 /// there, and exiting non-zero would make a routine `--refresh` in a script
 /// fail over a file somebody moved.
+/// `tasqx memory verify [id] [--project P]` (D235): each doc's cited files and
+/// symbols against the git toplevel of THIS process's working directory —
+/// checked here, not by the engine, so a daemon's own directory never stands
+/// in for the caller's. Docs are read through `memory.list` and `memory.get`;
+/// no method of its own. Every doc is in `--json`; the text names the stale
+/// ones (or the one asked for) and a count per status.
+pub(crate) fn run_memory_verify(
+    be: &mut Backend,
+    id: Option<&str>,
+    project: Option<&str>,
+) -> CmdOutcome {
+    use tasqx_core::memory_doc::{git_toplevel, verify_refs, RefStatus};
+    let ids: Vec<String> = match id {
+        Some(id) => vec![id.to_string()],
+        None => {
+            let mut params = json!({});
+            if let Some(p) = project {
+                params["project"] = json!(p);
+            }
+            let list = be.call("memory.list", &params)?;
+            list["docs"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(|d| d["id"].as_str().map(String::from))
+                .collect()
+        }
+    };
+    let top = std::env::current_dir()
+        .ok()
+        .and_then(|d| git_toplevel(&d.join("_")));
+    let statuses = [
+        RefStatus::Ok,
+        RefStatus::MissingPath,
+        RefStatus::MissingSymbol,
+        RefStatus::Unverifiable,
+    ];
+    let mut counts = [0usize; 4];
+    let (mut docs, mut text) = (Vec::new(), String::new());
+    for id in &ids {
+        let doc = be.call("memory.get", &json!({ "id": id }))?;
+        let check = verify_refs(
+            doc["source"].as_str(),
+            doc["body"].as_str().unwrap_or_default(),
+            doc["project"].as_str(),
+            top.as_deref(),
+        );
+        counts[statuses
+            .iter()
+            .position(|s| *s == check.status)
+            .unwrap_or(3)] += 1;
+        let stale = matches!(
+            check.status,
+            RefStatus::MissingPath | RefStatus::MissingSymbol
+        );
+        if stale || ids.len() == 1 {
+            text.push_str(&format!(
+                "{}  {}  {}\n",
+                check.status.as_str(),
+                render::san(id),
+                render::san(doc["title"].as_str().unwrap_or("?")),
+            ));
+            for r in &check.stale_refs {
+                text.push_str(&format!("  gone: {}\n", render::san(r)));
+            }
+        }
+        docs.push(json!({
+            "id": id,
+            "title": doc["title"],
+            "source": doc["source"],
+            "status": check.status.as_str(),
+            "stale_refs": check.stale_refs,
+        }));
+    }
+    let summary: Vec<String> = statuses
+        .iter()
+        .zip(counts)
+        .map(|(s, n)| format!("{n} {}", s.as_str()))
+        .collect();
+    let root = top.as_deref().map(|p| p.display().to_string());
+    text.push_str(&format!(
+        "{} checked against {}: {}\n",
+        ids.len(),
+        render::san(root.as_deref().unwrap_or("no git checkout")),
+        summary.join(", "),
+    ));
+    Ok((json!({ "root": root, "docs": docs }), text))
+}
+
 pub(crate) fn run_memory_refresh(be: &mut Backend, ctx: &Ctx) -> CmdOutcome {
     let result = be.call("memory.refresh", &json!({}))?;
     let rows = |key: &str| -> Vec<Value> { result[key].as_array().cloned().unwrap_or_default() };

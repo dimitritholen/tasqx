@@ -43,6 +43,17 @@ The answer is the rendered markdown alone (D151); use it as-is, and pass
 project, so you never guess terms that silently find nothing. Use `tasqx_search_memory` for what the brief cannot see (another
 project, a subject the title does not name); `raw: true` passes FTS5 syntax.
 
+## Cited code that is gone
+
+A doc hit, `tasqx_get_memory` and a standing ruling at session start carry
+`stale_refs`: files or `path::symbol` refs the doc cites that are gone from
+this checkout (D235). A non-empty one means the doc talks about code that was
+renamed or removed: check the code before following it, then correct the doc
+with `tasqx_update_memory`. Run `tasqx memory verify` from the repo after a
+rename, a large refactor or a merge that moved files, and before relying on
+an old ruling; it reports every doc as `ok`, `missing_path`, `missing_symbol`
+or `unverifiable` (nothing it could check).
+
 ## Completing
 
 `tasqx_complete_task` refuses a task with open blockers; `force: true`
