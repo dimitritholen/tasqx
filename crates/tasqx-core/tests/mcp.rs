@@ -797,12 +797,30 @@ fn a_project_named_after_an_ancestor_directory_does_not_take_over_the_session() 
 fn a_standing_ruling_citing_missing_code_is_marked_stale_refs() {
     let _guard = RIPWIRE_PATH_ENV.lock().unwrap_or_else(|e| e.into_inner());
     let engine = engine();
-    let repo = temp_repo("stale-refs/repo");
+    let repo = temp_repo("stale-refs/stalerepo");
     std::fs::create_dir_all(repo.join("src")).unwrap();
     std::fs::write(repo.join("src/live.rs"), "fn kept() {}").unwrap();
-    add_doc(&engine, "gone rule", "see `src/gone.rs`", None, true);
-    add_doc(&engine, "live rule", "see `src/live.rs::kept`", None, true);
-    let text = rulings_of(&McpServer::new(&engine, Scope::Write).with_workdir(Some(repo)));
+    engine
+        .project_create(&json!({ "name": "stalerepo" }))
+        .unwrap();
+    add_doc(
+        &engine,
+        "gone rule",
+        "see `src/gone.rs`",
+        Some("stalerepo"),
+        true,
+    );
+    add_doc(
+        &engine,
+        "live rule",
+        "see `src/live.rs::kept`",
+        Some("stalerepo"),
+        true,
+    );
+    // Global, naming no repo: never checked against the session's checkout.
+    add_doc(&engine, "global rule", "see `src/gone.rs`", None, true);
+    let server = McpServer::new(&engine, Scope::Write).with_workdir(Some(repo.clone()));
+    let text = rulings_of(&server);
     let line = |t: &str| {
         text.lines()
             .find(|l| l.contains(t))
@@ -814,6 +832,37 @@ fn a_standing_ruling_citing_missing_code_is_marked_stale_refs() {
         "{text}"
     );
     assert!(!line("live rule").contains("stale_refs"), "{text}");
+    assert!(!line("global rule").contains("stale_refs"), "{text}");
+
+    // `tasqx_get_memory` is checked in the server's own workdir, which the
+    // server supplies; a server launched with none checks nothing.
+    let id = engine.memory_list(&json!({ "standing": true })).unwrap()["docs"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|d| d["title"] == "gone rule")
+        .unwrap()["id"]
+        .clone();
+    let get = |server: &McpServer| {
+        let out = server
+            .handle_message(&json!({
+                "jsonrpc": "2.0", "id": 2, "method": "tools/call",
+                "params": { "name": "tasqx_get_memory", "arguments": { "id": id } }
+            }))
+            .expect("a request");
+        tool_text(&out)["stale_refs"].clone()
+    };
+    assert_eq!(get(&server), json!(["src/gone.rs"]));
+    assert!(get(&McpServer::new(&engine, Scope::Write)).is_null());
+    // The workdir is pinned: a caller cannot point the check elsewhere.
+    let out = server
+        .handle_message(&json!({
+            "jsonrpc": "2.0", "id": 3, "method": "tools/call",
+            "params": { "name": "tasqx_get_memory",
+                        "arguments": { "id": id, "workdir": "/" } }
+        }))
+        .expect("a request");
+    assert!(is_error(&out), "{out}");
 }
 
 #[test]

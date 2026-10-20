@@ -282,10 +282,12 @@ pub const PARAMS: &[(&str, &[&str], bool)] = &[
             // D196: words, meaning or both, and the meaning side's floor.
             "mode",
             "min_similarity",
+            // D235: the caller's checkout, which `stale_refs` is checked in.
+            "workdir",
         ],
         false,
     ),
-    ("memory.get", &["id"], false),
+    ("memory.get", &["id", "workdir"], false),
     ("memory.remove", &["id"], false),
     // #657: `project` scopes the whole batch, the same additive shape
     // `memory.add`'s own `project` already has.
