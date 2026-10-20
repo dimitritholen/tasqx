@@ -8,16 +8,16 @@
 //! meaning fused by reciprocal rank (D196) — at limit 5, which is what a
 //! user gets. Recall@5 is reported per language pair, query language first.
 //!
-//! The floors are the targets stated before any model swap, against
-//! potion-base-8M's hybrid baseline (en→en 0.85, nl→nl 0.80, en→nl 0.10,
-//! nl→en 0.05): Dutch and both cross-lingual pairs at least 0.15 above it,
-//! English at most 0.02 below it. No candidate meets them yet (task #2331):
-//! potion-multilingual-128M pruned to English and Dutch, with the language
-//! direction projected out, missed them even with the similarity floor and
-//! the vocabulary gate retuned for it on a held-out half of this fixture and
-//! of `memory-eval.json` (seed 2331, stratified). So the test is a
-//! measurement: run it with
-//! `cargo test -p tasqx-core --test multilingual_eval -- --ignored --nocapture`.
+//! It is a regression floor for the model memory search ships,
+//! potion-base-8M (D234 kept it). Its hybrid recall@5 when the floors were
+//! set was en→en 0.85, nl→nl 0.80, en→nl 0.10, nl→en 0.05; each floor sits
+//! 0.05 under that (the cross-lingual pairs are near zero and only
+//! reported), so a change that degrades search fails here rather than
+//! silently. The model and the search are deterministic, so a floor moves
+//! only when they do. The same fixture is the yardstick any future model
+//! is measured on (#2345): D234 records the static multilingual table that
+//! was measured on it and rejected. Run with `--nocapture` to see the table
+//! and every miss.
 
 use std::collections::{BTreeMap, HashMap};
 
@@ -27,10 +27,10 @@ use tasqx_core::{dispatch, Engine};
 const FIXTURE: &str = include_str!("fixtures/multilingual-eval.json");
 
 const FLOORS: &[(&str, f64)] = &[
-    ("en->en", 0.83),
-    ("nl->nl", 0.95),
-    ("en->nl", 0.25),
-    ("nl->en", 0.20),
+    ("en->en", 0.80),
+    ("nl->nl", 0.75),
+    ("en->nl", 0.0),
+    ("nl->en", 0.0),
 ];
 
 fn ok(e: &Engine, method: &str, params: Value) -> Value {
@@ -38,8 +38,7 @@ fn ok(e: &Engine, method: &str, params: Value) -> Value {
 }
 
 #[test]
-#[ignore = "a measurement: no candidate model meets these floors yet (task #2331)"]
-fn hybrid_recall_at_5_holds_in_dutch_english_and_across_them() {
+fn hybrid_recall_at_5_does_not_fall_in_english_or_dutch() {
     let fx: Value = serde_json::from_str(FIXTURE).unwrap();
     let e = Engine::open_in_memory().unwrap();
     let docs = fx["docs"].as_array().unwrap();
