@@ -11,8 +11,12 @@
 //! The floors are the targets stated before any model swap, against
 //! potion-base-8M's hybrid baseline (en→en 0.85, nl→nl 0.80, en→nl 0.10,
 //! nl→en 0.05): Dutch and both cross-lingual pairs at least 0.15 above it,
-//! English at most 0.02 below it. No candidate meets them yet (task #2331),
-//! so the test is a measurement: run it with
+//! English at most 0.02 below it. No candidate meets them yet (task #2331):
+//! potion-multilingual-128M pruned to English and Dutch, with the language
+//! direction projected out, missed them even with the similarity floor and
+//! the vocabulary gate retuned for it on a held-out half of this fixture and
+//! of `memory-eval.json` (seed 2331, stratified). So the test is a
+//! measurement: run it with
 //! `cargo test -p tasqx-core --test multilingual_eval -- --ignored --nocapture`.
 
 use std::collections::{BTreeMap, HashMap};
