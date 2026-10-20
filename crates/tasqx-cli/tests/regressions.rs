@@ -5695,8 +5695,10 @@ fn memory_import_refresh_re_reads_an_edited_file_and_names_a_deleted_one() {
 #[test]
 fn memory_verify_flags_renamed_files_and_removed_functions() {
     let dir = fresh_config_dir("memory-verify");
-    let repo = std::env::temp_dir().join(format!("tasqx-reg-memory-verify-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&repo);
+    let base = std::env::temp_dir().join(format!("tasqx-reg-memory-verify-{}", std::process::id()));
+    // The checkout's name is the project its docs are scoped to (D218, D235).
+    let repo = base.join("verifyrepo");
+    let _ = std::fs::remove_dir_all(&base);
     std::fs::create_dir_all(repo.join("src")).expect("create src");
     std::fs::create_dir_all(repo.join(".git")).expect("create .git dir");
     std::fs::write(repo.join("src/new_name.rs"), "fn moved() {}").expect("write");
@@ -5708,8 +5710,17 @@ fn memory_verify_flags_renamed_files_and_removed_functions() {
             .output()
             .expect("run tasqx")
     };
+    assert!(run(&["init", "verifyrepo"]).status.success());
     let add = |title: &str, body: &str| {
-        let out = run(&["--json", "memory", "add", title, body]);
+        let out = run(&[
+            "--json",
+            "memory",
+            "add",
+            title,
+            body,
+            "--project",
+            "verifyrepo",
+        ]);
         let v: serde_json::Value = serde_json::from_slice(&out.stdout).expect("json");
         v["id"].as_str().expect("an id").to_string()
     };
@@ -5717,6 +5728,10 @@ fn memory_verify_flags_renamed_files_and_removed_functions() {
     let fine = add("fine", "lives in `src/live.rs::kept`");
     let removed = add("removed", "calls `src/live.rs::dropped_fn`");
     let plain = add("plain", "no code cited here");
+    // A global doc names no repo, so it is never checked against this one.
+    let out = run(&["--json", "memory", "add", "global", "in `src/old_name.rs`"]);
+    let global: serde_json::Value = serde_json::from_slice(&out.stdout).expect("json");
+    let global = global["id"].as_str().expect("an id").to_string();
 
     let out = run(&["--json", "memory", "verify"]);
     assert_eq!(
@@ -5746,6 +5761,7 @@ fn memory_verify_flags_renamed_files_and_removed_functions() {
         (json!("missing_symbol"), json!(["src/live.rs::dropped_fn"]))
     );
     assert_eq!(status(&plain), (json!("unverifiable"), json!([])));
+    assert_eq!(status(&global), (json!("unverifiable"), json!([])));
 
     // One doc by id, as text: the status and the failing ref are named.
     let out = run(&["memory", "verify", &renamed]);
@@ -5755,7 +5771,7 @@ fn memory_verify_flags_renamed_files_and_removed_functions() {
         text.contains("missing_path") && text.contains("src/old_name.rs"),
         "{text}"
     );
-    let _ = std::fs::remove_dir_all(&repo);
+    let _ = std::fs::remove_dir_all(&base);
 }
 
 /// #790/D180: `memory search` marks a doc hit `stale` once its origin file has

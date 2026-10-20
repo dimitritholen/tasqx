@@ -15,6 +15,25 @@ use super::*;
 /// miss — the two must not share one exit code (DESIGN.md's `2`
 /// bad_request vs `4` not_found contract exists so a script can branch
 /// without parsing JSON).
+/// D235: the `workdir` param a caller names for its checkout, resolved once
+/// to the git toplevel cited code is checked against: `None` when absent (no
+/// check, `stale_refs` null), `Some(None)` outside a work tree. Never the
+/// engine process's own directory, which under a daemon is not the caller's;
+/// so a relative path, which would resolve against it, is refused.
+fn refs_root(p: &Value) -> Result<Option<Option<crate::memory_doc::RefRoot>>, ApiError> {
+    let Some(dir) = opt_str(p, "workdir")? else {
+        return Ok(None);
+    };
+    let dir = std::path::Path::new(&dir);
+    if !dir.is_absolute() {
+        return Err(ApiError::bad_request(
+            "`workdir` must be an absolute path: the caller's own checkout, never one this \
+             process resolves (D235)",
+        ));
+    }
+    Ok(Some(crate::memory_doc::RefRoot::at(dir)))
+}
+
 fn require_uuid_shape(id: &str) -> Result<(), ApiError> {
     if Uuid::parse_str(id).is_ok() {
         return Ok(());
@@ -1242,7 +1261,8 @@ impl Engine {
             ));
         }
         let query = req_str(p, "query")?;
-        self.search_fused(
+        let root = refs_root(p)?;
+        let mut out = self.search_fused(
             p,
             &Fusion {
                 lexical: match mode {
@@ -1260,7 +1280,31 @@ impl Engine {
                 floor: floor.unwrap_or(MEMORY_MIN_SIMILARITY),
                 exclude_task: None,
             },
-        )
+        )?;
+        // D235: checked for the page alone, against one toplevel resolved
+        // once, and only when the caller named its working directory.
+        if let (Some(root), Some(hits)) = (root, out["hits"].as_array_mut()) {
+            for hit in hits.iter_mut().filter(|h| h["kind"] == "doc") {
+                let id = hit["id"].as_str().unwrap_or_default().to_string();
+                let refs = self
+                    .conn
+                    .query_row(
+                        "SELECT source, body, project FROM docs WHERE id = ?1",
+                        params![id],
+                        |r| {
+                            Ok(Self::stale_refs(
+                                &json!(r.get::<_, Option<String>>(0)?),
+                                &json!(r.get::<_, String>(1)?),
+                                &json!(r.get::<_, Option<String>>(2)?),
+                                root.as_ref(),
+                            ))
+                        },
+                    )
+                    .optional()?;
+                hit["stale_refs"] = json!(refs.unwrap_or_default());
+            }
+        }
+        Ok(out)
     }
 
     /// The engine's own path into `memory.search`, widened with two things
@@ -1806,15 +1850,6 @@ impl Engine {
             None
         };
         let source: Option<String> = r.get(3)?;
-        let project: Option<String> = r.get(7)?;
-        // D235: an annotation cites nothing a doc's `source` keys, so null.
-        let stale_refs = (kind == "doc").then(|| {
-            self.stale_refs(
-                &json!(source),
-                &json!(body.as_deref().unwrap_or("")),
-                &json!(project),
-            )
-        });
         let row = json!({
             "id": id,
             "kind": kind,
@@ -1827,9 +1862,11 @@ impl Engine {
             "standing": r.get::<_, Option<i64>>(6)?.map(|n| n != 0),
             // #657: which project this hit belongs to — `null` for global
             // knowledge.
-            "project": project,
+            "project": r.get::<_, Option<String>>(7)?,
             "stale": stale,
-            "stale_refs": stale_refs,
+            // D235: null here; `memory.search` fills a doc hit's when the
+            // caller names its `workdir`, for the page alone.
+            "stale_refs": Value::Null,
             // #807: a doc's `modified`, an annotation's `created`:
             // annotations carry no modified time, so an edit does not move
             // it (the rule graph.query uses). A date filter can place every hit.
@@ -1873,15 +1910,19 @@ impl Engine {
         Ok(Some(row))
     }
 
-    /// D235: the refs a doc cites that are gone from the working tree this
-    /// process checks against ([`Engine::refs_toplevel`]); empty when every
-    /// ref holds or none can be checked.
-    fn stale_refs(&self, source: &Value, body: &Value, project: &Value) -> Vec<String> {
+    /// D235: the refs a doc cites that are gone from `root`'s working tree;
+    /// empty when every ref holds or none can be checked.
+    fn stale_refs(
+        source: &Value,
+        body: &Value,
+        project: &Value,
+        root: Option<&crate::memory_doc::RefRoot>,
+    ) -> Vec<String> {
         crate::memory_doc::verify_refs(
             source.as_str(),
             body.as_str().unwrap_or_default(),
             project.as_str(),
-            self.refs_toplevel().as_deref(),
+            root,
         )
         .stale_refs
     }
@@ -1947,9 +1988,17 @@ impl Engine {
             )
             .optional()?;
         if let Some(mut doc) = found {
-            // D235: the cited code that is gone, read at this read.
-            doc["stale_refs"] =
-                json!(self.stale_refs(&doc["source"], &doc["body"], &doc["project"]));
+            // D235: the cited code gone from the caller's checkout, checked
+            // only when the caller names it; null otherwise.
+            doc["stale_refs"] = match refs_root(p)? {
+                Some(root) => json!(Self::stale_refs(
+                    &doc["source"],
+                    &doc["body"],
+                    &doc["project"],
+                    root.as_ref()
+                )),
+                None => Value::Null,
+            };
             return Ok(doc);
         }
         // The id might be a real annotation, which `memory.search` returns
@@ -2214,7 +2263,7 @@ impl Engine {
 
         // D235: a standing ruling citing code that is gone from the
         // session's working tree says so; topical fill is not checked.
-        let top = workdir.and_then(|d| crate::memory_doc::git_toplevel(&d.join("_")));
+        let top = workdir.and_then(crate::memory_doc::RefRoot::at);
         let docs = |sql: &str| -> Result<Vec<SessionDoc>, ApiError> {
             let mut stmt = self.conn.prepare(sql)?;
             let rows = stmt.query_map(params![name], |r| {

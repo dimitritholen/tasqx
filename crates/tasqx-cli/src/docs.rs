@@ -492,7 +492,7 @@ const METHODS: [(&str, &str, &str); 52] = [
     ),
     (
         "memory.get",
-        "<code>id</code>",
+        "<code>id</code>, <code>workdir?</code>",
         "<code>{id, title, body, source, project, rev, created, modified}</code> — one doc \
          whole, by the id a search hit carries. An annotation id is refused, naming the task to \
          read it from.",
@@ -501,7 +501,7 @@ const METHODS: [(&str, &str, &str); 52] = [
         "memory.search",
         "<code>query</code>, <code>limit?</code>, <code>scope?</code>, <code>raw?</code>, \
          <code>project?</code>, <code>include_unscoped?</code>, <code>mode?</code>, \
-         <code>min_similarity?</code>",
+         <code>min_similarity?</code>, <code>workdir?</code>",
         "<code>{count, total, has_more, hits, matched, matched_any, relaxed, semantic}</code> — docs + \
          annotations ranked by meaning and by words (D196): an embedding model built into the \
          binary lists entries whose best passage is at least <code>min_similarity</code> (0 to \

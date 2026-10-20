@@ -555,6 +555,18 @@ const UNEXPOSED_METHODS: &[(&str, &str)] = &[
 /// these, so the omission is a recorded decision rather than a hidden param.
 const PINNED_ARGS: &[(&str, &str, &str)] = &[
     (
+        "tasqx_search_memory",
+        "workdir",
+        "`stale_refs` is checked in the session's own checkout, the directory this server \
+         was launched in; a caller-named one would point the check at any tree (D235).",
+    ),
+    (
+        "tasqx_get_memory",
+        "workdir",
+        "`stale_refs` is checked in the session's own checkout, the directory this server \
+         was launched in; a caller-named one would point the check at any tree (D235).",
+    ),
+    (
         "tasqx_add_tokens",
         "source",
         "an agent reporting its own spend is a self-report by definition; `otel` and \
@@ -2451,6 +2463,26 @@ impl<'e> McpServer<'e> {
                 }
             }
         }
+        // D235: `stale_refs` is checked in the session's checkout, the
+        // directory this server was launched in, never one a caller names
+        // (PINNED_ARGS): one sent anyway is refused like any unknown key.
+        if spec.method == "memory.search" || spec.method == "memory.get" {
+            if let Some(obj) = args.as_object_mut() {
+                if obj.contains_key("workdir") {
+                    return Err(tool_error(
+                        "bad_request",
+                        format!(
+                            "unknown argument `workdir` for {}: `stale_refs` is checked in \
+                             this server's own working directory (D235)",
+                            spec.name
+                        ),
+                    ));
+                }
+                if let Some(dir) = &self.workdir {
+                    obj.insert("workdir".to_string(), json!(dir.to_string_lossy()));
+                }
+            }
+        }
 
         // Arguments this server READS AND DOES NOT FORWARD. The removal is
         // driven by [`TRANSPORT_ONLY_ARGS`] rather than written out per key,
@@ -2598,7 +2630,7 @@ impl<'e> McpServer<'e> {
             .filter(|(tool, _, _)| *tool == spec.name)
             .map(|(_, arg, _)| *arg)
             .collect();
-        if !pinned.is_empty() {
+        if spec.method == "token.add" && !pinned.is_empty() {
             if let Some(obj) = args.as_object_mut() {
                 if let Some(key) = pinned.iter().find(|k| obj.contains_key(**k)) {
                     return Err(tool_error(
