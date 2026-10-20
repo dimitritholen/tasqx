@@ -238,15 +238,16 @@ want to act on:
 - **`tasqx_claim_task` is how parallel agents stay off each other's work.** A
   claim is a lease, 30 minutes unless `lease` names another length and at most
   24 hours, held by the connection (or the `actor` you name). While it is live
-  the task leaves every other connection's `@working` and `tasqx_next`, and
+  the task leaves every other connection's `@working` and `tasqx_next`, their
+  `tasqx_complete_task` and `tasqx_cancel_task` on it need `force`, and
   their `tasqx_start_timer` on it is refused naming the holder and the expiry.
   Claim again to renew; `tasqx_release_task`, completing or cancelling gives it
   up; an expired lease is anyone's. Claim before you start when more than one
   agent works the same store. The connection id changes when the server
   restarts, so an agent that may reconnect should pass its own stable `actor`
-  (its session id) to claim, start and release; a claim stranded by a dead
-  session is freed by `force: true` on `tasqx_release_task` or by its lease
-  running out.
+  (its session id) to claim, start, complete, cancel and release; a claim
+  stranded by a dead session is freed by `force: true` on
+  `tasqx_release_task` or by its lease running out.
 - **`tasqx_remove_annotation` redacts the event too.** It overwrites the body
   in the annotation row *and* in the original write's audit event, in one
   transaction, so a secret pasted into a note is also gone from an export.

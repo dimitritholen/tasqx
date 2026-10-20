@@ -144,13 +144,7 @@ pub(crate) fn pick_candidates(
     // D110's ceiling, so the common store is read in one call: `task.list`
     // scans the whole store each time (D58), and a small page made opening
     // the screen cost one scan per page.
-    let mut base = json!({ "filter": filter, "sort": ["-urgency"], "limit": 10_000 });
-    // D236: whose claims stay in the working set; absent is the engine's `user`.
-    if let Some(h) = holder {
-        base["actor"] = json!(h);
-    }
-    let pages = task_list_pages(|p| be.call("task.list", p), base)?;
-    Ok(merge_pages(&pages))
+    candidates_in_pages(be, filter, 10_000, holder)
 }
 
 /// [`pick_candidates`] with the page size named, so a test can make the loop
@@ -163,11 +157,15 @@ pub(crate) fn candidates_in_pages(
     be: &mut Backend,
     filter: &str,
     page: u64,
+    holder: Option<&str>,
 ) -> Result<Value, ApiError> {
-    let pages = task_list_pages(
-        |p| be.call("task.list", p),
-        json!({ "filter": filter, "sort": ["-urgency"], "limit": page }),
-    )?;
+    let mut base = json!({ "filter": filter, "sort": ["-urgency"], "limit": page });
+    // D236: a holder choosing work for itself; without one the list is a
+    // view and shows every claim.
+    if let Some(h) = holder {
+        base["actor"] = json!(h);
+    }
+    let pages = task_list_pages(|p| be.call("task.list", p), base)?;
     Ok(merge_pages(&pages))
 }
 

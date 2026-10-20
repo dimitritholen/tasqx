@@ -90,9 +90,7 @@ fn generate_at(
     )?;
     // Blocked and startable are the engine's answers, not a re-derivation.
     let blocked = short_ids(engine, filter, "@blocked")?;
-    // D236: a task someone else has claimed is still ready work in a report a
-    // person reads; the row names its holder.
-    let working = short_ids(engine, filter, "(@working or (@claimed status:pending))")?;
+    let working = short_ids(engine, filter, "@working")?;
     let members = chart::members_of(&export);
     let model = Model::new(&export, &members, &blocked, &working, now, period);
     let page = Page {

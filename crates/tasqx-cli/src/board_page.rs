@@ -28,9 +28,7 @@ pub(crate) const NONCE_SLOT: &str = "__NONCE__";
 const COLUMNS: [(&str, &str, &str); 5] = [
     ("backlog", "Backlog", "status:backlog"),
     ("blocked", "Blocked", "@blocked"),
-    // D236: a task claimed by someone else is still ready work on a board a
-    // person reads, so the column adds it back (with its holder on the card).
-    ("ready", "Ready", "@working or (@claimed status:pending)"),
+    ("ready", "Ready", "@working"),
     ("active", "Active", "status:active"),
     ("done", "Done", "completed.after:-7d"),
 ];
@@ -140,7 +138,7 @@ body[data-writes="0"] .w{display:none}
 
 const SCRIPT: &str = r###"(()=>{
 "use strict";
-const COLS=[["backlog","Backlog","status:backlog"],["blocked","Blocked","@blocked"],["ready","Ready","@working or (@claimed status:pending)"],["active","Active","status:active"],["done","Done","completed.after:-7d"]];
+const COLS=[["backlog","Backlog","status:backlog"],["blocked","Blocked","@blocked"],["ready","Ready","@working"],["active","Active","status:active"],["done","Done","completed.after:-7d"]];
 const $=id=>document.getElementById(id);
 const el=(t,c,x)=>{const e=document.createElement(t);if(c)e.className=c;if(x!=null)e.textContent=x;return e};
 const W=document.body.dataset.writes==="1";
@@ -200,7 +198,7 @@ function paint(){
  const keep=state.sel,main=$("cols"),had=document.activeElement&&document.activeElement.dataset&&document.activeElement.dataset.id;
  main.replaceChildren();state.byId={};
  COLS.forEach(c=>{
-  const rows=(state.data[c[0]]||[]).filter(t=>(c[0]!=="ready"||(t.status!=="active"&&!t.blocked))&&hit(t));
+  const rows=(state.data[c[0]]||[]).filter(t=>(c[0]!=="ready"||t.status!=="active")&&hit(t));
   const s=el("section","col");s.setAttribute("aria-labelledby","h-"+c[0]);s.dataset.col=c[0];
   const h=el("header"),h2=el("h2");const nm=el("span","",c[1]);nm.id="h-"+c[0];
   h2.append(nm,el("span","n",String(rows.length)));h.append(h2,el("code","",c[2]));s.append(h);
@@ -431,8 +429,8 @@ mod tests {
     }
 
     /// D236: the Ready column's query, run through the engine as the board
-    /// runs it (no actor, so `user`), keeps a pending task someone else has
-    /// claimed, and the card names the holder.
+    /// runs it (no actor: a view, no claim exclusion), keeps a pending task
+    /// someone else has claimed, and the card names the holder.
     #[test]
     fn a_task_claimed_by_someone_else_is_ready_with_its_holder() {
         use tasqx_core::{dispatch, Engine};

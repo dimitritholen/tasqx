@@ -168,7 +168,7 @@ impl Engine {
                 continue;
             }
             let ctx = MatchCtx::from(&snapshot);
-            if !filter.matches(&ctx) {
+            if !filter.matches_with_claims(&ctx, &snapshot.claims(None)) {
                 continue;
             }
             // D28: the group *key* is a read surface, so `group_key` goes through
@@ -509,7 +509,7 @@ impl Engine {
                 }
             }
             let ctx = MatchCtx::from(&snapshot);
-            if !filter.matches(&ctx) {
+            if !filter.matches_with_claims(&ctx, &snapshot.claims(None)) {
                 continue;
             }
             // D28's choke point, for the same reason `report.summary` uses it:

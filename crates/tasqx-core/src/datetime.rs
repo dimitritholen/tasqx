@@ -403,6 +403,14 @@ pub fn parse_signed_duration(input: &str) -> Result<i64, ApiError> {
 /// looks fine until a total is quietly wrong. Parsing at the edge makes it a
 /// clean `bad_request` instead.
 pub fn parse_duration(input: &str) -> Result<String, ApiError> {
+    duration_if_positive(input)?
+        .ok_or_else(|| ApiError::bad_request("an estimate must be greater than zero".to_string()))
+}
+
+/// [`parse_duration`]'s grammar, with "parsed, but not greater than zero"
+/// answered as `Ok(None)` rather than as an error, so a caller with its own
+/// word for the range (a lease, D236) can say it without reading a message.
+pub(crate) fn duration_if_positive(input: &str) -> Result<Option<String>, ApiError> {
     let raw = input.trim();
     if raw.is_empty() {
         return Err(ApiError::bad_request("empty duration"));
@@ -412,16 +420,13 @@ pub fn parse_duration(input: &str) -> Result<String, ApiError> {
             "could not parse duration: {raw:?} (try e.g. 4h, 90m, 1h30m, 2d, 1w, or ISO PT4H)"
         ))
     };
-    let not_positive =
-        || ApiError::bad_request("an estimate must be greater than zero".to_string());
-
     // A leading `-` is a range problem, not a spelling problem: the string
     // parses fine, it is just outside the accepted range. Caught here, before
     // the digit/unit scan, so `-1h` gets the range message instead of tripping
     // the scanner's "no digit before a unit" branch.
     if let Some(rest) = raw.strip_prefix('-') {
         if rest.chars().next().is_some_and(|c| c.is_ascii_digit()) {
-            return Err(not_positive());
+            return Ok(None);
         }
     }
 
@@ -429,7 +434,7 @@ pub fn parse_duration(input: &str) -> Result<String, ApiError> {
     if raw.starts_with('P') || raw.starts_with('p') {
         let up = raw.to_ascii_uppercase();
         return match crate::util::duration_secs(&up) {
-            Some(_) => Ok(up),
+            Some(_) => Ok(Some(up)),
             None => Err(bad()),
         };
     }
@@ -526,7 +531,7 @@ pub fn parse_duration(input: &str) -> Result<String, ApiError> {
     // Everything parsed but summed to nothing (`0h`): a zero estimate is not a
     // typo worth guessing at, but it is not a duration either.
     if out == "P" {
-        return Err(not_positive());
+        return Ok(None);
     }
     // Read the result back through the reader every consumer (`report`, urgency)
     // uses. The ISO branch above has always done this; the human branch never
@@ -535,7 +540,7 @@ pub fn parse_duration(input: &str) -> Result<String, ApiError> {
     if crate::util::duration_secs(&out).is_none() {
         return Err(bad());
     }
-    Ok(out)
+    Ok(Some(out))
 }
 
 /// The ISO end-of-week (Sunday) on or after `today`.

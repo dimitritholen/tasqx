@@ -222,6 +222,13 @@ fn next_and_list_take_the_holder_a_cli_agent_claims_under() {
     assert!(String::from_utf8_lossy(&listed.stdout).contains("agent work"));
     let shell = run(&["--json", "next"]);
     assert!(!String::from_utf8_lossy(&shell.stdout).contains("agent work"));
+    // A plain `list` is a view (review 3): it shows the claim and its holder.
+    let view = run(&["--json", "list"]);
+    let text = String::from_utf8_lossy(&view.stdout);
+    assert!(
+        text.contains("agent work") && text.contains("agent-1"),
+        "{text}"
+    );
 }
 
 /// Review 2 #10: `start --holder` names the claim holder only. The clock stays
@@ -242,21 +249,23 @@ fn start_holder_leaves_the_clock_anonymous() {
         String::from_utf8_lossy(&started.stderr)
     );
 
-    let plain = run(&["start", "9"]);
+    // Review 3 #1: the shell's start leaves bot's claimed task running.
+    let plain = run(&["--json", "start", "9"]);
     assert!(
         plain.status.success(),
         "{}",
         String::from_utf8_lossy(&plain.stderr)
     );
+    let body: Value = serde_json::from_slice(&plain.stdout).expect("start --json");
+    assert_eq!(body["kept_running"][0]["short_id"], 4, "{body}");
     let four = s.api(T0, "task.get", json!({ "ref": 4 }));
     assert_eq!(
-        four["result"]["status"], "pending",
-        "#4 was auto-stopped: {four}"
+        four["result"]["status"], "active",
+        "#4 kept running: {four}"
     );
 
-    // The sharper half: had `--holder` named the clock's actor, a NAMED actor
-    // starting elsewhere would be refused (D140). It is not.
-    assert!(run(&["start", "4", "--holder", "bot"]).status.success());
+    // Had `--holder` named the clock's actor, a NAMED actor starting
+    // elsewhere would be refused (D140). It is not: the clock is anonymous.
     let named = s.api(T0, "task.start", json!({ "ref": 8, "actor": "agent-2" }));
     assert_eq!(named["ok"], true, "{named}");
 }

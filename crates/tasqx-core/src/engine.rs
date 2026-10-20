@@ -51,7 +51,7 @@ use uuid::Uuid;
 
 use crate::datetime;
 use crate::error::ApiError;
-use crate::filter::{is_overdue, Filter, MatchCtx};
+use crate::filter::{is_overdue, ClaimCtx, Filter, MatchCtx};
 use crate::recur;
 use crate::remind;
 use crate::storage::{
@@ -329,8 +329,28 @@ struct TaskSnapshot {
     /// D236: the stored claim, `(holder, expires)`, live or not — the export
     /// carries it as stored.
     claim: Option<(String, String)>,
-    /// D236: whether that claim is live at the loader's instant.
-    claim_live: bool,
+    /// The instant the snapshot was loaded at, which every read-time fact of
+    /// it (wait/schedule release, a claim's liveness) is decided against.
+    read_at: Timestamp,
+}
+
+impl TaskSnapshot {
+    /// D236: the holder of the claim, if it is live at [`Self::read_at`].
+    fn live_claim(&self) -> Option<&str> {
+        self.claim
+            .as_ref()
+            .filter(|(_, until)| task::lease_is_live(until, self.read_at))
+            .map(|(by, _)| by.as_str())
+    }
+
+    /// The claim facts a filter reads beside [`MatchCtx`]. `caller` is the
+    /// one choosing work; `None` is a view, with no claim exclusion.
+    fn claims<'a>(&'a self, caller: Option<&'a str>) -> ClaimCtx<'a> {
+        ClaimCtx {
+            claimed_by: self.live_claim(),
+            caller,
+        }
+    }
 }
 
 /// The filter DSL's read view of a snapshot. `task.rs`, `transfer.rs` and
@@ -349,13 +369,6 @@ impl<'a> From<&'a TaskSnapshot> for MatchCtx<'a> {
             completed: t.completed.as_deref(),
             blocked: snapshot.blocked,
             title: &t.title,
-            claimed_by: snapshot
-                .claim
-                .as_ref()
-                .filter(|_| snapshot.claim_live)
-                .map(|(by, _)| by.as_str()),
-            // D236: a reader naming no actor is the shell, holder `user`.
-            caller: Some("user"),
         }
     }
 }
@@ -1951,6 +1964,7 @@ mod tests {
             title: "the title".to_string(),
             already_running: false,
             auto_stopped: Vec::new(),
+            kept_running: Vec::new(),
         }
         .into();
         assert_eq!(
@@ -1963,6 +1977,7 @@ mod tests {
                 "title": "the title",
                 "already_running": false,
                 "auto_stopped": [],
+                "kept_running": [],
             })
         );
 

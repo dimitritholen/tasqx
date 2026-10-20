@@ -1027,9 +1027,18 @@ fn execute(cli: Cli) -> Exit {
         Some(Command::Done {
             r#ref,
             force,
+            holder,
             correlation,
             self_report,
-        }) => run_done(&mut backend, &ctx, r#ref, force, &correlation, &self_report),
+        }) => run_done(
+            &mut backend,
+            &ctx,
+            r#ref,
+            force,
+            holder,
+            &correlation,
+            &self_report,
+        ),
         Some(Command::Show { r#ref, card, ascii }) => {
             run_show(&mut backend, &ctx, r#ref, card, ascii)
         }
@@ -1039,8 +1048,23 @@ fn execute(cli: Cli) -> Exit {
             card,
             ascii,
         }) => run_brief(&mut backend, &ctx, r#ref, memory_limit, card, ascii),
-        Some(Command::Cancel { r#ref }) => run_simple_ref(&mut backend, &ctx, "task.cancel", r#ref),
-        Some(Command::Reopen { r#ref }) => run_simple_ref(&mut backend, &ctx, "task.reopen", r#ref),
+        Some(Command::Cancel {
+            r#ref,
+            holder,
+            force,
+        }) => {
+            let mut params = json!({ "ref": r#ref });
+            if let Some(h) = holder {
+                params["actor"] = json!(h);
+            }
+            if force {
+                params["force"] = json!(true);
+            }
+            run_simple_ref(&mut backend, &ctx, "task.cancel", params)
+        }
+        Some(Command::Reopen { r#ref }) => {
+            run_simple_ref(&mut backend, &ctx, "task.reopen", json!({ "ref": r#ref }))
+        }
         Some(Command::Undo) => run_undo(&mut backend, &ctx),
         Some(Command::Annotate {
             r#ref,
@@ -1959,7 +1983,7 @@ mod tests {
                 .unwrap();
         }
         let mut be = Backend::Local(e);
-        let listed = candidates_in_pages(&mut be, "@working", 200).unwrap();
+        let listed = candidates_in_pages(&mut be, "@working", 200, None).unwrap();
         assert_eq!(pick_rows(&listed).len(), 450);
         assert_eq!(
             listed["count"],
