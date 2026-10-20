@@ -865,6 +865,68 @@ fn a_standing_ruling_citing_missing_code_is_marked_stale_refs() {
     assert!(is_error(&out), "{out}");
 }
 
+/// D235: when the standing gists overflow the budget, the title-only
+/// fallback counts each ruling's stale refs instead of naming them, so many
+/// gone paths cannot push the list of titles past the budget.
+#[test]
+fn the_title_only_fallback_counts_stale_refs_and_stays_in_budget() {
+    let _guard = RIPWIRE_PATH_ENV.lock().unwrap_or_else(|e| e.into_inner());
+    let engine = engine();
+    let repo = temp_repo("stale-refs-budget/budgetrepo");
+    std::fs::create_dir_all(repo.join("src")).unwrap();
+    engine
+        .project_create(&json!({ "name": "budgetrepo" }))
+        .unwrap();
+    let gone: String = (0..20)
+        .map(|i| format!("`src/a_rather_long_module_name_{i}.rs` "))
+        .collect();
+    for i in 0..12 {
+        let body = format!("{} {gone}", "a long gist word ".repeat(15));
+        add_doc(
+            &engine,
+            &format!("rule {i}"),
+            &body,
+            Some("budgetrepo"),
+            true,
+        );
+    }
+    let text = rulings_of(&McpServer::new(&engine, Scope::Write).with_workdir(Some(repo)));
+    assert!(text.contains("only titles are shown"), "{text}");
+    assert!(text.contains("- rule 0 [stale_refs: 20]"), "{text}");
+    assert!(!text.contains("a_rather_long_module_name"), "{text}");
+    assert!(
+        text.len() <= tasqx_core::mcp::STANDING_RULINGS_BUDGET,
+        "{} bytes:\n{text}",
+        text.len()
+    );
+}
+
+/// D235: a launch directory that is not UTF-8 cannot be sent as `workdir`
+/// without loss, so none is sent and `stale_refs` stays null.
+#[cfg(unix)]
+#[test]
+fn a_non_utf8_workdir_sends_no_workdir() {
+    use std::os::unix::ffi::OsStrExt;
+    let engine = engine();
+    let dir = temp_workdir("non-utf8").join(std::ffi::OsStr::from_bytes(b"repo\xff"));
+    if std::fs::create_dir_all(dir.join(".git")).is_err() {
+        return; // a filesystem that refuses the name has nothing to test
+    }
+    let id = engine
+        .memory_add(&json!({ "title": "t", "body": "`src/gone.rs`" }))
+        .unwrap()["id"]
+        .clone();
+    let server = McpServer::new(&engine, Scope::Write).with_workdir(Some(dir));
+    let out = server
+        .handle_message(&json!({
+            "jsonrpc": "2.0", "id": 2, "method": "tools/call",
+            "params": { "name": "tasqx_get_memory", "arguments": { "id": id } }
+        }))
+        .expect("a request");
+    assert!(!is_error(&out), "{out}");
+    assert!(tool_text(&out)["stale_refs"].is_null(), "{out}");
+}
+
 #[test]
 fn with_no_project_inferred_only_unscoped_standing_docs_are_shown() {
     let _guard = RIPWIRE_PATH_ENV.lock().unwrap_or_else(|e| e.into_inner());

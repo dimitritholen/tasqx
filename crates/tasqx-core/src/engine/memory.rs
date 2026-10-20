@@ -1298,12 +1298,13 @@ impl Engine {
                 .query_map(params![ids], |r| {
                     Ok((
                         r.get::<_, String>(0)?,
-                        Self::stale_refs(
-                            &json!(r.get::<_, Option<String>>(1)?),
-                            &json!(r.get::<_, String>(2)?),
-                            &json!(r.get::<_, Option<String>>(3)?),
+                        crate::memory_doc::verify_refs(
+                            r.get::<_, Option<String>>(1)?.as_deref(),
+                            &r.get::<_, String>(2)?,
+                            r.get::<_, Option<String>>(3)?.as_deref(),
                             root.as_ref(),
-                        ),
+                        )
+                        .stale_refs,
                     ))
                 })?
                 .collect::<Result<_, _>>()?;
@@ -1918,23 +1919,6 @@ impl Engine {
         Ok(Some(row))
     }
 
-    /// D235: the refs a doc cites that are gone from `root`'s working tree;
-    /// empty when every ref holds or none can be checked.
-    fn stale_refs(
-        source: &Value,
-        body: &Value,
-        project: &Value,
-        root: Option<&crate::memory_doc::RefRoot>,
-    ) -> Vec<String> {
-        crate::memory_doc::verify_refs(
-            source.as_str(),
-            body.as_str().unwrap_or_default(),
-            project.as_str(),
-            root,
-        )
-        .stale_refs
-    }
-
     // ---- memory.get ----------------------------------------------------------
 
     /// `memory.get` — read one knowledge document whole, by the `id`
@@ -2002,12 +1986,15 @@ impl Engine {
             // D235: the cited code gone from the caller's checkout, checked
             // only when the caller names it; null otherwise.
             doc["stale_refs"] = match root {
-                Some(root) => json!(Self::stale_refs(
-                    &doc["source"],
-                    &doc["body"],
-                    &doc["project"],
-                    root.as_ref()
-                )),
+                Some(root) => json!(
+                    crate::memory_doc::verify_refs(
+                        doc["source"].as_str(),
+                        doc["body"].as_str().unwrap_or_default(),
+                        doc["project"].as_str(),
+                        root.as_ref(),
+                    )
+                    .stale_refs
+                ),
                 None => Value::Null,
             };
             return Ok(doc);
@@ -2228,11 +2215,96 @@ impl Engine {
     /// Else the store's default project, else none. Never a bare ancestor
     /// (D218, #810): `/home/runner/work/<repo>` must not be claimed by a
     /// project called `home` or `work`.
-    /// Not a dispatched method: its one reader is the MCP handshake.
+    /// Not a dispatched method: its one reader is the MCP handshake. The
+    /// project alone is [`Engine::session_project`].
     pub fn session_rulings(
         &self,
         workdir: Option<&std::path::Path>,
     ) -> Result<SessionRulings, ApiError> {
+        let project = self.session_project(workdir)?;
+        let name = project.as_ref().map(|(n, _)| n.as_str());
+
+        // D235: a standing ruling citing code that is gone from the
+        // session's working tree says so; topical fill is not checked. A
+        // standing body is read whole only when there is a toplevel to
+        // check it against (a ref can sit anywhere in it; D156's soft cap
+        // keeps them few). PR #48 review: otherwise `substr(body, 1, 4096)`
+        // — the gist this feeds is the first paragraph, cut at 240 bytes,
+        // and 4 KB comfortably covers a frontmatter block ahead of it
+        // without loading a doc whole.
+        let top = workdir.and_then(crate::memory_doc::RefRoot::at);
+        let docs = |sql: &str, check: bool| -> Result<Vec<SessionDoc>, ApiError> {
+            let mut stmt = self.conn.prepare(sql)?;
+            let rows = stmt.query_map(params![name], |r| {
+                let body: String = r.get(1)?;
+                let stale_refs = match (check, &top) {
+                    (true, Some(top)) => {
+                        crate::memory_doc::verify_refs(
+                            r.get::<_, Option<String>>(2)?.as_deref(),
+                            &body,
+                            r.get::<_, Option<String>>(3)?.as_deref(),
+                            Some(top),
+                        )
+                        .stale_refs
+                    }
+                    _ => Vec::new(),
+                };
+                Ok(SessionDoc {
+                    title: r.get(0)?,
+                    body,
+                    stale_refs,
+                })
+            })?;
+            Ok(rows.collect::<Result<_, _>>()?)
+        };
+        // D144's newest-modified key. `project = NULL` matches nothing, so
+        // with no project inferred only the unscoped standing docs remain.
+        let check = top.is_some();
+        let standing = docs(
+            if check {
+                "SELECT title, body, source, project FROM docs \
+                 WHERE standing = 1 AND (project = ?1 OR project IS NULL) \
+                 ORDER BY project IS NULL, rtrim(modified, 'Z') DESC, id DESC"
+            } else {
+                "SELECT title, substr(body, 1, 4096) FROM docs \
+                 WHERE standing = 1 AND (project = ?1 OR project IS NULL) \
+                 ORDER BY project IS NULL, rtrim(modified, 'Z') DESC, id DESC"
+            },
+            check,
+        )?;
+        // Never unscoped: `memory import` stores every ADR unscoped, so the
+        // newest unscoped docs are an arbitrary slice (D157).
+        // PR #48 review: `LIMIT 256` bounds what session start ever reads —
+        // 256 is well above the most entries a 3,072-byte section could ever
+        // render, since every rendered entry is at least 4 bytes ("\n- " plus
+        // a title).
+        let topical = docs(
+            "SELECT title, substr(body, 1, 4096) FROM docs \
+             WHERE standing = 0 AND project = ?1 \
+             ORDER BY rtrim(modified, 'Z') DESC, id DESC \
+             LIMIT 256",
+            false,
+        )?;
+        let topical_total: i64 = self.conn.query_row(
+            "SELECT COUNT(*) FROM docs WHERE standing = 0 AND project = ?1",
+            params![name],
+            |r| r.get(0),
+        )?;
+        Ok(SessionRulings {
+            project,
+            standing,
+            topical,
+            topical_total: topical_total as usize,
+        })
+    }
+
+    /// The session's project and how it was inferred (D157, D218), with no
+    /// doc read: the cheap half of [`Engine::session_rulings`], for a reader
+    /// that needs only the name.
+    pub fn session_project(
+        &self,
+        workdir: Option<&std::path::Path>,
+    ) -> Result<Option<(String, &'static str)>, ApiError> {
         let mut stmt = self
             .conn
             .prepare("SELECT name FROM projects WHERE archived = 0")?;
@@ -2270,77 +2342,7 @@ impl Engine {
                 .filter(|n| names.contains(n))
                 .map(|n| (n, "default project")),
         };
-        let name = project.as_ref().map(|(n, _)| n.as_str());
-
-        // D235: a standing ruling citing code that is gone from the
-        // session's working tree says so; topical fill is not checked.
-        let top = workdir.and_then(crate::memory_doc::RefRoot::at);
-        let docs = |sql: &str| -> Result<Vec<SessionDoc>, ApiError> {
-            let mut stmt = self.conn.prepare(sql)?;
-            let rows = stmt.query_map(params![name], |r| {
-                let body: String = r.get(1)?;
-                let source: Option<String> = r.get(2)?;
-                let project: Option<String> = r.get(4)?;
-                let stale_refs = match (r.get::<_, bool>(3)?, &top) {
-                    (true, Some(top)) => {
-                        crate::memory_doc::verify_refs(
-                            source.as_deref(),
-                            &body,
-                            project.as_deref(),
-                            Some(top),
-                        )
-                        .stale_refs
-                    }
-                    _ => Vec::new(),
-                };
-                Ok(SessionDoc {
-                    title: r.get(0)?,
-                    body,
-                    stale_refs,
-                })
-            })?;
-            Ok(rows.collect::<Result<_, _>>()?)
-        };
-        // D144's newest-modified key. `project = NULL` matches nothing, so
-        // with no project inferred only the unscoped standing docs remain.
-        // PR #48 review: `substr(body, 1, 4096)` — the gist this feeds is
-        // the first paragraph, cut at 240 bytes, and 4 KB comfortably covers
-        // a frontmatter block ahead of it without loading a doc whole. A
-        // standing body is read whole only when there is a toplevel to check
-        // it against (D235: a ref can sit anywhere in it; D156's soft cap
-        // keeps them few).
-        let standing = docs(if top.is_some() {
-            "SELECT title, body, source, 1, project FROM docs \
-             WHERE standing = 1 AND (project = ?1 OR project IS NULL) \
-             ORDER BY project IS NULL, rtrim(modified, 'Z') DESC, id DESC"
-        } else {
-            "SELECT title, substr(body, 1, 4096), NULL, 0, NULL FROM docs \
-             WHERE standing = 1 AND (project = ?1 OR project IS NULL) \
-             ORDER BY project IS NULL, rtrim(modified, 'Z') DESC, id DESC"
-        })?;
-        // Never unscoped: `memory import` stores every ADR unscoped, so the
-        // newest unscoped docs are an arbitrary slice (D157).
-        // PR #48 review: `LIMIT 256` bounds what session start ever reads —
-        // 256 is well above the most entries a 3,072-byte section could ever
-        // render, since every rendered entry is at least 4 bytes ("\n- " plus
-        // a title).
-        let topical = docs(
-            "SELECT title, substr(body, 1, 4096), NULL, 0, NULL FROM docs \
-             WHERE standing = 0 AND project = ?1 \
-             ORDER BY rtrim(modified, 'Z') DESC, id DESC \
-             LIMIT 256",
-        )?;
-        let topical_total: i64 = self.conn.query_row(
-            "SELECT COUNT(*) FROM docs WHERE standing = 0 AND project = ?1",
-            params![name],
-            |r| r.get(0),
-        )?;
-        Ok(SessionRulings {
-            project,
-            standing,
-            topical,
-            topical_total: topical_total as usize,
-        })
+        Ok(project)
     }
 
     // ---- memory.update -----------------------------------------------------
@@ -2711,6 +2713,8 @@ mod tests {
         let r = e.session_rulings(None).unwrap();
         assert!(r.project.is_none(), "stale default must not be trusted");
         assert!(r.standing.is_empty());
+        // The cheap lookup the @working addendum uses agrees (D235).
+        assert!(e.session_project(None).unwrap().is_none());
     }
 
     fn has_content_word(query: &str) -> bool {
