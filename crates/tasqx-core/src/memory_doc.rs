@@ -137,11 +137,12 @@ pub struct CodeRef {
     pub path: String,
     /// The `path::symbol` part, when the doc named one.
     pub symbol: Option<String>,
-    /// A span that is only half path-like (a `/` but no known extension, or
-    /// an extension but no `/`): `origin/main`, `memory.rs`. Checked only
-    /// when its first segment exists under the root, so a branch name or a
-    /// bare file name living somewhere deeper is never reported as missing.
-    pub loose: bool,
+    /// The doc's own D203 source, relative to the toplevel by construction,
+    /// so checked even when its first segment is absent. A body span is
+    /// checked only when its first segment exists at the toplevel: a branch
+    /// name (`origin/main`), a bare file name living deeper (`memory.rs`) or
+    /// a crate-relative path (`engine/memory.rs`) is never reported missing.
+    pub anchored: bool,
 }
 
 impl CodeRef {
@@ -165,8 +166,8 @@ pub struct DocRefs {
 }
 
 /// The most refs one doc is checked for (D235): a stat per ref per hit. A
-/// loose ref [`verify_refs`] skips does not count against it, so junk spans
-/// cannot crowd out the real ones.
+/// ref [`verify_refs`] skips does not count against it, so junk spans cannot
+/// crowd out the real ones.
 pub const MAX_REFS: usize = 20;
 
 /// The bytes of a file a symbol is looked for in (D235). A larger file is
@@ -183,8 +184,8 @@ const CODE_EXTENSIONS: &[&str] = &[
 /// `s` as a repo-relative path, or `None` when it does not look like one:
 /// whitespace, a placeholder, ellipsis or URL character, an absolute or home
 /// path, or a segment of dots alone (`..` would leave the toplevel, `...` is
-/// an elision). A leading `./` and a trailing `/` are cut. The flag says
-/// whether it is half path-like ([`CodeRef::loose`]).
+/// an elision). A leading `./` and a trailing `/` are cut. It needs a `/` or
+/// a known extension, which the flag says it has.
 fn path_like(s: &str) -> Option<(String, bool)> {
     let s = s.strip_prefix("./").unwrap_or(s).trim_end_matches('/');
     if s.is_empty()
@@ -204,7 +205,7 @@ fn path_like(s: &str) -> Option<(String, bool)> {
         .next()
         .and_then(|name| name.rsplit_once('.'))
         .is_some_and(|(stem, ext)| !stem.is_empty() && CODE_EXTENSIONS.contains(&ext));
-    (slash || ext).then(|| (s.to_string(), !(slash && ext)))
+    (slash || ext).then(|| (s.to_string(), ext))
 }
 
 /// One backticked span as a ref: `path`, `path:line` or `path::symbol`.
@@ -225,12 +226,59 @@ fn span_ref(span: &str) -> Option<CodeRef> {
             None => (span, None),
         },
     };
-    let (path, loose) = path_like(path)?;
+    let (path, _) = path_like(path)?;
     Some(CodeRef {
         path,
         symbol,
-        loose,
+        anchored: false,
     })
+}
+
+/// The code spans on one line, as CommonMark reads them: a run of N
+/// backticks opens a span that the next run of exactly N closes; a run with
+/// no such partner is literal text. One leading and one trailing space are
+/// cut when both are there, so a double-backtick span around a backticked
+/// name keeps the inner backticks. A span is not followed across lines.
+fn code_spans(line: &str) -> Vec<&str> {
+    let b = line.as_bytes();
+    let run = |i: usize| b[i..].iter().take_while(|c| **c == b'`').count();
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < b.len() {
+        if b[i] != b'`' {
+            i += 1;
+            continue;
+        }
+        let n = run(i);
+        let start = i + n;
+        let mut j = start;
+        let mut close = None;
+        while j < b.len() {
+            if b[j] == b'`' {
+                let m = run(j);
+                if m == n {
+                    close = Some(j);
+                    break;
+                }
+                j += m;
+            } else {
+                j += 1;
+            }
+        }
+        match close {
+            Some(j) => {
+                let span = &line[start..j];
+                let span = match span.strip_prefix(' ').and_then(|s| s.strip_suffix(' ')) {
+                    Some(inner) if !inner.trim().is_empty() => inner,
+                    _ => span,
+                };
+                out.push(span);
+                i = j + n;
+            }
+            None => i = start,
+        }
+    }
+    out
 }
 
 /// A fence opener or closer: the fence character and the run's length, when
@@ -272,12 +320,12 @@ pub fn extract_refs(source: Option<&str>, body: &str) -> DocRefs {
                 && repo
                     .chars()
                     .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'));
-            if let (true, Some((path, false))) = (repo_ok, path_like(rest)) {
+            if let (true, Some((path, true))) = (repo_ok, path_like(rest)) {
                 out.repo = Some(repo.to_string());
                 let r = CodeRef {
                     path,
                     symbol: None,
-                    loose: false,
+                    anchored: true,
                 };
                 push(r, &mut out);
             }
@@ -300,9 +348,8 @@ pub fn extract_refs(source: Option<&str>, body: &str) -> DocRefs {
             (Some(_), None) => continue,
             (None, None) => {}
         }
-        let parts: Vec<&str> = line.split('`').collect();
-        for i in (1..parts.len().saturating_sub(1)).step_by(2) {
-            if let Some(r) = span_ref(parts[i]) {
+        for span in code_spans(line) {
+            if let Some(r) = span_ref(span) {
                 push(r, &mut out);
             }
         }
@@ -384,8 +431,11 @@ pub struct RefCheck {
 /// `project`; a doc naming neither (a global doc with no repo source) is
 /// `unverifiable`, never checked against whichever repo the reader is in,
 /// and so is one naming another repo than `root`'s, or with nothing left to
-/// check. Never a bare `ok`. At most [`MAX_REFS`] refs are checked; a loose
-/// ref whose first segment is absent is skipped without counting.
+/// check. Never a bare `ok`. A body ref whose first segment is absent at the
+/// toplevel is skipped without a verdict or a count ([`CodeRef::anchored`]):
+/// a crate-relative citation cannot be told from one about another tree, so
+/// a file renamed under such a citation goes unflagged. At most [`MAX_REFS`]
+/// refs are checked.
 pub fn verify_refs(
     source: Option<&str>,
     body: &str,
@@ -411,7 +461,7 @@ pub fn verify_refs(
             break;
         }
         let first = r.path.split('/').next().unwrap_or_default();
-        if r.loose && !top.join(first).exists() {
+        if !r.anchored && !top.join(first).exists() {
             continue;
         }
         checked += 1;
@@ -472,11 +522,11 @@ fn symbol_missing(file: &Path, word: &str) -> bool {
 mod tests {
     use super::*;
 
-    fn r(path: &str, symbol: Option<&str>, loose: bool) -> CodeRef {
+    fn r(path: &str, symbol: Option<&str>, anchored: bool) -> CodeRef {
         CodeRef {
             path: path.into(),
             symbol: symbol.map(Into::into),
-            loose,
+            anchored,
         }
     }
 
@@ -494,20 +544,20 @@ mod tests {
                 Some("tasqx/docs/a.md"),
                 "",
                 Some("tasqx"),
-                vec![r("docs/a.md", None, false)],
+                vec![r("docs/a.md", None, true)],
             ),
             // A fragment is cut; a source that is not a file path is no ref.
             (
                 Some("klustaken/src/reminders.js#shape"),
                 "",
                 Some("klustaken"),
-                vec![r("src/reminders.js", None, false)],
+                vec![r("src/reminders.js", None, true)],
             ),
             (Some("hubq/ORC-01/intake"), "", None, vec![]),
             (Some("task:#12"), "", None, vec![]),
             (Some("SPEC.md (#2277)"), "", None, vec![]),
             (Some("/abs/path/x.md"), "", None, vec![]),
-            // Body: path, path:line, path::symbol, loose spans.
+            // Body: path, path:line, path::symbol, half path-like spans.
             (
                 None,
                 "see `crates/a/src/b.rs`, `crates/a/src/c.rs:42` and \
@@ -524,9 +574,9 @@ mod tests {
                 "`origin/main`, `memory.rs`, `docs/wiki/`",
                 None,
                 vec![
-                    r("origin/main", None, true),
-                    r("memory.rs", None, true),
-                    r("docs/wiki", None, true),
+                    r("origin/main", None, false),
+                    r("memory.rs", None, false),
+                    r("docs/wiki", None, false),
                 ],
             ),
             // Refused: no path shape, a URL, a placeholder, an escape, an
@@ -553,12 +603,28 @@ mod tests {
                     r("out/c.rs", None, false),
                 ],
             ),
+            // A root-level source file is a ref too.
+            (
+                Some("tasqx/DESIGN.md"),
+                "",
+                Some("tasqx"),
+                vec![r("DESIGN.md", None, true)],
+            ),
+            // CommonMark code spans: a double-backtick span closes on the next
+            // double run, so the backticked name inside it is not a path; an
+            // unmatched run is literal and does not swallow the next span.
+            (
+                None,
+                "``crates/x.rs`` and `` `y/z.rs` `` then a `` b `c/d.rs` e",
+                None,
+                vec![r("crates/x.rs", None, false), r("c/d.rs", None, false)],
+            ),
             // Duplicates fold.
             (
                 Some("r/a/b.rs"),
                 "`a/b.rs` `a/b.rs:3`",
                 Some("r"),
-                vec![r("a/b.rs", None, false)],
+                vec![r("a/b.rs", None, true)],
             ),
         ];
         for (source, body, repo, refs) in cases {
@@ -623,7 +689,7 @@ mod tests {
         let both = check(None, "`src/live.rs::removed` `src/gone.rs`");
         assert_eq!(both.status, RefStatus::MissingPath);
 
-        // Nothing to check: no refs, only loose refs whose first segment is
+        // Nothing to check: no refs, only refs whose first segment is
         // absent, another repo's source or project, a global doc naming no
         // repo at all, or no toplevel.
         for (source, body, project, root) in [
@@ -638,8 +704,19 @@ mod tests {
             assert_eq!(got.status, RefStatus::Unverifiable, "{source:?} {body:?}");
             assert!(got.stale_refs.is_empty());
         }
-        // A loose ref whose first segment exists IS checked.
+        // A ref with no extension whose first segment exists IS checked.
         assert_eq!(check(None, "`src/gone`").status, RefStatus::MissingPath);
+        // DESIGN.md's crate-relative "Where" style names no top-level
+        // segment, so it is skipped, not cried missing; a real path beside
+        // it still is checked.
+        let crate_relative = "`engine/memory.rs`, `tui/settings.rs`";
+        assert_eq!(check(None, crate_relative).status, RefStatus::Unverifiable);
+        let mixed = check(None, &format!("{crate_relative} `src/gone.rs`"));
+        assert_eq!(mixed.stale_refs, vec!["src/gone.rs".to_string()]);
+        // The doc's own source is toplevel-relative by construction: a
+        // renamed root-level file is flagged although its segment is gone.
+        let source = check(Some("proj/GONE.md"), "");
+        assert_eq!(source.stale_refs, vec!["GONE.md".to_string()]);
         // A source naming this repo is checked even for a global doc, and
         // outranks a project naming another.
         let sourced = verify_refs(Some("proj/src/live.rs"), "", None, top);

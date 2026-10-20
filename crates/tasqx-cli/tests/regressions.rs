@@ -5771,6 +5771,20 @@ fn memory_verify_flags_renamed_files_and_removed_functions() {
         text.contains("missing_path") && text.contains("src/old_name.rs"),
         "{text}"
     );
+
+    // `memory show` and `memory search` say so in text too, checked in the
+    // directory they run from; a doc whose citations hold says nothing.
+    for args in [
+        vec!["memory", "show", renamed.as_str()],
+        vec!["memory", "search", "renamed", "--mode", "lexical"],
+    ] {
+        let out = run(&args);
+        let text = String::from_utf8_lossy(&out.stdout);
+        assert!(text.contains("stale: src/old_name.rs"), "{args:?}: {text}");
+    }
+    let out = run(&["memory", "show", &fine]);
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(!text.contains("stale:"), "{text}");
     let _ = std::fs::remove_dir_all(&base);
 }
 

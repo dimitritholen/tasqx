@@ -1387,21 +1387,13 @@ pub(crate) fn run_memory(be: &mut Backend, ctx: &Ctx, action: &MemoryAction) -> 
             if let Some(f) = min_similarity {
                 params["min_similarity"] = json!(f);
             }
-            // D235: `stale_refs` is checked in this shell's checkout.
-            if let Ok(dir) = std::env::current_dir() {
-                params["workdir"] = json!(dir.to_string_lossy());
-            }
-            let result = be.call("memory.search", &params)?;
+            let result = call_with_workdir(&mut |m, p| be.call(m, p), "memory.search", params)?;
             let text = render::memory_hits(ctx, &result, &query.join(" "), *raw, scope.as_deref());
             Ok((result, text))
         }
         MemoryAction::Show { id } => {
-            let mut params = json!({ "id": id });
-            // D235: `stale_refs` is checked in this shell's checkout.
-            if let Ok(dir) = std::env::current_dir() {
-                params["workdir"] = json!(dir.to_string_lossy());
-            }
-            let result = be.call("memory.get", &params)?;
+            let result =
+                call_with_workdir(&mut |m, p| be.call(m, p), "memory.get", json!({ "id": id }))?;
             let source = result["source"].as_str().unwrap_or("—");
             // D135: `body` in the JSON result is exactly what was stored —
             // `--json` on this same command must show the fence, if any, so
@@ -1410,8 +1402,12 @@ pub(crate) fn run_memory(be: &mut Backend, ctx: &Ctx, action: &MemoryAction) -> 
             // `key  value` prose instead: one reader should not have to
             // parse `---`/`key:` lines the browser already stopped printing.
             let body = tasqx_core::frontmatter::flatten(result["body"].as_str().unwrap_or(""));
+            // D235: the cited code gone from this checkout, under the head.
+            let stale = render::stale_refs_line(&render::stale_refs(&result))
+                .map(|l| format!("{}\n", ctx.paint("muted", &l)))
+                .unwrap_or_default();
             let text = format!(
-                "{}  ({})\n{}\n",
+                "{}  ({})\n{stale}{}\n",
                 render::san(result["title"].as_str().unwrap_or("?")),
                 render::san(source),
                 render::san_multiline(&body),
@@ -1659,6 +1655,34 @@ pub(crate) fn run_memory_import(
         result["superseded"] = v;
     }
     Ok((result, text))
+}
+
+/// D235: `method` with this shell's directory as `workdir`, so `stale_refs`
+/// is checked in the caller's checkout. A daemon started from an older build
+/// is not restarted on a version change and refuses the key it does not
+/// know; that exact refusal is retried once without it, and the answer then
+/// simply carries no `stale_refs`.
+pub(crate) fn call_with_workdir(
+    call: &mut dyn FnMut(&str, &Value) -> Result<Value, tasqx_core::ApiError>,
+    method: &str,
+    mut params: Value,
+) -> Result<Value, tasqx_core::ApiError> {
+    if let Ok(dir) = std::env::current_dir() {
+        params["workdir"] = json!(dir.to_string_lossy());
+    }
+    match call(method, &params) {
+        Err(e)
+            if e.code == tasqx_core::ErrorCode::BadRequest
+                && e.message
+                    .starts_with(&format!("unknown params key `workdir` for {method} ")) =>
+        {
+            if let Some(obj) = params.as_object_mut() {
+                obj.remove("workdir");
+            }
+            call(method, &params)
+        }
+        other => other,
+    }
 }
 
 /// `tasqx memory verify [id] [--project P]` (D235): each doc's cited files and
@@ -2983,5 +3007,40 @@ mod superseded_report_tests {
         assert!(text.contains("could not run"));
         assert!(text.contains("store closed"));
         assert!(json.is_none());
+    }
+}
+
+#[cfg(test)]
+mod call_with_workdir_tests {
+    use super::call_with_workdir;
+    use serde_json::{json, Value};
+    use tasqx_core::ApiError;
+
+    /// D235: an older daemon refuses `workdir` as an unknown key; the call
+    /// is retried once without it. Any other refusal is passed through.
+    #[test]
+    fn an_old_daemons_workdir_refusal_is_retried_once_without_it() {
+        let mut seen: Vec<Value> = Vec::new();
+        let mut old_daemon = |m: &str, p: &Value| -> Result<Value, ApiError> {
+            seen.push(p.clone());
+            if p.get("workdir").is_some() {
+                return Err(ApiError::bad_request(format!(
+                    "unknown params key `workdir` for {m} (accepted: id) — check the spelling"
+                )));
+            }
+            Ok(json!({ "id": p["id"] }))
+        };
+        let got = call_with_workdir(&mut old_daemon, "memory.get", json!({ "id": "x" }));
+        assert_eq!(got.unwrap(), json!({ "id": "x" }));
+        assert_eq!(seen.len(), 2);
+        assert!(seen[0].get("workdir").is_some() && seen[1].get("workdir").is_none());
+
+        let mut calls = 0;
+        let mut refuses = |_: &str, _: &Value| -> Result<Value, ApiError> {
+            calls += 1;
+            Err(ApiError::bad_request("memory id is not a UUID: x"))
+        };
+        assert!(call_with_workdir(&mut refuses, "memory.get", json!({ "id": "x" })).is_err());
+        assert_eq!(calls, 1, "only the workdir refusal is retried");
     }
 }

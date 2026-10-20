@@ -2090,7 +2090,10 @@ tasqx memory verify 019f8422-7b3e-7c41-a2d9-6f1b0e5c8a12</code></pre></div>
 backticked <code>path</code>, <code>path:line</code> or <code>path::symbol</code> in its body. Run from inside
 a git checkout, <code>verify</code> checks those against the checkout's working tree:
 each path must exist, and each symbol must appear as a whole word in the file
-it names. Each document gets one status:</p>
+it names. A path in the body is checked only when its first folder or file
+exists at the top of the checkout, so a branch name or a path written
+relative to a subfolder is skipped rather than reported missing. Each
+document gets one status:</p>
 <ul>
 <li><code>ok</code>: every cited path and symbol is there.</li>
 <li><code>missing_path</code>: a cited file or directory is gone, for example renamed.</li>
@@ -4491,7 +4494,7 @@ exit=5</code></pre></div><div class="pagenav"><a class="prev" href="#guide-writi
           <span class="j-k">&quot;snippet&quot;</span>: <span class="j-s">&quot;description  How an SDK release is cut, tagged and announced\n\nCut the…&quot;</span>,
           <span class="j-k">&quot;source&quot;</span>: <span class="j-s">&quot;docs/release.md&quot;</span>,
           <span class="j-k">&quot;stale&quot;</span>: <span class="j-b">null</span>,
-          <span class="j-k">&quot;stale_refs&quot;</span>: [],
+          <span class="j-k">&quot;stale_refs&quot;</span>: <span class="j-b">null</span>,
           <span class="j-k">&quot;standing&quot;</span>: <span class="j-b">false</span>,
           <span class="j-k">&quot;title&quot;</span>: <span class="j-s">&quot;release-process&quot;</span>,
           <span class="j-k">&quot;via&quot;</span>: <span class="j-s">&quot;lexical&quot;</span>
@@ -4986,7 +4989,7 @@ exit=5</code></pre></div><div class="pagenav"><a class="prev" href="#guide-writi
         <span class="j-k">&quot;snippet&quot;</span>: <span class="j-s">&quot;…Cut the release branch on Monday, tag after the canary has run…&quot;</span>,
         <span class="j-k">&quot;source&quot;</span>: <span class="j-s">&quot;docs/release.md&quot;</span>,
         <span class="j-k">&quot;stale&quot;</span>: <span class="j-b">null</span>,
-        <span class="j-k">&quot;stale_refs&quot;</span>: [],
+        <span class="j-k">&quot;stale_refs&quot;</span>: <span class="j-b">null</span>,
         <span class="j-k">&quot;standing&quot;</span>: <span class="j-b">false</span>,
         <span class="j-k">&quot;title&quot;</span>: <span class="j-s">&quot;release-process&quot;</span>,
         <span class="j-k">&quot;via&quot;</span>: <span class="j-s">&quot;both&quot;</span>

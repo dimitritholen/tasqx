@@ -15,6 +15,15 @@ use super::*;
 /// miss — the two must not share one exit code (DESIGN.md's `2`
 /// bad_request vs `4` not_found contract exists so a script can branch
 /// without parsing JSON).
+fn require_uuid_shape(id: &str) -> Result<(), ApiError> {
+    if Uuid::parse_str(id).is_ok() {
+        return Ok(());
+    }
+    Err(ApiError::bad_request(format!(
+        "memory id is not a UUID: {id} — expected a UUID like the one memory.add returns"
+    )))
+}
+
 /// D235: the `workdir` param a caller names for its checkout, resolved once
 /// to the git toplevel cited code is checked against: `None` when absent (no
 /// check, `stale_refs` null), `Some(None)` outside a work tree. Never the
@@ -32,15 +41,6 @@ fn refs_root(p: &Value) -> Result<Option<Option<crate::memory_doc::RefRoot>>, Ap
         ));
     }
     Ok(Some(crate::memory_doc::RefRoot::at(dir)))
-}
-
-fn require_uuid_shape(id: &str) -> Result<(), ApiError> {
-    if Uuid::parse_str(id).is_ok() {
-        return Ok(());
-    }
-    Err(ApiError::bad_request(format!(
-        "memory id is not a UUID: {id} — expected a UUID like the one memory.add returns"
-    )))
 }
 
 /// The closed `scope` vocabulary for `memory.search`. **First entry is the
@@ -1284,24 +1284,32 @@ impl Engine {
         // D235: checked for the page alone, against one toplevel resolved
         // once, and only when the caller named its working directory.
         if let (Some(root), Some(hits)) = (root, out["hits"].as_array_mut()) {
+            let ids: Vec<&str> = hits
+                .iter()
+                .filter(|h| h["kind"] == "doc")
+                .filter_map(|h| h["id"].as_str())
+                .collect();
+            let ids = json!(ids).to_string();
+            let mut stmt = self.conn.prepare(
+                "SELECT id, source, body, project FROM docs \
+                 WHERE id IN (SELECT value FROM json_each(?1))",
+            )?;
+            let refs: HashMap<String, Vec<String>> = stmt
+                .query_map(params![ids], |r| {
+                    Ok((
+                        r.get::<_, String>(0)?,
+                        Self::stale_refs(
+                            &json!(r.get::<_, Option<String>>(1)?),
+                            &json!(r.get::<_, String>(2)?),
+                            &json!(r.get::<_, Option<String>>(3)?),
+                            root.as_ref(),
+                        ),
+                    ))
+                })?
+                .collect::<Result<_, _>>()?;
             for hit in hits.iter_mut().filter(|h| h["kind"] == "doc") {
-                let id = hit["id"].as_str().unwrap_or_default().to_string();
-                let refs = self
-                    .conn
-                    .query_row(
-                        "SELECT source, body, project FROM docs WHERE id = ?1",
-                        params![id],
-                        |r| {
-                            Ok(Self::stale_refs(
-                                &json!(r.get::<_, Option<String>>(0)?),
-                                &json!(r.get::<_, String>(1)?),
-                                &json!(r.get::<_, Option<String>>(2)?),
-                                root.as_ref(),
-                            ))
-                        },
-                    )
-                    .optional()?;
-                hit["stale_refs"] = json!(refs.unwrap_or_default());
+                let found = hit["id"].as_str().and_then(|id| refs.get(id));
+                hit["stale_refs"] = json!(found.cloned().unwrap_or_default());
             }
         }
         Ok(out)
@@ -1957,6 +1965,9 @@ impl Engine {
     pub fn memory_get(&self, p: &Value) -> Result<Value, ApiError> {
         let id = req_str(p, "id")?;
         require_uuid_shape(&id)?;
+        // D235: a bad `workdir` is the request's fault, refused before the
+        // store is asked (bad_request before not_found).
+        let root = refs_root(p)?;
         let found = self
             .conn
             .query_row(
@@ -1990,7 +2001,7 @@ impl Engine {
         if let Some(mut doc) = found {
             // D235: the cited code gone from the caller's checkout, checked
             // only when the caller names it; null otherwise.
-            doc["stale_refs"] = match refs_root(p)? {
+            doc["stale_refs"] = match root {
                 Some(root) => json!(Self::stale_refs(
                     &doc["source"],
                     &doc["body"],
@@ -2292,16 +2303,21 @@ impl Engine {
         };
         // D144's newest-modified key. `project = NULL` matches nothing, so
         // with no project inferred only the unscoped standing docs remain.
-        // A standing body is read whole (D235: a ref can sit anywhere in it;
-        // D156's soft cap keeps them few). PR #48 review: topical fill reads
-        // `substr(body, 1, 4096)` — the gist this feeds is the first
-        // paragraph, cut at 240 bytes, and 4 KB comfortably covers a
-        // frontmatter block ahead of it without loading a doc whole.
-        let standing = docs(
+        // PR #48 review: `substr(body, 1, 4096)` — the gist this feeds is
+        // the first paragraph, cut at 240 bytes, and 4 KB comfortably covers
+        // a frontmatter block ahead of it without loading a doc whole. A
+        // standing body is read whole only when there is a toplevel to check
+        // it against (D235: a ref can sit anywhere in it; D156's soft cap
+        // keeps them few).
+        let standing = docs(if top.is_some() {
             "SELECT title, body, source, 1, project FROM docs \
              WHERE standing = 1 AND (project = ?1 OR project IS NULL) \
-             ORDER BY project IS NULL, rtrim(modified, 'Z') DESC, id DESC",
-        )?;
+             ORDER BY project IS NULL, rtrim(modified, 'Z') DESC, id DESC"
+        } else {
+            "SELECT title, substr(body, 1, 4096), NULL, 0, NULL FROM docs \
+             WHERE standing = 1 AND (project = ?1 OR project IS NULL) \
+             ORDER BY project IS NULL, rtrim(modified, 'Z') DESC, id DESC"
+        })?;
         // Never unscoped: `memory import` stores every ADR unscoped, so the
         // newest unscoped docs are an arbitrary slice (D157).
         // PR #48 review: `LIMIT 256` bounds what session start ever reads —

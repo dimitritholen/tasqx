@@ -2463,24 +2463,27 @@ impl<'e> McpServer<'e> {
                 }
             }
         }
+        // PINNED_ARGS, for every tool and before anything below fills one
+        // in: a pinned argument sent anyway is refused like any unknown key,
+        // not silently overwritten — an agent that asked for `high`, or for
+        // another tree, must learn it did not get it. The reason is the
+        // table's own.
+        if let Some(obj) = args.as_object() {
+            if let Some((_, key, why)) = PINNED_ARGS
+                .iter()
+                .find(|(tool, arg, _)| *tool == spec.name && obj.contains_key(*arg))
+            {
+                return Err(tool_error(
+                    "bad_request",
+                    format!("unknown argument `{key}` for {}: {why}", spec.name),
+                ));
+            }
+        }
         // D235: `stale_refs` is checked in the session's checkout, the
-        // directory this server was launched in, never one a caller names
-        // (PINNED_ARGS): one sent anyway is refused like any unknown key.
+        // directory this server was launched in, never one a caller names.
         if spec.method == "memory.search" || spec.method == "memory.get" {
-            if let Some(obj) = args.as_object_mut() {
-                if obj.contains_key("workdir") {
-                    return Err(tool_error(
-                        "bad_request",
-                        format!(
-                            "unknown argument `workdir` for {}: `stale_refs` is checked in \
-                             this server's own working directory (D235)",
-                            spec.name
-                        ),
-                    ));
-                }
-                if let Some(dir) = &self.workdir {
-                    obj.insert("workdir".to_string(), json!(dir.to_string_lossy()));
-                }
+            if let (Some(obj), Some(dir)) = (args.as_object_mut(), &self.workdir) {
+                obj.insert("workdir".to_string(), json!(dir.to_string_lossy()));
             }
         }
 
@@ -2621,29 +2624,11 @@ impl<'e> McpServer<'e> {
             }
         }
         // D167: `tasqx_add_tokens` records what `tasqx_complete_task`'s
-        // self-report records and nothing an agent could raise. A pinned
-        // argument sent anyway is refused like any unknown key, not silently
-        // overwritten: an agent that asked for `high` must learn it did not
-        // get it. `tool` falls back to the handshake client, as on `task.done`.
-        let pinned: Vec<&str> = PINNED_ARGS
-            .iter()
-            .filter(|(tool, _, _)| *tool == spec.name)
-            .map(|(_, arg, _)| *arg)
-            .collect();
-        if spec.method == "token.add" && !pinned.is_empty() {
+        // self-report records and nothing an agent could raise; the pinned
+        // `source` and `confidence` were refused from the caller above.
+        // `tool` falls back to the handshake client, as on `task.done`.
+        if spec.method == "token.add" {
             if let Some(obj) = args.as_object_mut() {
-                if let Some(key) = pinned.iter().find(|k| obj.contains_key(**k)) {
-                    return Err(tool_error(
-                        "bad_request",
-                        format!(
-                            "unknown argument `{key}` for {}: this tool records a self-report \
-                             at confidence \"medium\", the grade `tasqx_complete_task` gives the \
-                             same claim — `source` and `confidence` are not the caller's to set \
-                             (D50, D167)",
-                            spec.name
-                        ),
-                    ));
-                }
                 obj.insert(
                     "source".to_string(),
                     json!(crate::tokens::SOURCE_SELF_REPORT),
