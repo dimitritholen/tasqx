@@ -573,6 +573,36 @@ pub(crate) fn run_stop(be: &mut Backend, ctx: &Ctx, r#ref: String) -> CmdOutcome
     Ok((result, text))
 }
 
+/// D236: take, renew or take over a lease. With no `--holder` the core holds
+/// it as `user`, the shell.
+pub(crate) fn run_claim(
+    be: &mut Backend,
+    ctx: &Ctx,
+    r#ref: String,
+    lease: Option<String>,
+    holder: Option<String>,
+) -> CmdOutcome {
+    let params = json!({ "ref": r#ref, "lease": lease, "actor": holder });
+    let result = be.call("task.claim", &params)?;
+    let task = read_back(be, &result).unwrap_or_else(|| result.clone());
+    let text = render::claimed(ctx, &result, &task, crate::clock::now());
+    Ok((result, text))
+}
+
+/// D236: give a claim up; only its holder can.
+pub(crate) fn run_release(
+    be: &mut Backend,
+    ctx: &Ctx,
+    r#ref: String,
+    holder: Option<String>,
+) -> CmdOutcome {
+    let params = json!({ "ref": r#ref, "actor": holder });
+    let result = be.call("task.release", &params)?;
+    let task = read_back(be, &result).unwrap_or_else(|| result.clone());
+    let text = render::claim_released(ctx, &result, &task, crate::clock::now());
+    Ok((result, text))
+}
+
 pub(crate) fn run_adjust(
     be: &mut Backend,
     ctx: &Ctx,

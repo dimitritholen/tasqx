@@ -987,6 +987,12 @@ impl Engine {
         if let Some(from) = &snapshot.spawned_from {
             out["spawned_from"] = json!(from);
         }
+        // D236: the claim as stored, expired or not — liveness is a read-time
+        // question the importing store answers against its own clock.
+        if let Some((by, until)) = &snapshot.claim {
+            out["claimed_by"] = json!(by);
+            out["claim_expires"] = json!(until);
+        }
         // Last, and exactly once. It only ever ADDS `status_unrecognized`, so
         // wrapping the literal or the finished object is the same document —
         // wrapping last is the spelling that stays correct as conditional keys
@@ -1808,6 +1814,14 @@ impl Engine {
             )?;
             let spawned_from =
                 import_field(id, "spawned_from", opt_str_nonempty(tv, "spawned_from"))?;
+            // D236: a claim is a pair, so half of one is no claim.
+            let claimed_by = import_field(id, "claimed_by", opt_str_nonempty(tv, "claimed_by"))?;
+            let claim_expires =
+                import_field(id, "claim_expires", opt_when(tv, "claim_expires", now_ts))?;
+            let (claimed_by, claim_expires) = match (claimed_by, claim_expires) {
+                (Some(by), Some(until)) => (Some(by), Some(until)),
+                _ => (None, None),
+            };
             let remind = match import_field(id, "remind", opt_str_nonempty(tv, "remind"))? {
                 Some(s) => Some(
                     import_field(id, "remind", remind::parse_remind(&s, now_ts))
@@ -2041,6 +2055,8 @@ impl Engine {
                 ("budget_tokens", json!(budget_tokens)),
                 ("delivered_annotation_id", json!(delivered_annotation_id)),
                 ("spawned_from", json!(spawned_from)),
+                ("claimed_by", json!(claimed_by)),
+                ("claim_expires", json!(claim_expires)),
             ]));
             let (mut w_tracked, mut w_adjustment) = (tracked_seconds, tracked_adjustment_seconds);
             let (mut w_created, mut w_modified, mut w_urgency) =
@@ -2176,10 +2192,11 @@ impl Engine {
                     "INSERT INTO tasks (id, short_id, title, status, priority, project, due, \
                  scheduled, wait, estimate, recurrence, urgency, active_since, tracked_seconds, \
                  rev, created, modified, completed, remind, budget_tokens, \
-                 delivered_annotation_id, tracked_adjustment_seconds, spawned_from) \
+                 delivered_annotation_id, tracked_adjustment_seconds, spawned_from, \
+                 claimed_by, claim_expires) \
                  VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12, \
                  CASE WHEN ?4 = 'active' THEN COALESCE(?18,?19) ELSE NULL END, \
-                 COALESCE(?20,0),?13,?14,?15,?16,?17,?21,?22,COALESCE(?23,0),?24) \
+                 COALESCE(?20,0),?13,?14,?15,?16,?17,?21,?22,COALESCE(?23,0),?24,?25,?26) \
                  ON CONFLICT(id) DO UPDATE SET \
                  title=?3, status=?4, priority=?5, project=?6, due=?7, \
                  scheduled=?8, wait=?9, estimate=?10, recurrence=?11, urgency=?12, \
@@ -2190,7 +2207,7 @@ impl Engine {
                  budget_tokens=?21, delivered_annotation_id=?22, \
                  tracked_adjustment_seconds = COALESCE(?23, \
                  CASE WHEN ?20 IS NULL THEN tracked_adjustment_seconds ELSE 0 END), \
-                 spawned_from=?24",
+                 spawned_from=?24, claimed_by=?25, claim_expires=?26",
                     params![
                         id,
                         short_id,
@@ -2215,7 +2232,9 @@ impl Engine {
                         w.int("budget_tokens"),
                         w.text("delivered_annotation_id"),
                         w_adjustment,
-                        w.text("spawned_from")
+                        w.text("spawned_from"),
+                        w.text("claimed_by"),
+                        w.text("claim_expires")
                     ],
                 )?;
             }
@@ -2742,7 +2761,7 @@ impl Engine {
     /// The row `store.import` is about to merge onto, read inside its own
     /// transaction.
     fn stored_scalars(tx: &rusqlite::Transaction, id: &str) -> Result<HeldRow, ApiError> {
-        const COLS: [&str; 15] = [
+        const COLS: [&str; 17] = [
             "title",
             "status",
             "priority",
@@ -2758,6 +2777,8 @@ impl Engine {
             "budget_tokens",
             "delivered_annotation_id",
             "spawned_from",
+            "claimed_by",
+            "claim_expires",
         ];
         let sql = format!(
             "SELECT {}, tracked_seconds, tracked_adjustment_seconds, created, modified \

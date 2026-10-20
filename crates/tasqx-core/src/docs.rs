@@ -364,6 +364,72 @@ pub const TASK_EXPORT_SPAWNED_FROM: &[FieldDoc] = &[o(
     "The uuid of the task whose completion spawned this one (D170). Omitted on any other task.",
 )];
 
+/// D236: the live claim on a task.
+pub const TASK_CLAIM: &[FieldDoc] = &[
+    n(
+        "claimed_by",
+        "string",
+        "Who holds a live claim on this task (D236): the holder's actor key, `user` for a shell. Null when nobody does, or the lease has expired.",
+    ),
+    n(
+        "claim_expires",
+        "string",
+        "When that claim's lease runs out (UTC); null with `claimed_by`. Liveness is read against the clock, so an expired lease is simply null here.",
+    ),
+];
+
+/// D236: the claim on an export row, as stored and only when set.
+pub const TASK_EXPORT_CLAIM: &[FieldDoc] = &[
+    o(
+        "claimed_by",
+        "string",
+        "The claim's holder (D236), expired or not. Omitted on an unclaimed task.",
+    ),
+    o(
+        "claim_expires",
+        "string",
+        "When that claim's lease runs out (D236). Omitted with `claimed_by`.",
+    ),
+];
+
+/// `task.claim`'s result (D236).
+pub const R_TASK_CLAIM: &[FieldDoc] = &[
+    f(
+        "short_id",
+        "integer",
+        "The task's short id — the small number every `ref` accepts and the CLI prints.",
+    ),
+    f("title", "string", "The task's title, verbatim."),
+    f(
+        "op",
+        "string",
+        "`claim`, `renew` (the holder claimed again) or `takeover` (another holder's lease had expired) — the event it wrote.",
+    ),
+    f("claimed_by", "string", "The holder: the call's `actor`, else `user`."),
+    f("claim_expires", "string", "When the lease runs out (UTC)."),
+    f("_rev", "integer", "The task's revision counter after the claim."),
+];
+
+/// `task.release`'s result (D236).
+pub const R_TASK_RELEASE: &[FieldDoc] = &[
+    f(
+        "short_id",
+        "integer",
+        "The task's short id — the small number every `ref` accepts and the CLI prints.",
+    ),
+    f("title", "string", "The task's title, verbatim."),
+    f(
+        "released_by",
+        "string",
+        "The holder that gave the claim up.",
+    ),
+    f(
+        "_rev",
+        "integer",
+        "The task's revision counter after the release.",
+    ),
+];
+
 /// D170: what the previous occurrence of a recurring task delivered.
 pub const BRIEF_LAST_TIME: &[FieldDoc] = &[
     f(
@@ -1765,6 +1831,7 @@ pub fn result_shape(method: &str) -> &'static [(&'static str, &'static [FieldDoc
             ("result", TASK_ANNOTATIONS),
             ("result", TASK_BLOCKS),
             ("result", TASK_SPAWNED_FROM),
+            ("result", TASK_CLAIM),
             ("result", ANNOTATION_PAGING),
             ("result", TASK_ANNOTATIONS_REMOVED),
             ("result", TASK_TOKENS),
@@ -1797,6 +1864,7 @@ pub fn result_shape(method: &str) -> &'static [(&'static str, &'static [FieldDoc
             ("result.task", TASK_ANNOTATIONS),
             ("result.task", TASK_BLOCKS),
             ("result.task", TASK_SPAWNED_FROM),
+            ("result.task", TASK_CLAIM),
             ("result.task", ANNOTATION_PAGING),
             ("result.task", TASK_ANNOTATIONS_REMOVED),
             ("result.task", TASK_TOKENS),
@@ -1826,6 +1894,8 @@ pub fn result_shape(method: &str) -> &'static [(&'static str, &'static [FieldDoc
             ("result.auto_stopped[]", AUTO_STOPPED_ROW),
         ],
         "task.stop" => &[("result", R_TASK_STOP)],
+        "task.claim" => &[("result", R_TASK_CLAIM)],
+        "task.release" => &[("result", R_TASK_RELEASE)],
         "task.adjust_tracked" => &[("result", R_TASK_ADJUST_TRACKED)],
         "task.done" => &[
             ("result", R_TASK_DONE),
@@ -1937,6 +2007,7 @@ pub fn result_shape(method: &str) -> &'static [(&'static str, &'static [FieldDoc
             ("result.tasks[]", TASK_STATUS_FLAG),
             ("result.tasks[]", TASK_CHECKS),
             ("result.tasks[]", TASK_EXPORT_SPAWNED_FROM),
+            ("result.tasks[]", TASK_EXPORT_CLAIM),
             ("result.tasks[].tokens[]", MEASUREMENT_ROW),
             ("result.tasks[].annotations[]", ANNOTATION_ROW),
             ("result.tasks[].checks[]", TASK_CHECK),

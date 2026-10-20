@@ -74,7 +74,7 @@ mod obj_ref;
 /// which is unassertable prose-equivalence. So the column is gone and the page
 /// renders [`crate::cmddoc`]'s summary instead. One string per verb, used by
 /// both surfaces, with no second copy left to drift.
-const VERBS: [(&str, &str, &str); 48] = [
+const VERBS: [(&str, &str, &str); 50] = [
     ("init", "—", "project.create"),
     ("use", "—", "project.use"),
     ("archive", "—", "project.archive"),
@@ -102,6 +102,8 @@ const VERBS: [(&str, &str, &str); 48] = [
     ("why", "—", "task.get"),
     ("start", "<code>s</code>", "task.start"),
     ("stop", "<code>st</code>", "task.stop"),
+    ("claim", "—", "task.claim"),
+    ("release", "—", "task.release"),
     ("adjust", "—", "task.adjust_tracked"),
     (
         "done",
@@ -162,7 +164,7 @@ const VERBS: [(&str, &str, &str); 48] = [
 
 /// The method table the JSON API page renders: `(method, params, returns)`.
 /// Single source, same reason as [`VERBS`].
-const METHODS: [(&str, &str, &str); 52] = [
+const METHODS: [(&str, &str, &str); 54] = [
     (
         "project.create",
         "<code>name</code>, <code>description?</code>",
@@ -209,25 +211,29 @@ const METHODS: [(&str, &str, &str); 52] = [
     ),
     (
         "task.next",
-        "<code>project?</code>, <code>filter?</code>, <code>resume?</code>",
+        "<code>project?</code>, <code>filter?</code>, <code>resume?</code>, <code>actor?</code>",
         "<code>{task, summary, store_empty, total}</code> (D213). <code>task</code> is the row \
          <code>tasqx next</code> picks — <code>@working</code>, your scope ANDed on, highest \
          urgency first — or null; <code>summary</code> is the first paragraph of its oldest \
          annotation. With <code>resume: true</code> the answer also carries \
          <code>active</code> (each active task in scope and the actor holding its clock, D140) \
          and <code>recent</code> (the five open tasks annotated most recently, each with the \
-         first 200 characters of its newest note and when it was written).",
+         first 200 characters of its newest note and when it was written). A task under \
+         another holder's live claim is skipped; <code>actor</code> names whose claims are \
+         yours (D236).",
     ),
     (
         "task.list",
         "<code>filter?</code>, <code>sort?</code>, <code>limit?</code>, <code>offset?</code>, \
-         <code>fields?</code>",
+         <code>fields?</code>, <code>actor?</code>",
         "<code>{count, total, next_offset, tasks}</code>. An omitted <code>filter</code> matches \
          everything; <code>count</code> is how many rows came back and <code>total</code> how many \
          matched, so a windowed list is never mistaken for a complete one. \
          <code>next_offset</code> is null once nothing is left. An omitted <code>limit</code> \
          defaults to 100; a named <code>limit</code> is clamped to 10,000. \
-         <code>fields</code> may include <code>depends_on</code>, which no other projection emits.",
+         <code>fields</code> may include <code>depends_on</code>, which no other projection emits. \
+         <code>@working</code> leaves out tasks under a live claim held by anyone but \
+         <code>actor</code> (D236).",
     ),
     (
         "task.get",
@@ -261,6 +267,18 @@ const METHODS: [(&str, &str, &str); 52] = [
          refused <code>conflict</code> rather than silently stopping it, since that would \
          leave the other party's work untracked. Absent on both sides — a shell — keeps \
          D6's behaviour exactly; the MCP server fills it in with its own connection id.",
+    ),
+    (
+        "task.claim",
+        "<code>ref</code>, <code>lease?</code>, <code>actor?</code>",
+        "<code>{short_id, title, op, claimed_by, claim_expires, _rev}</code> (D236). \
+         <code>op</code> is <code>claim</code>, <code>renew</code> or <code>takeover</code>. \
+         Another holder's live lease is a <code>conflict</code> naming the holder and the expiry.",
+    ),
+    (
+        "task.release",
+        "<code>ref</code>, <code>actor?</code>",
+        "<code>{short_id, title, released_by, _rev}</code> (D236). Only the holder releases.",
     ),
     (
         "task.stop",

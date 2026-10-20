@@ -590,6 +590,9 @@ const RENDERED_AS: &[(&str, Shows)] = &[
         Shows::Cell("| recurrence | weekly on mon from #2 |"),
     ),
     ("active_since", Shows::Row("active since")),
+    // D236: the live claim, as two rows.
+    ("claimed_by", Shows::Row("claimed by")),
+    ("claim_expires", Shows::Row("claim expires")),
     ("completed", Shows::Row("completed")),
     ("blocked", Shows::Cell("| blocked | yes |")),
     ("depends_on", Shows::Cell("| depends on | #1 |")),
@@ -721,6 +724,9 @@ fn every_field_task_get_returns_is_accounted_for_in_the_view() {
     // `flag_unrecognized_status`) passed before this snapshot existed and fails
     // now. `backlog` needs its own task: it is what a future `wait` produces, and
     // a task in it cannot be started, so task 2 can never visit both.
+    // D236: claimed by the shell (`user`), so the start below is the
+    // holder's own and is allowed.
+    d("task.claim", &json!({ "ref": 2 }));
     let pending = d("task.get", &json!({ "ref": 2 }));
     d(
         "task.add",

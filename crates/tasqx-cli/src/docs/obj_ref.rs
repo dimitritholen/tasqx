@@ -85,6 +85,8 @@ pub(super) const OBJECTS: [Object; 10] = [
             ("", "", d::TASK_BUDGET_GAUGE),
             ("", "", d::TASK_SPAWNED_FROM),
             ("", "", d::TASK_EXPORT_SPAWNED_FROM),
+            ("", "", d::TASK_CLAIM),
+            ("", "", d::TASK_EXPORT_CLAIM),
             ("", "", d::TASK_URGENCY_BREAKDOWN),
             ("", "urgency_breakdown.", d::URGENCY_BREAKDOWN_ROW),
         ],

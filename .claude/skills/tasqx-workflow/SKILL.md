@@ -11,7 +11,7 @@ store a decision with its why — and CLAUDE.md carries the setup-specific
 rules. This file holds only what neither says.
 
 tasqx is one JSON API behind three clients: the CLI, an MCP server
-(thirty-four `tasqx_*` tools), and HTML reports. Prefer the MCP tools. Fall back
+(thirty-six `tasqx_*` tools), and HTML reports. Prefer the MCP tools. Fall back
 to the CLI for the verbs the MCP deliberately lacks: `why`, `agenda`,
 `chart`, `export`, `import`, `report --html`, `memory import`, `undo`, `use`,
 `archive`, and `tasqx --no-daemon tokens recompute` (refused over the daemon
@@ -25,6 +25,14 @@ active tasks (and who holds each clock) and the five open tasks annotated most
 recently, each with its newest note, so "where did I leave off" is one call. To
 create a task with its criteria and prerequisites, pass `checks` and
 `depends_on` to `tasqx_add_task` instead of one call each.
+
+When more than one agent works the same store, claim before you start:
+`tasqx_claim_task` takes a lease (30m by default, at most 24h; claim again to
+renew) that drops the task out of every other agent's `@working` and
+`tasqx_next` and refuses their `tasqx_start_timer` on it, naming you and the
+expiry (D236). A `conflict` from a claim means someone else is on it: pick
+another task. Completing or cancelling releases the claim; `tasqx_release_task`
+gives it up early. From a shell, `tasqx claim <id> --holder <name>`.
 
 ## Checks are claims, annotations are prose
 

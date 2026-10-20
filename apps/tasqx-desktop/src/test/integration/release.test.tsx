@@ -39,7 +39,15 @@ import { BIN, ScratchDaemon } from '../scratchDaemon';
 const { DatabaseSync } = createRequire(import.meta.url)('node:sqlite') as typeof import('node:sqlite');
 
 /** Columns `migrate` adds to a store written before them (storage.rs). */
-const LATER_TASK_COLUMNS = ['remind', 'budget_tokens', 'delivered_annotation_id', 'tracked_adjustment_seconds', 'spawned_from'];
+const LATER_TASK_COLUMNS = [
+  'remind',
+  'budget_tokens',
+  'delivered_annotation_id',
+  'tracked_adjustment_seconds',
+  'spawned_from',
+  'claimed_by',
+  'claim_expires',
+];
 
 let daemon: ScratchDaemon | null = null;
 let controller: ConnectionController | null = null;
@@ -76,6 +84,8 @@ function downgrade(db: string): void {
     const columns = sql.prepare(`PRAGMA index_info(${name})`).all() as { name: string }[];
     if (columns.some((column) => LATER_TASK_COLUMNS.includes(column.name))) sql.exec(`DROP INDEX ${name}`);
   }
+  // Nor a column a trigger reads: D236's claim columns came with this one.
+  sql.exec('DROP TRIGGER IF EXISTS tasks_claim_ends_on_close');
   for (const column of LATER_TASK_COLUMNS) sql.exec(`ALTER TABLE tasks DROP COLUMN ${column}`);
   sql.close();
 }

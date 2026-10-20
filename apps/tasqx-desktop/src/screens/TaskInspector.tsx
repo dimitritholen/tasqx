@@ -174,6 +174,12 @@ export function TaskInspector() {
       <TaskActions task={task} />
 
       <dl className="inspector-fields">
+        {/* D236: only a live claim is answered, so a row here is always one. */}
+        {task.claimed_by != null && (
+          <Row label="Claimed">
+            {task.claimed_by} until <When iso={task.claim_expires ?? null} />
+          </Row>
+        )}
         {FIELDS.map((field) => (
           <Row label={field.label} key={field.label}>
             {field.of(task)}

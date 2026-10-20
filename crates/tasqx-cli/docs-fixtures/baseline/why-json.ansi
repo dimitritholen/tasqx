@@ -63,6 +63,8 @@
       "state": "open"
     }
   ],
+  "claim_expires": null,
+  "claimed_by": null,
   "completed": null,
   "created": "2026-08-16T10:00:00Z",
   "delivered_annotation": null,

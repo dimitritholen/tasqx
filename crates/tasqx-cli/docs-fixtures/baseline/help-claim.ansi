@@ -1,0 +1,44 @@
+Claim a task so other agents skip it (maps to task.claim).
+
+D236: a lease, default 30m and at most 24h. Claiming again renews it; an expired lease is anyone's. While it is live, another holder's `start` is refused and the task leaves their `next` and `@working`.
+
+Usage: tasqx claim [OPTIONS] <REF>
+
+Arguments:
+  <REF>
+          short_id or UUID
+
+Options:
+      --json
+          Print the raw JSON API result instead of the human table
+
+      --lease <DURATION>
+          How long the lease runs: 30m, 2h (estimate's grammar). Default 30m, at most 24h
+
+      --holder <ID>
+          Who holds it. Default `user`, the shell; an agent's own id otherwise
+
+      --theme <THEME>
+          Theme name (built-in nord|gruvbox|dracula|solarized|mono, or a user file). Overrides $TASQX_THEME and the config file (DESIGN.md §8)
+
+      --socket <SOCKET>
+          Local socket / named-pipe address of a tasqx daemon. Overrides $TASQX_SOCK. When a daemon is reachable, one-shot commands route through it (single writer); otherwise they run in-process. A set $TASQX_DB naming a different store than that daemon's is refused. Also selects the address for `daemon` and `watch`
+
+      --no-daemon
+          Never route through a daemon; always run one-shot in-process (the pre-daemon behaviour). Escape hatch for scripts
+
+  -h, --help
+          Print help (see a summary with '-h')
+
+  -V, --version
+          Print version
+
+EXAMPLES
+  tasqx claim 12 --holder builder-2    # hold #12 for builder-2 for 30 minutes
+  tasqx claim 12 --holder builder-2 --lease 2h    # renew it for two hours
+
+NOTE  A claim is a lease (D236): 30m unless `--lease` names another length, at most 24h. Claiming again as the same holder renews it. Without `--holder` the shell holds it as `user`; over MCP the holder is the connection.
+      While the lease is live, a claim or `start` by anyone else exits 5 naming the holder and the expiry, and the task leaves their `next` and `@working`. `tasqx list @claimed` lists every live claim.
+      Nothing sweeps an expired lease: it is read against the clock, so once it runs out anyone can claim the task, and that claim is logged as a takeover. `done` and `cancel` end a claim; `tasqx release` gives one up.
+
+See also: release · start · next        Full manual: tasqx manual

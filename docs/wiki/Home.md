@@ -47,6 +47,8 @@ task, and where to find help.
 | `brief` | Everything needed before starting a task, in one read | [Working on Tasks](Working-on-Tasks.md#tasqx-brief) |
 | `check` | Acceptance criteria: add, mark, drop | [Adding and Editing Tasks](Adding-and-Editing-Tasks.md#tasqx-check) |
 | `start` / `stop` | Track time on a task | [Working on Tasks](Working-on-Tasks.md#tasqx-start) |
+| `claim` | Hold a task so other agents skip it | [Working on Tasks](Working-on-Tasks.md#tasqx-claim) |
+| `release` | Give a claim up | [Working on Tasks](Working-on-Tasks.md#tasqx-release) |
 | `done` | Complete a task | [Working on Tasks](Working-on-Tasks.md#tasqx-done) |
 | `cancel` | Cancel a task (reversibly) | [Working on Tasks](Working-on-Tasks.md#tasqx-cancel) |
 | `reopen` | Bring a finished task back | [Working on Tasks](Working-on-Tasks.md#tasqx-reopen) |

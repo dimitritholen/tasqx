@@ -398,6 +398,43 @@ pub const COMMAND_REF: &[CmdDoc] = &[
         topic: Topic::Capturing,
     },
     CmdDoc {
+        verb: "claim",
+        aliases: &[],
+        method: "task.claim",
+        summary: "Claim a task so other agents skip it.",
+        usage: "tasqx claim <ref> [--lease DURATION] [--holder ID]",
+        examples: &[
+            ex_norun(
+                "tasqx claim 12 --holder builder-2",
+                "hold #12 for builder-2 for 30 minutes",
+            ),
+            ex_norun("tasqx claim 12 --holder builder-2 --lease 2h", "renew it for two hours"),
+        ],
+        notes: &[
+            "A claim is a lease (D236): 30m unless `--lease` names another length, at most 24h. Claiming again as the same holder renews it. Without `--holder` the shell holds it as `user`; over MCP the holder is the connection.",
+            "While the lease is live, a claim or `start` by anyone else exits 5 naming the holder and the expiry, and the task leaves their `next` and `@working`. `tasqx list @claimed` lists every live claim.",
+            "Nothing sweeps an expired lease: it is read against the clock, so once it runs out anyone can claim the task, and that claim is logged as a takeover. `done` and `cancel` end a claim; `tasqx release` gives one up.",
+        ],
+        see_also: &["release", "start", "next"],
+        topic: Topic::Capturing,
+    },
+    CmdDoc {
+        verb: "release",
+        aliases: &[],
+        method: "task.release",
+        summary: "Give a claim up.",
+        usage: "tasqx release <ref> [--holder ID]",
+        examples: &[ex_norun(
+            "tasqx release 12 --holder builder-2",
+            "builder-2 is done with #12 without finishing it",
+        )],
+        notes: &[
+            "Only the holder releases (D236): a task with no claim, or another holder's, exits 5. Completing or cancelling a task ends its claim without this.",
+        ],
+        see_also: &["claim"],
+        topic: Topic::Capturing,
+    },
+    CmdDoc {
         verb: "adjust",
         aliases: &[],
         method: "task.adjust_tracked",

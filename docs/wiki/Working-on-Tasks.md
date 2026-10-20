@@ -62,6 +62,37 @@ The extra flags (`--client`, `--session-id`, `--transcript-path`) are for AI
 agents reporting who is doing the work; see
 [AI Agents and Automation](AI-Agents-and-Automation.md#token-accounting).
 
+## tasqx claim
+
+Claim a task so other agents skip it. A claim is a lease: 30 minutes unless
+`--lease` names another length, at most 24 hours.
+
+- `tasqx claim 42 --holder builder-2`: hold #42 for builder-2
+- `tasqx claim 42 --holder builder-2 --lease 2h`: renew it for two hours
+
+```console
+tasqx claim 42 --holder builder-2
+```
+
+While the lease is live, anyone else's `claim` or `start` on the task exits 5
+naming the holder and when the lease runs out, and the task drops out of their
+`tasqx next` and `@working`. `tasqx list @claimed` lists every live claim, and
+`tasqx show` names the holder and the expiry.
+
+Without `--holder` the shell holds the claim as `user`; an AI agent on the MCP
+server holds it as its connection. Nothing sweeps an expired lease: once it
+runs out, anyone may claim the task, and the log records that as a takeover.
+Claim, renew, release and takeover each land in the event log with the holder.
+
+## tasqx release
+
+Give a claim up. Only its holder can: a task with no claim, or someone else's,
+exits 5. `done` and `cancel` end a claim without it.
+
+```console
+tasqx release 42 --holder builder-2
+```
+
 ## tasqx stop
 
 *Alias: `st`*

@@ -100,6 +100,9 @@ export interface TaskDetail extends TaskRow {
   tokens: unknown[];
   fresh_tokens: number;
   over: boolean | null;
+  /** D236: the live claim's holder and expiry; null (or absent, from an older core) when none. */
+  claimed_by?: string | null;
+  claim_expires?: string | null;
 }
 
 export interface Project {

@@ -893,6 +893,30 @@ pub fn stopped(ctx: &Ctx, result: &Value, task: &Value, now: Timestamp) -> Strin
     draw(ctx, card, now)
 }
 
+/// `tasqx claim`: who holds the task now and until when (D236). `op` says
+/// whether this took, renewed or took over the lease.
+pub fn claimed(ctx: &Ctx, result: &Value, task: &Value, now: Timestamp) -> String {
+    let verb = match s(result, "op").as_str() {
+        "renew" => "renewed",
+        "takeover" => "taken over",
+        _ => "claimed",
+    };
+    let mut until = crate::render::instant_value(ctx, &s(result, "claim_expires"), now);
+    // D132: a clock on screen is UTC and says so, after the clock.
+    let (day, rest) = until.split_at(until.find(" (").unwrap_or(until.len()));
+    if day.contains(':') && !day.ends_with('Z') {
+        until = format!("{day} UTC{rest}");
+    }
+    let what = format!("{verb} by {} until {until}", san(&s(result, "claimed_by")));
+    draw(ctx, Card::new(task, outcome(ctx, &what)), now)
+}
+
+/// `tasqx release`: the claim given up (D236).
+pub fn claim_released(ctx: &Ctx, result: &Value, task: &Value, now: Timestamp) -> String {
+    let what = format!("released by {}", san(&s(result, "released_by")));
+    draw(ctx, Card::new(task, outcome(ctx, &what)), now)
+}
+
 /// `tasqx adjust`: the correction, signed, and the total it left (D166).
 pub fn adjusted(ctx: &Ctx, result: &Value, task: &Value, now: Timestamp) -> String {
     let delta = s(result, "delta");

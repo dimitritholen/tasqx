@@ -68,7 +68,9 @@ pub const PARAMS: &[(&str, &[&str], bool)] = &[
     ),
     (
         "task.list",
-        &["filter", "sort", "limit", "offset", "fields"],
+        // D236: `actor` is who is asking, so `@working` keeps that caller's
+        // own claims and leaves out everyone else's.
+        &["filter", "sort", "limit", "offset", "fields", "actor"],
         false,
     ),
     (
@@ -105,7 +107,11 @@ pub const PARAMS: &[(&str, &[&str], bool)] = &[
         false,
     ),
     // D213. `resume` is the only part that reads beyond `task.list`.
-    ("task.next", &["project", "filter", "resume"], false),
+    (
+        "task.next",
+        &["project", "filter", "resume", "actor"],
+        false,
+    ),
     // task.start/task.done also take the #12 correlation params: they are
     // stored in the start/done event payloads, the durable per-occurrence
     // record the async token-attribution engine reads later.
@@ -127,6 +133,9 @@ pub const PARAMS: &[(&str, &[&str], bool)] = &[
         false,
     ),
     ("task.stop", &["ref", "expected_rev"], false),
+    // D236: a lease on a task; the holder is D140's `actor`, `user` when absent.
+    ("task.claim", &["ref", "lease", "actor"], false),
+    ("task.release", &["ref", "actor"], false),
     // D166: an auditable correction to tracked time, undoable by `undo`.
     ("task.adjust_tracked", &["ref", "delta", "reason"], false),
     // task.done additionally takes the #13 self-report params: any present
@@ -442,6 +451,8 @@ pub fn dispatch(engine: &Engine, method: &str, params: &Value) -> Result<Value, 
         "task.brief" => engine.task_brief(params),
         "task.next" => engine.task_next(params),
         "task.cancel" => engine.task_cancel(params),
+        "task.claim" => engine.task_claim(params),
+        "task.release" => engine.task_release(params),
         "task.reopen" => engine.task_reopen(params),
         "tag.add" => engine.tag_add(params),
         "tag.remove" => engine.tag_remove(params),

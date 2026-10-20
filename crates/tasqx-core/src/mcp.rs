@@ -696,6 +696,10 @@ fn build_tool_specs() -> Vec<ToolSpec> {
                         "type": "string",
                         "description": "Filter DSL, e.g. \"status:pending +api\". \"@working\" is the actionable set. Bare words match the title (\"memory explorer\" as a phrase); \"status:any\" is every status. Omit it (or send \"\") for every task."
                     },
+                    "actor": {
+                        "type": "string",
+                        "description": "Whose claims `@working` keeps (D236)."
+                    },
                     // No `enum` here: a key may carry a `-` prefix, which a
                     // plain enum of the bare names would forbid. The valid set
                     // is still stated once, rendered from SORT_KEYS, so an
@@ -888,6 +892,10 @@ fn build_tool_specs() -> Vec<ToolSpec> {
                         "type": "boolean",
                         "description": "Also answer \"where did I leave off\": active tasks and \
                              recently annotated open tasks in the same scope. Default false."
+                    },
+                    "actor": {
+                        "type": "string",
+                        "description": "Whose claims count as yours (D236)."
                     },
                     "include_json": {
                         "type": "boolean",
@@ -1397,6 +1405,40 @@ fn build_tool_specs() -> Vec<ToolSpec> {
                 },
                 "required": ["ref"]
             })),
+        },
+        ToolSpec {
+            name: "tasqx_claim_task",
+            method: "task.claim",
+            write: true,
+            destructive: false,
+            idempotent: false,
+            description: "Lease a task so parallel agents skip it and cannot start it (D236). \
+                Claim again to renew.",
+            schema: json!({
+                "type": "object",
+                "properties": {
+                    "ref": ref_schema(),
+                    "lease": { "type": "string", "description": "Default 30m, max 24h." },
+                    "actor": { "type": "string", "description": "The holder (D140)." }
+                },
+                "required": ["ref"]
+            }),
+        },
+        ToolSpec {
+            name: "tasqx_release_task",
+            method: "task.release",
+            write: true,
+            destructive: false,
+            idempotent: false,
+            description: "Give up your claim (D236).",
+            schema: json!({
+                "type": "object",
+                "properties": {
+                    "ref": ref_schema(),
+                    "actor": { "type": "string", "description": "The holder (D140)." }
+                },
+                "required": ["ref"]
+            }),
         },
         ToolSpec {
             name: "tasqx_stop_timer",
@@ -1935,7 +1977,8 @@ pub fn instructions(scope: Scope) -> String {
         `@working`; blocked and waiting tasks are hidden there by design. Per task: \
         tasqx_brief_task, then tasqx_start_timer, do the work, tasqx_annotate_task with what was \
         decided and delivered, and tasqx_complete_task naming in checks_passed what you proved. \
-        Obsolete work is cancelled with tasqx_cancel_task, never left open.";
+        Working beside other agents on one store, tasqx_claim_task first: a claimed task leaves \
+        their `@working`. Obsolete work is cancelled with tasqx_cancel_task, never left open.";
 
     const WRITE_BACK: &str = "Write as you go. Only annotation bodies are indexed, never titles, \
         so name files and symbols in them. Call tasqx_add_memory when a decision settles or you \
@@ -2664,7 +2707,12 @@ impl<'e> McpServer<'e> {
         // names than a connection), and one that names none is stamped with
         // this connection's. `task.done` is not stamped, because it takes no
         // `actor` — only starting a clock can collide with one.
-        if spec.method == "task.start" {
+        // D236: the same key is a claim's holder, and `task.list`/`task.next`
+        // read it to keep this connection's own claims in `@working`.
+        if matches!(
+            spec.method,
+            "task.start" | "task.claim" | "task.release" | "task.list" | "task.next"
+        ) {
             if let Some(obj) = args.as_object_mut() {
                 if obj.get("actor").is_none_or(Value::is_null) {
                     obj.insert(
@@ -3968,13 +4016,15 @@ mod tests {
             dispatch(&e, "dependency.add", &json!({ "ref": 3, "depends_on": 1 }))
                 .expect("seed a dependency");
             dispatch(&e, "tag.add", &json!({ "ref": 1, "tags": ["x"] })).expect("seed a tag");
+            dispatch(&e, "task.claim", &json!({ "ref": 2 })).expect("seed a claim");
             let doc = dispatch(&e, "memory.add", &json!({ "title": "t", "body": "b" }))
                 .expect("seed a doc")["id"]
                 .clone();
 
             let full = match spec.method {
                 "task.get" | "task.brief" | "task.done" | "task.cancel" | "task.reopen"
-                | "task.start" | "task.stop" => json!({ "ref": 1 }),
+                | "task.start" | "task.stop" | "task.claim" => json!({ "ref": 1 }),
+                "task.release" => json!({ "ref": 2 }),
                 "task.add" => json!({ "title": "t" }),
                 "task.modify" => json!({ "ref": 1, "set": { "priority": "H" } }),
                 "tag.add" => json!({ "ref": 1, "tags": ["y"] }),

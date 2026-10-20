@@ -998,6 +998,12 @@ fn execute(cli: Cli) -> Exit {
             correlation,
         }) => run_start(&mut backend, &ctx, r#ref, keep, &correlation),
         Some(Command::Stop { r#ref }) => run_stop(&mut backend, &ctx, r#ref),
+        Some(Command::Claim {
+            r#ref,
+            lease,
+            holder,
+        }) => run_claim(&mut backend, &ctx, r#ref, lease, holder),
+        Some(Command::Release { r#ref, holder }) => run_release(&mut backend, &ctx, r#ref, holder),
         Some(Command::Adjust {
             r#ref,
             delta,

@@ -81,6 +81,7 @@ const EXAMPLE_SCREENS: &[(&str, &str, &str)] = &[
     ("why", "tasqx why 1", "why"),
     ("start", "tasqx start 1", "start-echo"),
     ("stop", "tasqx stop 1", "stop-echo"),
+    ("claim", "tasqx claim 12 --holder builder-2", "claim-echo"),
     (
         "adjust",
         "tasqx adjust 1 -2h25m --reason 'idle gap'",
@@ -132,6 +133,11 @@ const NO_SCREEN: &[(&str, &str)] = &[
         "undo",
         "it reverses the newest event, so a capture would have to record two commands \
          and the manifest records one.",
+    ),
+    (
+        "release",
+        "it needs a task that is already claimed, and the manifest runs each row against a \
+         fresh copy of the demo store.",
     ),
     (
         "unarchive",

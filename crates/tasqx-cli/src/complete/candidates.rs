@@ -1633,7 +1633,10 @@ mod tests {
 
         // Filtered by what has been typed, case-sensitively, exactly as clap's
         // engine filters a possible value.
-        assert_eq!(values(filter_candidates("@")), ["@working", "@blocked"]);
+        assert_eq!(
+            values(filter_candidates("@")),
+            ["@working", "@blocked", "@claimed"]
+        );
         assert_eq!(values(filter_candidates("@w")), ["@working"]);
         // #229 item 5: `proj:` joined `project:` as a real read-side prefix,
         // so both now complete a "pro" partial.
