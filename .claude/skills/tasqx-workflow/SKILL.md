@@ -45,8 +45,8 @@ project, a subject the title does not name); `raw: true` passes FTS5 syntax.
 
 ## Cited code that is gone
 
-A doc hit, `tasqx_get_memory` and a standing ruling at session start carry
-`stale_refs`: files or `path::symbol` refs the doc cites that are gone from
+A `tasqx_search_memory` doc hit, `tasqx_get_memory` and a standing ruling at
+session start carry `stale_refs` (a brief's hits do not): files or `path::symbol` refs the doc cites that are gone from
 this checkout (D235). A non-empty one means the doc talks about code that was
 renamed or removed: check the code before following it, then correct the doc
 with `tasqx_update_memory`. Run `tasqx memory verify` from the repo after a
