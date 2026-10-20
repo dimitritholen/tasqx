@@ -394,7 +394,9 @@ pub(crate) fn run_list(
     if !fields.is_empty() {
         params["fields"] = json!(fields);
     }
-    // D236: whose claims `@working` keeps; absent is the engine's `user`.
+    // D236: `--holder` makes this list choose work for that holder, so
+    // `@working` leaves out claims anyone else holds. Without it the list is
+    // a view: no claim exclusion, every claim shown with its holder.
     if let Some(h) = holder {
         params["actor"] = json!(h);
     }
@@ -583,7 +585,7 @@ pub(crate) fn run_start(
 
 /// D236: `--holder` as the call's `actor` and `--force-claim` as
 /// `force_claim`, for the verbs that stop or close a task.
-fn claim_params(params: &mut Value, holder: Option<String>, force_claim: bool) {
+pub(crate) fn claim_params(params: &mut Value, holder: Option<String>, force_claim: bool) {
     if let Some(h) = holder {
         params["actor"] = json!(h);
     }

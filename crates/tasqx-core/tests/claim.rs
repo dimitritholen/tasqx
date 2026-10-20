@@ -448,7 +448,10 @@ fn claiming_a_task_on_another_actors_clock_is_refused() {
     assert!(err.message.contains("agent-1"), "{}", err.message);
     claim(&e, a, "agent-1").expect("the clock's own actor may claim");
     call(&e, "task.start", json!({ "ref": b, "keep": true })).unwrap();
-    claim(&e, b, "agent-2").expect("an anonymous clock defers to nobody");
+    // Review 5 #1: an anonymous clock is the shell's, so only `user` claims it.
+    let err = claim(&e, b, "agent-2").unwrap_err();
+    assert_eq!(err.code, ErrorCode::Conflict, "{}", err.message);
+    call(&e, "task.claim", json!({ "ref": b })).expect("the shell claims its own");
 }
 
 /// Review 3 #3: closing a task under another holder's live claim needs force,
@@ -620,4 +623,83 @@ fn quick_restarts_of_a_running_claimed_task_leave_the_rev_alone() {
     call(&e, "task.start", json!({ "ref": t, "actor": "agent-1" })).unwrap();
     call(&e, "task.start", json!({ "ref": t, "actor": "agent-1" })).unwrap();
     assert_eq!(rev(&e), before);
+}
+
+/// Review 5 #2: undoing a completion puts back the claim it ended.
+#[test]
+fn undoing_a_done_keeps_the_claim() {
+    let e = engine();
+    let t = add(&e, "undone");
+    let claimed = claim(&e, t, "agent-1").unwrap();
+    call(&e, "task.done", json!({ "ref": t, "actor": "agent-1" })).unwrap();
+    assert_eq!(
+        call(&e, "task.get", json!({ "ref": t })).unwrap()["claimed_by"],
+        Value::Null
+    );
+    call(&e, "event.revert", json!({})).expect("undo");
+    let got = call(&e, "task.get", json!({ "ref": t })).unwrap();
+    assert_eq!(got["claimed_by"], "agent-1", "{got}");
+    assert_eq!(got["claim_expires"], claimed["claim_expires"], "{got}");
+
+    // And a cancellation, the other close the trigger clears a claim on.
+    call(&e, "task.cancel", json!({ "ref": t, "actor": "agent-1" })).unwrap();
+    call(&e, "event.revert", json!({})).expect("undo the cancel");
+    let got = call(&e, "task.get", json!({ "ref": t })).unwrap();
+    assert_eq!(got["claimed_by"], "agent-1", "{got}");
+}
+
+/// Review 5 #3: the first refusal names the real cause — a pending task
+/// cannot be stopped, whoever holds it.
+#[test]
+fn stopping_a_pending_claimed_task_names_the_status() {
+    let e = engine();
+    let t = add(&e, "not running");
+    claim(&e, t, "agent-1").unwrap();
+    let err = call(&e, "task.stop", json!({ "ref": t })).unwrap_err();
+    assert!(
+        err.message.contains("cannot stop a pending task"),
+        "{}",
+        err.message
+    );
+}
+
+/// Review 5 #5: two MCP actors. A's running task is under A's own claim, so
+/// B's start is not D140's conflict: it proceeds and keeps A's clock running.
+#[test]
+fn a_second_actor_starts_beside_a_claimed_running_task() {
+    use tasqx_core::{McpServer, Scope};
+    let e = engine();
+    let (t1, t2) = (add(&e, "a's"), add(&e, "b's"));
+    let tool = |server: &McpServer, name: &str, arguments: Value| {
+        server
+            .handle_message(&json!({
+                "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                "params": { "name": name, "arguments": arguments }
+            }))
+            .expect("a response")
+    };
+    let (a, b) = (
+        McpServer::new(&e, Scope::Write),
+        McpServer::new(&e, Scope::Write),
+    );
+    for (name, args) in [
+        ("tasqx_claim_task", json!({ "ref": t1 })),
+        (
+            "tasqx_start_timer",
+            json!({ "ref": t1, "include_memory": false }),
+        ),
+    ] {
+        let out = tool(&a, name, args);
+        assert_ne!(out["result"]["isError"], true, "{out}");
+    }
+    let out = tool(
+        &b,
+        "tasqx_start_timer",
+        json!({ "ref": t2, "include_memory": false }),
+    );
+    assert_ne!(out["result"]["isError"], true, "{out}");
+    for t in [t1, t2] {
+        let got = call(&e, "task.get", json!({ "ref": t })).unwrap();
+        assert_eq!(got["status"], "active", "#{t}: {got}");
+    }
 }

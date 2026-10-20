@@ -240,7 +240,12 @@ pub enum Pred {
     Always,
 }
 
-/// The parsed filter expression tree.
+/// The parsed filter expression tree, as the grammar describes it.
+///
+/// Since D236 the parser builds a private tree of the same shape with one
+/// more leaf (`@claimed`), and nothing in this crate constructs or returns an
+/// `Expr`. It is kept, unchanged, for API compatibility: removing it is a
+/// breaking change, and that waits for the next minor (#815's practice).
 #[derive(Debug, Clone, PartialEq)]
 pub enum Expr {
     /// Every child must match. Juxtaposition builds this as well as the literal

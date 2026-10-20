@@ -2741,18 +2741,12 @@ impl<'e> McpServer<'e> {
         // server mints a new id, so its old claims are another holder's; an
         // agent that may reconnect passes a stable `actor`, and `force_claim`
         // is the way past a claim a dead connection left.
-        if matches!(
-            spec.method,
-            "task.start"
-                | "task.stop"
-                | "task.claim"
-                | "task.release"
-                | "task.list"
-                | "task.next"
-                | "task.done"
-                | "task.cancel"
-                | "task.modify"
-        ) {
+        // Derived from the method table: every method that takes `actor`
+        // is stamped, so a method gaining one cannot be missed here.
+        let takes_actor = crate::dispatch::PARAMS
+            .iter()
+            .any(|(m, keys, _)| *m == spec.method && keys.contains(&"actor"));
+        if takes_actor {
             if let Some(obj) = args.as_object_mut() {
                 if obj.get("actor").is_none_or(Value::is_null) {
                     obj.insert(
