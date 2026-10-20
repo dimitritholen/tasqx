@@ -29,6 +29,65 @@ const NEXT_SUMMARY_CHARS: usize = 400;
 const RESUME_NOTE_CHARS: usize = 200;
 /// How many recently annotated open tasks `task.next`'s resume names (D213).
 const RESUME_RECENT: usize = 5;
+/// D236: a claim's lease when the caller names none — long enough for one
+/// unit of agent work, short enough that a crashed holder frees it soon.
+pub const DEFAULT_LEASE_SECS: i64 = 30 * 60;
+/// D236: the longest lease one call may ask for. A longer job renews.
+pub const MAX_LEASE_SECS: i64 = 24 * 60 * 60;
+
+/// The claim holder a call names: D140's actor key, `user` when it names none
+/// (the shell), so a claim always has a holder to show and compare.
+fn claim_holder(p: &Value) -> Result<String, ApiError> {
+    Ok(opt_str_nonempty(p, "actor")?.unwrap_or_else(|| "user".to_string()))
+}
+
+/// `now + secs` as the RFC 3339 instant the column stores.
+fn lease_end(now: Timestamp, secs: i64) -> String {
+    now.checked_add(jiff::SignedDuration::from_secs(secs))
+        .unwrap_or(now)
+        .to_string()
+}
+
+/// Whether a stored expiry is still in the future at `now` (D236, read-time
+/// liveness in D29's manner). An unreadable expiry is not live.
+pub(super) fn lease_is_live(expires: &str, now: Timestamp) -> bool {
+    parse_ts(expires).is_some_and(|t| t > now)
+}
+
+/// Write `holder`'s lease and its event, the holder as the event's actor.
+/// `op` is `claim`, `renew` or `takeover`; a takeover names who it took
+/// the expired lease from.
+fn write_claim(
+    tx: &rusqlite::Transaction,
+    task: &Task,
+    holder: &str,
+    expires: &str,
+    op: &str,
+    previous: Option<String>,
+) -> Result<(), ApiError> {
+    tx.execute(
+        "UPDATE tasks SET claimed_by = ?1, claim_expires = ?2, rev = ?3, modified = ?4 \
+         WHERE id = ?5",
+        params![holder, expires, task.rev + 1, now(), task.id],
+    )?;
+    let mut payload = json!({ "holder": holder, "expires": expires });
+    crate::storage::as_actor(Some(holder.to_string()), || match op {
+        "renew" => insert_event(tx, Entity::Task, &task.id, "renew", &payload),
+        "takeover" => {
+            payload["from"] = json!(previous);
+            insert_event(tx, Entity::Task, &task.id, "takeover", &payload)
+        }
+        _ => insert_event(tx, Entity::Task, &task.id, "claim", &payload),
+    })
+}
+
+/// The `conflict` a live lease held by someone else answers, naming both.
+fn claimed_elsewhere(short_id: i64, holder: &str, expires: &str) -> ApiError {
+    ApiError::conflict(format!(
+        "#{short_id} is claimed by {holder} until {expires}; wait for the lease to expire or \
+         ask its holder to release it (D236)"
+    ))
+}
 
 /// `s` on one line: every run of whitespace becomes a single space.
 fn one_line(s: &str) -> String {
@@ -698,6 +757,22 @@ impl Engine {
 
         let ts = now();
 
+        // D236: a live claim by another holder refuses the start; the
+        // holder's own start renews its lease, never shortening it.
+        if let Some((by, until)) = Self::claim_on(&tx, &task.id)? {
+            let now_ts = parse_ts(&ts).unwrap_or_else(crate::clock::now);
+            if lease_is_live(&until, now_ts) {
+                let caller = command.actor.as_deref().unwrap_or("user");
+                if by != caller {
+                    return Err(claimed_elsewhere(task.short_id, &by, &until));
+                }
+                let renewed = lease_end(now_ts, DEFAULT_LEASE_SECS);
+                if parse_ts(&renewed) > parse_ts(&until) {
+                    write_claim(&tx, &task, &by, &renewed, "renew", None)?;
+                }
+            }
+        }
+
         // D140: the auto-stop below is scoped to the caller's own clock. D6
         // wrote "the currently active one" for one actor and it reads as one
         // for as long as there is one; with two, it reaches across callers and
@@ -856,6 +931,138 @@ impl Engine {
             title: task.title,
         }
         .into())
+    }
+
+    // ---- task.claim / task.release (D236) -------------------------------------
+
+    /// `task.claim` — take, renew or take over a lease on a task (D236).
+    /// Params: `ref`, `lease` (`estimate`'s duration grammar, default
+    /// [`DEFAULT_LEASE_SECS`], at most [`MAX_LEASE_SECS`]), `actor`.
+    ///
+    /// The holder is D140's actor key; a call naming none holds as `user`.
+    /// A live lease held by someone else is `conflict`, naming the holder and
+    /// the expiry. The same holder renews; an expired lease is anyone's, and a
+    /// different holder taking it is a `takeover`. Liveness is read against the
+    /// clock (D29's rule), so nothing sweeps expired leases.
+    pub fn task_claim(&self, p: &Value) -> Result<Value, ApiError> {
+        let target = ref_param(p)?.clone();
+        let holder = claim_holder(p)?;
+        let lease = match opt_str_nonempty(p, "lease")? {
+            Some(raw) => {
+                let iso = datetime::parse_duration(&raw)?;
+                let secs = crate::util::duration_secs(&iso).unwrap_or(0);
+                if secs > MAX_LEASE_SECS {
+                    return Err(ApiError::bad_request(format!(
+                        "a lease is at most 24h, got {raw}: renew it instead of asking for longer"
+                    )));
+                }
+                secs
+            }
+            None => DEFAULT_LEASE_SECS,
+        };
+        let tx = self.begin_mutation()?;
+        let task = self.resolve_ref_value_on(&tx, &target)?;
+        if task.status.is_terminal() {
+            return Err(ApiError::conflict(format!(
+                "cannot claim {} {} task: only open work takes a claim",
+                article_for_status(task.status),
+                task.status.as_str()
+            )));
+        }
+        let now_ts = crate::clock::now();
+        let held = Self::claim_on(&tx, &task.id)?;
+        let op = match &held {
+            Some((by, until)) if by == &holder => {
+                if lease_is_live(until, now_ts) {
+                    "renew"
+                } else {
+                    "claim"
+                }
+            }
+            Some((by, until)) if lease_is_live(until, now_ts) => {
+                return Err(claimed_elsewhere(task.short_id, by, until));
+            }
+            Some(_) => "takeover",
+            None => "claim",
+        };
+        let expires = lease_end(now_ts, lease);
+        write_claim(&tx, &task, &holder, &expires, op, held.map(|(by, _)| by))?;
+        tx.commit()?;
+        Ok(json!({
+            "short_id": task.short_id,
+            "title": task.title,
+            "op": op,
+            "claimed_by": holder,
+            "claim_expires": expires,
+            "_rev": task.rev + 1,
+        }))
+    }
+
+    /// `task.release` — give a claim up (D236). Params: `ref`, `actor`.
+    ///
+    /// Only the holder releases; a task with no claim, or one held by somebody
+    /// else, is `conflict`. An expired lease of the caller's own releases too.
+    pub fn task_release(&self, p: &Value) -> Result<Value, ApiError> {
+        let target = ref_param(p)?.clone();
+        let holder = claim_holder(p)?;
+        let tx = self.begin_mutation()?;
+        let task = self.resolve_ref_value_on(&tx, &target)?;
+        match Self::claim_on(&tx, &task.id)? {
+            None => {
+                return Err(ApiError::conflict(format!(
+                    "#{} is not claimed; there is nothing to release",
+                    task.short_id
+                )))
+            }
+            Some((by, until)) if by != holder => {
+                return Err(ApiError::conflict(format!(
+                    "#{} is claimed by {by} until {until}, not by {holder}; only the holder \
+                     releases a claim",
+                    task.short_id
+                )))
+            }
+            Some(_) => {}
+        }
+        let ts = now();
+        tx.execute(
+            "UPDATE tasks SET claimed_by = NULL, claim_expires = NULL, rev = ?1, modified = ?2 \
+             WHERE id = ?3",
+            params![task.rev + 1, ts, task.id],
+        )?;
+        crate::storage::as_actor(Some(holder.clone()), || {
+            insert_event(
+                &tx,
+                Entity::Task,
+                &task.id,
+                "release",
+                &json!({ "holder": holder }),
+            )
+        })?;
+        tx.commit()?;
+        Ok(json!({
+            "short_id": task.short_id,
+            "title": task.title,
+            "released_by": holder,
+            "_rev": task.rev + 1,
+        }))
+    }
+
+    /// The stored claim on `task_id`, live or not: `(holder, expires)`.
+    pub(super) fn claim_on(
+        conn: &rusqlite::Connection,
+        task_id: &str,
+    ) -> Result<Option<(String, String)>, ApiError> {
+        let row: Option<(Option<String>, Option<String>)> = conn
+            .query_row(
+                "SELECT claimed_by, claim_expires FROM tasks WHERE id = ?1",
+                params![task_id],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .optional()?;
+        Ok(match row {
+            Some((Some(by), Some(until))) => Some((by, until)),
+            _ => None,
+        })
     }
 
     // ---- task.adjust_tracked --------------------------------------------------
@@ -1930,11 +2137,17 @@ impl Engine {
         // it is a column of the same row, read after `TASK_COLS` so every
         // positional index `map_task_row_at` reads is untouched.
         let ncols = TASK_COLS.split(',').count();
-        let tasks: Vec<(Task, Option<String>)> = {
-            let mut stmt = self
-                .conn
-                .prepare(&format!("SELECT {TASK_COLS}, spawned_from FROM tasks"))?;
-            let rows = stmt.query_map([], |r| Ok((map_task_row_at(r, now)?, r.get(ncols)?)))?;
+        // D236's claim pair rides on it the same way.
+        type Row = (Task, Option<String>, Option<(String, String)>);
+        let tasks: Vec<Row> = {
+            let mut stmt = self.conn.prepare(&format!(
+                "SELECT {TASK_COLS}, spawned_from, claimed_by, claim_expires FROM tasks"
+            ))?;
+            let rows = stmt.query_map([], |r| {
+                let by: Option<String> = r.get(ncols + 1)?;
+                let until: Option<String> = r.get(ncols + 2)?;
+                Ok((map_task_row_at(r, now)?, r.get(ncols)?, by.zip(until)))
+            })?;
             let mut out = Vec::new();
             for row in rows {
                 out.push(row?);
@@ -2088,10 +2301,14 @@ impl Engine {
 
         let snapshots = tasks
             .into_iter()
-            .map(|(task, spawned_from)| {
+            .map(|(task, spawned_from, claim)| {
                 let id = &task.id;
                 TaskSnapshot {
                     spawned_from,
+                    claim_live: claim
+                        .as_ref()
+                        .is_some_and(|(_, until)| lease_is_live(until, now)),
+                    claim,
                     tags: tags.remove(id).unwrap_or_default(),
                     blocked: blocked.contains(id),
                     depends_on: dependencies.remove(id).unwrap_or_default(),
@@ -2126,6 +2343,9 @@ impl Engine {
         let now_ts = crate::clock::now();
         let filter = Filter::parse(&filter_str, now_ts).map_err(ApiError::bad_request)?;
         validate_filter_projects(self.conn(), &filter)?;
+        // D236: who is asking, so `@working` can leave out only the tasks
+        // someone ELSE holds a live claim on. None sees every claim as foreign.
+        let caller = opt_str_nonempty(p, "actor")?;
 
         // Fetch all rows, then evaluate the filter in Rust: the §12-D8 grammar
         // (or/parens) and instant `due` comparison are evaluated on the loaded
@@ -2214,7 +2434,10 @@ impl Engine {
             {
                 continue;
             }
-            let ctx = MatchCtx::from(&snapshot);
+            let ctx = MatchCtx {
+                caller: caller.as_deref(),
+                ..MatchCtx::from(&snapshot)
+            };
             if filter.matches(&ctx) {
                 let totals = if want_tokens {
                     tokens::measurement_totals(&snapshot.tokens)
@@ -2698,6 +2921,12 @@ impl Engine {
         // short_id like `depends_on`. Null on a task nothing spawned — and on a
         // spawn whose predecessor is not in this store (a filtered import).
         obj["spawned_from"] = json!(self.spawned_from_short_id(&task.id)?);
+        // D236: the live claim, null on none and on an expired one — liveness
+        // is decided here, on read, not by a sweep.
+        let claim = Self::claim_on(&self.conn, &task.id)?
+            .filter(|(_, until)| lease_is_live(until, crate::clock::now()));
+        obj["claimed_by"] = json!(claim.as_ref().map(|(by, _)| by));
+        obj["claim_expires"] = json!(claim.as_ref().map(|(_, until)| until));
 
         let limit = opt_u64(p, "annotations_limit")?;
         let offset = opt_u64(p, "annotations_offset")?.unwrap_or(0);
@@ -2925,6 +3154,8 @@ impl Engine {
         };
         let listed = self.task_list(&json!({
             "filter": working, "sort": ["-urgency"], "limit": 1,
+            // D236: the caller's own claims stay in its working set.
+            "actor": opt_str_nonempty(p, "actor")?,
         }))?;
         let task = listed["tasks"].get(0).cloned().unwrap_or(Value::Null);
         let summary = match task["short_id"].as_i64() {

@@ -68,6 +68,24 @@ describe('TaskInspector', () => {
     expect(it.transport.calls.at(-1)).toMatchObject({ method: 'task.get', params: { ref: 1 } });
   });
 
+  it('names the holder and the expiry of a live claim, and nothing when there is none (D236)', async () => {
+    await live(
+      baselineScript(PAGE, {
+        'task.get': taskDetail({ ...DETAIL, claimed_by: 'builder-2', claim_expires: '2099-01-01T09:30:00.000Z' }),
+      }),
+      '#/tasks?sel=2',
+    );
+    const claimed = within(inspector()).getByText('Claimed').nextElementSibling;
+    expect(claimed).toHaveTextContent('builder-2');
+    expect(claimed).toHaveTextContent('until');
+    expect(claimed?.querySelector('span.mono')).toHaveAttribute('title');
+  });
+
+  it('leaves the Claimed row out of an unclaimed task', async () => {
+    await live(baselineScript(PAGE, { 'task.get': DETAIL }), '#/tasks?sel=2');
+    expect(within(inspector()).queryByText('Claimed')).toBeNull();
+  });
+
   it('colours an overdue Due value the way the table does', async () => {
     await live(
       baselineScript(PAGE, { 'task.get': taskDetail({ ...DETAIL, due: '2020-01-01T00:00:00.000Z' }) }),

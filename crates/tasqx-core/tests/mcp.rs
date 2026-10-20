@@ -94,12 +94,12 @@ fn full_protocol_sequence() {
     }));
     assert!(note.is_none(), "notifications must not produce a response");
 
-    // 3. tools/list — all 34 tools present, each with an inputSchema.
+    // 3. tools/list — all 36 tools present, each with an inputSchema.
     let listed = server
         .handle_message(&json!({ "jsonrpc": "2.0", "id": 2, "method": "tools/list" }))
         .expect("tools/list is a request");
     let tools = listed["result"]["tools"].as_array().expect("tools array");
-    assert_eq!(tools.len(), 34, "expected 34 tools");
+    assert_eq!(tools.len(), 36, "expected 36 tools");
     assert!(tools.iter().any(|t| t["name"] == "tasqx_next"));
     let names: Vec<&str> = tools.iter().map(|t| t["name"].as_str().unwrap()).collect();
     for expected in [
@@ -117,6 +117,8 @@ fn full_protocol_sequence() {
         "tasqx_cancel_task",
         "tasqx_start_timer",
         "tasqx_stop_timer",
+        "tasqx_claim_task",
+        "tasqx_release_task",
         "tasqx_adjust_tracked",
         "tasqx_tag_task",
         "tasqx_untag_task",
@@ -4009,6 +4011,9 @@ fn the_read_only_refusal_names_the_flag_that_fixes_it() {
 /// D237 added the `similar` sentence to `tasqx_add_task` and
 /// `tasqx_add_memory`. Measured beside every tool above: 34 tools, 38,477
 /// bytes, so the cap moved from 38,400 to 38,528.
+/// D236 added `tasqx_claim_task` and `tasqx_release_task`, and `actor` on
+/// `tasqx_list_tasks` and `tasqx_next`. Measured beside every tool above: 36
+/// tools, 39,516 bytes, so the cap moved from 38,400 to 39,552.
 ///
 /// The floor is not zero. With every `description` key removed from the roster
 /// the same serialization is 11,597 bytes of schema skeleton — property names,
@@ -4020,7 +4025,7 @@ fn the_read_only_refusal_names_the_flag_that_fixes_it() {
 fn the_whole_tool_roster_stays_inside_its_per_prompt_budget() {
     const MAX_DESCRIPTION: usize = 800;
     const MAX_ENTRY: usize = 3_072;
-    const MAX_ROSTER: usize = 38_528;
+    const MAX_ROSTER: usize = 39_552;
 
     let engine = engine();
     let server = McpServer::new(&engine, Scope::Write);

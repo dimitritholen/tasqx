@@ -99,6 +99,11 @@ pub fn task_detail(result: &Value, opts: &DetailOpts) -> String {
     for (key, label) in [("active_since", "active since"), ("completed", "completed")] {
         opt_instant(&mut out, result, key, label, opts);
     }
+    // D236: who holds the live claim, and until when. Both null otherwise.
+    if let Some(by) = result.get("claimed_by").and_then(Value::as_str) {
+        row(&mut out, "claimed by", by);
+        opt_instant(&mut out, result, "claim_expires", "claim expires", opts);
+    }
     // Only when true: "not blocked" is the norm, and a `no` on every task is
     // noise that pushes the rows a reader wants further down.
     if result.get("blocked").and_then(Value::as_bool) == Some(true) {

@@ -224,7 +224,13 @@ fn migrate(conn: &Connection) -> Result<(), ApiError> {
             -- D170: the task whose completion spawned this one (a recurrence),
             -- by uuid. NULL on everything else. Not in `TASK_COLS`: only
             -- `task.get`, `task.brief` and the export read it.
-            spawned_from    TEXT
+            spawned_from    TEXT,
+            -- D236: a lease on the task. The holder is D140's actor key and
+            -- the expiry a UTC instant; liveness is decided on read against
+            -- the clock (D29's rule), so an expired lease needs no sweep.
+            -- Not in `TASK_COLS`, like `spawned_from`.
+            claimed_by      TEXT,
+            claim_expires   TEXT
         );
         CREATE INDEX IF NOT EXISTS idx_tasks_status  ON tasks(status);
         CREATE INDEX IF NOT EXISTS idx_tasks_project ON tasks(project);
@@ -427,6 +433,17 @@ fn migrate(conn: &Connection) -> Result<(), ApiError> {
         "INTEGER NOT NULL DEFAULT 0",
     )?;
     add_column_if_missing(conn, "tasks", "spawned_from", "TEXT")?;
+    add_column_if_missing(conn, "tasks", "claimed_by", "TEXT")?;
+    add_column_if_missing(conn, "tasks", "claim_expires", "TEXT")?;
+    // D236: a closed task holds no claim. One trigger rather than a clause
+    // on every write that can close a task (`done`, `cancel`, a `modify` to
+    // cancelled, an import, an undo), so none of them can forget it.
+    conn.execute_batch(
+        "CREATE TRIGGER IF NOT EXISTS tasks_claim_ends_on_close \
+         AFTER UPDATE OF status ON tasks \
+         WHEN NEW.status IN ('done', 'cancelled') AND NEW.claimed_by IS NOT NULL \
+         BEGIN UPDATE tasks SET claimed_by = NULL, claim_expires = NULL WHERE id = NEW.id; END;",
+    )?;
 
     // Must follow the ALTER: on an upgraded store the column does not exist
     // until the statement above runs. Partial, because the scheduler only ever

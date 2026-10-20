@@ -186,6 +186,26 @@ pub const NOT_UNDOABLE: &[(&str, &str)] = &[
          `tasqx stop <ref>` closes the interval you just opened.",
     ),
     (
+        "claim",
+        "A claim is a lease another agent may already have read and stepped around (D236); \
+         `tasqx release <ref>` gives it up.",
+    ),
+    (
+        "renew",
+        "A renewal records the new expiry, not the one it replaced (D236); `tasqx release \
+         <ref>` gives the claim up, or `tasqx claim <ref> --lease` sets another length.",
+    ),
+    (
+        "release",
+        "The lease may already have been taken by somebody else since (D236); `tasqx claim \
+         <ref>` takes it again if it is still free.",
+    ),
+    (
+        "takeover",
+        "The previous holder's lease had expired and is not put back (D236); `tasqx release \
+         <ref>` gives the claim up.",
+    ),
+    (
         "reopen",
         "Reopening clears `completed` without recording the instant it cleared; `tasqx done \
          <ref>` completes it again with a real one.",

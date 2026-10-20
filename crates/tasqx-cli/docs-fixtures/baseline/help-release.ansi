@@ -1,0 +1,38 @@
+Give a claim up (maps to task.release).
+
+D236: only the holder releases. `done` and `cancel` release it too.
+
+Usage: tasqx release [OPTIONS] <REF>
+
+Arguments:
+  <REF>
+          short_id or UUID
+
+Options:
+      --holder <ID>
+          The holder giving it up. Default `user`, the shell
+
+      --json
+          Print the raw JSON API result instead of the human table
+
+      --theme <THEME>
+          Theme name (built-in nord|gruvbox|dracula|solarized|mono, or a user file). Overrides $TASQX_THEME and the config file (DESIGN.md §8)
+
+      --socket <SOCKET>
+          Local socket / named-pipe address of a tasqx daemon. Overrides $TASQX_SOCK. When a daemon is reachable, one-shot commands route through it (single writer); otherwise they run in-process. A set $TASQX_DB naming a different store than that daemon's is refused. Also selects the address for `daemon` and `watch`
+
+      --no-daemon
+          Never route through a daemon; always run one-shot in-process (the pre-daemon behaviour). Escape hatch for scripts
+
+  -h, --help
+          Print help (see a summary with '-h')
+
+  -V, --version
+          Print version
+
+EXAMPLES
+  tasqx release 12 --holder builder-2    # builder-2 is done with #12 without finishing it
+
+NOTE  Only the holder releases (D236): a task with no claim, or another holder's, exits 5. Completing or cancelling a task ends its claim without this.
+
+See also: claim        Full manual: tasqx manual

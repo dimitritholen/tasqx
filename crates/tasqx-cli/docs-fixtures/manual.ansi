@@ -27,6 +27,8 @@
   why          Explain a task's urgency score.
   start        Mark a task active.
   stop         Pause an active task.
+  claim        Claim a task so other agents skip it.
+  release      Give a claim up.
   adjust       Correct a task's tracked time.
   done         Complete a task.
   cancel       Cancel a task.

@@ -1713,7 +1713,7 @@ fn the_at_shapes_are_quoted_for_the_one_shell_that_eats_them() {
     let ps = complete_in("powershell", &["tasqx", "list", "@"], 2);
     assert_eq!(
         ps,
-        ["'@working'", "'@blocked'"],
+        ["'@working'", "'@blocked'", "'@claimed'"],
         "PowerShell throws an unquoted `@word` away, so the candidate must carry \
          its quotes or completing it silently lists every task"
     );
@@ -1738,7 +1738,7 @@ fn the_at_shapes_are_quoted_for_the_one_shell_that_eats_them() {
     // And bash, which delivers `@` intact, keeps the bare spelling.
     assert_eq!(
         complete_in("bash", &["tasqx", "list", "@"], 2),
-        ["@working", "@blocked"],
+        ["@working", "@blocked", "@claimed"],
         "quoting these outside PowerShell would insert literal quote characters \
          into a command line that does not need them"
     );

@@ -82,11 +82,11 @@ writes from `tasqx watch` or the desktop app: a running daemon notices changes
 made by other processes on its store, so they show up live, within about half
 a second.
 
-Thirty-four tools, one verb each. Ten reads: `list_tasks`, `get_task`,
+Thirty-six tools, one verb each. Ten reads: `list_tasks`, `get_task`,
 `brief_task`, `next`, `summary`, `outcomes`, `list_projects`, `search_memory`,
 `get_memory`, `list_memory`.
-Twenty-four writes: `add_task`, `modify_task`, `complete_task`, `reopen_task`,
-`cancel_task`, `start_timer`, `stop_timer`, `adjust_tracked`, `tag_task`, `untag_task`,
+Twenty-six writes: `add_task`, `modify_task`, `complete_task`, `reopen_task`,
+`cancel_task`, `start_timer`, `stop_timer`, `claim_task`, `release_task`, `adjust_tracked`, `tag_task`, `untag_task`,
 `annotate_task`, `update_annotation`, `move_annotation`, `remove_annotation`, `add_tokens`, `add_check`, `set_check`,
 `remove_check`, `add_dependency`, `remove_dependency`, `add_memory`,
 `update_memory`, `remove_memory`, `create_project` (all prefixed `tasqx_`).
@@ -235,6 +235,14 @@ want to act on:
   running clock is refused rather than silently stopping their timer. Pass
   `keep: true` to run both deliberately — which is what several agents working
   in parallel need.
+- **`tasqx_claim_task` is how parallel agents stay off each other's work.** A
+  claim is a lease, 30 minutes unless `lease` names another length and at most
+  24 hours, held by the connection (or the `actor` you name). While it is live
+  the task leaves every other connection's `@working` and `tasqx_next`, and
+  their `tasqx_start_timer` on it is refused naming the holder and the expiry.
+  Claim again to renew; `tasqx_release_task`, completing or cancelling gives it
+  up; an expired lease is anyone's. Claim before you start when more than one
+  agent works the same store.
 - **`tasqx_remove_annotation` redacts the event too.** It overwrites the body
   in the annotation row *and* in the original write's audit event, in one
   transaction, so a secret pasted into a note is also gone from an export.

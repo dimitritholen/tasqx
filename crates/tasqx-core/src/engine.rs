@@ -325,6 +325,11 @@ struct TaskSnapshot {
     tokens: Vec<Value>,
     /// D170: the uuid of the task a recurrence spawned this one from.
     spawned_from: Option<String>,
+    /// D236: the stored claim, `(holder, expires)`, live or not — the export
+    /// carries it as stored.
+    claim: Option<(String, String)>,
+    /// D236: whether that claim is live at the loader's instant.
+    claim_live: bool,
 }
 
 /// The filter DSL's read view of a snapshot. `task.rs`, `transfer.rs` and
@@ -343,6 +348,12 @@ impl<'a> From<&'a TaskSnapshot> for MatchCtx<'a> {
             completed: t.completed.as_deref(),
             blocked: snapshot.blocked,
             title: &t.title,
+            claimed_by: snapshot
+                .claim
+                .as_ref()
+                .filter(|_| snapshot.claim_live)
+                .map(|(by, _)| by.as_str()),
+            caller: None,
         }
     }
 }
@@ -943,6 +954,9 @@ pub const IMPORT_TASK_KEYS: &[&str] = &[
     "delivered_annotation_id",
     // D170: the predecessor's uuid, present only on a recurrence spawn.
     "spawned_from",
+    // D236: a claim's holder and expiry, present only on a claimed task.
+    "claimed_by",
+    "claim_expires",
 ];
 
 /// Every key an exported annotation object can carry. D34.
@@ -1976,6 +1990,8 @@ mod tests {
             "task_modify",
             "task_cancel",
             "task_reopen",
+            "task_claim",
+            "task_release",
             "tag_add",
             "annotation_add",
             "dependency_add",

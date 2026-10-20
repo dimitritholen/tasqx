@@ -10,6 +10,8 @@ Commands:
   agenda       What is coming up, when (maps to task.list). `list` ordered by time and grouped by day, instead of by urgency
   start        Start a task timer (maps to task.start)
   stop         Stop the task timer (maps to task.stop)
+  claim        Claim a task so other agents skip it (maps to task.claim)
+  release      Give a claim up (maps to task.release)
   adjust       Correct a task's tracked time by a signed duration (maps to task.adjust_tracked)
   done         Complete a task (maps to task.done)
   show         Show a task's full detail incl. tags/annotations/deps (maps to task.get)

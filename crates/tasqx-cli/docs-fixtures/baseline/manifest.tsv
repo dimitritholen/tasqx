@@ -68,6 +68,8 @@ help-list	pipe	100	-	list --help	-	-
 help-agenda	pipe	100	-	agenda --help	-	-
 help-start	pipe	100	-	start --help	-	-
 help-stop	pipe	100	-	stop --help	-	-
+help-claim	pipe	100	-	claim --help	-	-
+help-release	pipe	100	-	release --help	-	-
 help-adjust	pipe	100	-	adjust --help	-	-
 help-done	pipe	100	-	done --help	-	-
 help-show	pipe	100	-	show --help	-	-

@@ -544,6 +544,15 @@ pub(crate) fn detail_rows(ctx: &Ctx, result: &Value, now: Timestamp) -> Vec<Deta
         status = format!("{status} · since {}", fmt_i(&s(result, "active_since")));
     }
     row("status", DetailField::Status, status);
+    // D236: a live claim names its holder and when the lease runs out. The core
+    // answers null for an expired one, so a row here is always a live claim.
+    if !s(result, "claimed_by").is_empty() {
+        let mut claimed = san(&s(result, "claimed_by"));
+        if !s(result, "claim_expires").is_empty() {
+            claimed = format!("{claimed} · until {}", fmt_i(&s(result, "claim_expires")));
+        }
+        row("claimed", DetailField::Plain, claimed);
+    }
     // D122: blocked is a line only when it is true, and it names what blocks
     // the task. It used to be `blocked true` beside `depends_on #51`, two rows
     // for one fact, and `blocked false` on every other task, which is noise.

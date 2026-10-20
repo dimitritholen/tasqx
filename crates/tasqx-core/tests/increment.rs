@@ -4305,6 +4305,9 @@ fn the_import_key_table_matches_the_keys_an_export_actually_emits() {
             "tracked_seconds": 60,
             "tracked_adjustment_seconds": -30,
             "active_since": "2020-01-01T00:00:00Z",
+            // D236: a claim is emitted only on a claimed task, expired or not.
+            "claimed_by": "agent-1",
+            "claim_expires": "2020-01-01T01:00:00Z",
         }]}))
         .unwrap();
     emitted.extend(keys(&timed.store_export(&json!({})).unwrap()["tasks"][0]));

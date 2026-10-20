@@ -140,6 +140,10 @@ fn cases(tmp: &str) -> Vec<(Case, Vec<String>)> {
             &["memory", "add", "Guard doc", "the guard needle body"],
         ),
         c("memory", &["memory", "search", "needle"]),
+        // The shell claims as `user`, so the `start` after it is the holder's
+        // own; released again so no later case meets a claim (D236).
+        c("claim", &["claim", "1"]),
+        c("release", &["release", "1"]),
         c("start", &["start", "1"]),
         c("stop", &["stop", "1"]),
         c(

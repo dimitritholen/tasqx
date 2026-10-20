@@ -1772,7 +1772,9 @@ fn every_handler_that_opens_a_mutation_also_appends_an_event() {
     // The helper is NAMED rather than the rule loosened, and the loop below
     // this one checks that it really does append an event — so delegation
     // cannot become the hiding place this guard exists to close.
-    const EVENT_VIA_HELPER: [&str; 1] = ["upsert_doc("];
+    // D236: `task_claim` and `task_start` both write a lease through
+    // `write_claim`, which appends the `claim`/`renew`/`takeover` event.
+    const EVENT_VIA_HELPER: [&str; 2] = ["upsert_doc(", "write_claim("];
     for helper in EVENT_VIA_HELPER {
         let decl = format!("\nfn {}(", helper.trim_end_matches('('));
         let body = SOURCES

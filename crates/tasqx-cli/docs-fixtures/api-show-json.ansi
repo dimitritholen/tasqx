@@ -10,6 +10,8 @@
   "blocks": [],
   "budget_tokens": null,
   "checks": [],
+  "claim_expires": null,
+  "claimed_by": null,
   "completed": null,
   "created": "2026-08-15T10:00:00Z",
   "delivered_annotation": null,

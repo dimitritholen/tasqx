@@ -443,6 +443,32 @@ const TASK_SPAWNED_FROM: &[Field] = &[nul("spawned_from", Ty::Int)];
 /// make every new export unreadable to an older tasqx.
 const TASK_EXPORT_SPAWNED_FROM: &[Field] = &[opt("spawned_from", Ty::Str)];
 
+/// D236: the live claim, holder and expiry, both null on an unclaimed task and
+/// on an expired lease. `task.get`/`task.brief` only.
+const TASK_CLAIM: &[Field] = &[nul("claimed_by", Ty::Str), nul("claim_expires", Ty::Str)];
+
+/// D236 on the export row: the stored claim, present only on a claimed task —
+/// the closed import gate again.
+const TASK_EXPORT_CLAIM: &[Field] = &[opt("claimed_by", Ty::Str), opt("claim_expires", Ty::Str)];
+
+/// D236: `task.claim`'s answer — which of claim, renew or takeover it was.
+const R_TASK_CLAIM: Shape = &[&[
+    req("short_id", Ty::Int),
+    req("title", Ty::Str),
+    req("op", Ty::Str),
+    req("claimed_by", Ty::Str),
+    req("claim_expires", Ty::Str),
+    req("_rev", Ty::Int),
+]];
+
+/// D236: `task.release`'s answer.
+const R_TASK_RELEASE: Shape = &[&[
+    req("short_id", Ty::Int),
+    req("title", Ty::Str),
+    req("released_by", Ty::Str),
+    req("_rev", Ty::Int),
+]];
+
 /// What `task.get` says about the history it did NOT return.
 ///
 /// `annotations_total` is required, not optional, and present whether the page
@@ -752,6 +778,7 @@ const R_TASK_GET: Shape = &[
     TASK_GET_RELATIONS,
     TASK_BLOCKS,
     TASK_SPAWNED_FROM,
+    TASK_CLAIM,
     TASK_ANNOTATION_PAGE,
     TASK_TOKENS,
     TASK_BLOCKED,
@@ -1328,6 +1355,7 @@ const R_TASK_BRIEF_TASK: Shape = &[
     TASK_GET_RELATIONS,
     TASK_BLOCKS,
     TASK_SPAWNED_FROM,
+    TASK_CLAIM,
     TASK_ANNOTATION_PAGE,
     TASK_TOKENS,
     TASK_BLOCKED,
@@ -1511,6 +1539,7 @@ const R_STORE_EXPORT: Shape = &[&[
             // travel with the task like its annotations do.
             TASK_CHECKS,
             TASK_EXPORT_SPAWNED_FROM,
+            TASK_EXPORT_CLAIM,
         ],
     ),
     req("dropped_dependencies", Ty::Int),
@@ -2017,6 +2046,26 @@ fn cases() -> Vec<Case> {
                 json!({ "ref": 1 })
             },
             R_TASK_STOP,
+        ),
+        case(
+            "task.claim",
+            "a fresh claim with a named lease (D236)",
+            |e| {
+                plain_task(e);
+                json!({ "ref": 1, "lease": "1h", "actor": "agent-1" })
+            },
+            R_TASK_CLAIM,
+        ),
+        case(
+            "task.release",
+            "the holder gives its claim up (D236)",
+            |e| {
+                plain_task(e);
+                e.task_claim(&json!({ "ref": 1, "actor": "agent-1" }))
+                    .expect("claim");
+                json!({ "ref": 1, "actor": "agent-1" })
+            },
+            R_TASK_RELEASE,
         ),
         case(
             "task.adjust_tracked",
@@ -2789,6 +2838,9 @@ fn cases() -> Vec<Case> {
                 // ever ran. Red either way, but a red run that names the wrong
                 // thing sends the next reader to the wrong file.
                 e.token_add(&self_report(1)).expect("measure");
+                // D236's conditional pair: a claimed open task.
+                e.task_claim(&json!({ "ref": 1, "actor": "agent-1" }))
+                    .expect("claim");
                 json!({})
             },
             R_STORE_EXPORT,

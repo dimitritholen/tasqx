@@ -563,6 +563,35 @@ pub(super) enum Command {
         #[arg(add = crate::complete::candidates::task_ids())]
         r#ref: String,
     },
+    /// Claim a task so other agents skip it (maps to task.claim).
+    ///
+    /// D236: a lease, default 30m and at most 24h. Claiming again renews it;
+    /// an expired lease is anyone's. While it is live, another holder's
+    /// `start` is refused and the task leaves their `next` and `@working`.
+    #[command(after_help = crate::cmddoc::after_help("claim"))]
+    Claim {
+        /// short_id or UUID.
+        #[arg(add = crate::complete::candidates::task_ids())]
+        r#ref: String,
+        /// How long the lease runs: 30m, 2h (estimate's grammar). Default 30m, at most 24h.
+        #[arg(long, value_name = "DURATION")]
+        lease: Option<String>,
+        /// Who holds it. Default `user`, the shell; an agent's own id otherwise.
+        #[arg(long, value_name = "ID")]
+        holder: Option<String>,
+    },
+    /// Give a claim up (maps to task.release).
+    ///
+    /// D236: only the holder releases. `done` and `cancel` release it too.
+    #[command(after_help = crate::cmddoc::after_help("release"))]
+    Release {
+        /// short_id or UUID.
+        #[arg(add = crate::complete::candidates::task_ids())]
+        r#ref: String,
+        /// The holder giving it up. Default `user`, the shell.
+        #[arg(long, value_name = "ID")]
+        holder: Option<String>,
+    },
     /// Correct a task's tracked time by a signed duration (maps to task.adjust_tracked).
     #[command(after_help = crate::cmddoc::after_help("adjust"))]
     Adjust {
