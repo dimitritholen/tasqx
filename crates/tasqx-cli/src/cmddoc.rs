@@ -366,7 +366,7 @@ pub const COMMAND_REF: &[CmdDoc] = &[
         aliases: &["s"],
         method: "task.start",
         summary: "Mark a task active.",
-        usage: "tasqx start <ref> [--keep] [--client TOOL] [--session-id ID] [--transcript-path PATH]",
+        usage: "tasqx start <ref> [--keep] [--holder ID] [--client TOOL] [--session-id ID] [--transcript-path PATH]",
         examples: &[
             ex_norun("tasqx start 1", "single-active by default"),
             ex_norun("tasqx start 1 --keep", "keep others running"),
@@ -411,7 +411,7 @@ pub const COMMAND_REF: &[CmdDoc] = &[
             ex_norun("tasqx claim 12 --holder builder-2 --lease 2h", "renew it for two hours"),
         ],
         notes: &[
-            "A claim is a lease (D236): 30m unless `--lease` names another length, at most 24h. Claiming again as the same holder renews it. Without `--holder` the shell holds it as `user`; over MCP the holder is the connection.",
+            "A claim is a lease (D236): 30m unless `--lease` names another length, at most 24h. Claiming again as the same holder renews it. Without `--holder` the shell holds it as `user`; over MCP the holder is the connection. `tasqx start --holder` starts a task claimed under a named holder.",
             "While the lease is live, a claim or `start` by anyone else exits 5 naming the holder and the expiry, and the task leaves their `next` and `@working`. `tasqx list @claimed` lists every live claim.",
             "Nothing sweeps an expired lease: it is read against the clock, so once it runs out anyone can claim the task, and that claim is logged as a takeover. `done` and `cancel` end a claim; `tasqx release` gives one up.",
         ],
@@ -423,13 +423,14 @@ pub const COMMAND_REF: &[CmdDoc] = &[
         aliases: &[],
         method: "task.release",
         summary: "Give a claim up.",
-        usage: "tasqx release <ref> [--holder ID]",
+        usage: "tasqx release <ref> [--holder ID] [--force]",
         examples: &[ex_norun(
             "tasqx release 12 --holder builder-2",
             "builder-2 is done with #12 without finishing it",
         )],
         notes: &[
             "Only the holder releases (D236): a task with no claim, or another holder's, exits 5. Completing or cancelling a task ends its claim without this.",
+            "`--force` releases a claim someone else holds — one left by an agent that crashed or reconnected under a new id — and the log records it as forced, under your holder.",
         ],
         see_also: &["claim"],
         topic: Topic::Capturing,

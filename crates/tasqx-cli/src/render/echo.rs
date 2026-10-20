@@ -913,7 +913,10 @@ pub fn claimed(ctx: &Ctx, result: &Value, task: &Value, now: Timestamp) -> Strin
 
 /// `tasqx release`: the claim given up (D236).
 pub fn claim_released(ctx: &Ctx, result: &Value, task: &Value, now: Timestamp) -> String {
-    let what = format!("released by {}", san(&s(result, "released_by")));
+    let mut what = format!("released by {}", san(&s(result, "released_by")));
+    if result.get("forced").and_then(Value::as_bool) == Some(true) {
+        what.push_str(", forced");
+    }
     draw(ctx, Card::new(task, outcome(ctx, &what)), now)
 }
 

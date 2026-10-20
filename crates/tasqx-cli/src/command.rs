@@ -553,6 +553,9 @@ pub(super) enum Command {
         /// Keep other active tasks running (opt out of single-active).
         #[arg(long)]
         keep: bool,
+        /// Start as this holder, to start a task claimed with `claim --holder` (D236).
+        #[arg(long, value_name = "ID")]
+        holder: Option<String>,
         #[command(flatten)]
         correlation: CorrelationArgs,
     },
@@ -591,6 +594,9 @@ pub(super) enum Command {
         /// The holder giving it up. Default `user`, the shell.
         #[arg(long, value_name = "ID")]
         holder: Option<String>,
+        /// Release a claim someone else holds, e.g. one a dead session left behind.
+        #[arg(long)]
+        force: bool,
     },
     /// Correct a task's tracked time by a signed duration (maps to task.adjust_tracked).
     #[command(after_help = crate::cmddoc::after_help("adjust"))]

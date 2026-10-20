@@ -291,8 +291,8 @@ pub struct MatchCtx<'a> {
     /// D236: the holder of a LIVE claim on the row, `None` when there is none
     /// or it has expired. Liveness is decided by whoever builds this.
     pub claimed_by: Option<&'a str>,
-    /// D236: the caller's own holder key. `None` sees every live claim as
-    /// someone else's.
+    /// D236: the caller's own holder key; `task.list` passes `user` when the
+    /// call names no actor. `None` sees every live claim as someone else's.
     pub caller: Option<&'a str>,
 }
 

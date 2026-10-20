@@ -134,6 +134,45 @@ fn the_cli_verbs_claim_and_release_under_a_holder() {
     assert!(run(&["claim", "1"]).status.success(), "free again");
 }
 
+/// Review of #2328: the shell's own claim stays in its own `next`, a named
+/// holder can start what it claimed, and `--force` frees another's claim.
+#[test]
+fn a_shell_claim_stays_in_next_and_a_named_holder_can_start_it() {
+    let s = Store::new("shellnext");
+    s.api(T0, "task.add", json!({ "title": "five" }));
+    s.api(T0, "task.add", json!({ "title": "named" }));
+    let run = |args: &[&str]| -> Output { s.bin(T0).args(args).output().expect("run") };
+
+    assert!(run(&["claim", "1"]).status.success());
+    let next = run(&["--json", "next"]);
+    let body: Value = serde_json::from_slice(&next.stdout).expect("next --json");
+    assert!(body.to_string().contains("\"five\""), "{body}");
+
+    assert!(run(&["claim", "2", "--holder", "builder-2"])
+        .status
+        .success());
+    assert_eq!(
+        run(&["start", "2"]).status.code(),
+        Some(5),
+        "the shell is not builder-2"
+    );
+    let started = run(&["start", "2", "--holder", "builder-2"]);
+    assert!(
+        started.status.success(),
+        "{}",
+        String::from_utf8_lossy(&started.stderr)
+    );
+
+    assert_eq!(run(&["release", "2"]).status.code(), Some(5));
+    let forced = run(&["release", "2", "--force"]);
+    assert!(
+        forced.status.success(),
+        "{}",
+        String::from_utf8_lossy(&forced.stderr)
+    );
+    assert!(String::from_utf8_lossy(&forced.stdout).contains("forced"));
+}
+
 /// Two processes claim one task at the same moment, 100 times over: exactly
 /// one wins each round. `task.claim` reads and writes the lease inside one
 /// `BEGIN IMMEDIATE`, so the loser sees the winner's row.

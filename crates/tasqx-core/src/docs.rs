@@ -418,10 +418,11 @@ pub const R_TASK_RELEASE: &[FieldDoc] = &[
         "The task's short id — the small number every `ref` accepts and the CLI prints.",
     ),
     f("title", "string", "The task's title, verbatim."),
+    f("released_by", "string", "The holder that gave the claim up — with `force`, the caller that took it from another holder."),
     f(
-        "released_by",
-        "string",
-        "The holder that gave the claim up.",
+        "forced",
+        "boolean",
+        "True when `force` released a claim someone else held; the `release` event says so too.",
     ),
     f(
         "_rev",

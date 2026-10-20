@@ -79,15 +79,25 @@ naming the holder and when the lease runs out, and the task drops out of their
 `tasqx next` and `@working`. `tasqx list @claimed` lists every live claim, and
 `tasqx show` names the holder and the expiry.
 
-Without `--holder` the shell holds the claim as `user`; an AI agent on the MCP
-server holds it as its connection. Nothing sweeps an expired lease: once it
-runs out, anyone may claim the task, and the log records that as a takeover.
+Without `--holder` the shell holds the claim as `user`, and `tasqx next` and
+`@working` from the same shell still show it. `start --holder` starts a task
+claimed under a named holder:
+
+```console
+tasqx start 42 --holder builder-2
+```
+
+An AI agent on the MCP server holds it as its connection unless it names a
+stable `actor`. Nothing sweeps an expired lease: once it runs out, anyone may
+claim the task, and the log records that as a takeover.
 Claim, renew, release and takeover each land in the event log with the holder.
 
 ## tasqx release
 
 Give a claim up. Only its holder can: a task with no claim, or someone else's,
-exits 5. `done` and `cancel` end a claim without it.
+exits 5. `done` and `cancel` end a claim without it. `--force` releases a claim
+someone else holds — one left by an agent that crashed or reconnected under a
+new id — and the log records it as forced.
 
 ```console
 tasqx release 42 --holder builder-2

@@ -56,7 +56,8 @@ pub(super) fn lease_is_live(expires: &str, now: Timestamp) -> bool {
 
 /// Write `holder`'s lease and its event, the holder as the event's actor.
 /// `op` is `claim`, `renew` or `takeover`; a takeover names who it took
-/// the expired lease from.
+/// the expired lease from. `bump` writes this call's one rev increment; a
+/// caller that bumps the rev itself (`task.start`) passes false.
 fn write_claim(
     tx: &rusqlite::Transaction,
     task: &Task,
@@ -64,12 +65,20 @@ fn write_claim(
     expires: &str,
     op: &str,
     previous: Option<String>,
+    bump: bool,
 ) -> Result<(), ApiError> {
-    tx.execute(
-        "UPDATE tasks SET claimed_by = ?1, claim_expires = ?2, rev = ?3, modified = ?4 \
-         WHERE id = ?5",
-        params![holder, expires, task.rev + 1, now(), task.id],
-    )?;
+    if bump {
+        tx.execute(
+            "UPDATE tasks SET claimed_by = ?1, claim_expires = ?2, rev = ?3, modified = ?4 \
+             WHERE id = ?5",
+            params![holder, expires, task.rev + 1, now(), task.id],
+        )?;
+    } else {
+        tx.execute(
+            "UPDATE tasks SET claimed_by = ?1, claim_expires = ?2 WHERE id = ?3",
+            params![holder, expires, task.id],
+        )?;
+    }
     let mut payload = json!({ "holder": holder, "expires": expires });
     crate::storage::as_actor(Some(holder.to_string()), || match op {
         "renew" => insert_event(tx, Entity::Task, &task.id, "renew", &payload),
@@ -726,6 +735,19 @@ impl Engine {
         let task = self.resolve_ref_value_on(&tx, &command.target)?;
         guard_rev(expected_rev, &task)?;
 
+        // D236: a live claim by another holder refuses the start — before the
+        // already-running answer too, so a claimed running task is not
+        // reported as started for somebody who does not hold it.
+        let claim_now = crate::clock::now();
+        let live_claim =
+            Self::claim_on(&tx, &task.id)?.filter(|(_, until)| lease_is_live(until, claim_now));
+        if let Some((by, until)) = &live_claim {
+            let caller = command.actor.as_deref().unwrap_or("user");
+            if by != caller {
+                return Err(claimed_elsewhere(task.short_id, by, until));
+            }
+        }
+
         match task.status {
             Status::Active => {
                 // Idempotent: already running.
@@ -757,19 +779,13 @@ impl Engine {
 
         let ts = now();
 
-        // D236: a live claim by another holder refuses the start; the
-        // holder's own start renews its lease, never shortening it.
-        if let Some((by, until)) = Self::claim_on(&tx, &task.id)? {
-            let now_ts = parse_ts(&ts).unwrap_or_else(crate::clock::now);
-            if lease_is_live(&until, now_ts) {
-                let caller = command.actor.as_deref().unwrap_or("user");
-                if by != caller {
-                    return Err(claimed_elsewhere(task.short_id, &by, &until));
-                }
-                let renewed = lease_end(now_ts, DEFAULT_LEASE_SECS);
-                if parse_ts(&renewed) > parse_ts(&until) {
-                    write_claim(&tx, &task, &by, &renewed, "renew", None)?;
-                }
+        // D236: the holder's own start renews its lease, never shortening
+        // it. No rev of its own: the start's UPDATE below is this call's one
+        // bump.
+        if let Some((by, until)) = &live_claim {
+            let renewed = lease_end(claim_now, DEFAULT_LEASE_SECS);
+            if parse_ts(&renewed) > parse_ts(until) {
+                write_claim(&tx, &task, by, &renewed, "renew", None, false)?;
             }
         }
 
@@ -949,7 +965,15 @@ impl Engine {
         let holder = claim_holder(p)?;
         let lease = match opt_str_nonempty(p, "lease")? {
             Some(raw) => {
-                let iso = datetime::parse_duration(&raw)?;
+                let iso = datetime::parse_duration(&raw).map_err(|e| {
+                    if e.message.contains("greater than zero") {
+                        ApiError::bad_request("a lease must be greater than zero")
+                    } else {
+                        ApiError::bad_request(format!(
+                            "could not parse lease: {raw:?} (try e.g. 30m, 2h, or ISO PT30M)"
+                        ))
+                    }
+                })?;
                 let secs = crate::util::duration_secs(&iso).unwrap_or(0);
                 if secs > MAX_LEASE_SECS {
                     return Err(ApiError::bad_request(format!(
@@ -986,7 +1010,15 @@ impl Engine {
             None => "claim",
         };
         let expires = lease_end(now_ts, lease);
-        write_claim(&tx, &task, &holder, &expires, op, held.map(|(by, _)| by))?;
+        write_claim(
+            &tx,
+            &task,
+            &holder,
+            &expires,
+            op,
+            held.map(|(by, _)| by),
+            true,
+        )?;
         tx.commit()?;
         Ok(json!({
             "short_id": task.short_id,
@@ -1005,6 +1037,7 @@ impl Engine {
     pub fn task_release(&self, p: &Value) -> Result<Value, ApiError> {
         let target = ref_param(p)?.clone();
         let holder = claim_holder(p)?;
+        let force = opt_bool(p, "force")?.unwrap_or(false);
         let tx = self.begin_mutation()?;
         let task = self.resolve_ref_value_on(&tx, &target)?;
         match Self::claim_on(&tx, &task.id)? {
@@ -1014,15 +1047,17 @@ impl Engine {
                     task.short_id
                 )))
             }
-            Some((by, until)) if by != holder => {
+            Some((by, until)) if by != holder && !force => {
                 return Err(ApiError::conflict(format!(
                     "#{} is claimed by {by} until {until}, not by {holder}; only the holder \
-                     releases a claim",
+                     releases a claim, or `force` takes it from a holder that is gone",
                     task.short_id
                 )))
             }
             Some(_) => {}
         }
+        let held_by = Self::claim_on(&tx, &task.id)?.map(|(by, _)| by);
+        let forced = held_by.as_deref() != Some(holder.as_str());
         let ts = now();
         tx.execute(
             "UPDATE tasks SET claimed_by = NULL, claim_expires = NULL, rev = ?1, modified = ?2 \
@@ -1035,7 +1070,11 @@ impl Engine {
                 Entity::Task,
                 &task.id,
                 "release",
-                &json!({ "holder": holder }),
+                &if forced {
+                    json!({ "holder": held_by, "forced": true, "by": holder })
+                } else {
+                    json!({ "holder": holder })
+                },
             )
         })?;
         tx.commit()?;
@@ -1043,6 +1082,7 @@ impl Engine {
             "short_id": task.short_id,
             "title": task.title,
             "released_by": holder,
+            "forced": forced,
             "_rev": task.rev + 1,
         }))
     }
@@ -2344,8 +2384,9 @@ impl Engine {
         let filter = Filter::parse(&filter_str, now_ts).map_err(ApiError::bad_request)?;
         validate_filter_projects(self.conn(), &filter)?;
         // D236: who is asking, so `@working` can leave out only the tasks
-        // someone ELSE holds a live claim on. None sees every claim as foreign.
-        let caller = opt_str_nonempty(p, "actor")?;
+        // someone ELSE holds a live claim on. Absent is `user`, the holder a
+        // claim or start naming no actor gets, so a shell keeps its own.
+        let caller = claim_holder(p)?;
 
         // Fetch all rows, then evaluate the filter in Rust: the §12-D8 grammar
         // (or/parens) and instant `due` comparison are evaluated on the loaded
@@ -2435,7 +2476,7 @@ impl Engine {
                 continue;
             }
             let ctx = MatchCtx {
-                caller: caller.as_deref(),
+                caller: Some(caller.as_str()),
                 ..MatchCtx::from(&snapshot)
             };
             if filter.matches(&ctx) {

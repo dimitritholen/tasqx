@@ -32,7 +32,9 @@ renew) that drops the task out of every other agent's `@working` and
 `tasqx_next` and refuses their `tasqx_start_timer` on it, naming you and the
 expiry (D236). A `conflict` from a claim means someone else is on it: pick
 another task. Completing or cancelling releases the claim; `tasqx_release_task`
-gives it up early. From a shell, `tasqx claim <id> --holder <name>`.
+gives it up early. Pass a stable `actor` (your session id) to claim, start and
+release if you may reconnect: the default holder is the connection, which a
+restart replaces. From a shell, `tasqx claim <id> --holder <name>`.
 
 ## Checks are claims, annotations are prose
 

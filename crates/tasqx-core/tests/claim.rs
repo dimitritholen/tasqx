@@ -296,3 +296,87 @@ fn two_mcp_connections_are_two_holders() {
     assert!(working(&a), "the holder keeps it in its working set");
     assert!(!working(&b), "the other connection does not see it");
 }
+
+/// Review #1: the already-running answer is no way past a claim.
+#[test]
+fn another_holders_start_on_a_claimed_running_task_is_refused() {
+    let e = engine();
+    let t = add(&e, "running");
+    claim(&e, t, "agent-1").unwrap();
+    call(&e, "task.start", json!({ "ref": t, "actor": "agent-1" })).unwrap();
+    let err = call(&e, "task.start", json!({ "ref": t, "actor": "agent-2" })).unwrap_err();
+    assert_eq!(err.code, ErrorCode::Conflict, "{}", err.message);
+    assert!(err.message.contains("agent-1"), "{}", err.message);
+    // The holder's own re-start stays idempotent.
+    let again = call(&e, "task.start", json!({ "ref": t, "actor": "agent-1" })).unwrap();
+    assert_eq!(again["already_running"], true, "{again}");
+}
+
+/// Review #3: no actor is `user` on reads too, so a shell keeps its own claim.
+#[test]
+fn a_shell_claim_stays_in_the_shells_own_next() {
+    let e = engine();
+    let t = add(&e, "mine from a shell");
+    call(&e, "task.claim", json!({ "ref": t })).unwrap();
+    let next = call(&e, "task.next", json!({})).unwrap();
+    assert_eq!(next["task"]["short_id"], t, "{next}");
+    let other = call(&e, "task.next", json!({ "actor": "agent-2" })).unwrap();
+    assert_eq!(other["task"], Value::Null, "{other}");
+}
+
+/// Review #5: `force` takes a claim from a holder that is gone, and says so.
+#[test]
+fn force_releases_another_holders_claim_and_logs_it() {
+    let e = engine();
+    let t = add(&e, "orphaned");
+    claim(&e, t, "mcp:dead").unwrap();
+    let err = call(&e, "task.release", json!({ "ref": t, "actor": "agent-2" })).unwrap_err();
+    assert_eq!(err.code, ErrorCode::Conflict);
+    let out = call(
+        &e,
+        "task.release",
+        json!({ "ref": t, "actor": "agent-2", "force": true }),
+    )
+    .unwrap();
+    assert_eq!(out["forced"], true, "{out}");
+    let ev = events(&e, t)
+        .into_iter()
+        .find(|ev| ev["op"] == "release")
+        .expect("a release event");
+    assert_eq!(ev["actor"], "agent-2", "{ev}");
+    assert_eq!(ev["payload"]["forced"], true, "{ev}");
+    assert_eq!(ev["payload"]["holder"], "mcp:dead", "{ev}");
+    claim(&e, t, "agent-2").expect("free again");
+}
+
+/// Review #6: the holder's renewing start is one rev bump, not two writes at
+/// one rev, so `expected_rev` read before the start is the rev it consumes.
+#[test]
+fn a_renewing_start_bumps_the_rev_once() {
+    let e = engine();
+    let t = add(&e, "guarded");
+    let rev = claim(&e, t, "agent-1").unwrap()["_rev"].as_i64().unwrap();
+    call(
+        &e,
+        "task.start",
+        json!({ "ref": t, "actor": "agent-1", "expected_rev": rev }),
+    )
+    .expect("the rev the caller read");
+    let got = call(&e, "task.get", json!({ "ref": t })).unwrap();
+    assert_eq!(got["_rev"], rev + 1, "{got}");
+    let stale = call(&e, "task.stop", json!({ "ref": t, "expected_rev": rev })).unwrap_err();
+    assert_eq!(stale.code, ErrorCode::Conflict);
+}
+
+/// Review #7: a lease refusal speaks of a lease.
+#[test]
+fn a_zero_lease_is_refused_as_a_lease() {
+    let e = engine();
+    let t = add(&e, "zero");
+    let err = call(&e, "task.claim", json!({ "ref": t, "lease": "0m" })).unwrap_err();
+    assert_eq!(err.code, ErrorCode::BadRequest);
+    assert_eq!(err.message, "a lease must be greater than zero");
+    let err = call(&e, "task.claim", json!({ "ref": t, "lease": "soon" })).unwrap_err();
+    assert!(err.message.contains("lease"), "{}", err.message);
+    assert!(!err.message.contains("estimate"), "{}", err.message);
+}

@@ -1445,7 +1445,7 @@ const EXAMPLES: &[Example] = &[
         method: "task.release",
         request: r#"{"tasqx":"1","id":"rl1","method":"task.release","params":{"ref":"47","actor":"builder-2"}}"#,
         fixture: "",
-        response: r#"{"id":"rl1","ok":true,"result":{"_rev":3,"released_by":"builder-2","short_id":47,"title":"Renew the TLS certificate for api.example.dev"},"tasqx":"1"}"#,
+        response: r#"{"id":"rl1","ok":true,"result":{"_rev":3,"forced":false,"released_by":"builder-2","short_id":47,"title":"Renew the TLS certificate for api.example.dev"},"tasqx":"1"}"#,
         why: "the demo store holds no claim to give up, and the manifest runs each row against a fresh copy of it; `task.release` in the conformance suite pins its shape.",
     },
     Example {
