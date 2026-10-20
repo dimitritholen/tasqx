@@ -1246,7 +1246,9 @@ fn build_tool_specs() -> Vec<ToolSpec> {
                         "type": "object",
                         "description": "Field → new value, e.g. {\"priority\":\"M\",\"due\":\"2026-07-22T17:00:00+02:00\"}."
                     },
-                    "expected_rev": { "type": "integer", "description": "Optimistic-concurrency guard. Supplied by the server from the task's current `_rev` when omitted; pass it to pin a rev you read earlier. There is no last-writer-wins mode." }
+                    "expected_rev": { "type": "integer", "description": "Optimistic-concurrency guard. Supplied by the server from the task's current `_rev` when omitted; pass it to pin a rev you read earlier. There is no last-writer-wins mode." },
+                    "actor": { "type": "string", "description": "Holder (D236)." },
+                    "force": { "type": "boolean", "description": "Cancel past another holder's claim." }
                 },
                 "required": ["ref", "set"]
             }),
@@ -1262,7 +1264,7 @@ fn build_tool_specs() -> Vec<ToolSpec> {
                 you only know one number (D167): a transcript measurement wins when tasqx finds \
                 the session that ran this task, and self-report is the fallback, graded `medium` \
                 because nothing can check it (D50, D188). `tool`/`model` are recorded on the \
-                event even with no count. A task with open dependencies is a `conflict` naming the blockers; \
+                event even with no count. Open dependencies, or another holder's claim (D236), are a `conflict`; \
                 `force: true` completes it anyway, counted by `tasqx_outcomes` (D150). \
                 `view: \"card\"` leads with the task's box card (D153), for a person deciding on \
                 it; a routine completion needs none (D164).",
@@ -1320,9 +1322,9 @@ fn build_tool_specs() -> Vec<ToolSpec> {
                     },
                     "force": {
                         "type": "boolean",
-                        "description": "Complete despite still-open dependencies; without it \
-                            that is a `conflict` naming them (D150)."
+                        "description": "Complete anyway (D150, D236)."
                     },
+                    "actor": { "type": "string", "description": "Holder (D236)." },
                     "view": {
                         "type": "string",
                         "enum": enum_of(["markdown", "card"]),
@@ -1354,7 +1356,12 @@ fn build_tool_specs() -> Vec<ToolSpec> {
                 A task already closed is a conflict, not a no-op.",
             schema: json!({
                 "type": "object",
-                "properties": { "ref": ref_schema(), "expected_rev": lifecycle_rev_schema() },
+                "properties": {
+                    "ref": ref_schema(),
+                    "expected_rev": lifecycle_rev_schema(),
+                    "actor": { "type": "string", "description": "Holder (D236)." },
+                    "force": { "type": "boolean", "description": "Cancel past another holder's claim." }
+                },
                 "required": ["ref"]
             }),
         },
@@ -2725,9 +2732,17 @@ impl<'e> McpServer<'e> {
         // `actor` — only starting a clock can collide with one.
         // D236: the same key is a claim's holder, and `task.list`/`task.next`
         // read it to keep this connection's own claims in `@working`.
+        // D236: and the one that closes or cancels a task, against a claim.
         if matches!(
             spec.method,
-            "task.start" | "task.claim" | "task.release" | "task.list" | "task.next"
+            "task.start"
+                | "task.claim"
+                | "task.release"
+                | "task.list"
+                | "task.next"
+                | "task.done"
+                | "task.cancel"
+                | "task.modify"
         ) {
             if let Some(obj) = args.as_object_mut() {
                 if obj.get("actor").is_none_or(Value::is_null) {

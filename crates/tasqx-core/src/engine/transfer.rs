@@ -82,7 +82,7 @@ impl Engine {
         let mut selected = Vec::new();
         for snapshot in snapshots {
             let ctx = MatchCtx::from(&snapshot);
-            if !filter.matches(&ctx) {
+            if !filter.matches_with_claims(&ctx, &snapshot.claims(None)) {
                 continue;
             }
             selected.push(snapshot);

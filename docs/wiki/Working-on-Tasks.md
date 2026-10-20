@@ -74,15 +74,19 @@ Claim a task so other agents skip it. A claim is a lease: 30 minutes unless
 tasqx claim 42 --holder builder-2
 ```
 
-While the lease is live, anyone else's `claim` or `start` on the task exits 5
-naming the holder and when the lease runs out, and the task drops out of their
-`tasqx next` and `@working`. `tasqx list @claimed` lists every live claim, and
-`tasqx show` names the holder and the expiry.
+While the lease is live, anyone else's `claim`, `start`, `done` or `cancel` on
+the task exits 5 naming the holder and when the lease runs out (`done --force`
+and `cancel --force` go ahead and say so in the log), and starting another task
+leaves it running instead of stopping it. `tasqx next` skips it for anyone but
+the holder. `tasqx list` still shows it, with its holder: a list is a view, and
+only `list --holder <id>` — an agent choosing its own work — leaves other
+holders' claims out of `@working`. `tasqx list @claimed` lists every live
+claim, and `tasqx show` names the holder and the expiry.
 
-Without `--holder` the shell holds the claim as `user`, and `tasqx next` and
-`@working` from the same shell still show it. `next`, `list` and `pick` take
-`--holder` to see a named holder's claims as yours, and `start --holder` starts
-a task claimed under a named holder (the timer itself stays the shell's):
+Without `--holder` the shell holds the claim as `user`, and `tasqx next` from
+the same shell still shows it. `next`, `list` and `pick` take `--holder` to
+choose work as a named holder, and `start`, `done` and `cancel` take it to act
+on a task claimed under one (the timer itself stays the shell's):
 
 ```console
 tasqx start 42 --holder builder-2

@@ -168,11 +168,22 @@ pub const PARAMS: &[(&str, &[&str], bool)] = &[
             // D167: one unsplit count, for a harness that reports only that.
             "total_tokens",
             "expected_rev",
+            // D236: who is completing, against a live claim.
+            "actor",
         ],
         false,
     ),
-    ("task.modify", &["ref", "set", "expected_rev"], false),
-    ("task.cancel", &["ref", "expected_rev"], false),
+    // D236: `actor` and `force` close a task under another holder's claim.
+    (
+        "task.modify",
+        &["ref", "set", "expected_rev", "actor", "force"],
+        false,
+    ),
+    (
+        "task.cancel",
+        &["ref", "expected_rev", "actor", "force"],
+        false,
+    ),
     ("task.reopen", &["ref", "expected_rev"], false),
     ("tag.add", &["ref", "tags"], false),
     ("tag.remove", &["ref", "tags"], false),

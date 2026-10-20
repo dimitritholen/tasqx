@@ -467,7 +467,7 @@ pub const COMMAND_REF: &[CmdDoc] = &[
         aliases: &["d", "x", "complete"],
         method: "task.done",
         summary: "Complete a task.",
-        usage: "tasqx done <ref> [--force] [--client TOOL] [--session-id ID] \
+        usage: "tasqx done <ref> [--force] [--holder ID] [--client TOOL] [--session-id ID] \
                 [--transcript-path PATH] [--tool TOOL] [--model MODEL] \
                 [--input-tokens N] [--output-tokens N] [--cache-read-tokens N] \
                 [--cache-creation-tokens N] [--total-tokens N]",
@@ -510,7 +510,7 @@ pub const COMMAND_REF: &[CmdDoc] = &[
         aliases: &["delete", "del", "rm"],
         method: "task.cancel",
         summary: "Cancel a task.",
-        usage: "tasqx cancel <ref>",
+        usage: "tasqx cancel <ref> [--holder ID] [--force]",
         examples: &[
             ex_norun("tasqx cancel 1", "a cancelled dependency releases its dependents (D11)"),
             ex_norun("tasqx delete 1", "same thing — tasqx has no hard delete; reverse it with `reopen`"),

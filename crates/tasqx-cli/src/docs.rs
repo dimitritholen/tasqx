@@ -303,7 +303,7 @@ const METHODS: [(&str, &str, &str); 54] = [
          <code>model?</code>, <code>input_tokens?</code>, <code>output_tokens?</code>, \
          <code>cache_read_tokens?</code>, <code>cache_creation_tokens?</code>, \
          <code>total_tokens?</code>, <code>checks_passed?</code>, <code>evidence?</code>, \
-         <code>expected_rev?</code>",
+         <code>expected_rev?</code>, <code>actor?</code>",
         "The task; plus the spawned next instance if recurring. Correlation params \
          land in the done event, and so do <code>tool</code> and <code>model</code> on \
          their own (D65) — a caller that cannot count its tokens still records who did \
@@ -318,7 +318,8 @@ const METHODS: [(&str, &str, &str); 54] = [
     ),
     (
         "task.modify",
-        "<code>ref</code>, <code>set</code>, <code>expected_rev?</code>",
+        "<code>ref</code>, <code>set</code>, <code>expected_rev?</code>, <code>actor?</code>, \
+         <code>force?</code>",
         "<code>{short_id, _rev, set}</code>; <code>set</code> echoes the RESOLVED value \
          actually stored for each field this call named (e.g. <code>due:\"friday\"</code> \
          comes back as its ISO instant). <code>null</code> in the request's own \
@@ -328,7 +329,7 @@ const METHODS: [(&str, &str, &str); 54] = [
     ),
     (
         "task.cancel",
-        "<code>ref</code>, <code>expected_rev?</code>",
+        "<code>ref</code>, <code>expected_rev?</code>, <code>actor?</code>, <code>force?</code>",
         "<code>{short_id, status}</code>. Like <code>task.start</code>, <code>stop</code>, \
          <code>done</code> and <code>reopen</code>, it takes <code>task.modify</code>'s \
          <code>expected_rev</code>: a stale one is a <code>conflict</code> carrying the \

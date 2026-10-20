@@ -216,11 +216,10 @@ pub enum Pred {
     CompletedBefore(Timestamp),
     /// `completed.after:VALUE` — the bound the weekly report is built on.
     CompletedAfter(Timestamp),
-    /// `@working`: pending|active AND not blocked, and not under a live
-    /// claim held by anyone but the caller (D236).
+    /// `@working`: pending|active AND not blocked, and — evaluated with a
+    /// [`ClaimCtx`] naming a caller — not under a live claim held by anyone
+    /// else (D236).
     Working,
-    /// `@claimed`: under a live claim, whoever holds it (D236).
-    Claimed,
     /// The blocked flag: an open task with >=1 dependency not yet resolved —
     /// `done` or `cancelled` (DESIGN §3, D11, D145); a closed task is never
     /// blocked.
@@ -252,6 +251,19 @@ pub enum Expr {
     Or(Vec<Expr>),
     /// A leaf.
     Pred(Pred),
+}
+
+/// The parsed tree [`Filter`] holds: [`Expr`]'s shape, plus D236's `@claimed`
+/// leaf. Private, so the leaf could be added without a new variant on the
+/// public, exhaustive [`Pred`] (`cargo semver-checks`); [`Expr`] stays as the
+/// documented shape of the grammar.
+#[derive(Debug, Clone, PartialEq)]
+enum Node {
+    And(Vec<Node>),
+    Or(Vec<Node>),
+    Pred(Pred),
+    /// `@claimed`: under a live claim, whoever holds it, on an open task.
+    Claimed,
 }
 
 /// The fields a predicate is evaluated against.
@@ -288,11 +300,20 @@ pub struct MatchCtx<'a> {
     /// The row's title, which the title terms (D210) are substring-matched
     /// against, case-insensitively.
     pub title: &'a str,
-    /// D236: the holder of a LIVE claim on the row, `None` when there is none
-    /// or it has expired. Liveness is decided by whoever builds this.
+}
+
+/// D236: the claim facts a filter is evaluated with, beside [`MatchCtx`].
+///
+/// A struct of its own rather than two more [`MatchCtx`] fields, because that
+/// one is exhaustively constructible by every caller of this crate, and a
+/// field added to it breaks each of them (`cargo semver-checks`).
+#[derive(Debug, Clone, Copy, Default)]
+pub struct ClaimCtx<'a> {
+    /// The holder of a LIVE claim on the row, `None` when there is none or it
+    /// has expired. Liveness is decided by whoever builds this.
     pub claimed_by: Option<&'a str>,
-    /// D236: the caller's own holder key; `task.list` passes `user` when the
-    /// call names no actor. `None` sees every live claim as someone else's.
+    /// The caller choosing work for itself (`task.next` always, `task.list`
+    /// given an `actor`). `None` is a view: no claim exclusion.
     pub caller: Option<&'a str>,
 }
 
@@ -300,7 +321,7 @@ pub struct MatchCtx<'a> {
 /// evaluates what it accepted.
 #[derive(Debug, Clone)]
 pub struct Filter {
-    root: Expr,
+    root: Node,
 }
 
 impl Filter {
@@ -320,7 +341,7 @@ impl Filter {
         let toks = tokenize(input)?;
         if toks.is_empty() {
             return Ok(Filter {
-                root: Expr::Pred(Pred::Always),
+                root: Node::Pred(Pred::Always),
             });
         }
         let mut p = Parser {
@@ -342,7 +363,14 @@ impl Filter {
     /// True when `ctx` satisfies the filter, title terms (a bare word, a quoted
     /// phrase, `title:`; D210) included: they match against [`MatchCtx::title`].
     pub fn matches(&self, ctx: &MatchCtx) -> bool {
-        eval(&self.root, ctx)
+        eval(&self.root, ctx, &ClaimCtx::default())
+    }
+
+    /// [`Filter::matches`], with the row's claim and the caller (D236):
+    /// `@claimed` reads `claims.claimed_by`, and `@working` leaves out
+    /// another holder's live claim when `claims.caller` names one.
+    pub fn matches_with_claims(&self, ctx: &MatchCtx, claims: &ClaimCtx) -> bool {
+        eval(&self.root, ctx, claims)
     }
 
     /// True when this filter already constrains status, so `report.summary`'s
@@ -362,11 +390,11 @@ impl Filter {
     /// included (D215: the working set leaves out an archived project's tasks
     /// unless the filter names the project).
     pub fn mentions_working(&self) -> bool {
-        fn walk(e: &Expr) -> bool {
+        fn walk(e: &Node) -> bool {
             match e {
-                Expr::And(v) | Expr::Or(v) => v.iter().any(walk),
-                Expr::Pred(Pred::Working) => true,
-                Expr::Pred(_) => false,
+                Node::And(v) | Node::Or(v) => v.iter().any(walk),
+                Node::Pred(Pred::Working) => true,
+                Node::Pred(_) | Node::Claimed => false,
             }
         }
         walk(&self.root)
@@ -398,7 +426,7 @@ impl Filter {
     /// project or doc that no task references. Any other filter, even one that
     /// happens to match every row, narrows on purpose and is scoped.
     pub fn is_unfiltered(&self) -> bool {
-        matches!(self.root, Expr::Pred(Pred::Always))
+        matches!(self.root, Node::Pred(Pred::Always))
     }
 
     /// The VALUE carried by the single predicate this filter is — `None` when it
@@ -431,7 +459,7 @@ impl Filter {
     /// the string is gone by design. Nothing needs it — the date vocabulary is
     /// open, so no caller composes a date candidate to check.
     pub fn sole_value(&self) -> Option<&str> {
-        let Expr::Pred(pred) = &self.root else {
+        let Node::Pred(pred) = &self.root else {
             return None;
         };
         match pred {
@@ -448,42 +476,43 @@ impl Filter {
             | Pred::CompletedBefore(_)
             | Pred::CompletedAfter(_)
             | Pred::Working
-            | Pred::Claimed
             | Pred::Blocked
             | Pred::Always => None,
         }
     }
 }
 
-fn constrains_status(e: &Expr) -> bool {
+fn constrains_status(e: &Node) -> bool {
     match e {
-        Expr::And(v) | Expr::Or(v) => v.iter().any(constrains_status),
+        Node::And(v) | Node::Or(v) => v.iter().any(constrains_status),
         // `@working` counts: it expands to `status in {pending,active}`, so the
         // caller has named a status set just as explicitly as `status:pending`.
-        Expr::Pred(Pred::AnyStatus | Pred::Status(_) | Pred::Working) => true,
-        Expr::Pred(_) => false,
+        Node::Pred(Pred::AnyStatus | Pred::Status(_) | Pred::Working) => true,
+        Node::Pred(_) | Node::Claimed => false,
     }
 }
 
 /// [`Filter::project_names`]'s walk, over borrowed [`Pred::Project`] strings so
 /// the caller pays no allocation for a filter that names none.
-fn collect_project_names<'a>(e: &'a Expr, out: &mut Vec<&'a str>) {
+fn collect_project_names<'a>(e: &'a Node, out: &mut Vec<&'a str>) {
     match e {
-        Expr::And(v) | Expr::Or(v) => v.iter().for_each(|c| collect_project_names(c, out)),
-        Expr::Pred(Pred::Project(name)) => out.push(name.as_str()),
-        Expr::Pred(_) => {}
+        Node::And(v) | Node::Or(v) => v.iter().for_each(|c| collect_project_names(c, out)),
+        Node::Pred(Pred::Project(name)) => out.push(name.as_str()),
+        Node::Pred(_) | Node::Claimed => {}
     }
 }
 
-fn eval(e: &Expr, ctx: &MatchCtx) -> bool {
+fn eval(e: &Node, ctx: &MatchCtx, claims: &ClaimCtx) -> bool {
     match e {
-        Expr::And(v) => v.iter().all(|x| eval(x, ctx)),
-        Expr::Or(v) => v.iter().any(|x| eval(x, ctx)),
-        Expr::Pred(p) => eval_pred(p, ctx),
+        Node::And(v) => v.iter().all(|x| eval(x, ctx, claims)),
+        Node::Or(v) => v.iter().any(|x| eval(x, ctx, claims)),
+        Node::Pred(p) => eval_pred(p, ctx, claims),
+        // A closed task holds no claim (D236), whatever a row says.
+        Node::Claimed => claims.claimed_by.is_some() && !ctx.status.is_terminal(),
     }
 }
 
-fn eval_pred(p: &Pred, ctx: &MatchCtx) -> bool {
+fn eval_pred(p: &Pred, ctx: &MatchCtx, claims: &ClaimCtx) -> bool {
     match p {
         Pred::Always | Pred::AnyStatus => true,
         Pred::Title(t) => ctx.title.to_lowercase().contains(t.as_str()),
@@ -500,10 +529,10 @@ fn eval_pred(p: &Pred, ctx: &MatchCtx) -> bool {
         Pred::Working => {
             matches!(ctx.status, Status::Pending | Status::Active)
                 && !ctx.blocked
-                && (ctx.claimed_by.is_none() || ctx.claimed_by == ctx.caller)
+                && (claims.caller.is_none()
+                    || claims.claimed_by.is_none()
+                    || claims.claimed_by == claims.caller)
         }
-        // A closed task holds no claim (D236), whatever a row says.
-        Pred::Claimed => ctx.claimed_by.is_some() && !ctx.status.is_terminal(),
         Pred::Blocked => ctx.blocked,
         Pred::DueBefore(bound) => instant_cmp(ctx.due, *bound, true),
         Pred::DueAfter(bound) => instant_cmp(ctx.due, *bound, false),
@@ -932,7 +961,7 @@ impl Parser {
             .is_some_and(|t| !t.quoted && t.text == s)
     }
 
-    fn parse_or(&mut self) -> Result<Expr, String> {
+    fn parse_or(&mut self) -> Result<Node, String> {
         let mut parts = vec![self.parse_and()?];
         while self.is_kw("or") {
             self.pos += 1; // consume 'or'
@@ -941,11 +970,11 @@ impl Parser {
         if parts.len() == 1 {
             Ok(parts.pop().unwrap())
         } else {
-            Ok(Expr::Or(parts))
+            Ok(Node::Or(parts))
         }
     }
 
-    fn parse_and(&mut self) -> Result<Expr, String> {
+    fn parse_and(&mut self) -> Result<Node, String> {
         // #229 item 12: `and` used to be a word this loop SKIPPED regardless
         // of position — so `+pr and` (nothing after it), `and +pr` (nothing
         // before it), and `+pr and or +review` (the `and`'s operand slot
@@ -967,7 +996,7 @@ impl Parser {
         if parts.len() == 1 {
             Ok(parts.pop().unwrap())
         } else {
-            Ok(Expr::And(parts))
+            Ok(Node::And(parts))
         }
     }
 
@@ -977,14 +1006,14 @@ impl Parser {
     /// empty tail — so every "nothing here" case this grammar can reach
     /// (a dangling `and`, a leading `and`, an empty group `()`, a bare `or`)
     /// answers with the one message, `"expected a filter term"`.
-    fn parse_and_operand(&mut self) -> Result<Expr, String> {
+    fn parse_and_operand(&mut self) -> Result<Node, String> {
         if self.peek().is_none() || self.is_sym(")") || self.is_kw("or") || self.is_kw("and") {
             return Err("expected a filter term".to_string());
         }
         self.parse_term()
     }
 
-    fn parse_term(&mut self) -> Result<Expr, String> {
+    fn parse_term(&mut self) -> Result<Node, String> {
         if self.is_sym("(") {
             self.pos += 1; // consume '('
                            // Checked before the increment, so `depth` is only ever raised on a
@@ -1025,9 +1054,6 @@ impl Parser {
 fn predicate(tok: &str, now: Timestamp) -> Result<Pred, String> {
     if tok == "@working" {
         return Ok(Pred::Working);
-    }
-    if tok == "@claimed" {
-        return Ok(Pred::Claimed);
     }
     if tok == "@blocked" || tok == "+blocked" || tok == "status:blocked" {
         return Ok(Pred::Blocked);
@@ -1163,29 +1189,32 @@ const UNKNOWN_TOKEN: &str = "unknown filter token";
 /// predicate, and a leading `+`/`-`/`@` is a mistyped tag, flag or keyword. A
 /// quoted phrase is taken at its word, colon and all. Every other refusal
 /// (`status:nope`, `due.before:`) passes through untouched.
-fn leaf(tok: &str, quoted: bool, now: Timestamp) -> Result<Expr, String> {
+fn leaf(tok: &str, quoted: bool, now: Timestamp) -> Result<Node, String> {
+    if !quoted && tok == "@claimed" {
+        return Ok(Node::Claimed);
+    }
     if let Some(v) = tok.strip_prefix("title:") {
         if v.is_empty() {
             return Err("`title:` needs a value — e.g. title:review, or \
                  title:\"weekly planning\" when it contains a space"
                 .to_string());
         }
-        return Ok(Expr::Pred(Pred::Title(v.to_lowercase())));
+        return Ok(Node::Pred(Pred::Title(v.to_lowercase())));
     }
     if let Some(v) = tok.strip_prefix("status:") {
         if v.eq_ignore_ascii_case("any") || v.eq_ignore_ascii_case("all") {
-            return Ok(Expr::Pred(Pred::AnyStatus));
+            return Ok(Node::Pred(Pred::AnyStatus));
         }
     }
     match predicate(tok, now) {
-        Ok(p) => Ok(Expr::Pred(p)),
+        Ok(p) => Ok(Node::Pred(p)),
         Err(e) if e.starts_with(UNKNOWN_TOKEN) => {
             let looks_like_token =
                 tok.starts_with(['+', '-', '@']) || (!quoted && tok.contains(':'));
             if tok.is_empty() || looks_like_token {
                 Err(e)
             } else {
-                Ok(Expr::Pred(Pred::Title(tok.to_lowercase())))
+                Ok(Node::Pred(Pred::Title(tok.to_lowercase())))
             }
         }
         Err(e) => Err(e),
@@ -1401,8 +1430,6 @@ mod tests {
             due: None,
             completed: None,
             blocked: false,
-            claimed_by: None,
-            caller: None,
         }
     }
 
@@ -1416,8 +1443,6 @@ mod tests {
             due: None,
             completed: None,
             blocked: false,
-            claimed_by: None,
-            caller: None,
         }
     }
 
@@ -1431,8 +1456,6 @@ mod tests {
             due: None,
             completed: None,
             blocked: false,
-            claimed_by: None,
-            caller: None,
         }
     }
 
@@ -1461,8 +1484,6 @@ mod tests {
             due: None,
             completed: None,
             blocked: false,
-            claimed_by: None,
-            caller: None,
         };
         assert!(
             !parsed("(project:home or +api) and status:done").matches(&ctx),
@@ -1491,8 +1512,6 @@ mod tests {
             due: None,
             completed: None,
             blocked: false,
-            claimed_by: None,
-            caller: None,
         };
         assert!(parsed("proj:home").matches(&ctx));
         assert!(!parsed("proj:elsewhere").matches(&ctx));
@@ -1524,8 +1543,6 @@ mod tests {
             due: None,
             completed: None,
             blocked: false,
-            claimed_by: None,
-            caller: None,
         };
         assert!(parsed("+pr and status:pending").matches(&ctx));
         assert!(parsed("+pr status:pending").matches(&ctx), "implicit and");
@@ -1561,8 +1578,6 @@ mod tests {
             due: Some(bound),
             completed: None,
             blocked: false,
-            claimed_by: None,
-            caller: None,
         };
         assert!(
             !parsed(&format!("due.before:{bound}")).matches(&ctx),
@@ -1615,8 +1630,6 @@ mod tests {
             due: Some("2026-07-20T09:00:00Z"),
             completed: None,
             blocked: false,
-            claimed_by: None,
-            caller: None,
         };
         // Composed through `quote`, because a date is a VALUE like any other and
         // a multi-word one (`in 3 days`) is expressible only under D30's quoting
@@ -1693,8 +1706,6 @@ mod tests {
             due: Some("2026-07-21T00:00:00Z"),
             completed: None,
             blocked: false,
-            claimed_by: None,
-            caller: None,
         };
         // `tomorrow` at Monday noon is 2026-07-21T00:00:00Z, and the bound is
         // strict — so the row exactly on it is out and one second earlier is in,
@@ -1883,8 +1894,6 @@ mod tests {
             let blocked = MatchCtx {
                 title: "",
                 blocked: true,
-                claimed_by: None,
-                caller: None,
                 ..ctx_for(status)
             };
             assert!(
@@ -2222,8 +2231,6 @@ mod tests {
             due: None,
             completed: None,
             blocked: false,
-            claimed_by: None,
-            caller: None,
         };
         for literal in [r#"+"needs paint""#, r#"project:"Home Renovation""#] {
             assert!(parsed(literal).matches(&ctx), "{literal:?} must select");
@@ -2265,8 +2272,6 @@ mod tests {
                 due: None,
                 completed: None,
                 blocked: false,
-                claimed_by: None,
-                caller: None,
             };
             assert!(
                 f.matches(&ctx),
@@ -2316,8 +2321,6 @@ mod tests {
             due: None,
             completed: None,
             blocked: false,
-            claimed_by: None,
-            caller: None,
         };
         // The whole value is one predicate: if `(`, `)` or `or` kept their
         // meaning this is a different — and matching — filter tree.
@@ -2376,8 +2379,6 @@ mod tests {
                 due: None,
                 completed: None,
                 blocked: false,
-                claimed_by: None,
-                caller: None,
             };
             assert!(f.matches(&ctx), "quote({v:?}) did not round trip");
         }
@@ -2534,8 +2535,6 @@ mod tests {
                 due: None,
                 completed: None,
                 blocked: false,
-                claimed_by: None,
-                caller: None,
             }
         }
         assert!(
@@ -2704,8 +2703,6 @@ mod tests {
             due: None,
             completed: None,
             blocked: false,
-            claimed_by: None,
-            caller: None,
         };
         // Parses AND still means what it says: a cap that quietly truncated the
         // tree would also "parse".
@@ -2741,8 +2738,6 @@ mod tests {
             due: None,
             completed: None,
             blocked: false,
-            claimed_by: None,
-            caller: None,
         };
         // Not through `parsed`: its panic message echoes the filter, and this
         // one is 70 KB of `(project:home)`.

@@ -623,9 +623,13 @@ pub(super) enum Command {
         #[arg(add = crate::complete::candidates::task_ids())]
         r#ref: String,
         /// Complete the task even though some of its dependencies are still
-        /// open (recorded; `report --outcomes` counts it under FORCED).
+        /// open (recorded; `report --outcomes` counts it under FORCED), or
+        /// another holder has claimed it (D236).
         #[arg(long)]
         force: bool,
+        /// The claim holder completing it, for a task claimed with `claim --holder` (D236).
+        #[arg(long, value_name = "ID")]
+        holder: Option<String>,
         #[command(flatten)]
         correlation: CorrelationArgs,
         #[command(flatten)]
@@ -677,6 +681,12 @@ pub(super) enum Command {
         /// short_id or UUID.
         #[arg(add = crate::complete::candidates::task_ids())]
         r#ref: String,
+        /// The claim holder cancelling it, for a task claimed with `claim --holder` (D236).
+        #[arg(long, value_name = "ID")]
+        holder: Option<String>,
+        /// Cancel it although another holder has a live claim on it (D236).
+        #[arg(long)]
+        force: bool,
     },
     /// Reopen a done/cancelled task (maps to task.reopen).
     #[command(after_help = crate::cmddoc::after_help("reopen"))]

@@ -211,6 +211,7 @@ pub(crate) fn dashboard_data(
         be,
         "",
         tasqx_core::engine::task::MAX_TASK_LIST_LIMIT,
+        None,
     )?;
     let summary = be.call(
         "report.summary",

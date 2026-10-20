@@ -194,6 +194,15 @@ pub(super) struct TaskStarted {
     /// defect as D18/D21/D23 — behaviour-driving state mutated by a command
     /// whose own response never mentions it).
     pub(super) auto_stopped: Vec<AutoStopped>,
+    /// D236: running tasks the auto-stop left alone because another holder
+    /// has a live claim on them. Empty when nothing was kept.
+    pub(super) kept_running: Vec<KeptRunning>,
+}
+
+/// One running task `task.start` did not auto-stop, and whose claim kept it.
+pub(super) struct KeptRunning {
+    pub(super) short_id: i64,
+    pub(super) claimed_by: String,
 }
 
 /// One task `task.start` auto-stopped (D6) to enforce single-active. Carries
@@ -222,6 +231,11 @@ impl From<TaskStarted> for Value {
             "title": result.title,
             "already_running": result.already_running,
             "auto_stopped": result.auto_stopped.iter().map(Value::from).collect::<Vec<_>>(),
+            "kept_running": result
+                .kept_running
+                .iter()
+                .map(|k| json!({ "short_id": k.short_id, "claimed_by": k.claimed_by }))
+                .collect::<Vec<_>>(),
         })
     }
 }

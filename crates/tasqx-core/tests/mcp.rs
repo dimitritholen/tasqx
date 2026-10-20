@@ -4015,7 +4015,9 @@ fn the_read_only_refusal_names_the_flag_that_fixes_it() {
 /// `tasqx_list_tasks` and `tasqx_next`. Measured beside every tool above: 36
 /// tools, 39,516 bytes, so the cap moved from 38,400 to 39,552. Its review
 /// added `force` on `tasqx_release_task` and the stable-holder advice on three
-/// `actor`s: 36 tools, 39,756 bytes, so the cap moved to 39,808.
+/// `actor`s: 36 tools, 39,756 bytes, so the cap moved to 39,808. Its third
+/// review added `actor` on the three closing tools and `force` on cancel and
+/// modify (D236): 36 tools, 40,038 bytes, so the cap moved to 40,064.
 ///
 /// The floor is not zero. With every `description` key removed from the roster
 /// the same serialization is 11,597 bytes of schema skeleton — property names,
@@ -4027,7 +4029,7 @@ fn the_read_only_refusal_names_the_flag_that_fixes_it() {
 fn the_whole_tool_roster_stays_inside_its_per_prompt_budget() {
     const MAX_DESCRIPTION: usize = 800;
     const MAX_ENTRY: usize = 3_072;
-    const MAX_ROSTER: usize = 39_808;
+    const MAX_ROSTER: usize = 40_064;
 
     let engine = engine();
     let server = McpServer::new(&engine, Scope::Write);

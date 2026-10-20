@@ -525,7 +525,7 @@ pub(crate) fn run_agenda(
     // Every page, not task.list's default 100 (D110): an agenda has no
     // --limit/--offset to reach the rest with, and a horizon that silently
     // stopped at the hundredth task would be the lie #1126 is about.
-    let result = crate::pick_screen::candidates_in_pages(be, &filter_str, 10_000)?;
+    let result = crate::pick_screen::candidates_in_pages(be, &filter_str, 10_000, None)?;
 
     let a = render::agenda_select(&result, days.unwrap_or(AGENDA_DEFAULT_DAYS), now);
     let text = render::agenda_text(ctx, &a);
@@ -660,12 +660,17 @@ pub(crate) fn run_done(
     ctx: &Ctx,
     r#ref: String,
     force: bool,
+    holder: Option<String>,
     correlation: &command::CorrelationArgs,
     self_report: &command::SelfReportArgs,
 ) -> CmdOutcome {
     let mut params = json!({ "ref": r#ref });
     if force {
         params["force"] = json!(true);
+    }
+    // D236: the holder closing its own claim.
+    if let Some(h) = holder {
+        params["actor"] = json!(h);
     }
     apply_correlation(&mut params, correlation);
     apply_self_report(&mut params, self_report);
@@ -853,9 +858,9 @@ pub(crate) fn run_simple_ref(
     be: &mut Backend,
     ctx: &Ctx,
     method: &str,
-    r#ref: String,
+    params: Value,
 ) -> CmdOutcome {
-    let result = be.call(method, &json!({ "ref": r#ref }))?;
+    let result = be.call(method, &params)?;
     let task = read_back(be, &result).unwrap_or_else(|| result.clone());
     let mut moved = ids_in(&result, "unblocked", None);
     moved.extend(ids_in(&result, "blocked", None));

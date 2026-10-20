@@ -159,8 +159,8 @@ fn done_and_cancel_end_the_claim() {
     let (a, b) = (add(&e, "a"), add(&e, "b"));
     claim(&e, a, "agent-1").unwrap();
     claim(&e, b, "agent-1").unwrap();
-    call(&e, "task.done", json!({ "ref": a })).unwrap();
-    call(&e, "task.cancel", json!({ "ref": b })).unwrap();
+    call(&e, "task.done", json!({ "ref": a, "actor": "agent-1" })).unwrap();
+    call(&e, "task.cancel", json!({ "ref": b, "actor": "agent-1" })).unwrap();
     for r in [a, b] {
         let got = call(&e, "task.get", json!({ "ref": r })).unwrap();
         assert_eq!(got["claimed_by"], Value::Null, "{got}");
@@ -381,17 +381,119 @@ fn a_zero_lease_is_refused_as_a_lease() {
     assert!(!err.message.contains("estimate"), "{}", err.message);
 }
 
-/// Review 2 #1: every `MatchCtx` reader defaults to `user`, so a report or an
-/// export over `@working` keeps the shell's own claim.
+/// Review 3 ruling: claim exclusion is for a caller choosing work for itself.
+/// A report, an export and a list naming no actor are views, and show an
+/// agent's claim; `next`, and a list naming an actor, leave it out.
 #[test]
-fn report_and_export_over_working_keep_the_shells_claim() {
+fn views_show_every_claim_and_choosers_skip_others() {
     let e = engine();
-    let t = add(&e, "shell work");
-    call(&e, "task.claim", json!({ "ref": t })).unwrap();
+    let t = add(&e, "agent work");
+    claim(&e, t, "agent-1").unwrap();
     let summary = call(&e, "report.summary", json!({ "filter": "@working" })).unwrap();
     assert!(summary.to_string().contains("\"count\":1"), "{summary}");
     let doc = call(&e, "store.export", json!({ "filter": "@working" })).unwrap();
     assert_eq!(doc["tasks"].as_array().unwrap().len(), 1, "{doc}");
+    let view = call(&e, "task.list", json!({ "filter": "@working" })).unwrap();
+    assert_eq!(ids(&view), vec![t], "{view}");
+    assert_eq!(view["tasks"][0]["claimed_by"], "agent-1", "{view}");
+
+    let other = call(
+        &e,
+        "task.list",
+        json!({ "filter": "@working", "actor": "agent-2" }),
+    )
+    .unwrap();
+    assert_eq!(other["total"], 0, "{other}");
+    let next = call(&e, "task.next", json!({})).unwrap();
+    assert_eq!(
+        next["task"],
+        Value::Null,
+        "the shell is not agent-1: {next}"
+    );
+}
+
+/// Review 3 #1: D6's auto-stop leaves a running task another holder has
+/// claimed alone, and says it kept it.
+#[test]
+fn auto_stop_keeps_another_holders_claimed_task_running() {
+    let e = engine();
+    let (a, b) = (add(&e, "agent's"), add(&e, "mine"));
+    claim(&e, a, "agent-1").unwrap();
+    call(&e, "task.start", json!({ "ref": a, "actor": "agent-1" })).unwrap();
+    let out = call(&e, "task.start", json!({ "ref": b })).unwrap();
+    assert_eq!(out["auto_stopped"], json!([]), "{out}");
+    assert_eq!(
+        out["kept_running"],
+        json!([{ "short_id": a, "claimed_by": "agent-1" }]),
+        "{out}"
+    );
+    let got = call(&e, "task.get", json!({ "ref": a })).unwrap();
+    assert_eq!(got["status"], "active", "{got}");
+}
+
+/// Review 3 #2: a task running on another actor's clock cannot be claimed; a
+/// shell's anonymous clock names nobody to defer to.
+#[test]
+fn claiming_a_task_on_another_actors_clock_is_refused() {
+    let e = engine();
+    let (a, b) = (add(&e, "agent clock"), add(&e, "shell clock"));
+    call(
+        &e,
+        "task.start",
+        json!({ "ref": a, "actor": "agent-1", "keep": true }),
+    )
+    .unwrap();
+    let err = claim(&e, a, "agent-2").unwrap_err();
+    assert_eq!(err.code, ErrorCode::Conflict);
+    assert!(err.message.contains("agent-1"), "{}", err.message);
+    claim(&e, a, "agent-1").expect("the clock's own actor may claim");
+    call(&e, "task.start", json!({ "ref": b, "keep": true })).unwrap();
+    claim(&e, b, "agent-2").expect("an anonymous clock defers to nobody");
+}
+
+/// Review 3 #3: closing a task under another holder's live claim needs force,
+/// and the event says whose claim it went past.
+#[test]
+fn closing_another_holders_claimed_task_needs_force() {
+    let e = engine();
+    let (a, b, c) = (add(&e, "done"), add(&e, "cancel"), add(&e, "modify"));
+    for t in [a, b, c] {
+        claim(&e, t, "agent-1").unwrap();
+    }
+    let closes = [
+        ("task.done", json!({ "ref": a })),
+        ("task.cancel", json!({ "ref": b })),
+        (
+            "task.modify",
+            json!({ "ref": c, "set": { "status": "cancelled" } }),
+        ),
+    ];
+    for (method, params) in &closes {
+        let err = call(&e, method, params.clone()).unwrap_err();
+        assert_eq!(err.code, ErrorCode::Conflict, "{method}: {}", err.message);
+        assert!(err.message.contains("agent-1"), "{method}: {}", err.message);
+    }
+    for (method, params) in closes {
+        let mut forced = params;
+        forced["force"] = json!(true);
+        call(&e, method, forced).unwrap_or_else(|e| panic!("{method}: {}", e.message));
+    }
+    for (t, op) in [(a, "done"), (b, "cancel"), (c, "modify")] {
+        let ev = events(&e, t)
+            .into_iter()
+            .find(|ev| ev["op"] == op)
+            .expect(op);
+        assert_eq!(ev["payload"]["claim_forced"], "agent-1", "{ev}");
+    }
+}
+
+/// Review 3 #6: a month has no fixed length, so it is no lease.
+#[test]
+fn a_calendar_lease_is_refused() {
+    let e = engine();
+    let t = add(&e, "monthly");
+    let err = call(&e, "task.claim", json!({ "ref": t, "lease": "P1M" })).unwrap_err();
+    assert_eq!(err.message, "a lease must be a fixed duration");
 }
 
 /// Review 2 #3: the holder asking to start its running task again renews.
