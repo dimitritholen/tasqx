@@ -1748,21 +1748,28 @@ pub(crate) fn run_memory_verify(
             }
             Err(e) => return Err(e),
         };
+        // A fresh file cache per doc: the sweep never holds every cited
+        // file of the store at once.
+        if let Some(root) = &root {
+            root.clear_cache();
+        }
         let check = verify_refs(
             doc["source"].as_str(),
             doc["body"].as_str().unwrap_or_default(),
             doc["project"].as_str(),
             root.as_ref(),
         );
-        counts[statuses
-            .iter()
-            .position(|s| *s == check.status)
-            .unwrap_or(3)] += 1;
+        counts[match check.status {
+            RefStatus::Ok => 0,
+            RefStatus::MissingPath => 1,
+            RefStatus::MissingSymbol => 2,
+            RefStatus::Unverifiable => 3,
+        }] += 1;
         let stale = matches!(
             check.status,
             RefStatus::MissingPath | RefStatus::MissingSymbol
         );
-        if stale || ids.len() == 1 {
+        if stale || !sweep {
             text.push_str(&format!(
                 "{}  {}  {}\n",
                 check.status.as_str(),
@@ -1781,21 +1788,21 @@ pub(crate) fn run_memory_verify(
             "stale_refs": check.stale_refs,
         }));
     }
-    let mut summary: Vec<String> = statuses
+    let summary: Vec<String> = statuses
         .iter()
         .zip(counts)
         .map(|(s, n)| format!("{n} {}", s.as_str()))
         .collect();
-    if errors > 0 {
-        summary.push(format!("{errors} error"));
-    }
     let top = root.as_ref().map(|r| r.toplevel().display().to_string());
     text.push_str(&format!(
         "{} checked against {}: {}\n",
-        ids.len(),
+        ids.len() - errors,
         render::san(top.as_deref().unwrap_or("no git checkout")),
         summary.join(", "),
     ));
+    if errors > 0 {
+        text.push_str(&format!("{errors} could not be read\n"));
+    }
     Ok((json!({ "root": top, "docs": docs }), text))
 }
 
