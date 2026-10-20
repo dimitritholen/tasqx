@@ -206,12 +206,16 @@ fn clean_path(s: &str) -> Option<String> {
 fn path_like(s: &str) -> Option<(String, bool)> {
     let s = clean_path(s)?;
     let slash = s.contains('/');
-    let ext = s
-        .rsplit('/')
+    let ext = has_code_ext(&s);
+    (slash || ext).then_some((s, ext))
+}
+
+/// Does the path's last segment end in a known extension?
+fn has_code_ext(path: &str) -> bool {
+    path.rsplit('/')
         .next()
         .and_then(|name| name.rsplit_once('.'))
-        .is_some_and(|(stem, ext)| !stem.is_empty() && CODE_EXTENSIONS.contains(&ext));
-    (slash || ext).then_some((s, ext))
+        .is_some_and(|(stem, ext)| !stem.is_empty() && CODE_EXTENSIONS.contains(&ext))
 }
 
 /// One backticked span as a ref: `path`, `path:line`, `path:line:col` or
@@ -560,7 +564,14 @@ pub fn verify_refs(
             break;
         }
         let first = r.path.split('/').next().unwrap_or_default();
-        if (!r.anchored && !top.join(first).exists()) || root.ignored.iter().any(|i| i == first) {
+        // A source key with no known extension that is not there is no
+        // claim about a file (`hubq/ORC-01/intake`, a `memory add` key): no
+        // verdict. It still named the doc's repo above.
+        let file_less_key = r.anchored && !has_code_ext(&r.path) && !top.join(&r.path).exists();
+        if (!r.anchored && !top.join(first).exists())
+            || file_less_key
+            || root.ignored.iter().any(|i| i == first)
+        {
             continue;
         }
         checked += 1;
@@ -867,8 +878,20 @@ mod tests {
         // A ref with no extension whose first segment exists IS checked.
         assert_eq!(check(None, "`src/gone`").status, RefStatus::MissingPath);
         // An extensionless D203 source is checked as a path.
-        let docker = check(Some("proj/Dockerfile"), "");
-        assert_eq!(docker.stale_refs, vec!["Dockerfile".to_string()]);
+        // An extensionless D203 source that exists is checked as a path; one
+        // that is absent is a key, not a file: no verdict for it, and the doc
+        // is judged by its body refs.
+        std::fs::write(root.join("Dockerfile"), "FROM scratch").unwrap();
+        assert_eq!(check(Some("proj/Dockerfile"), "").status, RefStatus::Ok);
+        let key = check(Some("proj/ORC-01/intake"), "");
+        assert_eq!(key.status, RefStatus::Unverifiable);
+        let key = check(Some("proj/ORC-01/intake"), "`src/gone.rs`");
+        assert_eq!(key.stale_refs, vec!["src/gone.rs".to_string()]);
+        // With a known extension an absent source is still a renamed file.
+        assert_eq!(
+            check(Some("proj/GONE.md"), "").stale_refs,
+            vec!["GONE.md".to_string()]
+        );
         // A build artifact the root .gitignore ignores gets no verdict, even
         // with its directory present: a fresh checkout would not have it.
         std::fs::create_dir_all(root.join("target")).unwrap();
