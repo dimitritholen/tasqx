@@ -54,6 +54,10 @@ release also trims tasqx-core's public API, which is why it is a minor bump.
   a shared-folder start, Cloudflare R2 setup, what merges and wins, and headless
   use; a guide documents the connector protocol for a storage backend of your own
   (#1177).
+- **Memory docs say when the code they cite is gone.** `tasqx memory verify` reports
+  each doc as `ok`, `missing_path`, `missing_symbol` or `unverifiable` against the
+  current git checkout; search hits, `memory show` and an agent's standing rulings
+  carry `stale_refs`. Existence and text checks only, nothing indexed (D235, #2332).
 - **Memory search ranks by meaning beside words**, fused by reciprocal rank, and every
   hit says why it matched (D196).
 - **`undo` reaches done, cancel, tag and modify; `tasqx unarchive`** (D215). Notes can

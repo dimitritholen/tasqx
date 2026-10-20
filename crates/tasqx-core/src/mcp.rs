@@ -2183,7 +2183,10 @@ impl<'e> McpServer<'e> {
     /// every standing entry (PR #48 review) — it never reads as one. It
     /// names no write tool, since read-only sessions receive it too.
     fn rulings_section(&self) -> Option<String> {
-        let r = self.engine.session_rulings(self.workdir.as_deref()).ok()?;
+        let (r, stale_refs) = self
+            .engine
+            .session_rulings_with_refs(self.workdir.as_deref())
+            .ok()?;
         if r.standing.is_empty() && r.topical.is_empty() {
             return None;
         }
@@ -2205,7 +2208,7 @@ impl<'e> McpServer<'e> {
             }
         };
         let one_line = |s: &str| s.split_whitespace().collect::<Vec<_>>().join(" ");
-        let entry = |d: &crate::engine::SessionDoc, with_gist: bool| {
+        let entry = |d: &crate::engine::SessionDoc, refs: &[String], with_gist: bool| {
             let title = one_line(&d.title);
             let rest = crate::frontmatter::block(&d.body).map_or(d.body.as_str(), |(_, r)| r);
             let para: Vec<&str> = rest
@@ -2226,9 +2229,9 @@ impl<'e> McpServer<'e> {
             // the title-only fallback, so a ruling about it is not followed blind.
             // The title-only fallback counts them instead of naming them,
             // so it stays a list of titles inside the budget.
-            let stale = match (d.stale_refs.len(), with_gist) {
+            let stale = match (refs.len(), with_gist) {
                 (0, _) => String::new(),
-                (_, true) => format!(" [stale_refs: {}]", d.stale_refs.join(", ")),
+                (_, true) => format!(" [stale_refs: {}]", refs.join(", ")),
                 (n, false) => format!(" [stale_refs: {n}]"),
             };
             if with_gist && !gist.is_empty() {
@@ -2238,11 +2241,16 @@ impl<'e> McpServer<'e> {
             }
         };
 
-        let standing: Vec<String> = r.standing.iter().map(|d| entry(d, true)).collect();
+        let standing: Vec<String> = r
+            .standing
+            .iter()
+            .zip(&stale_refs)
+            .map(|(d, refs)| entry(d, refs, true))
+            .collect();
         let standing_len: usize = standing.iter().map(String::len).sum();
         if out.len() + standing_len > STANDING_RULINGS_BUDGET {
-            for d in &r.standing {
-                out.push_str(&entry(d, false));
+            for (d, refs) in r.standing.iter().zip(&stale_refs) {
+                out.push_str(&entry(d, refs, false));
             }
             out.push_str(&format!(
                 "\n{} standing rulings exceed the {STANDING_RULINGS_BUDGET}-byte session budget, \
@@ -2274,7 +2282,7 @@ impl<'e> McpServer<'e> {
         let mut shown = 0;
         let mut header_written = false;
         for d in &r.topical {
-            let e = entry(d, true);
+            let e = entry(d, &[], true);
             let left_after = total - shown - 1;
             let reserve = if left_after > 0 {
                 footer(left_after).len()
