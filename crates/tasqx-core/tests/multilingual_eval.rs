@@ -1,63 +1,91 @@
-//! Recall@5 of the embedding model across English and Dutch (DESIGN.md D234).
+//! Recall@5 of memory search across English and Dutch (DESIGN.md D234).
 //!
 //! `fixtures/multilingual-eval.json` holds public tasqx text only: English
 //! excerpts of DESIGN.md §12 and Dutch paraphrases of other §12 rulings,
-//! written for the fixture. Each query expects exactly one doc. A doc is
-//! embedded as memory is (`embed`), a query as search embeds one
-//! (`embed_query`), and every doc is ranked against every query by cosine.
-//! Recall@5 is reported per language pair, query language first.
+//! written for the fixture. Each query expects exactly one doc. The docs are
+//! imported into an in-memory store, each under a neutral title, and every
+//! query runs through `memory.search` in its default mode — hybrid: bm25 and
+//! meaning fused by reciprocal rank (D196) — at limit 5, which is what a
+//! user gets. Recall@5 is reported per language pair, query language first.
 //!
-//! The floors are the ruling's targets, stated before the model swap against
-//! potion-base-8M's baseline (en→en 1.00, nl→nl 0.60, en→nl 0.00,
-//! nl→en 0.00): Dutch and both cross-lingual pairs at least 0.15 above it,
-//! English at most 0.02 below it. Run with `--nocapture` to see the table.
+//! The floors are the targets stated before any model swap, against
+//! potion-base-8M's hybrid baseline (en→en 0.85, nl→nl 0.80, en→nl 0.10,
+//! nl→en 0.05): Dutch and both cross-lingual pairs at least 0.15 above it,
+//! English at most 0.02 below it. No candidate meets them yet (task #2331),
+//! so the test is a measurement: run it with
+//! `cargo test -p tasqx-core --test multilingual_eval -- --ignored --nocapture`.
 
-use serde_json::Value;
-use tasqx_core::embed::{cosine, embed, embed_query};
+use std::collections::{BTreeMap, HashMap};
+
+use serde_json::{json, Value};
+use tasqx_core::{dispatch, Engine};
 
 const FIXTURE: &str = include_str!("fixtures/multilingual-eval.json");
 
 const FLOORS: &[(&str, f64)] = &[
-    ("en->en", 0.98),
-    ("nl->nl", 0.75),
-    ("en->nl", 0.15),
-    ("nl->en", 0.15),
+    ("en->en", 0.83),
+    ("nl->nl", 0.95),
+    ("en->nl", 0.25),
+    ("nl->en", 0.20),
 ];
 
+fn ok(e: &Engine, method: &str, params: Value) -> Value {
+    dispatch(e, method, &params).unwrap_or_else(|err| panic!("{method} {params}: {err:?}"))
+}
+
 #[test]
-#[ignore = "a measurement: no candidate model meets these floors yet (task #2331); run with --ignored --nocapture"]
-fn recall_at_5_holds_in_dutch_english_and_across_them() {
+#[ignore = "a measurement: no candidate model meets these floors yet (task #2331)"]
+fn hybrid_recall_at_5_holds_in_dutch_english_and_across_them() {
     let fx: Value = serde_json::from_str(FIXTURE).unwrap();
-    let docs: Vec<(&str, &str, [f32; 256])> = fx["docs"]
+    let e = Engine::open_in_memory().unwrap();
+    let docs = fx["docs"].as_array().unwrap();
+    let lang: HashMap<&str, &str> = docs
+        .iter()
+        .map(|d| (d["key"].as_str().unwrap(), d["lang"].as_str().unwrap()))
+        .collect();
+    let batch: Vec<Value> = docs
+        .iter()
+        .enumerate()
+        .map(|(i, d)| json!({ "title": format!("m{i}"), "body": d["text"], "source": d["key"] }))
+        .collect();
+    let res = ok(&e, "memory.import", json!({ "docs": batch }));
+    let id2key: HashMap<String, String> = res["docs"]
         .as_array()
         .unwrap()
         .iter()
-        .map(|d| {
-            let text = d["text"].as_str().unwrap();
+        .map(|r| {
             (
-                d["key"].as_str().unwrap(),
-                d["lang"].as_str().unwrap(),
-                embed(text).unwrap_or_else(|| panic!("{text:?} has no vector")),
+                r["id"].as_str().unwrap().to_string(),
+                r["source"].as_str().unwrap().to_string(),
             )
         })
         .collect();
     let queries = fx["queries"].as_array().unwrap();
     assert!(queries.len() >= 30, "the ruling asks for at least 30 pairs");
 
-    let mut pairs: std::collections::BTreeMap<String, (usize, usize)> = Default::default();
+    let mut pairs: BTreeMap<String, (usize, usize)> = BTreeMap::new();
+    let mut misses = String::new();
     for q in queries {
-        let text = q["text"].as_str().unwrap();
         let want = q["expect"].as_str().unwrap();
-        let (_, doc_lang, _) = docs
+        let pair = format!("{}->{}", q["lang"].as_str().unwrap(), lang[want]);
+        let res = ok(
+            &e,
+            "memory.search",
+            json!({ "query": q["text"], "limit": 5 }),
+        );
+        let got: Vec<&str> = res["hits"]
+            .as_array()
+            .unwrap()
             .iter()
-            .find(|(k, _, _)| *k == want)
-            .unwrap_or_else(|| panic!("{want} is not a doc"));
-        let pair = format!("{}->{doc_lang}", q["lang"].as_str().unwrap());
-        let v = embed_query(text).unwrap_or_else(|| panic!("{text:?} has no vector"));
-        let mut ranked: Vec<(f32, &str)> =
-            docs.iter().map(|(k, _, d)| (cosine(&v, d), *k)).collect();
-        ranked.sort_by(|a, b| b.0.total_cmp(&a.0).then(a.1.cmp(b.1)));
-        let hit = ranked.iter().take(5).any(|(_, k)| *k == want);
+            .map(|h| id2key[h["id"].as_str().unwrap()].as_str())
+            .collect();
+        let hit = got.contains(&want);
+        if !hit {
+            misses.push_str(&format!(
+                "  {pair} {:?} wants {want}, got {got:?}\n",
+                q["text"]
+            ));
+        }
         let e = pairs.entry(pair).or_default();
         e.0 += usize::from(hit);
         e.1 += 1;
@@ -76,6 +104,6 @@ fn recall_at_5_holds_in_dutch_english_and_across_them() {
             failures.push(format!("{pair} recall@5 {r:.2} is under {floor}"));
         }
     }
-    eprintln!("{report}");
+    eprintln!("{report}misses:\n{misses}");
     assert!(failures.is_empty(), "{}\n{report}", failures.join("\n"));
 }
