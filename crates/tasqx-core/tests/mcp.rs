@@ -4006,6 +4006,10 @@ fn the_read_only_refusal_names_the_flag_that_fixes_it() {
 /// per-tool cap). Measured beside every tool above: 34 tools, 38,310 bytes,
 /// so the cap moved from 38,272 to 38,400.
 ///
+/// D237 added the `similar` sentence to `tasqx_add_task` and
+/// `tasqx_add_memory`. Measured beside every tool above: 34 tools, 38,477
+/// bytes, so the cap moved from 38,400 to 38,528.
+///
 /// The floor is not zero. With every `description` key removed from the roster
 /// the same serialization is 11,597 bytes of schema skeleton — property names,
 /// `type`, the closed `enum` lists D30 renders from the engine's own consts,
@@ -4016,7 +4020,7 @@ fn the_read_only_refusal_names_the_flag_that_fixes_it() {
 fn the_whole_tool_roster_stays_inside_its_per_prompt_budget() {
     const MAX_DESCRIPTION: usize = 800;
     const MAX_ENTRY: usize = 3_072;
-    const MAX_ROSTER: usize = 38_400;
+    const MAX_ROSTER: usize = 38_528;
 
     let engine = engine();
     let server = McpServer::new(&engine, Scope::Write);

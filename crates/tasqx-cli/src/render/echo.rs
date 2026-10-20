@@ -1040,6 +1040,28 @@ fn fit_note(note: &str, pointer: &str, cols: usize) -> String {
     }
 }
 
+/// The lines an add's `similar` becomes on a terminal (D237), one per
+/// candidate, on stderr beside the other notes: a task by its short id, a
+/// doc by its id. `--json` carries the list itself.
+pub fn similar_notes(result: &Value) -> Vec<String> {
+    let Some(list) = result.get("similar").and_then(Value::as_array) else {
+        return Vec::new();
+    };
+    list.iter()
+        .map(|s| {
+            let what = match s.get("short_id").and_then(Value::as_i64) {
+                Some(n) => format!("open task #{n}"),
+                None => format!("doc {}", san(s["id"].as_str().unwrap_or("?"))),
+            };
+            format!(
+                "note: looks like {what} \"{}\" (similarity {})",
+                san(s["title"].as_str().unwrap_or("")),
+                s["similarity"]
+            )
+        })
+        .collect()
+}
+
 /// How core's hint opens when there is nothing for the reader to do. Pinned
 /// against core by `the_token_note_tracks_cores_hint_wording`.
 pub(crate) const ALREADY_COVERED: &str = "a self-report already covers";

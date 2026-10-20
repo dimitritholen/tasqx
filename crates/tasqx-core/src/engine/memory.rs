@@ -838,8 +838,18 @@ impl Engine {
                 ));
             }
         }
+        // D237: inside the transaction, where the semantic index computes
+        // what it lacks for this call alone and writes nothing (D196), so an
+        // add stores no vector; a comparison never errors, so it cannot fail
+        // the add either.
+        out["similar"] = self.similar_docs(
+            &id,
+            &title,
+            &search_body,
+            project.as_deref(),
+            super::similar::DOC_THRESHOLD,
+        );
         tx.commit()?;
-
         Ok(out)
     }
 

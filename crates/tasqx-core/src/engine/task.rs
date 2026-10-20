@@ -554,6 +554,13 @@ impl Engine {
             out["blocked"] = json!(blocked);
         }
         with_title_warning(&mut out, &title);
+        // D237: after the commit, so a comparison can never fail the add.
+        out["similar"] = self.similar_tasks(
+            &id,
+            &title,
+            project.as_deref(),
+            super::similar::TASK_THRESHOLD,
+        );
         Ok(out)
     }
 

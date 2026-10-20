@@ -23,6 +23,11 @@ tasqx memory add "Deploy runbook" "Deploys go through the blue-green pipeline"
   that document, so `import` always knows which one to replace. The same
   goes for `update --source`.
 
+When a doc of the same project, or an unscoped one, already reads like the
+new doc, `add` still stores it and prints a `note:` line naming that doc, up
+to three of them, so you can update or remove one instead of keeping both.
+`--json` carries them as `similar`, an empty list when there are none.
+
 ## tasqx memory list
 
 Browse your documents without a query — the enumeration `search` cannot do,

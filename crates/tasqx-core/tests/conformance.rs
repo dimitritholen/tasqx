@@ -684,6 +684,17 @@ const R_TASK_ADD: Shape = &[&[
     ),
     opt("depends_on", Ty::Array),
     opt("blocked", Ty::Bool),
+    // D237, additive: always present, empty when nothing looks alike.
+    req_of(
+        "similar",
+        Ty::Array,
+        &[&[
+            req("id", Ty::Str),
+            req("short_id", Ty::Int),
+            req("title", Ty::Str),
+            req("similarity", Ty::Num),
+        ]],
+    ),
 ]];
 
 const R_TASK_LIST: Shape = &[&[
@@ -1062,6 +1073,16 @@ const R_MEMORY_ADD: Shape = &[&[
     // `STANDING_SOFT_CAP` — a consolidation hint, so absence is the ordinary
     // answer and a client tests for the key rather than reading its value.
     opt("hint", Ty::Str),
+    // D237, additive: always present, empty when nothing looks alike.
+    req_of(
+        "similar",
+        Ty::Array,
+        &[&[
+            req("id", Ty::Str),
+            req("title", Ty::Str),
+            req("similarity", Ty::Num),
+        ]],
+    ),
 ]];
 
 const R_MEMORY_SEARCH: Shape = &[&[
@@ -1805,10 +1826,12 @@ fn cases() -> Vec<Case> {
         ),
         case(
             "task.add",
-            "every optional column filled",
+            "every optional column filled, and an open look-alike so `similar` has a row",
             |e| {
                 e.project_create(&json!({ "name": "work" }))
                     .expect("create");
+                e.task_add(&json!({ "title": "ship the freeze", "project": "work" }))
+                    .expect("seed a look-alike (D237)");
                 json!({
                     "title": "ship the freeze",
                     "project": "work",
@@ -1827,7 +1850,11 @@ fn cases() -> Vec<Case> {
         case(
             "task.add",
             "#621: a title carrying CLI inline sugar, so `warnings` is observed",
-            |_| json!({ "title": "fix crash +bug due:friday" }),
+            |e| {
+                e.task_add(&json!({ "title": "fix crash +bug due:friday" }))
+                    .expect("seed a look-alike (D237)");
+                json!({ "title": "fix crash +bug due:friday" })
+            },
             R_TASK_ADD,
         ),
         case(
@@ -1835,7 +1862,7 @@ fn cases() -> Vec<Case> {
             "D213: checks and depends_on created with the task",
             |e| {
                 plain_task(e);
-                json!({ "title": "gated", "checks": ["tests pass"], "depends_on": [1] })
+                json!({ "title": "a plain task", "checks": ["tests pass"], "depends_on": [1] })
             },
             R_TASK_ADD,
         ),
@@ -2344,8 +2371,12 @@ fn cases() -> Vec<Case> {
         ),
         case(
             "memory.add",
-            "one doc",
-            |_| json!({ "title": "the freeze", "body": "v1 is stable", "source": "DESIGN.md" }),
+            "one doc, beside a look-alike so `similar` has a row",
+            |e| {
+                e.memory_add(&json!({ "title": "the freeze", "body": "v1 is stable" }))
+                    .expect("seed a look-alike (D237)");
+                json!({ "title": "the freeze", "body": "v1 is stable", "source": "DESIGN.md" })
+            },
             R_MEMORY_ADD,
         ),
         // #101: the conditional `hint` has no other fixture — it appears only
@@ -2364,6 +2395,8 @@ fn cases() -> Vec<Case> {
                     }))
                     .expect("seed a standing doc");
                 }
+                e.memory_add(&json!({ "title": "one too many", "body": "the line over the cap" }))
+                    .expect("seed a look-alike (D237)");
                 json!({ "title": "one too many", "body": "the line over the cap", "standing": true })
             },
             R_MEMORY_ADD,
