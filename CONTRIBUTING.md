@@ -107,8 +107,9 @@ These checks are advisory, not blocking:
   `docs/maintainers/terminal-style.md`, `DESIGN.md`, `NOTICE` (compiled into the
   binary for `tasqx about --notices`), `scripts/embedding-model.py` (whose
   pinned revision a test checks against the model id) and the memory-search
-  eval corpus in `crates/tasqx-core/tests/fixtures/` (`memory-eval.json` and
-  its recorded lexical rankings, `memory-eval-lexical.json`). Editing them can
+  eval corpora in `crates/tasqx-core/tests/fixtures/` (`memory-eval.json`, its
+  recorded lexical rankings `memory-eval-lexical.json`, and the English and
+  Dutch `multilingual-eval.json`). Editing them can
   redden a test, and moving one is a compile error on purpose.
 - **The README, wiki and guides are guarded.** Tests check relative links, the
   MCP tool roster, exit codes and command samples against the binary.

@@ -4943,3 +4943,30 @@ The markdown keeps a short typed excerpt of the output, so the page stays readab
 **Why.** There is exactly one implementation of "set up" between the two entry points, so the TUI cannot accept settings the CLI would refuse or write a file the CLI would not. A connector's stdout and stderr are piped by the runner (D198), never inherited, so it cannot draw over the alt screen; nothing extra was needed to keep it off the TUI's own frame.
 
 **Where:** `tui/settings.rs` (the Sync section and its form), `settings.rs`, `sync.rs` (`apply_setup`), `tasqx_core::remote::list_on`.
+
+### D234 — memory search keeps potion-base-8M: a pruned static multilingual table was measured on hybrid search and rejected (task #2331)
+
+**Decision.** The embedding model stays potion-base-8M (D196). A static multilingual table — MinishLab's potion-multilingual-128M (revision `73908c34`), pruned to the rows English and Dutch use (71,198 rows, about 20 MB compiled in) with the direction that separates the two languages projected out of every row — was built as the real compiled-in table, with a pure-Rust port of its Unigram tokenizer that matched upstream on every golden token id, and measured on what a user gets: `memory.search` in its default hybrid mode. It missed the bar stated before the swap, so it was not adopted, and the bar was not lowered. `crates/tasqx-core/tests/multilingual_eval.rs` and its fixture stay as a regression floor for the shipped model and as the yardstick for any future one; a non-static model is #2345's question.
+
+**The yardstick.** `tests/fixtures/multilingual-eval.json`: public tasqx text only, 26 English excerpts of this section and 26 Dutch paraphrases of other rulings written for it, and 80 queries, 20 per language pair (query → doc), each expecting one doc; recall@5. The bar: Dutch→Dutch and both cross-lingual pairs at least 0.15 above potion-base-8M, English→English at most 0.02 below it, and on `memory-eval.json` no category's recall@10 more than 0.05 lower, and no more meaning-side hits on queries with nothing relevant.
+
+**What was measured.**
+
+| recall@5 | en→en | nl→nl | en→nl | nl→en |
+|---|---|---|---|---|
+| meaning only (cosine), potion-base-8M | 1.00 | 0.60 | 0.00 | 0.00 |
+| meaning only, candidate (Python reference) | 0.85 | 0.80 | 0.80 | 0.70 |
+| hybrid, potion-base-8M | 0.85 | 0.80 | 0.10 | 0.05 |
+| hybrid, candidate | 0.80 | 0.80 | 0.55 | 0.45 |
+| hybrid, held-out half B, potion-base-8M | 0.90 | 0.80 | 0.10 | 0.10 |
+| hybrid, held-out half B, candidate retuned | 0.80 | 0.90 | 0.60 | 0.50 |
+
+On `memory-eval.json` (hybrid recall@10) the candidate lifted `dutch` from 0.458 to 0.917 and `paraphrase` from 0.160 to 0.253 but dropped `concept` from 0.545 to 0.409, `span` from 0.955 to 0.864 and `long` from 0.833 to 0.776, and its meaning-side hits on queries with nothing relevant rose from 16 to 17. Unpruned potion-multilingual-128M and fresh Model2Vec distillations of paraphrase-multilingual-MiniLM-L12-v2 and LaBSE scored lower still on English by meaning alone (0.85, 0.80 and 0.65 against 0.95 in the same Python harness), and no tweak of the pruned table (other linear projections, sharpened row norms, English rows blended from potion-base-8M) lifted it.
+
+**The retune.** D196's similarity floor (0.30) and vocabulary gate (half the content words known whole) were tuned for potion-base-8M, so they were retuned for the candidate honestly: both evals' queries were split in half with seed 2331, stratified per language pair and per category; a grid of seven gate fractions (0 to 1) by eleven floors (0.10 to 0.60) was searched on half A only, and the best setting (gate 0.34, floor 0.25) was judged on half B only. No setting met the bar on half A; on half B the candidate still lost English (0.80 against 0.90), stayed under Dutch's target (0.90 against 0.95), dropped `concept` (0.273 against 0.455) and `span` (0.833 against 0.917), and returned 21 meaning-side hits on queries with nothing relevant against 6. Half B has ten queries per language pair, so one query moves a pair by 0.10; the misses agree across both halves all the same.
+
+**The projection.** The language direction was fitted on word-frequency lists alone, never on an evaluation set: the 20,000 most frequent words of each of the English and Dutch OpenSubtitles 2018 lists (hermitdave/FrequencyWords at `525f9b56`), each word's vector its tokens' mean at unit length, weighted by log count; the direction is the Dutch mean minus the English one. The kept rows were those the upstream tokenizer uses on each list's 50,000 most frequent words, lowercase and capitalised, plus every single-character token.
+
+**Why rejected.** Cross-lingual search improved a lot (from near zero to about half), but English, the language most of every store is written in, got worse, Dutch-to-Dutch did not improve by the margin set in advance, and three English categories of the existing corpus regressed beyond the bar. Trading a measured English loss for a Dutch gain is not a swap D196's quality guard allows, and a two-table fusion that came close by meaning alone was set aside: it is not one static table, it doubles every stored vector, and it was found by tuning on the eval.
+
+**Where:** `crates/tasqx-core/tests/multilingual_eval.rs` (floors 0.05 under today's hybrid recall@5: en→en 0.80, nl→nl 0.75; the cross-lingual pairs are only reported), `crates/tasqx-core/tests/fixtures/multilingual-eval.json`. Follow-up: #2345.
