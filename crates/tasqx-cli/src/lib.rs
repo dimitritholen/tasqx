@@ -963,6 +963,8 @@ fn execute(cli: Cli) -> Exit {
             tags,
             clear,
             expected_rev,
+            holder,
+            force_claim,
         }) => run_modify(
             &mut backend,
             &ctx,
@@ -983,6 +985,7 @@ fn execute(cli: Cli) -> Exit {
             },
             &clear,
             expected_rev,
+            (holder, force_claim),
         ),
         Some(Command::List {
             filter,
@@ -1008,7 +1011,11 @@ fn execute(cli: Cli) -> Exit {
             holder,
             correlation,
         }) => run_start(&mut backend, &ctx, r#ref, keep, holder, &correlation),
-        Some(Command::Stop { r#ref }) => run_stop(&mut backend, &ctx, r#ref),
+        Some(Command::Stop {
+            r#ref,
+            holder,
+            force_claim,
+        }) => run_stop(&mut backend, &ctx, r#ref, holder, force_claim),
         Some(Command::Claim {
             r#ref,
             lease,
@@ -1017,8 +1024,8 @@ fn execute(cli: Cli) -> Exit {
         Some(Command::Release {
             r#ref,
             holder,
-            force,
-        }) => run_release(&mut backend, &ctx, r#ref, holder, force),
+            force_claim,
+        }) => run_release(&mut backend, &ctx, r#ref, holder, force_claim),
         Some(Command::Adjust {
             r#ref,
             delta,
@@ -1028,13 +1035,14 @@ fn execute(cli: Cli) -> Exit {
             r#ref,
             force,
             holder,
+            force_claim,
             correlation,
             self_report,
         }) => run_done(
             &mut backend,
             &ctx,
             r#ref,
-            force,
+            (force, force_claim),
             holder,
             &correlation,
             &self_report,
@@ -1051,14 +1059,14 @@ fn execute(cli: Cli) -> Exit {
         Some(Command::Cancel {
             r#ref,
             holder,
-            force,
+            force_claim,
         }) => {
             let mut params = json!({ "ref": r#ref });
             if let Some(h) = holder {
                 params["actor"] = json!(h);
             }
-            if force {
-                params["force"] = json!(true);
+            if force_claim {
+                params["force_claim"] = json!(true);
             }
             run_simple_ref(&mut backend, &ctx, "task.cancel", params)
         }

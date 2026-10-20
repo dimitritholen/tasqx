@@ -878,6 +878,20 @@ const PARAM_DOCS: &[(&str, &str, &str, &str, &str)] = &[
         "The project to archive. Archiving hides it from the list; it removes nothing.",
     ),
     (
+        "task.done",
+        "actor",
+        "string",
+        "",
+        "Who is completing, as a claim holder (D236): another holder's live claim is a `conflict` unless `force_claim`. Filled in with the MCP connection's id when omitted there; `user` elsewhere.",
+    ),
+    (
+        "task.done",
+        "force_claim",
+        "boolean",
+        "false",
+        "Complete past another holder's live claim; the `done` event records `claim_forced` with that holder (D236). `force` is only for open dependencies (D150).",
+    ),
+    (
         "task.start",
         "holder",
         "string",

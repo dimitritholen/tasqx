@@ -332,18 +332,16 @@ fn force_is_refused_on_a_method_that_does_not_read_it() {
     let dependent = add(&e, "the dependent");
     depend(&e, dependent, blocker);
 
-    // `task.cancel` reads `force` since D236 (past another holder's claim);
-    // `task.reopen` still has nothing to force.
     let err = call(
         &e,
-        "task.reopen",
+        "task.cancel",
         json!({ "ref": dependent, "force": true }),
     )
     .expect_err("D33: the params gate refuses a key the method does not accept");
     assert_eq!(
         err.code,
         ErrorCode::BadRequest,
-        "reopening is never refused for a blocker, so there is nothing here to force — a \
+        "cancelling a blocked task was never refused, so there is nothing here to force — a \
          tolerated `force` would teach the caller a flag that does nothing"
     );
 }

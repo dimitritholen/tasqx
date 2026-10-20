@@ -6,12 +6,13 @@ Arguments:
   <REF>  short_id or UUID
 
 Options:
-      --force                      Complete the task even though some of its dependencies are still open (recorded; `report --outcomes` counts it under FORCED), or another holder has claimed it (D236)
+      --force                      Complete the task even though some of its dependencies are still open (recorded; `report --outcomes` counts it under FORCED)
       --json                       Print the raw JSON API result instead of the human table
       --holder <ID>                The claim holder completing it, for a task claimed with `claim --holder` (D236)
       --theme <THEME>              Theme name (built-in nord|gruvbox|dracula|solarized|mono, or a user file). Overrides $TASQX_THEME and the config file (DESIGN.md §8)
-      --client <TOOL>              Calling tool as "<name> <version>", e.g. "claude-code 2.1". Selects the transcript parser; without it no transcript is ever read
+      --force-claim                Override another holder's live claim; the event records whose (D236)
       --socket <SOCKET>            Local socket / named-pipe address of a tasqx daemon. Overrides $TASQX_SOCK. When a daemon is reachable, one-shot commands route through it (single writer); otherwise they run in-process. A set $TASQX_DB naming a different store than that daemon's is refused. Also selects the address for `daemon` and `watch`
+      --client <TOOL>              Calling tool as "<name> <version>", e.g. "claude-code 2.1". Selects the transcript parser; without it no transcript is ever read
       --no-daemon                  Never route through a daemon; always run one-shot in-process (the pre-daemon behaviour). Escape hatch for scripts
       --session-id <ID>            Agent session id, verified against the transcript to earn high confidence. Requires --client
       --transcript-path <PATH>     Absolute path to the session transcript the tokens will be found in. Requires --client

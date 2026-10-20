@@ -682,7 +682,12 @@ pub const VALUE_PREFIXES: [(&str, Vocabulary); 11] = [
 /// canonical one, and it is the one the grammar lists first.
 ///
 /// Pinned to [`GRAMMAR`] in both directions by `keywords_match_the_grammar`.
-pub const KEYWORDS: [&str; 3] = ["@working", "@blocked", "@claimed"];
+pub const KEYWORDS: [&str; 2] = ["@working", "@blocked"];
+
+/// D236's valueless predicate, kept apart from [`KEYWORDS`] so that public
+/// array's type stays the one tasqx-core released. A consumer offering the
+/// grammar offers both, in this order.
+pub const CLAIM_KEYWORDS: [&str; 1] = ["@claimed"];
 
 /// The boolean operators that join terms.
 ///
@@ -2023,13 +2028,14 @@ mod tests {
                 in_grammar.push(rest[..=end].to_string());
             }
         }
+        let keywords: Vec<&str> = KEYWORDS.into_iter().chain(CLAIM_KEYWORDS).collect();
         assert_eq!(
-            in_grammar, KEYWORDS,
+            in_grammar, keywords,
             "GRAMMAR names {in_grammar:?} as valueless predicates and KEYWORDS \
              says {KEYWORDS:?}; one of them moved, and the completion menu reads \
              KEYWORDS"
         );
-        for kw in KEYWORDS {
+        for kw in keywords {
             Filter::parse(kw, anchor()).unwrap_or_else(|e| {
                 panic!("KEYWORDS offers {kw:?} and the parser refuses it: {e}")
             });

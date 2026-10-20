@@ -849,6 +849,7 @@ fn token_shapes(typed: &str) -> Vec<CompletionCandidate> {
     let quote_at_signs = super::shell_is_powershell();
     filter::KEYWORDS
         .into_iter()
+        .chain(filter::CLAIM_KEYWORDS)
         .chain(filter::OPERATORS)
         .chain(filter::VALUE_PREFIXES.iter().map(|&(prefix, _)| prefix))
         // Matched on the BARE spelling, always: it is what the user is typing,
@@ -1620,6 +1621,7 @@ mod tests {
     fn a_bare_partial_offers_the_grammar_shapes() {
         let want: Vec<String> = filter::KEYWORDS
             .into_iter()
+            .chain(filter::CLAIM_KEYWORDS)
             .chain(filter::OPERATORS)
             .chain(filter::VALUE_PREFIXES.iter().map(|&(p, _)| p))
             .map(str::to_string)

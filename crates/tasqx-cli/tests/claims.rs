@@ -164,7 +164,7 @@ fn a_shell_claim_stays_in_next_and_a_named_holder_can_start_it() {
     );
 
     assert_eq!(run(&["release", "2"]).status.code(), Some(5));
-    let forced = run(&["release", "2", "--force"]);
+    let forced = run(&["release", "2", "--force-claim"]);
     assert!(
         forced.status.success(),
         "{}",

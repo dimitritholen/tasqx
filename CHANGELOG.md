@@ -42,8 +42,8 @@ release also trims tasqx-core's public API, which is why it is a minor bump.
 
 - **Task claims, so two agents never work the same task.** `tasqx claim` and
   `tasqx_claim_task` take a lease (30m by default, 24h at most; claiming again
-  renews) that keeps another holder from starting, completing or cancelling the
-  task without `force`, and out of their `tasqx next`; `tasqx release` gives it
+  renews) that keeps another holder from starting, stopping, completing or
+  cancelling the task without `--force-claim`, and out of their `tasqx next`; `tasqx release` gives it
   up and an expired lease is anyone's. A plain `list`, the board and the report
   still show claimed work, with its holder; `@claimed` lists live claims (D236,
   #2328).

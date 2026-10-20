@@ -74,9 +74,10 @@ Claim a task so other agents skip it. A claim is a lease: 30 minutes unless
 tasqx claim 42 --holder builder-2
 ```
 
-While the lease is live, anyone else's `claim`, `start`, `done` or `cancel` on
-the task exits 5 naming the holder and when the lease runs out (`done --force`
-and `cancel --force` go ahead and say so in the log), and starting another task
+While the lease is live, anyone else's `claim`, `start`, `stop`, `done`,
+`cancel` or `modify` to cancelled on the task exits 5 naming the holder and when
+the lease runs out (`--force-claim` goes ahead and the log names whose claim it
+overrode; `done --force` is only for open dependencies), and starting another task
 leaves it running instead of stopping it. `tasqx next` skips it for anyone but
 the holder. `tasqx list` still shows it, with its holder: a list is a view, and
 only `list --holder <id>` — an agent choosing its own work — leaves other
@@ -100,10 +101,10 @@ Claim, renew, release and takeover each land in the event log with the holder.
 ## tasqx release
 
 Give a claim up. Only its holder can: a task with no claim, or someone else's,
-exits 5. `done` and `cancel` end a claim without it. `--force` releases a claim
+exits 5. `done` and `cancel` end a claim without it. `--force-claim` releases a claim
 someone else holds — one left by an agent that crashed or reconnected under a
 new id — and the log records it as forced. A claim whose lease has run out can
-be released by anyone, no `--force` needed.
+be released by anyone, no `--force-claim` needed.
 
 ```console
 tasqx release 42 --holder builder-2
