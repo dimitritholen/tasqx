@@ -5687,6 +5687,77 @@ fn memory_import_refresh_re_reads_an_edited_file_and_names_a_deleted_one() {
     let _ = std::fs::remove_dir_all(&repo);
 }
 
+/// #2332/D235: `memory verify` reports each doc against the code it cites in
+/// the git toplevel of the working directory: a renamed file is
+/// `missing_path`, a removed function in a file that is still there is
+/// `missing_symbol`, a doc whose citations hold is `ok`, and a doc with
+/// nothing to check is `unverifiable`, never ok. A report: exit 0 when stale.
+#[test]
+fn memory_verify_flags_renamed_files_and_removed_functions() {
+    let dir = fresh_config_dir("memory-verify");
+    let repo = std::env::temp_dir().join(format!("tasqx-reg-memory-verify-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&repo);
+    std::fs::create_dir_all(repo.join("src")).expect("create src");
+    std::fs::create_dir_all(repo.join(".git")).expect("create .git dir");
+    std::fs::write(repo.join("src/new_name.rs"), "fn moved() {}").expect("write");
+    std::fs::write(repo.join("src/live.rs"), "pub fn kept() {}").expect("write");
+    let run = |args: &[&str]| {
+        bin("memory-verify", &dir)
+            .current_dir(repo.join("src"))
+            .args(args)
+            .output()
+            .expect("run tasqx")
+    };
+    let add = |title: &str, body: &str| {
+        let out = run(&["--json", "memory", "add", title, body]);
+        let v: serde_json::Value = serde_json::from_slice(&out.stdout).expect("json");
+        v["id"].as_str().expect("an id").to_string()
+    };
+    let renamed = add("renamed", "lives in `src/old_name.rs`");
+    let fine = add("fine", "lives in `src/live.rs::kept`");
+    let removed = add("removed", "calls `src/live.rs::dropped_fn`");
+    let plain = add("plain", "no code cited here");
+
+    let out = run(&["--json", "memory", "verify"]);
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).expect("json");
+    let status = |id: &str| {
+        v["docs"]
+            .as_array()
+            .expect("docs")
+            .iter()
+            .find(|d| d["id"] == id)
+            .map(|d| (d["status"].clone(), d["stale_refs"].clone()))
+            .unwrap_or_else(|| panic!("{id} not reported: {v}"))
+    };
+    use serde_json::json;
+    assert_eq!(
+        status(&renamed),
+        (json!("missing_path"), json!(["src/old_name.rs"]))
+    );
+    assert_eq!(status(&fine), (json!("ok"), json!([])));
+    assert_eq!(
+        status(&removed),
+        (json!("missing_symbol"), json!(["src/live.rs::dropped_fn"]))
+    );
+    assert_eq!(status(&plain), (json!("unverifiable"), json!([])));
+
+    // One doc by id, as text: the status and the failing ref are named.
+    let out = run(&["memory", "verify", &renamed]);
+    assert_eq!(out.status.code(), Some(0));
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        text.contains("missing_path") && text.contains("src/old_name.rs"),
+        "{text}"
+    );
+    let _ = std::fs::remove_dir_all(&repo);
+}
+
 /// #790/D180: `memory search` marks a doc hit `stale` once its origin file has
 /// moved on since it was imported — no `memory import --refresh` run, the
 /// case a reader has no other way to notice. Nothing prints before the edit.

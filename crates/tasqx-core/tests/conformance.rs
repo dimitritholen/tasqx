@@ -570,6 +570,9 @@ const MEMORY_HIT_ROW: &[Field] = &[
     // imported — null on an annotation hit and on a doc `memory.add` wrote,
     // which has no origin file to compare against.
     nul("stale", Ty::Bool),
+    // D235: the cited paths and symbols gone from the working tree, read at
+    // read time — always an array on a doc hit, null on an annotation hit.
+    nul("stale_refs", Ty::Array),
     // #807/D219: when the entry last changed — a doc's `modified`, an
     // annotation's `created` (an edit does not move it). Always set; the desktop date filter
     // reads it.
@@ -1099,7 +1102,11 @@ const R_MEMORY_REMOVE: Shape = &[&[req("id", Ty::Str), req("removed", Ty::Bool)]
 /// One doc, whole. The same eight columns `store.export` emits per doc, because
 /// they are the same row — a per-document read and a whole-store dump that
 /// disagreed about what a document IS would be two answers to one question.
-const R_MEMORY_GET: Shape = &[DOC_EXPORT_ROW];
+const R_MEMORY_GET: Shape = &[DOC_EXPORT_ROW, MEMORY_GET_REFS];
+
+/// D235: what a read adds to the stored row — a check against the working
+/// tree, so `store.export` does not carry it.
+const MEMORY_GET_REFS: &[Field] = &[req("stale_refs", Ty::Array)];
 
 /// #133: one row of `memory.list` — recency metadata plus a short preview, not
 /// the full body (a browse page of whole bodies is the thing `memory.search`'s

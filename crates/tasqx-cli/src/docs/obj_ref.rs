@@ -172,7 +172,11 @@ pub(super) const OBJECTS: [Object; 10] = [
                already stored replaces that doc in place; removing one is permanent.",
         namespaces: &["memory"],
         linked: &[d::MEMORY_HIT_ROW],
-        groups: &[("", "", d::DOC_EXPORT_ROW), ("", "", d::MEMORY_LIST_ROW)],
+        groups: &[
+            ("", "", d::DOC_EXPORT_ROW),
+            ("", "", d::MEMORY_GET_REFS),
+            ("", "", d::MEMORY_LIST_ROW),
+        ],
         example: ("memory.get", "", &[]),
     },
     Object {

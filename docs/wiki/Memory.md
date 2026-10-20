@@ -178,6 +178,39 @@ you ask — a search, a brief, `--refresh`, or an agent session starting — nev
 by watching the filesystem in the background. Nothing is ever deleted because
 a file moved or disappeared; it's named so you can decide what to do about it.
 
+## tasqx memory verify
+
+Check the code that documents talk about, not the file they came from.
+
+```console
+tasqx memory verify
+tasqx memory verify 019f8422-7b3e-7c41-a2d9-6f1b0e5c8a12
+```
+
+A document cites code through its `source` (a `<repo>/<path>` key) and every
+backticked `path`, `path:line` or `path::symbol` in its body. Run from inside
+a git checkout, `verify` checks those against the checkout's working tree:
+each path must exist, and each symbol must appear as a whole word in the file
+it names. Each document gets one status:
+
+- `ok`: every cited path and symbol is there.
+- `missing_path`: a cited file or directory is gone, for example renamed.
+- `missing_symbol`: the files are there, but a cited function or type is not.
+- `unverifiable`: nothing could be checked. The document cites no code, its
+  source or its project names a different repository, or you are not in a
+  git checkout. This is never reported as `ok`.
+
+The text output lists the stale documents with the references that are gone,
+then a count per status; `--json` lists every document. `--project` checks
+one project's documents. The command exits 0 even when documents are stale,
+because it is a report. Nothing is indexed: it is a file check and a text
+search, run when you ask for it (D235).
+
+A search hit and `memory show --json` carry the same check as `stale_refs`,
+and an agent's session start marks a standing ruling whose cited code is gone.
+Run `verify` after a rename or a large refactor, and correct what it names
+with [`tasqx memory update`](#tasqx-memory-update).
+
 ## tasqx memory rm
 
 Remove one document, permanently, by id.

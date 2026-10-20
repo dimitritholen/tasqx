@@ -9,6 +9,61 @@ fn engine() -> Engine {
     Engine::open_in_memory().expect("open in-memory store")
 }
 
+/// D235: a doc hit and `memory.get` carry `stale_refs`, the cited paths and
+/// symbols that are gone from the working tree — always an array on a doc,
+/// empty when nothing is missing; null on an annotation hit.
+#[test]
+fn search_hits_and_get_carry_stale_refs_for_cited_code_that_is_gone() {
+    let root = std::env::temp_dir().join(format!("tasqx-stale-refs-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(root.join(".git")).unwrap();
+    std::fs::create_dir_all(root.join("src")).unwrap();
+    std::fs::write(root.join("src/live.rs"), "pub fn kept() {}").unwrap();
+    let mut e = engine();
+    e.set_refs_workdir(root.join("src"));
+    let add = |e: &Engine, title: &str, body: &str| {
+        call(e, "memory.add", json!({ "title": title, "body": body })).unwrap()["id"]
+            .as_str()
+            .unwrap()
+            .to_string()
+    };
+    let stale = add(
+        &e,
+        "zebra ruling",
+        "zebra lives in `src/gone.rs` and `src/live.rs::removed`",
+    );
+    let fine = add(&e, "yak ruling", "yak lives in `src/live.rs::kept`");
+    let task = call(&e, "task.add", json!({ "title": "t" })).unwrap();
+    call(
+        &e,
+        "annotation.add",
+        json!({ "ref": task["short_id"], "body": "walrus note in `src/gone.rs`" }),
+    )
+    .unwrap();
+
+    let want = json!(["src/gone.rs", "src/live.rs::removed"]);
+    let got = call(&e, "memory.get", json!({ "id": stale })).unwrap();
+    assert_eq!(got["stale_refs"], want);
+    let got = call(&e, "memory.get", json!({ "id": fine })).unwrap();
+    assert_eq!(got["stale_refs"], json!([]));
+
+    let search = |q: &str| {
+        call(
+            &e,
+            "memory.search",
+            json!({ "query": q, "mode": "lexical" }),
+        )
+        .unwrap()["hits"][0]
+            .clone()
+    };
+    assert_eq!(search("zebra")["stale_refs"], want);
+    assert_eq!(search("yak")["stale_refs"], json!([]));
+    let note = search("walrus");
+    assert_eq!(note["kind"], "annotation");
+    assert!(note["stale_refs"].is_null(), "{note}");
+    let _ = std::fs::remove_dir_all(&root);
+}
+
 fn call(e: &Engine, method: &str, params: Value) -> Result<Value, tasqx_core::ApiError> {
     dispatch(e, method, &params)
 }

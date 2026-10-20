@@ -1629,6 +1629,20 @@ pub(super) enum MemoryAction {
         /// The doc UUID, as printed by `memory add` and `memory search`.
         id: String,
     },
+    /// Check the files and symbols docs cite against this git checkout
+    /// (D235): ok, missing_path, missing_symbol or unverifiable per doc.
+    ///
+    /// A doc cites its `source` (a `<repo>/<path>` key) and every backticked
+    /// `path`, `path:line` or `path::symbol` in its body. Paths are checked
+    /// for existence and symbols by a text search in the named file, in the
+    /// git toplevel of the current directory. A report: exits 0 when stale.
+    Verify {
+        /// One doc UUID. Omit to check every doc.
+        id: Option<String>,
+        /// Only docs stored with this project.
+        #[arg(long, conflicts_with = "id", add = crate::complete::candidates::projects())]
+        project: Option<String>,
+    },
     /// Remove a doc by id (maps to memory.remove).
     Rm {
         /// The doc UUID, as printed by `memory add` and `memory search`.
