@@ -4954,14 +4954,15 @@ The markdown keeps a short typed excerpt of the output, so the page stays readab
 
 | recall@5 | en→en | nl→nl | en→nl | nl→en |
 |---|---|---|---|---|
-| meaning only (cosine), potion-base-8M | 1.00 | 0.60 | 0.00 | 0.00 |
-| meaning only, candidate (Python reference) | 0.85 | 0.80 | 0.80 | 0.70 |
+| meaning only (cosine), potion-base-8M, Rust | 1.00 | 0.60 | 0.00 | 0.00 |
+| meaning only (cosine), potion-base-8M, Python | 0.95 | 0.60 | 0.00 | 0.00 |
+| meaning only (cosine), candidate, Python | 0.85 | 0.80 | 0.80 | 0.70 |
 | hybrid, potion-base-8M | 0.85 | 0.80 | 0.10 | 0.05 |
 | hybrid, candidate | 0.80 | 0.80 | 0.55 | 0.45 |
 | hybrid, held-out half B, potion-base-8M | 0.90 | 0.80 | 0.10 | 0.10 |
 | hybrid, held-out half B, candidate retuned | 0.80 | 0.90 | 0.60 | 0.50 |
 
-On `memory-eval.json` (hybrid recall@10) the candidate lifted `dutch` from 0.458 to 0.917 and `paraphrase` from 0.160 to 0.253 but dropped `concept` from 0.545 to 0.409, `span` from 0.955 to 0.864 and `long` from 0.833 to 0.776, and its meaning-side hits on queries with nothing relevant rose from 16 to 17. Unpruned potion-multilingual-128M and fresh Model2Vec distillations of paraphrase-multilingual-MiniLM-L12-v2 and LaBSE scored lower still on English by meaning alone (0.85, 0.80 and 0.65 against 0.95 in the same Python harness), and no tweak of the pruned table (other linear projections, sharpened row norms, English rows blended from potion-base-8M) lifted it.
+On `memory-eval.json` (hybrid recall@10) the candidate lifted `dutch` from 0.458 to 0.917 and `paraphrase` from 0.160 to 0.253 but dropped `concept` from 0.545 to 0.409, `span` from 0.955 to 0.864 and `long` from 0.833 to 0.776, and its meaning-side hits on queries with nothing relevant rose from 16 to 17. The meaning-only rows come from two harnesses, so potion-base-8M has two English baselines: 1.00 from the Rust test (`embed`/`embed_query`, the query's punctuation-only words left out, the stored int8 table) and 0.95 from the Python one used to compare candidates (model2vec's f32 `StaticModel.encode`, ASCII punctuation stripped from the query); candidates are compared against the 0.95. In that Python harness the candidate scored 0.85 on English with or without pruning, and fresh Model2Vec distillations of paraphrase-multilingual-MiniLM-L12-v2 and LaBSE scored lower (0.80 and 0.65); no tweak of the pruned table (other linear projections, sharpened row norms, English rows blended from potion-base-8M) lifted its English above 0.85.
 
 **The retune.** D196's similarity floor (0.30) and vocabulary gate (half the content words known whole) were tuned for potion-base-8M, so they were retuned for the candidate honestly: both evals' queries were split in half with seed 2331, stratified per language pair and per category; a grid of seven gate fractions (0 to 1) by eleven floors (0.10 to 0.60) was searched on half A only, and the best setting (gate 0.34, floor 0.25) was judged on half B only. No setting met the bar on half A; on half B the candidate still lost English (0.80 against 0.90), stayed under Dutch's target (0.90 against 0.95), dropped `concept` (0.273 against 0.455) and `span` (0.833 against 0.917), and returned 21 meaning-side hits on queries with nothing relevant against 6. Half B has ten queries per language pair, so one query moves a pair by 0.10; the misses agree across both halves all the same.
 
