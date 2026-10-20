@@ -502,6 +502,11 @@ impl Engine {
                 )))
             }
         };
+        // D236: a done or cancel cleared the task's claim (the close trigger)
+        // and recorded it; undoing it puts back a lease that is still live.
+        if matches!(op.as_str(), "done" | "cancel") {
+            restore_claim(&tx, &task.id, &payload)?;
+        }
 
         // Rule 1, in one call: the compensating mutation APPENDS. The original
         // event is untouched, so `tasqx history` reads "the tag came off, then
@@ -1255,4 +1260,22 @@ fn revert_adjust_tracked(
         "delta": signed_iso_duration(delta),
         "tracked": iso_duration(total),
     }))
+}
+
+/// D236: put back the claim a `done`/`cancel` recorded, when its lease is
+/// still live at the undo; an expired one stays gone.
+fn restore_claim(tx: &Transaction, task_id: &str, payload: &Value) -> Result<(), ApiError> {
+    let (Some(by), Some(until)) = (
+        payload["claim"]["holder"].as_str(),
+        payload["claim"]["expires"].as_str(),
+    ) else {
+        return Ok(());
+    };
+    if crate::engine::task::lease_is_live(until, crate::clock::now()) {
+        tx.execute(
+            "UPDATE tasks SET claimed_by = ?1, claim_expires = ?2 WHERE id = ?3",
+            params![by, until, task_id],
+        )?;
+    }
+    Ok(())
 }

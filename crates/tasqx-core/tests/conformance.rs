@@ -2869,9 +2869,9 @@ fn cases() -> Vec<Case> {
                 // ever ran. Red either way, but a red run that names the wrong
                 // thing sends the next reader to the wrong file.
                 e.token_add(&self_report(1)).expect("measure");
-                // D236's conditional pair: a claimed open task.
-                e.task_claim(&json!({ "ref": 1, "actor": "agent-1" }))
-                    .expect("claim");
+                // D236's conditional pair: a claimed open task — by the shell,
+                // whose anonymous clock #1 runs on.
+                e.task_claim(&json!({ "ref": 1 })).expect("claim");
                 json!({})
             },
             R_STORE_EXPORT,

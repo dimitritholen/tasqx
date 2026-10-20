@@ -1062,12 +1062,7 @@ fn execute(cli: Cli) -> Exit {
             force_claim,
         }) => {
             let mut params = json!({ "ref": r#ref });
-            if let Some(h) = holder {
-                params["actor"] = json!(h);
-            }
-            if force_claim {
-                params["force_claim"] = json!(true);
-            }
+            verbs::claim_params(&mut params, holder, force_claim);
             run_simple_ref(&mut backend, &ctx, "task.cancel", params)
         }
         Some(Command::Reopen { r#ref }) => {

@@ -907,7 +907,26 @@ impl Engine {
         if !command.keep {
             if let Some(mine) = command.actor.as_deref() {
                 if let Some((held_by, short_id, title)) = self.active_clock_holder()? {
-                    if held_by != mine {
+                    // D236: a clock under its own actor's live claim is not
+                    // stopped (the auto-stop keeps it running), so there is
+                    // nothing to refuse.
+                    let kept = tx
+                        .query_row(
+                            "SELECT claimed_by, claim_expires FROM tasks WHERE short_id = ?1",
+                            params![short_id],
+                            |r| {
+                                Ok((
+                                    r.get::<_, Option<String>>(0)?,
+                                    r.get::<_, Option<String>>(1)?,
+                                ))
+                            },
+                        )
+                        .optional()?
+                        .and_then(|(by, until)| by.zip(until))
+                        .is_some_and(|(by, until)| {
+                            by == held_by && lease_is_live(&until, claim_now)
+                        });
+                    if held_by != mine && !kept {
                         return Err(ApiError::conflict(format!(
                             "#{short_id} \"{title}\" is active and its clock is held by another \
                              session ({held_by}); stopping it here would leave that session's \
@@ -1040,7 +1059,6 @@ impl Engine {
         let tx = self.begin_mutation()?;
         let task = self.resolve_ref_value_on(&tx, &target)?;
         guard_rev(expected_rev, &task)?;
-        let claim_forced = claim_close_guard(&tx, &task, actor.as_deref(), force_claim)?;
         if task.status != Status::Active {
             return Err(ApiError::conflict(format!(
                 "cannot stop {} {} task (only active -> pending)",
@@ -1048,6 +1066,8 @@ impl Engine {
                 task.status.as_str()
             )));
         }
+        // After the status check, so the first refusal names the real cause.
+        let claim_forced = claim_close_guard(&tx, &task, actor.as_deref(), force_claim)?;
 
         let ts = now();
         let elapsed = seconds_between(&task.active_since, &ts);
@@ -1115,17 +1135,18 @@ impl Engine {
             )));
         }
         // D236 beside D140: a task running on another actor's clock is that
-        // actor's work, claimed or not. An anonymous clock (a shell's) names
-        // nobody to defer to.
+        // actor's work, claimed or not. An anonymous clock is the shell's, so
+        // only the shell's own holder may claim it.
         if task.status == Status::Active {
-            if let Some(clock) = self.clock_holder_of(&task.id)? {
-                if clock != holder {
-                    return Err(ApiError::conflict(format!(
-                        "#{} is running on {clock}'s clock; it is that session's work, so it \
-                         cannot be claimed by {holder} (D236)",
-                        task.short_id
-                    )));
-                }
+            let clock = self
+                .clock_holder_of(&task.id)?
+                .unwrap_or_else(|| SHELL_HOLDER.to_string());
+            if clock != holder {
+                return Err(ApiError::conflict(format!(
+                    "#{} is running on {clock}'s clock; it is that session's work, so it \
+                     cannot be claimed by {holder} (D236)",
+                    task.short_id
+                )));
             }
         }
         let now_ts = crate::clock::now();
@@ -1346,7 +1367,6 @@ impl Engine {
         let tx = self.begin_mutation()?;
         let task = self.resolve_ref_on(&tx, p)?;
         guard_rev(expected_rev, &task)?;
-        let claim_forced = claim_close_guard(&tx, &task, actor.as_deref(), force_claim)?;
         match task.status {
             Status::Pending | Status::Active => {}
             Status::Backlog => {
@@ -1363,6 +1383,11 @@ impl Engine {
                 )));
             }
         }
+
+        // D236, after the status check so the first refusal names the cause.
+        let claim_forced = claim_close_guard(&tx, &task, actor.as_deref(), force_claim)?;
+        // Read before the UPDATE below, whose status change clears it.
+        let ended_claim = Self::claim_on(&tx, &task.id)?;
 
         // D150, finding #626. Completing a task whose dependencies are still
         // open used to succeed in silence — on a store that KNEW, and had said
@@ -1438,6 +1463,10 @@ impl Engine {
         // back; with `interval_started` it also says how long the closed
         // interval was (`completed` minus the start).
         let mut done_payload = json!({ "completed": ts, "from": task.status.as_str() });
+        // D236: the claim this completion ends, so `undo` can put it back.
+        if let Some((by, until)) = &ended_claim {
+            done_payload["claim"] = json!({ "holder": by, "expires": until });
+        }
         // D189: completing a running task closes its interval, and names it.
         if task.status == Status::Active {
             done_payload["interval_started"] = json!(task.active_since);
@@ -3965,7 +3994,6 @@ impl Engine {
         let tx = self.begin_mutation()?;
         let task = self.resolve_ref_value_on(&tx, &target)?;
         guard_rev(expected_rev, &task)?;
-        let claim_forced = claim_close_guard(&tx, &task, actor.as_deref(), force_claim)?;
         match task.status {
             Status::Backlog | Status::Pending | Status::Active => {}
             other => {
@@ -3976,6 +4004,8 @@ impl Engine {
                 )));
             }
         }
+        // D236, after the status check so the first refusal names the cause.
+        let claim_forced = claim_close_guard(&tx, &task, actor.as_deref(), force_claim)?;
 
         let ts = now();
         // Closing an open interval into tracked time, exactly as stop/done do.
@@ -3986,6 +4016,10 @@ impl Engine {
         };
         let total = task.tracked_seconds + elapsed;
         let mut cancel_payload = json!({ "from": task.status.as_str() });
+        // D236: the claim this cancellation ends, so `undo` can put it back.
+        if let Some((by, until)) = Self::claim_on(&tx, &task.id)? {
+            cancel_payload["claim"] = json!({ "holder": by, "expires": until });
+        }
         if let Some(by) = &claim_forced {
             cancel_payload["claim_forced"] = json!(by);
         }
