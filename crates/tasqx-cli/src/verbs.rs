@@ -1667,8 +1667,13 @@ pub(crate) fn call_with_workdir(
     method: &str,
     mut params: Value,
 ) -> Result<Value, tasqx_core::ApiError> {
-    if let Ok(dir) = std::env::current_dir() {
-        params["workdir"] = json!(dir.to_string_lossy());
+    // A directory that is not UTF-8 cannot be named in JSON without loss;
+    // it sends none, and `stale_refs` stays null.
+    if let Some(dir) = std::env::current_dir()
+        .ok()
+        .and_then(|d| d.to_str().map(String::from))
+    {
+        params["workdir"] = json!(dir);
     }
     match call(method, &params) {
         Err(e)
