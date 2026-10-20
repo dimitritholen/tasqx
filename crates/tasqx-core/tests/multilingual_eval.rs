@@ -10,10 +10,10 @@
 //!
 //! It is a regression floor for the model memory search ships,
 //! potion-base-8M (D234 kept it). Its hybrid recall@5 when the floors were
-//! set was en→en 0.85, nl→nl 0.80, en→nl 0.10, nl→en 0.05; each floor sits
-//! 0.05 under that (the cross-lingual pairs are near zero and only
-//! reported), so a change that degrades search fails here rather than
-//! silently. The model and the search are deterministic, so a floor moves
+//! set was en→en 0.85, nl→nl 0.80, en→nl 0.10, nl→en 0.05. The English and
+//! Dutch floors sit 0.05 under that; the cross-lingual ones are today's
+//! values, so a fall to zero fails too. A change that degrades search fails
+//! here rather than silently. The model and the search are deterministic, so a floor moves
 //! only when they do. The same fixture is the yardstick any future model
 //! is measured on (#2345): D234 records the static multilingual table that
 //! was measured on it and rejected. Run with `--nocapture` to see the table
@@ -29,8 +29,8 @@ const FIXTURE: &str = include_str!("fixtures/multilingual-eval.json");
 const FLOORS: &[(&str, f64)] = &[
     ("en->en", 0.80),
     ("nl->nl", 0.75),
-    ("en->nl", 0.0),
-    ("nl->en", 0.0),
+    ("en->nl", 0.10),
+    ("nl->en", 0.05),
 ];
 
 fn ok(e: &Engine, method: &str, params: Value) -> Value {
@@ -52,6 +52,9 @@ fn hybrid_recall_at_5_does_not_fall_in_english_or_dutch() {
         .map(|(i, d)| json!({ "title": format!("m{i}"), "body": d["text"], "source": d["key"] }))
         .collect();
     let res = ok(&e, "memory.import", json!({ "docs": batch }));
+    assert_eq!(res["imported"], json!(docs.len()), "{res}");
+    assert_eq!(res["replaced"], json!(0), "{res}");
+    assert_eq!(res["unchanged"], json!(0), "{res}");
     let id2key: HashMap<String, String> = res["docs"]
         .as_array()
         .unwrap()
@@ -64,7 +67,15 @@ fn hybrid_recall_at_5_does_not_fall_in_english_or_dutch() {
         })
         .collect();
     let queries = fx["queries"].as_array().unwrap();
-    assert!(queries.len() >= 30, "the ruling asks for at least 30 pairs");
+    for q in queries {
+        let want = q["expect"].as_str().unwrap();
+        let doc = docs.iter().find(|d| d["key"] == want);
+        assert!(
+            doc.is_some_and(|d| d.get("decoy").is_none()),
+            "{want} is not a doc a query may expect"
+        );
+    }
+    assert_eq!(queries.len(), 80, "D234's shape: 80 queries, 20 per pair");
 
     let mut pairs: BTreeMap<String, (usize, usize)> = BTreeMap::new();
     let mut misses = String::new();
@@ -94,11 +105,24 @@ fn hybrid_recall_at_5_does_not_fall_in_english_or_dutch() {
         e.1 += 1;
     }
 
+    let known: Vec<&str> = FLOORS.iter().map(|(p, _)| *p).collect();
+    assert_eq!(
+        pairs.keys().map(String::as_str).collect::<Vec<_>>(),
+        {
+            let mut k = known.clone();
+            k.sort_unstable();
+            k
+        },
+        "the fixture's language pairs are exactly the four known ones"
+    );
+    for (pair, (_, n)) in &pairs {
+        assert_eq!(*n, 20, "{pair} has {n} queries, D234's shape is 20");
+    }
+
     let mut report = String::new();
     let mut failures = Vec::new();
     for (pair, floor) in FLOORS {
         let (hits, n) = pairs.get(*pair).copied().unwrap_or_default();
-        assert!(n >= 10, "{pair} has {n} queries");
         let r = hits as f64 / n as f64;
         report.push_str(&format!(
             "{pair}  recall@5 {r:.2}  ({hits}/{n}, floor {floor})\n"
