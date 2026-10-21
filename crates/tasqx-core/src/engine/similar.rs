@@ -120,6 +120,14 @@ fn embed_task(title: &str, summary: &str) -> Vector {
     embed::embed_query(&format!("{title}\n{summary}"))
 }
 
+/// Whether two titles are the same once lowercased, with whitespace runs
+/// collapsed and the ends trimmed.
+fn same_title(a: &str, b: &str) -> bool {
+    a.split_whitespace()
+        .map(str::to_lowercase)
+        .eq(b.split_whitespace().map(str::to_lowercase))
+}
+
 /// `f` of each of `items`, in order: inline for a few; for many, one worker
 /// a core, each taking the next item until none is left, so a slow core
 /// does less rather than holding the rest up. Each item is independent, so
@@ -172,7 +180,8 @@ impl Engine {
     /// The open tasks of `project` whose similarity to `title` is at or
     /// above `floor`, best first then by short id, at most [`MAX`]. A task
     /// is compared as its title then its description, the opening summary
-    /// of its oldest live note.
+    /// of its oldest live note; one whose title is `title` (see
+    /// [`same_title`]) scores 1.0 and comes first, whatever its note says.
     pub(crate) fn similar_tasks(
         &self,
         title: &str,
@@ -282,21 +291,28 @@ impl Engine {
                     .retain(|_, c| c.project.as_deref() == project || c.stamp > cut);
             }
         }
-        let mut hits: Vec<(f64, i64, String, String)> = open
+        // A task with the very same title is named at 1.0 and first, whatever
+        // its note says (#2350).
+        let mut hits: Vec<(bool, f64, i64, String, String)> = open
             .into_iter()
             .filter_map(|(id, short_id)| {
                 let c = cache.tasks.get(&id)?;
-                let s = c.vector.as_ref().map_or(f64::NEG_INFINITY, |v| {
-                    embed::round_similarity(embed::cosine(&q, v))
-                });
-                (s >= floor).then(|| (s, short_id, c.title.clone(), id))
+                let exact = same_title(&c.title, title);
+                let s = if exact {
+                    1.0
+                } else {
+                    c.vector.as_ref().map_or(f64::NEG_INFINITY, |v| {
+                        embed::round_similarity(embed::cosine(&q, v))
+                    })
+                };
+                (s >= floor).then(|| (exact, s, short_id, c.title.clone(), id))
             })
             .collect();
-        hits.sort_by(|a, b| b.0.total_cmp(&a.0).then(a.1.cmp(&b.1)));
+        hits.sort_by(|a, b| b.0.cmp(&a.0).then(b.1.total_cmp(&a.1)).then(a.2.cmp(&b.2)));
         hits.truncate(MAX);
         Ok(hits
             .into_iter()
-            .map(|(s, short_id, t, id)| {
+            .map(|(_, s, short_id, t, id)| {
                 json!({ "id": id, "short_id": short_id, "title": t, "similarity": s })
             })
             .collect())
