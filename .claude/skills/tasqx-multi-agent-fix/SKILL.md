@@ -1,6 +1,6 @@
 ---
 name: tasqx-multi-agent-fix
-description: Fix a batch of open tasqx findings with parallel builder agents — settle every design question with the user first, allocate D-numbers in merge order, run one builder per task in its own worktree cut from origin/main, review each branch for correctness until clean, then land each one as its own auto-merged PR. Use it when the user hands over several tasks at once ("fix all these tasks with sub-agents and a reviewer", "orchestrate the open tasqx tasks", "run builders on #12, #13 and #14 in parallel"). Not for a single task — CLAUDE.md's one-task loop covers that. Sighted on task #11 (merge 0f903c1); written up as task #61.
+description: Fix a batch of open tasqx findings with parallel builder agents — settle every design question with the user first, allocate D-numbers in merge order, run one builder per task in its own worktree cut from origin/main, review each branch for correctness until clean, then land each one as its own PR with auto-merge. Use it when the user hands over several tasks at once ("fix all these tasks with sub-agents and a reviewer", "orchestrate the open tasqx tasks", "run builders on #12, #13 and #14 in parallel"). Not for a single task — CLAUDE.md's one-task loop covers that. Sighted on task #11 (merge 0f903c1); written up as task #61.
 ---
 
 # Fix a batch of tasqx findings with parallel builders
