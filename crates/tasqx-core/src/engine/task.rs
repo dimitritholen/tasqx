@@ -53,9 +53,9 @@ fn claim_holder(p: &Value) -> Result<String, ApiError> {
 }
 
 /// `now + secs`, the instant a lease granted at `now` runs out.
-fn lease_end(now: Timestamp, secs: i64) -> Timestamp {
+fn lease_end(now: Timestamp, secs: i64) -> Result<Timestamp, ApiError> {
     now.checked_add(jiff::SignedDuration::from_secs(secs))
-        .unwrap_or(now)
+        .map_err(|_| ApiError::bad_request("lease end out of range"))
 }
 
 /// A `lease` param in `estimate`'s duration grammar, as whole seconds (D236):
@@ -104,7 +104,7 @@ fn renew_on_start(
     until: Timestamp,
     now: Timestamp,
 ) -> Result<(), ApiError> {
-    let renewed = lease_end(now, DEFAULT_LEASE_SECS);
+    let renewed = lease_end(now, DEFAULT_LEASE_SECS)?;
     if renewed > until {
         write_claim(
             tx,
@@ -245,16 +245,19 @@ fn latest_start(conn: &rusqlite::Connection, task_id: &str) -> Result<Option<Val
     Ok(payload.and_then(|p| serde_json::from_str::<Value>(&p).ok()))
 }
 
-/// Whose clock a running task is (D236): the identity its latest start
+/// Who a running task's clock names (D236): the identity its latest start
 /// recorded (`holder`), else that start's `actor` (a start older than the
-/// field), else the shell. Claims and per-holder single-active both read it.
-pub(crate) fn clock_owner(conn: &rusqlite::Connection, task_id: &str) -> Result<String, ApiError> {
+/// field); `None` for an anonymous start, the shell's.
+fn clock_named(conn: &rusqlite::Connection, task_id: &str) -> Result<Option<String>, ApiError> {
     let start = latest_start(conn, task_id)?;
     let field = |k: &str| start.as_ref().and_then(|v| payload_field(v, k));
-    Ok(identity(
-        field("holder").as_deref(),
-        field("actor").as_deref(),
-    ))
+    Ok(field("holder").or_else(|| field("actor")))
+}
+
+/// Whose clock a running task is (D236): [`clock_named`], else the shell.
+/// Claims, the auto-stop and `undo` all read it.
+pub(crate) fn clock_owner(conn: &rusqlite::Connection, task_id: &str) -> Result<String, ApiError> {
+    Ok(clock_named(conn, task_id)?.unwrap_or_else(|| SHELL_HOLDER.to_string()))
 }
 
 /// The `conflict` a live lease held by someone else answers, naming both.
@@ -954,12 +957,14 @@ impl Engine {
             renew_on_start(&tx, &task, by, *until, claim_now)?;
         }
 
-        // D6, amended by D236: single-active is PER HOLDER. A start without
-        // `keep` auto-stops the starter's own running clocks — the clocks
-        // whose start recorded the same identity — and leaves every other
-        // holder's alone. That is D140's defect removed at its root: nobody's
-        // clock is stopped from somebody else's session, so there is nothing
-        // to refuse either.
+        // D6 with D140 and D236. A start without `keep` auto-stops the
+        // starter's own running clocks. A clock another identity owns is left
+        // running when it is under that identity's live claim (its work,
+        // allocated), and is otherwise D140's: a `conflict` when both the
+        // start and that clock name somebody (stopping it would leave that
+        // session's work untracked), the usual auto-stop when either is the
+        // anonymous shell — two unknowns are not evidence of two parties.
+        let starter_named = command.holder.is_some() || command.actor.is_some();
         let mut auto_stopped: Vec<commands::AutoStopped> = Vec::new();
         if !command.keep {
             type Active = (String, i64, Option<String>, i64, i64);
@@ -983,8 +988,22 @@ impl Engine {
                 }
             }
             for (aid, a_short_id, active_since, tracked, rev) in actives {
-                if clock_owner(&tx, &aid)? != starter {
-                    continue;
+                let named = clock_named(&tx, &aid)?;
+                let owner = named.as_deref().unwrap_or(SHELL_HOLDER);
+                if owner != starter {
+                    let claimed_by_owner =
+                        live_claim_on(&tx, &aid, claim_now)?.is_some_and(|(by, _)| by == owner);
+                    if claimed_by_owner {
+                        continue;
+                    }
+                    if let (true, Some(held_by)) = (starter_named, named.as_deref()) {
+                        return Err(ApiError::conflict(format!(
+                            "#{a_short_id} is active and its clock is held by another session \
+                             ({held_by}); stopping it here would leave that session's work \
+                             untracked. Pass keep:true to run both clocks deliberately (D6), or \
+                             wait for it to stop."
+                        )));
+                    }
                 }
                 let elapsed = seconds_between(&active_since, &ts);
                 let elapsed_iso = iso_duration(elapsed);
@@ -1177,7 +1196,7 @@ impl Engine {
             Some((by, _)) => ClaimOp::Takeover(by),
             None => ClaimOp::Claim,
         };
-        let expires = lease_end(now_ts, lease).to_string();
+        let expires = lease_end(now_ts, lease)?.to_string();
         write_claim(&tx, &task, &holder, &expires, &op, true)?;
         tx.commit()?;
         Ok(json!({
@@ -3466,19 +3485,13 @@ impl Engine {
                 json!({ "short_id": short_id, "title": title, "status": status, "note": note });
             if status == "active" {
                 item["active_since"] = json!(since);
-                item["held_by"] = json!(self.clock_actor_of(&id)?);
+                item["held_by"] = json!(clock_named(&self.conn, &id)?);
                 active.push(item);
             } else if !item["note"].is_null() && recent.len() < RESUME_RECENT {
                 recent.push(item);
             }
         }
         Ok((active, recent))
-    }
-
-    /// The actor named on a task's latest `start` event (D140), if any —
-    /// what `task.next`'s resume rows name; a shell's start names none.
-    fn clock_actor_of(&self, task_id: &str) -> Result<Option<String>, ApiError> {
-        Ok(latest_start(&self.conn, task_id)?.and_then(|v| payload_field(&v, "actor")))
     }
 
     /// Whose clock a running task is (D236): see [`clock_owner`].

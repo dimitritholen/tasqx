@@ -73,21 +73,7 @@ fn generate_at(
 ) -> Result<String, ApiError> {
     let filter = params.get("filter").and_then(Value::as_str);
     let period = Period::new(params, now)?;
-    let mut export = dispatch(engine, "store.export", &scoped(json!({}), filter))?;
-    // D236: the export carries claims as stored, live or not; the engine says
-    // which are live (`@claimed`), so the page never decides that itself.
-    let live = short_ids(engine, filter, "@claimed")?;
-    if let Some(rows) = export.get_mut("tasks").and_then(Value::as_array_mut) {
-        for row in rows {
-            let short = row.get("short_id").and_then(Value::as_i64);
-            if !short.is_some_and(|n| live.contains(&n)) {
-                if let Some(obj) = row.as_object_mut() {
-                    obj.remove("claimed_by");
-                    obj.remove("claim_expires");
-                }
-            }
-        }
-    }
+    let export = dispatch(engine, "store.export", &scoped(json!({}), filter))?;
     // The engine's own outcomes over the same period, so every figure in that
     // section is the one `report --outcomes --since … --until …` prints.
     let outcomes = dispatch(
@@ -1042,8 +1028,15 @@ impl<'a> Page<'a> {
             let x = t(i);
             let over = x.due.is_some_and(|d| d < now);
             // D236: whose it is, when someone else holds a live claim on it.
-            let held = match x.v.get("claimed_by").and_then(Value::as_str) {
-                Some(by) if by != tasqx_core::engine::task::SHELL_HOLDER => {
+            // The export carries the claim as stored; liveness is the one rule.
+            let held = match (
+                x.v.get("claimed_by").and_then(Value::as_str),
+                x.v.get("claim_expires").and_then(Value::as_str),
+            ) {
+                (Some(by), Some(until))
+                    if tasqx_core::engine::task::lease_is_live(until, now)
+                        && by != tasqx_core::engine::task::SHELL_HOLDER =>
+                {
                     format!("claimed by {} · ", esc(by))
                 }
                 _ => String::new(),

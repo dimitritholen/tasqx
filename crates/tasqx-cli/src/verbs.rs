@@ -570,8 +570,9 @@ pub(crate) fn run_start(
     correlation: &command::CorrelationArgs,
 ) -> CmdOutcome {
     let mut params = json!({ "ref": r#ref, "keep": keep });
-    // D236: `--holder` names the claim holder only (`holder`, not `actor`),
-    // so the clock stays anonymous and a shell keeps D140's auto-stop.
+    // D236: `--holder` sends `holder`, not `actor`: the start acts as that
+    // claim holder and the clock is that holder's (its claims, its own
+    // auto-stop), while D140's `actor` stays absent.
     if let Some(h) = holder {
         params["holder"] = json!(h);
     }

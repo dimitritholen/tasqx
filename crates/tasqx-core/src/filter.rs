@@ -362,6 +362,9 @@ impl Filter {
 
     /// True when `ctx` satisfies the filter, title terms (a bare word, a quoted
     /// phrase, `title:`; D210) included: they match against [`MatchCtx::title`].
+    ///
+    /// `@claimed` is false here: this has no claim to read. A caller that
+    /// needs it evaluated uses [`Filter::matches_with_claims`] (D236).
     pub fn matches(&self, ctx: &MatchCtx) -> bool {
         eval(&self.root, ctx, &ClaimCtx::default())
     }

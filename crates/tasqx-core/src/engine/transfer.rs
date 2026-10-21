@@ -1814,14 +1814,16 @@ impl Engine {
             )?;
             let spawned_from =
                 import_field(id, "spawned_from", opt_str_nonempty(tv, "spawned_from"))?;
-            // D236: a claim is a pair, so half of one is no claim.
+            // D236: a claim is a pair, so half of one is refused.
             let claimed_by = import_field(id, "claimed_by", opt_str_nonempty(tv, "claimed_by"))?;
             let claim_expires =
                 import_field(id, "claim_expires", opt_when(tv, "claim_expires", now_ts))?;
-            let (claimed_by, claim_expires) = match (claimed_by, claim_expires) {
-                (Some(by), Some(until)) => (Some(by), Some(until)),
-                _ => (None, None),
-            };
+            if claimed_by.is_some() != claim_expires.is_some() {
+                return Err(ApiError::bad_request(format!(
+                    "store.import: task {id}, claimed_by and claim_expires: a claim is a pair; \
+                     send both, or neither"
+                )));
+            }
             let remind = match import_field(id, "remind", opt_str_nonempty(tv, "remind"))? {
                 Some(s) => Some(
                     import_field(id, "remind", remind::parse_remind(&s, now_ts))
