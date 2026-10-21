@@ -5014,7 +5014,9 @@ The root is always the caller's, never the engine process's working directory, w
 
 **Rejected: holder from `session_id`.** The ruling first named `session_id`; D140 already refused that field as the actor key because the attribution engine reads it to match telemetry. The holder is the same `actor` D140 built.
 
-**Undo and the next minor.** `done` and `cancel` record the claim they end (`claim` in the event payload, holder and expiry), and undoing either puts the claim back when its lease is still live. A task running on the shell's anonymous clock is the shell's, so only `user` claims it. The public `filter::Expr` is no longer what the parser builds (a private tree with the `@claimed` leaf is), and is kept as is until the next minor folds the claim leaf and `ClaimCtx` into the public filter types, as #815 did for the title terms.
+**Undo and the next minor.** `done`, `cancel` and a `modify` to cancelled record the claim they end (`claim` in the event payload, holder and expiry), and undoing any of them puts the claim back when its lease is still live, through a `renew` event marked `restored: true` so a merge (D189) sees the restore as the claim's latest word. A task running on the shell's anonymous clock is the shell's, so only `user` claims it — except that a holder renewing its own live claim on a task it is running is never refused for the clock.
+
+**D140 is decided per running task.** A start without `keep` looks at every active task: one under another holder's live claim is kept running (`kept_running`); one whose clock belongs to another named actor is D140's `conflict` when the starter names an actor; the rest are auto-stopped. Nothing another actor is running is ever stopped silently, whichever clock started last. The public `filter::Expr` is no longer what the parser builds (a private tree with the `@claimed` leaf is), and is kept as is until the next minor folds the claim leaf and `ClaimCtx` into the public filter types, as #815 did for the title terms.
 
 **Not built (11a):** `next --claim` (pick and claim atomically) and `@unclaimed`.
 

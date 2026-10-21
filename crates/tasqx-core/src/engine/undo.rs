@@ -502,9 +502,10 @@ impl Engine {
                 )))
             }
         };
-        // D236: a done or cancel cleared the task's claim (the close trigger)
-        // and recorded it; undoing it puts back a lease that is still live.
-        if matches!(op.as_str(), "done" | "cancel") {
+        // D236: a done, cancel or modify to cancelled cleared the task's claim
+        // (the close trigger) and recorded it; undoing it puts back a lease
+        // that is still live.
+        if matches!(op.as_str(), "done" | "cancel" | "modify") {
             restore_claim(&tx, &task.id, &payload)?;
         }
 
@@ -1276,6 +1277,17 @@ fn restore_claim(tx: &Transaction, task_id: &str, payload: &Value) -> Result<(),
             "UPDATE tasks SET claimed_by = ?1, claim_expires = ?2 WHERE id = ?3",
             params![by, until, task_id],
         )?;
+        // An event that writes the claim group, so a merge (D189) sees the
+        // restore as the claim's latest word rather than the close before it.
+        crate::storage::as_actor(Some(by.to_string()), || {
+            insert_event(
+                tx,
+                Entity::Task,
+                task_id,
+                "renew",
+                &json!({ "holder": by, "expires": until, "restored": true }),
+            )
+        })?;
     }
     Ok(())
 }

@@ -4728,6 +4728,32 @@ mod tests {
         assert_eq!(exported_row(&b, &id)["claimed_by"], json!("agent-1"));
     }
 
+    /// D236: A claims and completes; B pulls the completion; A undoes it.
+    /// The undo's restored claim is written through a `renew` event, so the
+    /// next merge carries it to B instead of keeping the completion's clear.
+    #[test]
+    fn store_import_merge_carries_a_claim_an_undo_restored() {
+        let (a, b, id, sid) = one_task_on_two_machines();
+        tick(&[&a, &b]);
+        a.task_claim(&json!({ "ref": sid, "actor": "agent-1" }))
+            .expect("claim on a");
+        a.task_done(&json!({ "ref": sid, "actor": "agent-1" }))
+            .expect("done on a");
+        merge_into(&b, &a);
+        assert!(exported_row(&b, &id).get("claimed_by").is_none());
+        tick(&[&a, &b]);
+        a.event_revert().expect("undo on a");
+        // B touches the task after the undo, so its `modified` is the later
+        // one: without an event of its own the restore would lose the tie.
+        tick(&[&a, &b]);
+        b.annotation_add(&json!({ "ref": sid, "body": "on b" }))
+            .expect("note on b");
+        merge_into(&b, &a);
+        let row = exported_row(&b, &id);
+        assert_eq!(row["claimed_by"], json!("agent-1"), "{row}");
+        assert_eq!(row["status"], json!("pending"), "{row}");
+    }
+
     /// D189: one field edited on both machines goes to the later event, in
     /// either direction of the merge.
     #[test]

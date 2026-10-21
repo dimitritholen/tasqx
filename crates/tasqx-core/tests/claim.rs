@@ -703,3 +703,47 @@ fn a_second_actor_starts_beside_a_claimed_running_task() {
         assert_eq!(got["status"], "active", "#{t}: {got}");
     }
 }
+
+/// Review 6 #2: D140 per running task. A's clock is under A's own claim, so
+/// it is kept; B's is not claimed, so C's start is refused naming B, and
+/// nothing — A's clock included — was stopped.
+#[test]
+fn every_running_clock_is_kept_or_refused_never_silently_stopped() {
+    let e = engine();
+    let (t1, t2, t3) = (add(&e, "a's"), add(&e, "b's"), add(&e, "c's"));
+    // B first, so the newest start is A's: a check of only the newest clock
+    // would see A's claimed one, wave the start through and stop B silently.
+    call(&e, "task.start", json!({ "ref": t2, "actor": "agent-b" })).unwrap();
+    claim(&e, t1, "agent-a").unwrap();
+    call(
+        &e,
+        "task.start",
+        json!({ "ref": t1, "actor": "agent-a", "keep": true }),
+    )
+    .unwrap();
+    let err = call(&e, "task.start", json!({ "ref": t3, "actor": "agent-c" })).unwrap_err();
+    assert_eq!(err.code, ErrorCode::Conflict, "{}", err.message);
+    assert!(err.message.contains("agent-b"), "{}", err.message);
+    for t in [t1, t2] {
+        let got = call(&e, "task.get", json!({ "ref": t })).unwrap();
+        assert_eq!(got["status"], "active", "#{t}: {got}");
+    }
+}
+
+/// Review 6 #3: a modify to cancelled records the claim it ends, and undo
+/// puts it back.
+#[test]
+fn undoing_a_modify_to_cancelled_keeps_the_claim() {
+    let e = engine();
+    let t = add(&e, "cancelled by modify");
+    claim(&e, t, "agent-1").unwrap();
+    call(
+        &e,
+        "task.modify",
+        json!({ "ref": t, "set": { "status": "cancelled" }, "actor": "agent-1" }),
+    )
+    .unwrap();
+    call(&e, "event.revert", json!({})).expect("undo");
+    let got = call(&e, "task.get", json!({ "ref": t })).unwrap();
+    assert_eq!(got["claimed_by"], "agent-1", "{got}");
+}

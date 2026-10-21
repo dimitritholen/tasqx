@@ -269,3 +269,22 @@ fn start_holder_leaves_the_clock_anonymous() {
     let named = s.api(T0, "task.start", json!({ "ref": 8, "actor": "agent-2" }));
     assert_eq!(named["ok"], true, "{named}");
 }
+
+/// Review 6 #1: a holder renewing its own claim on a task it is running is
+/// not refused for the clock, which (`--holder` leaves it anonymous) is the
+/// shell's.
+#[test]
+fn a_holder_renews_its_claim_on_its_own_running_task() {
+    let s = Store::new("renewrun");
+    s.api(T0, "task.add", json!({ "title": "running" }));
+    let run = |args: &[&str]| -> Output { s.bin(T0).args(args).output().expect("run") };
+    assert!(run(&["claim", "1", "--holder", "x"]).status.success());
+    assert!(run(&["start", "1", "--holder", "x"]).status.success());
+    let renewed = run(&["claim", "1", "--holder", "x", "--lease", "2h"]);
+    assert!(
+        renewed.status.success(),
+        "{}",
+        String::from_utf8_lossy(&renewed.stderr)
+    );
+    assert!(String::from_utf8_lossy(&renewed.stdout).contains("renewed by x"));
+}
