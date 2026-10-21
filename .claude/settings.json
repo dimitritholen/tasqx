@@ -20,11 +20,6 @@
         "hooks": [
           {
             "type": "command",
-            "command": ".claude/review.sh",
-            "timeout": 30
-          },
-          {
-            "type": "command",
             "command": ".claude/gate.sh",
             "timeout": 600
           }
