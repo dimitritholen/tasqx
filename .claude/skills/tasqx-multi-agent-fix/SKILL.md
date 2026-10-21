@@ -1,6 +1,6 @@
 ---
 name: tasqx-multi-agent-fix
-description: Fix a batch of open tasqx findings with parallel builder agents — settle every design question with the user first, allocate D-numbers in merge order, run one builder per task in its own worktree cut from origin/main, review each branch with /1337:review until clean, then land each one as its own PR through land-tasqx-pr. Use it when the user hands over several tasks at once ("fix all these tasks with sub-agents and a reviewer", "orchestrate the open tasqx tasks", "run builders on #12, #13 and #14 in parallel"). Not for a single task — CLAUDE.md's one-task loop covers that. Sighted on task #11 (merge 0f903c1); written up as task #61.
+description: Fix a batch of open tasqx findings with parallel builder agents — settle every design question with the user first, allocate D-numbers in merge order, run one builder per task in its own worktree cut from origin/main, review each branch until clean, then land each one as its own PR through land-tasqx-pr. Use it when the user hands over several tasks at once ("fix all these tasks with sub-agents and a reviewer", "orchestrate the open tasqx tasks", "run builders on #12, #13 and #14 in parallel"). Not for a single task — CLAUDE.md's one-task loop covers that. Sighted on task #11 (merge 0f903c1); written up as task #61.
 ---
 
 # Fix a batch of tasqx findings with parallel builders
@@ -51,11 +51,10 @@ those loops side by side, so nothing here replaces a per-task rule.
      repo's style citing the task, no AI attribution, no push until told.
 
 5. **Review each branch as it finishes.** Read `git diff origin/main...<branch>`,
-   run `/1337:review`, and check the new tests bite: with the non-test changes
+   review it on correctness, and check the new tests bite: with the non-test changes
    reverted they must fail. Send findings back to the same builder
-   (SendMessage keeps its context) and review again after every new commit —
-   `.claude/review.sh` blocks the turn while an unpushed `task/*` branch has
-   a commit newer than the last review. Repeat until clean and gated.
+   (SendMessage keeps its context) and review again after every new commit.
+   Repeat until clean and gated.
 
 6. **Land each branch on its own, in merge order.** Before the push,
    `git fetch origin` and re-read main's highest D heading; if the number was
@@ -103,8 +102,8 @@ every task is `done` with its checks marked.
     auto-merge, so steps 6–8 land each branch alone and there is no
     integrator or completeness-critic agent; the per-branch review covers
     each task against its ruling.
-  - #61 allowed one fix round on blocking findings. CLAUDE.md and
-    `review.sh` require review until clean, after every commit (step 5).
+  - #61 allowed one fix round on blocking findings. CLAUDE.md requires
+    review until clean, after every commit (step 5).
   - #61 pre-assigned D-numbers once. Other sessions take numbers while PRs
     wait (land-tasqx-pr sighting 4, rebase-tasqx-pr on #647 and #648), so
     step 3 allocates in merge order and step 6 re-checks before each push.
