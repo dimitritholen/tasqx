@@ -3,22 +3,22 @@ name: retro
 description: Retrospective on the tasqx tasks completed in this session — review the decisions and rework that got them done, record the lessons on each task, and decide whether a procedure earns a skill. Use at the end of a session, or when the user says retro, retrospective, post-mortem, lessons learned, or asks what we learned. Never triggered by completing a task.
 ---
 
-This skill runs once per session, on request (`/retro`), over every task the
+This skill runs once per session, on request, over every task the
 session completed — not after each `tasqx_complete_task`. Until 2026-09-16 a
-PostToolUse hook nudged a retro per completion; each run cost ~56k tokens, 14
+hook nudged a retro per completion; each run cost ~56k tokens, 14
 completions in 36 h cost ~800k, and a measurement (memory doc
 01a0a754-e116) found the docs those retros wrote were never read back. Decided
 in claude-config #675: one run, one agent, one bundle per task that earned it,
 and nothing written on a task that went straight through. Its evidence is an
 evidence bundle the main session assembles from tasqx and the executors'
 reports (Step 0); the session transcript is not read. Its outputs are an
-annotation on each reviewed task, and optionally a memory entry, a hookify
-recommendation, or a skill candidate. A skill is promoted only on the second
+annotation on each reviewed task, and optionally a memory entry, a
+recommended guard, or a skill candidate. A skill is promoted only on the second
 sighting of the same procedure — retros overrate their own novelty.
 
 ## Step 0: Pick the tasks, then delegate to a fresh agent on an evidence bundle
 
-**Which tasks.** With a ref (`/retro 123`), that task. With none, every task
+**Which tasks.** Given a task ref, that task. With none, every task
 whose `tasqx_complete_task` this session made; if unsure, `tasqx list
 status:done` newest first and take the ones completed since the session began.
 
@@ -88,7 +88,7 @@ report it as "straight through" in the verdict and move to the next bundle.
   `tasqx_add_memory` with a title, a body (the ruling on the first line, the
   reasoning under it), and `source` naming the repo path.
 - A mistake worth preventing mechanically (a "never run X against Y" rule):
-  name the pattern to the user as a hookify candidate. Hooks are the user's
+  name the pattern to the user as a candidate guard. Guards are the user's
   call to create.
 - A procedure from Q5: run it through the skill-worthiness test in Step 4.
 
@@ -97,7 +97,7 @@ report it as "straight through" in the verdict and move to the next bundle.
 Gates 1 and 2 must both pass:
 
 1. **Procedural** — a sequence of steps with a verifiable end. A fact belongs
-   in memory instead; a prohibition belongs in a hook instead.
+   in memory instead; a prohibition belongs in a guard instead.
 2. **Non-obvious** — it cost at least one wrong attempt or a discovery to get
    right. Getting it right first time from general knowledge means a skill
    would add nothing.
@@ -121,8 +121,7 @@ Completion criterion: the candidate task exists with that annotation.
 **Prior sighting, candidate open**: promote it, in this order.
 - `tasqx_annotate_task` on the candidate with `sighting 2: task #N` and
   whatever this run added to the procedure.
-- Draft the skill with the `skill-creator` skill (invoke it via the `Skill`
-  tool), using the candidate's annotation as the spec.
+- Draft the skill, using the candidate's annotation as the spec.
 - `tasqx_annotate_task` on the candidate with the path to the new SKILL.md.
 - `tasqx_cancel_task` the candidate.
 
@@ -137,8 +136,8 @@ stop.
 
 `tasqx_annotate_task` on each reviewed task. Body starts with `retro:`,
 followed by the five answers (only those with evidence) and the routing
-outcome — the memory id, the hookify recommendation, the candidate task ref,
-or the skill path. The verdict relayed by the fresh agent names any hookify
+outcome — the memory id, the recommended guard, the candidate task ref,
+or the skill path. The verdict relayed by the fresh agent names any guard
 pattern verbatim, since that recommendation reaches the user only through the
 verdict.
 

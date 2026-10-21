@@ -91,16 +91,16 @@ Codex or Gemini it also installs `~/.codex/skills/retro` and
 `~/.gemini/skills/retro` (`--only codex:retro`, `--only gemini:retro`). A
 `~/.claude/skills/retro/SKILL.md` that differs from it, your own edit or an
 older copy, is kept; `tasqx setup --yes --only retro --force` replaces it. It
-runs once per session, on request (`/retro`), over every task the session
+runs once per session, on request, over every task the session
 completed — not after each `tasqx_complete_task`. Until 2026-09-16 a
-PostToolUse hook nudged a retro per completion; each run cost ~56k tokens, 14
+hook nudged a retro per completion; each run cost ~56k tokens, 14
 completions in 36 h cost ~800k, and a measurement (memory doc
 01a0a754-e116) found the docs those retros wrote were never read back. Decided
 in claude-config #675: one run, one agent, one bundle per task that earned it,
 and nothing written on a task that went straight through. Its evidence is an
 evidence bundle the main session assembles from tasqx and the executors'
 reports; the session transcript is not read. Its outputs are an annotation on
-each reviewed task, and optionally a memory entry, a hookify recommendation,
+each reviewed task, and optionally a memory entry, a recommended guard,
 or a skill candidate. A skill is promoted only on the second sighting of the
 same procedure — retros overrate their own novelty.
 
@@ -109,7 +109,7 @@ The skill picks the tasks to review, assembles an evidence bundle per task
 rework), delegates to a fresh agent rather than a fork so cost does not grow
 with the session, answers five questions per task (goal vs delivered, rework,
 discovery, redo, procedure), and routes each finding — a fact to memory, a
-mistake to a hookify candidate, a procedure through a skill-worthiness test
+mistake to a candidate guard, a procedure through a skill-worthiness test
 that only promotes on a second sighting — before writing a `retro:` annotation
 on the task.
 

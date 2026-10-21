@@ -1,6 +1,6 @@
 ---
 name: tasqx-multi-agent-fix
-description: Fix a batch of open tasqx findings with parallel builder agents — settle every design question with the user first, allocate D-numbers in merge order, run one builder per task in its own worktree cut from origin/main, review each branch with /1337:review until clean, then land each one as its own PR through land-tasqx-pr. Use it when the user hands over several tasks at once ("fix all these tasks with sub-agents and a reviewer", "orchestrate the open tasqx tasks", "run builders on #12, #13 and #14 in parallel"). Not for a single task — CLAUDE.md's one-task loop covers that. Sighted on task #11 (merge 0f903c1); written up as task #61.
+description: Fix a batch of open tasqx findings with parallel builder agents — settle every design question with the user first, allocate D-numbers in merge order, run one builder per task in its own worktree cut from origin/main, review each branch for correctness until clean, then land each one as its own auto-merged PR. Use it when the user hands over several tasks at once ("fix all these tasks with sub-agents and a reviewer", "orchestrate the open tasqx tasks", "run builders on #12, #13 and #14 in parallel"). Not for a single task — CLAUDE.md's one-task loop covers that. Sighted on task #11 (merge 0f903c1); written up as task #61.
 ---
 
 # Fix a batch of tasqx findings with parallel builders
@@ -51,29 +51,27 @@ those loops side by side, so nothing here replaces a per-task rule.
      repo's style citing the task, no AI attribution, no push until told.
 
 5. **Review each branch as it finishes.** Read `git diff origin/main...<branch>`,
-   run `/1337:review`, and check the new tests bite: with the non-test changes
+   review it for correctness, and check the new tests bite: with the non-test changes
    reverted they must fail. Send findings back to the same builder
-   (SendMessage keeps its context) and review again after every new commit —
-   `.claude/review.sh` blocks the turn while an unpushed `task/*` branch has
-   a commit newer than the last review. Repeat until clean and gated.
+   (SendMessage keeps its context) and review again after every new commit.
+   Repeat until clean and gated.
 
 6. **Land each branch on its own, in merge order.** Before the push,
    `git fetch origin` and re-read main's highest D heading; if the number was
-   taken, the builder renumbers and rebases locally (`rebase-tasqx-pr` steps
-   1–5) — a local rebase before the first push is fine. Then the builder
-   pushes, and you follow `land-tasqx-pr` from step 2, with
+   taken, the builder renumbers, rebases onto `origin/main` and re-gates locally —
+   a local rebase before the first push is fine. Then the builder
+   pushes, and you open the PR and arm auto-merge, with
    `GH_TOKEN="$(gh auth token --hostname github.com --user dimitritholen)"`
    on every `gh pr create` and `gh pr merge --auto --rebase` — never
    `gh auth switch`. Move on to the next branch without waiting on CI.
 
 7. **When main moves under an open PR** (CONFLICTING, or its D-number taken),
-   the owning builder runs `rebase-tasqx-pr`: renumber, rebase, re-gate, push
+   the owning builder renumbers, rebases, re-gates and pushes
    under a new name (`task/<id>-<slug>-rebased`), and you open the
    replacement PR and close the old one. Never force-push a pushed task
    branch.
 
-8. **Close each task at the next task boundary**, per `land-tasqx-pr` steps
-   4–7: MERGED, reinstall, verify, delivery annotation, cleanup, complete
+8. **Close each task at the next task boundary**: MERGED, reinstall, verify, delivery annotation, cleanup, complete
    once. Before deleting a branch, `git cherry origin/main <branch>`; a `+`
    line after a rebase merge can be the same change with shifted context, so
    compare the changed lines (`git show <sha>` against the merged commit on
@@ -103,10 +101,10 @@ every task is `done` with its checks marked.
     auto-merge, so steps 6–8 land each branch alone and there is no
     integrator or completeness-critic agent; the per-branch review covers
     each task against its ruling.
-  - #61 allowed one fix round on blocking findings. CLAUDE.md and
-    `review.sh` require review until clean, after every commit (step 5).
+  - #61 allowed one fix round on blocking findings. CLAUDE.md requires
+    review until clean, after every commit (step 5).
   - #61 pre-assigned D-numbers once. Other sessions take numbers while PRs
-    wait (land-tasqx-pr sighting 4, rebase-tasqx-pr on #647 and #648), so
+    wait (land-tasqx-pr sighting 4, the rebases of #647 and #648), so
     step 3 allocates in merge order and step 6 re-checks before each push.
   - #61's "re-render affected screens" is now a hard rule over two corpora:
     the site fixtures and `docs-fixtures/baseline`.
@@ -114,7 +112,7 @@ every task is `done` with its checks marked.
     the orchestrator's guard refuses repo writes from the main session, so
     the builder pushes once its branch is reviewed, and owns any rebase.
   - #61 trial-merged onto the moved main and pushed main itself. A moved
-    main is now handled per PR by `rebase-tasqx-pr` with a
+    main is now handled per PR with a rebased
     replacement branch; `guard.sh` would let `--force-with-lease` through
     on a task branch, but a pushed branch is never rewritten.
   - #61 removed merged branches outright. Rebase merges rewrite hashes, so

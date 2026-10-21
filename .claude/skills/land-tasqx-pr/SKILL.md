@@ -50,10 +50,11 @@ Run commands from the worktree, one plain command per call.
 3. **Arm auto-merge, then move on.** Read
    `gh pr view <n> --json mergeable,mergeStateStatus` (`UNKNOWN` right after
    opening: read it again a few seconds later). A CONFLICTING PR queues no CI
-   and never merges — go to the `rebase-tasqx-pr` skill, then arm the
-   replacement PR. If the branch adds a D-number to `DESIGN.md` §12,
+   and never merges — have the builder rebase onto `origin/main`, re-gate and
+   push under a new branch name, open the replacement PR, close the old one,
+   then arm the replacement. If the branch adds a D-number to `DESIGN.md` §12,
    `git fetch origin` and check it is still free on `origin/main`; if another
-   session took it, `rebase-tasqx-pr` too. Then
+   session took it, renumber and do the same. Then
    `gh pr merge <n> --auto --rebase` — **without `--delete-branch`.** The
    branch lives in a worktree; `--delete-branch` deletes it (remote and
    local) out from under that worktree before step 6 has checked, with
@@ -84,10 +85,11 @@ Run commands from the worktree, one plain command per call.
    - A required check failed → brief a builder with the failing output to
      fix it on the branch, in the worktree, and push. Auto-merge stays armed
      on the new head; confirm `autoMergeRequest` is not null.
-   - CONFLICTING → `rebase-tasqx-pr`, then arm the replacement PR (step 3).
+   - CONFLICTING → rebase onto `origin/main`, re-gate, push under a new
+     branch name, open a replacement PR, then arm it (step 3).
    - `CLOSED` unmerged → find out why: `gh pr view <n> --json closedAt,comments`
-     and the timeline (`gh api repos/{owner}/{repo}/issues/<n>/timeline`). If
-     `rebase-tasqx-pr` replaced it, follow the replacement and arm it (step 3).
+     and the timeline (`gh api repos/{owner}/{repo}/issues/<n>/timeline`). If a
+     rebased replacement PR superseded it, follow the replacement and arm it (step 3).
      Otherwise show the user and ask whether to reopen it with
      `gh pr reopen <n>`; leave the task open. Never delete the branch or
      worktree while the PR is CLOSED and unmerged.
@@ -146,7 +148,7 @@ Run commands from the worktree, one plain command per call.
    $ git push origin --delete task/<id>-<slug>
    ```
 
-   If the PR superseded earlier ones (`rebase-tasqx-pr` pushes a rebased head
+   If the PR superseded earlier ones (a rebase pushes the rebased head
    under a new remote name), delete every remote name the task used, and any
    `backup/<id>-*` branch, in the same pass.
 
