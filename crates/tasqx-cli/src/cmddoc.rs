@@ -412,7 +412,7 @@ pub const COMMAND_REF: &[CmdDoc] = &[
         ],
         notes: &[
             "A claim is a lease (D236): 30m unless `--lease` names another length, at most 24h. Claiming again as the same holder renews it. Without `--holder` the shell holds it as `user`; over MCP the holder is the connection. `tasqx start --holder` starts a task claimed under a named holder, the timer itself staying the shell's; `next`, `list` and `pick` take `--holder` to see that holder's claims as yours.",
-            "While the lease is live, a claim or `start` by anyone else exits 5 naming the holder and the expiry, and the task leaves their `next` and `@working`. `tasqx list @claimed` lists every live claim.",
+            "While the lease is live, a claim or `start` by anyone else exits 5 naming the holder and the expiry, and the task leaves their `next`, `pick` and `list --holder`. `tasqx list @claimed` lists every live claim.",
             "Nothing sweeps an expired lease: it is read against the clock, so once it runs out anyone can claim the task, and that claim is logged as a takeover. `done` and `cancel` end a claim; `tasqx release` gives one up.",
         ],
         see_also: &["release", "start", "next"],

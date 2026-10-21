@@ -205,10 +205,12 @@ fn next_and_working_skip_another_holders_live_claim_and_claimed_lists_it() {
 
     let claimed = call(&e, "task.list", json!({ "filter": "@claimed" })).unwrap();
     assert_eq!(ids(&claimed), vec![hot]);
-    // Not @working: a plain list still shows it.
+    // A list naming no actor is a view and shows it; one naming an actor
+    // chooses for that actor and does not, whatever the filter (review 7).
+    assert_eq!(ids(&call(&e, "task.list", json!({})).unwrap()).len(), 2);
     assert_eq!(
-        ids(&call(&e, "task.list", json!({ "actor": "agent-2" })).unwrap()).len(),
-        2
+        ids(&call(&e, "task.list", json!({ "actor": "agent-2" })).unwrap()),
+        vec![cold]
     );
 }
 
@@ -499,29 +501,6 @@ fn a_calendar_lease_is_refused() {
     assert_eq!(err.message, "a lease must be a fixed duration");
 }
 
-/// Review 2 #3: the holder asking to start its running task again renews.
-#[test]
-fn the_holders_restart_of_a_running_task_renews_the_lease() {
-    let e = engine();
-    let t = add(&e, "long haul");
-    claim(&e, t, "agent-1").unwrap();
-    call(&e, "task.start", json!({ "ref": t, "actor": "agent-1" })).unwrap();
-    call(
-        &e,
-        "task.claim",
-        json!({ "ref": t, "actor": "agent-1", "lease": "1m" }),
-    )
-    .unwrap();
-    let again = call(&e, "task.start", json!({ "ref": t, "actor": "agent-1" })).unwrap();
-    assert_eq!(again["already_running"], true, "{again}");
-    let got = call(&e, "task.get", json!({ "ref": t })).unwrap();
-    let expires: jiff::Timestamp = got["claim_expires"].as_str().unwrap().parse().unwrap();
-    assert!(
-        expires.duration_since(jiff::Timestamp::now()).as_secs() > 25 * 60,
-        "{got}"
-    );
-}
-
 /// Review 2 #5: the ISO spelling of nothing is no lease either.
 #[test]
 fn an_iso_zero_lease_is_refused() {
@@ -746,4 +725,48 @@ fn undoing_a_modify_to_cancelled_keeps_the_claim() {
     call(&e, "event.revert", json!({})).expect("undo");
     let got = call(&e, "task.get", json!({ "ref": t })).unwrap();
     assert_eq!(got["claimed_by"], "agent-1", "{got}");
+}
+
+/// Review 7 #2: the chooser rule holds whatever the filter — an MCP list of
+/// `status:pending` (the connection's actor stamped in) leaves out another
+/// holder's claim, as a plain list does not.
+#[test]
+fn an_mcp_list_never_offers_another_holders_claim() {
+    use tasqx_core::{McpServer, Scope};
+    let e = engine();
+    let t = add(&e, "zebraclaimed");
+    claim(&e, t, "agent-9").unwrap();
+    let server = McpServer::new(&e, Scope::Write);
+    let out = server
+        .handle_message(&json!({
+            "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+            "params": { "name": "tasqx_list_tasks", "arguments": { "filter": "status:pending" } }
+        }))
+        .expect("a response");
+    assert!(!out.to_string().contains("zebraclaimed"), "{out}");
+    let view = call(&e, "task.list", json!({ "filter": "status:pending" })).unwrap();
+    assert_eq!(view["tasks"][0]["claimed_by"], "agent-9", "{view}");
+    assert!(view["tasks"][0]["claim_expires"].is_string(), "{view}");
+}
+
+/// Review 7 #4: a start of a task already running never writes, the holder's
+/// included; renewing there is an explicit claim.
+#[test]
+fn an_idempotent_start_writes_nothing() {
+    let e = engine();
+    let t = add(&e, "running");
+    claim(&e, t, "agent-1").unwrap();
+    call(&e, "task.start", json!({ "ref": t, "actor": "agent-1" })).unwrap();
+    call(
+        &e,
+        "task.claim",
+        json!({ "ref": t, "actor": "agent-1", "lease": "1m" }),
+    )
+    .unwrap();
+    let before = call(&e, "task.get", json!({ "ref": t })).unwrap();
+    let again = call(&e, "task.start", json!({ "ref": t, "actor": "agent-1" })).unwrap();
+    assert_eq!(again["already_running"], true, "{again}");
+    let after = call(&e, "task.get", json!({ "ref": t })).unwrap();
+    assert_eq!(after["_rev"], before["_rev"]);
+    assert_eq!(after["claim_expires"], before["claim_expires"]);
 }

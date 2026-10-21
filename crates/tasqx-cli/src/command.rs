@@ -511,8 +511,8 @@ pub(super) enum Command {
         /// `fields`; an unknown name is refused by the engine, same as above.
         #[arg(long, value_delimiter = ',')]
         fields: Vec<String>,
-        /// Choose work as this holder: `@working` leaves out tasks anyone else has
-        /// claimed (D236). Without it the list is a view and shows every claim.
+        /// Choose work as this holder: tasks anyone else has claimed are left out,
+        /// whatever the filter (D236). Without it the list is a view and shows them.
         #[arg(long, value_name = "ID")]
         holder: Option<String>,
     },
@@ -1108,8 +1108,8 @@ pub(super) enum Command {
         /// With --card: draw the borders with + - | instead of box-drawing characters.
         #[arg(long, requires = "card")]
         ascii: bool,
-        /// Whose claims count as yours: a task claimed by anyone else is left out of
-        /// `@working` (D236). Default `user`, the shell.
+        /// Choose as this holder: a task anyone else has claimed is never picked
+        /// (D236). Default `user`, the shell.
         #[arg(long, value_name = "ID")]
         holder: Option<String>,
     },
@@ -1169,8 +1169,8 @@ pub(super) enum Command {
         /// filtered on `"\u{1}api"`.
         #[arg(add = crate::complete::candidates::filter_words())]
         filter: Vec<String>,
-        /// Whose claims count as yours: a task claimed by anyone else is left out of
-        /// `@working`, and `s` starts as this holder (D236). Default `user`, the shell.
+        /// Choose as this holder: a task anyone else has claimed is not offered,
+        /// and `s` starts as this holder (D236). Default `user`, the shell.
         #[arg(long, value_name = "ID")]
         holder: Option<String>,
     },

@@ -232,8 +232,9 @@ const METHODS: [(&str, &str, &str); 54] = [
          <code>next_offset</code> is null once nothing is left. An omitted <code>limit</code> \
          defaults to 100; a named <code>limit</code> is clamped to 10,000. \
          <code>fields</code> may include <code>depends_on</code>, which no other projection emits. \
-         <code>@working</code> leaves out tasks under a live claim held by anyone but \
-         <code>actor</code>, <code>user</code> when omitted (D236).",
+         Given an <code>actor</code>, the list chooses for it: tasks under another \
+         holder's live claim are left out whatever the filter. Without one it is a view; \
+         rows carry <code>claimed_by</code> and <code>claim_expires</code> (D236).",
     ),
     (
         "task.get",

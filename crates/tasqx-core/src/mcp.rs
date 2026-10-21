@@ -704,7 +704,7 @@ fn build_tool_specs() -> Vec<ToolSpec> {
                     },
                     "actor": {
                         "type": "string",
-                        "description": "Whose claims `@working` keeps (D236)."
+                        "description": "Who chooses: others' claims are left out (D236)."
                     },
                     // No `enum` here: a key may carry a `-` prefix, which a
                     // plain enum of the bare names would forbid. The valid set
@@ -901,7 +901,7 @@ fn build_tool_specs() -> Vec<ToolSpec> {
                     },
                     "actor": {
                         "type": "string",
-                        "description": "Whose claims count as yours (D236)."
+                        "description": "Who chooses: others' claims are skipped (D236)."
                     },
                     "include_json": {
                         "type": "boolean",

@@ -311,11 +311,18 @@ pub const TASK_BLOCKED: &[FieldDoc] = &[f(
 )];
 
 /// D236: a list row's live claim holder.
-pub const TASK_LIST_CLAIM: &[FieldDoc] = &[n(
-    "claimed_by",
-    "string",
-    "Who holds a live claim on this task (D236), or null. `task.get` adds when the lease runs out.",
-)];
+pub const TASK_LIST_CLAIM: &[FieldDoc] = &[
+    n(
+        "claimed_by",
+        "string",
+        "Who holds a live claim on this task (D236), or null.",
+    ),
+    n(
+        "claim_expires",
+        "string",
+        "When that claim's lease runs out (UTC); null with `claimed_by`.",
+    ),
+];
 
 /// The flag a row carries when its stored `status` is text this build does not recognize.
 pub const TASK_STATUS_FLAG: &[FieldDoc] = &[

@@ -135,7 +135,7 @@ Everything that lists tasks (`list`, `agenda`, `pick`, `watch`, `report`,
 | `'"memory explorer"'` | Title contains the phrase |
 | `title:review` | The same, spelled as a key |
 | `status:any` | Every status, done and cancelled too (`status:all` is the same) |
-| `@working` | Pending or active and not blocked — what a bare `list` shows. Under `next`, or `list --holder`, a task someone else has claimed is left out |
+| `@working` | Pending or active and not blocked — what a bare `list` shows. `next`, `pick` and `list --holder` also leave out, whatever the filter, a task someone else has claimed |
 | `@blocked` | Open, with a dependency that is not yet done or cancelled |
 | `@claimed` | Under a live claim, whoever holds it ([claims](Working-on-Tasks.md#tasqx-claim)) |
 
