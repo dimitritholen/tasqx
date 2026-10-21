@@ -843,17 +843,6 @@ pub fn started(ctx: &Ctx, result: &Value, task: &Value, titles: &Titles, now: Ti
                 .collect()
         })
         .unwrap_or_default();
-    // D236: what the auto-stop left running, because another holder has a
-    // live claim on it — said as plainly as what it stopped.
-    if let Some(kept) = result.get("kept_running").and_then(Value::as_array) {
-        card.below.extend(kept.iter().map(|x| {
-            let what = Fact::detail(
-                ctx,
-                &format!("kept running, claimed by {}", san(&s(x, "claimed_by"))),
-            );
-            moved(ctx, None, sid(x), what, titles)
-        }));
-    }
     draw(ctx, card, now)
 }
 

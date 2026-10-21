@@ -829,13 +829,6 @@ const R_TASK_START: Shape = &[&[
             req("tracked", Ty::Str),
         ]],
     ),
-    // D236: running tasks the auto-stop left alone for another holder's
-    // live claim; empty when nothing was kept.
-    req_of(
-        "kept_running",
-        Ty::Array,
-        &[&[req("short_id", Ty::Int), req("claimed_by", Ty::Str)]],
-    ),
 ]];
 
 const R_TASK_STOP: Shape = &[&[
@@ -2055,16 +2048,12 @@ fn cases() -> Vec<Case> {
             |e| {
                 plain_task(e);
                 plain_task(e);
-                // D236: #3 runs under agent-1's claim, so the start below
-                // keeps it running and says so in `kept_running`.
-                plain_task(e);
-                e.task_claim(&json!({ "ref": 3, "actor": "agent-1" }))
-                    .expect("claim #3");
-                e.task_start(&json!({ "ref": 3, "actor": "agent-1", "keep": true }))
-                    .expect("start #3");
-                e.task_start(&json!({ "ref": 2, "keep": true }))
+                // One holder for both, named, so the MCP path (which stamps
+                // its connection's actor on a call naming none) auto-stops
+                // #2 exactly as the direct call does: D6 is per holder (D236).
+                e.task_start(&json!({ "ref": 2, "actor": "conformance" }))
                     .expect("start #2 first");
-                json!({ "ref": 1, "keep": false, "client": "conformance" })
+                json!({ "ref": 1, "keep": false, "client": "conformance", "actor": "conformance" })
             },
             R_TASK_START,
         ),

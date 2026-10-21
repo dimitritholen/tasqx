@@ -610,11 +610,10 @@ fn task_lifecycle() -> String {
            <code>wait</code> nor its <code>scheduled</code> is still in the future — each has \
            passed or been cleared with <code>task.modify</code>. There is no separate waiting status. <code>task.start</code> \
            and <code>task.done</code> refuse a backlog task. Starting a task without <code>keep</code> stops \
-           every task already running (D6), with one exception (D140): when the start names an \
-           <code>actor</code> and the most recently started running clock was started under a \
-           different named actor, the start is refused instead. A start that names no actor, \
-           as <code>tasqx start</code> sends none, auto-stops as usual; the MCP server fills in \
-           its connection's id when a call names none. When the newest event is a \
+           every task the same holder is already running (D6, per holder since D236): the \
+           holder is the start's <code>holder</code>, else its <code>actor</code>, else \
+           <code>user</code> for the shell, and another holder's running task is never touched. \
+           The MCP server fills in its connection's id when a call names no actor. When the newest event is a \
            <code>task.stop</code>, <code>event.revert</code> takes it back, putting the task \
            back to <code>active</code> if it is still <code>pending</code>. <code>task.modify</code> refuses a <code>status</code> \
            other than <code>cancelled</code>."),
@@ -1147,27 +1146,24 @@ mod tests {
             "a future date does not park a running task"
         );
 
-        // D140 refuses only when BOTH the incoming start and the running
-        // clock's start named an actor, and they differ (PR #58 review).
+        // D6 per holder (D236): a start stops only its own holder's clock.
         let f = add(json!({}));
         let g = add(json!({}));
         call("task.start", json!({"ref": f, "actor": "a"})).unwrap();
-        assert!(
-            call("task.start", json!({"ref": g, "actor": "b"})).is_err(),
-            "a start naming another actor is refused"
-        );
-        assert_eq!(status(f), "active");
+        call("task.start", json!({"ref": g, "actor": "b"})).unwrap();
+        assert_eq!(status(f), "active", "b's start leaves a's clock alone");
+        call("task.stop", json!({"ref": g})).unwrap();
         call("task.start", json!({"ref": g})).unwrap();
         assert_eq!(
             status(f),
-            "pending",
-            "an actor-less start auto-stops a named clock"
+            "active",
+            "the shell's start leaves a's clock alone"
         );
         call("task.start", json!({"ref": f, "actor": "b"})).unwrap();
         assert_eq!(
             status(g),
-            "pending",
-            "a named start auto-stops an actor-less clock"
+            "active",
+            "b's start leaves the shell's clock alone"
         );
         // The Task page's `_rev` and `completed` rows (PR #58 re-read): token
         // spend leaves the revision alone, and a cancelled task is never
@@ -1191,8 +1187,8 @@ mod tests {
 
         let prose = task_lifecycle();
         assert!(
-            prose.contains("once neither") && prose.contains("names an <code>actor</code>"),
-            "the prose does not state the two-date hold or the two-actor refusal"
+            prose.contains("once neither") && prose.contains("per holder"),
+            "the prose does not state the two-date hold or the per-holder auto-stop"
         );
 
         // So the drawing may not send any arrow to `pending` alone, and the

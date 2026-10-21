@@ -704,7 +704,7 @@ fn build_tool_specs() -> Vec<ToolSpec> {
                     },
                     "actor": {
                         "type": "string",
-                        "description": "Who chooses: others' claims are left out (D236)."
+                        "description": "Who chooses: under @working, others' claims are hidden (D236)."
                     },
                     // No `enum` here: a key may carry a `-` prefix, which a
                     // plain enum of the bare names would forbid. The valid set
@@ -1430,12 +1430,14 @@ fn build_tool_specs() -> Vec<ToolSpec> {
             idempotent: false,
             description: "Lease a task so parallel agents skip it and cannot start, stop or \
                 close it (D236). Claim again to renew. The default holder is this connection, \
-                and a restarted server is a NEW holder locked out of its old claims: pass a \
-                stable `actor` if you may reconnect, or `force_claim` past a stranded claim.",
+                and a restarted server is a NEW holder locked out of its old claims: if you may \
+                reconnect, pass the same stable `actor` on the claim AND on every later call \
+                (start, stop, complete, cancel, release); `force_claim` passes a stranded claim.",
             schema: json!({
                 "type": "object",
                 "properties": {
                     "ref": ref_schema(),
+                    "expected_rev": lifecycle_rev_schema(),
                     "lease": { "type": "string", "description": "Default 30m, max 24h." },
                     "actor": {
                         "type": "string",
@@ -1456,6 +1458,7 @@ fn build_tool_specs() -> Vec<ToolSpec> {
                 "type": "object",
                 "properties": {
                     "ref": ref_schema(),
+                    "expected_rev": lifecycle_rev_schema(),
                     "actor": {
                         "type": "string",
                         "description": "The holder; default this connection. Reconnecting? Pass a stable id."

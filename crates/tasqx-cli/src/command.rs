@@ -511,8 +511,8 @@ pub(super) enum Command {
         /// `fields`; an unknown name is refused by the engine, same as above.
         #[arg(long, value_delimiter = ',')]
         fields: Vec<String>,
-        /// Choose work as this holder: tasks anyone else has claimed are left out,
-        /// whatever the filter (D236). Without it the list is a view and shows them.
+        /// Choose work as this holder: with `@working` (the default), tasks anyone else
+        /// has claimed are left out (D236). Without it the list is a view and shows them.
         #[arg(long, value_name = "ID")]
         holder: Option<String>,
     },

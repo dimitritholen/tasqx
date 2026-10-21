@@ -232,9 +232,10 @@ const METHODS: [(&str, &str, &str); 54] = [
          <code>next_offset</code> is null once nothing is left. An omitted <code>limit</code> \
          defaults to 100; a named <code>limit</code> is clamped to 10,000. \
          <code>fields</code> may include <code>depends_on</code>, which no other projection emits. \
-         Given an <code>actor</code>, the list chooses for it: tasks under another \
-         holder's live claim are left out whatever the filter. Without one it is a view; \
-         rows carry <code>claimed_by</code> and <code>claim_expires</code> (D236).",
+         With an <code>actor</code> AND <code>@working</code> in the filter the list \
+         chooses for that caller and leaves out tasks under another holder's live claim; \
+         any other list is a view. Rows carry <code>claimed_by</code> and \
+         <code>claim_expires</code> (D236).",
     ),
     (
         "task.get",
@@ -271,14 +272,15 @@ const METHODS: [(&str, &str, &str); 54] = [
     ),
     (
         "task.claim",
-        "<code>ref</code>, <code>lease?</code>, <code>actor?</code>",
+        "<code>ref</code>, <code>lease?</code>, <code>actor?</code>, <code>expected_rev?</code>",
         "<code>{short_id, title, op, claimed_by, claim_expires, _rev}</code> (D236). \
          <code>op</code> is <code>claim</code>, <code>renew</code> or <code>takeover</code>. \
          Another holder's live lease is a <code>conflict</code> naming the holder and the expiry.",
     ),
     (
         "task.release",
-        "<code>ref</code>, <code>actor?</code>, <code>force_claim?</code>",
+        "<code>ref</code>, <code>actor?</code>, <code>force_claim?</code>, \
+         <code>expected_rev?</code>",
         "<code>{short_id, title, released_by, forced, _rev}</code> (D236). Only the holder \
          releases, unless <code>force_claim</code> takes a claim another holder left behind.",
     ),

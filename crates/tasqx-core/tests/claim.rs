@@ -205,12 +205,12 @@ fn next_and_working_skip_another_holders_live_claim_and_claimed_lists_it() {
 
     let claimed = call(&e, "task.list", json!({ "filter": "@claimed" })).unwrap();
     assert_eq!(ids(&claimed), vec![hot]);
-    // A list naming no actor is a view and shows it; one naming an actor
-    // chooses for that actor and does not, whatever the filter (review 7).
+    // Only `@working` with an actor chooses; any other list is a view and
+    // shows the claim, an actor named or not (review 8).
     assert_eq!(ids(&call(&e, "task.list", json!({})).unwrap()).len(), 2);
     assert_eq!(
-        ids(&call(&e, "task.list", json!({ "actor": "agent-2" })).unwrap()),
-        vec![cold]
+        ids(&call(&e, "task.list", json!({ "actor": "agent-2" })).unwrap()).len(),
+        2
     );
 }
 
@@ -383,56 +383,22 @@ fn a_zero_lease_is_refused_as_a_lease() {
     assert!(!err.message.contains("estimate"), "{}", err.message);
 }
 
-/// Review 3 ruling: claim exclusion is for a caller choosing work for itself.
-/// A report, an export and a list naming no actor are views, and show an
-/// agent's claim; `next`, and a list naming an actor, leave it out.
+/// Review 8 #2: single-active is per holder. A start leaves another holder's
+/// running task alone — no stop, no report, no refusal.
 #[test]
-fn views_show_every_claim_and_choosers_skip_others() {
-    let e = engine();
-    let t = add(&e, "agent work");
-    claim(&e, t, "agent-1").unwrap();
-    let summary = call(&e, "report.summary", json!({ "filter": "@working" })).unwrap();
-    assert!(summary.to_string().contains("\"count\":1"), "{summary}");
-    let doc = call(&e, "store.export", json!({ "filter": "@working" })).unwrap();
-    assert_eq!(doc["tasks"].as_array().unwrap().len(), 1, "{doc}");
-    let view = call(&e, "task.list", json!({ "filter": "@working" })).unwrap();
-    assert_eq!(ids(&view), vec![t], "{view}");
-    assert_eq!(view["tasks"][0]["claimed_by"], "agent-1", "{view}");
-
-    let other = call(
-        &e,
-        "task.list",
-        json!({ "filter": "@working", "actor": "agent-2" }),
-    )
-    .unwrap();
-    assert_eq!(other["total"], 0, "{other}");
-    let next = call(&e, "task.next", json!({})).unwrap();
-    assert_eq!(
-        next["task"],
-        Value::Null,
-        "the shell is not agent-1: {next}"
-    );
-}
-
-/// Review 3 #1: D6's auto-stop leaves a running task another holder has
-/// claimed alone, and says it kept it.
-#[test]
-fn auto_stop_keeps_another_holders_claimed_task_running() {
+fn a_start_never_touches_another_holders_running_task() {
     let e = engine();
     let (a, b) = (add(&e, "agent's"), add(&e, "mine"));
     claim(&e, a, "agent-1").unwrap();
     call(&e, "task.start", json!({ "ref": a, "actor": "agent-1" })).unwrap();
     let out = call(&e, "task.start", json!({ "ref": b })).unwrap();
     assert_eq!(out["auto_stopped"], json!([]), "{out}");
-    assert_eq!(
-        out["kept_running"],
-        json!([{ "short_id": a, "claimed_by": "agent-1" }]),
-        "{out}"
-    );
-    let got = call(&e, "task.get", json!({ "ref": a })).unwrap();
-    assert_eq!(got["status"], "active", "{got}");
+    assert!(out.get("kept_running").is_none(), "{out}");
+    for t in [a, b] {
+        let got = call(&e, "task.get", json!({ "ref": t })).unwrap();
+        assert_eq!(got["status"], "active", "#{t}: {got}");
+    }
 }
-
 /// Review 3 #2: a task running on another actor's clock cannot be claimed; a
 /// shell's anonymous clock names nobody to defer to.
 #[test]
@@ -683,32 +649,43 @@ fn a_second_actor_starts_beside_a_claimed_running_task() {
     }
 }
 
-/// Review 6 #2: D140 per running task. A's clock is under A's own claim, so
-/// it is kept; B's is not claimed, so C's start is refused naming B, and
-/// nothing — A's clock included — was stopped.
+/// Review 8 #2: three holders, three clocks; each start stops only its own.
 #[test]
-fn every_running_clock_is_kept_or_refused_never_silently_stopped() {
+fn every_holder_runs_its_own_single_clock() {
     let e = engine();
-    let (t1, t2, t3) = (add(&e, "a's"), add(&e, "b's"), add(&e, "c's"));
-    // B first, so the newest start is A's: a check of only the newest clock
-    // would see A's claimed one, wave the start through and stop B silently.
+    let (t1, t2, t3, t4) = (
+        add(&e, "a's"),
+        add(&e, "b's"),
+        add(&e, "c's"),
+        add(&e, "a's next"),
+    );
+    call(&e, "task.start", json!({ "ref": t1, "actor": "agent-a" })).unwrap();
     call(&e, "task.start", json!({ "ref": t2, "actor": "agent-b" })).unwrap();
-    claim(&e, t1, "agent-a").unwrap();
-    call(
-        &e,
-        "task.start",
-        json!({ "ref": t1, "actor": "agent-a", "keep": true }),
-    )
-    .unwrap();
-    let err = call(&e, "task.start", json!({ "ref": t3, "actor": "agent-c" })).unwrap_err();
-    assert_eq!(err.code, ErrorCode::Conflict, "{}", err.message);
-    assert!(err.message.contains("agent-b"), "{}", err.message);
+    call(&e, "task.start", json!({ "ref": t3, "actor": "agent-c" })).unwrap();
+    for t in [t1, t2, t3] {
+        let got = call(&e, "task.get", json!({ "ref": t })).unwrap();
+        assert_eq!(got["status"], "active", "#{t}: {got}");
+    }
+    let out = call(&e, "task.start", json!({ "ref": t4, "actor": "agent-a" })).unwrap();
+    assert_eq!(out["auto_stopped"][0]["short_id"], t1, "{out}");
+    let got = call(&e, "task.get", json!({ "ref": t2 })).unwrap();
+    assert_eq!(got["status"], "active");
+}
+
+/// Review 8 #2: undoing a stop puts a clock back beside another holder's.
+#[test]
+fn undo_of_a_stop_is_refused_only_by_the_same_holders_clock() {
+    let e = engine();
+    let (t1, t2) = (add(&e, "agent's"), add(&e, "mine"));
+    call(&e, "task.start", json!({ "ref": t1, "actor": "agent-1" })).unwrap();
+    call(&e, "task.start", json!({ "ref": t2 })).unwrap();
+    call(&e, "task.stop", json!({ "ref": t2 })).unwrap();
+    call(&e, "event.revert", json!({})).expect("agent-1's clock is not the shell's");
     for t in [t1, t2] {
         let got = call(&e, "task.get", json!({ "ref": t })).unwrap();
         assert_eq!(got["status"], "active", "#{t}: {got}");
     }
 }
-
 /// Review 6 #3: a modify to cancelled records the claim it ends, and undo
 /// puts it back.
 #[test]
@@ -727,28 +704,74 @@ fn undoing_a_modify_to_cancelled_keeps_the_claim() {
     assert_eq!(got["claimed_by"], "agent-1", "{got}");
 }
 
-/// Review 7 #2: the chooser rule holds whatever the filter — an MCP list of
-/// `status:pending` (the connection's actor stamped in) leaves out another
-/// holder's claim, as a plain list does not.
+/// Review 8 #1: over MCP every list is stamped with the connection's actor,
+/// so the rule is what decides: `@working` hides another agent's claim,
+/// `@claimed` and `status:active` show it.
 #[test]
-fn an_mcp_list_never_offers_another_holders_claim() {
+fn an_mcp_list_hides_claims_only_under_working() {
     use tasqx_core::{McpServer, Scope};
     let e = engine();
     let t = add(&e, "zebraclaimed");
     claim(&e, t, "agent-9").unwrap();
+    call(&e, "task.start", json!({ "ref": t, "actor": "agent-9" })).unwrap();
     let server = McpServer::new(&e, Scope::Write);
-    let out = server
-        .handle_message(&json!({
-            "jsonrpc": "2.0", "id": 1, "method": "tools/call",
-            "params": { "name": "tasqx_list_tasks", "arguments": { "filter": "status:pending" } }
-        }))
-        .expect("a response");
-    assert!(!out.to_string().contains("zebraclaimed"), "{out}");
-    let view = call(&e, "task.list", json!({ "filter": "status:pending" })).unwrap();
-    assert_eq!(view["tasks"][0]["claimed_by"], "agent-9", "{view}");
-    assert!(view["tasks"][0]["claim_expires"].is_string(), "{view}");
+    let list = |filter: &str| {
+        server
+            .handle_message(&json!({
+                "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                "params": { "name": "tasqx_list_tasks", "arguments": { "filter": filter } }
+            }))
+            .expect("a response")
+            .to_string()
+    };
+    assert!(!list("@working").contains("zebraclaimed"));
+    assert!(list("@claimed").contains("zebraclaimed"));
+    assert!(list("status:active").contains("zebraclaimed"));
 }
 
+/// Review 8 #4: claim and release take the optimistic-concurrency guard.
+#[test]
+fn claim_and_release_honour_expected_rev() {
+    let e = engine();
+    let t = add(&e, "guarded");
+    let rev = call(&e, "task.get", json!({ "ref": t })).unwrap()["_rev"]
+        .as_i64()
+        .unwrap();
+    let err = call(
+        &e,
+        "task.claim",
+        json!({ "ref": t, "expected_rev": rev - 1 }),
+    )
+    .unwrap_err();
+    assert_eq!(err.code, ErrorCode::Conflict, "{}", err.message);
+    let out = call(&e, "task.claim", json!({ "ref": t, "expected_rev": rev })).unwrap();
+    let rev = out["_rev"].as_i64().unwrap();
+    let err = call(
+        &e,
+        "task.release",
+        json!({ "ref": t, "expected_rev": rev - 1 }),
+    )
+    .unwrap_err();
+    assert_eq!(err.code, ErrorCode::Conflict, "{}", err.message);
+    call(&e, "task.release", json!({ "ref": t, "expected_rev": rev })).expect("current rev");
+}
+
+/// Review 8 #6: the restoring `renew` is the undoer's act; the claim's holder
+/// rides in the payload.
+#[test]
+fn a_restored_claim_is_attributed_to_whoever_undid_it() {
+    let e = engine();
+    let t = add(&e, "undone");
+    claim(&e, t, "agent-1").unwrap();
+    call(&e, "task.done", json!({ "ref": t, "actor": "agent-1" })).unwrap();
+    call(&e, "event.revert", json!({})).unwrap();
+    let ev = events(&e, t)
+        .into_iter()
+        .find(|ev| ev["op"] == "renew" && ev["payload"]["restored"] == true)
+        .expect("the restoring renew");
+    assert_eq!(ev["actor"], "user", "{ev}");
+    assert_eq!(ev["payload"]["holder"], "agent-1", "{ev}");
+}
 /// Review 7 #4: a start of a task already running never writes, the holder's
 /// included; renewing there is an explicit claim.
 #[test]
@@ -769,4 +792,39 @@ fn an_idempotent_start_writes_nothing() {
     let after = call(&e, "task.get", json!({ "ref": t })).unwrap();
     assert_eq!(after["_rev"], before["_rev"]);
     assert_eq!(after["claim_expires"], before["claim_expires"]);
+}
+
+/// Review 8's rule: a list hides another holder's live claim only when it
+/// names an actor AND asks for `@working`; reports, exports and every other
+/// list show it with its holder and expiry.
+#[test]
+fn views_show_every_claim_and_choosers_skip_others() {
+    let e = engine();
+    let t = add(&e, "agent work");
+    claim(&e, t, "agent-1").unwrap();
+    let summary = call(&e, "report.summary", json!({ "filter": "@working" })).unwrap();
+    assert!(summary.to_string().contains("\"count\":1"), "{summary}");
+    let doc = call(&e, "store.export", json!({ "filter": "@working" })).unwrap();
+    assert_eq!(doc["tasks"].as_array().unwrap().len(), 1, "{doc}");
+    for filter in ["@working", "status:pending", "@claimed", ""] {
+        let view = call(&e, "task.list", json!({ "filter": filter })).unwrap();
+        assert_eq!(ids(&view), vec![t], "{filter}: {view}");
+        assert_eq!(view["tasks"][0]["claimed_by"], "agent-1", "{view}");
+        assert!(view["tasks"][0]["claim_expires"].is_string(), "{view}");
+    }
+    for (filter, shown) in [("@working", 0), ("status:pending", 1), ("@claimed", 1)] {
+        let chosen = call(
+            &e,
+            "task.list",
+            json!({ "filter": filter, "actor": "agent-2" }),
+        )
+        .unwrap();
+        assert_eq!(chosen["total"], shown, "{filter}: {chosen}");
+    }
+    let next = call(&e, "task.next", json!({})).unwrap();
+    assert_eq!(
+        next["task"],
+        Value::Null,
+        "the shell is not agent-1: {next}"
+    );
 }

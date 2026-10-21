@@ -698,13 +698,6 @@ pub const R_TASK_START: &[FieldDoc] = &[
     f("title", "string", "The task's title, verbatim."),
     f("already_running", "boolean", "True when the call opened no new interval because the timer was already on."),
     f("auto_stopped", "array", "Whatever D6's single-active rule stopped to make room. Empty unless `keep` was omitted and something else was running."),
-    f("kept_running", "array", "Running tasks the auto-stop left alone because another holder has a live claim on them (D236), as `{short_id, claimed_by}`. Empty when none."),
-];
-
-/// One running task `task.start` left alone for another holder's claim (D236).
-pub const KEPT_RUNNING_ROW: &[FieldDoc] = &[
-    f("short_id", "integer", "The task kept running."),
-    f("claimed_by", "string", "Whose live claim kept it."),
 ];
 
 /// One task D6's single-active rule stopped to make room.
@@ -1916,7 +1909,6 @@ pub fn result_shape(method: &str) -> &'static [(&'static str, &'static [FieldDoc
         "task.start" => &[
             ("result", R_TASK_START),
             ("result.auto_stopped[]", AUTO_STOPPED_ROW),
-            ("result.kept_running[]", KEPT_RUNNING_ROW),
         ],
         "task.stop" => &[("result", R_TASK_STOP)],
         "task.claim" => &[("result", R_TASK_CLAIM)],

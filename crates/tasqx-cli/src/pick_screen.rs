@@ -78,10 +78,7 @@ pub(crate) fn run_pick(
     let task = verbs::read_back(be, &result).unwrap_or_else(|| result.clone());
     let titles = verbs::titles_of(
         be,
-        &verbs::ids_in(&result, "auto_stopped", Some("short_id"))
-            .into_iter()
-            .chain(verbs::ids_in(&result, "kept_running", Some("short_id")))
-            .collect::<Vec<_>>(),
+        &verbs::ids_in(&result, "auto_stopped", Some("short_id")),
     );
     let text = picked_summary(ctx, &result, &task, &titles);
     // The title out of the snapshot the screen was built from, for the
@@ -151,7 +148,23 @@ pub(crate) fn pick_candidates(
     // D110's ceiling, so the common store is read in one call: `task.list`
     // scans the whole store each time (D58), and a small page made opening
     // the screen cost one scan per page.
-    candidates_in_pages(be, filter, 10_000, holder)
+    let mut listed = candidates_in_pages(be, filter, 10_000, holder)?;
+    // D236: `pick` chooses work whatever its filter, so another holder's
+    // live claim (the rows carry it) is never offered — the list itself
+    // hides one only under `@working`.
+    if let (Some(chooser), Some(rows)) = (
+        holder,
+        listed.get_mut("tasks").and_then(Value::as_array_mut),
+    ) {
+        rows.retain(|t| {
+            t.get("claimed_by")
+                .and_then(Value::as_str)
+                .is_none_or(|by| by == chooser)
+        });
+        let n = rows.len();
+        listed["count"] = json!(n);
+    }
+    Ok(listed)
 }
 
 /// [`pick_candidates`] with the page size named, so a test can make the loop

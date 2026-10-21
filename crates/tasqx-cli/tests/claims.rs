@@ -257,7 +257,8 @@ fn start_holder_leaves_the_clock_anonymous() {
         String::from_utf8_lossy(&plain.stderr)
     );
     let body: Value = serde_json::from_slice(&plain.stdout).expect("start --json");
-    assert_eq!(body["kept_running"][0]["short_id"], 4, "{body}");
+    // Per holder (review 8): bot's clock is not the shell's to stop.
+    assert_eq!(body["auto_stopped"], json!([]), "{body}");
     let four = s.api(T0, "task.get", json!({ "ref": 4 }));
     assert_eq!(
         four["result"]["status"], "active",
@@ -318,21 +319,5 @@ fn a_holder_owns_the_clock_it_started_under() {
         run(T_EXPIRED, &["claim", "1"]).status.code(),
         Some(5),
         "x's clock"
-    );
-}
-
-/// Review 7 #3: `start` says which running task it left alone, and why.
-#[test]
-fn start_names_what_it_kept_running() {
-    let s = Store::new("keptline");
-    s.api(T0, "task.add", json!({ "title": "agent work" }));
-    s.api(T0, "task.add", json!({ "title": "mine" }));
-    s.api(T0, "task.claim", json!({ "ref": 1, "actor": "agent-1" }));
-    s.api(T0, "task.start", json!({ "ref": 1, "actor": "agent-1" }));
-    let out = s.bin(T0).args(["start", "2"]).output().expect("run");
-    let text = String::from_utf8_lossy(&out.stdout);
-    assert!(
-        text.contains("#1") && text.contains("kept running, claimed by agent-1"),
-        "{text}"
     );
 }
