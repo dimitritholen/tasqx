@@ -39,10 +39,17 @@ pub const MAX_LEASE_SECS: i64 = 24 * 60 * 60;
 /// spelling for every comparison and every surface that names it.
 pub const SHELL_HOLDER: &str = "user";
 
-/// The claim holder a call names: D140's actor key, [`SHELL_HOLDER`] when it
-/// names none, so a claim always has a holder to show and compare.
+/// D236: the ONE resolver of who a call is, as a claim holder: `holder`
+/// (the CLI's `--holder` on `start`), else D140's `actor`, else
+/// [`SHELL_HOLDER`]. Every claim decision — start, claim, release, stop, done,
+/// cancel, modify, next, and a list or pick choosing work — goes through it.
+fn identity(holder: Option<&str>, actor: Option<&str>) -> String {
+    holder.or(actor).unwrap_or(SHELL_HOLDER).to_string()
+}
+
+/// [`identity`] for a call that takes `actor` and no `holder`.
 fn claim_holder(p: &Value) -> Result<String, ApiError> {
-    Ok(opt_str_nonempty(p, "actor")?.unwrap_or_else(|| SHELL_HOLDER.to_string()))
+    Ok(identity(None, opt_str_nonempty(p, "actor")?.as_deref()))
 }
 
 /// `now + secs`, the instant a lease granted at `now` runs out.
@@ -86,25 +93,29 @@ fn parse_lease(raw: &str) -> Result<i64, ApiError> {
     Ok(secs)
 }
 
-/// The holder's own start renews its live lease to at least
-/// [`DEFAULT_LEASE_SECS`] from `now`, never shortening it (D236). One helper
-/// for the fresh start and the already-running answer. `bump` is the
-/// already-running answer, which writes only once less than half the default
-/// lease is left, so repeating a start in quick succession changes nothing.
+/// The holder's own fresh start renews its live lease to at least
+/// [`DEFAULT_LEASE_SECS`] from `now`, never shortening it (D236), inside the
+/// start's own rev bump. A start of a task already running writes nothing;
+/// renewing there is an explicit `task.claim`.
 fn renew_on_start(
     tx: &rusqlite::Transaction,
     task: &Task,
     holder: &str,
     until: Timestamp,
     now: Timestamp,
-    bump: bool,
-) -> Result<bool, ApiError> {
+) -> Result<(), ApiError> {
     let renewed = lease_end(now, DEFAULT_LEASE_SECS);
-    if renewed <= until || (bump && lease_end(now, DEFAULT_LEASE_SECS / 2) <= until) {
-        return Ok(false);
+    if renewed > until {
+        write_claim(
+            tx,
+            task,
+            holder,
+            &renewed.to_string(),
+            &ClaimOp::Renew,
+            false,
+        )?;
     }
-    write_claim(tx, task, holder, &renewed.to_string(), "renew", None, bump)?;
-    Ok(true)
+    Ok(())
 }
 
 /// The live claim on `task_id` as `(holder, expiry)`, or `None` when there is
@@ -119,27 +130,42 @@ fn live_claim_on(
         .and_then(|(by, until)| parse_ts(&until).map(|u| (by, u))))
 }
 
+/// What [`claim_close_guard`] found: the holder a `force_claim` overrode,
+/// and the claim as stored (live or not), which a close records so `undo`
+/// can put it back.
+struct ClosedClaim {
+    forced: Option<String>,
+    stored: Option<(String, String)>,
+}
+
 /// D236: stopping or closing (stop, done, cancel, a modify to cancelled) a
 /// task under another holder's live claim is `conflict` unless
-/// `force_claim`; with it, the holder it overrode, for the event.
+/// `force_claim`. One read of the claim serves the check and the event.
 fn claim_close_guard(
     tx: &rusqlite::Transaction,
     task: &Task,
     actor: Option<&str>,
     force_claim: bool,
-) -> Result<Option<String>, ApiError> {
-    let caller = actor.unwrap_or(SHELL_HOLDER);
-    match live_claim_on(tx, &task.id, crate::clock::now())? {
-        Some((by, _)) if by == caller => Ok(None),
-        Some((by, until)) if !force_claim => Err(ApiError::conflict(format!(
-            "#{} is claimed by {by} until {until}; act as that holder (`actor`, or --holder on \
-             the CLI), or force_claim:true (--force-claim) to override it — the event records \
-             whose claim it overrode (D236)",
-            task.short_id
-        ))),
-        Some((by, _)) => Ok(Some(by)),
-        None => Ok(None),
-    }
+) -> Result<ClosedClaim, ApiError> {
+    let caller = identity(None, actor);
+    let stored = Engine::claim_on(tx, &task.id)?;
+    let live = stored
+        .as_ref()
+        .filter(|(_, until)| lease_is_live(until, crate::clock::now()));
+    let forced = match live {
+        Some((by, _)) if by == &caller => None,
+        Some((by, until)) if !force_claim => {
+            return Err(ApiError::conflict(format!(
+                "#{} is claimed by {by} until {until}; act as that holder (`actor`, or --holder \
+                 on the CLI), or force_claim:true (--force-claim) to override it — the event \
+                 records whose claim it overrode (D236)",
+                task.short_id
+            )))
+        }
+        Some((by, _)) => Some(by.clone()),
+        None => None,
+    };
+    Ok(ClosedClaim { forced, stored })
 }
 
 /// Whether a stored claim expiry is still in the future at `now` (D236,
@@ -150,17 +176,35 @@ pub fn lease_is_live(expires: &str, now: Timestamp) -> bool {
     parse_ts(expires).is_some_and(|t| t > now)
 }
 
+/// What a claim write is, and the event it logs (D236).
+enum ClaimOp {
+    Claim,
+    Renew,
+    /// Another holder's expired lease, named.
+    Takeover(String),
+}
+
+impl ClaimOp {
+    /// The event op and `task.claim`'s `op` answer.
+    const fn name(&self) -> &'static str {
+        match self {
+            ClaimOp::Claim => "claim",
+            ClaimOp::Renew => "renew",
+            ClaimOp::Takeover(_) => "takeover",
+        }
+    }
+}
+
 /// Write `holder`'s lease and its event, the holder as the event's actor.
-/// `op` is `claim`, `renew` or `takeover`; a takeover names who it took
-/// the expired lease from. `bump` writes this call's one rev increment; a
-/// caller that bumps the rev itself (`task.start`) passes false.
+/// A takeover names who it took the expired lease from. `bump` writes this
+/// call's one rev increment; a caller that bumps the rev itself
+/// (`task.start`) passes false.
 fn write_claim(
     tx: &rusqlite::Transaction,
     task: &Task,
     holder: &str,
     expires: &str,
-    op: &str,
-    previous: Option<String>,
+    op: &ClaimOp,
     bump: bool,
 ) -> Result<(), ApiError> {
     if bump {
@@ -176,13 +220,15 @@ fn write_claim(
         )?;
     }
     let mut payload = json!({ "holder": holder, "expires": expires });
+    // One literal per op: the undo vocabulary guard (tests/engine.rs) reads
+    // each `insert_event` op as a string literal.
     crate::storage::as_actor(Some(holder.to_string()), || match op {
-        "renew" => insert_event(tx, Entity::Task, &task.id, "renew", &payload),
-        "takeover" => {
-            payload["from"] = json!(previous);
+        ClaimOp::Claim => insert_event(tx, Entity::Task, &task.id, "claim", &payload),
+        ClaimOp::Renew => insert_event(tx, Entity::Task, &task.id, "renew", &payload),
+        ClaimOp::Takeover(from) => {
+            payload["from"] = json!(from);
             insert_event(tx, Entity::Task, &task.id, "takeover", &payload)
         }
-        _ => insert_event(tx, Entity::Task, &task.id, "claim", &payload),
     })
 }
 
@@ -836,13 +882,8 @@ impl Engine {
         // reported as started for somebody who does not hold it.
         let claim_now = crate::clock::now();
         let live_claim = live_claim_on(&tx, &task.id, claim_now)?;
-        // Who this start is, as a claim holder: `holder` (the CLI's), else
-        // the clock's `actor`, else the shell.
-        let starter = command
-            .holder
-            .as_deref()
-            .or(command.actor.as_deref())
-            .unwrap_or(SHELL_HOLDER);
+        let starter = identity(command.holder.as_deref(), command.actor.as_deref());
+        let starter = starter.as_str();
         if let Some((by, until)) = &live_claim {
             if by != starter {
                 return Err(claimed_elsewhere(task.short_id, by, &until.to_string()));
@@ -851,14 +892,8 @@ impl Engine {
 
         match task.status {
             Status::Active => {
-                // Idempotent: already running. D236: the holder asking again
-                // renews its lease once less than half of it is left — the one
-                // write this answer can make.
-                if let Some((by, until)) = &live_claim {
-                    if renew_on_start(&tx, &task, by, *until, claim_now, true)? {
-                        tx.commit()?;
-                    }
-                }
+                // Idempotent: already running, and no write (D236: renewing a
+                // running task's lease is an explicit `task.claim`).
                 return Ok(commands::TaskStarted {
                     id: task.id,
                     interval_started: task.active_since,
@@ -892,7 +927,7 @@ impl Engine {
         // it. No rev of its own: the start's UPDATE below is this call's one
         // bump.
         if let Some((by, until)) = &live_claim {
-            renew_on_start(&tx, &task, by, *until, claim_now, false)?;
+            renew_on_start(&tx, &task, by, *until, claim_now)?;
         }
 
         // D6: single active by default — auto-stop any currently active task.
@@ -944,7 +979,7 @@ impl Engine {
                 // auto-stop against an agent's clock and against another shell, which
                 // is every single-actor store and therefore almost every store.
                 if let Some(mine) = command.actor.as_deref() {
-                    if let Some(held_by) = self.clock_holder_of(&aid)?.filter(|a| a != mine) {
+                    if let Some(held_by) = self.clock_actor_of(&aid)?.filter(|a| a != mine) {
                         return Err(ApiError::conflict(format!(
                             "#{a_short_id} \"{a_title}\" is active and its clock is held by \
                              another session ({held_by}); stopping it here would leave that \
@@ -1003,6 +1038,13 @@ impl Engine {
         if let Some(actor) = &command.actor {
             start_payload["actor"] = json!(actor);
         }
+        // D236: whose clock this is for claim purposes — the resolved
+        // identity, so a CLI `start --holder X` clock is X's while `actor`
+        // above stays absent and D140's anonymous auto-stop is untouched.
+        // Absent is the shell's, so a plain shell start's event is unchanged.
+        if starter != SHELL_HOLDER {
+            start_payload["holder"] = json!(starter);
+        }
         insert_event(&tx, Entity::Task, &task.id, "start", &start_payload)?;
         tx.commit()?;
 
@@ -1041,7 +1083,7 @@ impl Engine {
             )));
         }
         // After the status check, so the first refusal names the real cause.
-        let claim_forced = claim_close_guard(&tx, &task, actor.as_deref(), force_claim)?;
+        let claim_forced = claim_close_guard(&tx, &task, actor.as_deref(), force_claim)?.forced;
 
         let ts = now();
         let elapsed = seconds_between(&task.active_since, &ts);
@@ -1108,19 +1150,12 @@ impl Engine {
                 task.status.as_str()
             )));
         }
-        // D236 beside D140: a task running on another actor's clock is that
-        // actor's work, claimed or not. An anonymous clock is the shell's, so
-        // only the shell's own holder may claim it.
+        // D236 beside D140: a running task is its clock owner's work, claimed
+        // or not — the owner being the identity its start recorded.
         let now_ts = crate::clock::now();
         let held = Self::claim_on(&tx, &task.id)?;
-        // A holder renewing its own live claim is already the task's owner.
-        let renewing = held
-            .as_ref()
-            .is_some_and(|(by, until)| by == &holder && lease_is_live(until, now_ts));
-        if task.status == Status::Active && !renewing {
-            let clock = self
-                .clock_holder_of(&task.id)?
-                .unwrap_or_else(|| SHELL_HOLDER.to_string());
+        if task.status == Status::Active {
+            let clock = self.clock_holder_of(&task.id)?;
             if clock != holder {
                 return Err(ApiError::conflict(format!(
                     "#{} is running on {clock}'s clock; it is that session's work, so it \
@@ -1129,35 +1164,27 @@ impl Engine {
                 )));
             }
         }
-        let op = match &held {
-            Some((by, until)) if by == &holder => {
-                if lease_is_live(until, now_ts) {
-                    "renew"
+        let op = match held {
+            Some((by, until)) if by == holder => {
+                if lease_is_live(&until, now_ts) {
+                    ClaimOp::Renew
                 } else {
-                    "claim"
+                    ClaimOp::Claim
                 }
             }
-            Some((by, until)) if lease_is_live(until, now_ts) => {
-                return Err(claimed_elsewhere(task.short_id, by, until));
+            Some((by, until)) if lease_is_live(&until, now_ts) => {
+                return Err(claimed_elsewhere(task.short_id, &by, &until));
             }
-            Some(_) => "takeover",
-            None => "claim",
+            Some((by, _)) => ClaimOp::Takeover(by),
+            None => ClaimOp::Claim,
         };
         let expires = lease_end(now_ts, lease).to_string();
-        write_claim(
-            &tx,
-            &task,
-            &holder,
-            &expires,
-            op,
-            held.map(|(by, _)| by),
-            true,
-        )?;
+        write_claim(&tx, &task, &holder, &expires, &op, true)?;
         tx.commit()?;
         Ok(json!({
             "short_id": task.short_id,
             "title": task.title,
-            "op": op,
+            "op": op.name(),
             "claimed_by": holder,
             "claim_expires": expires,
             "_rev": task.rev + 1,
@@ -1363,9 +1390,9 @@ impl Engine {
         }
 
         // D236, after the status check so the first refusal names the cause.
-        let claim_forced = claim_close_guard(&tx, &task, actor.as_deref(), force_claim)?;
-        // Read before the UPDATE below, whose status change clears it.
-        let ended_claim = Self::claim_on(&tx, &task.id)?;
+        // One read: the check, and the claim the UPDATE below clears.
+        let closed = claim_close_guard(&tx, &task, actor.as_deref(), force_claim)?;
+        let (claim_forced, ended_claim) = (closed.forced, closed.stored);
 
         // D150, finding #626. Completing a task whose dependencies are still
         // open used to succeed in silence — on a store that KNEW, and had said
@@ -2213,17 +2240,13 @@ impl Engine {
         // `tracked` and a cancellation of a running task write columns that
         // are not in `assignments`, so they are named here too. First reading
         // wins: the original value, whichever branch writes it first.
-        let claim_forced = if cancelling {
-            claim_close_guard(&tx, &task, actor.as_deref(), force_claim)?
+        // D236: one read — the check, and the claim the cancellation's write
+        // clears, so `undo` can put it back.
+        let (claim_forced, ended_claim) = if cancelling {
+            let closed = claim_close_guard(&tx, &task, actor.as_deref(), force_claim)?;
+            (closed.forced, closed.stored)
         } else {
-            None
-        };
-        // D236: the claim a cancellation ends, read before the write that
-        // clears it, so `undo` can put it back.
-        let ended_claim = if cancelling {
-            Self::claim_on(&tx, &task.id)?
-        } else {
-            None
+            (None, None)
         };
         let mut before = serde_json::Map::new();
         let mut wrote: Vec<&str> = assignments.iter().map(|(c, _)| *c).collect();
@@ -2649,7 +2672,13 @@ impl Engine {
                 continue;
             }
             let ctx = MatchCtx::from(&snapshot);
-            if filter.matches_with_claims(&ctx, &snapshot.claims(caller.as_deref())) {
+            // D236: a caller choosing work for itself never gets another
+            // holder's live claim, whatever its filter says.
+            let others = |c: &str| snapshot.live_claim().is_some_and(|by| by != c);
+            if caller.as_deref().is_some_and(others) {
+                continue;
+            }
+            if filter.matches_with_claims(&ctx, &snapshot.claims()) {
                 let totals = if want_tokens {
                     tokens::measurement_totals(&snapshot.tokens)
                 } else {
@@ -2731,7 +2760,7 @@ impl Engine {
                 &snapshot.task,
                 &snapshot.tags,
                 snapshot.blocked,
-                snapshot.live_claim(),
+                snapshot.live_claim().zip(snapshot.live_claim_expires()),
                 deps.as_deref(),
                 token_field.as_ref(),
                 now_ts,
@@ -3426,7 +3455,7 @@ impl Engine {
                 json!({ "short_id": short_id, "title": title, "status": status, "note": note });
             if status == "active" {
                 item["active_since"] = json!(since);
-                item["held_by"] = json!(self.clock_holder_of(&id)?);
+                item["held_by"] = json!(self.clock_actor_of(&id)?);
                 active.push(item);
             } else if !item["note"].is_null() && recent.len() < RESUME_RECENT {
                 recent.push(item);
@@ -3435,8 +3464,8 @@ impl Engine {
         Ok((active, recent))
     }
 
-    /// The actor named on a task's latest `start` event (D140), if any.
-    fn clock_holder_of(&self, task_id: &str) -> Result<Option<String>, ApiError> {
+    /// A task's latest `start` event payload, if it has one.
+    fn latest_start(&self, task_id: &str) -> Result<Option<Value>, ApiError> {
         let payload: Option<String> = self
             .conn
             .query_row(
@@ -3446,9 +3475,27 @@ impl Engine {
                 |r| r.get(0),
             )
             .optional()?;
-        Ok(payload
-            .and_then(|p| serde_json::from_str::<Value>(&p).ok())
+        Ok(payload.and_then(|p| serde_json::from_str::<Value>(&p).ok()))
+    }
+
+    /// The actor named on a task's latest `start` event (D140), if any —
+    /// what the clock check compares; a shell's start names none.
+    fn clock_actor_of(&self, task_id: &str) -> Result<Option<String>, ApiError> {
+        Ok(self
+            .latest_start(task_id)?
             .and_then(|v| payload_field(&v, "actor")))
+    }
+
+    /// Whose clock a running task is for claim purposes (D236): the identity
+    /// its latest start recorded (`holder`), else that start's `actor` (a
+    /// start older than the field), else the shell.
+    fn clock_holder_of(&self, task_id: &str) -> Result<String, ApiError> {
+        let start = self.latest_start(task_id)?;
+        let field = |k: &str| start.as_ref().and_then(|v| payload_field(v, k));
+        Ok(identity(
+            field("holder").as_deref(),
+            field("actor").as_deref(),
+        ))
     }
 
     // ---- task.brief ----------------------------------------------------------
@@ -3959,7 +4006,8 @@ impl Engine {
             }
         }
         // D236, after the status check so the first refusal names the cause.
-        let claim_forced = claim_close_guard(&tx, &task, actor.as_deref(), force_claim)?;
+        let closed = claim_close_guard(&tx, &task, actor.as_deref(), force_claim)?;
+        let claim_forced = closed.forced;
 
         let ts = now();
         // Closing an open interval into tracked time, exactly as stop/done do.
@@ -3971,7 +4019,7 @@ impl Engine {
         let total = task.tracked_seconds + elapsed;
         let mut cancel_payload = json!({ "from": task.status.as_str() });
         // D236: the claim this cancellation ends, so `undo` can put it back.
-        if let Some((by, until)) = Self::claim_on(&tx, &task.id)? {
+        if let Some((by, until)) = &closed.stored {
             cancel_payload["claim"] = json!({ "holder": by, "expires": until });
         }
         if let Some(by) = &claim_forced {

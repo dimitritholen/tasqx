@@ -1995,6 +1995,25 @@ mod tests {
         );
     }
 
+    /// Review 7 #2 (D236): `pick` chooses, so another holder's claim is not
+    /// offered whatever the filter — `+api` included — while the shell's own is.
+    #[test]
+    fn pick_never_offers_another_holders_claim() {
+        let e = tasqx_core::Engine::open_in_memory().unwrap();
+        for title in ["mine", "theirs", "free"] {
+            e.task_add(&json!({ "title": title, "tags": ["api"] }))
+                .unwrap();
+        }
+        e.task_claim(&json!({ "ref": 1 })).unwrap();
+        e.task_claim(&json!({ "ref": 2, "actor": "agent-9" }))
+            .unwrap();
+        let mut be = Backend::Local(e);
+        let listed = pick_candidates(&mut be, "+api", Some("user")).unwrap();
+        let ids: Vec<i64> = pick_rows(&listed).iter().map(|r| r.short_id).collect();
+        assert_eq!(ids.len(), 2, "{ids:?}");
+        assert!(!ids.contains(&2), "{ids:?}");
+    }
+
     /// An empty `task.list` answer must produce no rows, which is what makes
     /// `run_pick` refuse instead of opening an alt screen whose only available
     /// action is leaving it.

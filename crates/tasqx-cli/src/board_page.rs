@@ -185,7 +185,7 @@ function card(t,col){
  if(col==="done"&&t.completed)m.append(el("span","","done "+day(t.completed)));
  else if(t.due){const late=new Date(t.due)<new Date();m.append(el("span",late?"late":"",(late?"overdue ":"due ")+day(t.due)))}
  (t.tags||[]).forEach(g=>m.append(el("span","","+"+g)));
- if(t.claimed_by&&t.claimed_by!==SHELL)m.append(el("span","held","claimed by "+t.claimed_by));
+ if(t.claimed_by&&t.claimed_by!==SHELL)m.append(el("span","held","claimed by "+t.claimed_by+(t.claim_expires?" until "+new Date(t.claim_expires).toLocaleTimeString([],{hour:"2-digit",minute:"2-digit"}):"")));
  li.append(m);
  if(col!=="done"){
   const u=t.urgency||0,g=el("div","gauge "+band(u));g.setAttribute("role","img");

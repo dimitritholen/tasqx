@@ -78,7 +78,10 @@ pub(crate) fn run_pick(
     let task = verbs::read_back(be, &result).unwrap_or_else(|| result.clone());
     let titles = verbs::titles_of(
         be,
-        &verbs::ids_in(&result, "auto_stopped", Some("short_id")),
+        &verbs::ids_in(&result, "auto_stopped", Some("short_id"))
+            .into_iter()
+            .chain(verbs::ids_in(&result, "kept_running", Some("short_id")))
+            .collect::<Vec<_>>(),
     );
     let text = picked_summary(ctx, &result, &task, &titles);
     // The title out of the snapshot the screen was built from, for the

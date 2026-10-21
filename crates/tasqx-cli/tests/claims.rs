@@ -288,3 +288,51 @@ fn a_holder_renews_its_claim_on_its_own_running_task() {
     );
     assert!(String::from_utf8_lossy(&renewed.stdout).contains("renewed by x"));
 }
+
+/// Review 7 #1: a `start --holder X` clock is X's for claim purposes. X claims
+/// and re-claims the task it runs, in either order and after its lease lapsed;
+/// a plain shell claim on X's running task is refused.
+#[test]
+fn a_holder_owns_the_clock_it_started_under() {
+    let s = Store::new("clockowner");
+    s.api(T0, "task.add", json!({ "title": "claim then start" }));
+    s.api(T0, "task.add", json!({ "title": "start then claim" }));
+    let run = |now: &str, args: &[&str]| -> Output { s.bin(now).args(args).output().expect("run") };
+    let ok = |o: Output| assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+
+    ok(run(T0, &["claim", "1", "--holder", "x"]));
+    ok(run(T0, &["start", "1", "--holder", "x", "--keep"]));
+    ok(run(T0, &["claim", "1", "--holder", "x"]));
+
+    ok(run(T0, &["start", "2", "--holder", "x", "--keep"]));
+    ok(run(T0, &["claim", "2", "--holder", "x"]));
+    assert_eq!(
+        run(T0, &["claim", "2"]).status.code(),
+        Some(5),
+        "the shell is not x"
+    );
+
+    // The lease lapses with the task still running; x claims it again.
+    ok(run(T_EXPIRED, &["claim", "2", "--holder", "x"]));
+    assert_eq!(
+        run(T_EXPIRED, &["claim", "1"]).status.code(),
+        Some(5),
+        "x's clock"
+    );
+}
+
+/// Review 7 #3: `start` says which running task it left alone, and why.
+#[test]
+fn start_names_what_it_kept_running() {
+    let s = Store::new("keptline");
+    s.api(T0, "task.add", json!({ "title": "agent work" }));
+    s.api(T0, "task.add", json!({ "title": "mine" }));
+    s.api(T0, "task.claim", json!({ "ref": 1, "actor": "agent-1" }));
+    s.api(T0, "task.start", json!({ "ref": 1, "actor": "agent-1" }));
+    let out = s.bin(T0).args(["start", "2"]).output().expect("run");
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        text.contains("#1") && text.contains("kept running, claimed by agent-1"),
+        "{text}"
+    );
+}

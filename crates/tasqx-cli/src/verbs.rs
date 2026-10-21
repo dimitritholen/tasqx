@@ -578,7 +578,9 @@ pub(crate) fn run_start(
     apply_correlation(&mut params, correlation);
     let result = be.call("task.start", &params)?;
     let task = read_back(be, &result).unwrap_or_else(|| result.clone());
-    let titles = titles_of(be, &ids_in(&result, "auto_stopped", Some("short_id")));
+    let mut moved = ids_in(&result, "auto_stopped", Some("short_id"));
+    moved.extend(ids_in(&result, "kept_running", Some("short_id")));
+    let titles = titles_of(be, &moved);
     let text = render::started(ctx, &result, &task, &titles, crate::clock::now());
     Ok((result, text))
 }
@@ -618,7 +620,8 @@ pub(crate) fn run_claim(
     lease: Option<String>,
     holder: Option<String>,
 ) -> CmdOutcome {
-    let params = json!({ "ref": r#ref, "lease": lease, "actor": holder });
+    let mut params = json!({ "ref": r#ref, "lease": lease });
+    claim_params(&mut params, holder, false);
     let result = be.call("task.claim", &params)?;
     let task = read_back(be, &result).unwrap_or_else(|| result.clone());
     let text = render::claimed(ctx, &result, &task, crate::clock::now());
@@ -633,7 +636,8 @@ pub(crate) fn run_release(
     holder: Option<String>,
     force_claim: bool,
 ) -> CmdOutcome {
-    let params = json!({ "ref": r#ref, "actor": holder, "force_claim": force_claim });
+    let mut params = json!({ "ref": r#ref });
+    claim_params(&mut params, holder, force_claim);
     let result = be.call("task.release", &params)?;
     let task = read_back(be, &result).unwrap_or_else(|| result.clone());
     let text = render::claim_released(ctx, &result, &task, crate::clock::now());

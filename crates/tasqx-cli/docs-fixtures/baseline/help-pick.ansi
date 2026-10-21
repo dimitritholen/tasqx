@@ -16,7 +16,7 @@ Arguments:
 
 Options:
       --holder <ID>
-          Whose claims count as yours: a task claimed by anyone else is left out of `@working`, and `s` starts as this holder (D236). Default `user`, the shell
+          Choose as this holder: a task anyone else has claimed is not offered, and `s` starts as this holder (D236). Default `user`, the shell
 
       --json
           Print the raw JSON API result instead of the human table

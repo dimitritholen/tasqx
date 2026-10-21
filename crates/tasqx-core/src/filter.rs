@@ -216,9 +216,7 @@ pub enum Pred {
     CompletedBefore(Timestamp),
     /// `completed.after:VALUE` — the bound the weekly report is built on.
     CompletedAfter(Timestamp),
-    /// `@working`: pending|active AND not blocked, and — evaluated with a
-    /// [`ClaimCtx`] naming a caller — not under a live claim held by anyone
-    /// else (D236).
+    /// `@working`: pending|active AND not blocked.
     Working,
     /// The blocked flag: an open task with >=1 dependency not yet resolved —
     /// `done` or `cancelled` (DESIGN §3, D11, D145); a closed task is never
@@ -317,9 +315,6 @@ pub struct ClaimCtx<'a> {
     /// The holder of a LIVE claim on the row, `None` when there is none or it
     /// has expired. Liveness is decided by whoever builds this.
     pub claimed_by: Option<&'a str>,
-    /// The caller choosing work for itself (`task.next` always, `task.list`
-    /// given an `actor`). `None` is a view: no claim exclusion.
-    pub caller: Option<&'a str>,
 }
 
 /// A parsed filter. `Filter::parse` rejects what it cannot parse; `matches`
@@ -371,9 +366,10 @@ impl Filter {
         eval(&self.root, ctx, &ClaimCtx::default())
     }
 
-    /// [`Filter::matches`], with the row's claim and the caller (D236):
-    /// `@claimed` reads `claims.claimed_by`, and `@working` leaves out
-    /// another holder's live claim when `claims.caller` names one.
+    /// [`Filter::matches`], with the row's claim (D236): `@claimed` reads
+    /// `claims.claimed_by`. Leaving other holders' claims out of a caller's
+    /// choice is the reader's rule (`task.list` with an `actor`), not the
+    /// grammar's, so it holds whatever the filter says.
     pub fn matches_with_claims(&self, ctx: &MatchCtx, claims: &ClaimCtx) -> bool {
         eval(&self.root, ctx, claims)
     }
@@ -511,13 +507,13 @@ fn eval(e: &Node, ctx: &MatchCtx, claims: &ClaimCtx) -> bool {
     match e {
         Node::And(v) => v.iter().all(|x| eval(x, ctx, claims)),
         Node::Or(v) => v.iter().any(|x| eval(x, ctx, claims)),
-        Node::Pred(p) => eval_pred(p, ctx, claims),
+        Node::Pred(p) => eval_pred(p, ctx),
         // A closed task holds no claim (D236), whatever a row says.
         Node::Claimed => claims.claimed_by.is_some() && !ctx.status.is_terminal(),
     }
 }
 
-fn eval_pred(p: &Pred, ctx: &MatchCtx, claims: &ClaimCtx) -> bool {
+fn eval_pred(p: &Pred, ctx: &MatchCtx) -> bool {
     match p {
         Pred::Always | Pred::AnyStatus => true,
         Pred::Title(t) => ctx.title.to_lowercase().contains(t.as_str()),
@@ -531,13 +527,7 @@ fn eval_pred(p: &Pred, ctx: &MatchCtx, claims: &ClaimCtx) -> bool {
         Pred::Project(pr) => ctx.project == Some(pr.as_str()),
         Pred::TagInclude(t) => ctx.tags.iter().any(|x| x == t),
         Pred::TagExclude(t) => !ctx.tags.iter().any(|x| x == t),
-        Pred::Working => {
-            matches!(ctx.status, Status::Pending | Status::Active)
-                && !ctx.blocked
-                && (claims.caller.is_none()
-                    || claims.claimed_by.is_none()
-                    || claims.claimed_by == claims.caller)
-        }
+        Pred::Working => matches!(ctx.status, Status::Pending | Status::Active) && !ctx.blocked,
         Pred::Blocked => ctx.blocked,
         Pred::DueBefore(bound) => instant_cmp(ctx.due, *bound, true),
         Pred::DueAfter(bound) => instant_cmp(ctx.due, *bound, false),

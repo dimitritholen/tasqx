@@ -498,7 +498,7 @@ const TASK_ANNOTATION_PAGE: &[Field] = &[
 const TASK_BLOCKED: &[Field] = &[req("blocked", Ty::Bool)];
 
 /// D236: a list row names the live claim's holder, null when there is none.
-const TASK_LIST_CLAIM: &[Field] = &[nul("claimed_by", Ty::Str)];
+const TASK_LIST_CLAIM: &[Field] = &[nul("claimed_by", Ty::Str), nul("claim_expires", Ty::Str)];
 
 /// #150: the terms `urgency` sums (D1) — absent unless `explain: true` is
 /// asked for, so the default `task.get` shape every existing caller reads is

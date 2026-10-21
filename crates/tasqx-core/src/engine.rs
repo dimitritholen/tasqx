@@ -343,13 +343,18 @@ impl TaskSnapshot {
             .map(|(by, _)| by.as_str())
     }
 
-    /// The claim facts a filter reads beside [`MatchCtx`]. `caller` is the
-    /// one choosing work; `None` is a view, with no claim exclusion.
-    fn claims<'a>(&'a self, caller: Option<&'a str>) -> ClaimCtx<'a> {
+    /// The claim facts a filter reads beside [`MatchCtx`].
+    fn claims(&self) -> ClaimCtx<'_> {
         ClaimCtx {
             claimed_by: self.live_claim(),
-            caller,
         }
+    }
+
+    /// The live claim's expiry, beside [`Self::live_claim`]'s holder.
+    fn live_claim_expires(&self) -> Option<&str> {
+        self.live_claim()
+            .and(self.claim.as_ref())
+            .map(|(_, until)| until.as_str())
     }
 }
 
@@ -1337,16 +1342,18 @@ fn list_row_json(
     t: &Task,
     tags: &[String],
     blocked: bool,
-    claimed_by: Option<&str>,
+    claim: Option<(&str, &str)>,
     depends_on: Option<&[i64]>,
     tokens: Option<&Value>,
     now: Timestamp,
 ) -> Value {
     let mut v = task_to_json(t, tags, now);
     v["blocked"] = json!(blocked);
-    // D236: the live claim's holder, null when there is none — what a board
-    // or a list needs to say whose a task is without a `task.get` per row.
-    v["claimed_by"] = json!(claimed_by);
+    // D236: the live claim's holder and expiry, null when there is none —
+    // what a board or a list needs to say whose a task is, and until when,
+    // without a `task.get` per row.
+    v["claimed_by"] = json!(claim.map(|(by, _)| by));
+    v["claim_expires"] = json!(claim.map(|(_, until)| until));
     // Emitted only when the caller projected it (D70). It is a name
     // `TASK_FIELDS` publishes and `parse_fields` accepts, and it is absent from
     // the default row on purpose: the edge list costs a statement and a
