@@ -380,3 +380,60 @@ fn the_description_is_the_first_paragraph_with_either_line_ending() {
     assert!(cut.ends_with('…'));
     assert_eq!(opening_summary(&"x".repeat(400)), "x".repeat(400));
 }
+
+/// An open task with the very same title is named first at 1.0, however
+/// long its first note (#2350); a title differing only in a version is not
+/// matched by that rule, and a closed task never is.
+#[test]
+fn an_open_task_with_the_same_title_is_named_whatever_its_note_says() {
+    let e = Engine::open_in_memory().unwrap();
+    let note = "Background on the storage layer, the daemon handshake, the \
+                report renderer and the import pipeline, with no bearing on \
+                the title at all. "
+        .repeat(8);
+    let release = ok(
+        &e,
+        "task.add",
+        json!({ "title": "Release v0.10.0 to crates.io" }),
+    );
+    ok(
+        &e,
+        "annotation.add",
+        json!({ "ref": release["short_id"], "body": note }),
+    );
+    let same = ok(&e, "task.add", json!({ "title": "Fix the Login  timeout" }));
+    ok(
+        &e,
+        "annotation.add",
+        json!({ "ref": same["short_id"], "body": note }),
+    );
+    let done = ok(&e, "task.add", json!({ "title": "fix the login timeout" }));
+    ok(&e, "task.done", json!({ "ref": done["short_id"] }));
+    let t = ok(
+        &e,
+        "task.add",
+        json!({ "title": " fix the LOGIN timeout " }),
+    );
+    let similar = t["similar"].as_array().unwrap();
+    assert_eq!(similar[0]["id"], same["id"], "{t}");
+    assert_eq!(similar[0]["similarity"], 1.0, "{t}");
+    assert!(similar.iter().all(|s| s["id"] != done["id"]), "{t}");
+    assert_eq!(
+        similar.iter().filter(|s| s["id"] == same["id"]).count(),
+        1,
+        "{t}"
+    );
+    let r = ok(
+        &e,
+        "task.add",
+        json!({ "title": "Release v0.13.0 to crates.io" }),
+    );
+    assert!(
+        r["similar"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|s| s["id"] != release["id"] || s["similarity"] != 1.0),
+        "{r}"
+    );
+}

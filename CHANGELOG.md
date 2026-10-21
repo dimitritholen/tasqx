@@ -71,7 +71,8 @@ release also trims tasqx-core's public API, which is why it is a minor bump.
 - **`add` and `memory add` warn about near-duplicates.** Up to three open tasks of
   the same project, or indexed docs, that read like the new one are named on a
   `note:` line, and as `similar` in `--json` and over MCP (always present, empty
-  when none). The write happens either way (D237, #2341).
+  when none); an open task with the very same title (case and spacing aside) is
+  always named first. The write happens either way (D237, #2341, #2350).
 - **`undo` reaches done, cancel, tag and modify; `tasqx unarchive`** (D215). Notes can
   be named by position or id prefix and moved to another task (D211).
 - **A byte-identical `memory import` is a no-op** (the doc keeps its rev, modified and
