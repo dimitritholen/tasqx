@@ -74,10 +74,14 @@ check-echo	pipe-mut	100	-	check add 50 "p99 stays under 200ms at the new ceiling
 git-echo	pipe-mut	100	-	git event merged --branch task/51-sdk-migration-guide --pr https://github.com/acme/api/pull/412 --sha 4f9c2e1	-	-
 cancel-echo	pipe-mut	100	-	cancel 59	-	-
 reopen-echo	pipe-mut	100	-	reopen 46	-	-
+accept-echo	pipe-mut	100	-	accept 63	-	-
+decline-echo	pipe-mut	100	-	decline 63 --reason "the CDN already caches it"	-	-
+duplicate-echo	pipe-mut	100	-	duplicate 62 --of 60	-	-
 stop-echo	pipe-mut	100	-	stop 48	-	-
 claim-echo	pipe-mut	100	-	claim 47 --holder builder-2	-	-
 adjust-echo	pipe-mut	100	-	adjust 42 -2h25m --reason "idle gap"	-	-
 config-list	pipe	100	-	config list	-	-
+triage	pipe	100	-	triage	-	-
 #
 list	pipe	100	-	list	-	-
 list-narrow	pipe	80	-	list	-	-
@@ -133,6 +137,8 @@ api-task-adjust-tracked	pipe-mut	100	-	api	-	{"tasqx":"1","id":"at1","method":"t
 api-task-modify	pipe-mut	100	-	api	-	{"tasqx":"1","id":"m1","method":"task.modify","params":{"ref":"52","set":{"priority":"H","due":"friday"}}}
 api-task-cancel	pipe-mut	100	-	api	-	{"tasqx":"1","id":"c1","method":"task.cancel","params":{"ref":"60"}}
 api-task-reopen	pipe-mut	100	-	api	-	{"tasqx":"1","id":"ro1","method":"task.reopen","params":{"ref":"12"}}
+api-task-triage-list	pipe	100	-	api	-	{"tasqx":"1","id":"tl1","method":"task.triage_list","params":{}}
+api-task-triage	pipe-mut	100	-	api	-	{"tasqx":"1","id":"tr1","method":"task.triage","params":{"ref":"62","action":"duplicate","of":"60"}}
 api-tag-add	pipe-mut	100	-	api	-	{"tasqx":"1","id":"t1","method":"tag.add","params":{"ref":"53","tags":["q4"]}}
 api-tag-remove	pipe-mut	100	-	api	-	{"tasqx":"1","id":"t2","method":"tag.remove","params":{"ref":"53","tags":["ops"]}}
 api-annotation-remove	pipe-mut	100	-	api	-	{"tasqx":"1","id":"ar1","method":"annotation.remove","params":{"ref":"51","annotation_id":"17dd6621-7db4-43b5-9f36-ddf89018081e"}}

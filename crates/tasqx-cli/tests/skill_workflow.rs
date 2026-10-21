@@ -26,7 +26,7 @@ fn skill() -> String {
 /// the same way. Duplicated rather than shared across the two test binaries —
 /// `tests/*.rs` are separate crates and cannot import each other's helpers.
 fn word(n: usize) -> &'static str {
-    const WORDS: [&str; 37] = [
+    const WORDS: [&str; 38] = [
         "Zero",
         "One",
         "Two",
@@ -64,6 +64,7 @@ fn word(n: usize) -> &'static str {
         "Thirty-four",
         "Thirty-five",
         "Thirty-six",
+        "Thirty-seven",
     ];
     WORDS
         .get(n)

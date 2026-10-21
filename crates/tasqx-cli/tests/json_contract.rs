@@ -187,6 +187,23 @@ fn cases(tmp: &str) -> Vec<(Case, Vec<String>)> {
         c("done", &["done", "1"]),
         c("cancel", &["cancel", "2"]),
         c("reopen", &["reopen", "2"]),
+        // D238: three proposals (3, 4, 5), the inbox, and each way out of it.
+        c("add", &["add", "proposal one", "--triage"]),
+        c("add", &["add", "proposal two", "--triage"]),
+        c(
+            "add",
+            &[
+                "add",
+                "proposal three",
+                "--triage",
+                "--discovered-from",
+                "1",
+            ],
+        ),
+        c("triage", &["triage"]),
+        c("accept", &["accept", "3"]),
+        c("decline", &["decline", "4", "--reason", "not now"]),
+        c("duplicate", &["duplicate", "5", "--of", "1"]),
         c("report", &["report"]),
         // Dry-run by design: this guard only judges the --json shape, and the
         // shared store carries no log-parse measurement to repair anyway.

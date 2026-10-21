@@ -32,6 +32,7 @@ export const SUMMARY: Summary = {
     { status: 'pending', count: 7, overdue: 2 },
     { status: 'backlog', count: 3, overdue: 0 },
     { status: 'active', count: 1, overdue: 1 },
+    { status: 'triage', count: 4, overdue: 0 },
   ],
   generated: '2026-09-19T09:00:00.000Z',
   filter: '',

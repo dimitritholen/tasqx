@@ -215,6 +215,53 @@ the task, the event acts as that holder.
 tasqx never asks GitHub, or any network. Something that watched the PR tells
 it: a script reading `gh pr view --json`, a CI step, a git hook.
 
+## tasqx triage
+
+Work you or an agent finds mid-task can be filed as a **proposal** instead of
+going straight into the backlog: `tasqx add … --triage` (an agent passes
+`status: "triage"`, or every MCP add lands there once `mcp.add_status` is
+`triage`). A proposal stays out of `@working`, `next` and the urgency ranking,
+and cannot be started or completed until it is accepted.
+`--discovered-from <id>` links it to the task it was found on.
+
+```console
+tasqx triage
+```
+
+lists the inbox oldest first, with the tool that filed each proposal and the
+task it was found on. `tasqx list status:triage` is the same set as a table.
+Settle each one with a single command, below.
+
+## tasqx accept
+
+```console
+tasqx accept 12
+```
+
+Makes the proposal pending — or backlog, while a future `wait` or `scheduled`
+still holds it. `tasqx undo` puts it back in triage.
+
+## tasqx decline
+
+```console
+tasqx decline 12 --reason "out of scope for this release"
+```
+
+Cancels the proposal and keeps the reason as a note. `tasqx undo` puts it back
+in triage; the note stays.
+
+## tasqx duplicate
+
+```console
+tasqx duplicate 12 --of 7
+```
+
+Cancels the proposal, moves its notes to the task it repeats and links the two
+with `duplicates`. Undo does not take this one back.
+
+The dashboard's header, the HTML report and the desktop app count what is
+waiting in triage.
+
 ## tasqx pick
 
 *Aliases: `p`, `fzf`*
@@ -281,9 +328,9 @@ tasqx undo
 
 `undo` is deliberately narrow, and honest about it:
 
-- Eleven operations are undoable: `done`, `cancel`, `modify`, `tag`, `stop`,
-  `untag`, `undep`, `annotate`, `annotate --edit`, `annotate --move` and
-  `adjust`. Everything else is refused *by name*, with the command that does
+- Twelve operations are undoable: `done`, `cancel`, `modify`, `tag`, `stop`,
+  `untag`, `undep`, `annotate`, `annotate --edit`, `annotate --move`,
+  `adjust` and `accept`. Everything else is refused *by name*, with the command that does
   take it back — undoing a `start` is `tasqx stop`, undoing an `archive` is
   `tasqx unarchive`.
 - Undoing a **`done`** puts the task back in the status it left. If it was

@@ -172,8 +172,11 @@ impl Task {
 
     /// Open and past its deadline at `now`, by core's one definition of overdue
     /// (D131, `tasqx_core::filter::overdue_at`).
+    /// A proposal in triage is never overdue: nobody has agreed to its date
+    /// yet (D238).
     pub fn is_overdue(&self, now: Timestamp) -> bool {
         self.status.is_open()
+            && self.status.as_str() != tasqx_core::types::Status::Triage.as_str()
             && self
                 .due
                 .is_some_and(|d| tasqx_core::filter::overdue_at(d, now))
@@ -253,6 +256,8 @@ pub struct StatusBar {
     pub active: usize,
     pub overdue: usize,
     pub blocked: usize,
+    /// Proposals waiting in triage (D238): `tasqx triage` lists them.
+    pub triage: usize,
     pub done_week: usize,
 }
 
@@ -731,6 +736,10 @@ pub fn build_sorted(src: Sources<'_>, now: Timestamp, today: Date, sort: Sort) -
         // from the panels", now that there is one panel to take them from.
         overdue: overdue_now,
         blocked: blocked_now,
+        triage: all
+            .iter()
+            .filter(|t| t.status.as_str() == tasqx_core::types::Status::Triage.as_str())
+            .count(),
         done_week: all
             .iter()
             .filter(|t| t.completed.is_some_and(|c| c.as_second() >= week_ago))

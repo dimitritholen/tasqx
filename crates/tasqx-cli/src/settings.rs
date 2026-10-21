@@ -249,6 +249,19 @@ pub(crate) fn config_detail_time_format() -> TimeFormat {
     }
 }
 
+/// Read `[mcp] add_status` from `config.toml` (D238): the status a
+/// `tasqx_add_task` that names none is filed under. Falls back to `pending` on
+/// any failure, as [`config_detail_time_format`] does.
+pub(crate) fn config_mcp_add_status() -> String {
+    let s = config::find("mcp.add_status").expect("mcp.add_status is a registered setting");
+    let (v, _) = config::resolve(s, None, config::toml_value(None, s).as_deref());
+    if v == tasqx_core::types::Status::Triage.as_str() {
+        v
+    } else {
+        "pending".to_string()
+    }
+}
+
 /// Read `[otlp] port` from `config.toml` (#18), falling back to the registered
 /// default (4318). The registry already validated the range, so a parse failure
 /// here can only be the default, which is a valid `u16`.

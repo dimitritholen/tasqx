@@ -70,7 +70,7 @@ fn an_unrecognized_status_is_named_as_such_with_the_valid_set() {
     let out = task_detail(&task, &iso_opts());
     assert!(
         out.contains(
-            "| status | snoozed (unrecognized — not one of backlog, pending, active, done, cancelled) |"
+            "| status | snoozed (unrecognized — not one of triage, backlog, pending, active, done, cancelled) |"
         ),
         "got:\n{out}"
     );

@@ -621,6 +621,61 @@ pub(crate) fn calendar_date(day: Date, today: Date) -> String {
     }
 }
 
+/// `tasqx triage` (D238): one line per proposal, oldest first — its id and
+/// title, the day it was filed, the tool that filed it and the task it was
+/// found on. No urgency: a proposal is not ranked until it is accepted.
+pub fn triage_inbox(ctx: &Ctx, result: &Value, now: Timestamp) -> String {
+    let rows = result["tasks"].as_array().cloned().unwrap_or_default();
+    if rows.is_empty() {
+        return "Nothing in triage.\n".to_string();
+    }
+    let n = result["total"].as_u64().unwrap_or(rows.len() as u64) as usize;
+    let mut out = format!(
+        "{} in triage, oldest first — `tasqx accept|decline|duplicate <id>` settles one\n\n",
+        if n == 1 {
+            "1 proposal".to_string()
+        } else {
+            format!("{n} proposals")
+        }
+    );
+    let sid_w = rows
+        .iter()
+        .map(|r| width(&format!("#{}", r["short_id"])))
+        .max()
+        .unwrap_or(2);
+    for r in &rows {
+        let filed = r["created"]
+            .as_str()
+            .and_then(|c| c.parse::<Timestamp>().ok())
+            .map_or_else(String::new, |at| day_ago(at, now));
+        let mut facts = vec![filed];
+        if let Some(c) = r["client"].as_str() {
+            facts.push(format!("by {}", san(c)));
+        }
+        if let Some(o) = r["discovered_from"].as_object() {
+            facts.push(format!(
+                "found on #{} {}",
+                o.get("short_id").and_then(Value::as_i64).unwrap_or(0),
+                san(o.get("title").and_then(Value::as_str).unwrap_or(""))
+            ));
+        }
+        out.push_str(&format!(
+            "  {}  {}\n  {}  {}\n",
+            ctx.paint("table.label", &pad(&format!("#{}", r["short_id"]), sid_w)),
+            san(r["title"].as_str().unwrap_or("")),
+            " ".repeat(sid_w),
+            ctx.paint("card.label", &facts.join(" · ")),
+        ));
+    }
+    if n > rows.len() {
+        out.push_str(&format!(
+            "\n  {} more not shown — `tasqx list status:triage` lists them all\n",
+            n - rows.len()
+        ));
+    }
+    out
+}
+
 /// When something last happened, as a calendar day: `today`, `yesterday`,
 /// `3d ago`, `17 Aug`, `4 Jan 25`. The past-facing half of [`due_cell`]'s
 /// vocabulary, for a timestamp that records an event rather than a deadline.

@@ -14,7 +14,7 @@ One small grammar, used everywhere a query is taken: `list`, `report`, `export`,
 | `+api` | Tasks tagged `api`. |
 | `-api` | Tasks *not* tagged `api`. |
 | `project:work.tasqx` | Exact project match. |
-| `status:pending` | Exact status: `backlog`, `pending`, `active`, `done`, `cancelled`. |
+| `status:pending` | Exact status: `triage`, `backlog`, `pending`, `active`, `done`, `cancelled`. `backlog` is the date-held backlog; a proposal in `triage` (D238) is never in it. |
 | `status:any` | Every status, `done` and `cancelled` included; also spelled `status:all`. Overrides a default that hides closed tasks. |
 | `weekly review` | Free text: a bare word is a case-insensitive substring of the title, and several words must all appear. Quote a phrase to match it as one — `"memory explorer"`. `title:review` and `title:"weekly planning"` are the explicit spelling; `%` and `_` are ordinary characters. |
 | `@working` | Status pending or active, *and* not blocked. The default filter. |
@@ -83,7 +83,7 @@ matching nothing.
 > instead of silently listing every task. The same goes for a dangling `or` or
 > an unclosed `(`. Values follow the same rule when the set of them is
 > *closed*: `status:` and a date bound have a fixed list of accepted values,
-> so `status:pendign` is an error naming the value and the five statuses, not
+> so `status:pendign` is an error naming the value and the six statuses, not
 > an empty table. A `project:` or a tag is different on purpose — those names
 > are made at runtime, so an unknown one simply matches no row.
 

@@ -20,7 +20,7 @@ function card(name: string): HTMLElement {
 }
 
 describe('DashboardScreen', () => {
-  it('counts the five cards from the summary and the two card reads', async () => {
+  it('counts the six cards from the summary and the two card reads', async () => {
     await live(baselineScript(PAGE));
 
     // pending 7 + backlog 3; active 1; overdue 2 + 0 + 1; blocked and the
@@ -29,6 +29,8 @@ describe('DashboardScreen', () => {
     expect(card('Active')).toHaveTextContent('1');
     expect(card('Overdue')).toHaveTextContent('3');
     expect(card('Blocked')).toHaveTextContent('2');
+    // D238: proposals are counted apart from open work, off the same summary.
+    expect(card('Triage')).toHaveTextContent('4');
     // The tile is the window's count (task.list `total`), not the rows read.
     expect(card('Completed, last 7 days')).toHaveTextContent(String(COMPLETED_TOTAL));
   });

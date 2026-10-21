@@ -54,6 +54,16 @@ release also trims tasqx-core's public API, which is why it is a minor bump.
   `closed` adds a note. The branch, PR and merge commit are listed by `show`, `brief`
   and the desktop inspector, and travel with export, import and sync. tasqx never
   asks GitHub: the caller reports the event (API `git.event`).
+- **A triage inbox for proposed work.** `tasqx add --triage` (MCP `status: "triage"`,
+  or every MCP add once `mcp.add_status = triage`) files a task outside `@working`,
+  `next` and the urgency ranking; `--discovered-from` links the task it was found on.
+  `tasqx triage` lists the inbox with the tool that filed each one, and `tasqx accept`,
+  `decline` and `duplicate` (`task.triage`, MCP `tasqx_triage_task`) settle it; undo
+  covers accept and decline. `status:triage` filters, a new `duplicates` link, and a
+  triage count on the dashboard, the HTML report and the desktop app, and a Triage
+  column on the board (D238, #2330).
+- **tasqx-core: `Status::Triage`** (D238). Code that matches `Status` exhaustively
+  needs the new variant; `Status::ALL` has six members.
 - **`tasqx sync`** pulls, merges and pushes a store's snapshot through a
   `tasqx-remote-<name>` connector (folder and Cloudflare R2 ship), sealed with
   XChaCha20-Poly1305 under a key from the store's passphrase (D198-D202).

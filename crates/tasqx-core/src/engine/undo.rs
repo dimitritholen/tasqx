@@ -134,6 +134,9 @@ use super::*;
 ///    task it left (`from`), and the move touched nothing but that note's
 ///    `task_id` (and both tasks' `rev`, which undo bumps anyway). The event is
 ///    recorded on the destination, so `task` here is where the note is now.
+///  * **`accept`** (D238) — the only write is `triage` -> `pending` on that
+///    task (and its `rev`), so storing `triage` again restores it, provided the
+///    task is still open and not running.
 ///  * **`adjust_tracked`** (D166) — the payload carries `delta_seconds`, the
 ///    exact figure added to both `tracked_seconds` and
 ///    `tracked_adjustment_seconds`, so subtracting it restores both to the
@@ -144,7 +147,7 @@ use super::*;
 /// (tests/engine.rs) forces every op the engine can write into this list or into
 /// [`NOT_UNDOABLE`], so the choice is always made deliberately — but it cannot
 /// check that a listed inverse is *correct*.
-pub const UNDOABLE_OPS: [&str; 11] = [
+pub const UNDOABLE_OPS: [&str; 12] = [
     "stop",
     "done",
     "cancel",
@@ -156,6 +159,7 @@ pub const UNDOABLE_OPS: [&str; 11] = [
     "annotation.update",
     "annotation.move",
     "adjust_tracked",
+    "accept",
 ];
 
 /// Every other op the engine writes, paired with the reason `undo` refuses it
@@ -498,6 +502,7 @@ impl Engine {
             "annotation.update" => revert_annotation_update(&tx, &task, &payload)?,
             "annotation.move" => revert_annotation_move(&tx, &task, &payload)?,
             "adjust_tracked" => revert_adjust_tracked(&tx, &task, &payload)?,
+            "accept" => revert_accept(&tx, &task)?,
             // Unreachable while this match covers UNDOABLE_OPS, and an error
             // rather than a fallthrough precisely so that if the two ever drift
             // the store is left alone instead of being told the undo happened.
@@ -705,14 +710,13 @@ fn put_back_status(
     started: Option<&str>,
     elapsed: i64,
 ) -> Result<Value, ApiError> {
-    let from = Status::parse(from)
-        .filter(|s| matches!(s, Status::Backlog | Status::Pending | Status::Active))
-        .ok_or_else(|| {
-            ApiError::conflict(format!(
-                "this event names `{from}` as the status to go back to, which is not an open \
+    // D238: a declined or cancelled proposal goes back to triage.
+    let from = Status::parse(from).filter(|s| s.is_open()).ok_or_else(|| {
+        ApiError::conflict(format!(
+            "this event names `{from}` as the status to go back to, which is not an open \
                  one. Nothing was changed."
-            ))
-        })?;
+        ))
+    })?;
     if from != Status::Active {
         tx.execute(
             "UPDATE tasks SET status=?1, completed=NULL, delivered_annotation_id=NULL \
@@ -839,6 +843,24 @@ fn remove_untouched_spawn(tx: &Transaction, id: &str) -> Result<i64, ApiError> {
     tx.execute("DELETE FROM task_tags WHERE task_id = ?1", params![id])?;
     tx.execute("DELETE FROM tasks WHERE id = ?1", params![id])?;
     Ok(short)
+}
+
+/// Put an accepted proposal back in triage (D238). Refused once it has been
+/// started or closed: those moves are their own events, undone first.
+fn revert_accept(tx: &Transaction, task: &Task) -> Result<Value, ApiError> {
+    if !matches!(task.status, Status::Backlog | Status::Pending) {
+        return Err(ApiError::conflict(format!(
+            "#{} is {} — `undo` returns an accepted task to triage, and something has \
+             changed it since. Nothing was undone.",
+            task.short_id,
+            task.status.as_str()
+        )));
+    }
+    tx.execute(
+        "UPDATE tasks SET status=?1 WHERE id=?2",
+        params![Status::Triage.as_str(), task.id],
+    )?;
+    Ok(json!({ "status": Status::Triage.as_str() }))
 }
 
 /// Put back the status a `task.cancel` left (D215), reopening the interval it

@@ -1608,7 +1608,7 @@ pub fn undone(ctx: &Ctx, result: &Value, task: &Value, titles: &Titles, now: Tim
             ));
             card.context = Context::NONE;
         }
-        "done" | "cancel" => {
+        "done" | "cancel" | "accept" => {
             // The rail says which status it is back in; the line says what the
             // undo took with it (D215): the spawned next instance, the proofs.
             let status = s(&restored, "status");

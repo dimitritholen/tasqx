@@ -1766,6 +1766,23 @@
     {
       "actor": "user",
       "entity": "task",
+      "entity_id": "dace715d-e182-4c12-b451-8a51c24a5fb0",
+      "id": "38a331e5-05b0-4f09-8fd5-89bd480d6e49",
+      "op": "add",
+      "payload": {
+        "client": "claude-code 2.1",
+        "priority": null,
+        "project": "website",
+        "recurrence": null,
+        "status": "triage",
+        "tags": [],
+        "title": "Retry the flaky checkout e2e test"
+      },
+      "ts": "2026-09-14T15:40:00Z"
+    },
+    {
+      "actor": "user",
+      "entity": "task",
       "entity_id": "3dd1e044-e448-473c-bf91-4fe871227cb2",
       "id": "402746a4-aa78-4c61-a79e-2a6153b3b0ff",
       "op": "add",
@@ -1992,6 +2009,23 @@
         "title": "Compress hero images"
       },
       "ts": "2026-08-26T12:15:00Z"
+    },
+    {
+      "actor": "user",
+      "entity": "task",
+      "entity_id": "05b816d3-f767-4afa-8bbe-bcfb91453934",
+      "id": "6c3904b6-cde7-4967-9778-dac7a6b55031",
+      "op": "add",
+      "payload": {
+        "client": "claude-code 2.1",
+        "priority": null,
+        "project": "api",
+        "recurrence": null,
+        "status": "triage",
+        "tags": [],
+        "title": "Cache the pricing API response"
+      },
+      "ts": "2026-09-15T15:40:00Z"
     },
     {
       "actor": "user",
@@ -2522,7 +2556,24 @@
       "ts": "2026-08-15T10:00:00Z"
     }
   ],
-  "links": [],
+  "links": [
+    {
+      "created_at": "2026-09-16T09:00:00Z",
+      "from": "task:dace715d-e182-4c12-b451-8a51c24a5fb0",
+      "id": "289f8719-8b4d-461b-8ec7-3bf68401115f",
+      "metadata": null,
+      "relation": "derived_from",
+      "to": "task:63e5a05b-e665-459b-be06-d750369a9ad7"
+    },
+    {
+      "created_at": "2026-09-16T09:00:00Z",
+      "from": "task:05b816d3-f767-4afa-8bbe-bcfb91453934",
+      "id": "4e339674-8bfc-43a7-94fb-57511066014b",
+      "metadata": null,
+      "relation": "derived_from",
+      "to": "task:63e5a05b-e665-459b-be06-d750369a9ad7"
+    }
+  ],
   "projects": [
     {
       "archived": false,
@@ -4835,6 +4886,54 @@
       "tags": [],
       "title": "Sketch ideas for the Q4 offsite",
       "urgency": 0.4,
+      "wait": null
+    },
+    {
+      "_rev": 1,
+      "annotations": [],
+      "budget_tokens": null,
+      "checks": [],
+      "completed": null,
+      "created": "2026-09-14T15:40:00Z",
+      "depends_on": [],
+      "due": null,
+      "estimate": null,
+      "id": "dace715d-e182-4c12-b451-8a51c24a5fb0",
+      "modified": "2026-09-14T15:40:00Z",
+      "priority": null,
+      "project": "website",
+      "recurrence": null,
+      "remind": null,
+      "scheduled": null,
+      "short_id": 62,
+      "status": "triage",
+      "tags": [],
+      "title": "Retry the flaky checkout e2e test",
+      "urgency": 0.0,
+      "wait": null
+    },
+    {
+      "_rev": 1,
+      "annotations": [],
+      "budget_tokens": null,
+      "checks": [],
+      "completed": null,
+      "created": "2026-09-15T15:40:00Z",
+      "depends_on": [],
+      "due": null,
+      "estimate": null,
+      "id": "05b816d3-f767-4afa-8bbe-bcfb91453934",
+      "modified": "2026-09-15T15:40:00Z",
+      "priority": null,
+      "project": "api",
+      "recurrence": null,
+      "remind": null,
+      "scheduled": null,
+      "short_id": 63,
+      "status": "triage",
+      "tags": [],
+      "title": "Cache the pricing API response",
+      "urgency": 0.0,
       "wait": null
     }
   ]

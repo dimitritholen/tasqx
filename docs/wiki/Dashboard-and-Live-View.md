@@ -126,7 +126,8 @@ Like `watch`, `board` needs a running
 [daemon](AI-Agents-and-Automation.md#tasqx-daemon). Ctrl-C stops it.
 
 The columns are the states tasqx already derives, each headed by the filter
-that fills it: **Backlog** `status:backlog`, **Blocked** `@blocked`, **Ready**
+that fills it: **Triage** `status:triage` (proposals, D238), **Backlog**
+`status:backlog`, **Blocked** `@blocked`, **Ready**
 `@working`, **Active** `status:active` (one at a time) and **Done**
 `completed.after:-7d`. Inside a column cards are ordered by urgency, on the
 same scale and in the same three bands as `tasqx list`; a `▶` marks the running
@@ -151,6 +152,7 @@ command you would type:
 | Ready | Backlog | clears its wait and scheduled dates |
 | Backlog | Ready | waits a week (change the date with `tasqx modify`) |
 | Blocked | — | refused: a task is blocked by its dependencies, not by a drag |
+| any | Triage | refused: settle a proposal with `tasqx accept`, `decline` or `duplicate`; the board never starts one |
 
 While you drag, a tray appears under the card: drop on **H**, **M** or **L**
 to set the priority, **clear** to remove it, or **cancel** to cancel the task.

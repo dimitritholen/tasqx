@@ -445,7 +445,9 @@ impl<'a> Model<'a> {
     /// ponytail: past days read today's `due`; a due date moved since is not
     /// replayed.
     fn overdue_on(&self, i: usize, d: Date) -> bool {
+        // D238: a proposal is not overdue. ponytail: judged by today's status.
         self.open_on(i, d)
+            && !self.is(i, "triage")
             && self.tasks[i]
                 .due
                 .is_some_and(|due| tasqx_core::filter::overdue_at(due, self.p.read_at(d)))
@@ -1050,11 +1052,15 @@ impl<'a> Page<'a> {
             )
         });
 
+        // D238: proposals are not ranked until accepted, so they are counted
+        // under the ranking rather than in it.
+        let triage = s.ix.iter().filter(|&&i| m.is(i, "triage")).count();
         format!(
             "<div><h3>Done yesterday <span class=\"count\">{}</span></h3>{done_rows}</div>\
              <div><h3>In progress <span class=\"count\">{}</span></h3>{active_rows}</div>\
              <div><h3>Blocked <span class=\"count\">{}</span></h3>{blocked_rows}</div>\
-             <div><h3>Next 5</h3>{next_rows}</div>",
+             <div><h3>Next 5</h3>{next_rows}<p class=\"triage\">{triage} in triage, \
+             not ranked until accepted · <code>tasqx triage</code></p></div>",
             done.len(),
             active.len(),
             ids.len(),
@@ -1418,7 +1424,7 @@ impl<'a> Page<'a> {
              <div class=\"sbar\" role=\"search\"><label class=\"vh\" for=\"q\">Search tasks</label>\
              <input type=\"search\" id=\"q\" placeholder=\"Search title, project, status, #id\" autocomplete=\"off\">\
              <label class=\"vh\" for=\"sf\">Status</label><select id=\"sf\"><option value=\"\">any status</option>\
-             <option>pending</option><option>active</option><option>blocked</option><option>backlog</option><option>done</option>{}</select></div>\
+             <option>pending</option><option>active</option><option>blocked</option><option>backlog</option><option>triage</option><option>done</option>{}</select></div>\
              <p class=\"empty\" id=\"hitcount\" aria-live=\"polite\"></p><ol class=\"hits\" id=\"hits\"></ol></section>\
              <div id=\"ix\" hidden>{}</div>",
             if self.opts.all { ", cancelled included" } else { "" },
@@ -2030,6 +2036,7 @@ dl.facts dt{color:var(--muted)}dl.facts dd{margin:0}
 .dsec li{padding:3px 0;border-bottom:1px solid var(--line);display:flex;gap:8px;align-items:baseline}
 .dsec li span.t{flex:1;min-width:0;overflow-wrap:anywhere}
 .note{white-space:pre-wrap}
+.triage{font-size:12px;color:var(--muted);margin:6px 0 0}
 footer{margin-top:36px;border-top:1px solid var(--line);padding-top:12px;font-size:12px;color:var(--muted)}
 @media (max-width:720px){.out{grid-template-columns:1fr}}
 @media (max-width:600px){.cw{display:none}.cn{display:block}}

@@ -93,13 +93,76 @@ pub(super) fn node_id((ty, id): &Node) -> String {
 /// [`CHECK_STATES`] established. Fixed for now and persisted as a STRING, so
 /// the day a sixth relation is agreed it costs a line here and no migration:
 /// the schema deliberately puts no CHECK on the column.
-pub const LINK_RELATIONS: [&str; 5] = [
+///
+/// `duplicates` (D238) is what `task.triage {action: duplicate}` writes from
+/// the cancelled proposal to the task it repeats.
+pub const LINK_RELATIONS: [&str; 6] = [
     "references",
     "supersedes",
     "implements_decision",
     "derived_from",
     "contradicts",
+    "duplicates",
 ];
+
+/// Insert one new link row and its `link.add` event, returning the link's id.
+/// The caller has validated the relation and the endpoints and holds the write
+/// lock; shared by `link.add` and the D238 writes (`discovered_from`,
+/// `duplicate`), so the row and the event a store replays cannot differ by door.
+pub(super) fn insert_link(
+    tx: &Transaction,
+    from: &Node,
+    to: &Node,
+    relation: &str,
+    metadata: Option<&Value>,
+    ts: &str,
+) -> Result<String, ApiError> {
+    let id = crate::clock::uuid_v7().to_string();
+    tx.execute(
+        "INSERT INTO links \
+         (id, from_type, from_id, to_type, to_id, relation, metadata, created, created_by) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 'user')",
+        params![
+            id,
+            from.0.as_str(),
+            from.1,
+            to.0.as_str(),
+            to.1,
+            relation,
+            metadata.map(Value::to_string),
+            ts,
+        ],
+    )?;
+    insert_event(
+        tx,
+        Entity::Link,
+        &id,
+        "link.add",
+        &json!({ "from": node_id(from), "to": node_id(to), "relation": relation }),
+    )?;
+    Ok(id)
+}
+
+/// D238: link two tasks, a no-op when the same edge is already there.
+pub(super) fn link_tasks(
+    tx: &Transaction,
+    from_id: &str,
+    to_id: &str,
+    relation: &str,
+    ts: &str,
+) -> Result<(), ApiError> {
+    let exists: bool = tx.query_row(
+        "SELECT EXISTS(SELECT 1 FROM links WHERE from_type = 'task' AND from_id = ?1 \
+         AND to_type = 'task' AND to_id = ?2 AND relation = ?3)",
+        params![from_id, to_id, relation],
+        |r| r.get(0),
+    )?;
+    if !exists {
+        let node = |id: &str| (NodeType::Task, id.to_string());
+        insert_link(tx, &node(from_id), &node(to_id), relation, None, ts)?;
+    }
+    Ok(())
+}
 
 /// `link.list`'s page when the caller names no `limit`, and the ceiling on one
 /// they do — `task.list`'s pair of numbers, for its reasons.
@@ -469,29 +532,7 @@ impl Engine {
             return Ok(link);
         }
 
-        let id = crate::clock::uuid_v7().to_string();
-        tx.execute(
-            "INSERT INTO links \
-             (id, from_type, from_id, to_type, to_id, relation, metadata, created, created_by) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 'user')",
-            params![
-                id,
-                from.0.as_str(),
-                from.1,
-                to.0.as_str(),
-                to.1,
-                relation,
-                metadata.as_ref().map(Value::to_string),
-                ts,
-            ],
-        )?;
-        insert_event(
-            &tx,
-            Entity::Link,
-            &id,
-            "link.add",
-            &json!({ "from": node_id(&from), "to": node_id(&to), "relation": relation }),
-        )?;
+        let id = insert_link(&tx, &from, &to, &relation, metadata.as_ref(), &ts)?;
         tx.commit()?;
 
         Ok(json!({

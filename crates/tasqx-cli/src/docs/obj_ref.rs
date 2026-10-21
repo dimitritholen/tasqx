@@ -572,14 +572,23 @@ fn operations_html(o: &Object) -> String {
 // Task: lifecycle and urgency
 // ============================================================================
 
-/// The status machine, as `engine/task.rs` enforces it. `backlog` and
-/// `pending` are one box because every write that stores `pending` — stop,
+/// The status machine, as `engine/task.rs` enforces it. `triage` (D238) sits
+/// above the box: a proposal that `task.triage` accepts into it or cancels.
+/// `backlog` and `pending` are one box because every write that stores `pending` — stop,
 /// the D6 auto-stop, reopen — is read back through `effective_status`, so no
 /// arrow may end in `pending` alone (PR #56 review). A raw string, so
 /// the first line keeps its indentation (a `"\` continuation strips it).
 const LIFECYCLE: &str = r"
                           task.add
                               │
+            status: triage    │
+          ┌───────────────────┤
+          v                   │
+   ┌─────────────┐            │
+   │   triage    ├─ accept ──>│
+   └─────────────┘            │
+     decline, duplicate:      │
+     to cancelled             │
  ┌─ open ─────────────────────┼─────────────────────────────┐
  │                            v                             │
  │  ┌────────────────────────────────────────────────────┐  │
@@ -609,10 +618,20 @@ const LIFECYCLE: &str = r"
 
 fn task_lifecycle() -> String {
     format!(
-        "<h3 id=\"obj-task-lifecycle\">Lifecycle</h3>{}{}{}{}",
-        p("A task has five statuses. Three are open — <code>backlog</code>, <code>pending</code> \
-           and <code>active</code> — and two are closed: <code>done</code> and \
-           <code>cancelled</code>. Each arrow is labelled with the method that makes the move."),
+        "<h3 id=\"obj-task-lifecycle\">Lifecycle</h3>{}{}{}{}{}",
+        p("A task has six statuses. Four are open — <code>triage</code>, <code>backlog</code>, \
+           <code>pending</code> and <code>active</code> — and two are closed: <code>done</code> \
+           and <code>cancelled</code>. Each arrow is labelled with the method that makes the move."),
+        p("<code>triage</code> holds a proposal (D238): <code>task.add</code> with \
+           <code>status: \"triage\"</code> files one, and no clock moves it. It is outside \
+           <code>@working</code>, <code>task.next</code> and the urgency ranking, still blocks \
+           the tasks that depend on it, and <code>task.start</code> and <code>task.done</code> \
+           refuse it. <code>task.triage</code> settles it: <code>accept</code> moves it into the \
+           box below, landing wherever its dates say; <code>decline</code> and \
+           <code>duplicate</code> cancel it, as <code>task.cancel</code> may too. \
+           <code>event.revert</code> takes back an accept, a decline or a cancel, putting it \
+           back in triage, and <code>task.reopen</code> of a cancelled proposal returns it to \
+           triage rather than to the box."),
         pre_plain(LIFECYCLE.trim_start_matches('\n')),
         p("<code>backlog</code> and <code>pending</code> are one question asked of the clock \
            every time a task is read: a task is in <code>backlog</code> while its \
@@ -1203,6 +1222,60 @@ mod tests {
         assert!(
             get(g)["completed"].is_null(),
             "a cancelled task was stamped"
+        );
+
+        // D238: a proposal sits outside the box until `task.triage` settles it.
+        let proposal = add(json!({"status": "triage"}));
+        assert_eq!(status(proposal), "triage");
+        assert!(call("task.start", json!({"ref": proposal})).is_err());
+        assert!(call("task.done", json!({"ref": proposal})).is_err());
+        call("task.triage", json!({"ref": proposal, "action": "accept"})).unwrap();
+        assert_eq!(status(proposal), "pending", "accept moves it into the box");
+        call("event.revert", json!({})).unwrap();
+        assert_eq!(status(proposal), "triage", "undo puts it back");
+        let held_proposal = add(json!({"status": "triage", "wait": far}));
+        assert_eq!(status(held_proposal), "triage", "no clock moves a proposal");
+        call(
+            "task.triage",
+            json!({"ref": held_proposal, "action": "accept"}),
+        )
+        .unwrap();
+        assert_eq!(
+            status(held_proposal),
+            "backlog",
+            "accepted where its dates say"
+        );
+        call("task.triage", json!({"ref": proposal, "action": "decline"})).unwrap();
+        assert_eq!(status(proposal), "cancelled");
+        call("event.revert", json!({})).unwrap();
+        assert_eq!(status(proposal), "triage", "undo takes back a decline");
+        call(
+            "task.triage",
+            json!({"ref": proposal, "action": "duplicate", "of": held_proposal}),
+        )
+        .unwrap();
+        assert_eq!(status(proposal), "cancelled");
+        call("task.reopen", json!({"ref": proposal})).unwrap();
+        assert_eq!(
+            status(proposal),
+            "triage",
+            "a reopened proposal is a proposal"
+        );
+        let dropped = add(json!({"status": "triage"}));
+        call("task.cancel", json!({"ref": dropped})).unwrap();
+        call("event.revert", json!({})).unwrap();
+        assert_eq!(
+            status(dropped),
+            "triage",
+            "a cancelled proposal comes back to triage"
+        );
+        assert!(
+            call(
+                "task.triage",
+                json!({"ref": held_proposal, "action": "accept"})
+            )
+            .is_err(),
+            "only a proposal can be accepted"
         );
 
         let prose = task_lifecycle();

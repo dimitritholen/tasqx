@@ -592,6 +592,7 @@ pub(crate) fn run_mcp_serve(scope: Scope) {
     // rulings the handshake carries.
     let server = McpServer::new(&engine, scope)
         .with_time_format(config_detail_time_format())
+        .with_add_status(&config_mcp_add_status())
         .with_workdir(std::env::current_dir().ok());
     let stdin = std::io::stdin();
     let stdout = std::io::stdout();

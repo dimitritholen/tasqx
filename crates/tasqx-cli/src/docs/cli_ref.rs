@@ -90,6 +90,14 @@ const EXAMPLE_SCREENS: &[(&str, &str, &str)] = &[
     ("done", "tasqx done 1", "done-echo"),
     ("cancel", "tasqx cancel 1", "cancel-echo"),
     ("reopen", "tasqx reopen 1", "reopen-echo"),
+    ("triage", "tasqx triage", "triage"),
+    ("accept", "tasqx accept 12", "accept-echo"),
+    (
+        "decline",
+        "tasqx decline 12 --reason \"out of scope for this release\"",
+        "decline-echo",
+    ),
+    ("duplicate", "tasqx duplicate 12 --of 7", "duplicate-echo"),
     (
         "annotate",
         "tasqx annotate 1 Called the plumber, waiting on a quote",

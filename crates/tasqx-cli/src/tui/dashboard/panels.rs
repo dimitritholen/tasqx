@@ -847,7 +847,7 @@ pub fn status_line(bar: &StatusBar, width: u16, theme: &Theme, caps: &Caps) -> V
         budget = budget.saturating_sub(render::width(&sp.content));
     }
     // Narrow terminals drop the tail fields rather than truncating mid-word.
-    let extras: [(String, RtStyle); 4] = [
+    let extras: [(String, RtStyle); 5] = [
         (
             format!("{} active", bar.active),
             if bar.active > 0 { s.active } else { s.muted },
@@ -859,6 +859,10 @@ pub fn status_line(bar: &StatusBar, width: u16, theme: &Theme, caps: &Caps) -> V
         (
             format!("{} blocked", bar.blocked),
             if bar.blocked > 0 { s.warn } else { s.muted },
+        ),
+        (
+            format!("{} triage", bar.triage),
+            if bar.triage > 0 { s.warn } else { s.muted },
         ),
         (format!("{} done/week", bar.done_week), s.muted),
     ];

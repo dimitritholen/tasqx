@@ -78,6 +78,10 @@ help-check	pipe	100	-	check --help	-	-
 help-git	pipe	100	-	git --help	-	-
 help-cancel	pipe	100	-	cancel --help	-	-
 help-reopen	pipe	100	-	reopen --help	-	-
+help-triage	pipe	100	-	triage --help	-	-
+help-accept	pipe	100	-	accept --help	-	-
+help-decline	pipe	100	-	decline --help	-	-
+help-duplicate	pipe	100	-	duplicate --help	-	-
 help-undo	pipe	100	-	undo --help	-	-
 help-annotate	pipe	100	-	annotate --help	-	-
 help-unannotate	pipe	100	-	unannotate --help	-	-
@@ -158,6 +162,7 @@ memory-list-json	pipe	100	-	memory list --json	-	-
 theme-list-json	pipe	100	-	theme list --json	-	-
 config-list-json	pipe	100	-	config list --json	-	-
 dashboard-json	pipe	100	-	dashboard --json	-	-
+triage-json	pipe	100	-	triage --json	-	-
 sync-status-json	pipe	100	-	sync --status --json	-	-
 sync-status	pipe	100	-	sync --status	-	-
 
@@ -180,6 +185,7 @@ projects-plain	pipe-plain	100	-	projects	-	-
 report-plain	pipe-plain	100	-	report	-	-
 memory-list-plain	pipe-plain	100	-	memory list	-	-
 theme-list-plain	pipe-plain	100	-	theme list	-	-
+triage-plain	pipe-plain	100	-	triage	-	-
 
 # --- default-mode captures for verbs ../manifest.tsv does not show at all.
 # `setup --list` uses a fixed, nonexistent --home so its ITEM/STATUS table

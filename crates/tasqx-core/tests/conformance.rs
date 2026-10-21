@@ -728,6 +728,8 @@ const R_TASK_ADD: Shape = &[&[
     // D237, additive: whether the comparison could not run (and `similar`
     // is empty for that reason, not because nothing looks alike).
     req("similar_skipped", Ty::Bool),
+    // D238: only when the call named `discovered_from`.
+    opt("discovered_from", Ty::Int),
 ]];
 
 const R_TASK_LIST: Shape = &[&[
@@ -909,6 +911,36 @@ const R_TASK_REOPEN: Shape = &[&[
     // The inverse of `task.done`'s `unblocked` (D69): the open dependents this
     // reopen put back into `blocked`. Always present, empty when none.
     req("blocked", Ty::Array),
+]];
+
+// D238: `of` and `moved_annotations` only on `duplicate`; `unblocked` is
+// always present, empty on `accept`.
+const R_TASK_TRIAGE: Shape = &[&[
+    req("short_id", Ty::Int),
+    req("title", Ty::Str),
+    req("action", Ty::Str),
+    req("status", Ty::Str),
+    req("_rev", Ty::Int),
+    req("unblocked", Ty::Array),
+    opt("of", Ty::Object),
+    opt("moved_annotations", Ty::Int),
+]];
+
+// D238: one page of the inbox.
+const R_TASK_TRIAGE_LIST: Shape = &[&[
+    req_of(
+        "tasks",
+        Ty::Array,
+        &[&[
+            req("short_id", Ty::Int),
+            req("title", Ty::Str),
+            req("created", Ty::Str),
+            nul("client", Ty::Str),
+            nul("discovered_from", Ty::Object),
+        ]],
+    ),
+    req("total", Ty::Int),
+    nul("next_offset", Ty::Int),
 ]];
 
 const R_TAG_ADD: Shape = &[&[req("short_id", Ty::Int), req("tags", Ty::Array)]];
@@ -1959,6 +1991,15 @@ fn cases() -> Vec<Case> {
             R_TASK_ADD,
         ),
         case(
+            "task.add",
+            "D238: a proposal filed in triage, found while working on another task",
+            |e| {
+                plain_task(e);
+                json!({ "title": "a plain task", "status": "triage", "discovered_from": 1 })
+            },
+            R_TASK_ADD,
+        ),
+        case(
             "task.next",
             "D213: the pick with its summary, and the resume rows",
             |e| {
@@ -2232,6 +2273,31 @@ fn cases() -> Vec<Case> {
                 json!({ "ref": 1 })
             },
             R_TASK_REOPEN,
+        ),
+        case(
+            "task.triage",
+            "a proposal marked a duplicate: cancelled, notes moved, linked (D238)",
+            |e| {
+                plain_task(e);
+                e.task_add(&json!({ "title": "again", "status": "triage" }))
+                    .expect("add");
+                json!({ "ref": 2, "action": "duplicate", "of": 1 })
+            },
+            R_TASK_TRIAGE,
+        ),
+        case(
+            "task.triage_list",
+            "the inbox, one page of two: a proposal with its client and origin (D238)",
+            |e| {
+                plain_task(e);
+                e.task_add(&json!({ "title": "found", "status": "triage",
+                                    "discovered_from": 1, "client": "agent 1" }))
+                    .expect("add");
+                e.task_add(&json!({ "title": "again", "status": "triage" }))
+                    .expect("add");
+                json!({ "limit": 1 })
+            },
+            R_TASK_TRIAGE_LIST,
         ),
         case(
             "tag.add",

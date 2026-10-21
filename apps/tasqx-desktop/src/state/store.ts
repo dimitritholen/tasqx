@@ -749,12 +749,14 @@ export function selectRowById(state: DashboardState, id: string): TaskRow | unde
   return state.tasks.data.find((row) => row.id === id);
 }
 
-/** The five summary cards, derived from the one summary slice. */
+/** The six summary cards, derived from the one summary slice. */
 export interface Cards {
   open: number;
   active: number;
   overdue: number;
   blocked: number;
+  /** Proposals in triage (D238), outside `open`. */
+  triage: number;
   completed: number;
 }
 
@@ -769,6 +771,7 @@ export function selectCards(state: DashboardState): Cards {
     active: groupCount(report, 'active'),
     overdue: (report?.groups ?? []).reduce((sum, group) => sum + (group.overdue ?? 0), 0),
     blocked,
+    triage: groupCount(report, 'triage'),
     completed,
   };
 }

@@ -76,10 +76,18 @@ pub(crate) fn cut_project_name(parsed: &sugar::ParsedAdd) -> Option<String> {
 const ADD_DASH_IS_NOT_A_TITLE: &str = "`add` does not read stdin; `-` would become a task titled \
      \"-\". Pipe canonical JSON into `tasqx import -` instead (see `tasqx import --help`).";
 
+/// `add --triage` and `--discovered-from` (D238): what a proposal carries
+/// beside the fields the sugar parser reads.
+pub(crate) struct Proposal {
+    pub triage: bool,
+    pub discovered_from: Option<String>,
+}
+
 pub(crate) fn run_add(
     be: &mut Backend,
     ctx: &Ctx,
     title: Vec<String>,
+    proposal: Proposal,
     flags: sugar::AddFlags,
 ) -> CmdOutcome {
     if title == ["-"] {
@@ -127,6 +135,12 @@ pub(crate) fn run_add(
     }
     if !parsed.tags.is_empty() {
         params["tags"] = Value::Array(parsed.tags.into_iter().map(Value::String).collect());
+    }
+    if proposal.triage {
+        params["status"] = json!(tasqx_core::types::Status::Triage.as_str());
+    }
+    if let Some(r) = proposal.discovered_from {
+        params["discovered_from"] = json!(r);
     }
     let result = be
         .call("task.add", &params)
@@ -919,6 +933,44 @@ pub(crate) fn run_simple_ref(
     let text = render::status_changed(ctx, verb, &result, &task, &titles, crate::clock::now());
     Ok((result, text))
 }
+
+/// `tasqx accept|decline|duplicate` (D238): one `task.triage` call, echoed as
+/// the card every other status change draws.
+pub(crate) fn run_triage(
+    be: &mut Backend,
+    ctx: &Ctx,
+    r#ref: String,
+    mut params: Value,
+) -> CmdOutcome {
+    params["ref"] = json!(r#ref);
+    let result = be.call("task.triage", &params)?;
+    let task = read_back(be, &result).unwrap_or_else(|| result.clone());
+    let moved = ids_in(&result, "unblocked", None);
+    let titles = titles_of(be, &moved);
+    let verb = match result["action"].as_str() {
+        Some("accept") => "accepted".to_string(),
+        Some("decline") => "declined".to_string(),
+        _ => format!(
+            "duplicate of #{}",
+            result["of"]["short_id"].as_i64().unwrap_or(0)
+        ),
+    };
+    let text = render::status_changed(ctx, &verb, &result, &task, &titles, crate::clock::now());
+    Ok((result, text))
+}
+
+/// `tasqx triage` (D238): the proposals still in triage, oldest first, each
+/// with the tool that filed it and the task it was found on — one
+/// `task.triage_list` read, the first [`TRIAGE_PAGE`] of them, and a line
+/// naming how many more there are.
+pub(crate) fn run_triage_inbox(be: &mut Backend, ctx: &Ctx) -> CmdOutcome {
+    let result = be.call("task.triage_list", &json!({ "limit": TRIAGE_PAGE }))?;
+    let text = render::triage_inbox(ctx, &result, crate::clock::now());
+    Ok((result, text))
+}
+
+/// How many proposals `tasqx triage` prints before it says how many more wait.
+const TRIAGE_PAGE: u64 = 50;
 
 /// `tasqx undo` — the safety net (DESIGN §5 example 12).
 ///

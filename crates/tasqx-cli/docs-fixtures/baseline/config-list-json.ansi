@@ -97,6 +97,14 @@
       "value": "website"
     },
     {
+      "default": "pending",
+      "home": "config.toml",
+      "key": "mcp.add_status",
+      "source": "default",
+      "summary": "Status a task added over MCP takes when the call names none: `triage` holds agent proposals out of @working until `tasqx accept` (D238).",
+      "value": "pending"
+    },
+    {
       "default": "both",
       "home": "config.toml",
       "key": "detail.time_format",
