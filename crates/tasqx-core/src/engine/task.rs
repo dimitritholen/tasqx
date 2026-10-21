@@ -79,7 +79,8 @@ fn parse_lease(raw: &str) -> Result<i64, ApiError> {
     }
     if secs > MAX_LEASE_SECS {
         return Err(ApiError::bad_request(format!(
-            "a lease is at most 24h, got {raw}: renew it instead of asking for longer"
+            "a lease is at most {}, got {raw}: renew it instead of asking for longer",
+            crate::util::human_duration(MAX_LEASE_SECS)
         )));
     }
     Ok(secs)
@@ -894,90 +895,63 @@ impl Engine {
             renew_on_start(&tx, &task, by, *until, claim_now, false)?;
         }
 
-        // D140: the auto-stop below is scoped to the caller's own clock. D6
-        // wrote "the currently active one" for one actor and it reads as one
-        // for as long as there is one; with two, it reaches across callers and
-        // the OTHER party's task leaves `active` mid-work with its remaining
-        // time untracked, reported only to the caller that caused it.
-        //
-        // Two unknowns are not evidence of two parties, so the refusal needs
-        // BOTH sides named: a person at a shell (who names no actor) keeps the
-        // auto-stop against an agent's clock and against another shell, which
-        // is every single-actor store and therefore almost every store.
-        if !command.keep {
-            if let Some(mine) = command.actor.as_deref() {
-                if let Some((held_by, short_id, title)) = self.active_clock_holder()? {
-                    // D236: a clock under its own actor's live claim is not
-                    // stopped (the auto-stop keeps it running), so there is
-                    // nothing to refuse.
-                    let kept = tx
-                        .query_row(
-                            "SELECT claimed_by, claim_expires FROM tasks WHERE short_id = ?1",
-                            params![short_id],
-                            |r| {
-                                Ok((
-                                    r.get::<_, Option<String>>(0)?,
-                                    r.get::<_, Option<String>>(1)?,
-                                ))
-                            },
-                        )
-                        .optional()?
-                        .and_then(|(by, until)| by.zip(until))
-                        .is_some_and(|(by, until)| {
-                            by == held_by && lease_is_live(&until, claim_now)
-                        });
-                    if held_by != mine && !kept {
-                        return Err(ApiError::conflict(format!(
-                            "#{short_id} \"{title}\" is active and its clock is held by another \
-                             session ({held_by}); stopping it here would leave that session's \
-                             work untracked. Pass keep:true to run both clocks deliberately \
-                             (D6), or wait for it to stop."
-                        )));
-                    }
-                }
-            }
-        }
-
         // D6: single active by default — auto-stop any currently active task.
         let mut auto_stopped: Vec<commands::AutoStopped> = Vec::new();
         // D236: a running task under another holder's live claim is that
         // holder's work; it keeps running and the response says so.
         let mut kept_running: Vec<commands::KeptRunning> = Vec::new();
         if !command.keep {
-            type Active = (String, i64, Option<String>, i64, i64, Option<String>);
+            type Active = (String, i64, String, Option<String>, i64, i64);
             let mut actives: Vec<Active> = Vec::new();
             {
                 let mut stmt = tx.prepare(
-                    "SELECT id, short_id, active_since, tracked_seconds, rev, claimed_by, \
-                     claim_expires FROM tasks WHERE status = 'active'",
+                    "SELECT id, short_id, title, active_since, tracked_seconds, rev \
+                     FROM tasks WHERE status = 'active'",
                 )?;
                 let rows = stmt.query_map([], |r| {
-                    let by: Option<String> = r.get(5)?;
-                    let until: Option<String> = r.get(6)?;
-                    let live = by
-                        .zip(until)
-                        .filter(|(_, u)| lease_is_live(u, claim_now))
-                        .map(|(b, _)| b);
                     Ok((
                         r.get::<_, String>(0)?,
                         r.get::<_, i64>(1)?,
-                        r.get::<_, Option<String>>(2)?,
-                        r.get::<_, i64>(3)?,
+                        r.get::<_, String>(2)?,
+                        r.get::<_, Option<String>>(3)?,
                         r.get::<_, i64>(4)?,
-                        live,
+                        r.get::<_, i64>(5)?,
                     ))
                 })?;
                 for row in rows {
                     actives.push(row?);
                 }
             }
-            for (aid, a_short_id, active_since, tracked, rev, held) in actives {
+            for (aid, a_short_id, a_title, active_since, tracked, rev) in actives {
+                // D236: a running task under another holder's live claim is
+                // that holder's work; it keeps running, and is reported.
+                let held = live_claim_on(&tx, &aid, claim_now)?.map(|(by, _)| by);
                 if let Some(by) = held.filter(|by| by != starter) {
                     kept_running.push(commands::KeptRunning {
                         short_id: a_short_id,
                         claimed_by: by,
                     });
                     continue;
+                }
+                // D140: the auto-stop below is scoped to the caller's own clock. D6
+                // wrote "the currently active one" for one actor and it reads as one
+                // for as long as there is one; with two, it reaches across callers and
+                // the OTHER party's task leaves `active` mid-work with its remaining
+                // time untracked, reported only to the caller that caused it.
+                //
+                // Two unknowns are not evidence of two parties, so the refusal needs
+                // BOTH sides named: a person at a shell (who names no actor) keeps the
+                // auto-stop against an agent's clock and against another shell, which
+                // is every single-actor store and therefore almost every store.
+                if let Some(mine) = command.actor.as_deref() {
+                    if let Some(held_by) = self.clock_holder_of(&aid)?.filter(|a| a != mine) {
+                        return Err(ApiError::conflict(format!(
+                            "#{a_short_id} \"{a_title}\" is active and its clock is held by \
+                             another session ({held_by}); stopping it here would leave that \
+                             session's work untracked. Pass keep:true to run both clocks \
+                             deliberately (D6), or wait for it to stop."
+                        )));
+                    }
                 }
                 let elapsed = seconds_between(&active_since, &ts);
                 let elapsed_iso = iso_duration(elapsed);
@@ -1137,7 +1111,13 @@ impl Engine {
         // D236 beside D140: a task running on another actor's clock is that
         // actor's work, claimed or not. An anonymous clock is the shell's, so
         // only the shell's own holder may claim it.
-        if task.status == Status::Active {
+        let now_ts = crate::clock::now();
+        let held = Self::claim_on(&tx, &task.id)?;
+        // A holder renewing its own live claim is already the task's owner.
+        let renewing = held
+            .as_ref()
+            .is_some_and(|(by, until)| by == &holder && lease_is_live(until, now_ts));
+        if task.status == Status::Active && !renewing {
             let clock = self
                 .clock_holder_of(&task.id)?
                 .unwrap_or_else(|| SHELL_HOLDER.to_string());
@@ -1149,8 +1129,6 @@ impl Engine {
                 )));
             }
         }
-        let now_ts = crate::clock::now();
-        let held = Self::claim_on(&tx, &task.id)?;
         let op = match &held {
             Some((by, until)) if by == &holder => {
                 if lease_is_live(until, now_ts) {
@@ -2240,6 +2218,13 @@ impl Engine {
         } else {
             None
         };
+        // D236: the claim a cancellation ends, read before the write that
+        // clears it, so `undo` can put it back.
+        let ended_claim = if cancelling {
+            Self::claim_on(&tx, &task.id)?
+        } else {
+            None
+        };
         let mut before = serde_json::Map::new();
         let mut wrote: Vec<&str> = assignments.iter().map(|(c, _)| *c).collect();
         if new_tracked_seconds.is_some() {
@@ -2301,6 +2286,12 @@ impl Engine {
             payload.insert("before".to_string(), Value::Object(before));
             if let Some(by) = &claim_forced {
                 payload.insert("claim_forced".to_string(), json!(by));
+            }
+            if let Some((by, until)) = &ended_claim {
+                payload.insert(
+                    "claim".to_string(),
+                    json!({ "holder": by, "expires": until }),
+                );
             }
             Value::Object(payload)
         })?;
@@ -3307,43 +3298,6 @@ impl Engine {
                     .saturating_add(bucket("total_tokens"))
             });
         Ok(sum)
-    }
-
-    /// The actor holding the one active clock, with the task it is on — or
-    /// `None` when nothing is active or the running timer names no actor.
-    ///
-    /// Read from the most recent `start` event of the active task rather than
-    /// from a column, because that event is where D140 wrote it and because a
-    /// column would have to be cleared on every stop, done and cancel — three
-    /// more places to forget.
-    ///
-    /// A task can be active with no `actor` on its start (a shell, or a client
-    /// predating D140), and that answers `None`: two unknowns are not evidence
-    /// of two parties, and refusing on a guess would break the ordinary case of
-    /// a person who started a task and then pointed an agent at the store.
-    fn active_clock_holder(&self) -> Result<Option<(String, i64, String)>, ApiError> {
-        let mut stmt = self.conn.prepare(
-            "SELECT e.payload, t.short_id, t.title FROM tasks t \
-             JOIN events e ON e.entity_id = t.id AND e.op = 'start' \
-             WHERE t.status = 'active' \
-             ORDER BY e.rowid DESC LIMIT 1",
-        )?;
-        let row = stmt
-            .query_map([], |r| {
-                Ok((
-                    r.get::<_, Option<String>>(0)?,
-                    r.get::<_, i64>(1)?,
-                    r.get::<_, String>(2)?,
-                ))
-            })?
-            .next();
-        let Some(row) = row else { return Ok(None) };
-        let (payload, short_id, title) = row?;
-        let actor = payload
-            .as_deref()
-            .and_then(|p| serde_json::from_str::<Value>(p).ok())
-            .and_then(|v| payload_field(&v, "actor"));
-        Ok(actor.map(|a| (a, short_id, title)))
     }
 
     // ---- task.next -----------------------------------------------------------
