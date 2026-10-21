@@ -269,6 +269,8 @@ impl From<TaskCancelled> for Value {
 
 pub(super) struct TaskReopened {
     pub(super) short_id: i64,
+    /// `pending`, or `triage` for a proposal that was cancelled (D238).
+    pub(super) status: &'static str,
     /// short_ids of the open dependents this reopen put back into `blocked`.
     ///
     /// The inverse of [`TaskDone::unblocked`], and it exists for the same
@@ -281,7 +283,7 @@ impl From<TaskReopened> for Value {
     fn from(result: TaskReopened) -> Self {
         json!({
             "short_id": result.short_id,
-            "status": "pending",
+            "status": result.status,
             "blocked": result.blocked,
         })
     }

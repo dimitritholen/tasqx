@@ -300,6 +300,17 @@ pub const SETTINGS: &[Setting] = &[
             "Project a bare `tasqx add` files into. Lives in the store; set it with `tasqx use`.",
     },
     Setting {
+        key: "mcp.add_status",
+        home: Home::Toml,
+        kind: Kind::Str,
+        default: "pending",
+        env: None,
+        flag: None,
+        choices: Choices::OneOf(&["pending", "triage"]),
+        summary: "Status a task added over MCP takes when the call names none: `triage` holds \
+                  agent proposals out of @working until `tasqx accept` (D238).",
+    },
+    Setting {
         key: "detail.time_format",
         home: Home::Toml,
         kind: Kind::Str,
@@ -1714,6 +1725,9 @@ idle_timeout = 15
 [detail]
 time_format = "iso"
 
+[mcp]
+add_status = "triage"
+
 [extra]
 thing = 1
 
@@ -1735,6 +1749,7 @@ x = 1
             ("board.port", "8080"),
             ("daemon.idle_timeout", "15"),
             ("detail.time_format", "iso"),
+            ("mcp.add_status", "triage"),
         ];
         let toml_keys: Vec<&str> = SETTINGS
             .iter()

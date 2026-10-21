@@ -1312,3 +1312,19 @@ fn an_uncut_list_is_unchanged_and_has_no_footer() {
     );
     assert_eq!(cut_footer(&ctx, &result, Some("+work"), &[]), "");
 }
+
+/// D238: `tasqx triage` prints one page and names how many proposals it left
+/// out, rather than ending as though the inbox were empty past that page.
+#[test]
+fn the_triage_inbox_names_what_it_did_not_show() {
+    let ctx = Ctx::new(theme::default_theme(), Caps::PLAIN);
+    let now = "2026-09-16T09:00:00Z".parse().unwrap();
+    let row = json!({ "short_id": 7, "title": "a proposal", "created": "2026-09-15T09:00:00Z",
+                      "client": "agent 1", "discovered_from": { "short_id": 3, "title": "origin" } });
+    let text = triage_inbox(&ctx, &json!({ "tasks": [row.clone()], "total": 3 }), now);
+    assert!(text.starts_with("3 proposals in triage"), "{text}");
+    assert!(text.contains("by agent 1 · found on #3 origin"), "{text}");
+    assert!(text.contains("2 more not shown"), "{text}");
+    let one = triage_inbox(&ctx, &json!({ "tasks": [row], "total": 1 }), now);
+    assert!(!one.contains("more not shown"), "{one}");
+}

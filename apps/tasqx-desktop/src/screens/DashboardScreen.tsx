@@ -12,7 +12,7 @@ import { routeStateOf, useRouteSync } from './route';
 import { TaskTable } from './TaskTable';
 
 /**
- * What is working, what is blocked, what is due: five counts, the working set
+ * What is working, what is blocked, what is due: six counts, the working set
  * itself, and the tail of the event log. The table is the Tasks table on a
  * fixed `@working` filter — the dashboard never pages, so the route's filter
  * and page are the screen's, not the query's.
@@ -21,7 +21,7 @@ import { TaskTable } from './TaskTable';
 /** The last events the panel shows; `event.list` is bounded, never streamed. */
 export const ACTIVITY_LIMIT = 20;
 
-export type CardId = 'open' | 'active' | 'overdue' | 'blocked' | 'completed';
+export type CardId = 'open' | 'active' | 'overdue' | 'blocked' | 'triage' | 'completed';
 
 /** Each card is a filter you can walk into. The count comes from the summary. */
 export const CARDS: { id: CardId; label: string; filter: string }[] = [
@@ -29,6 +29,8 @@ export const CARDS: { id: CardId; label: string; filter: string }[] = [
   { id: 'active', label: 'Active', filter: 'status:active' },
   { id: 'overdue', label: 'Overdue', filter: 'due.before:now @working' },
   { id: 'blocked', label: 'Blocked', filter: '@blocked' },
+  // D238: proposals waiting to be accepted, outside the working set.
+  { id: 'triage', label: 'Triage', filter: 'status:triage' },
   { id: 'completed', label: 'Completed, last 7 days', filter: COMPLETED_FILTER },
 ];
 

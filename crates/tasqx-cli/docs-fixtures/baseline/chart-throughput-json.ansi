@@ -90,12 +90,12 @@
       "net": -2
     },
     {
-      "added": 0,
+      "added": 2,
       "done": 1,
       "iso_week": 38,
       "iso_year": 2026,
       "label": "W38",
-      "net": -1
+      "net": 1
     }
   ],
   "velocity_4wk": 3.0,

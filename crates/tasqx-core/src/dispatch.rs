@@ -63,6 +63,12 @@ pub const PARAMS: &[(&str, &[&str], bool)] = &[
             "depends_on",
             // D139: a size gauge over fresh tokens, null for no threshold.
             "budget_tokens",
+            // D238: `pending` (the default) or `triage`; the task this one was
+            // found while working on (a `derived_from` link); and the tool that
+            // proposed it, kept on the `add` event.
+            "status",
+            "discovered_from",
+            "client",
         ],
         false,
     ),
@@ -202,6 +208,15 @@ pub const PARAMS: &[(&str, &[&str], bool)] = &[
         false,
     ),
     ("task.reopen", &["ref", "expected_rev"], false),
+    // D238: leave triage — accept, decline (with an optional `reason` note) or
+    // mark a duplicate `of` another task.
+    (
+        "task.triage",
+        &["ref", "action", "reason", "of", "expected_rev"],
+        false,
+    ),
+    // D238: the inbox, in one read.
+    ("task.triage_list", &["limit", "offset"], false),
     ("tag.add", &["ref", "tags"], false),
     ("tag.remove", &["ref", "tags"], false),
     ("annotation.add", &["ref", "body", "expected_rev"], false),
@@ -495,6 +510,8 @@ pub fn dispatch(engine: &Engine, method: &str, params: &Value) -> Result<Value, 
         "task.claim" => engine.task_claim(params),
         "task.release" => engine.task_release(params),
         "task.reopen" => engine.task_reopen(params),
+        "task.triage" => engine.task_triage(params),
+        "task.triage_list" => engine.task_triage_list(params),
         "tag.add" => engine.tag_add(params),
         "tag.remove" => engine.tag_remove(params),
         "project.list" => engine.project_list(params),

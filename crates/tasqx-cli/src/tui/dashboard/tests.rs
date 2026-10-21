@@ -2556,3 +2556,42 @@ fn the_p_help_names_the_keys_pick_itself_reads_and_starts_with() {
         enter.help
     );
 }
+
+/// D238: the header counts what waits in triage, apart from the open work it
+/// is not yet part of the ranking of.
+#[test]
+fn the_header_counts_the_proposals_in_triage() {
+    let mut d = dash();
+    let base = d.status.triage;
+    assert_eq!(base, 0, "the fixture holds no proposal");
+    let row = |id: i64, status: &str| {
+        json!({
+            "_rev": 1, "active_since": null, "blocked": false, "completed": null,
+            "created": "2026-08-01T09:00:00Z", "due": null, "estimate": null,
+            "id": format!("019fd213-0000-7000-8000-{id:012}"),
+            "modified": "2026-08-01T09:00:00Z", "priority": null, "project": "work",
+            "recurrence": null, "remind": null, "scheduled": null, "short_id": id,
+            "status": status, "tags": [], "title": "a proposal", "tracked": "PT0S",
+            "urgency": 0.0, "wait": null
+        })
+    };
+    d = model::build(
+        Sources {
+            tasks: &json!({ "count": 2, "tasks": [row(1, "triage"), row(2, "pending")] }),
+            summary: &json!({ "groups": [] }),
+            projects: &json!({ "count": 0, "projects": [] }),
+            events: &json!({ "count": 0, "events": [] }),
+            event_limit: 100,
+            days: 7,
+        },
+        "2026-08-05T12:00:00Z".parse().unwrap(),
+        date(2026, 8, 5),
+    );
+    assert_eq!(d.status.triage, 1);
+    let th = theme::load("nord", None);
+    let text: String = panels::status_line(&d.status, 200, &th, &caps())
+        .iter()
+        .map(|s| s.content.to_string())
+        .collect();
+    assert!(text.contains("1 triage"), "{text}");
+}

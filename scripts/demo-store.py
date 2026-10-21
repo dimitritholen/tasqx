@@ -174,6 +174,14 @@ OPEN = [
 RUNNING = 1
 BLOCKED = (4, 3)
 
+# D238: proposals an agent filed while working, still waiting in triage —
+# (title, project, days ago, index into OPEN of the task it was found on).
+TRIAGE = [
+    ("Retry the flaky checkout e2e test", "website", 2, 1),
+    ("Cache the pricing API response", "api", 1, 1),
+]
+TRIAGE_CLIENT = "claude-code 2.1"
+
 DONE_TITLES = [
     "Upgrade Postgres to 16", "Add health check endpoint", "Localise the onboarding",
     "Fix crash on rotate", "Cache the pricing API response", "Retire the v1 webhooks",
@@ -460,9 +468,20 @@ def main():
 
     outcomes(tasks, events)
 
+    # The triage inbox, minted after every other id so none of them moves.
+    links = []
+    for title, project, ago, origin in TRIAGE:
+        created = day(-ago, 15, 40)
+        tid = task(sid, title, project, None, None, [], None, created)
+        tasks[-1]["status"] = "triage"
+        events[-1]["payload"].update(status="triage", client=TRIAGE_CLIENT)
+        links.append({"id": uid(), "from": f"task:{tid}", "to": f"task:{ids[origin][1]}",
+                      "relation": "derived_from"})
+        sid += 1
+
     payload = {"default_project": "website", "docs": docs, "dropped_dependencies": [],
-               "events": sorted(events, key=lambda e: e["ts"]), "projects": projects,
-               "tasks": tasks}
+               "events": sorted(events, key=lambda e: e["ts"]), "links": links,
+               "projects": projects, "tasks": tasks}
 
     OUT.parent.mkdir(parents=True, exist_ok=True)
     for suffix in ("", "-wal", "-shm"):

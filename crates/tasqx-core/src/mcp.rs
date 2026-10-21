@@ -453,6 +453,11 @@ fn with_correlation(mut schema: Value) -> Value {
 /// written as such; what is not allowed is an omission with nothing beside it.
 const UNEXPOSED_METHODS: &[(&str, &str)] = &[
     (
+        "task.triage_list",
+        "`tasqx_list_tasks` with `status:triage` already lists the inbox for an agent; the \
+         filing tool and origin task this adds are for the person settling it (D238).",
+    ),
+    (
         "core.capabilities",
         "the MCP handshake already answers this question: `initialize` reports the protocol          revision and scope, and `tools/list` reports the surface. A second, differently          shaped capability document is a second thing to keep in sync.",
     ),
@@ -1164,22 +1169,20 @@ fn build_tool_specs() -> Vec<ToolSpec> {
             write: true,
             destructive: false,
             idempotent: false,
-            description: "Create a task. Returns short_id, urgency and status — `backlog`, \
-                not `pending`, when `scheduled` or `wait` is in the future, which holds the \
-                task outside `@working` until then — plus the stored title, due, tags and \
-                resolved `scheduled`, so an ambiguous date or sugar captured into the title \
-                can be checked against what was stored. A title carrying CLI sugar adds a \
-                `warnings` entry naming it. `checks` and `depends_on` are created in the same \
-                transaction (D213) and echoed as `checks[]` (with ids) and `depends_on`. \
-                `similar` lists up to three open look-alike tasks (D237).",
+            description: "Create a task. Returns short_id, urgency and status — `backlog` \
+                while `scheduled` or `wait` is in the future, outside `@working`; `triage` for \
+                a proposal (D238) — plus the stored title, due, tags and resolved `scheduled`, \
+                to check a parsed date. CLI sugar in the title adds a `warnings` \
+                entry. `checks` and `depends_on` are created in the same transaction (D213) \
+                and echoed back, checks with ids. `similar`: up to three open look-alikes \
+                (D237).",
             schema: json!({
                 "type": "object",
                 "properties": {
                     "title": {
                         "type": "string",
-                        "description": "Stored verbatim: this server does not parse the CLI's \
-                            inline sugar (`+tag`, `project:`, `due:`, `!prio`). Use the \
-                            fields below."
+                        "description": "Stored verbatim: CLI sugar (`+tag`, `due:`, `!prio`) \
+                            is not parsed; use the fields below."
                     },
                     "project": { "type": "string" },
                     "priority": {
@@ -1232,7 +1235,14 @@ fn build_tool_specs() -> Vec<ToolSpec> {
                             input, output, cache creation, never cache reads. It STOPS \
                             NOTHING; a blown budget signals a task too big to hand over \
                             whole. `tasqx_get_task` reports `over` against it."
-                    }
+                    },
+                    "status": {
+                        "type": "string",
+                        "enum": ["pending", "triage"],
+                        "description": "triage: a proposal, outside @working (D238)."
+                    },
+                    "discovered_from": { "type": ["integer", "string"] },
+                    "client": { "type": "string" }
                 },
                 "required": ["title"]
             }),
@@ -1377,6 +1387,33 @@ fn build_tool_specs() -> Vec<ToolSpec> {
                     "force_claim": { "type": "boolean", "description": "Override another holder's claim." }
                 },
                 "required": ["ref"]
+            }),
+        },
+        ToolSpec {
+            name: "tasqx_triage_task",
+            method: "task.triage",
+            write: true,
+            destructive: true,
+            idempotent: false,
+            description: "Settle a task in triage (D238): `accept` makes it pending, \
+                `decline` cancels it with an optional `reason` note, `duplicate` cancels it, \
+                moves its notes to `of` and links the two. A task not in triage is a conflict.",
+            schema: json!({
+                "type": "object",
+                "properties": {
+                    "ref": ref_schema(),
+                    "action": {
+                        "type": "string",
+                        "enum": Engine::TRIAGE_ACTIONS,
+                    },
+                    "reason": { "type": "string", "description": "Why it was declined." },
+                    "of": {
+                        "type": ["integer", "string"],
+                        "description": "The task it duplicates (action `duplicate`)."
+                    },
+                    "expected_rev": lifecycle_rev_schema()
+                },
+                "required": ["ref", "action"]
             }),
         },
         ToolSpec {
@@ -2105,6 +2142,9 @@ pub struct McpServer<'e> {
     /// for the standing rulings `initialize` appends (#96, D157). `None`
     /// infers from the default project alone.
     workdir: Option<std::path::PathBuf>,
+    /// D238: the `status` a `task.add` arriving here takes when it names none
+    /// (`mcp.add_status`). `None` leaves the engine's default, `pending`.
+    add_status: Option<String>,
 }
 
 impl<'e> McpServer<'e> {
@@ -2120,7 +2160,17 @@ impl<'e> McpServer<'e> {
             connection_id: format!("mcp:{}", crate::clock::uuid_v7()),
             time_format: crate::markdown::TimeFormat::Both,
             workdir: None,
+            add_status: None,
         }
+    }
+
+    /// D238: file every `task.add` this session makes without a `status` of
+    /// its own under `status` (`mcp.add_status`): `triage` holds agent
+    /// proposals out of `@working` until a person accepts them. `pending`, the
+    /// default, sends nothing and leaves the engine's own default in force.
+    pub fn with_add_status(mut self, status: &str) -> Self {
+        self.add_status = (status != "pending").then(|| status.to_string());
+        self
     }
 
     /// Set the working directory whose ancestors name the session's project
@@ -2705,6 +2755,22 @@ impl<'e> McpServer<'e> {
         // `client: null` counts as absent, matching the engine's D32 read
         // (clients that serialize unset optionals as null must not lose
         // attribution).
+        // D238: an add that names no status takes the session's
+        // `mcp.add_status`, and every add names the tool that proposed it.
+        if spec.method == "task.add" {
+            if let Some(obj) = args.as_object_mut() {
+                if obj.get("status").is_none_or(Value::is_null) {
+                    if let Some(status) = &self.add_status {
+                        obj.insert("status".to_string(), json!(status));
+                    }
+                }
+                if obj.get("client").is_none_or(Value::is_null) {
+                    if let Some(label) = self.client_label() {
+                        obj.insert("client".to_string(), Value::String(label));
+                    }
+                }
+            }
+        }
         if spec.method == "task.start" || spec.method == "task.done" {
             if let Some(obj) = args.as_object_mut() {
                 if obj.get("client").is_none_or(Value::is_null) {
@@ -4085,6 +4151,12 @@ mod tests {
                 }),
                 "task.adjust_tracked" => {
                     json!({ "ref": 1, "delta": "+30m", "reason": "forgot to start" })
+                }
+                "task.triage" => {
+                    let id = dispatch(&e, "task.add", &json!({ "title": "p", "status": "triage" }))
+                        .expect("seed a proposal")["short_id"]
+                        .clone();
+                    json!({ "ref": id, "action": "accept" })
                 }
                 other => panic!(
                     "tool `{}` requires {required:?} of `{other}`, which this fixture has no \

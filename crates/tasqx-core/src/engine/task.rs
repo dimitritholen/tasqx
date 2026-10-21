@@ -661,16 +661,38 @@ impl Engine {
         // strings the caller typed.
         check_dates_not_inverted(due.as_deref(), scheduled.as_deref(), wait.as_deref())?;
         check_remind_has_anchor(remind.as_deref(), due.as_deref())?;
+        // D238: a proposal is filed in triage, out of `@working` until it is
+        // accepted. `pending` is the default and the only other value: the
+        // computed backlog below is a date's doing, not a caller's choice.
+        let triage = match opt_str_nonempty(p, "status")?.as_deref() {
+            None | Some("pending") => false,
+            Some("triage") => true,
+            Some(other) => {
+                return Err(ApiError::bad_request(format!(
+                    "task.add takes status `pending` or `triage` (got {other:?}); a date holds \
+                     a task in backlog, and the other statuses are reached by their verbs"
+                )))
+            }
+        };
+        let discovered_from = p.get("discovered_from").filter(|v| !v.is_null());
+        let client = opt_str_nonempty(p, "client")?;
 
         // add -> pending, or backlog if wait/scheduled is in the future. Asking
         // the shared rule what a *backlog* task would be right now answers both
         // halves, and keeps this in step with the spawn path and every read.
-        let status = effective_status(
-            Status::Backlog,
-            wait.as_deref(),
-            scheduled.as_deref(),
-            now_ts,
-        );
+        // A proposal is not read against the clock (`effective_status` leaves
+        // `Triage` alone), so its dates decide nothing until it is accepted.
+        let status = if triage {
+            Status::Triage
+        } else {
+            effective_status(
+                Status::Backlog,
+                wait.as_deref(),
+                scheduled.as_deref(),
+                now_ts,
+            )
+        };
+        let status_text = status.as_str();
 
         let id = crate::clock::uuid_v7().to_string();
         // The instant the dates above resolved against, as the stored string —
@@ -719,6 +741,10 @@ impl Engine {
                 targets.push(t);
             }
         }
+        let origin = match discovered_from {
+            Some(r) => Some(self.resolve_ref_value_on(&tx, r)?),
+            None => None,
+        };
         let short_id = alloc_short_id(&tx)?;
         tx.execute(
             &format!(
@@ -729,7 +755,7 @@ impl Engine {
                 id,
                 short_id,
                 title,
-                status.as_str(),
+                status_text,
                 priority.map(|x| x.as_str()),
                 project,
                 due,
@@ -753,20 +779,19 @@ impl Engine {
         for tag in &tags {
             ensure_tag_link(&tx, &id, tag)?;
         }
-        insert_event(
-            &tx,
-            Entity::Task,
-            &id,
-            "add",
-            &json!({
-                "title": title,
-                "status": status.as_str(),
-                "project": project,
-                "priority": priority.map(|x| x.as_str()),
-                "tags": tags,
-                "recurrence": recurrence.clone(),
-            }),
-        )?;
+        let mut add_payload = json!({
+            "title": title,
+            "status": status_text,
+            "project": project,
+            "priority": priority.map(|x| x.as_str()),
+            "tags": tags,
+            "recurrence": recurrence.clone(),
+        });
+        // D238: who proposed it, for `tasqx triage`; absent when nobody said.
+        if let Some(c) = &client {
+            add_payload["client"] = json!(c);
+        }
+        insert_event(&tx, Entity::Task, &id, "add", &add_payload)?;
         // D213: the same rows and events `check.add` and `dependency.add`
         // write, so a store replays them identically; `rev` ends at one per
         // event, as it does when the calls are made one by one.
@@ -813,12 +838,16 @@ impl Engine {
         } else {
             self.is_blocked(&id)?
         };
+        // D238: the task this one was found while working on.
+        if let Some(o) = &origin {
+            super::graph::link_tasks(&tx, &id, &o.id, "derived_from", &ts)?;
+        }
         tx.commit()?;
 
         let mut out = json!({
             "id": id,
             "short_id": short_id,
-            "status": status.as_str(),
+            "status": status_text,
             // D21: the project this task actually landed in. When it was
             // inherited from the default rather than named on the command, this
             // is the ONLY place the caller learns where it went — "silently
@@ -850,10 +879,23 @@ impl Engine {
             out["depends_on"] = json!(targets.iter().map(|t| t.short_id).collect::<Vec<_>>());
             out["blocked"] = json!(blocked);
         }
+        if let Some(o) = &origin {
+            out["discovered_from"] = json!(o.short_id);
+        }
         with_title_warning(&mut out, &title);
         out["similar"] = similar;
         out["similar_skipped"] = json!(skipped);
         Ok(out)
+    }
+
+    /// D238: a proposal is not work yet — `start` and `done` name the verb
+    /// that makes it so.
+    fn triage_refusal(task: &Task, verb: &str) -> ApiError {
+        ApiError::conflict(format!(
+            "cannot {verb} #{0}: it is in triage, a proposal nobody has accepted yet; \
+             accept it first with `tasqx accept {0}` (task.triage action accept)",
+            task.short_id
+        ))
     }
 
     // ---- backlog refusal hint -------------------------------------------------
@@ -952,6 +994,7 @@ impl Engine {
                 .into());
             }
             Status::Pending => {}
+            Status::Triage => return Err(Self::triage_refusal(&task, "start")),
             Status::Backlog => {
                 return Err(ApiError::conflict(format!(
                     "cannot start a backlog task (only pending -> active){}",
@@ -1467,6 +1510,7 @@ impl Engine {
         match task.status {
             Status::Pending | Status::Active => {}
             Status::Backlog if merge.is_some() => {}
+            Status::Triage => return Err(Self::triage_refusal(&task, "complete")),
             Status::Backlog => {
                 return Err(ApiError::conflict(format!(
                     "cannot complete a backlog task (only pending|active -> done){}",
@@ -2341,7 +2385,7 @@ impl Engine {
                     }
                     // Cancel is only valid from a non-terminal state.
                     match task.status {
-                        Status::Backlog | Status::Pending | Status::Active => {}
+                        s if s.is_open() => {}
                         other => {
                             return Err(ApiError::conflict(format!(
                                 "cannot cancel {} {} task",
@@ -3579,7 +3623,7 @@ impl Engine {
              FROM tasks t \
              LEFT JOIN annotations a ON a.id = \
                  (SELECT MAX(a2.id) FROM annotations a2 WHERE a2.task_id = t.id) \
-             WHERE t.status NOT IN ('done', 'cancelled') \
+             WHERE t.status NOT IN ('done', 'cancelled', 'triage') \
              ORDER BY a.id DESC",
         )?;
         let rows = stmt.query_map([], |r| {
@@ -4122,10 +4166,10 @@ impl Engine {
         let task = self.resolve_ref_value_on(&tx, &target)?;
         guard_rev(expected_rev, &task)?;
         match task.status {
-            Status::Backlog | Status::Pending | Status::Active => {}
+            s if s.is_open() => {}
             other => {
                 return Err(ApiError::conflict(format!(
-                    "cannot cancel {} {} task (only backlog|pending|active -> cancelled)",
+                    "cannot cancel {} {} task (only triage|backlog|pending|active -> cancelled)",
                     article_for_status(other),
                     other.as_str()
                 )));
@@ -4176,6 +4220,242 @@ impl Engine {
         .into())
     }
 
+    // ---- task.triage ---------------------------------------------------------
+
+    /// The three ways out of triage (D238), each one call.
+    pub const TRIAGE_ACTIONS: [&'static str; 3] = ["accept", "decline", "duplicate"];
+
+    /// `task.triage` — settle a proposal (D238). Params: `ref`, `action`
+    /// (`accept`, `decline` or `duplicate`), `reason` (decline only: kept as a
+    /// note), `of` (duplicate only: the task it repeats), `expected_rev`.
+    ///
+    /// `accept` stores `pending`, so the computed backlog still applies to a
+    /// future `wait`/`scheduled`, and records an `accept` event that `undo`
+    /// takes back. `decline` writes the reason note, then the `cancel` event,
+    /// so `undo` puts the proposal back in triage. `duplicate` cancels it,
+    /// moves its live notes to the original (each an `annotation.move`, D211),
+    /// and links it to the original with `duplicates`; that link's event is
+    /// written last, and `undo` refuses it by name rather than take back half.
+    /// A task not in triage is a `conflict`.
+    pub fn task_triage(&self, p: &Value) -> Result<Value, ApiError> {
+        let target = ref_param(p)?.clone();
+        let action = req_str(p, "action")?;
+        if !Self::TRIAGE_ACTIONS.contains(&action.as_str()) {
+            return Err(ApiError::bad_request(format!(
+                "action must be one of {} (got {action:?})",
+                Self::TRIAGE_ACTIONS.join(", ")
+            )));
+        }
+        let reason = opt_str_nonempty(p, "reason")?;
+        if reason.is_some() && action != "decline" {
+            return Err(ApiError::bad_request(
+                "`reason` goes with action `decline`; nothing was changed",
+            ));
+        }
+        let of = p.get("of").filter(|v| !v.is_null()).cloned();
+        match (action.as_str(), &of) {
+            ("duplicate", None) => {
+                return Err(ApiError::bad_request(
+                    "action `duplicate` needs `of`: the task this one repeats",
+                ))
+            }
+            ("accept" | "decline", Some(_)) => {
+                return Err(ApiError::bad_request(
+                    "`of` goes with action `duplicate`; nothing was changed",
+                ))
+            }
+            _ => {}
+        }
+        let expected_rev = opt_i64(p, "expected_rev")?;
+
+        let tx = self.begin_mutation()?;
+        let task = self.resolve_ref_value_on(&tx, &target)?;
+        guard_rev(expected_rev, &task)?;
+        if task.status != Status::Triage {
+            return Err(ApiError::conflict(format!(
+                "#{} is {}, not in triage: only a proposal can be accepted, declined or marked \
+                 a duplicate",
+                task.short_id,
+                task.status_text()
+            )));
+        }
+        let original = match &of {
+            Some(r) => {
+                let o = self.resolve_ref_value_on(&tx, r)?;
+                if o.id == task.id {
+                    return Err(ApiError::conflict(format!(
+                        "#{} cannot be a duplicate of itself — name the task it repeats in `of`",
+                        task.short_id
+                    )));
+                }
+                Some(o)
+            }
+            None => None,
+        };
+
+        let ts = now();
+        let mut rev = task.rev;
+        let mut moved = 0usize;
+        if action == "accept" {
+            rev += 1;
+            tx.execute(
+                "UPDATE tasks SET status='pending', rev=?1, modified=?2 WHERE id=?3",
+                params![rev, ts, task.id],
+            )?;
+            insert_event(
+                &tx,
+                Entity::Task,
+                &task.id,
+                "accept",
+                &json!({ "from": Status::Triage.as_str() }),
+            )?;
+        } else {
+            if let Some(body) = &reason {
+                let note = crate::clock::uuid_v7().to_string();
+                tx.execute(
+                    "INSERT INTO annotations (id, task_id, body, created) VALUES (?1, ?2, ?3, ?4)",
+                    params![note, task.id, body, ts],
+                )?;
+                insert_event(
+                    &tx,
+                    Entity::Task,
+                    &task.id,
+                    "annotation.add",
+                    &json!({ "id": note, "body": body }),
+                )?;
+                rev += 1;
+            }
+            rev += 1;
+            tx.execute(
+                "UPDATE tasks SET status='cancelled', rev=?1, modified=?2 WHERE id=?3",
+                params![rev, ts, task.id],
+            )?;
+            let mut payload = json!({ "from": Status::Triage.as_str() });
+            if let Some(o) = &original {
+                payload["duplicate_of"] = json!(o.id);
+            }
+            insert_event(&tx, Entity::Task, &task.id, "cancel", &payload)?;
+        }
+        if let Some(o) = &original {
+            let notes: Vec<String> = {
+                let mut stmt = tx.prepare(
+                    "SELECT id FROM annotations WHERE task_id = ?1 AND removed IS NULL ORDER BY id",
+                )?;
+                let rows = stmt.query_map(params![task.id], |r| r.get::<_, String>(0))?;
+                rows.collect::<Result<_, _>>()?
+            };
+            for note in &notes {
+                tx.execute(
+                    "UPDATE annotations SET task_id = ?1 WHERE id = ?2",
+                    params![o.id, note],
+                )?;
+                insert_event(
+                    &tx,
+                    Entity::Task,
+                    &o.id,
+                    "annotation.move",
+                    &json!({ "id": note, "from": task.id, "to": o.id }),
+                )?;
+            }
+            moved = notes.len();
+            if moved > 0 {
+                tx.execute(
+                    "UPDATE tasks SET rev = rev + ?1, modified = ?2 WHERE id = ?3",
+                    params![moved as i64, ts, o.id],
+                )?;
+                rev += moved as i64;
+                tx.execute("UPDATE tasks SET rev=?1 WHERE id=?2", params![rev, task.id])?;
+            }
+            super::graph::link_tasks(&tx, &task.id, &o.id, "duplicates", &ts)?;
+        }
+        // A proposal can block other work; closing it releases them (D11).
+        let unblocked = if action == "accept" {
+            Vec::new()
+        } else {
+            Self::compute_unblocked(&tx, &task.id)?
+        };
+        let after = self.resolve_ref_value_on(&tx, &json!(task.id))?;
+        tx.commit()?;
+
+        let mut out = json!({
+            "short_id": task.short_id,
+            "title": task.title,
+            "action": action,
+            "status": after.status_text(),
+            "_rev": after.rev,
+            "unblocked": unblocked,
+        });
+        if let Some(o) = &original {
+            out["of"] = json!({ "short_id": o.short_id, "title": o.title });
+            out["moved_annotations"] = json!(moved);
+        }
+        Ok(out)
+    }
+
+    /// `task.triage_list` — the triage inbox (D238), in one read: every
+    /// proposal oldest first with the tool its `add` event names (`client`)
+    /// and the task its `derived_from` link points at (`discovered_from`).
+    /// Params: `limit` (default and ceiling as `task.list`'s), `offset`.
+    /// Answers `{tasks, total, next_offset}`; `next_offset` is null on the
+    /// last page.
+    pub fn task_triage_list(&self, p: &Value) -> Result<Value, ApiError> {
+        let limit = opt_u64(p, "limit")?
+            .unwrap_or(DEFAULT_TASK_LIST_LIMIT)
+            .min(MAX_TASK_LIST_LIMIT);
+        let offset = opt_u64(p, "offset")?.unwrap_or(0);
+        let total: i64 = self.conn.query_row(
+            "SELECT COUNT(*) FROM tasks WHERE status = 'triage'",
+            [],
+            |r| r.get(0),
+        )?;
+        let mut stmt = self.conn.prepare(
+            "SELECT t.short_id, t.title, t.created, \
+                 (SELECT e.payload FROM events e \
+                   WHERE e.entity_id = t.id AND e.op = 'add' ORDER BY e.id LIMIT 1), \
+                 o.short_id, o.title \
+             FROM tasks t \
+             LEFT JOIN links l ON l.id = \
+                 (SELECT l2.id FROM links l2 WHERE l2.from_type = 'task' AND l2.from_id = t.id \
+                   AND l2.to_type = 'task' AND l2.relation = 'derived_from' ORDER BY l2.id LIMIT 1) \
+             LEFT JOIN tasks o ON o.id = l.to_id \
+             WHERE t.status = 'triage' \
+             ORDER BY t.created, t.short_id LIMIT ?1 OFFSET ?2",
+        )?;
+        let rows = stmt.query_map(params![limit as i64, offset as i64], |r| {
+            Ok((
+                r.get::<_, i64>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, String>(2)?,
+                r.get::<_, Option<String>>(3)?,
+                r.get::<_, Option<i64>>(4)?,
+                r.get::<_, Option<String>>(5)?,
+            ))
+        })?;
+        let mut tasks = Vec::new();
+        for row in rows {
+            let (short_id, title, created, add, origin_id, origin_title) = row?;
+            let client = add
+                .and_then(|a| serde_json::from_str::<Value>(&a).ok())
+                .and_then(|a| a["client"].as_str().map(str::to_string));
+            let discovered_from = origin_id
+                .map(|id| json!({ "short_id": id, "title": origin_title }))
+                .unwrap_or(Value::Null);
+            tasks.push(json!({
+                "short_id": short_id,
+                "title": title,
+                "created": created,
+                "client": client,
+                "discovered_from": discovered_from,
+            }));
+        }
+        let shown = offset as i64 + tasks.len() as i64;
+        Ok(json!({
+            "tasks": tasks,
+            "total": total,
+            "next_offset": if shown < total { json!(shown) } else { Value::Null },
+        }))
+    }
+
     // ---- task.reopen ---------------------------------------------------------
 
     /// `task.reopen` — bring a closed task back. Param: `ref`. `done|cancelled
@@ -4199,13 +4479,20 @@ impl Engine {
             }
         }
 
+        // D238: a proposal that was declined, marked a duplicate or cancelled
+        // comes back as a proposal, not as accepted work.
+        let to = if task.status == Status::Cancelled && cancelled_from_triage(&tx, &task.id)? {
+            Status::Triage
+        } else {
+            Status::Pending
+        };
         let ts = now();
         tx.execute(
             // D165: the pin goes with the completion it belonged to; the next
             // `task.done` pins afresh.
-            "UPDATE tasks SET status='pending', completed=NULL, delivered_annotation_id=NULL, \
-             rev=?1, modified=?2 WHERE id=?3",
-            params![task.rev + 1, ts, task.id],
+            "UPDATE tasks SET status=?1, completed=NULL, delivered_annotation_id=NULL, \
+             rev=?2, modified=?3 WHERE id=?4",
+            params![to.as_str(), task.rev + 1, ts, task.id],
         )?;
         insert_event(
             &tx,
@@ -4222,6 +4509,7 @@ impl Engine {
 
         Ok(commands::TaskReopened {
             short_id: task.short_id,
+            status: to.as_str(),
             blocked,
         }
         .into())
@@ -4265,6 +4553,31 @@ impl Engine {
 /// A function taking the key as a parameter rather than a literal
 /// `.get("actor")` chain: D32's guard bans that shape across the engine because
 /// it cannot tell an absent value from a wrong-typed one.
+/// D238: whether the newest cancellation of `task_id` left `triage` — a
+/// `cancel` event (decline, duplicate, cancel) or a `modify` that set
+/// `cancelled`, whose `before` names the status it replaced.
+fn cancelled_from_triage(tx: &rusqlite::Transaction, task_id: &str) -> Result<bool, ApiError> {
+    let payload: Option<(String, String)> = tx
+        .query_row(
+            "SELECT op, payload FROM events WHERE entity_id = ?1 \
+             AND (op = 'cancel' OR (op = 'modify' AND payload LIKE '%\"status\"%')) \
+             ORDER BY id DESC LIMIT 1",
+            params![task_id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .optional()?;
+    let Some((op, payload)) = payload else {
+        return Ok(false);
+    };
+    let v: Value = serde_json::from_str(&payload).unwrap_or(Value::Null);
+    let from = if op == "cancel" {
+        &v["from"]
+    } else {
+        &v["before"]["status"]
+    };
+    Ok(from == Status::Triage.as_str())
+}
+
 fn payload_field(payload: &Value, key: &str) -> Option<String> {
     payload.get(key).and_then(Value::as_str).map(str::to_string)
 }

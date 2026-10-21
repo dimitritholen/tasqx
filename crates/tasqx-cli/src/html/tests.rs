@@ -732,3 +732,30 @@ fn a_task_someone_else_claimed_stays_next_and_names_its_holder() {
         "{next}"
     );
 }
+
+/// D238: the stand-up grid counts the proposals waiting in triage under the
+/// ranking they are not part of.
+#[test]
+fn the_standup_counts_the_proposals_in_triage() {
+    let e = engine();
+    dispatch(
+        &e,
+        "task.add",
+        &json!({ "title": "a proposal", "project": "alpha", "status": "triage" }),
+    )
+    .expect("add a proposal");
+    let th = theme::builtin("nord").unwrap();
+    let doc = generate_at(
+        &e,
+        &th,
+        &json!({ "group_by": "project" }),
+        Options::default(),
+        now(),
+    )
+    .expect("the page renders");
+    assert!(
+        doc.contains("1 in triage"),
+        "the report does not count the proposal"
+    );
+    assert!(page().contains("0 in triage"));
+}

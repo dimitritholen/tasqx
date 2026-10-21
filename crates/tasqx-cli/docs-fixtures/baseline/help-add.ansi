@@ -20,6 +20,8 @@ Options:
   -e, --estimate <ESTIMATE>    Effort estimate — human duration (4h, 90m, 1h30m, 2d) or ISO PT4H
       --budget-tokens <N>      Token budget — a size gauge over FRESH tokens (input + output + cache creation; cache reads are not counted). It stops nothing: tasqx is a store an agent calls between turns and cannot preempt one. An overrun is a signal that the task was probably too big to hand over whole
   -t, --tag <TAG>              Repeatable tag flag
+      --triage                 File it in triage: a proposal kept out of `@working` until `tasqx accept` (D238)
+      --discovered-from <ID>   The task this was found while working on; links the two with `derived_from` (D238)
   -h, --help                   Print help
   -V, --version                Print version
 
@@ -28,9 +30,11 @@ EXAMPLES
   tasqx add Ship it due:friday +api !high --project work
   tasqx add Water plants repeat:"every 3 days"
   tasqx add Call bank due:"friday 9am" --remind -30m    # reminder 30m before due
+  tasqx add Retry the flaky e2e test --triage --discovered-from 42    # a proposal, held out of @working until accepted (D238)
 
 NOTE  Inline sugar: `+tag`, `project:p` (or `proj:`), `!high`, `due:…`, `scheduled:…` (or `sched:`), `wait:…`, `repeat:…` (or `every:`/`recur:`), `remind:…`, `est:4h` (or `estimate:`).
       A bare add lands in the default project (`tasqx use` to change it).
+      --triage files the task as a proposal: it stays out of `@working`, `next` and the urgency ranking until `tasqx accept` (D238). --discovered-from links it to the task it was found on. Tasks an agent adds over MCP land in triage when `mcp.add_status` is `triage`.
       Anywhere a command takes a `<ref>`, it accepts either the short id you see in the table (`1`) or the full UUID. Short ids are for your fingers; UUIDs are stable forever and are what `export` carries.
 
 See also: modify · use · list · next        Full manual: tasqx manual

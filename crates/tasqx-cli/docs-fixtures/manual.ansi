@@ -33,6 +33,10 @@
   done         Complete a task.
   cancel       Cancel a task.
   reopen       Reopen a completed or cancelled task.
+  triage       List the proposals waiting in triage, oldest first.
+  accept       Accept a proposal from triage: it becomes pending.
+  decline      Decline a proposal from triage: it is cancelled.
+  duplicate    Mark a proposal in triage a duplicate of another task.
   undo         Take back the last thing this store recorded.
   annotate     Attach a timestamped note to a task, correct one, or move it.
   unannotate   Permanently scrub one annotation's text.

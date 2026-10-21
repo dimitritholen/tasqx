@@ -25,7 +25,8 @@ pub(crate) const NONCE_SLOT: &str = "__NONCE__";
 /// The columns, as `(id, title, filter)`: the states the core already derives.
 /// The page carries the same table in its script; a test keeps them equal.
 #[cfg(test)]
-const COLUMNS: [(&str, &str, &str); 5] = [
+const COLUMNS: [(&str, &str, &str); 6] = [
+    ("triage", "Triage", "status:triage"),
     ("backlog", "Backlog", "status:backlog"),
     ("blocked", "Blocked", "@blocked"),
     ("ready", "Ready", "@working"),
@@ -85,7 +86,7 @@ h1{font-size:18px;margin:0;font-weight:700}h1 span{font-weight:400;color:var(--m
 select{background:var(--sunken);border:1px solid var(--line-strong);border-radius:6px;padding:6px 8px}
 .conn{font-size:13px;color:var(--muted)}.conn.on{color:var(--good)}.conn.off{color:var(--danger);font-weight:600}
 .err{margin:0;padding:8px clamp(12px,2vw,24px);background:var(--danger);color:var(--on-accent)}
-.cols{display:grid;grid-template-columns:repeat(5,minmax(210px,1fr));gap:12px;padding:12px clamp(12px,2vw,24px);overflow-x:auto;align-items:start}
+.cols{display:grid;grid-template-columns:repeat(6,minmax(190px,1fr));gap:12px;padding:12px clamp(12px,2vw,24px);overflow-x:auto;align-items:start}
 .col{background:var(--bg);border:1px solid var(--line);border-radius:8px;min-width:0}
 .col>header{padding:10px 12px 6px;border-bottom:1px solid var(--line)}
 .col h2{margin:0;font-size:14px;display:flex;justify-content:space-between;gap:8px}
@@ -141,7 +142,7 @@ body[data-writes="0"] .w{display:none}
 
 const SCRIPT: &str = r###"(()=>{
 "use strict";
-const COLS=[["backlog","Backlog","status:backlog"],["blocked","Blocked","@blocked"],["ready","Ready","@working"],["active","Active","status:active"],["done","Done","completed.after:-7d"]];
+const COLS=[["triage","Triage","status:triage"],["backlog","Backlog","status:backlog"],["blocked","Blocked","@blocked"],["ready","Ready","@working"],["active","Active","status:active"],["done","Done","completed.after:-7d"]];
 const $=id=>document.getElementById(id);
 const el=(t,c,x)=>{const e=document.createElement(t);if(c)e.className=c;if(x!=null)e.textContent=x;return e};
 const W=document.body.dataset.writes==="1",SHELL=document.documentElement.dataset.shellHolder;
@@ -281,6 +282,7 @@ document.addEventListener("keydown",e=>{
 const verbs={"task.start":"Started","task.stop":"Stopped","task.done":"Done","task.reopen":"Reopened","task.cancel":"Cancelled"};
 const iso=d=>String(d||"").replace(/^P(T)?/,"").toLowerCase();
 function plan(from,to){
+ if(from==="triage"||to==="triage")return{no:"A proposal is settled with tasqx accept, decline or duplicate (D238)."};
  if(to==="blocked")return{no:"Blocked comes from dependencies; it is not a drop target."};
  if(to==="active")return{m:"task.start"};
  if(to==="done")return{m:"task.done"};
@@ -445,7 +447,7 @@ mod tests {
             &serde_json::json!({ "ref": 1, "actor": "agent-9" }),
         )
         .expect("claim");
-        let (_, _, ready) = COLUMNS[2];
+        let (_, _, ready) = COLUMNS[3];
         let rows = dispatch(&e, "task.list", &serde_json::json!({ "filter": ready }))
             .expect("the Ready query parses");
         assert_eq!(rows["tasks"][0]["claimed_by"], "agent-9", "{rows}");
@@ -454,6 +456,15 @@ mod tests {
             "data-shell-holder=\"{}\"",
             tasqx_core::engine::task::SHELL_HOLDER
         )));
+    }
+
+    /// D238: proposals have their own column, and the board never offers to
+    /// start one: no Start button, and a drag out of Triage is refused.
+    #[test]
+    fn proposals_have_a_column_and_are_never_offered_start() {
+        assert!(COLUMNS.iter().any(|c| c.2 == "status:triage"));
+        assert!(SCRIPT.contains("from===\"triage\""));
+        assert!(!SCRIPT.contains("s===\"triage\")b(\"Start\""));
     }
 
     #[test]

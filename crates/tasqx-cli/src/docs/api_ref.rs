@@ -795,6 +795,41 @@ pub(super) fn describe(text: &str) -> String {
 /// is none to state.
 const PARAM_DOCS: &[(&str, &str, &str, &str, &str)] = &[
     (
+        "task.triage_list",
+        "limit",
+        "integer",
+        "100",
+        "Proposals per page, at most 10,000 — `task.list`'s bounds.",
+    ),
+    (
+        "task.triage_list",
+        "offset",
+        "integer",
+        "0",
+        "Proposals to skip; pass the previous answer's `next_offset`.",
+    ),
+    (
+        "task.triage",
+        "action",
+        "string",
+        "",
+        "`accept` (to pending), `decline` (cancelled, `reason` kept as a note) or `duplicate` (cancelled, notes moved to `of`, linked with `duplicates`). D238.",
+    ),
+    (
+        "task.add",
+        "discovered_from",
+        "integer or string",
+        "",
+        "The task this one was found while working on (short_id or UUID). The new task gets a `derived_from` link to it, and `tasqx triage` names it (D238).",
+    ),
+    (
+        "task.add",
+        "client",
+        "string",
+        "",
+        "The tool proposing the task, kept on its `add` event for `tasqx triage` (D238). The MCP server fills it from the handshake when omitted.",
+    ),
+    (
         "memory.search",
         "workdir",
         "string",
@@ -1320,6 +1355,13 @@ const PARAM_DOCS: &[(&str, &str, &str, &str, &str)] = &[
         "Optimistic-concurrency guard, as on `task.modify`: the task's `_rev` as you read it. A stale one is a `conflict` carrying the current rev, and nothing is written (#638).",
     ),
     (
+        "task.triage",
+        "expected_rev",
+        "integer",
+        "",
+        "Optimistic-concurrency guard, as on `task.modify`: the task's `_rev` as you read it. A stale one is a `conflict` carrying the current rev, and nothing is written.",
+    ),
+    (
         "task.stop",
         "expected_rev",
         "integer",
@@ -1551,6 +1593,20 @@ const EXAMPLES: &[Example] = &[
         method: "task.reopen",
         request: r#"{"tasqx":"1","id":"ro1","method":"task.reopen","params":{"ref":"12"}}"#,
         fixture: "api-task-reopen",
+        response: "",
+        why: "",
+    },
+    Example {
+        method: "task.triage",
+        request: r#"{"tasqx":"1","id":"tr1","method":"task.triage","params":{"ref":"62","action":"duplicate","of":"60"}}"#,
+        fixture: "api-task-triage",
+        response: "",
+        why: "",
+    },
+    Example {
+        method: "task.triage_list",
+        request: r#"{"tasqx":"1","id":"tl1","method":"task.triage_list","params":{}}"#,
+        fixture: "api-task-triage-list",
         response: "",
         why: "",
     },

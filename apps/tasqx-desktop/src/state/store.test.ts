@@ -157,6 +157,7 @@ describe('DashboardStore', () => {
           { status: 'pending', count: 5, overdue: 1 },
           { status: 'backlog', count: 2, overdue: 0 },
           { status: 'active', count: 3, overdue: 2 },
+          { status: 'triage', count: 4, overdue: 0 },
           { status: 'done', count: 40 },
         ],
         generated: '2026-09-19T09:00:00.000Z',
@@ -173,6 +174,7 @@ describe('DashboardStore', () => {
       active: 3,
       overdue: 3,
       blocked: 6,
+      triage: 4,
       completed: 918,
     });
   });
@@ -183,6 +185,7 @@ describe('DashboardStore', () => {
       active: 0,
       overdue: 0,
       blocked: 0,
+      triage: 0,
       completed: 0,
     });
   });

@@ -82,11 +82,11 @@ writes from `tasqx watch` or the desktop app: a running daemon notices changes
 made by other processes on its store, so they show up live, within about half
 a second.
 
-Thirty-six tools, one verb each. Ten reads: `list_tasks`, `get_task`,
+Thirty-seven tools, one verb each. Ten reads: `list_tasks`, `get_task`,
 `brief_task`, `next`, `summary`, `outcomes`, `list_projects`, `search_memory`,
 `get_memory`, `list_memory`.
-Twenty-six writes: `add_task`, `modify_task`, `complete_task`, `reopen_task`,
-`cancel_task`, `start_timer`, `stop_timer`, `claim_task`, `release_task`, `adjust_tracked`, `tag_task`, `untag_task`,
+Twenty-seven writes: `add_task`, `modify_task`, `complete_task`, `reopen_task`,
+`cancel_task`, `triage_task`, `start_timer`, `stop_timer`, `claim_task`, `release_task`, `adjust_tracked`, `tag_task`, `untag_task`,
 `annotate_task`, `update_annotation`, `move_annotation`, `remove_annotation`, `add_tokens`, `add_check`, `set_check`,
 `remove_check`, `add_dependency`, `remove_dependency`, `add_memory`,
 `update_memory`, `remove_memory`, `create_project` (all prefixed `tasqx_`).
@@ -262,6 +262,14 @@ want to act on:
   `tasqx undo` puts it back. `tasqx_update_annotation` and
   `tasqx_remove_annotation` take the note's full id, a unique prefix of eight or
   more characters, or its 1-based position on the task.
+- **Proposals can wait in triage.** `tasqx_add_task` with `status: "triage"`
+  files a task outside `@working`, `next` and the urgency ranking, so work an
+  agent discovers mid-task does not compete with the planned backlog;
+  `discovered_from` links it to the task it was found on. Set
+  `tasqx config set mcp.add_status triage` and every MCP add that names no
+  status lands there. `tasqx_triage_task` (or `tasqx accept`, `decline`,
+  `duplicate` at a shell) settles each one; `tasqx triage` lists the inbox
+  with the tool that filed each proposal (D238).
 
 The server's `instructions` block is the short version of how to work, so a
 fresh install already nudges the agent to search before deciding and to write

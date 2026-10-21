@@ -366,6 +366,14 @@ pub(super) enum Command {
             add = crate::complete::candidates::tags()
         )]
         tags: Vec<String>,
+        /// File it in triage: a proposal kept out of `@working` until
+        /// `tasqx accept` (D238).
+        #[arg(long)]
+        triage: bool,
+        /// The task this was found while working on; links the two with
+        /// `derived_from` (D238).
+        #[arg(long, value_name = "ID", add = crate::complete::candidates::task_ids())]
+        discovered_from: Option<String>,
     },
     /// Change a task (maps to task.modify). Takes the same inline sugar and
     /// natural-language dates as `add`; clear a field with `--clear <field>`.
@@ -708,6 +716,40 @@ pub(super) enum Command {
         #[arg(long)]
         force_claim: bool,
     },
+    /// The triage inbox, oldest first: proposals waiting to be accepted,
+    /// declined or marked a duplicate, with the tool that filed each and the
+    /// task it was found on (D238).
+    #[command(after_help = crate::cmddoc::after_help("triage"))]
+    Triage,
+    /// Accept a task in triage: it becomes pending (maps to task.triage).
+    #[command(after_help = crate::cmddoc::after_help("accept"))]
+    Accept {
+        /// short_id or UUID.
+        #[arg(add = crate::complete::candidates::task_ids())]
+        r#ref: String,
+    },
+    /// Decline a task in triage: it is cancelled, the reason kept as a note
+    /// (maps to task.triage).
+    #[command(after_help = crate::cmddoc::after_help("decline"))]
+    Decline {
+        /// short_id or UUID.
+        #[arg(add = crate::complete::candidates::task_ids())]
+        r#ref: String,
+        /// Why it was declined; stored as a note on the task.
+        #[arg(long)]
+        reason: Option<String>,
+    },
+    /// Mark a task in triage a duplicate of another: it is cancelled, its
+    /// notes move to the original and the two are linked (maps to task.triage).
+    #[command(after_help = crate::cmddoc::after_help("duplicate"))]
+    Duplicate {
+        /// short_id or UUID.
+        #[arg(add = crate::complete::candidates::task_ids())]
+        r#ref: String,
+        /// The task it repeats.
+        #[arg(long, value_name = "ID", add = crate::complete::candidates::task_ids())]
+        of: String,
+    },
     /// Reopen a done/cancelled task (maps to task.reopen).
     #[command(after_help = crate::cmddoc::after_help("reopen"))]
     Reopen {
@@ -721,7 +763,7 @@ pub(super) enum Command {
     /// else, because that is the only position from which its inverses are exact
     /// rather than plausible (see `engine/undo.rs`); a `<ref>` here would look
     /// like a courtesy and would silently reach past whatever happened
-    /// elsewhere. Eleven operations are undoable and every other one refuses by
+    /// elsewhere. Twelve operations are undoable and every other one refuses by
     /// name, saying what does take it back.
     #[command(alias = "u", after_help = crate::cmddoc::after_help("undo"))]
     Undo,

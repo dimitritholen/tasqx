@@ -95,6 +95,11 @@ pub enum Status {
     Done,
     /// Abandoned; retained for history.
     Cancelled,
+    /// A proposal nobody has accepted yet (D238): open, but outside `@working`,
+    /// `next` and the urgency ranking, and never moved by the clock. Declared
+    /// last so the other variants keep their discriminants; [`Status::ALL`]
+    /// lists it first, in lifecycle order.
+    Triage,
 }
 
 /// The single definition of "is this task still being held back by a date?" —
@@ -160,7 +165,8 @@ impl Status {
     /// finding all ten and nothing failed if you missed one — a task in the new
     /// status would simply stop appearing, and a chart missing tasks still looks
     /// like a valid chart.
-    pub const ALL: [Status; 5] = [
+    pub const ALL: [Status; 6] = [
+        Status::Triage,
         Status::Backlog,
         Status::Pending,
         Status::Active,
@@ -175,7 +181,7 @@ impl Status {
     pub fn is_terminal(self) -> bool {
         match self {
             Status::Done | Status::Cancelled => true,
-            Status::Backlog | Status::Pending | Status::Active => false,
+            Status::Triage | Status::Backlog | Status::Pending | Status::Active => false,
         }
     }
 
@@ -195,7 +201,9 @@ impl Status {
     pub fn counts_in_reports(self) -> bool {
         match self {
             Status::Cancelled => false,
-            Status::Backlog | Status::Pending | Status::Active | Status::Done => true,
+            Status::Triage | Status::Backlog | Status::Pending | Status::Active | Status::Done => {
+                true
+            }
         }
     }
 
@@ -204,6 +212,7 @@ impl Status {
     /// interpolates these straight into SQL and asserts that shape.
     pub fn as_str(self) -> &'static str {
         match self {
+            Status::Triage => "triage",
             Status::Backlog => "backlog",
             Status::Pending => "pending",
             Status::Active => "active",
@@ -231,8 +240,8 @@ impl Status {
         Status::ALL
             .into_iter()
             .filter(|s| pred(*s))
-            .map(|s| {
-                let name = s.as_str();
+            .map(Status::as_str)
+            .map(|name| {
                 debug_assert!(
                     name.chars().all(|c| c.is_ascii_lowercase()),
                     "Status::as_str must stay a bare lowercase word to be SQL-literal-safe: {name:?}"
@@ -258,6 +267,7 @@ impl Status {
     /// recoded — see [`Task::status_raw`].
     pub fn parse(s: &str) -> Option<Status> {
         match s {
+            "triage" => Some(Status::Triage),
             "backlog" => Some(Status::Backlog),
             "pending" => Some(Status::Pending),
             "active" => Some(Status::Active),
@@ -529,7 +539,7 @@ mod tests {
         seen.sort_unstable();
         seen.dedup();
         assert_eq!(seen.len(), before, "Status::ALL contains a duplicate");
-        assert_eq!(before, 5, "Status::ALL must list every variant");
+        assert_eq!(before, 6, "Status::ALL must list every variant");
     }
 
     /// `as_str` and `parse` are two independent hand-written matches. Both are
@@ -652,7 +662,7 @@ mod tests {
     fn sql_in_list_emits_quoted_names_for_exactly_the_matching_statuses() {
         assert_eq!(
             Status::sql_in_list(Status::is_open),
-            "'backlog','pending','active'"
+            "'triage','backlog','pending','active'"
         );
         assert_eq!(
             Status::sql_in_list(Status::is_terminal),
@@ -660,7 +670,7 @@ mod tests {
         );
         assert_eq!(
             Status::sql_in_list(Status::counts_in_reports),
-            "'backlog','pending','active','done'"
+            "'triage','backlog','pending','active','done'"
         );
 
         // Shape, independent of any one predicate: every element is a bare
@@ -696,11 +706,14 @@ mod tests {
                 .map(Status::as_str)
                 .collect()
         };
-        assert_eq!(names(Status::is_open), ["backlog", "pending", "active"]);
+        assert_eq!(
+            names(Status::is_open),
+            ["triage", "backlog", "pending", "active"]
+        );
         assert_eq!(names(Status::is_terminal), ["done", "cancelled"]);
         assert_eq!(
             names(Status::counts_in_reports),
-            ["backlog", "pending", "active", "done"],
+            ["triage", "backlog", "pending", "active", "done"],
             "D24: everything but cancelled — done is terminal but is still real work"
         );
     }

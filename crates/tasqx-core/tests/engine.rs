@@ -1775,9 +1775,11 @@ fn every_handler_that_opens_a_mutation_also_appends_an_event() {
     // cannot become the hiding place this guard exists to close.
     // D236: `task_claim` and `task_start` both write a lease through
     // `write_claim`, which appends the `claim`/`renew`/`takeover` event.
-    const EVENT_VIA_HELPER: [&str; 3] = ["upsert_doc(", "write_claim(", "write_note("];
+    const EVENT_VIA_HELPER: [&str; 4] =
+        ["upsert_doc(", "write_claim(", "write_note(", "insert_link("];
     for helper in EVENT_VIA_HELPER {
-        let decl = format!("\nfn {}(", helper.trim_end_matches('('));
+        // `fn NAME(` at any visibility: `insert_link` is `pub(super)` (D238).
+        let decl = format!("fn {}(", helper.trim_end_matches('('));
         let body = SOURCES
             .iter()
             .find_map(|(_, source)| {

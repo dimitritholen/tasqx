@@ -125,6 +125,9 @@ The task row carries one nullable field under **D139**: `budget_tokens`, a size 
 
 ```mermaid
 stateDiagram-v2
+    [*] --> triage: task.add (status triage, D238)
+    triage --> pending: task.triage accept
+    triage --> cancelled: task.triage decline/duplicate, task.cancel
     [*] --> backlog: task.add (waiting/scheduled)
     [*] --> pending: task.add
     backlog --> pending: wait/schedule reached
@@ -141,6 +144,7 @@ stateDiagram-v2
 
 | Status | Meaning |
 |---|---|
+| `triage` | A proposal not yet accepted (D238): outside `@working`, `next` and the urgency ranking, never moved by the clock. |
 | `backlog` | Exists but not yet actionable (`wait` in future, or `scheduled` later). |
 | `pending` | Actionable, not started. The default working set. |
 | `active` | Currently being worked (has an open time interval). |
@@ -4052,8 +4056,8 @@ matches, shared project/tag/terms, related annotations or similar/cited content;
 they are generated from existing data, carry provenance/confidence, and are
 never persisted or presented as fact until a user promotes one.  Explicit links
 persist stable endpoint ids and relation strings, start with the fixed validated
-registry `references`, `supersedes`, `implements_decision`, `derived_from` and
-`contradicts`, reject self-links and missing entities, make duplicates
+registry `references`, `supersedes`, `implements_decision`, `derived_from`,
+`contradicts` and `duplicates` (D238), reject self-links and missing entities, make duplicates
 idempotent, return `not_found` when removing an absent link, and permit cycles.
 
 The graph UI is Sigma.js with Graphology and WebGL, with renderer cleanup on
@@ -5062,6 +5066,25 @@ The root is always the caller's, never the engine process's working directory, w
 **Rejected: an MCP tool.** An agent reporting a merge would be stating a fact it has not seen; it completes with `tasqx_complete_task` and cites the merge. **Rejected: polling `gh` from the daemon.** A network call and a credential in the core, for an event a caller already has in hand. **Rejected: the note and the completion in one commit.** Two events in one commit would make undoing a completion take the note with it unasked, against the one-event-per-commit rule every other mutation keeps.
 
 **Where:** `crates/tasqx-core/src/engine/git.rs` (`git_event`, `Facts`, `upsert_ref`, `git_facts`, `import_refs`, `refs_for`, `sort_refs`), `crates/tasqx-core/src/engine/task.rs` (`task_done_merged`, `MergeDone`, `merge_hold_back`, `task_start_via`, `live_claim_holder`), `crates/tasqx-core/src/engine.rs` (`write_note`), `crates/tasqx-core/src/engine/undo.rs`, `crates/tasqx-core/src/storage.rs` (`task_git_refs`), `crates/tasqx-cli/src/verbs.rs` (`run_git`), `.claude/skills/land-tasqx-pr/SKILL.md` (step 6).
+
+### D238 — `triage` is a sixth `Status` for proposed tasks, kept out of `@working` until `task.triage` accepts, declines or marks it a duplicate; it adds a `Status` variant, so tasqx-core 0.15.0 is a breaking minor (task #2330; extends D29, D211, D160, D54, D215)
+
+**Decision.** A task can be filed as a proposal: `task.add {status: "triage"}`, `tasqx add --triage`, and, over MCP, every add that names no status when `mcp.add_status = triage` (a `config.toml` setting, default `pending`; the MCP server reads it once at start, `McpServer::with_add_status`). `status` on `task.add` takes `pending` or `triage` and nothing else. `discovered_from: <ref>` on `task.add` (`--discovered-from`) writes a `derived_from` link from the new task to that one, and the MCP server stamps `client` (the handshake's tool) on the `add` event, as it does on `start`/`done`.
+
+- **The status.** `Status::Triage`, stored as `triage`, first in `Status::ALL`. It is open (`is_open`: it still blocks its dependents, counts in reports and the burndown, and is in every SQL open set) but not actionable: `@working`, `task.next` (and its `resume` rows), the default `list` and the urgency ranking leave it out, it is never overdue (`report.summary`, the dashboard, the HTML report and the desktop count none), `task.start` and `task.done` refuse it (`conflict`, naming `tasqx accept`), and `effective_status` never moves it, whatever its `wait`/`scheduled`. `status:triage` filters it, through the filter's ordinary `Status::parse`; so do `graph.query {status}` and `store.import`. `task.cancel` and the `modify` path to `cancelled` take it like any open status, and every refusal names it as `triage`.
+- **One method out.** `task.triage {ref, action, reason?, of?, expected_rev?}`, MCP `tasqx_triage_task`, CLI `tasqx accept|decline|duplicate`. `accept` stores `pending` (so a future date still reads `backlog`) and records an `accept` event; `decline` records the `reason` as an `annotation.add`, then the `cancel` event (`from: "triage"`); `duplicate` records the `cancel` (`duplicate_of`), moves every live note to `of` as one `annotation.move` each (D211), and links the two with the new `duplicates` relation, whose `link.add` event is written last. A task not in triage is a `conflict`; `reason` goes with `decline` and `of` with `duplicate` only.
+- **Back again.** `task.reopen` of a cancelled task whose newest cancellation left `triage` (a decline, a duplicate, a cancel, or a `modify` to `cancelled`) puts it back in triage, not in `pending`, and says so in its `status`.
+- **Undo.** `accept` joins `UNDOABLE_OPS` (puts `triage` back while the task is still pending or backlog); a `cancel` whose `from` is `triage` is undone back into triage, the reason note staying. A duplicate is not undone: the newest event is its `link.add`, which `undo` already refuses by name. The sync merge counts `accept` (and its undo) in the status group.
+- **The inbox.** `task.triage_list {limit?, offset?}` answers the proposals oldest first in one read, each with the tool that filed it (its `add` event's `client`) and the task it was found on (its `derived_from` link), plus `total` and `next_offset`. `tasqx triage` prints its first page and says how many more there are; MCP agents use `tasqx_list_tasks status:triage`. The dashboard header, the HTML report's stand-up grid and the desktop's summary cards count proposals, and `tasqx board` gives them a Triage column, out of which no drag and no key starts one.
+- **Store compatibility.** No migration: an existing store holds no `triage` row and reads as before. `store.export` emits `triage` and `store.import` accepts it, so export, import and sync round-trip it.
+
+**Semver.** `Status` is a public exhaustive enum, so the variant is a breaking change and `cargo semver-checks` reports it against the baseline. That is accepted by the owner: tasqx-core 0.15.0 is unreleased and is already a breaking minor (CHANGELOG, D210), and a placeholder status carried in `status_raw` with a hidden filter tag was tried and rejected as a second, quieter representation every reader would have to know about.
+
+**Why.** Agents add tasks for what they discover mid-work, and those went straight into `@working` to compete with planned work. A status rather than a flag on `pending` because a proposal must fail every working-set question by construction — `@working`, `next`, start, done, overdue — and a flag would have to be remembered at each. One method for the three ways out keeps the MCP roster to one tool; the three CLI verbs are the human spelling of its `action`.
+
+**Rejected: snooze** (Linear's fourth action). `wait:` on an accepted task already parks it. **Rejected: an event `actor` for the proposing tool.** `actor` is the board's envelope field (D228); `client` is what MCP already stamps on lifecycle events.
+
+**Where:** `crates/tasqx-core/src/types.rs` (`Status::Triage`), `engine/task.rs` (`task_add`, `task_triage`, `task_triage_list`, `task_reopen`, `cancelled_from_triage`, `resume_rows`), `engine/reports.rs` (overdue), `engine/graph.rs` (`insert_link`, `link_tasks`, `LINK_RELATIONS`), `engine/undo.rs` (`revert_accept`, `put_back_status`), `engine/field_merge.rs`, `mcp.rs` (`tasqx_triage_task`, `with_add_status`); `crates/tasqx-cli/src/verbs.rs` (`run_triage`, `run_triage_inbox`), `render/table.rs` (`triage_inbox`), `config.rs` (`mcp.add_status`), `board_page.rs`, the dashboard, `html.rs`; `apps/tasqx-desktop/src/screens/DashboardScreen.tsx`; `crates/tasqx-core/tests/triage.rs`.
 
 ### D240 — `memory.search` takes a `source_prefix`: only docs whose stored `source` starts with it, literally, on every side before the page and the count (task #2358; extends D41, D136, D193, D196)
 

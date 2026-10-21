@@ -1,0 +1,6 @@
+2 proposals in triage, oldest first — `tasqx accept|decline|duplicate <id>` settles one
+
+  #62  Retry the flaky checkout e2e test
+       2d ago · by claude-code 2.1 · found on #48 Ship the v2 pricing page
+  #63  Cache the pricing API response
+       yesterday · by claude-code 2.1 · found on #48 Ship the v2 pricing page

@@ -929,10 +929,16 @@ fn execute(cli: Cli) -> Exit {
             estimate,
             budget_tokens,
             tags,
+            triage,
+            discovered_from,
         }) => run_add(
             &mut backend,
             &ctx,
             title,
+            verbs::Proposal {
+                triage,
+                discovered_from,
+            },
             sugar::AddFlags {
                 project,
                 priority,
@@ -1068,6 +1074,23 @@ fn execute(cli: Cli) -> Exit {
         Some(Command::Reopen { r#ref }) => {
             run_simple_ref(&mut backend, &ctx, "task.reopen", json!({ "ref": r#ref }))
         }
+        Some(Command::Triage) => verbs::run_triage_inbox(&mut backend, &ctx),
+        Some(Command::Accept { r#ref }) => {
+            verbs::run_triage(&mut backend, &ctx, r#ref, json!({ "action": "accept" }))
+        }
+        Some(Command::Decline { r#ref, reason }) => {
+            let mut p = json!({ "action": "decline" });
+            if let Some(r) = reason {
+                p["reason"] = json!(r);
+            }
+            verbs::run_triage(&mut backend, &ctx, r#ref, p)
+        }
+        Some(Command::Duplicate { r#ref, of }) => verbs::run_triage(
+            &mut backend,
+            &ctx,
+            r#ref,
+            json!({ "action": "duplicate", "of": of }),
+        ),
         Some(Command::Undo) => run_undo(&mut backend, &ctx),
         Some(Command::Annotate {
             r#ref,

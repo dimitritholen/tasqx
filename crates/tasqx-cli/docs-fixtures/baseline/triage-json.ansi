@@ -1,0 +1,26 @@
+{
+  "next_offset": null,
+  "tasks": [
+    {
+      "client": "claude-code 2.1",
+      "created": "2026-09-14T15:40:00Z",
+      "discovered_from": {
+        "short_id": 48,
+        "title": "Ship the v2 pricing page"
+      },
+      "short_id": 62,
+      "title": "Retry the flaky checkout e2e test"
+    },
+    {
+      "client": "claude-code 2.1",
+      "created": "2026-09-15T15:40:00Z",
+      "discovered_from": {
+        "short_id": 48,
+        "title": "Ship the v2 pricing page"
+      },
+      "short_id": 63,
+      "title": "Cache the pricing API response"
+    }
+  ],
+  "total": 2
+}

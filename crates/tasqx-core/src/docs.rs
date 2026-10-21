@@ -173,6 +173,7 @@ pub const R_TASK_ADD: &[FieldDoc] = &[
     o("blocked", "boolean", "Present with `depends_on`: whether any of those prerequisites is still open."),
     f("similar", "array", "Always present: up to three open tasks of the same project that look like this one, best first, each `{id, short_id, title, similarity}`; empty when none does. A warning only — the task was added either way (D237)."),
     f("similar_skipped", "boolean", "Always present: true when the comparison could not run, so `similar` is empty for that reason rather than because nothing looks alike; the task was added either way (D237)."),
+    o("discovered_from", "integer", "Present only when the call named `discovered_from` (D238): the short id of the task this one was found on, now linked to it with `derived_from`."),
 ];
 
 /// One near-duplicate in `task.add`'s `similar` (D237).
@@ -913,6 +914,42 @@ pub const R_TASK_CANCEL: &[FieldDoc] = &[
     ),
 ];
 
+/// `task.triage`'s result (D238).
+pub const R_TASK_TRIAGE: &[FieldDoc] = &[
+    f("short_id", "integer", "The proposal's short id."),
+    f("title", "string", "Its title."),
+    f("action", "string", "`accept`, `decline` or `duplicate`, as asked."),
+    f("status", "string", "Its status now: `pending` (or `backlog` while a future `wait` or `scheduled` holds it) after `accept`, `cancelled` otherwise (D238)."),
+    f("_rev", "integer", "The proposal's revision after the call."),
+    f("unblocked", "array", "Short ids of open tasks the decline or duplicate released, as `task.cancel` reports them (D11). Empty after `accept`."),
+    o("of", "object", "Present on `duplicate`: `{short_id, title}` of the task it repeats, now linked to it with `duplicates`."),
+    o("moved_annotations", "integer", "Present on `duplicate`: how many notes moved to `of` (D211)."),
+];
+
+/// `task.triage_list`'s result (D238).
+pub const R_TASK_TRIAGE_LIST: &[FieldDoc] = &[
+    f("tasks", "array", "The page of proposals, oldest first, each `{short_id, title, created, client, discovered_from}`."),
+    f("total", "integer", "How many tasks are in triage, the page aside."),
+    n("next_offset", "integer", "The `offset` that reads the next page; null on the last."),
+];
+
+/// One proposal in `task.triage_list` (D238).
+pub const TRIAGE_ROW: &[FieldDoc] = &[
+    f("short_id", "integer", "The proposal's short id."),
+    f("title", "string", "Its title."),
+    f("created", "string", "When it was filed."),
+    n(
+        "client",
+        "string",
+        "The tool its `add` event names, or null when none did.",
+    ),
+    n(
+        "discovered_from",
+        "object",
+        "`{short_id, title}` of the task its `derived_from` link points at, or null.",
+    ),
+];
+
 /// `task.reopen`'s result.
 pub const R_TASK_REOPEN: &[FieldDoc] = &[
     f(
@@ -1178,7 +1215,7 @@ pub const LINK_ROW: &[FieldDoc] = &[
     f("id", "string", "The link's uuid — what `link.remove` takes."),
     f("from", "string", "The node the link starts at, as `<type>:<uuid>`: `task:`, `memory:`, `annotation:` or `project:`."),
     f("to", "string", "The node the link points at, spelled the same way."),
-    f("relation", "string", "What the link asserts: `references`, `supersedes`, `implements_decision`, `derived_from` or `contradicts`."),
+    f("relation", "string", "What the link asserts: `references`, `supersedes`, `implements_decision`, `derived_from`, `contradicts` or `duplicates` (D238)."),
     n("metadata", "object", "The caller's own object, stored verbatim and never interpreted, or null."),
     f("created_at", "string", "When the link was written. Named `created_at` because `link.add` answers with a boolean `created` beside it."),
 ];
@@ -2002,6 +2039,11 @@ pub fn result_shape(method: &str) -> &'static [(&'static str, &'static [FieldDoc
         "task.modify" => &[("result", R_TASK_MODIFY)],
         "task.cancel" => &[("result", R_TASK_CANCEL)],
         "task.reopen" => &[("result", R_TASK_REOPEN)],
+        "task.triage" => &[("result", R_TASK_TRIAGE)],
+        "task.triage_list" => &[
+            ("result", R_TASK_TRIAGE_LIST),
+            ("result.tasks[]", TRIAGE_ROW),
+        ],
         "tag.add" => &[("result", R_TAG_ADD)],
         "tag.remove" => &[("result", R_TAG_REMOVE)],
         "annotation.add" => &[

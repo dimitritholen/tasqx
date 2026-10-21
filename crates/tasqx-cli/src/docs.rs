@@ -74,7 +74,7 @@ mod obj_ref;
 /// which is unassertable prose-equivalence. So the column is gone and the page
 /// renders [`crate::cmddoc`]'s summary instead. One string per verb, used by
 /// both surfaces, with no second copy left to drift.
-const VERBS: [(&str, &str, &str); 51] = [
+const VERBS: [(&str, &str, &str); 55] = [
     ("init", "—", "project.create"),
     ("use", "—", "project.use"),
     ("archive", "—", "project.archive"),
@@ -116,6 +116,10 @@ const VERBS: [(&str, &str, &str); 51] = [
         "task.cancel",
     ),
     ("reopen", "—", "task.reopen"),
+    ("triage", "—", "task.triage_list"),
+    ("accept", "—", "task.triage"),
+    ("decline", "—", "task.triage"),
+    ("duplicate", "—", "task.triage"),
     ("undo", "<code>u</code>", "event.revert"),
     (
         "annotate",
@@ -165,7 +169,7 @@ const VERBS: [(&str, &str, &str); 51] = [
 
 /// The method table the JSON API page renders: `(method, params, returns)`.
 /// Single source, same reason as [`VERBS`].
-const METHODS: [(&str, &str, &str); 55] = [
+const METHODS: [(&str, &str, &str); 57] = [
     (
         "project.create",
         "<code>name</code>, <code>description?</code>",
@@ -197,7 +201,8 @@ const METHODS: [(&str, &str, &str); 55] = [
         "<code>title</code>, <code>project?</code>, <code>priority?</code>, <code>due?</code>, \
          <code>scheduled?</code>, <code>wait?</code>, <code>recurrence?</code>, \
          <code>remind?</code>, <code>estimate?</code>, <code>tags?</code>, \
-         <code>budget_tokens?</code>, <code>checks?</code>, <code>depends_on?</code>",
+         <code>budget_tokens?</code>, <code>checks?</code>, <code>depends_on?</code>, \
+         <code>status?</code>, <code>discovered_from?</code>, <code>client?</code>",
         "The new task, incl. the <code>project</code> it landed in (the default, if none given). \
          <code>checks</code> (strings) and <code>depends_on</code> (refs) are created in the same \
          transaction as the task (D213): an unknown prerequisite or a blank check refuses the \
@@ -208,7 +213,10 @@ const METHODS: [(&str, &str, &str); 55] = [
          cache creation, never cache reads — which stops nothing and is read back as \
          <code>fresh_tokens</code> and <code>over</code> on <code>task.get</code>. The title \
          is stored verbatim: a title carrying the CLI's inline sugar (<code>+tag</code>, \
-         <code>due:</code>, <code>!prio</code>…) adds a <code>warnings</code> entry naming it.",
+         <code>due:</code>, <code>!prio</code>…) adds a <code>warnings</code> entry naming it. \
+         <code>status: \"triage\"</code> files a proposal outside <code>@working</code> until \
+         <code>task.triage</code> accepts it; <code>discovered_from</code> links the task it was \
+         found on with <code>derived_from</code> (D238).",
     ),
     (
         "task.next",
@@ -346,6 +354,25 @@ const METHODS: [(&str, &str, &str); 55] = [
         "<code>ref</code>, <code>expected_rev?</code>",
         "<code>{short_id, status, blocked}</code>. <code>blocked</code> names the open dependents \
          this reopen put back — the mirror of <code>unblocked</code> on <code>task.done</code>.",
+    ),
+    (
+        "task.triage",
+        "<code>ref</code>, <code>action</code>, <code>reason?</code>, <code>of?</code>, \
+         <code>expected_rev?</code>",
+        "<code>{short_id, title, action, status, _rev, unblocked}</code> (D238). Settles a \
+         task in triage: <code>accept</code> makes it pending (or backlog, while a future date \
+         holds it); <code>decline</code> cancels it, keeping <code>reason</code> as a note; \
+         <code>duplicate</code> cancels it, moves its notes to <code>of</code> and links the \
+         two with <code>duplicates</code>, adding <code>of</code> and \
+         <code>moved_annotations</code>. A task not in triage is a <code>conflict</code>. \
+         <code>event.revert</code> takes back an accept or a decline.",
+    ),
+    (
+        "task.triage_list",
+        "<code>limit?</code>, <code>offset?</code>",
+        "<code>{tasks, total, next_offset}</code> (D238). The triage inbox in one read, oldest \
+         first: each proposal with the <code>client</code> its add named and the task it was \
+         <code>discovered_from</code>. <code>next_offset</code> is null on the last page.",
     ),
     (
         "tag.add",
@@ -2551,11 +2578,12 @@ mod tests {
         // (#222) did, 9 -> 10 when `memory.list` (#133) did, 10 -> 11 when
         // `report.outcomes` (D137) did, 11 -> 12 when `link.list` (D160) did,
         // 12 -> 13 when `memory.refresh` (#789) did, 13 -> 14 when `task.next`
-        // (D213) did, and a floor that drifts
+        // (D213) did, 14 -> 15 when `task.triage_list` (D238) did, and a floor
+        // that drifts
         // below the truth is a guard that has stopped guarding.
         assert_eq!(
-            checked, 14,
-            "expected to check all 14 bare-callable return shapes; a row that stopped being \
+            checked, 15,
+            "expected to check all 15 bare-callable return shapes; a row that stopped being \
              checkable is coverage lost silently"
         );
     }

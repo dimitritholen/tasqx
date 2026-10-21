@@ -52,6 +52,7 @@ task, and where to find help.
 | `done` | Complete a task | [Working on Tasks](Working-on-Tasks.md#tasqx-done) |
 | `cancel` | Cancel a task (reversibly) | [Working on Tasks](Working-on-Tasks.md#tasqx-cancel) |
 | `reopen` | Bring a finished task back | [Working on Tasks](Working-on-Tasks.md#tasqx-reopen) |
+| `triage` / `accept` / `decline` / `duplicate` | Review proposed tasks before they join the backlog | [Working on Tasks](Working-on-Tasks.md#tasqx-triage) |
 | `pick` | Browse tasks on a full screen, read one, and start it | [Working on Tasks](Working-on-Tasks.md#tasqx-pick) |
 | `undo` | Take back the last change | [Working on Tasks](Working-on-Tasks.md#tasqx-undo) |
 | `git` | Let a pull request start or complete its task | [Working on Tasks](Working-on-Tasks.md#tasqx-git) |
@@ -116,7 +117,7 @@ task, and where to find help.
 ## Honest edges
 
 `tasqx undo` is narrow on purpose: it reverses the newest event only, over
-eleven operations, and refuses everything else by name along with the verb that
+twelve operations, and refuses everything else by name along with the verb that
 does take it back. `tasqx agenda` is a day-grouped list, not the week grid the
 spec sketched. The full-screen views (`tasqx dashboard`, `tasqx pick`, the memory
 browser, `tasqx config edit`, `tasqx setup`) let you browse and start work, but

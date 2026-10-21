@@ -137,6 +137,7 @@ pub fn document(d: &Dashboard, days: usize, order: &[PanelId]) -> Value {
             "active": d.status.active,
             "overdue": d.status.overdue,
             "blocked": d.status.blocked,
+            "triage": d.status.triage,
             "done_week": d.status.done_week,
         }),
     );

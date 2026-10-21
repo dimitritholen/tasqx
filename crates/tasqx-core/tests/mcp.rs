@@ -83,12 +83,12 @@ fn full_protocol_sequence() {
     }));
     assert!(note.is_none(), "notifications must not produce a response");
 
-    // 3. tools/list — all 36 tools present, each with an inputSchema.
+    // 3. tools/list — all 37 tools present, each with an inputSchema.
     let listed = server
         .handle_message(&json!({ "jsonrpc": "2.0", "id": 2, "method": "tools/list" }))
         .expect("tools/list is a request");
     let tools = listed["result"]["tools"].as_array().expect("tools array");
-    assert_eq!(tools.len(), 36, "expected 36 tools");
+    assert_eq!(tools.len(), 37, "expected 37 tools");
     assert!(tools.iter().any(|t| t["name"] == "tasqx_next"));
     let names: Vec<&str> = tools.iter().map(|t| t["name"].as_str().unwrap()).collect();
     for expected in [
@@ -115,6 +115,7 @@ fn full_protocol_sequence() {
         "tasqx_remove_annotation",
         "tasqx_update_annotation",
         "tasqx_move_annotation",
+        "tasqx_triage_task",
         "tasqx_add_tokens",
         "tasqx_add_dependency",
         "tasqx_remove_dependency",
@@ -3925,6 +3926,11 @@ fn the_read_only_refusal_names_the_flag_that_fixes_it() {
 /// Its eighth added `expected_rev` on claim and release and the same-`actor`
 /// advice; measured beside D237: 36 tools, 40,723 bytes, so 40,832.
 ///
+/// D238 added `tasqx_triage_task` and the `status`, `discovered_from` and
+/// `client` arguments on `tasqx_add_task` (whose description was tightened to
+/// stay under the per-tool cap). Measured beside every tool above: 37 tools,
+/// 41,679 bytes, so the cap moved from 40,832 to 41,728.
+///
 /// The floor is not zero. With every `description` key removed from the roster
 /// the same serialization is 11,597 bytes of schema skeleton — property names,
 /// `type`, the closed `enum` lists D30 renders from the engine's own consts,
@@ -3935,7 +3941,7 @@ fn the_read_only_refusal_names_the_flag_that_fixes_it() {
 fn the_whole_tool_roster_stays_inside_its_per_prompt_budget() {
     const MAX_DESCRIPTION: usize = 800;
     const MAX_ENTRY: usize = 3_072;
-    const MAX_ROSTER: usize = 40_832;
+    const MAX_ROSTER: usize = 41_728;
 
     let engine = engine();
     let server = McpServer::new(&engine, Scope::Write);

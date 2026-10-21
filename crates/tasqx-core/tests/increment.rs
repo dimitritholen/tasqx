@@ -186,7 +186,7 @@ fn a_terminal_dependent_is_never_announced_as_unblocked() {
                 .task_done(&json!({ "ref": dependent, "force": true }))
                 .unwrap(),
             Status::Cancelled => e.task_cancel(&json!({ "ref": dependent })).unwrap(),
-            Status::Backlog | Status::Pending | Status::Active => {
+            Status::Triage | Status::Backlog | Status::Pending | Status::Active => {
                 unreachable!("filtered to terminal statuses")
             }
         };
@@ -3415,6 +3415,10 @@ fn every_status_survives_a_write_read_round_trip() {
     for want in Status::ALL {
         let e = engine();
         let r = match want {
+            Status::Triage => e
+                .task_add(&json!({ "title": "t", "status": "triage" }))
+                .unwrap()["short_id"]
+                .clone(),
             Status::Pending => e.task_add(&json!({ "title": "t" })).unwrap()["short_id"].clone(),
             Status::Backlog => e
                 .task_add(&json!({ "title": "t", "wait": "2999-01-01T00:00:00Z" }))

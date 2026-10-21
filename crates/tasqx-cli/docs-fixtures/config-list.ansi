@@ -11,4 +11,5 @@ otlp.port            4318                                  [2;38;2;76;86;106mde
 board.port           0                                     [2;38;2;76;86;106mdefault[0m
 daemon.idle_timeout  0                                     [2;38;2;76;86;106mdefault[0m
 default_project      website                               [2;38;2;76;86;106mstore[0m
+mcp.add_status       pending                               [2;38;2;76;86;106mdefault[0m
 detail.time_format   both                                  [2;38;2;76;86;106mdefault[0m
