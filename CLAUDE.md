@@ -27,7 +27,7 @@ edits.
 
 ## Task tracking
 
-Work is tracked in tasqx itself — see `.claude/skills/tasqx-workflow/SKILL.md`.
+Work is tracked in tasqx itself.
 No `TODO.md`, no checklists, plans or session notes committed to the repo; they
 are what the tasqx backlog and its annotations are for.
 
