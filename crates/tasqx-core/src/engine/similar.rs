@@ -4,8 +4,8 @@
 //! [`MAX`] open tasks or live docs whose similarity to what is being written
 //! is at or above [`TASK_THRESHOLD`] or [`DOC_THRESHOLD`], best first. Advice,
 //! never a refusal: it is computed before the add takes its write lock, and
-//! anything that goes wrong in it — an error, a panic — is noted on stderr
-//! and answers an empty list while the add goes ahead.
+//! anything that goes wrong in it — an error, a panic — answers an empty
+//! list and `similar_skipped: true` while the add goes ahead.
 //!
 //! Tasks keep no stored vectors (D237): the open tasks of the project are
 //! embedded on demand and kept in this process only ([`SimilarCache`]), so a
@@ -23,13 +23,13 @@ use std::collections::{HashMap, HashSet};
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use rusqlite::params;
+use rusqlite::{params, OptionalExtension};
 use serde_json::{json, Value};
 
 use super::task::opening_summary;
 use super::vectors::{Kind, SemanticFilter};
 use super::Engine;
-use crate::embed::{self, QueryVector, DIMS};
+use crate::embed::{self, QueryVector, BLOB_LEN, DIMS};
 use crate::error::ApiError;
 use crate::types::Status;
 
@@ -37,7 +37,7 @@ use crate::types::Status;
 pub(crate) const TASK_THRESHOLD: f64 = 0.7;
 
 /// The floor a doc's similarity, rounded to three decimals, must reach.
-pub(crate) const DOC_THRESHOLD: f64 = 0.8;
+pub(crate) const DOC_THRESHOLD: f64 = 0.83;
 
 /// At most this many candidates are named.
 pub(crate) const MAX: usize = 3;
@@ -86,11 +86,23 @@ pub(super) struct SimilarCache {
     pub(super) embedded: usize,
     #[cfg(test)]
     pub(super) fail: Option<Failure>,
+    /// A smaller [`CACHE_BOUND`], for a test.
+    #[cfg(test)]
+    pub(super) bound: Option<usize>,
 }
 
 pub(super) type SimilarCell = RefCell<SimilarCache>;
 
 impl SimilarCache {
+    /// The most entries kept: [`CACHE_BOUND`], or what a test set.
+    fn bound(&self) -> usize {
+        #[cfg(test)]
+        if let Some(b) = self.bound {
+            return b;
+        }
+        CACHE_BOUND
+    }
+
     /// The failure a test injected, if any.
     fn injected(&self) -> Result<(), ApiError> {
         #[cfg(test)]
@@ -146,22 +158,13 @@ fn par_map<T: Sync, R: Send + Clone + Default>(items: &[T], f: impl Fn(&T) -> R 
     out
 }
 
-/// `f`'s answer, or `[]` when it errs or panics, with a note on stderr: the
-/// comparison is advice, and the add it advises goes ahead regardless.
-fn advisory(what: &str, f: impl FnOnce() -> Result<Value, ApiError>) -> Value {
+/// `f`'s answer and `false`, or `[]` and `true` when it errs or panics:
+/// the comparison is advice, and the add it advises goes ahead regardless,
+/// saying in `similar_skipped` that it could not compare.
+fn advisory(f: impl FnOnce() -> Result<Value, ApiError>) -> (Value, bool) {
     match catch_unwind(AssertUnwindSafe(f)) {
-        Ok(Ok(v)) => v,
-        Ok(Err(e)) => {
-            eprintln!(
-                "tasqx: note: the {what} duplicate check was skipped: {}",
-                e.message
-            );
-            json!([])
-        }
-        Err(_) => {
-            eprintln!("tasqx: note: the {what} duplicate check was skipped: it panicked");
-            json!([])
-        }
+        Ok(Ok(v)) => (v, false),
+        Ok(Err(_)) | Err(_) => (json!([]), true),
     }
 }
 
@@ -170,8 +173,13 @@ impl Engine {
     /// above `floor`, best first then by short id, at most [`MAX`]. A task
     /// is compared as its title then its description, the opening summary
     /// of its oldest live note.
-    pub(crate) fn similar_tasks(&self, title: &str, project: Option<&str>, floor: f64) -> Value {
-        advisory("task", || self.try_similar_tasks(title, project, floor))
+    pub(crate) fn similar_tasks(
+        &self,
+        title: &str,
+        project: Option<&str>,
+        floor: f64,
+    ) -> (Value, bool) {
+        advisory(|| self.try_similar_tasks(title, project, floor))
     }
 
     fn try_similar_tasks(
@@ -186,11 +194,12 @@ impl Engine {
             return Ok(json!([]));
         };
         cache.embedded += 1;
-        // The note is cut in SQL to more than its summary can use, so a long
-        // note costs no more than a short one; `opening_summary` cuts the rest.
+        // The note is cut in SQL to more than its summary can use, after its
+        // leading whitespace, so a long note costs no more than a short one;
+        // `opening_summary` cuts the rest.
         let mut stmt = self.conn.prepare_cached(&format!(
             "SELECT t.id, t.short_id, t.title, \
-             (SELECT substr(a.body, 1, 2000) FROM annotations a WHERE a.task_id = t.id \
+             (SELECT substr(ltrim(a.body, ' ' || char(9, 10, 13)), 1, 2000) FROM annotations a WHERE a.task_id = t.id \
               AND a.removed IS NULL ORDER BY a.id LIMIT 1) \
              FROM tasks t WHERE t.project IS ?1 AND t.status NOT IN ({})",
             Status::sql_in_list(Status::is_terminal)
@@ -224,6 +233,8 @@ impl Engine {
         for (id, short_id, title, summary) in rows {
             match cache.tasks.get_mut(&id) {
                 Some(c) if !stale(Some(c), &title, &summary) => {
+                    cache.stamp += 1;
+                    c.stamp = cache.stamp;
                     c.project = project.map(str::to_string);
                 }
                 _ => {
@@ -245,16 +256,31 @@ impl Engine {
             open.push((id, short_id));
         }
         // This project's tasks that are no longer open leave; every other
-        // project's stay, until the bound pushes the oldest out.
+        // project's stay, until the bound pushes the least recently used out.
+        // This project's are never pushed out: they are what is compared.
+        // ponytail: a project with more open tasks than the bound is kept and
+        // compared whole, so the bound is exceeded by that much; fine until a
+        // real store does it.
         let keep: HashSet<&str> = open.iter().map(|(id, _)| id.as_str()).collect();
         cache
             .tasks
             .retain(|id, c| c.project.as_deref() != project || keep.contains(id.as_str()));
-        if cache.tasks.len() > CACHE_BOUND {
-            let mut stamps: Vec<u64> = cache.tasks.values().map(|c| c.stamp).collect();
-            stamps.sort_unstable();
-            let cut = stamps[cache.tasks.len() - CACHE_BOUND];
-            cache.tasks.retain(|_, c| c.stamp >= cut);
+        let bound = cache.bound();
+        if cache.tasks.len() > bound {
+            let mut others: Vec<u64> = cache
+                .tasks
+                .values()
+                .filter(|c| c.project.as_deref() != project)
+                .map(|c| c.stamp)
+                .collect();
+            others.sort_unstable();
+            let over = (cache.tasks.len() - bound).min(others.len());
+            if over > 0 {
+                let cut = others[over - 1];
+                cache
+                    .tasks
+                    .retain(|_, c| c.project.as_deref() == project || c.stamp > cut);
+            }
         }
         let mut hits: Vec<(f64, i64, String, String)> = open
             .into_iter()
@@ -277,50 +303,67 @@ impl Engine {
     }
 
     /// The docs — every doc for an unscoped one, else those of `project` and
-    /// the unscoped — whose stored best chunk is at or above `floor` to the
-    /// doc `title` + `body`, best first then by id, at most [`MAX`]. A doc
-    /// the index has no stored vector for is not a candidate.
+    /// the unscoped — whose best stored chunk is at or above `floor` to the
+    /// best of `chunks`, the new doc's own chunk vectors, best first then by
+    /// id, at most [`MAX`]. A doc the index has no stored vector for is not
+    /// a candidate. `None` is a new doc whose embedding failed: skipped.
     pub(crate) fn similar_docs(
         &self,
-        title: &str,
-        body: &str,
+        chunks: Option<&[(i64, [u8; BLOB_LEN])]>,
         project: Option<&str>,
         floor: f64,
-    ) -> Value {
-        advisory("doc", || self.try_similar_docs(title, body, project, floor))
+    ) -> (Value, bool) {
+        advisory(|| {
+            let chunks = chunks.ok_or_else(|| ApiError::internal("the new doc did not embed"))?;
+            self.try_similar_docs(chunks, project, floor)
+        })
     }
 
     fn try_similar_docs(
         &self,
-        title: &str,
-        body: &str,
+        chunks: &[(i64, [u8; BLOB_LEN])],
         project: Option<&str>,
         floor: f64,
     ) -> Result<Value, ApiError> {
         {
             let mut cache = self.similar.borrow_mut();
             cache.injected()?;
+            // The new doc, embedded once by `doc_vectors` for the index too.
             cache.embedded += 1;
         }
-        let Some(q) = embed::embed(&format!("{title}\n{body}")) else {
+        let queries: Vec<QueryVector> = chunks
+            .iter()
+            .map(|(_, blob)| QueryVector::new(&embed::dequantize(blob)))
+            .collect();
+        if queries.is_empty() {
             return Ok(json!([]));
-        };
+        }
         let filter = SemanticFilter {
             scope: "docs",
             project,
             include_unscoped: true,
             exclude_task: None,
             min_similarity: floor,
-            depth: MAX,
+            // Room for a doc that vanishes before its title is read.
+            depth: MAX * 2,
         };
-        let hits = self.stored_pass(&QueryVector::new(&q), &filter)?;
+        let hits = self.stored_pass(&queries, &filter)?;
         let mut stmt = self
             .conn
             .prepare_cached("SELECT title FROM docs WHERE id = ?1")?;
-        let mut out = Vec::with_capacity(hits.len());
+        let mut out = Vec::with_capacity(MAX);
         for h in hits.into_iter().filter(|h| h.kind == Kind::Doc) {
-            let title: String = stmt.query_row(params![h.owner_id], |r| r.get(0))?;
+            // A doc removed since the pass read it is simply not named.
+            let Some(title) = stmt
+                .query_row(params![h.owner_id], |r| r.get::<_, String>(0))
+                .optional()?
+            else {
+                continue;
+            };
             out.push(json!({ "id": h.owner_id, "title": title, "similarity": h.similarity }));
+            if out.len() == MAX {
+                break;
+            }
         }
         Ok(Value::Array(out))
     }

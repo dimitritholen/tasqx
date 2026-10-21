@@ -1480,3 +1480,21 @@ fn a_doc_s_vectors_stored_at_add_serve_the_next_add_and_the_next_search() {
         "nothing embedded again"
     );
 }
+
+/// D237: the vectors `memory.add` stores record their model as used, as a
+/// search's write does, so the sweep of unused models leaves them alone.
+#[test]
+fn a_doc_added_records_its_model_as_used() {
+    let e = Engine::open_in_memory().unwrap();
+    e.memory_add(&json!({ "title": "Wildlife", "body": GIRAFFE }))
+        .unwrap();
+    let models: Vec<String> = e
+        .conn
+        .prepare("SELECT model FROM memory_vector_models")
+        .unwrap()
+        .query_map([], |r| r.get(0))
+        .unwrap()
+        .collect::<rusqlite::Result<_>>()
+        .unwrap();
+    assert_eq!(models, [MODEL_ID]);
+}

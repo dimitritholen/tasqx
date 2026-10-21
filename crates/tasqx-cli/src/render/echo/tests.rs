@@ -1814,5 +1814,10 @@ fn similar_notes_name_each_candidate() {
         vec!["note: looks like doc 01a0-doc \"Ruling\" (similarity 0.81)"]
     );
     assert!(similar_notes(&json!({ "similar": [] })).is_empty());
+    assert!(similar_notes(&json!({ "similar": [], "similar_skipped": false })).is_empty());
     assert!(similar_notes(&json!({})).is_empty());
+    assert_eq!(
+        similar_notes(&json!({ "similar": [], "similar_skipped": true })),
+        vec!["note: the duplicate check could not run; the add went ahead"]
+    );
 }

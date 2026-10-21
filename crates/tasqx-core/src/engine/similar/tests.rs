@@ -25,7 +25,7 @@ const PRECISION_FLOOR: f64 = 0.9;
 
 /// Recall at each kind's threshold when it was chosen; less is a regression.
 const RECALL_FLOORS: [(&str, f64, f64); 2] =
-    [("task", TASK_THRESHOLD, 0.15), ("doc", DOC_THRESHOLD, 0.77)];
+    [("task", TASK_THRESHOLD, 0.15), ("doc", DOC_THRESHOLD, 0.66)];
 
 fn ok(e: &Engine, method: &str, params: Value) -> Value {
     dispatch(e, method, &params).unwrap_or_else(|err| panic!("{method} {params}: {err:?}"))
@@ -52,6 +52,7 @@ fn score(pair: &Value) -> f64 {
                 );
             }
             e.similar_tasks(new["title"].as_str().unwrap(), Some("tasqx"), -1.0)
+                .0
         }
         "doc" => {
             ok(
@@ -59,12 +60,11 @@ fn score(pair: &Value) -> f64 {
                 "memory.add",
                 json!({ "title": old["title"], "body": old["body"], "project": "tasqx" }),
             );
-            e.similar_docs(
+            let chunks = super::super::vectors::doc_vectors(
                 new["title"].as_str().unwrap(),
                 new["body"].as_str().unwrap(),
-                Some("tasqx"),
-                -1.0,
-            )
+            );
+            e.similar_docs(chunks.as_deref(), Some("tasqx"), -1.0).0
         }
         k => panic!("unknown kind {k}"),
     };
@@ -230,12 +230,15 @@ fn a_failing_comparison_answers_an_empty_similar() {
         let t = ok(&e, "task.add", json!({ "title": "the same task" }));
         assert!(t["short_id"].is_i64());
         assert_eq!(t["similar"], json!([]));
+        assert_eq!(t["similar_skipped"], true);
         let d = ok(&e, "memory.add", json!({ "title": "same", "body": "same" }));
         assert!(d["id"].is_string());
         assert_eq!(d["similar"], json!([]));
+        assert_eq!(d["similar_skipped"], true);
         e.similar.borrow_mut().fail = None;
         let t = ok(&e, "task.add", json!({ "title": "the same task" }));
         assert_eq!(t["similar"].as_array().unwrap().len(), 2, "{t}");
+        assert_eq!(t["similar_skipped"], false);
     }
 }
 
@@ -249,6 +252,69 @@ fn an_sql_error_in_the_comparison_does_not_fail_the_add() {
     let t = ok(&e, "task.add", json!({ "title": "still added" }));
     assert!(t["short_id"].is_i64());
     assert_eq!(t["similar"], json!([]));
+    assert_eq!(t["similar_skipped"], true);
+}
+
+/// Past the bound the least recently used entries of other projects leave
+/// first; the current project's are never evicted, even when it alone is
+/// over the bound, and every one of them is compared.
+#[test]
+fn the_cache_evicts_other_projects_least_recently_used_first() {
+    let e = Engine::open_in_memory().unwrap();
+    for p in ["a", "b", "c"] {
+        ok(&e, "project.create", json!({ "name": p }));
+    }
+    e.similar.borrow_mut().bound = Some(3);
+    let short = |out: Value| out["short_id"].as_i64().unwrap();
+    let a1 = short(ok(
+        &e,
+        "task.add",
+        json!({ "title": "alpha", "project": "a" }),
+    ));
+    let b1 = short(ok(
+        &e,
+        "task.add",
+        json!({ "title": "beta", "project": "b" }),
+    ));
+    // Embeds a1, then b1; a1 is used again after b1, so b1 is now the oldest.
+    ok(&e, "task.add", json!({ "title": "x", "project": "a" }));
+    ok(&e, "task.add", json!({ "title": "x", "project": "b" }));
+    ok(&e, "task.add", json!({ "title": "x", "project": "a" }));
+    let held = |e: &Engine| -> Vec<i64> {
+        let ids: Vec<String> = e.similar.borrow().tasks.keys().cloned().collect();
+        let mut v: Vec<i64> = ids
+            .iter()
+            .map(|id| short(ok(e, "task.get", json!({ "ref": id }))))
+            .collect();
+        v.sort();
+        v
+    };
+    assert!(held(&e).contains(&a1) && held(&e).contains(&b1));
+    // Four open tasks in c, over the bound of three: c is kept and compared
+    // whole, and the others go.
+    for _ in 0..4 {
+        ok(&e, "task.add", json!({ "title": "gamma", "project": "c" }));
+    }
+    let again = ok(&e, "task.add", json!({ "title": "gamma", "project": "c" }));
+    assert_eq!(again["similar"].as_array().unwrap().len(), MAX, "{again}");
+    let cache = e.similar.borrow();
+    assert_eq!(cache.tasks.len(), 4, "only c's four are left");
+    assert!(cache
+        .tasks
+        .values()
+        .all(|c| c.project.as_deref() == Some("c")));
+}
+
+/// A hit refreshes an entry's place, so it is used, not merely embedded.
+#[test]
+fn a_hit_refreshes_an_entry() {
+    let e = Engine::open_in_memory().unwrap();
+    ok(&e, "task.add", json!({ "title": "one" }));
+    ok(&e, "task.add", json!({ "title": "two" }));
+    let stamp = |e: &Engine| e.similar.borrow().tasks.values().map(|c| c.stamp).max();
+    let before = stamp(&e);
+    ok(&e, "task.add", json!({ "title": "three" }));
+    assert!(stamp(&e) > before);
 }
 
 /// Another project's open tasks stay embedded while this one is compared,

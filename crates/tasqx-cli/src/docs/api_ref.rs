@@ -1389,7 +1389,7 @@ const EXAMPLES: &[Example] = &[
         method: "task.add",
         request: r#"{"tasqx":"1","id":"a1","method":"task.add","params":{"title":"Draft the Q4 roadmap","project":"website","priority":"H","due":"friday","tags":["planning"]}}"#,
         fixture: "",
-        response: r#"{"id":"a1","ok":true,"result":{"due":"2026-09-18T00:00:00Z","id":"019f7c0a-3d51-7c42-9a08-1f0c4e5b62d7","project":"website","recurrence":null,"scheduled":null,"short_id":62,"similar":[],"status":"pending","tags":["planning"],"title":"Draft the Q4 roadmap","urgency":16.6},"tasqx":"1"}"#,
+        response: r#"{"id":"a1","ok":true,"result":{"due":"2026-09-18T00:00:00Z","id":"019f7c0a-3d51-7c42-9a08-1f0c4e5b62d7","project":"website","recurrence":null,"scheduled":null,"short_id":62,"similar":[],"similar_skipped":false,"status":"pending","tags":["planning"],"title":"Draft the Q4 roadmap","urgency":16.6},"tasqx":"1"}"#,
         why: "a new task's v7 id is half clock and half entropy, so no pin can reproduce it. The CLI's own `add` echo, which prints the short id, is captured instead.",
     },
     Example {
@@ -1599,7 +1599,7 @@ const EXAMPLES: &[Example] = &[
         method: "memory.add",
         request: r#"{"tasqx":"1","id":"ma1","method":"memory.add","params":{"title":"rate-limit-ceiling","body":"60 requests a minute per key, burst 120.","source":"notes/limits.md","project":"api"}}"#,
         fixture: "",
-        response: r#"{"id":"ma1","ok":true,"result":{"created":"2026-09-16T09:00:00Z","id":"019f7c0a-3d51-7b18-8d44-6e1a92c07f35","project":"api","similar":[{"id":"019f6e21-8c04-7a93-b5d2-41f0c8e7a1b6","similarity":0.842,"title":"api-rate-limits"}],"standing":false,"title":"rate-limit-ceiling"},"tasqx":"1"}"#,
+        response: r#"{"id":"ma1","ok":true,"result":{"created":"2026-09-16T09:00:00Z","id":"019f7c0a-3d51-7b18-8d44-6e1a92c07f35","project":"api","similar":[{"id":"019f6e21-8c04-7a93-b5d2-41f0c8e7a1b6","similarity":0.842,"title":"api-rate-limits"}],"similar_skipped":false,"standing":false,"title":"rate-limit-ceiling"},"tasqx":"1"}"#,
         why: "the doc's id is minted fresh, v7, half of it random.",
     },
     Example {

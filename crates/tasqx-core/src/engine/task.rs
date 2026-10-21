@@ -444,7 +444,7 @@ impl Engine {
         for r in dep_refs {
             self.resolve_ref_value_on(&self.conn, r)?;
         }
-        let similar =
+        let (similar, skipped) =
             self.similar_tasks(&title, landing.as_deref(), super::similar::TASK_THRESHOLD);
 
         let tx = self.begin_mutation()?;
@@ -602,6 +602,7 @@ impl Engine {
         }
         with_title_warning(&mut out, &title);
         out["similar"] = similar;
+        out["similar_skipped"] = json!(skipped);
         Ok(out)
     }
 
