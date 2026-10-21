@@ -81,10 +81,20 @@ fn id(v: &Value) -> String {
     v["id"].as_str().expect("id").to_string()
 }
 
+/// A doc with no stored vector, as `memory.import` or an older binary
+/// leaves one: `memory.add` stores its vectors with it (D237), and these
+/// tests are about what a search does for a doc without them.
 fn add_doc(e: &Engine, title: &str, body: &str) -> String {
-    id(&e
+    let doc = id(&e
         .memory_add(&json!({ "title": title, "body": body }))
-        .expect("memory.add"))
+        .expect("memory.add"));
+    e.conn
+        .execute(
+            "DELETE FROM memory_vectors WHERE owner_id = ?1",
+            params![doc],
+        )
+        .unwrap();
+    doc
 }
 
 fn add_task(e: &Engine, title: &str) -> String {
@@ -1443,5 +1453,30 @@ fn measure(label: &str, make: &dyn Fn(usize) -> (bool, String)) {
     println!(
         "{label}: cold (new engine, {chunks} vectors stored): {:?}",
         t.elapsed()
+    );
+}
+
+/// D237: `memory.add` stores the new doc's vectors with it, so the next add
+/// compares against it at once, and a search afterwards finds both docs
+/// from those stored rows without embedding either again.
+#[test]
+fn a_doc_s_vectors_stored_at_add_serve_the_next_add_and_the_next_search() {
+    let e = Engine::open_in_memory().unwrap();
+    let a = id(&e
+        .memory_add(&json!({ "title": "Wildlife", "body": GIRAFFE }))
+        .unwrap());
+    assert!(rows(&e.conn, &a) >= 1, "stored at add");
+    let again = e
+        .memory_add(&json!({ "title": "Wildlife", "body": GIRAFFE }))
+        .unwrap();
+    assert_eq!(again["similar"][0]["id"], a.as_str(), "{again}");
+    let before = e.vectors.borrow().embedded;
+    let hits = finds(&e, GIRAFFE);
+    assert!(hits.contains(&(Kind::Doc, a.clone())), "{hits:?}");
+    assert!(hits.contains(&(Kind::Doc, id(&again))), "{hits:?}");
+    assert_eq!(
+        e.vectors.borrow().embedded,
+        before,
+        "nothing embedded again"
     );
 }

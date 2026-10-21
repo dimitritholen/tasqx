@@ -46,13 +46,30 @@ fn cut_chars(s: &str, max: usize) -> String {
 /// A note's opening summary: its first paragraph — up to the first blank
 /// line, `\r\n` or `\n` alike — on one line and cut at
 /// [`NEXT_SUMMARY_CHARS`]. `task.next`'s summary, and D237's description.
+///
+/// The same text as `cut_chars(&one_line(paragraph), NEXT_SUMMARY_CHARS)`,
+/// built in one pass that stops at the cut: D237 takes it for every open
+/// task on every add.
 pub(super) fn opening_summary(body: &str) -> String {
-    let para: Vec<&str> = body
+    let words = body
         .lines()
         .skip_while(|l| l.trim().is_empty())
         .take_while(|l| !l.trim().is_empty())
-        .collect();
-    cut_chars(&one_line(&para.join(" ")), NEXT_SUMMARY_CHARS)
+        .flat_map(str::split_whitespace);
+    let mut out = String::new();
+    let mut chars = 0;
+    for word in words {
+        let space = (!out.is_empty()).then_some(' ');
+        for c in space.into_iter().chain(word.chars()) {
+            if chars == NEXT_SUMMARY_CHARS {
+                out.push('…');
+                return out;
+            }
+            out.push(c);
+            chars += 1;
+        }
+    }
+    out
 }
 
 /// Which optional side tables a bulk snapshot load should read.
@@ -419,8 +436,16 @@ impl Engine {
             Some(name) => Some(name.clone()),
             None => get_config(&self.conn, DEFAULT_PROJECT_KEY)?,
         };
+        // The cheap refusals first, so a doomed add pays for no comparison;
+        // the transaction checks both again under its lock.
+        if let Some(name) = &landing {
+            require_live_project(&self.conn, name)?;
+        }
+        for r in dep_refs {
+            self.resolve_ref_value_on(&self.conn, r)?;
+        }
         let similar =
-            self.similar_tasks(&title, landing.as_deref(), super::similar::TASK_THRESHOLD)?;
+            self.similar_tasks(&title, landing.as_deref(), super::similar::TASK_THRESHOLD);
 
         let tx = self.begin_mutation()?;
         // Resolve both explicit and inherited routing inside the IMMEDIATE
@@ -2926,7 +2951,7 @@ impl Engine {
             .conn
             .query_row(
                 "SELECT a.body FROM annotations a JOIN tasks t ON t.id = a.task_id \
-                 WHERE t.short_id = ?1 ORDER BY a.id ASC LIMIT 1",
+                 WHERE t.short_id = ?1 AND a.removed IS NULL ORDER BY a.id ASC LIMIT 1",
                 params![short_id],
                 |r| r.get(0),
             )

@@ -94,6 +94,9 @@ release also trims tasqx-core's public API, which is why it is a minor bump.
 
 ### Fixed
 
+- **`next`'s summary is the opening note's first paragraph as written**: it ends
+  at a blank or whitespace-only line, with `\r\n` line ends too, and a removed
+  note is no longer shown (#2341).
 - **Windows: a dropped client frees the daemon's admission slot** at once instead
   of lingering in the pipe pool (#1168).
 - **Desktop: a row with no dependencies shows a dash in Blockers, not 0**, and an

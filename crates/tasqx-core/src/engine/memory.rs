@@ -800,14 +800,19 @@ impl Engine {
 
         let id = crate::clock::uuid_v7().to_string();
         let ts = now();
-        // D237: compared before the write lock is taken, against the vectors
-        // already stored; only the new doc is embedded.
+        // The cheap refusal first, so a doomed add pays for no embedding; the
+        // transaction checks it again under its lock.
+        refuse_source_held_elsewhere(&self.conn, source.as_deref(), &id)?;
+        // D237: the new doc's vectors, embedded before the write lock is
+        // taken and stored with the doc, so the next add already compares
+        // against it; then the comparison, against what is stored.
+        let vectors = super::vectors::doc_vectors(&title, &search_body);
         let similar = self.similar_docs(
             &title,
             &search_body,
             project.as_deref(),
             super::similar::DOC_THRESHOLD,
-        )?;
+        );
         let tx = self.begin_mutation()?;
         refuse_source_held_elsewhere(&tx, source.as_deref(), &id)?;
         tx.execute(
@@ -816,6 +821,9 @@ impl Engine {
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?8)",
             params![id, source, title, body, search_body, project, standing, ts],
         )?;
+        if let Some(v) = &vectors {
+            super::vectors::store_doc_vectors(&tx, &id, v)?;
+        }
         insert_event(
             &tx,
             Entity::Doc,
