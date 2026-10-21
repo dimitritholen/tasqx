@@ -524,6 +524,67 @@ fn best(e: &Entry, query: &QueryVector) -> (i64, f64) {
     top
 }
 
+/// The entries in `filter` at or above its floor, best first, then by
+/// `(kind, id)`, the first `filter.depth` of them; and how many entries in
+/// the filter were compared.
+fn rank(
+    entries: &[Entry],
+    q: &QueryVector,
+    filter: &SemanticFilter<'_>,
+) -> (Vec<SemanticHit>, usize) {
+    let mut compared = 0;
+    let mut hits: Vec<SemanticHit> = entries
+        .iter()
+        .filter(|e| in_filter(e, filter))
+        .filter_map(|e| {
+            compared += 1;
+            let (chunk, similarity) = best(e, q);
+            (similarity >= filter.min_similarity).then(|| SemanticHit {
+                kind: e.kind,
+                owner_id: e.owner_id.clone(),
+                chunk,
+                similarity,
+            })
+        })
+        .collect();
+    hits.sort_by(|a, b| {
+        b.similarity
+            .total_cmp(&a.similarity)
+            .then(a.kind.cmp(&b.kind))
+            .then_with(|| a.owner_id.cmp(&b.owner_id))
+    });
+    hits.truncate(filter.depth);
+    (hits, compared)
+}
+
+/// A doc's chunk vectors as the index stores them (D237): what
+/// [`scan_missing`] would embed for it. `None` when embedding panicked; the
+/// next reconcile then embeds the doc as it would any other.
+pub(super) fn doc_vectors(title: &str, search_body: &str) -> Option<Vec<(i64, [u8; BLOB_LEN])>> {
+    std::panic::catch_unwind(|| embed_chunks(&embed::chunk::chunk_doc(title, search_body))).ok()
+}
+
+/// Store a new doc's [`doc_vectors`] in the transaction that inserts the doc
+/// (D237), as the guarded write would: the text cannot have moved, it is
+/// the same transaction. One sentinel row when no chunk has a vector.
+pub(super) fn store_doc_vectors(
+    conn: &Connection,
+    id: &str,
+    vectors: &[(i64, [u8; BLOB_LEN])],
+) -> rusqlite::Result<()> {
+    let mut insert = conn.prepare_cached(
+        "INSERT OR IGNORE INTO memory_vectors (kind, owner_id, model, chunk, vec) \
+         VALUES ('doc', ?1, ?2, ?3, ?4)",
+    )?;
+    if vectors.is_empty() {
+        insert.execute(params![id, MODEL_ID, -1i64, Option::<&[u8]>::None])?;
+    }
+    for (ix, blob) in vectors {
+        insert.execute(params![id, MODEL_ID, ix, &blob[..]])?;
+    }
+    Ok(())
+}
+
 /// When a model was last recorded as searching a store: by the wall clock
 /// and by memory's own clock, the generation (#838).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -789,29 +850,8 @@ impl Engine {
             Reconciled::ThisCall(e) => e,
             Reconciled::Failed => &[],
         };
-        let mut compared = 0;
-        let mut hits: Vec<SemanticHit> = entries
-            .iter()
-            .filter(|e| in_filter(e, filter))
-            .filter_map(|e| {
-                compared += 1;
-                let (chunk, similarity) = best(e, q);
-                (similarity >= filter.min_similarity).then(|| SemanticHit {
-                    kind: e.kind,
-                    owner_id: e.owner_id.clone(),
-                    chunk,
-                    similarity,
-                })
-            })
-            .collect();
+        let (hits, compared) = rank(entries, q, filter);
         drop(cache);
-        hits.sort_by(|a, b| {
-            b.similarity
-                .total_cmp(&a.similarity)
-                .then(a.kind.cmp(&b.kind))
-                .then_with(|| a.owner_id.cmp(&b.owner_id))
-        });
-        hits.truncate(filter.depth);
         SemanticPass {
             hits,
             compared,
@@ -821,6 +861,36 @@ impl Engine {
                 _ => None,
             },
         }
+    }
+
+    /// D237's pass over what is stored: [`Self::semantic_pass`] without the
+    /// reconcile. The copy is brought to the stored vectors at the current
+    /// generation when it is behind, and nothing is embedded or written; an
+    /// entry with no stored vector is simply not compared. A later search
+    /// at the same generation embeds only what is still missing.
+    pub(crate) fn stored_pass(
+        &self,
+        q: &QueryVector,
+        filter: &SemanticFilter<'_>,
+    ) -> rusqlite::Result<Vec<SemanticHit>> {
+        let mut cache = self.vectors.borrow_mut();
+        let snapshot = rusqlite::Transaction::new_unchecked(
+            &self.conn,
+            rusqlite::TransactionBehavior::Deferred,
+        )?;
+        let indexed = indexed(&snapshot)?;
+        let key = read_key(&snapshot, indexed)?;
+        if cache.key != Some(key) {
+            cache.reset_copy();
+            cache.entries = load(&snapshot, indexed)?;
+            #[cfg(test)]
+            {
+                cache.loads += 1;
+            }
+            cache.key = Some(key);
+        }
+        snapshot.commit()?;
+        Ok(rank(&cache.entries, q, filter).0)
     }
 
     /// The rounded similarity to `q` of each of `keys` that has a vector in

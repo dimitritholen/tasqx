@@ -31,11 +31,6 @@ fn ok(e: &Engine, method: &str, params: Value) -> Value {
     dispatch(e, method, &params).unwrap_or_else(|err| panic!("{method} {params}: {err:?}"))
 }
 
-/// Have the D196 index store a vector for every doc, as a search does.
-fn index(e: &Engine) {
-    ok(e, "memory.search", json!({ "query": "anything" }));
-}
-
 /// The pair's similarity, as the add of its `new` side would compute it
 /// against its `existing` side.
 fn score(pair: &Value) -> f64 {
@@ -57,7 +52,6 @@ fn score(pair: &Value) -> f64 {
                 );
             }
             e.similar_tasks(new["title"].as_str().unwrap(), Some("tasqx"), -1.0)
-                .unwrap()
         }
         "doc" => {
             ok(
@@ -65,14 +59,12 @@ fn score(pair: &Value) -> f64 {
                 "memory.add",
                 json!({ "title": old["title"], "body": old["body"], "project": "tasqx" }),
             );
-            index(&e);
             e.similar_docs(
                 new["title"].as_str().unwrap(),
                 new["body"].as_str().unwrap(),
                 Some("tasqx"),
                 -1.0,
             )
-            .unwrap()
         }
         k => panic!("unknown kind {k}"),
     };
@@ -178,17 +170,29 @@ fn n_doc_adds_embed_exactly_n_texts() {
     assert_eq!(e.similar.borrow().embedded - before, 5);
 }
 
-/// A doc the index has not stored a vector for is not a candidate; once a
-/// search has stored it, it is.
+/// A doc added a moment ago is a candidate for the next add: its vectors
+/// are stored with it. A doc whose vector is not stored is not one.
 #[test]
-fn only_indexed_docs_are_candidates() {
+fn a_doc_added_a_moment_ago_is_a_candidate_and_an_unindexed_one_is_not() {
     let e = Engine::open_in_memory().unwrap();
     let doc = json!({ "title": "release checklist", "body": "bump, changelog, tag, push" });
-    ok(&e, "memory.add", doc.clone());
-    assert_eq!(ok(&e, "memory.add", doc.clone())["similar"], json!([]));
-    index(&e);
+    let first = ok(&e, "memory.add", doc.clone());
+    let second = ok(&e, "memory.add", doc.clone());
+    assert_eq!(second["similar"][0]["id"], first["id"], "{second}");
+    e.conn
+        .execute(
+            "DELETE FROM memory_vectors WHERE owner_id = ?1",
+            [first["id"].as_str().unwrap()],
+        )
+        .unwrap();
     let third = ok(&e, "memory.add", doc);
-    assert_eq!(third["similar"].as_array().unwrap().len(), 2, "{third}");
+    let named: Vec<&Value> = third["similar"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|s| &s["id"])
+        .collect();
+    assert_eq!(named, [&second["id"]], "{third}");
 }
 
 /// A long-lived engine embeds an open task once: an add embeds its own
@@ -214,21 +218,88 @@ fn an_add_embeds_only_the_open_tasks_that_changed() {
     assert_eq!(e.similar.borrow().embedded - before, 3);
 }
 
-/// An embedding that panics leaves the add standing, with nothing in
-/// `similar`.
+/// A comparison that panics or errs leaves the add standing, with nothing
+/// in `similar`.
 #[test]
-fn a_panicking_embedding_answers_an_empty_similar() {
+fn a_failing_comparison_answers_an_empty_similar() {
+    for failure in [Failure::Panic, Failure::Error] {
+        let e = Engine::open_in_memory().unwrap();
+        ok(&e, "task.add", json!({ "title": "the same task" }));
+        ok(&e, "memory.add", json!({ "title": "same", "body": "same" }));
+        e.similar.borrow_mut().fail = Some(failure);
+        let t = ok(&e, "task.add", json!({ "title": "the same task" }));
+        assert!(t["short_id"].is_i64());
+        assert_eq!(t["similar"], json!([]));
+        let d = ok(&e, "memory.add", json!({ "title": "same", "body": "same" }));
+        assert!(d["id"].is_string());
+        assert_eq!(d["similar"], json!([]));
+        e.similar.borrow_mut().fail = None;
+        let t = ok(&e, "task.add", json!({ "title": "the same task" }));
+        assert_eq!(t["similar"].as_array().unwrap().len(), 2, "{t}");
+    }
+}
+
+/// A store whose tables cannot be read for the comparison still adds.
+#[test]
+fn an_sql_error_in_the_comparison_does_not_fail_the_add() {
     let e = Engine::open_in_memory().unwrap();
-    ok(&e, "task.add", json!({ "title": "the same task" }));
-    ok(&e, "memory.add", json!({ "title": "same", "body": "same" }));
-    index(&e);
-    e.similar.borrow_mut().fail = true;
-    let t = ok(&e, "task.add", json!({ "title": "the same task" }));
+    e.conn
+        .execute_batch("ALTER TABLE annotations RENAME TO annotations_gone")
+        .unwrap();
+    let t = ok(&e, "task.add", json!({ "title": "still added" }));
     assert!(t["short_id"].is_i64());
     assert_eq!(t["similar"], json!([]));
-    let d = ok(&e, "memory.add", json!({ "title": "same", "body": "same" }));
-    assert!(d["id"].is_string());
-    assert_eq!(d["similar"], json!([]));
+}
+
+/// Another project's open tasks stay embedded while this one is compared,
+/// and a task that closes leaves.
+#[test]
+fn the_cache_keeps_other_projects_and_drops_closed_tasks() {
+    let e = Engine::open_in_memory().unwrap();
+    for p in ["a", "b"] {
+        ok(&e, "project.create", json!({ "name": p }));
+    }
+    ok(&e, "task.add", json!({ "title": "in a", "project": "a" }));
+    ok(&e, "task.add", json!({ "title": "in b", "project": "b" }));
+    ok(&e, "task.add", json!({ "title": "x", "project": "a" }));
+    ok(&e, "task.add", json!({ "title": "y", "project": "b" }));
+    assert_eq!(
+        e.similar.borrow().tasks.len(),
+        2,
+        "one per project, both kept"
+    );
+    ok(&e, "task.done", json!({ "ref": 1 }));
+    ok(&e, "task.add", json!({ "title": "z", "project": "a" }));
+    let ids: Vec<i64> = {
+        let cache = e.similar.borrow();
+        let mut v: Vec<i64> = cache
+            .tasks
+            .keys()
+            .map(|id| {
+                ok(&e, "task.get", json!({ "ref": id }))["short_id"]
+                    .as_i64()
+                    .unwrap()
+            })
+            .collect();
+        v.sort();
+        v
+    };
+    assert_eq!(ids, [2, 3], "the done task left, project b's stayed");
+}
+
+/// `task.next`'s summary skips a removed note.
+#[test]
+fn the_summary_skips_a_removed_note() {
+    let e = Engine::open_in_memory().unwrap();
+    ok(&e, "task.add", json!({ "title": "t" }));
+    let first = ok(&e, "annotation.add", json!({ "ref": 1, "body": "first" }));
+    ok(&e, "annotation.add", json!({ "ref": 1, "body": "second" }));
+    ok(
+        &e,
+        "annotation.remove",
+        json!({ "ref": 1, "annotation_id": first["annotation"]["id"] }),
+    );
+    assert_eq!(ok(&e, "task.next", json!({}))["summary"], "second");
 }
 
 /// The description is the note's first paragraph, `\r\n` or `\n`.
@@ -237,4 +308,9 @@ fn the_description_is_the_first_paragraph_with_either_line_ending() {
     assert_eq!(opening_summary("one\r\ntwo\r\n\r\nthree"), "one two");
     assert_eq!(opening_summary("\n\none\ntwo\n\nthree"), "one two");
     assert_eq!(opening_summary("one\n \nthree"), "one");
+    let long = "word ".repeat(200);
+    let cut = opening_summary(&long);
+    assert_eq!(cut.chars().count(), 401);
+    assert!(cut.ends_with('…'));
+    assert_eq!(opening_summary(&"x".repeat(400)), "x".repeat(400));
 }
