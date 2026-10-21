@@ -1042,8 +1042,12 @@ fn fit_note(note: &str, pointer: &str, cols: usize) -> String {
 
 /// The lines an add's `similar` becomes on a terminal (D237), one per
 /// candidate, on stderr beside the other notes: a task by its short id, a
-/// doc by its id. `--json` carries the list itself.
+/// doc by its id; or one line saying the check could not run, when
+/// `similar_skipped` says so. `--json` carries both fields itself.
 pub fn similar_notes(result: &Value) -> Vec<String> {
+    if result.get("similar_skipped").and_then(Value::as_bool) == Some(true) {
+        return vec!["note: the duplicate check could not run; the add went ahead".to_string()];
+    }
     let Some(list) = result.get("similar").and_then(Value::as_array) else {
         return Vec::new();
     };

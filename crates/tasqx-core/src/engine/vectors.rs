@@ -526,10 +526,12 @@ fn best(e: &Entry, query: &QueryVector) -> (i64, f64) {
 
 /// The entries in `filter` at or above its floor, best first, then by
 /// `(kind, id)`, the first `filter.depth` of them; and how many entries in
-/// the filter were compared.
+/// the filter were compared. An entry scores its best chunk against the
+/// best of `queries` (one for a search; a new doc's chunks for D237), the
+/// lowest chunk index on a tie.
 fn rank(
     entries: &[Entry],
-    q: &QueryVector,
+    queries: &[QueryVector],
     filter: &SemanticFilter<'_>,
 ) -> (Vec<SemanticHit>, usize) {
     let mut compared = 0;
@@ -538,7 +540,16 @@ fn rank(
         .filter(|e| in_filter(e, filter))
         .filter_map(|e| {
             compared += 1;
-            let (chunk, similarity) = best(e, q);
+            let (chunk, similarity) = queries.iter().map(|q| best(e, q)).fold(
+                (i64::MAX, f64::NEG_INFINITY),
+                |top, (ix, sim)| {
+                    if sim > top.1 || (sim == top.1 && ix < top.0) {
+                        (ix, sim)
+                    } else {
+                        top
+                    }
+                },
+            );
             (similarity >= filter.min_similarity).then(|| SemanticHit {
                 kind: e.kind,
                 owner_id: e.owner_id.clone(),
@@ -566,7 +577,9 @@ pub(super) fn doc_vectors(title: &str, search_body: &str) -> Option<Vec<(i64, [u
 
 /// Store a new doc's [`doc_vectors`] in the transaction that inserts the doc
 /// (D237), as the guarded write would: the text cannot have moved, it is
-/// the same transaction. One sentinel row when no chunk has a vector.
+/// the same transaction. One sentinel row when no chunk has a vector. The
+/// model is recorded as used, as a search's write records it, so the sweep
+/// of models nobody uses does not take these rows for a stale model's.
 pub(super) fn store_doc_vectors(
     conn: &Connection,
     id: &str,
@@ -582,6 +595,13 @@ pub(super) fn store_doc_vectors(
     for (ix, blob) in vectors {
         insert.execute(params![id, MODEL_ID, ix, &blob[..]])?;
     }
+    conn.execute(
+        "INSERT INTO memory_vector_models (model, last_used, last_used_generation) \
+         VALUES (?1, ?2, (SELECT gen FROM memory_generation WHERE id = 1)) \
+         ON CONFLICT (model) DO UPDATE SET \
+         last_used = excluded.last_used, last_used_generation = excluded.last_used_generation",
+        params![MODEL_ID, crate::clock::now().as_second()],
+    )?;
     Ok(())
 }
 
@@ -850,7 +870,7 @@ impl Engine {
             Reconciled::ThisCall(e) => e,
             Reconciled::Failed => &[],
         };
-        let (hits, compared) = rank(entries, q, filter);
+        let (hits, compared) = rank(entries, std::slice::from_ref(q), filter);
         drop(cache);
         SemanticPass {
             hits,
@@ -870,7 +890,7 @@ impl Engine {
     /// at the same generation embeds only what is still missing.
     pub(crate) fn stored_pass(
         &self,
-        q: &QueryVector,
+        queries: &[QueryVector],
         filter: &SemanticFilter<'_>,
     ) -> rusqlite::Result<Vec<SemanticHit>> {
         let mut cache = self.vectors.borrow_mut();
@@ -890,7 +910,7 @@ impl Engine {
             cache.key = Some(key);
         }
         snapshot.commit()?;
-        Ok(rank(&cache.entries, q, filter).0)
+        Ok(rank(&cache.entries, queries, filter).0)
     }
 
     /// The rounded similarity to `q` of each of `keys` that has a vector in

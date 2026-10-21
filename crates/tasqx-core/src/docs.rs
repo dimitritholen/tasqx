@@ -172,6 +172,7 @@ pub const R_TASK_ADD: &[FieldDoc] = &[
     o("depends_on", "array", "Present only when the call named `depends_on` (D213): the short ids the task now waits on, deduplicated."),
     o("blocked", "boolean", "Present with `depends_on`: whether any of those prerequisites is still open."),
     f("similar", "array", "Always present: up to three open tasks of the same project that look like this one, best first, each `{id, short_id, title, similarity}`; empty when none does. A warning only — the task was added either way (D237)."),
+    f("similar_skipped", "boolean", "Always present: true when the comparison could not run, so `similar` is empty for that reason rather than because nothing looks alike; the task was added either way (D237)."),
 ];
 
 /// One near-duplicate in `task.add`'s `similar` (D237).
@@ -1125,6 +1126,11 @@ pub const R_MEMORY_ADD: &[FieldDoc] = &[
         "similar",
         "array",
         "Always present: up to three docs of the same project or none, with a vector in the search index, that look like this one, best first, each `{id, title, similarity}`; empty when none does. A warning only — the doc was stored either way (D237).",
+    ),
+    f(
+        "similar_skipped",
+        "boolean",
+        "Always present: true when the comparison could not run, so `similar` is empty for that reason rather than because nothing looks alike; the doc was stored either way (D237).",
     ),
 ];
 

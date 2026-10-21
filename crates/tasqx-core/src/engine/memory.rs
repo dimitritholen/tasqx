@@ -805,11 +805,11 @@ impl Engine {
         refuse_source_held_elsewhere(&self.conn, source.as_deref(), &id)?;
         // D237: the new doc's vectors, embedded before the write lock is
         // taken and stored with the doc, so the next add already compares
-        // against it; then the comparison, against what is stored.
+        // against it; then the comparison of those chunks against what is
+        // stored.
         let vectors = super::vectors::doc_vectors(&title, &search_body);
-        let similar = self.similar_docs(
-            &title,
-            &search_body,
+        let (similar, skipped) = self.similar_docs(
+            vectors.as_deref(),
             project.as_deref(),
             super::similar::DOC_THRESHOLD,
         );
@@ -856,6 +856,7 @@ impl Engine {
         }
         tx.commit()?;
         out["similar"] = similar;
+        out["similar_skipped"] = json!(skipped);
         Ok(out)
     }
 

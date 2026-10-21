@@ -695,6 +695,9 @@ const R_TASK_ADD: Shape = &[&[
             req("similarity", Ty::Num),
         ]],
     ),
+    // D237, additive: whether the comparison could not run (and `similar`
+    // is empty for that reason, not because nothing looks alike).
+    req("similar_skipped", Ty::Bool),
 ]];
 
 const R_TASK_LIST: Shape = &[&[
@@ -1083,6 +1086,9 @@ const R_MEMORY_ADD: Shape = &[&[
             req("similarity", Ty::Num),
         ]],
     ),
+    // D237, additive: whether the comparison could not run (and `similar`
+    // is empty for that reason, not because nothing looks alike).
+    req("similar_skipped", Ty::Bool),
 ]];
 
 const R_MEMORY_SEARCH: Shape = &[&[
