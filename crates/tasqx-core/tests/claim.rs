@@ -649,27 +649,47 @@ fn a_second_actor_starts_beside_a_claimed_running_task() {
     }
 }
 
-/// Review 8 #2: three holders, three clocks; each start stops only its own.
+/// Final review #1: a reconnected agent is a new identity. Its old clock,
+/// unclaimed, is D140's — the new connection's start is refused; under the
+/// old identity's live claim it is left running (the documented limit: two
+/// clocks until the agent passes a stable actor).
 #[test]
-fn every_holder_runs_its_own_single_clock() {
+fn a_reconnect_meets_its_old_clock_as_d140_or_as_a_claim() {
     let e = engine();
-    let (t1, t2, t3, t4) = (
-        add(&e, "a's"),
-        add(&e, "b's"),
-        add(&e, "c's"),
-        add(&e, "a's next"),
-    );
-    call(&e, "task.start", json!({ "ref": t1, "actor": "agent-a" })).unwrap();
-    call(&e, "task.start", json!({ "ref": t2, "actor": "agent-b" })).unwrap();
-    call(&e, "task.start", json!({ "ref": t3, "actor": "agent-c" })).unwrap();
-    for t in [t1, t2, t3] {
+    let (t1, t2) = (add(&e, "before the restart"), add(&e, "after it"));
+    call(&e, "task.start", json!({ "ref": t1, "actor": "mcp:old" })).unwrap();
+    let err = call(&e, "task.start", json!({ "ref": t2, "actor": "mcp:new" })).unwrap_err();
+    assert_eq!(err.code, ErrorCode::Conflict, "{}", err.message);
+    assert!(err.message.contains("mcp:old"), "{}", err.message);
+
+    call(&e, "task.claim", json!({ "ref": t1, "actor": "mcp:old" })).unwrap();
+    call(&e, "task.start", json!({ "ref": t2, "actor": "mcp:new" })).expect("left running");
+    for t in [t1, t2] {
         let got = call(&e, "task.get", json!({ "ref": t })).unwrap();
         assert_eq!(got["status"], "active", "#{t}: {got}");
     }
-    let out = call(&e, "task.start", json!({ "ref": t4, "actor": "agent-a" })).unwrap();
-    assert_eq!(out["auto_stopped"][0]["short_id"], t1, "{out}");
-    let got = call(&e, "task.get", json!({ "ref": t2 })).unwrap();
-    assert_eq!(got["status"], "active");
+}
+
+/// Final review #6: half a claim pair is a malformed import, named.
+#[test]
+fn an_import_with_half_a_claim_is_refused() {
+    let e = engine();
+    let err = call(
+        &e,
+        "store.import",
+        json!({ "tasks": [{
+            "id": "019f0000-0000-7000-8000-000000000001", "short_id": 1,
+            "title": "half", "status": "pending", "claimed_by": "agent-1",
+        }]}),
+    )
+    .unwrap_err();
+    assert_eq!(err.code, ErrorCode::BadRequest);
+    assert!(
+        err.message.contains("019f0000-0000-7000-8000-000000000001"),
+        "{}",
+        err.message
+    );
+    assert!(err.message.contains("pair"), "{}", err.message);
 }
 
 /// Review 8 #2: undoing a stop puts a clock back beside another holder's.
@@ -677,6 +697,7 @@ fn every_holder_runs_its_own_single_clock() {
 fn undo_of_a_stop_is_refused_only_by_the_same_holders_clock() {
     let e = engine();
     let (t1, t2) = (add(&e, "agent's"), add(&e, "mine"));
+    claim(&e, t1, "agent-1").unwrap();
     call(&e, "task.start", json!({ "ref": t1, "actor": "agent-1" })).unwrap();
     call(&e, "task.start", json!({ "ref": t2 })).unwrap();
     call(&e, "task.stop", json!({ "ref": t2 })).unwrap();

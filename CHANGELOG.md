@@ -45,9 +45,9 @@ release also trims tasqx-core's public API, which is why it is a minor bump.
   renews) that keeps another holder from starting, stopping, completing or
   cancelling the task without `--force-claim`, and out of their `tasqx next`; `tasqx release` gives it
   up and an expired lease is anyone's. A plain `list`, the board and the report
-  still show claimed work, with its holder; `@claimed` lists live claims. One
-  running task is now per holder: starting a task stops your own running one
-  and leaves an agent's (or the shell's) alone (D236, #2328).
+  still show claimed work, with its holder; `@claimed` lists live claims.
+  Starting a task never stops another holder's running task while that holder
+  claims it (D236, #2328).
 - **`tasqx sync`** pulls, merges and pushes a store's snapshot through a
   `tasqx-remote-<name>` connector (folder and Cloudflare R2 ship), sealed with
   XChaCha20-Poly1305 under a key from the store's passphrase (D198-D202).
