@@ -1291,6 +1291,20 @@ const PARAM_DOCS: &[(&str, &str, &str, &str, &str)] = &[
         "Optimistic-concurrency guard, as on `task.modify`: the task's `_rev` as you read it. A stale one is a `conflict` carrying the current rev, and nothing is written (#638).",
     ),
     (
+        "task.claim",
+        "expected_rev",
+        "integer",
+        "",
+        "Optimistic-concurrency guard, as on `task.modify`: the task's `_rev` as you read it. A stale one is a `conflict` carrying the current rev, and nothing is written (D236).",
+    ),
+    (
+        "task.release",
+        "expected_rev",
+        "integer",
+        "",
+        "Optimistic-concurrency guard, as on `task.modify`: the task's `_rev` as you read it. A stale one is a `conflict` carrying the current rev, and nothing is written (D236).",
+    ),
+    (
         "task.done",
         "expected_rev",
         "integer",

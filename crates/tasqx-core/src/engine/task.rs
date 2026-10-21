@@ -232,6 +232,31 @@ fn write_claim(
     })
 }
 
+/// A task's latest `start` event payload, if it has one.
+fn latest_start(conn: &rusqlite::Connection, task_id: &str) -> Result<Option<Value>, ApiError> {
+    let payload: Option<String> = conn
+        .query_row(
+            "SELECT payload FROM events WHERE entity_id = ?1 AND op = 'start' \
+             ORDER BY rowid DESC LIMIT 1",
+            params![task_id],
+            |r| r.get(0),
+        )
+        .optional()?;
+    Ok(payload.and_then(|p| serde_json::from_str::<Value>(&p).ok()))
+}
+
+/// Whose clock a running task is (D236): the identity its latest start
+/// recorded (`holder`), else that start's `actor` (a start older than the
+/// field), else the shell. Claims and per-holder single-active both read it.
+pub(crate) fn clock_owner(conn: &rusqlite::Connection, task_id: &str) -> Result<String, ApiError> {
+    let start = latest_start(conn, task_id)?;
+    let field = |k: &str| start.as_ref().and_then(|v| payload_field(v, k));
+    Ok(identity(
+        field("holder").as_deref(),
+        field("actor").as_deref(),
+    ))
+}
+
 /// The `conflict` a live lease held by someone else answers, naming both.
 fn claimed_elsewhere(short_id: i64, holder: &str, expires: &str) -> ApiError {
     ApiError::conflict(format!(
@@ -901,7 +926,6 @@ impl Engine {
                     title: task.title,
                     already_running: true,
                     auto_stopped: Vec::new(),
-                    kept_running: Vec::new(),
                 }
                 .into());
             }
@@ -930,63 +954,37 @@ impl Engine {
             renew_on_start(&tx, &task, by, *until, claim_now)?;
         }
 
-        // D6: single active by default — auto-stop any currently active task.
+        // D6, amended by D236: single-active is PER HOLDER. A start without
+        // `keep` auto-stops the starter's own running clocks — the clocks
+        // whose start recorded the same identity — and leaves every other
+        // holder's alone. That is D140's defect removed at its root: nobody's
+        // clock is stopped from somebody else's session, so there is nothing
+        // to refuse either.
         let mut auto_stopped: Vec<commands::AutoStopped> = Vec::new();
-        // D236: a running task under another holder's live claim is that
-        // holder's work; it keeps running and the response says so.
-        let mut kept_running: Vec<commands::KeptRunning> = Vec::new();
         if !command.keep {
-            type Active = (String, i64, String, Option<String>, i64, i64);
+            type Active = (String, i64, Option<String>, i64, i64);
             let mut actives: Vec<Active> = Vec::new();
             {
                 let mut stmt = tx.prepare(
-                    "SELECT id, short_id, title, active_since, tracked_seconds, rev \
+                    "SELECT id, short_id, active_since, tracked_seconds, rev \
                      FROM tasks WHERE status = 'active'",
                 )?;
                 let rows = stmt.query_map([], |r| {
                     Ok((
                         r.get::<_, String>(0)?,
                         r.get::<_, i64>(1)?,
-                        r.get::<_, String>(2)?,
-                        r.get::<_, Option<String>>(3)?,
+                        r.get::<_, Option<String>>(2)?,
+                        r.get::<_, i64>(3)?,
                         r.get::<_, i64>(4)?,
-                        r.get::<_, i64>(5)?,
                     ))
                 })?;
                 for row in rows {
                     actives.push(row?);
                 }
             }
-            for (aid, a_short_id, a_title, active_since, tracked, rev) in actives {
-                // D236: a running task under another holder's live claim is
-                // that holder's work; it keeps running, and is reported.
-                let held = live_claim_on(&tx, &aid, claim_now)?.map(|(by, _)| by);
-                if let Some(by) = held.filter(|by| by != starter) {
-                    kept_running.push(commands::KeptRunning {
-                        short_id: a_short_id,
-                        claimed_by: by,
-                    });
+            for (aid, a_short_id, active_since, tracked, rev) in actives {
+                if clock_owner(&tx, &aid)? != starter {
                     continue;
-                }
-                // D140: the auto-stop below is scoped to the caller's own clock. D6
-                // wrote "the currently active one" for one actor and it reads as one
-                // for as long as there is one; with two, it reaches across callers and
-                // the OTHER party's task leaves `active` mid-work with its remaining
-                // time untracked, reported only to the caller that caused it.
-                //
-                // Two unknowns are not evidence of two parties, so the refusal needs
-                // BOTH sides named: a person at a shell (who names no actor) keeps the
-                // auto-stop against an agent's clock and against another shell, which
-                // is every single-actor store and therefore almost every store.
-                if let Some(mine) = command.actor.as_deref() {
-                    if let Some(held_by) = self.clock_actor_of(&aid)?.filter(|a| a != mine) {
-                        return Err(ApiError::conflict(format!(
-                            "#{a_short_id} \"{a_title}\" is active and its clock is held by \
-                             another session ({held_by}); stopping it here would leave that \
-                             session's work untracked. Pass keep:true to run both clocks \
-                             deliberately (D6), or wait for it to stop."
-                        )));
-                    }
                 }
                 let elapsed = seconds_between(&active_since, &ts);
                 let elapsed_iso = iso_duration(elapsed);
@@ -1055,7 +1053,6 @@ impl Engine {
             title: task.title,
             already_running: false,
             auto_stopped,
-            kept_running,
         }
         .into())
     }
@@ -1141,8 +1138,10 @@ impl Engine {
             Some(raw) => parse_lease(&raw)?,
             None => DEFAULT_LEASE_SECS,
         };
+        let expected_rev = opt_i64(p, "expected_rev")?;
         let tx = self.begin_mutation()?;
         let task = self.resolve_ref_value_on(&tx, &target)?;
+        guard_rev(expected_rev, &task)?;
         if task.status.is_terminal() {
             return Err(ApiError::conflict(format!(
                 "cannot claim {} {} task: only open work takes a claim",
@@ -1199,8 +1198,10 @@ impl Engine {
         let target = ref_param(p)?.clone();
         let holder = claim_holder(p)?;
         let force_claim = opt_bool(p, "force_claim")?.unwrap_or(false);
+        let expected_rev = opt_i64(p, "expected_rev")?;
         let tx = self.begin_mutation()?;
         let task = self.resolve_ref_value_on(&tx, &target)?;
+        guard_rev(expected_rev, &task)?;
         let Some((by, until)) = Self::claim_on(&tx, &task.id)? else {
             return Err(ApiError::conflict(format!(
                 "#{} is not claimed; there is nothing to release",
@@ -2579,10 +2580,12 @@ impl Engine {
         let now_ts = crate::clock::now();
         let filter = Filter::parse(&filter_str, now_ts).map_err(ApiError::bad_request)?;
         validate_filter_projects(self.conn(), &filter)?;
-        // D236: a caller choosing work for itself names its `actor`, and only
-        // then does `@working` leave out what someone ELSE holds a live claim
-        // on. Without one the list is a view, and shows every task.
+        // D236: a list chooses work — and leaves out what someone ELSE holds
+        // a live claim on — only when it names its `actor` AND asks for
+        // `@working`. Every other list (`@claimed`, `status:active`, any
+        // filter without `@working`, any list with no actor) is a view.
         let caller = opt_str_nonempty(p, "actor")?;
+        let choosing = filter.mentions_working();
 
         // Fetch all rows, then evaluate the filter in Rust: the §12-D8 grammar
         // (or/parens) and instant `due` comparison are evaluated on the loaded
@@ -2641,7 +2644,8 @@ impl Engine {
         // above — otherwise the default zero totals, never read back as a
         // number, only ever used to compare below and to render the `tokens`
         // field when projected.
-        let mut tasks: Vec<(TaskSnapshot, crate::tokens::TokenTotals)> = Vec::new();
+        type Claim = Option<(String, String)>;
+        let mut tasks: Vec<(TaskSnapshot, crate::tokens::TokenTotals, Claim)> = Vec::new();
         // D215: the working set is what to do next, and a shelved project is
         // not. Its tasks stay in every other read; `@working` leaves them out
         // unless the filter names the project.
@@ -2672,10 +2676,15 @@ impl Engine {
                 continue;
             }
             let ctx = MatchCtx::from(&snapshot);
-            // D236: a caller choosing work for itself never gets another
-            // holder's live claim, whatever its filter says.
-            let others = |c: &str| snapshot.live_claim().is_some_and(|by| by != c);
-            if caller.as_deref().is_some_and(others) {
+            // D236: the live claim, decided once for this row.
+            let claim = snapshot
+                .live_claim()
+                .zip(snapshot.live_claim_expires())
+                .map(|(by, until)| (by.to_string(), until.to_string()));
+            // A caller choosing work — an `actor` AND `@working` — never gets
+            // another holder's live claim. Every other list is a view.
+            let others = |c: &str| claim.as_ref().is_some_and(|(by, _)| by != c);
+            if choosing && caller.as_deref().is_some_and(others) {
                 continue;
             }
             if filter.matches_with_claims(&ctx, &snapshot.claims()) {
@@ -2684,7 +2693,7 @@ impl Engine {
                 } else {
                     crate::tokens::TokenTotals::default()
                 };
-                tasks.push((snapshot, totals));
+                tasks.push((snapshot, totals, claim));
             }
         }
 
@@ -2745,7 +2754,7 @@ impl Engine {
         // so an unknown key fails before any of this rather than quietly
         // yielding a narrower row.
         let mut out = Vec::with_capacity(tasks.len());
-        for (snapshot, totals) in &tasks {
+        for (snapshot, totals, claim) in &tasks {
             let deps: Option<Vec<i64>> = want_deps.then(|| {
                 let mut v: Vec<i64> = snapshot
                     .depends_on
@@ -2760,7 +2769,9 @@ impl Engine {
                 &snapshot.task,
                 &snapshot.tags,
                 snapshot.blocked,
-                snapshot.live_claim().zip(snapshot.live_claim_expires()),
+                claim
+                    .as_ref()
+                    .map(|(by, until)| (by.as_str(), until.as_str())),
                 deps.as_deref(),
                 token_field.as_ref(),
                 now_ts,
@@ -3464,38 +3475,15 @@ impl Engine {
         Ok((active, recent))
     }
 
-    /// A task's latest `start` event payload, if it has one.
-    fn latest_start(&self, task_id: &str) -> Result<Option<Value>, ApiError> {
-        let payload: Option<String> = self
-            .conn
-            .query_row(
-                "SELECT payload FROM events WHERE entity_id = ?1 AND op = 'start' \
-                 ORDER BY rowid DESC LIMIT 1",
-                params![task_id],
-                |r| r.get(0),
-            )
-            .optional()?;
-        Ok(payload.and_then(|p| serde_json::from_str::<Value>(&p).ok()))
-    }
-
     /// The actor named on a task's latest `start` event (D140), if any —
-    /// what the clock check compares; a shell's start names none.
+    /// what `task.next`'s resume rows name; a shell's start names none.
     fn clock_actor_of(&self, task_id: &str) -> Result<Option<String>, ApiError> {
-        Ok(self
-            .latest_start(task_id)?
-            .and_then(|v| payload_field(&v, "actor")))
+        Ok(latest_start(&self.conn, task_id)?.and_then(|v| payload_field(&v, "actor")))
     }
 
-    /// Whose clock a running task is for claim purposes (D236): the identity
-    /// its latest start recorded (`holder`), else that start's `actor` (a
-    /// start older than the field), else the shell.
+    /// Whose clock a running task is (D236): see [`clock_owner`].
     fn clock_holder_of(&self, task_id: &str) -> Result<String, ApiError> {
-        let start = self.latest_start(task_id)?;
-        let field = |k: &str| start.as_ref().and_then(|v| payload_field(v, k));
-        Ok(identity(
-            field("holder").as_deref(),
-            field("actor").as_deref(),
-        ))
+        clock_owner(&self.conn, task_id)
     }
 
     // ---- task.brief ----------------------------------------------------------

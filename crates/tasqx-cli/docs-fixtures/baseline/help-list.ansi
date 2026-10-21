@@ -34,7 +34,7 @@ Options:
           Never route through a daemon; always run one-shot in-process (the pre-daemon behaviour). Escape hatch for scripts
 
       --holder <ID>
-          Choose work as this holder: tasks anyone else has claimed are left out, whatever the filter (D236). Without it the list is a view and shows them
+          Choose work as this holder: with `@working` (the default), tasks anyone else has claimed are left out (D236). Without it the list is a view and shows them
 
   -h, --help
           Print help (see a summary with '-h')

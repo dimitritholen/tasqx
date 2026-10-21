@@ -667,21 +667,26 @@ fn revert_stop(
 /// have started since, so a running task means the store was changed outside
 /// the log.
 fn require_no_other_active(tx: &Transaction, task: &Task) -> Result<(), ApiError> {
-    let other: Option<i64> = tx
-        .query_row(
-            "SELECT short_id FROM tasks WHERE status = 'active' AND id != ?1",
-            params![task.id],
-            |r| r.get(0),
-        )
-        .optional()?;
-    match other {
-        Some(n) => Err(ApiError::conflict(format!(
-            "#{n} is running, and only one task can be (D6), so #{} cannot be put back to \
-             active. Nothing was changed; `tasqx stop {n}` first.",
-            task.short_id
-        ))),
-        None => Ok(()),
+    // D236 amends D6: single-active is per holder, so only another running
+    // clock of the SAME holder stands in the way.
+    let owner = crate::engine::task::clock_owner(tx, &task.id)?;
+    let mut stmt =
+        tx.prepare("SELECT id, short_id FROM tasks WHERE status = 'active' AND id != ?1")?;
+    let rows = stmt.query_map(params![task.id], |r| {
+        Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?))
+    })?;
+    for row in rows {
+        let (id, n) = row?;
+        if crate::engine::task::clock_owner(tx, &id)? == owner {
+            return Err(ApiError::conflict(format!(
+                "#{n} is running on {owner}'s clock, and one holder runs one task at a time \
+                 (D6, per holder since D236), so #{} cannot be put back to active. Nothing was \
+                 changed; `tasqx stop {n}` first.",
+                task.short_id
+            )));
+        }
     }
+    Ok(())
 }
 
 /// What a status the log names puts back: the status, and for a running task
@@ -1279,15 +1284,15 @@ fn restore_claim(tx: &Transaction, task_id: &str, payload: &Value) -> Result<(),
         )?;
         // An event that writes the claim group, so a merge (D189) sees the
         // restore as the claim's latest word rather than the close before it.
-        crate::storage::as_actor(Some(by.to_string()), || {
-            insert_event(
-                tx,
-                Entity::Task,
-                task_id,
-                "renew",
-                &json!({ "holder": by, "expires": until, "restored": true }),
-            )
-        })?;
+        // Attributed to whoever undid it; the claim's own holder is in the
+        // payload.
+        insert_event(
+            tx,
+            Entity::Task,
+            task_id,
+            "renew",
+            &json!({ "holder": by, "expires": until, "restored": true }),
+        )?;
     }
     Ok(())
 }

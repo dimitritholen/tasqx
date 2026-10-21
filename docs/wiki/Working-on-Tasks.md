@@ -80,8 +80,8 @@ the lease runs out (`--force-claim` goes ahead and the log names whose claim it
 overrode; `done --force` is only for open dependencies), and starting another task
 leaves it running instead of stopping it. `tasqx next` skips it for anyone but
 the holder, and so does `tasqx pick`. `tasqx list` still shows it, with its
-holder and expiry: a list is a view, and only `list --holder <id>` — an agent
-choosing its own work — leaves other holders' claims out, whatever the filter. `tasqx list @claimed` lists every live
+holder and expiry: a list is a view, and only `list --holder <id> @working` —
+an agent choosing its own work — leaves other holders' claims out. `tasqx list @claimed` lists every live
 claim, and `tasqx show` names the holder and the expiry.
 
 Without `--holder` the shell holds the claim as `user`, and `tasqx next` from

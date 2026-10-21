@@ -145,7 +145,7 @@ and_expr   := term ( \"and\"? term )*        # juxtaposition = implicit AND
 term       := \"(\" or_expr \")\" | predicate
 predicate  := \"+\" VALUE                    # require tag; VALUE not empty, lowercased (D172)
             | \"-\" VALUE                    # exclude tag; VALUE not empty, not starting with a dash, lowercased
-            | \"@working\"                   # status in {pending,active} AND not blocked AND not claimed by another (D236)
+            | \"@working\"                   # status in {pending,active} AND not blocked; a chooser (next, pick, a list with an actor) also skips other holders' live claims (D236)
             | \"@blocked\" | \"+blocked\" | \"status:blocked\"   # the blocked flag
             | \"@claimed\"                   # under a live claim, anyone's (D236)
             | \"project:\" VALUE

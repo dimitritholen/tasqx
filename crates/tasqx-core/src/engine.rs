@@ -1971,7 +1971,6 @@ mod tests {
             title: "the title".to_string(),
             already_running: false,
             auto_stopped: Vec::new(),
-            kept_running: Vec::new(),
         }
         .into();
         assert_eq!(
@@ -1984,7 +1983,6 @@ mod tests {
                 "title": "the title",
                 "already_running": false,
                 "auto_stopped": [],
-                "kept_running": [],
             })
         );
 

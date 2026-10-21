@@ -578,9 +578,7 @@ pub(crate) fn run_start(
     apply_correlation(&mut params, correlation);
     let result = be.call("task.start", &params)?;
     let task = read_back(be, &result).unwrap_or_else(|| result.clone());
-    let mut moved = ids_in(&result, "auto_stopped", Some("short_id"));
-    moved.extend(ids_in(&result, "kept_running", Some("short_id")));
-    let titles = titles_of(be, &moved);
+    let titles = titles_of(be, &ids_in(&result, "auto_stopped", Some("short_id")));
     let text = render::started(ctx, &result, &task, &titles, crate::clock::now());
     Ok((result, text))
 }

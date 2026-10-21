@@ -68,8 +68,9 @@ pub const PARAMS: &[(&str, &[&str], bool)] = &[
     ),
     (
         "task.list",
-        // D236: `actor` is who is asking, so `@working` keeps that caller's
-        // own claims and leaves out everyone else's.
+        // D236: `actor` is who is asking. With `@working` in the filter the
+        // list chooses for that caller and leaves out other holders' live
+        // claims; any other list is a view and shows them.
         &["filter", "sort", "limit", "offset", "fields", "actor"],
         false,
     ),
@@ -142,9 +143,17 @@ pub const PARAMS: &[(&str, &[&str], bool)] = &[
         false,
     ),
     // D236: a lease on a task; the holder is D140's `actor`, `user` when absent.
-    ("task.claim", &["ref", "lease", "actor"], false),
+    (
+        "task.claim",
+        &["ref", "lease", "actor", "expected_rev"],
+        false,
+    ),
     // D236: `force_claim` releases a claim the caller does not hold.
-    ("task.release", &["ref", "actor", "force_claim"], false),
+    (
+        "task.release",
+        &["ref", "actor", "force_claim", "expected_rev"],
+        false,
+    ),
     // D166: an auditable correction to tracked time, undoable by `undo`.
     ("task.adjust_tracked", &["ref", "delta", "reason"], false),
     // task.done additionally takes the #13 self-report params: any present
