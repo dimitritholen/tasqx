@@ -50,6 +50,7 @@ fn everything() -> SemanticFilter<'static> {
         project: None,
         include_unscoped: false,
         exclude_task: None,
+        doc_ids: None,
         min_similarity: 0.95,
         depth: 1000,
     }

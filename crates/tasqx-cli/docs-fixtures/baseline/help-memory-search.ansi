@@ -40,6 +40,9 @@ Options:
       --min-similarity <N>
           The floor a match by meaning must reach, 0 to 1 (default 0.30)
 
+      --source-prefix <PREFIX>
+          Only docs whose source starts with PREFIX (literal, case-sensitive); annotations are left out
+
   -h, --help
           Print help (see a summary with '-h')
 

@@ -359,6 +359,7 @@ impl Engine {
             project,
             include_unscoped: true,
             exclude_task: None,
+            doc_ids: None,
             min_similarity: floor,
             // Room for a doc that vanishes before its title is read.
             depth: MAX * 2,

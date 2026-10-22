@@ -3252,6 +3252,57 @@ fn memory_search_off_a_terminal_is_a_record_per_hit() {
 ///     release-process  docs/release.md  01a09c55-...
 ///         …How an SDK release is cut, tagged and announced --- Cut the release…
 ///
+/// D240: `memory search --source-prefix` reaches `memory.search` as
+/// `source_prefix`, so only docs whose source starts with it come back.
+#[test]
+fn memory_search_source_prefix_keeps_only_matching_docs() {
+    let dir = fresh_config_dir("memory-search-source-prefix");
+    let run = |args: &[&str]| {
+        bin("memory-search-source-prefix", &dir)
+            .args(args)
+            .output()
+            .expect("run tasqx")
+    };
+    for (source, title) in [(".lessons/a.md", "lesson"), ("docs/a.md", "adr")] {
+        let out = run(&[
+            "memory",
+            "add",
+            "--source",
+            source,
+            "--",
+            title,
+            "retries are bounded",
+        ]);
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+    let out = run(&[
+        "--json",
+        "memory",
+        "search",
+        "--source-prefix",
+        ".lessons/",
+        "retries",
+    ]);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).expect("json");
+    let titles: Vec<&str> = v["hits"]
+        .as_array()
+        .expect("hits")
+        .iter()
+        .map(|h| h["title"].as_str().expect("title"))
+        .collect();
+    assert_eq!(titles, ["lesson"], "{v}");
+    assert_eq!(v["total"], 1, "{v}");
+}
+
 /// D135 indexes a leading frontmatter block as flattened prose (a derived
 /// `docs.search_body`, never `docs.body` itself), so the snippet `memory
 /// search` prints — the same JSON `memory.search` hands `tasqx_search_memory`

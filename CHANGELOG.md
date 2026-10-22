@@ -73,6 +73,11 @@ release also trims tasqx-core's public API, which is why it is a minor bump.
   `note:` line, and as `similar` in `--json` and over MCP (always present, empty
   when none); an open task with the very same title (case and spacing aside) is
   always named first. The write happens either way (D237, #2341, #2350).
+- **Memory search narrows by source.** `tasqx memory search --source-prefix
+  .lessons/` (and `source_prefix` on `tasqx_search_memory`) returns only docs
+  whose source starts with it, literally and case-sensitively, before the page
+  and the count, so a small set of docs is found without over-fetching (D240,
+  #2358).
 - **`undo` reaches done, cancel, tag and modify; `tasqx unarchive`** (D215). Notes can
   be named by position or id prefix and moved to another task (D211).
 - **A byte-identical `memory import` is a no-op** (the doc keeps its rev, modified and
