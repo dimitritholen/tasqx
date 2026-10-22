@@ -57,6 +57,9 @@ pub(crate) struct SemanticFilter<'a> {
     pub project: Option<&'a str>,
     pub include_unscoped: bool,
     pub exclude_task: Option<&'a str>,
+    /// D240: when set, only these docs (and no annotation) — the ids a
+    /// `source_prefix` admits, read from `docs` by the caller.
+    pub doc_ids: Option<&'a HashSet<String>>,
     /// The floor, compared with the similarity after rounding.
     pub min_similarity: f64,
     /// How many hits to return, best first.
@@ -508,7 +511,8 @@ fn in_filter(e: &Entry, f: &SemanticFilter<'_>) -> bool {
         },
     };
     let excluded = f.exclude_task.is_some() && e.task_id.as_deref() == f.exclude_task;
-    scoped && in_project && !excluded
+    let admitted = f.doc_ids.is_none_or(|ids| ids.contains(&e.owner_id));
+    scoped && in_project && !excluded && admitted
 }
 
 /// The best chunk of `e` for `query`, by rounded similarity, the lowest

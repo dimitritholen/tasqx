@@ -1690,6 +1690,10 @@ pub(super) enum MemoryAction {
         /// The floor a match by meaning must reach, 0 to 1 (default 0.30).
         #[arg(long, value_name = "N", value_parser = similarity_parser)]
         min_similarity: Option<f64>,
+        /// Only docs whose source starts with PREFIX (literal,
+        /// case-sensitive); annotations are left out.
+        #[arg(long, value_name = "PREFIX")]
+        source_prefix: Option<String>,
     },
     /// Show one doc whole, by id (maps to memory.get).
     // #229 item 7: `get` is the name a reader already knows — it is

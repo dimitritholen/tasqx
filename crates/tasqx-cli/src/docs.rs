@@ -525,8 +525,8 @@ const METHODS: [(&str, &str, &str); 54] = [
     (
         "memory.search",
         "<code>query</code>, <code>limit?</code>, <code>scope?</code>, <code>raw?</code>, \
-         <code>project?</code>, <code>include_unscoped?</code>, <code>mode?</code>, \
-         <code>min_similarity?</code>, <code>workdir?</code>",
+         <code>project?</code>, <code>include_unscoped?</code>, <code>source_prefix?</code>, \
+         <code>mode?</code>, <code>min_similarity?</code>, <code>workdir?</code>",
         "<code>{count, total, has_more, hits, matched, matched_any, relaxed, semantic}</code> — docs + \
          annotations ranked by meaning and by words (D196): an embedding model built into the \
          binary lists entries whose best passage is at least <code>min_similarity</code> (0 to \
@@ -546,7 +546,9 @@ const METHODS: [(&str, &str, &str); 54] = [
          (D193). Under <code>mode: lexical</code> the OR runs only when nothing holds \
          every word, as before. \
          <code>total</code> is every entry either side matched before <code>limit</code> truncates (#132), and \
-         <code>project</code> scopes to one project's docs plus its tasks' annotations (#134). \
+         <code>project</code> scopes to one project's docs plus its tasks' annotations (#134), and \
+         <code>source_prefix</code> keeps only docs whose stored source starts with it, literally \
+         and case-sensitively, before the page and <code>total</code> (D240). \
          Each hit carries its own <code>project</code> too (null for global knowledge, #657), so a \
          store-wide search says which project it came from.",
     ),

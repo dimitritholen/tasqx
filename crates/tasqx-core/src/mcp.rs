@@ -1071,6 +1071,10 @@ fn build_tool_specs() -> Vec<ToolSpec> {
                              NO project — what `tasqx memory import` produces. Never admits \
                              another project's. Refused without `project`."
                     },
+                    "source_prefix": {
+                        "type": "string",
+                        "description": "Docs whose source starts with this, literally (D240)."
+                    },
                     "include_rank": {
                         "type": "boolean",
                         "description": "Add the fused `rank` and `score` to each hit. Default \

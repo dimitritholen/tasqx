@@ -1448,8 +1448,12 @@ pub(crate) fn run_memory(be: &mut Backend, ctx: &Ctx, action: &MemoryAction) -> 
             raw,
             mode,
             min_similarity,
+            source_prefix,
         } => {
             let mut params = json!({ "query": query.join(" ") });
+            if let Some(s) = source_prefix {
+                params["source_prefix"] = json!(s);
+            }
             if let Some(n) = limit {
                 params["limit"] = json!(n);
             }

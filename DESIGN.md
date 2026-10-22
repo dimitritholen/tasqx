@@ -5041,3 +5041,11 @@ The root is always the caller's, never the engine process's working directory, w
 
 **Where:** `engine/similar.rs` (and `similar/pairs.json`, `similar/tests.rs`), the two adds in `engine/task.rs` and `engine/memory.rs`, `stored_pass`, `doc_vectors` and `store_doc_vectors` in `engine/vectors.rs`, `render::similar_notes`, `tests/similar.rs`.
 
+
+### D240 — `memory.search` takes a `source_prefix`: only docs whose stored `source` starts with it, literally, on every side before the page and the count (task #2358; extends D41, D136, D193, D196)
+
+**Decision.** `memory.search` (CLI `tasqx memory search --source-prefix`, MCP `tasqx_search_memory`) takes an optional non-empty `source_prefix`. Only docs whose stored `source` starts with it come back: a literal, case-sensitive compare (`substr(source, 1, length(prefix)) = prefix`, so `%` and `_` are characters, not wildcards), and a doc with no source never matches. It narrows the all-words list, D193's any-word list and the meaning side alike, inside the queries the page and `total`/`has_more` read, never over a page already cut. Annotations carry no stored source, so with a prefix none come back and scope `all` searches as `docs`; a prefix beside `scope: annotations` would keep nothing and is refused `bad_request` (D33), as is an empty one. It combines with `project` and `include_unscoped`: both filters apply.
+
+**Why.** claude-lessons keeps its lessons as global docs keyed `.lessons/<file>.md`, and a one-word query ranks them under every project's docs, so it over-fetched `--limit 1000` and filtered client-side; a project scope is no fix, because `memory import --project` needs a real project and hides the docs from ordinary searches.
+
+**Where:** `SearchWindow` and `lexical_sql` in `engine/memory.rs`, `SemanticFilter::doc_ids` in `engine/vectors.rs`, `tests/memory.rs` (`source_prefix_*`).

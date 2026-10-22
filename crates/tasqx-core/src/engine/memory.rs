@@ -378,6 +378,8 @@ struct SearchWindow<'a> {
     scope: String,
     project: Option<String>,
     include_unscoped: bool,
+    /// D240: only docs whose stored `source` starts with this, literally.
+    source_prefix: Option<String>,
     exclude_task: Option<&'a str>,
 }
 
@@ -394,12 +396,25 @@ impl<'a> SearchWindow<'a> {
             )));
         }
         let limit = usize::try_from(limit).unwrap_or(usize::MAX);
-        let scope = opt_str(p, "scope")?.unwrap_or_else(|| MEMORY_SCOPES[0].to_string());
+        let mut scope = opt_str(p, "scope")?.unwrap_or_else(|| MEMORY_SCOPES[0].to_string());
         if !MEMORY_SCOPES.contains(&scope.as_str()) {
             return Err(ApiError::bad_request(format!(
                 "unknown scope `{scope}` — accepted: {}",
                 MEMORY_SCOPES.join(", ")
             )));
+        }
+        let source_prefix = opt_str_nonempty(p, "source_prefix")?;
+        if source_prefix.is_some() {
+            // D240: an annotation has no stored source, so a prefix keeps
+            // docs alone — and beside `scope: annotations` it would keep
+            // nothing, a value the caller cannot mean (D33).
+            if scope == "annotations" {
+                return Err(ApiError::bad_request(
+                    "`source_prefix` matches a doc's stored source, which annotations do \
+                     not have — drop it, or search `scope: docs`",
+                ));
+            }
+            scope = "docs".to_string();
         }
         let project = opt_str_nonempty(p, "project")?;
         // D136: a document with no project is GLOBAL knowledge — `tasqx memory
@@ -421,6 +436,7 @@ impl<'a> SearchWindow<'a> {
             scope,
             project,
             include_unscoped,
+            source_prefix,
             exclude_task,
         })
     }
@@ -1225,7 +1241,7 @@ impl Engine {
     /// `memory.search` — ranked retrieval over docs and annotations, by words
     /// and by meaning (D196). Params: `query`, `limit` (default 10), `scope`
     /// (one of [`MEMORY_SCOPES`], default `all`), `raw`, optional `project`
-    /// (#134) and `include_unscoped` (D136), `mode` (one of
+    /// (#134) and `include_unscoped` (D136), `source_prefix` (D240), `mode` (one of
     /// [`MEMORY_SEARCH_MODES`], default `hybrid`) and `min_similarity` (0 to
     /// 1, default [`MEMORY_MIN_SIMILARITY`]).
     ///
@@ -1431,6 +1447,20 @@ impl Engine {
         // Caps are the hybrid fusion's alone: every other search ranks every
         // match, as D41 always has.
         let hybrid = f.any_word == AnyWord::Fused;
+        // D240: the docs the prefix admits, read with the lexical side's own
+        // compare, so the meaning side narrows before it ranks and counts.
+        let doc_ids: Option<HashSet<String>> = match (&window.source_prefix, &query_vector) {
+            (Some(prefix), Some(_)) => {
+                let mut stmt = self
+                    .conn
+                    .prepare("SELECT id FROM docs WHERE substr(source, 1, length(?1)) = ?1")?;
+                let ids = stmt
+                    .query_map(params![prefix], |r| r.get(0))?
+                    .collect::<Result<_, _>>()?;
+                Some(ids)
+            }
+            _ => None,
+        };
         let mut semantic_pass = query_vector.as_ref().map(|q| {
             self.semantic_pass(
                 q,
@@ -1439,6 +1469,7 @@ impl Engine {
                     project: window.project.as_deref(),
                     include_unscoped: window.include_unscoped,
                     exclude_task: f.exclude_task,
+                    doc_ids: doc_ids.as_ref(),
                     min_similarity: f.floor,
                     depth: usize::MAX,
                 },
@@ -1696,9 +1727,16 @@ impl Engine {
         } else {
             ""
         };
+        // D240: `substr`, not LIKE, so `%` and `_` are literal and the compare
+        // is case-sensitive; a NULL source compares NULL and never matches.
+        let prefix = if w.source_prefix.is_some() {
+            " AND substr(d.source, 1, length(:source_prefix)) = :source_prefix"
+        } else {
+            ""
+        };
         let docs = format!(
             "SELECT {docs_cols} FROM docs_fts JOIN docs d ON d.rowid = docs_fts.rowid \
-             WHERE docs_fts MATCH :match{d_where}{}",
+             WHERE docs_fts MATCH :match{d_where}{prefix}{}",
             extra.0
         );
         let ann = format!(
@@ -1723,6 +1761,9 @@ impl Engine {
         let mut named: Vec<(&str, &dyn rusqlite::ToSql)> = vec![(":match", expr)];
         if let Some(proj) = &w.project {
             named.push((":project", proj));
+        }
+        if let Some(prefix) = &w.source_prefix {
+            named.push((":source_prefix", prefix));
         }
         // Bound only when the arm that reads it is part of the SQL: binding a
         // name the statement does not have is its own error.

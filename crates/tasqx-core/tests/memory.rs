@@ -4254,3 +4254,127 @@ fn a_raw_query_against_an_unknown_column_names_the_scopes_own_columns() {
         );
     }
 }
+
+// ---- D240: source_prefix ---------------------------------------------------
+
+/// D240's store: two lessons under `.lessons/` (one in project `alpha`), more
+/// other docs than a page of one holds, sources only LIKE's wildcards would
+/// confuse, a doc with no source and an annotation, all saying the same.
+fn lessons_store() -> Engine {
+    let e = engine();
+    let body = "login errors after the identity provider change";
+    let add = |title: &str, source: Option<&str>, project: Option<&str>| {
+        let mut p = json!({ "title": title, "body": body });
+        if let Some(s) = source {
+            p["source"] = json!(s);
+        }
+        if let Some(pr) = project {
+            p["project"] = json!(pr);
+        }
+        call(&e, "memory.add", p).expect("doc");
+    };
+    add("lesson", Some(".lessons/login.md"), None);
+    for n in 0..4 {
+        add(&format!("adr {n}"), Some(&format!("docs/adr-{n}.md")), None);
+    }
+    add("percent", Some("a%b/x.md"), None);
+    add("underscore", Some("a_b/x.md"), None);
+    add("wild", Some("aXb/x.md"), None);
+    add("no source", None, None);
+    call(&e, "project.create", json!({ "name": "alpha" })).expect("project");
+    add("alpha lesson", Some(".lessons/alpha.md"), Some("alpha"));
+    let task = call(&e, "task.add", json!({ "title": "t" })).expect("task");
+    call(
+        &e,
+        "annotation.add",
+        json!({ "ref": task["short_id"], "body": body }),
+    )
+    .expect("note");
+    e
+}
+
+/// D240: `source_prefix` keeps only docs whose stored source starts with it,
+/// in every mode, before the page is cut and before the count; annotations,
+/// which carry no stored source, never come back.
+#[test]
+fn source_prefix_keeps_only_docs_whose_source_starts_with_it() {
+    let e = lessons_store();
+    for mode in ["lexical", "hybrid", "semantic"] {
+        let out = search(
+            &e,
+            json!({ "query": "login errors", "mode": mode, "source_prefix": ".lessons/" }),
+        );
+        assert_eq!(
+            hit_titles(&out),
+            ["alpha lesson", "lesson"],
+            "{mode}: {out}"
+        );
+        assert_eq!(out["total"], json!(2), "{mode}: {out}");
+        // A one-word query and a page of one: the lesson is still on it, and
+        // the count is the matches alone.
+        let one = search(
+            &e,
+            json!({ "query": "errors", "mode": mode, "limit": 1, "source_prefix": ".lessons/l" }),
+        );
+        assert_eq!(hit_titles(&one), ["lesson"], "{mode}: {one}");
+        assert_eq!(one["total"], json!(1), "{mode}: {one}");
+        assert_eq!(one["has_more"], json!(false), "{mode}: {one}");
+    }
+}
+
+/// D240: the prefix is literal and case-sensitive — `%` and `_` are no
+/// wildcards — and a doc with no source never matches.
+#[test]
+fn source_prefix_is_literal_and_case_sensitive() {
+    let e = lessons_store();
+    for (prefix, want) in [
+        ("a%", vec!["percent"]),
+        ("a_", vec!["underscore"]),
+        (".LESSONS/", vec![]),
+    ] {
+        let out = search(
+            &e,
+            json!({ "query": "login", "mode": "lexical", "source_prefix": prefix }),
+        );
+        assert_eq!(hit_titles(&out), want, "{prefix}: {out}");
+    }
+}
+
+/// D240: it combines with `project` and `include_unscoped`, both filters
+/// applying.
+#[test]
+fn source_prefix_combines_with_project() {
+    let e = lessons_store();
+    let strict = search(
+        &e,
+        json!({ "query": "login", "source_prefix": ".lessons/", "project": "alpha" }),
+    );
+    assert_eq!(hit_titles(&strict), ["alpha lesson"], "{strict}");
+    let widened = search(
+        &e,
+        json!({
+            "query": "login", "source_prefix": ".lessons/",
+            "project": "alpha", "include_unscoped": true,
+        }),
+    );
+    assert_eq!(
+        hit_titles(&widened),
+        ["alpha lesson", "lesson"],
+        "{widened}"
+    );
+}
+
+/// D240 with D33: an empty prefix, and a prefix beside `scope: annotations`
+/// (which carry no stored source), change nothing and are refused.
+#[test]
+fn source_prefix_that_changes_nothing_is_refused() {
+    let e = lessons_store();
+    for params in [
+        json!({ "query": "login", "source_prefix": "" }),
+        json!({ "query": "login", "source_prefix": ".lessons/", "scope": "annotations" }),
+    ] {
+        let err = call(&e, "memory.search", params.clone()).expect_err("refused");
+        assert_eq!(err.code, ErrorCode::BadRequest, "{params}");
+        assert!(err.message.contains("source_prefix"), "{}", err.message);
+    }
+}
