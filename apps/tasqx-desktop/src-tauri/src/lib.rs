@@ -281,10 +281,10 @@ fn open_release_page(url: String) -> Result<(), String> {
 const MAX_URL_LEN: usize = 2048;
 
 /// A link out of a note body, as the one string the OS opener gets (D241):
-/// http or https with a host, no whitespace or control character anywhere
-/// (checked before parsing, which would quietly strip some), at most
-/// `MAX_URL_LEN` bytes. Answers the parser's serialization, so what is opened
-/// is exactly what was validated.
+/// http or https with a host and no userinfo, no whitespace or control
+/// character anywhere (checked before parsing, which would quietly strip
+/// some), no backslash once normalised, at most `MAX_URL_LEN` bytes. Answers
+/// the parser's serialization, so what is opened is exactly what was validated.
 fn link_to_open(raw: &str) -> Result<String, String> {
     if raw.len() > MAX_URL_LEN {
         return Err(format!("link longer than {MAX_URL_LEN} bytes"));
@@ -299,6 +299,13 @@ fn link_to_open(raw: &str) -> Result<String, String> {
     if url.host_str().is_none_or(str::is_empty) {
         return Err("link has no host".into());
     }
+    // `https://google.com@evil.com/` reads as google.com and goes to evil.com.
+    if !url.username().is_empty() || url.password().is_some() {
+        return Err("link carries a user name or password".into());
+    }
+    if url.as_str().contains('\\') {
+        return Err("link holds a backslash".into());
+    }
     Ok(url.into())
 }
 
@@ -308,28 +315,64 @@ fn open_url(url: String) -> Result<(), String> {
     open_in_browser(&link_to_open(&url)?)
 }
 
-/// Hand one validated URL to the OS opener as a single argument, no shell.
+/// The program and arguments that open `url` on `os` (`std::env::consts::OS`).
+/// Never `explorer` on Windows: it splits its argument on commas and honours
+/// `/root,<path>` and `/select,`, so a URL could name a local binary.
+/// `FileProtocolHandler` hands its whole argument to the URL handler.
+fn opener_for<'a>(os: &str, url: &'a str) -> (&'static str, Vec<&'a str>) {
+    match os {
+        "windows" => ("rundll32", vec!["url.dll,FileProtocolHandler", url]),
+        "macos" => ("open", vec![url]),
+        _ => ("xdg-open", vec![url]),
+    }
+}
+
+/// Hand one validated URL to the OS opener as its own argument, no shell.
 fn open_in_browser(url: &str) -> Result<(), String> {
-    #[cfg(target_os = "macos")]
-    let opener = "open";
-    #[cfg(windows)]
-    let opener = "explorer";
-    #[cfg(all(unix, not(target_os = "macos")))]
-    let opener = "xdg-open";
-    let mut child = std::process::Command::new(opener)
-        .arg(url)
+    let (program, args) = opener_for(std::env::consts::OS, url);
+    let mut child = std::process::Command::new(program)
+        .args(args)
         .spawn()
         .map_err(|e| e.to_string())?;
     // Reaped off the command thread; the opener's exit status says nothing
-    // useful (explorer answers 1 on success).
+    // useful.
     std::thread::spawn(move || child.wait());
     Ok(())
+}
+
+/// Whether the webview may navigate to `url`: only the app's own pages, the
+/// bundled origin (`tauri://localhost`, or `http(s)://tauri.localhost` on
+/// Windows) and, in a dev run, the dev server's origin. A link clicked past
+/// `open_url` (a middle click, the context menu) goes nowhere.
+fn app_navigation(url: &tauri::Url, dev: Option<&tauri::Url>) -> bool {
+    let bundled = match url.scheme() {
+        "tauri" => url.host_str() == Some("localhost"),
+        "http" | "https" => url.host_str() == Some("tauri.localhost"),
+        _ => false,
+    };
+    bundled || dev.is_some_and(|dev| dev.origin() == url.origin())
 }
 
 pub fn run() {
     tauri::Builder::default()
         .setup(|app| {
             app.manage(Arc::new(Daemon::default()));
+            // The window is built here and not from the config alone
+            // (`create: false`), so its webview carries the navigation guard.
+            let dev = tauri::is_dev()
+                .then(|| app.config().build.dev_url.clone())
+                .flatten();
+            let config = app
+                .config()
+                .app
+                .windows
+                .first()
+                .ok_or("tauri.conf.json declares no window")?
+                .clone();
+            tauri::WebviewWindowBuilder::from_config(app.handle(), &config)?
+                .on_navigation(move |url| app_navigation(url, dev.as_ref()))
+                .on_new_window(|_, _| tauri::webview::NewWindowResponse::Deny)
+                .build()?;
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -443,9 +486,59 @@ mod tests {
             "https://example.com/\u{a0}",
             "https://example.com/\u{2028}",
             "https://example.com/\0",
+            "https://google.com@evil.com/",
+            "https://user:pass@example.com/",
+            "https://:pass@example.com/",
+            "https://example.com/?a=\\b",
             long.as_str(),
         ] {
             assert!(link_to_open(refused).is_err(), "{refused:?}");
         }
+    }
+
+    #[test]
+    fn the_explorer_comma_payload_never_reaches_explorer() {
+        // Explorer splits its argument on commas and honours `/root,<path>`;
+        // the URL itself is legal, so the opener is what has to be safe.
+        let payload = "https://x/?a,/root,C:\\Windows\\System32\\calc.exe";
+        assert!(
+            link_to_open(payload).is_err(),
+            "a backslash survives in the query"
+        );
+        let commas = link_to_open("https://x/?a,/root,C:/Windows/calc.exe").unwrap();
+        let (program, args) = opener_for("windows", &commas);
+        assert_eq!(program, "rundll32");
+        assert_eq!(args, ["url.dll,FileProtocolHandler", commas.as_str()]);
+        assert_ne!(program, "explorer");
+    }
+
+    #[test]
+    fn each_platform_hands_the_url_on_as_one_argument() {
+        let url = "https://example.com/";
+        assert_eq!(opener_for("macos", url), ("open", vec![url]));
+        assert_eq!(opener_for("linux", url), ("xdg-open", vec![url]));
+        assert_eq!(opener_for("freebsd", url), ("xdg-open", vec![url]));
+    }
+
+    #[test]
+    fn the_webview_stays_on_the_app_origin() {
+        let dev = tauri::Url::parse("http://localhost:1420/").unwrap();
+        let ok = |raw: &str, dev: Option<&tauri::Url>| {
+            app_navigation(&tauri::Url::parse(raw).unwrap(), dev)
+        };
+        assert!(ok("tauri://localhost/#/notes", None));
+        assert!(ok("http://tauri.localhost/index.html", None));
+        assert!(ok("https://tauri.localhost/", None));
+        assert!(ok("http://localhost:1420/#/notes", Some(&dev)));
+        for refused in [
+            "https://example.com/",
+            "http://localhost:1420/",
+            "http://tauri.localhost.evil.com/",
+            "tauri://evil/",
+            "file:///etc/passwd",
+        ] {
+            assert!(!ok(refused, None), "{refused}");
+        }
+        assert!(!ok("http://localhost:1421/", Some(&dev)));
     }
 }
