@@ -93,6 +93,9 @@ pub fn prepass<I: IntoIterator<Item = OsString>>(raw: I) -> Prepass {
     if name == "check" {
         escape_check_body(&cmd, &mut argv, i);
     }
+    if name == "note" {
+        reorder_note(&cmd, &mut argv, i);
+    }
     if !FILTER_COMMANDS.contains(&name.as_str()) {
         return Prepass {
             argv,
@@ -206,6 +209,58 @@ fn escape_check_body(cmd: &clap::Command, argv: &mut [OsString], at: usize) {
             positionals += 1;
         }
         j += 1;
+    }
+}
+
+/// Marks a word of a note's text that clap would otherwise take for a subverb;
+/// `verbs::run_note` strips it. A control character, for [`ESCAPED_DASH`]'s
+/// reason.
+pub(crate) const NOTE_TEXT: char = '\u{2}';
+
+/// A short id or a UUID: the only words `tasqx note` reads as naming a note.
+pub(crate) fn names_a_note(tok: &str) -> bool {
+    (!tok.is_empty() && tok.bytes().all(|b| b.is_ascii_digit()))
+        || (tok.len() == 36 && tok.bytes().all(|b| b.is_ascii_hexdigit() || b == b'-'))
+}
+
+/// `tasqx note <ID> <subverb> …` is how a change to a note is typed, the id
+/// first like every task verb, but clap reads a subcommand only in first
+/// place. So the subverb is moved in front of the id here. Every other first
+/// word is text: a note that opens with a subverb's name (`tasqx note edit
+/// the readme`) has that word marked with [`NOTE_TEXT`], so clap takes it as
+/// the text it is.
+fn reorder_note(cmd: &clap::Command, argv: &mut [OsString], at: usize) {
+    let Some(note) = cmd.find_subcommand("note") else {
+        return;
+    };
+    let mut j = at + 1;
+    while let Some(tok) = argv.get(j).and_then(|t| t.to_str()) {
+        if tok == "--" {
+            return;
+        }
+        if let Some(long) = tok.strip_prefix("--") {
+            if !long.contains('=') && long_value_follows(note, long) {
+                j += 1;
+            }
+        } else if let Some(short) = declared_short(note, tok) {
+            if short_takes_value(note, short) {
+                j += 1;
+            }
+        } else {
+            break;
+        }
+        j += 1;
+    }
+    let word = |k: usize| argv.get(k).and_then(|t| t.to_str()).map(str::to_string);
+    let subverb = |w: &Option<String>| {
+        w.as_deref()
+            .is_some_and(|w| note.get_subcommands().any(|c| c.get_name() == w))
+    };
+    let (first, second) = (word(j), word(j + 1));
+    if first.as_deref().is_some_and(names_a_note) && subverb(&second) {
+        argv.swap(j, j + 1);
+    } else if subverb(&first) {
+        argv[j] = OsString::from(format!("{NOTE_TEXT}{}", first.unwrap_or_default()));
     }
 }
 

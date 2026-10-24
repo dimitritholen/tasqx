@@ -29,6 +29,7 @@ task, and where to find help.
 | `tag` / `untag` | Label a task, or unlabel it | [Adding and Editing Tasks](Adding-and-Editing-Tasks.md#tasqx-tag) |
 | `annotate` | Attach a note to a task | [Adding and Editing Tasks](Adding-and-Editing-Tasks.md#tasqx-annotate) |
 | `unannotate` | Scrub one annotation's text, for good | [Adding and Editing Tasks](Adding-and-Editing-Tasks.md#tasqx-unannotate) |
+| `note` / `notes` | Jot down an idea or a link, outside the backlog | [Notes](Notes.md) |
 
 **Decide what to do**
 

@@ -784,7 +784,7 @@ pub(super) enum Command {
     /// to another task with `--move <annotation> --to <task>` (maps to
     /// annotation.move, D211). A note is named by its full id, a unique prefix
     /// of 8+ characters, or the `[n]` position `tasqx show` prints.
-    #[command(alias = "note", after_help = crate::cmddoc::after_help("annotate"))]
+    #[command(after_help = crate::cmddoc::after_help("annotate"))]
     Annotate {
         /// short_id or UUID.
         #[arg(add = crate::complete::candidates::task_ids())]
@@ -1077,6 +1077,47 @@ pub(super) enum Command {
     Config {
         #[command(subcommand)]
         action: ConfigAction,
+    },
+    /// Capture a quick note: an idea, a URL to read later (maps to note.add,
+    /// D241). Not a task: no urgency, no `@working`, no report.
+    ///
+    /// `tasqx note <ID>` prints one note whole; `tasqx note <ID> <SUBVERB>`
+    /// changes it. The subverb follows the id, so a note may open with any
+    /// word, `edit` included.
+    #[command(
+        override_usage = "tasqx note <TEXT>... [--project <PROJECT>]\n       tasqx note <ID> [edit <TEXT>... | archive | unarchive | rm | promote <task|memory>]",
+        args_conflicts_with_subcommands = true,
+        subcommand_negates_reqs = true,
+        after_help = crate::cmddoc::after_help("note")
+    )]
+    Note {
+        #[command(subcommand)]
+        action: Option<NoteAction>,
+        /// The note's text, stored verbatim; several words are joined by spaces.
+        #[arg(required = true)]
+        text: Vec<String>,
+        /// File it under this project. Omitted, the note has none.
+        #[arg(long, add = crate::complete::candidates::projects())]
+        project: Option<String>,
+    },
+    /// List notes, newest first (maps to note.list, D241).
+    #[command(after_help = crate::cmddoc::after_help("notes"))]
+    Notes {
+        /// Only notes holding an http:// or https:// link.
+        #[arg(long)]
+        links: bool,
+        /// Archived notes instead of open ones.
+        #[arg(long, conflicts_with = "all")]
+        archived: bool,
+        /// Open and archived notes.
+        #[arg(long)]
+        all: bool,
+        /// Only notes whose text contains this, ignoring case.
+        #[arg(long, value_name = "TEXT")]
+        search: Option<String>,
+        /// Only notes filed under this project.
+        #[arg(long, add = crate::complete::candidates::projects())]
+        project: Option<String>,
     },
     /// Memory: store and search knowledge docs + annotations (DESIGN.md §12-D41).
     #[command(after_help = crate::cmddoc::after_help("memory"))]
@@ -1673,6 +1714,51 @@ pub(super) enum ConfigAction {
     Store,
     /// Edit settings on an interactive screen, previewing themes live.
     Edit,
+}
+
+/// What `tasqx note <ID> …` does to a note. Typed after the id; the argv
+/// pre-pass puts the subverb first for clap (see `argv::reorder_note`).
+#[derive(Subcommand)]
+pub(super) enum NoteAction {
+    /// Replace a note's text (maps to note.update).
+    #[command(override_usage = "tasqx note <ID> edit <TEXT>...")]
+    Edit {
+        /// The note's short id or UUID.
+        id: String,
+        /// The new text, stored verbatim.
+        #[arg(required = true)]
+        text: Vec<String>,
+    },
+    /// Archive a note: out of `tasqx notes`, kept under `--archived` (maps to note.update).
+    #[command(override_usage = "tasqx note <ID> archive")]
+    Archive {
+        /// The note's short id or UUID.
+        id: String,
+    },
+    /// Bring an archived note back (maps to note.update).
+    #[command(override_usage = "tasqx note <ID> unarchive")]
+    Unarchive {
+        /// The note's short id or UUID.
+        id: String,
+    },
+    /// Delete a note for good (maps to note.remove); `tasqx undo` cannot bring it back.
+    #[command(override_usage = "tasqx note <ID> rm")]
+    Rm {
+        /// The note's short id or UUID.
+        id: String,
+    },
+    /// File a note as a task or a memory doc, and archive it (maps to note.promote).
+    #[command(override_usage = "tasqx note <ID> promote <task|memory> [--title <TITLE>]")]
+    Promote {
+        /// The note's short id or UUID.
+        id: String,
+        /// What it becomes.
+        #[arg(value_parser = ["task", "memory"])]
+        to: String,
+        /// The title. Omitted, the note's first line, cut at 80 characters.
+        #[arg(long)]
+        title: Option<String>,
+    },
 }
 
 #[derive(Subcommand)]

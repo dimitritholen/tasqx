@@ -74,7 +74,7 @@ mod obj_ref;
 /// which is unassertable prose-equivalence. So the column is gone and the page
 /// renders [`crate::cmddoc`]'s summary instead. One string per verb, used by
 /// both surfaces, with no second copy left to drift.
-const VERBS: [(&str, &str, &str); 55] = [
+const VERBS: [(&str, &str, &str); 57] = [
     ("init", "—", "project.create"),
     ("use", "—", "project.use"),
     ("archive", "—", "project.archive"),
@@ -123,7 +123,7 @@ const VERBS: [(&str, &str, &str); 55] = [
     ("undo", "<code>u</code>", "event.revert"),
     (
         "annotate",
-        "<code>note</code>",
+        "—",
         "annotation.add + annotation.update + annotation.move",
     ),
     ("unannotate", "—", "annotation.remove"),
@@ -149,6 +149,8 @@ const VERBS: [(&str, &str, &str); 55] = [
         // use is a command line.
         "memory.search + get/add/remove/list/update + memory.import + memory.refresh",
     ),
+    ("note", "—", "note.add + get/update/remove/promote"),
+    ("notes", "—", "note.list"),
     // `token.add` spelled whole, not as a `/add` suffix: its object is the
     // singular `token`, and a suffix would expand against `tokens`.
     ("tokens", "—", "tokens.recompute + token.add"),

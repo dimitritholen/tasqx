@@ -140,6 +140,19 @@ fn cases(tmp: &str) -> Vec<(Case, Vec<String>)> {
             &["memory", "add", "Guard doc", "the guard needle body"],
         ),
         c("memory", &["memory", "search", "needle"]),
+        // Every `note` form prints the API result under `--json` (D241).
+        c("note", &["note", "read https://example.com later"]),
+        c("note", &["note", "a second note"]),
+        c("note", &["note", "1"]),
+        c(
+            "note",
+            &["note", "1", "edit", "read https://example.com today"],
+        ),
+        c("note", &["note", "1", "archive"]),
+        c("note", &["note", "1", "unarchive"]),
+        c("note", &["note", "1", "promote", "memory"]),
+        c("note", &["note", "2", "rm"]),
+        c("notes", &["notes", "--all"]),
         // The shell claims as `user`, so the `start` after it is the holder's
         // own; released again so no later case meets a claim (D236).
         c("claim", &["claim", "1"]),
