@@ -22,7 +22,8 @@ use serde_json::{json, Map, Value};
 use crate::dispatch::dispatch;
 use crate::engine::{
     shell_quote, Engine, MEMORY_MIN_SIMILARITY, MEMORY_SCOPES, MEMORY_SEARCH_MODES,
-    OUTCOME_METRICS, SORT_KEYS, SUMMARY_GROUP_BY, SUMMARY_METRICS, TASK_FIELDS,
+    NOTE_LIST_STATUSES, NOTE_PROMOTE_TARGETS, NOTE_STATUSES, OUTCOME_METRICS, SORT_KEYS,
+    SUMMARY_GROUP_BY, SUMMARY_METRICS, TASK_FIELDS,
 };
 use crate::types::Priority;
 
@@ -452,6 +453,11 @@ fn with_correlation(mut schema: Value) -> Value {
 /// A reason is not a formality. "Nobody asked for it" is a fine reason and is
 /// written as such; what is not allowed is an omission with nothing beside it.
 const UNEXPOSED_METHODS: &[(&str, &str)] = &[
+    (
+        "note.get",
+        "note.list returns full bodies, so an agent never needs a second read of one note \
+         (D241).",
+    ),
     (
         "task.triage_list",
         "`tasqx_list_tasks` with `status:triage` already lists the inbox for an agent; the \
@@ -1928,6 +1934,108 @@ fn build_tool_specs() -> Vec<ToolSpec> {
                 "required": ["id"]
             }),
         },
+        // ---- D241: quick-capture notes --------------------------------------
+        ToolSpec {
+            name: "tasqx_add_note",
+            method: "note.add",
+            write: true,
+            destructive: false,
+            idempotent: false,
+            description: "Capture a quick note: an idea, a URL to read later, a throwaway \
+                line. Not a task and not memory, so it stays out of `@working`, reports and \
+                `tasqx_search_memory` until `tasqx_promote_note` files it (D241).",
+            schema: json!({
+                "type": "object",
+                "properties": {
+                    "body": { "type": "string", "description": "Stored verbatim." },
+                    "project": { "type": "string", "description": "An existing project to file it under. Optional." }
+                },
+                "required": ["body"]
+            }),
+        },
+        ToolSpec {
+            name: "tasqx_list_notes",
+            method: "note.list",
+            write: false,
+            destructive: false,
+            idempotent: true,
+            description: "List notes, newest first, bodies whole, paged like \
+                `tasqx_list_tasks`. `query` is a case-insensitive substring, not a ranked \
+                search; each row says `has_links` (D241).",
+            schema: json!({
+                "type": "object",
+                "properties": {
+                    "status": {
+                        "type": "string",
+                        "enum": enum_of(NOTE_LIST_STATUSES),
+                        "description": format!("Default {}.", NOTE_LIST_STATUSES[0])
+                    },
+                    "links": { "type": "boolean", "description": "Only notes holding an `http://` or `https://` link." },
+                    "query": { "type": "string", "description": "A substring of the body, any case." },
+                    "project": { "type": "string" },
+                    "limit": { "type": "integer", "minimum": 0, "description": format!("Default {MEMORY_LIST_PAGE}.") },
+                    "offset": { "type": "integer", "minimum": 0, "description": "Pass the previous response's `next_offset`." }
+                }
+            }),
+        },
+        ToolSpec {
+            name: "tasqx_update_note",
+            method: "note.update",
+            write: true,
+            destructive: true,
+            idempotent: false,
+            description: "Change a note's body, project or status; `status: archived` \
+                archives it and `open` brings it back. An omitted `expected_rev` pins the \
+                current `_rev`, so a concurrent edit is a `conflict` (D241).",
+            schema: json!({
+                "type": "object",
+                "properties": {
+                    "id": { "type": "string", "description": "The note's uuid or short id." },
+                    "body": { "type": "string", "description": "New body. Omit to leave unchanged." },
+                    "project": { "type": "string", "description": "New project. Omit to leave unchanged." },
+                    "status": { "type": "string", "enum": enum_of(NOTE_STATUSES) },
+                    "expected_rev": { "type": "integer", "description": "Optimistic-concurrency guard. Supplied by the server from the note's current `_rev` when omitted." }
+                },
+                "required": ["id"]
+            }),
+        },
+        ToolSpec {
+            name: "tasqx_remove_note",
+            method: "note.remove",
+            write: true,
+            destructive: true,
+            idempotent: true,
+            description: "Delete a note for good. Permanent: `tasqx undo` does not cover \
+                notes (D241). Archive it with `tasqx_update_note` to keep it.",
+            schema: json!({
+                "type": "object",
+                "properties": {
+                    "id": { "type": "string", "description": "The note's uuid or short id." }
+                },
+                "required": ["id"]
+            }),
+        },
+        ToolSpec {
+            name: "tasqx_promote_note",
+            method: "note.promote",
+            write: true,
+            destructive: false,
+            idempotent: false,
+            description: "File a note as a task or a memory doc in one transaction, then \
+                archive it with `promoted_to` naming what it became. The title is `title` or \
+                the body's first line; a task gets the full body as a note when it says more. \
+                A promoted note is refused (D241).",
+            schema: json!({
+                "type": "object",
+                "properties": {
+                    "id": { "type": "string", "description": "The note's uuid or short id." },
+                    "to": { "type": "string", "enum": enum_of(NOTE_PROMOTE_TARGETS) },
+                    "title": { "type": "string", "description": "Optional; defaults to the body's first line." },
+                    "expected_rev": { "type": "integer", "description": "Optional guard on the note's `_rev`." }
+                },
+                "required": ["id", "to"]
+            }),
+        },
         ToolSpec {
             name: "tasqx_create_project",
             method: "project.create",
@@ -2532,10 +2640,16 @@ impl<'e> McpServer<'e> {
         // above, so `tasqx_update_memory`'s own description ("when omitted,
         // this server reads the doc's current rev and pins it") is true
         // rather than aspirational.
-        if spec.method == "memory.update" {
+        if spec.method == "memory.update" || spec.method == "note.update" {
             if let Some(obj) = args.as_object_mut() {
                 if !obj.contains_key("expected_rev") {
-                    if let Some(rev) = self.current_memory_rev(obj.get("id")) {
+                    // D241: a note is read the same way, by its own method.
+                    let read = if spec.method == "note.update" {
+                        "note.get"
+                    } else {
+                        "memory.get"
+                    };
+                    if let Some(rev) = self.current_memory_rev(read, obj.get("id")) {
                         obj.insert("expected_rev".to_string(), json!(rev));
                     }
                 }
@@ -2596,7 +2710,7 @@ impl<'e> McpServer<'e> {
         // `view`. The ROW narrowing is not here but in `present`: `memory.list`
         // has no `fields` param to express it as, so the transport does it to
         // the answer instead.
-        if spec.method == "memory.list" {
+        if spec.method == "memory.list" || spec.method == "note.list" {
             if let Some(obj) = args.as_object_mut() {
                 if obj.get("limit").is_none_or(Value::is_null) {
                     obj.insert("limit".to_string(), json!(MEMORY_LIST_PAGE));
@@ -3589,9 +3703,9 @@ impl<'e> McpServer<'e> {
 
     /// `memory.update`'s counterpart to [`Self::current_rev`]: read a doc's
     /// current `rev` by id, for the same server-side auto-pin.
-    fn current_memory_rev(&self, id_val: Option<&Value>) -> Option<i64> {
+    fn current_memory_rev(&self, read: &str, id_val: Option<&Value>) -> Option<i64> {
         let id_val = id_val?;
-        let got = dispatch(self.engine, "memory.get", &json!({ "id": id_val })).ok()?;
+        let got = dispatch(self.engine, read, &json!({ "id": id_val })).ok()?;
         got.get("_rev").and_then(Value::as_i64)
     }
 }
@@ -4147,6 +4261,15 @@ mod tests {
                 }
                 "memory.get" | "memory.update" | "memory.remove" => json!({ "id": doc }),
                 "memory.add" => json!({ "title": "t", "body": "b" }),
+                "note.add" => json!({ "body": "b" }),
+                "note.update" | "note.remove" => {
+                    dispatch(&e, "note.add", &json!({ "body": "n" })).expect("seed a note");
+                    json!({ "id": 1 })
+                }
+                "note.promote" => {
+                    dispatch(&e, "note.add", &json!({ "body": "n" })).expect("seed a note");
+                    json!({ "id": 1, "to": "task" })
+                }
                 "project.create" => json!({ "name": "p" }),
                 "token.add" => json!({
                     "ref": 1, "tool": "t", "source": "self-report", "confidence": "medium"

@@ -82,14 +82,15 @@ writes from `tasqx watch` or the desktop app: a running daemon notices changes
 made by other processes on its store, so they show up live, within about half
 a second.
 
-Thirty-seven tools, one verb each. Ten reads: `list_tasks`, `get_task`,
+Forty-two tools, one verb each. Eleven reads: `list_tasks`, `get_task`,
 `brief_task`, `next`, `summary`, `outcomes`, `list_projects`, `search_memory`,
-`get_memory`, `list_memory`.
-Twenty-seven writes: `add_task`, `modify_task`, `complete_task`, `reopen_task`,
+`get_memory`, `list_memory`, `list_notes`.
+Thirty-one writes: `add_task`, `modify_task`, `complete_task`, `reopen_task`,
 `cancel_task`, `triage_task`, `start_timer`, `stop_timer`, `claim_task`, `release_task`, `adjust_tracked`, `tag_task`, `untag_task`,
 `annotate_task`, `update_annotation`, `move_annotation`, `remove_annotation`, `add_tokens`, `add_check`, `set_check`,
 `remove_check`, `add_dependency`, `remove_dependency`, `add_memory`,
-`update_memory`, `remove_memory`, `create_project` (all prefixed `tasqx_`).
+`update_memory`, `remove_memory`, `add_note`, `update_note`, `remove_note`,
+`promote_note`, `create_project` (all prefixed `tasqx_`).
 
 What makes this more than remote CRUD:
 

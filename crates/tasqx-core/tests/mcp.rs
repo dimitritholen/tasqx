@@ -83,12 +83,12 @@ fn full_protocol_sequence() {
     }));
     assert!(note.is_none(), "notifications must not produce a response");
 
-    // 3. tools/list — all 37 tools present, each with an inputSchema.
+    // 3. tools/list — all 42 tools present, each with an inputSchema.
     let listed = server
         .handle_message(&json!({ "jsonrpc": "2.0", "id": 2, "method": "tools/list" }))
         .expect("tools/list is a request");
     let tools = listed["result"]["tools"].as_array().expect("tools array");
-    assert_eq!(tools.len(), 37, "expected 37 tools");
+    assert_eq!(tools.len(), 42, "expected 42 tools");
     assert!(tools.iter().any(|t| t["name"] == "tasqx_next"));
     let names: Vec<&str> = tools.iter().map(|t| t["name"].as_str().unwrap()).collect();
     for expected in [
@@ -274,10 +274,10 @@ fn read_scope_tools_list_hides_write_tools() {
     // added browsing to that same read-only set. D137's `tasqx_outcomes` joined
     // them for the same reason: an agent that cannot write should still be able
     // to see its own record, and D136's `tasqx_brief_task` for the reason
-    // beside it — orienting is a read.
+    // beside it — orienting is a read. D241's `tasqx_list_notes` is a read.
     assert_eq!(
         tools.len(),
-        10,
+        11,
         "read scope should list only the read tools"
     );
     for t in tools {
@@ -3933,6 +3933,9 @@ fn the_read_only_refusal_names_the_flag_that_fixes_it() {
 /// added `actor` and `force_claim` on `tasqx_triage_task` (D236's claim guard
 /// on decline and duplicate): 37 tools, 41,818 bytes, so 41,856.
 ///
+/// D241 added the five note tools. Measured beside every tool above: 42
+/// tools, 45,323 bytes, so the cap moved from 41,856 to 45,568.
+///
 /// The floor is not zero. With every `description` key removed from the roster
 /// the same serialization is 11,597 bytes of schema skeleton — property names,
 /// `type`, the closed `enum` lists D30 renders from the engine's own consts,
@@ -3943,7 +3946,7 @@ fn the_read_only_refusal_names_the_flag_that_fixes_it() {
 fn the_whole_tool_roster_stays_inside_its_per_prompt_budget() {
     const MAX_DESCRIPTION: usize = 800;
     const MAX_ENTRY: usize = 3_072;
-    const MAX_ROSTER: usize = 41_856;
+    const MAX_ROSTER: usize = 45_568;
 
     let engine = engine();
     let server = McpServer::new(&engine, Scope::Write);
@@ -5223,4 +5226,21 @@ fn add_task_refuses_a_blank_check() {
     assert!(is_error(&r), "{r}");
     let list = tool_json(&call(&w, 2, "tasqx_list_tasks", json!({ "filter": "" })));
     assert_eq!(list["total"], 0);
+}
+
+/// D241: `note.list` returns whole bodies, so this transport pages it by
+/// default the way it pages `memory.list`, and `total` says what was cut.
+#[test]
+fn list_notes_is_paged_by_default() {
+    let engine = engine();
+    for i in 0..25 {
+        engine
+            .note_add(&json!({ "body": format!("note {i}") }))
+            .expect("seed a note");
+    }
+    let server = McpServer::new(&engine, Scope::Write);
+    let page = tool_text(&call(&server, 1, "tasqx_list_notes", json!({})));
+    assert_eq!(page["count"], json!(20), "{page}");
+    assert_eq!(page["total"], json!(25), "{page}");
+    assert_eq!(page["next_offset"], json!(20), "{page}");
 }
