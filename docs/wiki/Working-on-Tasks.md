@@ -256,8 +256,11 @@ in triage; the note stays.
 tasqx duplicate 12 --of 7
 ```
 
-Cancels the proposal, moves its notes to the task it repeats and links the two
-with `duplicates`. Undo does not take this one back.
+Cancels the proposal, moves its notes to the task it repeats, makes the tasks
+that waited on it wait on that one instead (unless that would close a loop) and
+links the two with `duplicates`. Undo does not take this one back; `tasqx
+reopen` brings the proposal back to triage, and the notes and dependents stay
+where they went.
 
 The dashboard's header, the HTML report and the desktop app count what is
 waiting in triage.

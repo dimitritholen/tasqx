@@ -181,8 +181,12 @@ pub const UNDOABLE_OPS: [&str; 12] = [
 pub const NOT_UNDOABLE: &[(&str, &str)] = &[
     (
         "duplicate",
-        "Marking a duplicate cancelled the proposal, moved its notes and linked it to the \
-         original in one step (D238); `tasqx reopen <ref>` brings the proposal back to triage.",
+        "Marking a duplicate cancelled the proposal, moved its notes and its dependents to the \
+         original and linked the two in one step (D238). `tasqx reopen <ref>` brings its status \
+         back to triage, but the notes, the dependents and the `duplicates` link stay on the \
+         original: `tasqx annotate <original> --move <note> --to <ref>` moves a note back, \
+         `tasqx undep`/`tasqx dep` re-point a dependent, and `tasqx api link.remove {id}` drops \
+         the link.",
     ),
     (
         "add",

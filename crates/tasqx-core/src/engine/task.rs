@@ -4389,6 +4389,52 @@ impl Engine {
                 rev += moved as i64;
                 tx.execute("UPDATE tasks SET rev=?1 WHERE id=?2", params![rev, task.id])?;
             }
+            // The work that waited on the proposal now waits on the task it
+            // repeats: each `depends_on` edge is re-pointed at the original,
+            // as a `dependency.remove` and `dependency.add` on the dependent,
+            // unless the new edge would close a cycle (or point a task at
+            // itself), in which case the edge is only dropped.
+            let dependents: Vec<(String, i64)> = {
+                let mut stmt = tx.prepare(
+                    "SELECT t.id, t.rev FROM dependencies d JOIN tasks t ON t.id = d.task_id \
+                     WHERE d.depends_on_id = ?1 ORDER BY t.short_id",
+                )?;
+                let rows = stmt.query_map(params![task.id], |r| Ok((r.get(0)?, r.get(1)?)))?;
+                rows.collect::<Result<_, _>>()?
+            };
+            for (dep_id, dep_rev) in dependents {
+                tx.execute(
+                    "DELETE FROM dependencies WHERE task_id = ?1 AND depends_on_id = ?2",
+                    params![dep_id, task.id],
+                )?;
+                insert_event(
+                    &tx,
+                    Entity::Task,
+                    &dep_id,
+                    "dependency.remove",
+                    &json!({ "depends_on": task.id }),
+                )?;
+                let mut bump = 1i64;
+                if dep_id != o.id && !super::reaches(&tx, &o.id, &dep_id)? {
+                    tx.execute(
+                        "INSERT OR IGNORE INTO dependencies (task_id, depends_on_id) \
+                         VALUES (?1, ?2)",
+                        params![dep_id, o.id],
+                    )?;
+                    insert_event(
+                        &tx,
+                        Entity::Task,
+                        &dep_id,
+                        "dependency.add",
+                        &json!({ "depends_on": o.id }),
+                    )?;
+                    bump += 1;
+                }
+                tx.execute(
+                    "UPDATE tasks SET rev = ?1, modified = ?2 WHERE id = ?3",
+                    params![dep_rev + bump, ts, dep_id],
+                )?;
+            }
             super::graph::link_tasks(&tx, &task.id, &o.id, "duplicates", &ts)?;
             // The newest event, always — even when the link was already there
             // — so `undo` refuses the duplicate whole instead of taking back
@@ -4452,7 +4498,7 @@ impl Engine {
                    AND l2.to_type = 'task' AND l2.relation = 'derived_from' ORDER BY l2.id LIMIT 1) \
              LEFT JOIN tasks o ON o.id = l.to_id \
              WHERE t.status = 'triage' \
-             ORDER BY t.created, t.short_id LIMIT ?1 OFFSET ?2",
+             ORDER BY t.short_id LIMIT ?1 OFFSET ?2",
         )?;
         let rows = stmt.query_map(params![limit as i64, offset as i64], |r| {
             Ok((

@@ -28,12 +28,8 @@ pub(crate) const NONCE_SLOT: &str = "__NONCE__";
 const COLUMNS: [(&str, &str, &str); 6] = [
     ("triage", "Triage", "status:triage"),
     ("backlog", "Backlog", "status:backlog"),
-    // D238: a blocked proposal stays in Triage, never here too.
-    (
-        "blocked",
-        "Blocked",
-        "@blocked and (status:backlog or status:pending or status:active)",
-    ),
+    // D238: `@blocked` never holds a proposal, so a blocked one is in Triage only.
+    ("blocked", "Blocked", "@blocked"),
     ("ready", "Ready", "@working"),
     ("active", "Active", "status:active"),
     ("done", "Done", "completed.after:-7d"),
@@ -147,7 +143,7 @@ body[data-writes="0"] .w{display:none}
 
 const SCRIPT: &str = r###"(()=>{
 "use strict";
-const COLS=[["triage","Triage","status:triage"],["backlog","Backlog","status:backlog"],["blocked","Blocked","@blocked and (status:backlog or status:pending or status:active)"],["ready","Ready","@working"],["active","Active","status:active"],["done","Done","completed.after:-7d"]];
+const COLS=[["triage","Triage","status:triage"],["backlog","Backlog","status:backlog"],["blocked","Blocked","@blocked"],["ready","Ready","@working"],["active","Active","status:active"],["done","Done","completed.after:-7d"]];
 const $=id=>document.getElementById(id);
 const el=(t,c,x)=>{const e=document.createElement(t);if(c)e.className=c;if(x!=null)e.textContent=x;return e};
 const W=document.body.dataset.writes==="1",SHELL=document.documentElement.dataset.shellHolder;

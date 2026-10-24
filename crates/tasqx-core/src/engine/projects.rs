@@ -322,10 +322,11 @@ impl Engine {
                 }
                 open += 1;
                 let due: Option<String> = row.get(1)?;
-                if due
-                    .as_deref()
-                    .and_then(parse_ts)
-                    .is_some_and(|d| crate::filter::overdue_at(d, now_ts))
+                if status.can_be_overdue()
+                    && due
+                        .as_deref()
+                        .and_then(parse_ts)
+                        .is_some_and(|d| crate::filter::overdue_at(d, now_ts))
                 {
                     overdue += 1;
                 }

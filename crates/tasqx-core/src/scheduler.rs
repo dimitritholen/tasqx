@@ -104,7 +104,9 @@ impl ReminderScheduler {
         // the rule as "skip done/cancelled", which is the same partition, so this
         // shares the predicate rather than keeping a fourth hand-typed copy.
         // Enum-derived, never caller text — see `Status::sql_in_list`.
-        let open = crate::types::Status::sql_in_list(crate::types::Status::is_open);
+        // D238: a proposal is not reminded of; `can_be_overdue` is open minus
+        // triage, the same set every overdue count reads.
+        let open = crate::types::Status::sql_in_list(crate::types::Status::can_be_overdue);
         let mut stmt = conn.prepare(&format!(
             "SELECT id, short_id, title, due, remind FROM tasks \
              WHERE remind IS NOT NULL AND status IN ({open}) \
