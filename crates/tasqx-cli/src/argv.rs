@@ -212,11 +212,17 @@ fn escape_check_body(cmd: &clap::Command, argv: &mut [OsString], at: usize) {
     }
 }
 
-/// Marks the first word of a note's text when it must be read as text: a
-/// subverb's name clap would otherwise take for the subcommand, or anything
-/// after `--`, which `verbs::run_note` would otherwise read as an id.
-/// `run_note` strips it. A control character, for [`ESCAPED_DASH`]'s reason.
+/// Prepended by the pre-pass to the first word of a note's text that must be
+/// read as text: the word after `--` (which `verbs::run_note` would otherwise
+/// read as an id), or a word that already opens with a marker of the user's
+/// own, so stripping one marker gives it back verbatim. A control character,
+/// for [`ESCAPED_DASH`]'s reason.
 pub(crate) const NOTE_TEXT: char = '\u{2}';
+
+/// Prepended to a first word that is a subverb's name, which clap would
+/// otherwise take for the subcommand; `run_note` decides whether the line
+/// reads as a command typed the wrong way round.
+pub(crate) const NOTE_SUBVERB: char = '\u{3}';
 
 /// A short id or a UUID: the only words `tasqx note` reads as naming a note.
 pub(crate) fn names_a_note(tok: &str) -> bool {
@@ -224,66 +230,141 @@ pub(crate) fn names_a_note(tok: &str) -> bool {
         || (tok.len() == 36 && tok.bytes().all(|b| b.is_ascii_hexdigit() || b == b'-'))
 }
 
+/// The one consumer of the markers, for `note`'s text and `edit`'s alike:
+/// exactly one marker comes off the first word, and which it was is returned.
+/// The pre-pass put it there, so a user's own leading `\u{2}` survives.
+pub(crate) fn note_words(words: &[String]) -> (Option<char>, Vec<String>) {
+    let mut words = words.to_vec();
+    let mark = words.first_mut().and_then(|w| {
+        let c = w
+            .chars()
+            .next()
+            .filter(|c| [NOTE_TEXT, NOTE_SUBVERB].contains(c))?;
+        w.drain(..c.len_utf8());
+        Some(c)
+    });
+    (mark, words)
+}
+
+/// The next positional of a `note` line at or after `j`, flags and their
+/// values skipped; `Err` carries the index just past a `--`.
+fn note_next(note: &clap::Command, argv: &[OsString], mut j: usize) -> Result<usize, usize> {
+    while let Some(tok) = argv.get(j).and_then(|t| t.to_str()) {
+        if tok == "--" {
+            return Err(j + 1);
+        }
+        if let Some(long) = tok.strip_prefix("--") {
+            if !long.contains('=') && long_value_follows(note, long) {
+                j += 1;
+            }
+        } else if let Some(short) = declared_short(note, tok) {
+            if short_takes_value(note, short) {
+                j += 1;
+            }
+        } else {
+            return Ok(j);
+        }
+        j += 1;
+    }
+    Ok(j)
+}
+
+fn word_at(argv: &[OsString], k: usize) -> Option<&str> {
+    argv.get(k).and_then(|t| t.to_str())
+}
+
+fn is_note_subverb(note: &clap::Command, w: Option<&str>) -> bool {
+    w.is_some_and(|w| note.get_subcommands().any(|c| c.get_name() == w))
+}
+
+fn prepend(argv: &mut [OsString], k: usize, c: char) {
+    if let Some(w) = word_at(argv, k).map(str::to_string) {
+        argv[k] = OsString::from(format!("{c}{w}"));
+    }
+}
+
+/// A word that already opens with a marker gets one more, so [`note_words`]
+/// hands back what was typed.
+fn escape_marker(argv: &mut [OsString], k: usize) {
+    if word_at(argv, k).is_some_and(|w| w.starts_with([NOTE_TEXT, NOTE_SUBVERB])) {
+        prepend(argv, k, NOTE_TEXT);
+    }
+}
+
 /// `tasqx note <ID> <subverb> …` is how a change to a note is typed, the id
 /// first like every task verb, but clap reads a subcommand only right after
 /// `note`. So the subverb is moved there, ahead of any flag, and the flags
 /// typed before the id then reach the subverb, which refuses one it lacks
 /// (`note --project p 7 archive` exits 2 instead of noting "archive 7"). Every
-/// other first word is text: a note that opens with a subverb's name (`tasqx
-/// note edit the readme`), or any word after `--`, is marked with
-/// [`NOTE_TEXT`].
+/// other first word is text: the word after `--` is marked [`NOTE_TEXT`], a
+/// subverb's name [`NOTE_SUBVERB`], once each.
 fn reorder_note(cmd: &clap::Command, argv: &mut Vec<OsString>, at: usize) {
     let Some(note) = cmd.find_subcommand("note") else {
         return;
     };
-    // The next positional at or after `j`, flags and their values skipped;
-    // `Err` carries the index just past a `--`.
-    let next = |argv: &[OsString], mut j: usize| -> Result<usize, usize> {
-        while let Some(tok) = argv.get(j).and_then(|t| t.to_str()) {
-            if tok == "--" {
-                return Err(j + 1);
-            }
-            if let Some(long) = tok.strip_prefix("--") {
-                if !long.contains('=') && long_value_follows(note, long) {
-                    j += 1;
-                }
-            } else if let Some(short) = declared_short(note, tok) {
-                if short_takes_value(note, short) {
-                    j += 1;
-                }
-            } else {
-                return Ok(j);
-            }
-            j += 1;
-        }
-        Ok(j)
-    };
-    let word =
-        |argv: &[OsString], k: usize| argv.get(k).and_then(|t| t.to_str()).map(str::to_string);
-    let subverb = |w: &Option<String>| {
-        w.as_deref()
-            .is_some_and(|w| note.get_subcommands().any(|c| c.get_name() == w))
-    };
-    let mark = |argv: &mut Vec<OsString>, k: usize| {
-        if let Some(w) = word(argv, k) {
-            argv[k] = OsString::from(format!("{NOTE_TEXT}{w}"));
-        }
-    };
-    let j = match next(argv, at + 1) {
+    let j = match note_next(note, argv, at + 1) {
         Ok(j) => j,
-        Err(after) => return mark(argv, after),
+        Err(after) => return prepend(argv, after, NOTE_TEXT),
     };
-    let first = word(argv, j);
-    if first.as_deref().is_some_and(names_a_note) {
-        if let Ok(k) = next(argv, j + 1) {
-            if subverb(&word(argv, k)) {
+    if word_at(argv, j).is_some_and(names_a_note) {
+        if let Ok(k) = note_next(note, argv, j + 1) {
+            if is_note_subverb(note, word_at(argv, k)) {
                 let s = argv.remove(k);
+                let edit = s == "edit";
                 argv.insert(at + 1, s);
+                // The id now sits at j + 1; `edit`'s text follows it.
+                if edit {
+                    let (Ok(t) | Err(t)) = note_next(note, argv, j + 2);
+                    escape_marker(argv, t);
+                }
             }
         }
-    } else if subverb(&first) {
-        mark(argv, j);
+    } else if is_note_subverb(note, word_at(argv, j)) {
+        prepend(argv, j, NOTE_SUBVERB);
+    } else {
+        escape_marker(argv, j);
     }
+}
+
+/// The completion twin of [`reorder_note`], on the words a shell hands the
+/// completer with `cursor` the word being completed: the first word after
+/// `note` is text, so it is marked and nothing is offered for it; the word
+/// after an id is a subverb, so the id's slot becomes the valueless global
+/// `--json` and the engine offers the subverbs there; past a subverb, the
+/// two swap so the subverb's own arguments complete. `None` when the line is
+/// not `note`; `Some(true)` when the cursor is on the subverb's slot, where
+/// the caller hides `--project`, which no subverb takes.
+pub(crate) fn note_completion(argv: &mut [OsString], cursor: usize) -> Option<bool> {
+    let mut cmd = Cli::command();
+    cmd.build();
+    let i = subcommand_index(&cmd, argv)?;
+    if canonical_name(&cmd, &argv[i]).as_deref() != Some("note") {
+        return None;
+    }
+    let note = cmd.find_subcommand("note").expect("note is a subcommand");
+    let Ok(p1) = note_next(note, argv, i + 1) else {
+        return Some(false);
+    };
+    if cursor == p1 {
+        if !word_at(argv, p1).is_some_and(|w| w.starts_with('-')) {
+            prepend(argv, p1, NOTE_TEXT);
+        }
+        return Some(false);
+    }
+    if !word_at(argv, p1).is_some_and(names_a_note) {
+        return Some(false);
+    }
+    let Ok(p2) = note_next(note, argv, p1 + 1) else {
+        return Some(false);
+    };
+    if cursor == p2 {
+        argv[p1] = OsString::from("--json");
+        return Some(true);
+    }
+    if cursor > p2 && is_note_subverb(note, word_at(argv, p2)) {
+        argv.swap(p1, p2);
+    }
+    Some(false)
 }
 
 /// Will clap take the NEXT token as this long flag's value?

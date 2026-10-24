@@ -26,7 +26,9 @@ fn lone_url(line: &str) -> bool {
 /// `tasqx notes`: one line per note under a header, newest first, built like
 /// `memory list` (D125). The text carries the row; a link mark, the project
 /// and the day it was added recede. An archived note (under `--all`) is dim.
-pub fn notes_table(ctx: &Ctx, result: &Value, now: Timestamp) -> String {
+/// `open_only` is whether the open notes alone were asked for, the one case
+/// where an empty answer should point at `--all`.
+pub fn notes_table(ctx: &Ctx, result: &Value, now: Timestamp, open_only: bool) -> String {
     let empty = Vec::new();
     let notes = result
         .get("notes")
@@ -34,9 +36,11 @@ pub fn notes_table(ctx: &Ctx, result: &Value, now: Timestamp) -> String {
         .unwrap_or(&empty);
     let total = result.get("total").and_then(Value::as_u64).unwrap_or(0);
     if notes.is_empty() {
-        return if total == 0 {
+        return if total == 0 && open_only {
             "No notes here. `tasqx note <text…>` captures one; `--all` lists the archived too.\n"
                 .to_string()
+        } else if total == 0 {
+            "No notes here.\n".to_string()
         } else {
             format!("No notes on this page; {total} match.\n")
         };
@@ -202,6 +206,7 @@ mod tests {
             &ctx,
             &page(json!([note(2, url, true), note(1, prose, false)])),
             "2026-10-24T12:00:00Z".parse().unwrap(),
+            true,
         );
         assert!(out.contains(url), "the URL was cut:\n{out}");
         assert!(!out.contains(prose), "the prose was not cut:\n{out}");

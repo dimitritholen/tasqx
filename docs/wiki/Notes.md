@@ -49,7 +49,10 @@ tasqx note 3 rm
   when you are not sure.
 
 The number always comes first. Any other first word is part of the note, so
-`tasqx note edit the readme` writes down "edit the readme".
+`tasqx note edit the readme` writes down "edit the readme". A subverb on its
+own, or followed by a number (`tasqx note archive 7`), reads as a command typed
+the wrong way round: it is refused (exit 2) with the right spelling, and
+`tasqx note -- archive 7` stores it as text.
 
 `note` used to be another name for `annotate`. A number followed by text is
 now refused (exit 2) and names the command you probably meant:

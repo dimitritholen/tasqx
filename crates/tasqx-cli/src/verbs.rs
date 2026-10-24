@@ -1667,16 +1667,19 @@ pub(crate) fn run_note(
     project: Option<String>,
 ) -> CmdOutcome {
     let Some(action) = action else {
-        let words: Vec<String> = text
-            .iter()
-            .map(|w| w.trim_start_matches(crate::argv::NOTE_TEXT).to_string())
-            .collect();
+        let (mark, words) = crate::argv::note_words(&text);
         let first = words.first().map(String::as_str).unwrap_or_default();
-        // Marked by the pre-pass after `--` (or as a subverb's name): text.
-        let marked = text
-            .first()
-            .is_some_and(|w| w.starts_with(crate::argv::NOTE_TEXT));
-        if !marked && crate::argv::names_a_note(first) {
+        // `note archive 7`, or a lone `note rm`: a command typed the wrong
+        // way round, refused rather than stored. `note edit the readme` is text.
+        if mark == Some(crate::argv::NOTE_SUBVERB)
+            && words.get(1).is_none_or(|w| crate::argv::names_a_note(w))
+        {
+            let n = words.get(1).map_or("<n>", String::as_str);
+            return Err(tasqx_core::ApiError::bad_request(format!(
+                "did you mean: tasqx note {n} {first}? To store this as text, put -- before it"
+            )));
+        }
+        if mark.is_none() && crate::argv::names_a_note(first) {
             if words.len() == 1 {
                 let result = be.call("note.get", &json!({ "id": first }))?;
                 let text = render::note_shown(ctx, &result, crate::clock::now());
@@ -1702,7 +1705,11 @@ pub(crate) fn run_note(
             let held = be.call("note.get", &json!({ "id": id }))?;
             let result = be.call(
                 "note.update",
-                &json!({ "id": id, "body": text.join(" "), "expected_rev": held["_rev"] }),
+                &json!({
+                    "id": id,
+                    "body": crate::argv::note_words(&text).1.join(" "),
+                    "expected_rev": held["_rev"],
+                }),
             )?;
             let text = note_echo(ctx, "Updated note", &result, true);
             (result, text)
@@ -1779,7 +1786,8 @@ fn note_echo(ctx: &Ctx, verb: &str, note: &Value, with_body: bool) -> String {
 /// `tasqx notes` (D241): one `note.list` read, drawn as a table.
 pub(crate) fn run_notes(be: &mut Backend, ctx: &Ctx, params: Value) -> CmdOutcome {
     let result = be.call("note.list", &params)?;
-    let text = render::notes_table(ctx, &result, crate::clock::now());
+    let open_only = params["status"] == "open";
+    let text = render::notes_table(ctx, &result, crate::clock::now(), open_only);
     Ok((result, text))
 }
 

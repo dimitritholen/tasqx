@@ -2995,6 +2995,10 @@ mod tests {
         // honours it, and naming `~/.config/fish` for a user who moved their
         // fish config points them at a file fish never reads.
         const USER_ENVIRONMENT: &[&str] = &["SHELL", "XDG_CONFIG_HOME"];
+        // clap_complete's bash protocol: the index of the word under the
+        // cursor, set by the registration script on every Tab and read by the
+        // note-line rewrite in `complete::prepassed` (D241). No person sets it.
+        const SHELL_PROTOCOL: &[&str] = &["_CLAP_COMPLETE_INDEX"];
         // Hand-kept, and that is the guard's own weak spot: `complete.rs` was
         // absent until the completion feature added two variables to it, and
         // for the length of that branch `TASQX_NO_COMPLETE_LOOKUP` existed with
@@ -3091,6 +3095,7 @@ mod tests {
             .filter(|v| !v.starts_with("TASQX_"))
             .filter(|v| !TERMINAL_IDENTITY.contains(&v.as_str()))
             .filter(|v| !USER_ENVIRONMENT.contains(&v.as_str()))
+            .filter(|v| !SHELL_PROTOCOL.contains(&v.as_str()))
             .filter(|v| !doc.contains(&format!("<code>{v}</code>")))
             .collect();
         assert!(

@@ -292,7 +292,16 @@ pub(crate) fn intercept() {
 
     let raw: Vec<OsString> = std::env::args_os().collect();
     let cwd = std::env::current_dir().ok();
-    let result = CompleteEnv::with_factory(Cli::command)
+    let (words, on_note_subverb) = prepassed(raw);
+    // On a note's subverb slot `--project` is hidden: no subverb takes it.
+    let factory = move || {
+        let cmd = Cli::command();
+        match on_note_subverb {
+            true => cmd.mut_subcommand("note", |n| n.mut_arg("project", |a| a.hide(true))),
+            false => cmd,
+        }
+    };
+    let result = CompleteEnv::with_factory(factory)
         .var(COMPLETE_VAR)
         // Explicit rather than left to `get_bin_name().or(get_name())`. Both
         // fallbacks happen to yield "tasqx" today, but which one fires depends
@@ -300,7 +309,7 @@ pub(crate) fn intercept() {
         // produces is what the shell registers `complete -F ... <bin>` against.
         // A registration bound to the wrong name completes nothing, silently.
         .bin("tasqx")
-        .try_complete(prepassed(raw), cwd.as_deref());
+        .try_complete(words, cwd.as_deref());
 
     match result {
         // Candidates (or a registration script) were written. Exiting here is
@@ -448,13 +457,26 @@ fn canonical_shell_name(value: &OsStr) -> Option<&'static str> {
 /// symmetric on both paths or they are broken on one; this is the second half of
 /// that pair, and its absence is what made a provider on a filter positional
 /// return nothing.
-fn prepassed(raw: Vec<OsString>) -> Vec<OsString> {
+///
+/// A `note` line takes [`crate::argv::note_completion`] instead; the `bool`
+/// says the cursor sits on a note's subverb slot.
+fn prepassed(raw: Vec<OsString>) -> (Vec<OsString>, bool) {
     let Some(sep) = raw.iter().position(|a| a == "--") else {
-        return raw;
+        return (raw, false);
     };
     let mut out: Vec<OsString> = raw[..=sep].to_vec();
-    out.extend(crate::argv::prepass(raw[sep + 1..].iter().cloned()).argv);
-    out
+    let mut tail = raw[sep + 1..].to_vec();
+    // bash names the word under the cursor; the other shells complete the last.
+    let cursor = std::env::var("_CLAP_COMPLETE_INDEX")
+        .ok()
+        .and_then(|i| i.parse().ok())
+        .unwrap_or(tail.len().saturating_sub(1));
+    let on_subverb = crate::argv::note_completion(&mut tail, cursor);
+    match on_subverb {
+        Some(_) => out.extend(tail),
+        None => out.extend(crate::argv::prepass(tail).argv),
+    }
+    (out, on_subverb.unwrap_or(false))
 }
 
 /// Wrap a candidate provider for a positional whose words [`prepassed`] escapes,
@@ -994,7 +1016,7 @@ mod tests {
         // tail, so the test exercises `prepassed` on the shape it really gets.
         let mut raw: Vec<OsString> = vec![OsString::from("tasqx"), OsString::from("--")];
         raw.extend(words.iter().map(OsString::from));
-        let tail = prepassed(raw).split_off(2);
+        let tail = prepassed(raw).0.split_off(2);
 
         clap_complete::engine::complete(&mut cmd, tail, index, None)
             .expect("the engine must not fail")
