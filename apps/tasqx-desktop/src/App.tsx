@@ -21,6 +21,8 @@ import {
   GraphScreen,
   MemoryInspector,
   MemoryScreen,
+  NoteInspector,
+  NotesScreen,
   ProjectsScreen,
   ReportsScreen,
   SettingsScreen,
@@ -37,6 +39,7 @@ const SCREEN_VIEWS: Record<Screen, ComponentType<{ connection?: ReactNode }>> = 
   tasks: TasksScreen,
   projects: ProjectsScreen,
   memory: MemoryScreen,
+  notes: NotesScreen,
   graph: GraphScreen,
   charts: ChartsScreen,
   reports: ReportsScreen,
@@ -142,6 +145,8 @@ function ConnectedApp() {
         inspector={
           route.screen === 'memory' ? (
             <MemoryInspector onChanged={() => void store.reloadMemoryResults()} />
+          ) : route.screen === 'notes' ? (
+            <NoteInspector />
           ) : route.screen === 'graph' ? (
             <GraphInspector />
           ) : (

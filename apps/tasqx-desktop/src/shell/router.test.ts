@@ -20,6 +20,7 @@ test.each(['', '#', '#/', '#/nope', '#/tasks/42'])('%o falls back to the dashboa
 test('serialises a route with a stable query order', () => {
   expect(formatRoute({ screen: 'tasks', query: { sel: '42', filter: 'open' } })).toBe('#/tasks?filter=open&sel=42');
   expect(formatRoute({ screen: 'memory', query: {} })).toBe('#/memory');
+  expect(parseRoute('#/notes')).toEqual({ screen: 'notes', query: {} });
 });
 
 test('navigate writes the hash and currentRoute reads it back', () => {

@@ -12,6 +12,7 @@ const SCREEN_TITLES: Record<Screen, string> = {
   tasks: 'Tasks',
   projects: 'Projects',
   memory: 'Memory',
+  notes: 'Notes',
   graph: 'Graph',
   charts: 'Charts',
   reports: 'Reports',
@@ -22,6 +23,7 @@ const SCREEN_HINTS: Partial<Record<Screen, string>> = {
   dashboard: 'g d',
   tasks: 'g t',
   memory: 'g m',
+  notes: 'g n',
   graph: 'g g',
   charts: 'g c',
 };

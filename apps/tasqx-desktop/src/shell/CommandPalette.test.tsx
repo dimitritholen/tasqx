@@ -110,6 +110,7 @@ test('shellCommands covers navigation and the shell toggles', () => {
       'Go to Tasks',
       'Go to Projects',
       'Go to Memory',
+      'Go to Notes',
       'Go to Graph',
       'Go to Reports',
       'Go to Settings',
