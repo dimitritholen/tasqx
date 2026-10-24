@@ -2402,7 +2402,7 @@ dependencies = [
 
 [[package]]
 name = "tasqx-cli"
-version = "0.15.0"
+version = "0.16.0"
 dependencies = [
  "argon2",
  "chacha20poly1305",
@@ -2425,7 +2425,7 @@ dependencies = [
 
 [[package]]
 name = "tasqx-core"
-version = "0.15.0"
+version = "0.16.0"
 dependencies = [
  "interprocess",
  "jiff",
@@ -2441,7 +2441,7 @@ dependencies = [
 
 [[package]]
 name = "tasqx-remote-dir"
-version = "0.15.0"
+version = "0.16.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -2451,7 +2451,7 @@ dependencies = [
 
 [[package]]
 name = "tasqx-remote-r2"
-version = "0.15.0"
+version = "0.16.0"
 dependencies = [
  "hmac",
  "keyring",

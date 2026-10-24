@@ -76,6 +76,7 @@
   "dropped_docs": 0,
   "dropped_events": 0,
   "dropped_links": 0,
+  "dropped_notes": 0,
   "dropped_projects": 0,
   "events": [
     {
@@ -2572,6 +2573,30 @@
       "metadata": null,
       "relation": "derived_from",
       "to": "task:63e5a05b-e665-459b-be06-d750369a9ad7"
+    }
+  ],
+  "notes": [
+    {
+      "_rev": 0,
+      "body": "read https://www.rfc-editor.org/rfc/rfc9457 before the error-format change",
+      "created": "2026-09-14T11:20:00Z",
+      "id": "019f5a10-0000-7000-8000-00000000b001",
+      "modified": "2026-09-14T11:20:00Z",
+      "project": "api",
+      "promoted_to": null,
+      "short_id": 1,
+      "status": "open"
+    },
+    {
+      "_rev": 0,
+      "body": "idea: a dark-mode toggle in the docs header",
+      "created": "2026-09-15T16:05:00Z",
+      "id": "019f5a10-0000-7000-8000-00000000b002",
+      "modified": "2026-09-15T16:05:00Z",
+      "project": null,
+      "promoted_to": null,
+      "short_id": 2,
+      "status": "open"
     }
   ],
   "projects": [
