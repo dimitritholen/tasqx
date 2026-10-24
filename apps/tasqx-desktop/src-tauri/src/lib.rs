@@ -274,6 +274,42 @@ fn release_page(url: &str) -> Option<&str> {
 #[tauri::command]
 fn open_release_page(url: String) -> Result<(), String> {
     let url = release_page(&url).ok_or("not a tasqx release page")?;
+    open_in_browser(url)
+}
+
+/// The longest link `open_url` hands on; a note's link is a page, not a payload.
+const MAX_URL_LEN: usize = 2048;
+
+/// A link out of a note body, as the one string the OS opener gets (D241):
+/// http or https with a host, no whitespace or control character anywhere
+/// (checked before parsing, which would quietly strip some), at most
+/// `MAX_URL_LEN` bytes. Answers the parser's serialization, so what is opened
+/// is exactly what was validated.
+fn link_to_open(raw: &str) -> Result<String, String> {
+    if raw.len() > MAX_URL_LEN {
+        return Err(format!("link longer than {MAX_URL_LEN} bytes"));
+    }
+    if raw.chars().any(|c| c.is_whitespace() || c.is_control()) {
+        return Err("link holds whitespace or a control character".into());
+    }
+    let url = tauri::Url::parse(raw).map_err(|e| format!("not a link: {e}"))?;
+    if !matches!(url.scheme(), "http" | "https") {
+        return Err("only http and https links are opened".into());
+    }
+    if url.host_str().is_none_or(str::is_empty) {
+        return Err("link has no host".into());
+    }
+    Ok(url.into())
+}
+
+/// Open a link from a note in the default browser.
+#[tauri::command]
+fn open_url(url: String) -> Result<(), String> {
+    open_in_browser(&link_to_open(&url)?)
+}
+
+/// Hand one validated URL to the OS opener as a single argument, no shell.
+fn open_in_browser(url: &str) -> Result<(), String> {
     #[cfg(target_os = "macos")]
     let opener = "open";
     #[cfg(windows)]
@@ -304,7 +340,8 @@ pub fn run() {
             graph_views_read,
             graph_views_write,
             graph_views_quarantine,
-            open_release_page
+            open_release_page,
+            open_url
         ])
         .run(tauri::generate_context!())
         .expect("error while running tasqx desktop");
@@ -358,6 +395,57 @@ mod tests {
             "file:///etc/passwd",
         ] {
             assert_eq!(release_page(refused), None, "{refused}");
+        }
+    }
+
+    #[test]
+    fn a_plain_http_or_https_link_is_opened() {
+        for (given, opened) in [
+            ("https://example.com", "https://example.com/"),
+            (
+                "http://example.com/a/b?q=1#frag",
+                "http://example.com/a/b?q=1#frag",
+            ),
+            ("HTTPS://Example.COM/path", "https://example.com/path"),
+            ("https://127.0.0.1:8080/x", "https://127.0.0.1:8080/x"),
+            ("https://[::1]/", "https://[::1]/"),
+            (
+                "https://example.com/caf%C3%A9",
+                "https://example.com/caf%C3%A9",
+            ),
+        ] {
+            assert_eq!(link_to_open(given).as_deref(), Ok(opened), "{given}");
+        }
+    }
+
+    #[test]
+    fn anything_but_a_plain_web_link_is_refused() {
+        let long = format!("https://example.com/{}", "a".repeat(MAX_URL_LEN));
+        for refused in [
+            "",
+            "example.com",
+            "/etc/passwd",
+            "file:///etc/passwd",
+            "javascript:alert(1)",
+            "data:text/html,<b>x</b>",
+            "mailto:me@example.com",
+            "ftp://example.com/",
+            "httpx://example.com/",
+            "https:",
+            "https://",
+            "https://exa mple.com/",
+            " https://example.com/",
+            "https://example.com/ ",
+            "https://example.com/\tx",
+            "https://example.com/\nx",
+            "https://example.com/\u{7f}",
+            "https://example.com/\u{85}",
+            "https://example.com/\u{a0}",
+            "https://example.com/\u{2028}",
+            "https://example.com/\0",
+            long.as_str(),
+        ] {
+            assert!(link_to_open(refused).is_err(), "{refused:?}");
         }
     }
 }
