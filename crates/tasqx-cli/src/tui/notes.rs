@@ -379,44 +379,61 @@ impl App {
     }
 }
 
-/// A body in lines of at most `width` cells, its own line breaks kept. A word
-/// wider than the line, which is a URL more often than not, is broken across
-/// as many lines as it needs and never cut: the detail view exists to show a
-/// note whole.
+/// A body in lines of at most `width` cells, verbatim (D241): its own line
+/// breaks, its indentation and its runs of spaces are kept, and only the
+/// whitespace a wrap breaks at is spent. A word wider than the line, which is
+/// a URL more often than not, is broken across as many lines as it needs and
+/// never cut: the detail view exists to show a note whole.
 pub fn wrap_body(body: &str, width: usize) -> Vec<String> {
     let width = width.max(1);
+    let cells = |c: char| render::width(c.encode_utf8(&mut [0; 4]));
     let mut out = Vec::new();
     for raw in body.lines() {
         let mut line = String::new();
         let mut used = 0;
-        for word in raw.split_whitespace() {
-            let w = render::width(word);
-            if used > 0 && used + 1 + w > width {
-                out.push(std::mem::take(&mut line));
-                used = 0;
+        // Whitespace waits here until the word after it is placed: kept when
+        // the word fits behind it, spent when the word wraps.
+        let mut gap = String::new();
+        let mut at_start = true;
+        let mut rest = raw;
+        while !rest.is_empty() {
+            let ws = rest.starts_with(char::is_whitespace);
+            let end = rest
+                .find(|c: char| c.is_whitespace() != ws)
+                .unwrap_or(rest.len());
+            let (tok, tail) = rest.split_at(end);
+            rest = tail;
+            if ws {
+                gap.push_str(tok);
+                continue;
             }
-            if w > width {
+            let (gw, w) = (render::width(&gap), render::width(tok));
+            if used + gw + w <= width {
+                line.push_str(&gap);
+                used += gw + w;
+                line.push_str(tok);
+            } else {
                 if used > 0 {
                     out.push(std::mem::take(&mut line));
                     used = 0;
+                } else if at_start && gw < width {
+                    // Indentation in front of a word too long for the
+                    // line: the indentation stays, the word breaks.
+                    line.push_str(&gap);
+                    used = gw;
                 }
-                for c in word.chars() {
-                    let cw = render::width(c.encode_utf8(&mut [0; 4]));
-                    if used + cw > width {
+                for c in tok.chars() {
+                    let cw = cells(c);
+                    if used + cw > width && used > 0 {
                         out.push(std::mem::take(&mut line));
                         used = 0;
                     }
                     line.push(c);
                     used += cw;
                 }
-                continue;
             }
-            if used > 0 {
-                line.push(' ');
-                used += 1;
-            }
-            line.push_str(word);
-            used += w;
+            gap.clear();
+            at_start = false;
         }
         out.push(line);
     }
@@ -1222,6 +1239,22 @@ mod tests {
             ["one two", "three", "", "four"]
         );
         assert_eq!(wrap_body("ab abcdefgh", 4), ["ab", "abcd", "efgh"]);
+    }
+
+    /// A note is shown verbatim (D241): an indented snippet keeps its
+    /// indentation and its runs of spaces. Only the space a wrap breaks at
+    /// is spent, and a wide character still counts two cells.
+    #[test]
+    fn wrap_body_keeps_indentation_and_runs_of_spaces() {
+        let snippet = "fn main() {\n    let a  =  1;\n}";
+        assert_eq!(
+            wrap_body(snippet, 40),
+            ["fn main() {", "    let a  =  1;", "}"]
+        );
+        assert_eq!(wrap_body("  ab  cd  ef", 8), ["  ab  cd", "ef"]);
+        assert_eq!(wrap_body("日本語 x", 6), ["日本語", "x"]);
+        let url = format!("    https://example.com/{}", "a".repeat(30));
+        assert_eq!(wrap_body(&url, 20).concat(), url, "the url was cut");
     }
 
     /// Every key each table advertises changes something or asks for a
