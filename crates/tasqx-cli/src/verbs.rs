@@ -1655,6 +1655,112 @@ pub(crate) fn run_memory(be: &mut Backend, ctx: &Ctx, action: &MemoryAction) -> 
     }
 }
 
+/// `tasqx note …` (D241): capture a note, print one, or change one. A first
+/// word naming a note followed by anything but a subverb is refused rather
+/// than stored, because `tasqx note 42 "…"` annotated task 42 until the
+/// `note` alias of `annotate` went.
+pub(crate) fn run_note(
+    be: &mut Backend,
+    ctx: &Ctx,
+    action: Option<NoteAction>,
+    text: Vec<String>,
+    project: Option<String>,
+) -> CmdOutcome {
+    let Some(action) = action else {
+        let words: Vec<String> = text
+            .iter()
+            .map(|w| w.trim_start_matches(crate::argv::NOTE_TEXT).to_string())
+            .collect();
+        let first = words.first().map(String::as_str).unwrap_or_default();
+        if crate::argv::names_a_note(first) {
+            if words.len() == 1 {
+                let result = be.call("note.get", &json!({ "id": first }))?;
+                let text = render::note_shown(ctx, &result, crate::clock::now());
+                return Ok((result, text));
+            }
+            return Err(tasqx_core::ApiError::bad_request(format!(
+                "`tasqx note {first}` takes edit, archive, unarchive, rm or promote next; \
+                 to annotate task {first}, use: tasqx annotate {first} \"…\""
+            )));
+        }
+        let mut params = json!({ "body": words.join(" ") });
+        if let Some(p) = project {
+            params["project"] = json!(p);
+        }
+        let result = be.call("note.add", &params)?;
+        let text = note_echo(ctx, "Noted", &result, true);
+        return Ok((result, text));
+    };
+    let (result, text) = match action {
+        NoteAction::Edit { id, text } => {
+            let result = be.call("note.update", &json!({ "id": id, "body": text.join(" ") }))?;
+            let text = note_echo(ctx, "Updated note", &result, true);
+            (result, text)
+        }
+        NoteAction::Archive { id } => {
+            let result = be.call("note.update", &json!({ "id": id, "status": "archived" }))?;
+            let text = note_echo(ctx, "Archived note", &result, false);
+            (result, text)
+        }
+        NoteAction::Unarchive { id } => {
+            let result = be.call("note.update", &json!({ "id": id, "status": "open" }))?;
+            let text = note_echo(ctx, "Unarchived note", &result, false);
+            (result, text)
+        }
+        NoteAction::Rm { id } => {
+            let result = be.call("note.remove", &json!({ "id": id }))?;
+            let text = note_echo(ctx, "Removed note", &result, false);
+            (result, text)
+        }
+        NoteAction::Promote { id, to, title } => {
+            let mut params = json!({ "id": id, "to": to });
+            if let Some(t) = title {
+                params["title"] = json!(t);
+            }
+            let result = be.call("note.promote", &params)?;
+            let mut text = if let Some(task) = result.get("task") {
+                let card = read_back(be, task).unwrap_or_else(|| task.clone());
+                render::added(ctx, &card, crate::clock::now())
+            } else {
+                format!(
+                    "Stored {}  ·  {}\n",
+                    render::san(result["doc"]["id"].as_str().unwrap_or("?")),
+                    render::san(result["doc"]["title"].as_str().unwrap_or("?"))
+                )
+            };
+            text.push_str(&note_echo(ctx, "Archived note", &result["note"], false));
+            (result, text)
+        }
+    };
+    Ok((result, text))
+}
+
+/// A note write's echo: the verb, the note's number and, for a write that
+/// set the text, its first line, whole, so a URL in it stays copyable. The
+/// outcome carries the weight, as every write echo's does (D126).
+fn note_echo(ctx: &Ctx, verb: &str, note: &Value, with_body: bool) -> String {
+    let head = format!(
+        "{} #{}",
+        ctx.paint("card.strong", verb),
+        note["short_id"].as_i64().unwrap_or(0)
+    );
+    match with_body {
+        true => format!(
+            "{head}  {}  {}\n",
+            ctx.mid(),
+            render::san(render::note_first_line(note["body"].as_str().unwrap_or("")))
+        ),
+        false => format!("{head}\n"),
+    }
+}
+
+/// `tasqx notes` (D241): one `note.list` read, drawn as a table.
+pub(crate) fn run_notes(be: &mut Backend, ctx: &Ctx, params: Value) -> CmdOutcome {
+    let result = be.call("note.list", &params)?;
+    let text = render::notes_table(ctx, &result, crate::clock::now());
+    Ok((result, text))
+}
+
 /// `tasqx tokens recompute [--apply]` (DESIGN.md §12-D50, Decision 3).
 ///
 /// The polarity flip happens here and nowhere else: the CLI speaks opt-in

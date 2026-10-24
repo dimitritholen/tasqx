@@ -70,6 +70,8 @@ screens![
     "chart-burndown",
     "memory-list",
     "memory-search",
+    "notes",
+    "note-echo",
     "theme-list",
     "manual",
     "add-echo",

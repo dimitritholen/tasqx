@@ -1,0 +1,57 @@
+Capture a quick note: an idea, a URL to read later (maps to note.add, D241). Not a task: no urgency, no `@working`, no report.
+
+`tasqx note <ID>` prints one note whole; `tasqx note <ID> <SUBVERB>` changes it. The subverb follows the id, so a note may open with any word, `edit` included.
+
+Usage: tasqx note <TEXT>... [--project <PROJECT>]
+       tasqx note <ID> [edit <TEXT>... | archive | unarchive | rm | promote <task|memory>]
+
+Commands:
+  edit       Replace a note's text (maps to note.update)
+  archive    Archive a note: out of `tasqx notes`, kept under `--archived` (maps to note.update)
+  unarchive  Bring an archived note back (maps to note.update)
+  rm         Delete a note for good (maps to note.remove); `tasqx undo` cannot bring it back
+  promote    File a note as a task or a memory doc, and archive it (maps to note.promote)
+
+Arguments:
+  <TEXT>...
+          The note's text, stored verbatim; several words are joined by spaces
+
+Options:
+      --json
+          Print the raw JSON API result instead of the human table
+
+      --theme <THEME>
+          Theme name (built-in nord|gruvbox|dracula|solarized|mono, or a user file). Overrides $TASQX_THEME and the config file (DESIGN.md §8)
+
+      --socket <SOCKET>
+          Local socket / named-pipe address of a tasqx daemon. Overrides $TASQX_SOCK. When a daemon is reachable, one-shot commands route through it (single writer); otherwise they run in-process. A set $TASQX_DB naming a different store than that daemon's is refused. Also selects the address for `daemon` and `watch`
+
+      --no-daemon
+          Never route through a daemon; always run one-shot in-process (the pre-daemon behaviour). Escape hatch for scripts
+
+      --project <PROJECT>
+          File it under this project. Omitted, the note has none
+
+  -h, --help
+          Print help (see a summary with '-h')
+
+  -V, --version
+          Print version
+
+EXAMPLES
+  tasqx note try the new tracing exporter
+  tasqx note https://example.com/blog/sqlite-tips --project infra    # a link to read later, filed under a project
+  tasqx note 3    # print note 3 whole
+  tasqx note 3 edit try the OTLP exporter instead    # replace its text
+  tasqx note 3 archive    # out of `tasqx notes`, kept under --archived
+  tasqx note 3 promote task --title "Evaluate the OTLP exporter"    # file it as a task; the note is archived
+  tasqx note 3 promote memory    # file it as a memory doc instead
+  tasqx note 3 rm    # delete it for good
+
+NOTE  A note is not a task: it has no urgency, stays out of `@working`, `next` and the reports, and `memory search` never sees it. Notes have their own numbers, so note 3 and task 3 are different things.
+      The text is stored verbatim, words joined by spaces; quote it to keep a shell from reading `#`, `*` or `?`. No `project:` sugar: a note's words are its own, so --project files it.
+      The id comes first and the subverb after it, as on every task verb. Any other first word is text, so `tasqx note edit the readme` notes "edit the readme". A number followed by text is refused (exit 2): `tasqx note 42 "…"` once annotated task 42, and that is `tasqx annotate 42 "…"` now.
+      `promote task` files a task in the note's project (else your default), titled --title or the note's first line, the whole note as its first annotation when the title does not say all of it; `promote memory` files a memory doc. Either way the note is archived with a pointer to what it became, in one transaction. Promotion is final: a promoted note cannot be promoted again or unarchived.
+      `rm` is permanent and `tasqx undo` does not cover notes; `archive` is the way to put one out of sight.
+
+See also: notes · add · memory · annotate        Full manual: tasqx manual

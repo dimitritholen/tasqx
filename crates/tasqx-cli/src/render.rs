@@ -18,6 +18,8 @@ mod echo;
 pub use echo::*;
 mod memory;
 pub use memory::*;
+mod notes;
+pub use notes::*;
 mod reports;
 pub use reports::*;
 mod table;

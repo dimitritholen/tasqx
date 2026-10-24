@@ -127,6 +127,8 @@ const EXAMPLE_SCREENS: &[(&str, &str, &str)] = &[
     ("config", "tasqx config list", "config-list"),
     ("memory", "tasqx memory list", "memory-list"),
     ("memory", "tasqx memory search blue-green", "memory-search"),
+    ("note", "tasqx note try the new tracing exporter", "note-echo"),
+    ("notes", "tasqx notes", "notes"),
     (
         "api",
         "tasqx api <<< '{\"tasqx\":\"1\",\"id\":\"1\",\"method\":\"task.list\",\"params\":{}}'",

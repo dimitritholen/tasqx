@@ -79,7 +79,7 @@ use tasqx_core::{
 
 use command::{
     cli_command, ChartKind, CheckAction, Cli, Command, ConfigAction, GitAction, McpAction,
-    MemoryAction, SyncAction, ThemeAction, TokensAction,
+    MemoryAction, NoteAction, SyncAction, ThemeAction, TokensAction,
 };
 use theme::{Caps, Ctx};
 
@@ -1151,6 +1151,32 @@ fn execute(cli: Cli) -> Exit {
         Some(Command::Check { action }) => run_check(&mut backend, &ctx, &action),
         Some(Command::Git { action }) => run_git(&mut backend, &ctx, &action),
         Some(Command::Memory { action }) => run_memory(&mut backend, &ctx, &action),
+        Some(Command::Note {
+            action,
+            text,
+            project,
+        }) => run_note(&mut backend, &ctx, action, text, project),
+        Some(Command::Notes {
+            links,
+            archived,
+            all,
+            search,
+            project,
+        }) => {
+            let status = match (archived, all) {
+                (true, _) => "archived",
+                (_, true) => "all",
+                _ => "open",
+            };
+            let mut params = json!({ "status": status, "links": links });
+            if let Some(q) = search {
+                params["query"] = json!(q);
+            }
+            if let Some(p) = project {
+                params["project"] = json!(p);
+            }
+            run_notes(&mut backend, &ctx, params)
+        }
         Some(Command::Tokens { action }) => run_tokens(&mut backend, &ctx, &action),
         Some(Command::Export {
             filter,
@@ -2388,7 +2414,9 @@ mod tests {
                         "{}: example segment {part:?} must start with `tasqx`",
                         d.verb
                     );
-                    Cli::try_parse_from(&argv).unwrap_or_else(|err| {
+                    // Through the binary's own pre-pass: `note <id> promote`
+                    // only parses once it has put the subverb first.
+                    parse_argv(&argv).unwrap_or_else(|err| {
                         panic!("{}: example {:?} does not parse:\n{err}", d.verb, e.cmd)
                     });
                     checked += 1;

@@ -96,6 +96,8 @@ report-outcomes	pipe	100	-	report --outcomes	-	-
 chart-burndown	pipe	100	-	chart burndown	-	-
 memory-list	pipe	100	-	memory list	-	-
 memory-search	pipe	100	-	memory search release canary	-	-
+notes	pipe	100	-	notes	-	-
+note-echo	pipe-mut	100	-	note try the new tracing exporter	-	-
 theme-list	pipe	100	-	theme list	-	-
 manual	pipe	100	-	manual	-	-
 add-echo	pipe-mut	100	-	add "Draft the Q4 roadmap" project:website !H due:friday +planning	-	-

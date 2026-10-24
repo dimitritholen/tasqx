@@ -98,6 +98,8 @@ help-chart	pipe	100	-	chart --help	-	-
 help-theme	pipe	100	-	theme --help	-	-
 help-config	pipe	100	-	config --help	-	-
 help-memory	pipe	100	-	memory --help	-	-
+help-note	pipe	100	-	note --help	-	-
+help-notes	pipe	100	-	notes --help	-	-
 help-tokens	pipe	100	-	tokens --help	-	-
 help-export	pipe	100	-	export --help	-	-
 help-import	pipe	100	-	import --help	-	-
@@ -142,6 +144,7 @@ help-memory-search	pipe	100	-	memory search --help	-	-
 help-memory-show	pipe	100	-	memory show --help	-	-
 help-memory-rm	pipe	100	-	memory rm --help	-	-
 help-memory-import	pipe	100	-	memory import --help	-	-
+help-note-promote	pipe	100	-	note 1 promote --help	-	-
 help-tokens-add	pipe	100	-	tokens add --help	-	-
 help-tokens-recompute	pipe	100	-	tokens recompute --help	-	-
 help-mcp-serve	pipe	100	-	mcp serve --help	-	-

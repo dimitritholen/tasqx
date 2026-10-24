@@ -2256,7 +2256,7 @@ mod tests {
         }
     }
 
-    /// The methods no CLI verb reaches are the nine we know about.
+    /// The methods no CLI verb reaches are the eight we know about.
     ///
     /// Read in both directions from [`super::VERBS`]' Method column, because
     /// that column is prose a human maintains: a mapping lost to a typo would
@@ -2289,14 +2289,6 @@ mod tests {
             // desktop client, and `tasqx api graph.query` is the way from a
             // terminal.
             "graph.query",
-            // D241: the note verbs are a later slice (#927); `tasqx api
-            // note.*` is the way until then.
-            "note.add",
-            "note.list",
-            "note.get",
-            "note.update",
-            "note.remove",
-            "note.promote",
         ]
         .into_iter()
         .collect();

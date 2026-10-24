@@ -39,6 +39,8 @@ Commands:
   chart        Native terminal charts from the event log (DESIGN.md §8)
   theme        Theme tools: list built-ins or preview a theme's roles (DESIGN.md §8)
   config       Read and change tasqx settings (DESIGN.md §12-D25)
+  note         Capture a quick note: an idea, a URL to read later (maps to note.add, D241). Not a task: no urgency, no `@working`, no report
+  notes        List notes, newest first (maps to note.list, D241)
   memory       Memory: store and search knowledge docs + annotations (DESIGN.md §12-D41)
   tokens       Token accounting maintenance (DESIGN.md §12-D50)
   export       Export tasks as canonical JSON (maps to store.export)

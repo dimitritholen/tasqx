@@ -245,6 +245,7 @@ const WIKI: &[(&str, &str)] = &[
         include_str!("../../../../docs/wiki/Reports-and-Charts.md"),
     ),
     ("Memory.md", include_str!("../../../../docs/wiki/Memory.md")),
+    ("Notes.md", include_str!("../../../../docs/wiki/Notes.md")),
     (
         "AI-Agents-and-Automation.md",
         include_str!("../../../../docs/wiki/AI-Agents-and-Automation.md"),
