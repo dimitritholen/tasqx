@@ -684,6 +684,12 @@ pub(super) enum Command {
         #[command(subcommand)]
         action: CheckAction,
     },
+    /// Record a PR event on the task its branch names (maps to git.event).
+    #[command(after_help = crate::cmddoc::after_help("git"))]
+    Git {
+        #[command(subcommand)]
+        action: GitAction,
+    },
     /// Cancel a task (maps to task.cancel).
     #[command(
         alias = "delete",
@@ -1508,6 +1514,30 @@ pub(super) enum CheckAction {
         r#ref: String,
         /// The check's id — or its 1-based position in `tasqx show`.
         check_id: String,
+    },
+}
+
+/// D239. One verb under `git` today; the noun leaves room without a rename.
+#[derive(Subcommand)]
+pub(super) enum GitAction {
+    /// Report a PR event: opened starts the task, merged completes it when
+    /// every check passed, closed adds a note. tasqx never asks GitHub.
+    Event {
+        /// opened | merged | closed.
+        #[arg(value_parser = tasqx_core::engine::GIT_EVENTS)]
+        event: String,
+        /// The PR's branch; `task/<id>-<slug>` names the task.
+        #[arg(long)]
+        branch: String,
+        /// The PR's URL.
+        #[arg(long)]
+        pr: Option<String>,
+        /// The merge commit's sha.
+        #[arg(long)]
+        sha: Option<String>,
+        /// The task, when the branch does not name it (short_id or UUID).
+        #[arg(long, add = crate::complete::candidates::task_ids())]
+        task: Option<String>,
     },
 }
 

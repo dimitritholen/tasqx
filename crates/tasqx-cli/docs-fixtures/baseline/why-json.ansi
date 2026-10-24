@@ -80,6 +80,26 @@
     "id": "17dd6621-7db4-43b5-9f36-ddf89018081e"
   },
   "fresh_tokens": 0,
+  "git_refs": [
+    {
+      "created": "2026-09-13T14:05:00Z",
+      "id": "019f5a10-0000-7000-8000-00000000a001",
+      "kind": "branch",
+      "modified": "2026-09-13T14:05:00Z",
+      "noted": null,
+      "ref": "task/51-sdk-migration-guide",
+      "state": "open"
+    },
+    {
+      "created": "2026-09-13T14:05:00Z",
+      "id": "019f5a10-0000-7000-8000-00000000a002",
+      "kind": "pr",
+      "modified": "2026-09-13T14:05:00Z",
+      "noted": null,
+      "ref": "https://github.com/acme/api/pull/412",
+      "state": "open"
+    }
+  ],
   "id": "46773aad-c4aa-435a-abe1-fcde8ce09658",
   "modified": "2026-08-16T10:00:00Z",
   "over": null,

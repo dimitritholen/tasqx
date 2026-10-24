@@ -54,6 +54,7 @@ task, and where to find help.
 | `reopen` | Bring a finished task back | [Working on Tasks](Working-on-Tasks.md#tasqx-reopen) |
 | `pick` | Browse tasks on a full screen, read one, and start it | [Working on Tasks](Working-on-Tasks.md#tasqx-pick) |
 | `undo` | Take back the last change | [Working on Tasks](Working-on-Tasks.md#tasqx-undo) |
+| `git` | Let a pull request start or complete its task | [Working on Tasks](Working-on-Tasks.md#tasqx-git) |
 | `dep` / `undep` | Say "this waits on that" | [Dependencies](Dependencies.md) |
 
 **See the bigger picture**

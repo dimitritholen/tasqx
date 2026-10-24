@@ -64,6 +64,19 @@ export interface Check {
   modified: string;
 }
 
+/** A branch, PR or merge commit `git.event` recorded on a task (D239). */
+export interface GitRef {
+  id: string;
+  kind: 'branch' | 'pr' | 'commit';
+  /** The branch name, the PR's URL or the sha. */
+  ref: string;
+  state: 'open' | 'closed' | 'merged';
+  created: string;
+  modified: string;
+  /** `git.event`'s bookkeeping: the fact its last note stated. */
+  noted: string | null;
+}
+
 export interface Annotation {
   id: string;
   body: string;
@@ -96,6 +109,8 @@ export interface TaskDetail extends TaskRow {
   annotations_next_offset: number | null;
   annotations_removed: Tombstone[];
   checks: Check[];
+  /** Absent from a daemon older than D239. */
+  git_refs?: GitRef[];
   /** Token measurements; #691 renders the gauge below, not the rows. */
   tokens: unknown[];
   fresh_tokens: number;

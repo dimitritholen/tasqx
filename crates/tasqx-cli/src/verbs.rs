@@ -854,6 +854,27 @@ pub(crate) fn run_check(be: &mut Backend, ctx: &Ctx, action: &CheckAction) -> Cm
     Ok((result, text))
 }
 
+/// `tasqx git event` (D239) — a PR event, reported by whatever watched it.
+pub(crate) fn run_git(be: &mut Backend, ctx: &Ctx, action: &GitAction) -> CmdOutcome {
+    let GitAction::Event {
+        event,
+        branch,
+        pr,
+        sha,
+        task,
+    } = action;
+    let mut params = json!({ "event": event, "branch": branch });
+    for (key, value) in [("pr", pr), ("sha", sha), ("task", task)] {
+        if let Some(v) = value {
+            params[key] = json!(v);
+        }
+    }
+    let result = be.call("git.event", &params)?;
+    let task = read_back(be, &result).unwrap_or_else(|| result.clone());
+    let text = render::git_event(ctx, &result, &task, crate::clock::now());
+    Ok((result, text))
+}
+
 /// `tasqx brief <ref>` (D136) — the task, what its prerequisites concluded,
 /// and memory under a query derived from the task itself.
 pub(crate) fn run_brief(

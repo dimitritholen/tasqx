@@ -600,6 +600,11 @@ const RENDERED_AS: &[(&str, Shows)] = &[
     // edge added above, so its OWN `task.get` — not task 2's — is where this
     // ever renders non-empty.
     ("blocks", Shows::Cell("| blocks | #2 |")),
+    // D239: its own section, one line a ref.
+    (
+        "git_refs",
+        Shows::Cell("- pr https://github.com/o/r/pull/7 · closed"),
+    ),
     // D139: one row for the pair, because a spend with no threshold beside it
     // is a number the reader has nothing to do with, and the buckets below
     // already report the spend.
@@ -696,6 +701,12 @@ fn every_field_task_get_returns_is_accounted_for_in_the_view() {
     // The BLOCKER's own read — task 2's snapshots all carry an empty
     // `blocks` (nothing depends on the dependent), so the reverse edge only
     // renders on task 1's side of the same fixture edge.
+    // D239: a ref on the blocker, through the inbound door; `closed` only
+    // annotates, so task 1's status is the same either way.
+    d(
+        "git.event",
+        &json!({ "event": "closed", "branch": "task/1-x", "pr": "https://github.com/o/r/pull/7" }),
+    );
     let blocker = d("task.get", &json!({ "ref": 1 }));
     d("annotation.add", &json!({ "ref": 2, "body": "note" }));
     // D138: marked, so the state's marker and the evidence line are both

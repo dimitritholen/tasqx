@@ -1,0 +1,4 @@
+[38;2;191;97;106m▌[0m [38;2;138;138;138m#51[0m  [1mWrite the migration guide for SDK 3.0[0m
+[38;2;191;97;106m⊘[0m [1mnoted[0m   Merged https://github.com/acme/api/pull/412 (4f9c2e1), but not completed: 2 checks not
+[38;2;191;97;106m▌[0m         passed: open "The rate-limit ceiling is stated with its real number"; open "Reviewed by
+[38;2;191;97;106m▌[0m         whoever ships 3.0"; blocked by #50

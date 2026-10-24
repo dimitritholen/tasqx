@@ -45,6 +45,7 @@
   unarchive    Put an archived project back into rotation.
   projects     List projects (default marked with `*`).
   check        Acceptance criteria on a task: add, mark, drop.
+  git          Let a pull request start or complete its task.
   brief        Everything needed before starting a task, in one read.
   report       Summary counts, or outcomes, optionally grouped, as text or HTML.
   chart        Render throughput, heatmap, or burndown charts.

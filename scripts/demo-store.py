@@ -438,6 +438,16 @@ def main():
                           "position": i, "created": iso(day(-12, 11, 30)),
                           "modified": iso(day(-2, 9, 10))}
                          for i, (state, body) in enumerate(CHECKS)]
+    # D239: its branch and PR, as `tasqx git event opened` records them. Literal
+    # ids: a uid() here would move every id minted after it.
+    pr = "https://github.com/acme/api/pull/412"
+    subject["git_refs"] = [
+        {"id": "019f5a10-0000-7000-8000-00000000a001", "kind": "branch",
+         "ref": f"task/{subject['short_id']}-sdk-migration-guide",
+         "state": "open", "created": iso(day(-3, 14, 5))},
+        {"id": "019f5a10-0000-7000-8000-00000000a002", "kind": "pr", "ref": pr,
+         "state": "open", "created": iso(day(-3, 14, 5))},
+    ]
 
     # Memory docs go through `import` rather than `memory add`, so their ids and
     # their dates are this script's to choose: a live add mints a v7 id off the

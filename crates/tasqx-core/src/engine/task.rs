@@ -506,8 +506,8 @@ fn article_for_status(status: Status) -> &'static str {
 /// message, into the done event as bare short_ids, and into the response as
 /// `{short_id, title}` — and a tuple would leave each of those three sites
 /// spelling `.0`/`.1`/`.2` for itself.
-struct OpenBlocker {
-    short_id: i64,
+pub(super) struct OpenBlocker {
+    pub(super) short_id: i64,
     title: String,
     /// The blocker's status as every other read resolves it, so "how far off
     /// is it" is part of the answer: `#623 (pending)` and `#623 (active)` mean
@@ -899,6 +899,13 @@ impl Engine {
     /// else was running — the alternative is two clocks and no way to tell which
     /// one was the truth.
     pub fn task_start(&self, p: &Value) -> Result<Value, ApiError> {
+        self.task_start_via(p, None)
+    }
+
+    /// `task.start`, naming what started the clock in the event payload
+    /// (`via`, D239) without making it the clock's holder: the clock stays
+    /// anonymous for D140, so any start may auto-stop it.
+    pub(super) fn task_start_via(&self, p: &Value, via: Option<&str>) -> Result<Value, ApiError> {
         let command = commands::parse_start_task(p)?;
         let expected_rev = opt_i64(p, "expected_rev")?;
         let tx = self.begin_mutation()?;
@@ -1061,6 +1068,9 @@ impl Engine {
         // Absent is the shell's, so a plain shell start's event is unchanged.
         if starter != SHELL_HOLDER {
             start_payload["holder"] = json!(starter);
+        }
+        if let Some(via) = via {
+            start_payload["via"] = json!(via);
         }
         insert_event(&tx, Entity::Task, &task.id, "start", &start_payload)?;
         tx.commit()?;
@@ -1365,6 +1375,21 @@ impl Engine {
     /// become unblocked — both consequences of the same commit, so history and
     /// state cannot disagree about them.
     pub fn task_done(&self, p: &Value) -> Result<Value, ApiError> {
+        Ok(self.task_done_pinned(p, None)?.unwrap_or_default())
+    }
+
+    /// `task.done`, or with `pin` (D239) a merge's completion: the note `pin`
+    /// names — written in its own commit before — becomes the delivery note
+    /// by id, and the decision is re-read inside this transaction. A task
+    /// that is no longer open, has a check that has not passed, or is blocked
+    /// answers `None` and nothing is written. A pinned completion also
+    /// completes a backlog task: a merged PR is delivered work whatever the
+    /// schedule said. Without `pin` the answer is always `Some`.
+    pub(super) fn task_done_pinned(
+        &self,
+        p: &Value,
+        pin: Option<&str>,
+    ) -> Result<Option<Value>, ApiError> {
         // Pure params first (#12/#13): correlation metadata and any
         // self-reported token usage are validated before the write lock,
         // exactly like every other parse-then-lock mutation.
@@ -1392,8 +1417,29 @@ impl Engine {
         let tx = self.begin_mutation()?;
         let task = self.resolve_ref_on(&tx, p)?;
         guard_rev(expected_rev, &task)?;
+        if pin.is_some() {
+            let open = matches!(
+                task.status,
+                Status::Pending | Status::Active | Status::Backlog
+            );
+            let unproven: i64 = tx.query_row(
+                "SELECT COUNT(*) FROM checks WHERE task_id = ?1 AND state <> 'passed'",
+                params![task.id],
+                |r| r.get(0),
+            )?;
+            let pinned: i64 = tx.query_row(
+                "SELECT COUNT(*) FROM annotations WHERE id = ?1 AND task_id = ?2 \
+                 AND removed IS NULL",
+                params![pin, task.id],
+                |r| r.get(0),
+            )?;
+            if !open || unproven > 0 || pinned == 0 || !self.open_blockers(&task.id)?.is_empty() {
+                return Ok(None);
+            }
+        }
         match task.status {
             Status::Pending | Status::Active => {}
+            Status::Backlog if pin.is_some() => {}
             Status::Backlog => {
                 return Err(ApiError::conflict(format!(
                     "cannot complete a backlog task (only pending|active -> done){}",
@@ -1475,11 +1521,11 @@ impl Engine {
         // card. Ordered by id, the order `annotations_page` pages in.
         tx.execute(
             "UPDATE tasks SET status='done', completed=?1, active_since=NULL, \
-             tracked_seconds=?2, rev=?3, modified=?4, delivered_annotation_id=( \
+             tracked_seconds=?2, rev=?3, modified=?4, delivered_annotation_id=COALESCE(?6, ( \
                  SELECT id FROM annotations WHERE task_id=?5 AND removed IS NULL \
-                 ORDER BY id DESC LIMIT 1) \
+                 ORDER BY id DESC LIMIT 1)) \
              WHERE id=?5",
-            params![ts, total, task.rev + 1, ts, task.id],
+            params![ts, total, task.rev + 1, ts, task.id, pin],
         )?;
         // #12: the done event carries the correlation record for this
         // completion — see `commands::Correlation` for why it lives in the
@@ -1711,7 +1757,7 @@ impl Engine {
                 )
             });
         }
-        Ok(out)
+        Ok(Some(out))
     }
 
     /// If `template` carries a recurrence rule, create the next instance inside
@@ -2919,7 +2965,7 @@ impl Engine {
     /// `task.get` (§4), and widening it there would put a third spelling of
     /// status onto a read surface that already answers `status` for the task
     /// itself.
-    fn open_blockers(&self, task_id: &str) -> Result<Vec<OpenBlocker>, ApiError> {
+    pub(super) fn open_blockers(&self, task_id: &str) -> Result<Vec<OpenBlocker>, ApiError> {
         let mut stmt = self.conn.prepare(&format!(
             "SELECT t.short_id, t.title, t.status, t.wait, t.scheduled {} \
              AND d.task_id = ?1 ORDER BY t.short_id",
@@ -3255,6 +3301,9 @@ impl Engine {
         // "this shape does not carry them" cannot, and the difference matters
         // to anything deciding whether a completion was proven.
         obj["checks"] = json!(self.checks_of(&task.id)?);
+        // D239: the branch, PR and merge commit `git.event` recorded. Always
+        // present, like `checks`.
+        obj["git_refs"] = json!(super::git::refs_of(&self.conn, &task.id)?);
         obj["tokens"] = json!(self.tokens_of(&task.id)?);
         // D139: the gauge, beside the four buckets rather than instead of
         // them. `fresh_tokens` is always reported — it is a fact about the

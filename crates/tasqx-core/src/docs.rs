@@ -342,6 +342,83 @@ pub const TASK_CHECKS: &[FieldDoc] = &[f(
     "The acceptance criteria on the task, in position order (D138).",
 )];
 
+/// D239: the branch, PR and merge commit recorded on a task.
+pub const TASK_GIT_REFS: &[FieldDoc] = &[f(
+    "git_refs",
+    "array",
+    "The branch, PR and merge commit `git.event` recorded on this task (D239), oldest first.",
+)];
+
+/// D239: `store.export`'s copy, absent on a task with none.
+pub const TASK_EXPORT_GIT_REFS: &[FieldDoc] = &[o(
+    "git_refs",
+    "array",
+    "The branch, PR and merge commit recorded on this task (D239). Omitted entirely for a task that has none.",
+)];
+
+/// D239: one recorded git ref.
+pub const GIT_REF_ROW: &[FieldDoc] = &[
+    f("id", "string", "The ref row's id."),
+    f("kind", "string", "`branch`, `pr` or `commit`."),
+    f(
+        "ref",
+        "string",
+        "The branch name, the PR's URL (its link) or the merge commit's sha.",
+    ),
+    f(
+        "state",
+        "string",
+        "`open`, `closed` or `merged`. `merged` is final; a PR can move between `open` and `closed`.",
+    ),
+    f("created", "string", "When the ref was first recorded."),
+    f(
+        "modified",
+        "string",
+        "When `state` last changed. Between `open` and `closed`, the later change wins when two stores merge.",
+    ),
+    n(
+        "noted",
+        "string",
+        "The fact the last note `git.event` wrote for this ref states, so a retry writes a missing note and never a duplicate. Null before any.",
+    ),
+];
+
+/// D239: `git.event`'s answer.
+pub const R_GIT_EVENT: &[FieldDoc] = &[
+    f(
+        "changed",
+        "boolean",
+        "False when the event wrote nothing: a replay whose outcome already holds, or an event a recorded merge already settled.",
+    ),
+    f(
+        "event",
+        "string",
+        "The event, as given: `opened`, `merged` or `closed`.",
+    ),
+    f(
+        "short_id",
+        "integer",
+        "The task's short id — the small number every `ref` accepts and the CLI prints.",
+    ),
+    f("title", "string", "The task's title."),
+    f("status", "string", "The task's status after the event."),
+    n(
+        "transition",
+        "string",
+        "`started`, `completed` or `annotated`; null when the event moved nothing beyond the refs.",
+    ),
+    n(
+        "note",
+        "string",
+        "The note the event wrote (on `completed`, the delivery note); null when it wrote none.",
+    ),
+    n(
+        "reason",
+        "string",
+        "Why nothing was written when `changed` is false: `already recorded`, or the state that kept the event from moving its ref (`merged` is final). Null otherwise.",
+    ),
+];
+
 /// The forward dependency edge: what this task waits on. The same key on a
 /// live read and on an export row.
 pub const TASK_DEPENDS_ON: &[FieldDoc] = &[f(
@@ -1842,6 +1919,7 @@ pub fn result_shape(method: &str) -> &'static [(&'static str, &'static [FieldDoc
             ("result", TASK_CARD_NOTES),
             ("result", TASK_BUDGET_GAUGE),
             ("result", TASK_CHECKS),
+            ("result", TASK_GIT_REFS),
             ("result", TASK_CORE),
             ("result", TASK_LIVE_TIME),
             ("result", TASK_DEPENDS_ON),
@@ -1857,6 +1935,7 @@ pub fn result_shape(method: &str) -> &'static [(&'static str, &'static [FieldDoc
             ("result", TASK_URGENCY_BREAKDOWN),
             ("result", TASK_UNMET_BLOCKERS),
             ("result.checks[]", TASK_CHECK),
+            ("result.git_refs[]", GIT_REF_ROW),
             ("result.annotations[]", ANNOTATION_ROW),
             ("result.annotations[]", ANNOTATION_CAP),
             ("result.first_annotation", ANNOTATION_ROW),
@@ -1875,6 +1954,7 @@ pub fn result_shape(method: &str) -> &'static [(&'static str, &'static [FieldDoc
             ("result.task", TASK_CARD_NOTES),
             ("result.task", TASK_BUDGET_GAUGE),
             ("result.task", TASK_CHECKS),
+            ("result.task", TASK_GIT_REFS),
             ("result.task", TASK_CORE),
             ("result.task", TASK_LIVE_TIME),
             ("result.task", TASK_DEPENDS_ON),
@@ -1889,6 +1969,7 @@ pub fn result_shape(method: &str) -> &'static [(&'static str, &'static [FieldDoc
             ("result.task", TASK_STATUS_FLAG),
             ("result.task", TASK_UNMET_BLOCKERS),
             ("result.task.checks[]", TASK_CHECK),
+            ("result.task.git_refs[]", GIT_REF_ROW),
             ("result.task.annotations[]", ANNOTATION_ROW),
             ("result.task.annotations[]", ANNOTATION_CAP),
             ("result.task.first_annotation", ANNOTATION_ROW),
@@ -2019,6 +2100,7 @@ pub fn result_shape(method: &str) -> &'static [(&'static str, &'static [FieldDoc
             ("result.tasks[]", TASK_EXPORT_TIME),
             ("result.tasks[]", TASK_EXPORT_PIN),
             ("result.tasks[]", TASK_EXPORT_TOKENS),
+            ("result.tasks[]", TASK_EXPORT_GIT_REFS),
             ("result.tasks[]", TASK_DEPENDS_ON),
             ("result.tasks[]", TASK_EXPORT_ANNOTATIONS),
             ("result.tasks[]", TASK_STATUS_FLAG),
@@ -2028,12 +2110,14 @@ pub fn result_shape(method: &str) -> &'static [(&'static str, &'static [FieldDoc
             ("result.tasks[].tokens[]", MEASUREMENT_ROW),
             ("result.tasks[].annotations[]", ANNOTATION_ROW),
             ("result.tasks[].checks[]", TASK_CHECK),
+            ("result.tasks[].git_refs[]", GIT_REF_ROW),
             ("result.projects[]", PROJECT_EXPORT_ROW),
             ("result.docs[]", DOC_EXPORT_ROW),
             ("result.links[]", LINK_ROW),
             ("result.events[]", EVENT_ROW),
         ],
         "store.import" => &[("result", R_STORE_IMPORT)],
+        "git.event" => &[("result", R_GIT_EVENT)],
         "event.list" => &[("result", R_EVENT_LIST), ("result.events[]", EVENT_ROW)],
         "event.revert" => &[
             ("result", R_EVENT_REVERT),

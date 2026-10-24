@@ -466,6 +466,9 @@ pub(crate) enum DetailField {
     Tags,
     Check,
     Annotation,
+    /// D239: one branch, PR or merge commit. Its own line on the card, never
+    /// paired: a URL beside `rev` reads as one fact.
+    Git,
     /// A fact neither layout emphasises.
     Plain,
 }
@@ -777,6 +780,10 @@ pub(crate) fn detail_rows(ctx: &Ctx, result: &Value, now: Timestamp) -> Vec<Deta
             );
         }
     }
+    // D239: where the work went — the branch, the PR, the merge commit.
+    for line in tasqx_core::markdown::git_ref_lines(result) {
+        row("git", DetailField::Git, san(&line));
+    }
     // D138: the criteria, above the annotations and below the facts — each on
     // its own line with the state as a marker, and its evidence indented under
     // it, because a citation is only meaningful beside the claim it supports.
@@ -1009,6 +1016,7 @@ pub(crate) fn task_detail_card(ctx: &Ctx, result: &Value, now: Timestamp) -> Str
     let mut cells: Vec<MetaCell> = Vec::new();
     let mut annotations: Vec<String> = Vec::new();
     let mut checks: Vec<(&'static str, String)> = Vec::new();
+    let mut gits: Vec<String> = Vec::new();
     let all_rows = detail_rows(ctx, result, now);
     let numbers = CheckNumbers::new(&all_rows);
     for r in all_rows {
@@ -1022,6 +1030,10 @@ pub(crate) fn task_detail_card(ctx: &Ctx, result: &Value, now: Timestamp) -> Str
             // column. Its own block under the facts, like the notes.
             DetailField::Check => {
                 checks.push((r.label, r.value));
+                continue;
+            }
+            DetailField::Git => {
+                gits.push(r.value);
                 continue;
             }
             // D122: the one fact that stops the reader working opens the
@@ -1150,6 +1162,15 @@ pub(crate) fn task_detail_card(ctx: &Ctx, result: &Value, now: Timestamp) -> Str
             }
         }
         i += 1;
+    }
+
+    // D239: one ref a line, under the facts, wrapped under itself.
+    for g in &gits {
+        let vw = avail.saturating_sub(LW).max(10);
+        for (j, line) in wrap_words(g, vw).iter().enumerate() {
+            let label = if j == 0 { lab("git") } else { " ".repeat(LW) };
+            push(&mut out, format!("{label}{line}"));
+        }
     }
 
     // D138: one criterion per line, the marker painted as the plain layout

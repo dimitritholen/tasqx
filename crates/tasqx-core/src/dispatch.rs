@@ -395,6 +395,13 @@ pub const PARAMS: &[(&str, &[&str], bool)] = &[
         ],
         true,
     ),
+    // D239: a PR event reported by a caller; tasqx never asks GitHub. `task`
+    // overrides the task the branch's `task/<id>-<slug>` names.
+    (
+        "git.event",
+        &["event", "branch", "pr", "sha", "task"],
+        false,
+    ),
     ("event.list", &["limit", "ref", "entity", "from"], false),
     // `event.revert` takes NO params, and that is the decision rather than an
     // omission: it undoes the newest event in the log and nothing else, because
@@ -522,6 +529,7 @@ pub fn dispatch(engine: &Engine, method: &str, params: &Value) -> Result<Value, 
         "report.outcomes" => engine.report_outcomes(params),
         "store.export" => engine.store_export(params),
         "store.import" => engine.store_import(params),
+        "git.event" => engine.git_event(params),
         "event.list" => engine.event_list(params),
         "event.revert" => engine.event_revert_with(params),
         "reminder.fire" => engine.reminder_fire(params),

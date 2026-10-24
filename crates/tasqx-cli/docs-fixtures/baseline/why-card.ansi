@@ -14,6 +14,8 @@
 │             │ [ ] The rate-limit ceiling is stated with its real     │
 │             │     number                                             │
 │             │ [ ] Reviewed by whoever ships 3.0                      │
+│ Git         │ branch task/51-sdk-migration-guide · open              │
+│             │ pr https://github.com/acme/api/pull/412 · open         │
 │ Notes       │ 3 annotations, newest 2026-09-04 (12 days ago)         │
 └─────────────┴────────────────────────────────────────────────────────┘
 

@@ -330,6 +330,28 @@ fn migrate(conn: &Connection) -> Result<(), ApiError> {
         );
         CREATE INDEX IF NOT EXISTS idx_checks_task ON checks(task_id, position);
 
+        -- D239: the branch, PR and merge commit a task was delivered through,
+        -- recorded by `git.event` from what a caller reports (tasqx never asks
+        -- GitHub). `kind` is branch|pr|commit, `ref` the branch name, the PR
+        -- URL or the sha — a PR's ref IS its link, so there is no url column;
+        -- `state` is open|closed|merged and only moves forward.
+        CREATE TABLE IF NOT EXISTS task_git_refs (
+            id      TEXT PRIMARY KEY,
+            task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+            kind    TEXT NOT NULL,
+            ref     TEXT NOT NULL,
+            state   TEXT NOT NULL,
+            created TEXT NOT NULL,
+            -- When `state` last changed: between open and closed the later
+            -- change wins a merge of two stores (merged always wins).
+            modified TEXT NOT NULL,
+            -- The fact the last note `git.event` wrote for this ref states
+            -- (`held:<why>`, `merged:<note id>`, …), so a retry writes a
+            -- missing note and never a duplicate. NULL before any note.
+            noted   TEXT,
+            UNIQUE (task_id, kind, ref)
+        );
+
         CREATE TABLE IF NOT EXISTS annotations (
             id      TEXT PRIMARY KEY,
             task_id TEXT NOT NULL,

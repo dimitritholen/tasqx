@@ -75,6 +75,7 @@ help-done	pipe	100	-	done --help	-	-
 help-show	pipe	100	-	show --help	-	-
 help-brief	pipe	100	-	brief --help	-	-
 help-check	pipe	100	-	check --help	-	-
+help-git	pipe	100	-	git --help	-	-
 help-cancel	pipe	100	-	cancel --help	-	-
 help-reopen	pipe	100	-	reopen --help	-	-
 help-undo	pipe	100	-	undo --help	-	-
@@ -114,6 +115,7 @@ help-setup	pipe	100	-	setup --help	-	-
 help-check-add	pipe	100	-	check add --help	-	-
 help-check-set	pipe	100	-	check set --help	-	-
 help-check-remove	pipe	100	-	check remove --help	-	-
+help-git-event	pipe	100	-	git event --help	-	-
 help-chart-throughput	pipe	100	-	chart throughput --help	-	-
 help-chart-heatmap	pipe	100	-	chart heatmap --help	-	-
 help-chart-burndown	pipe	100	-	chart burndown --help	-	-

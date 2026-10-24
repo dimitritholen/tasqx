@@ -4277,6 +4277,9 @@ fn the_import_key_table_matches_the_keys_an_export_actually_emits() {
         "model": "claude-fable-5", "input_tokens": 1, "confidence": "high"
     }))
     .unwrap();
+    // `git_refs` (D239) is emitted only on a task that has one.
+    e.git_event(&json!({ "event": "closed", "branch": "task/1-x", "task": sid }))
+        .unwrap();
     e.task_done(&json!({ "ref": sid })).unwrap();
 
     let document = e.store_export(&json!({})).unwrap();
