@@ -107,6 +107,8 @@ export interface MemoryDetail {
 export interface NoteResults {
   notes: Note[];
   total: number;
+  /** The `offset` of the page after the loaded ones; null once all are in. */
+  nextOffset: number | null;
   filters: NoteFilters | null;
 }
 
@@ -131,6 +133,8 @@ export interface DashboardState {
   notes: Slice<NoteResults>;
   /** The note open in the inspector, as its last read or write answered it. */
   selectedNote: Note | null;
+  /** Why the inspector closed on its own (the open note was removed elsewhere). */
+  noteNotice: string | null;
   /** The loaded neighbourhood, merged across expansions; null before the first query. */
   graph: Slice<GraphData | null>;
   /** The request `graph` answers — what an expansion and a reload repeat. */
@@ -171,8 +175,9 @@ function initialState(): DashboardState {
     memoryResults: idle<MemoryResults>({ rows: [], matched: null, storeEmpty: false, filters: DEFAULT_MEMORY_FILTERS }),
     memorySelection: null,
     memoryDetail: idle<MemoryDetail>(idleMemoryDetail()),
-    notes: idle<NoteResults>({ notes: [], total: 0, filters: null }),
+    notes: idle<NoteResults>({ notes: [], total: 0, nextOffset: null, filters: null }),
     selectedNote: null,
+    noteNotice: null,
     graph: idle<GraphData | null>(null),
     graphRequest: null,
     graphSelection: null,
@@ -592,16 +597,64 @@ export class DashboardStore {
     try {
       const result = await client.request<NoteListResult>('note.list', noteListParams(filters));
       if (seq !== this.notesSeq) return;
-      this.setSlice('notes', { data: { notes: result.notes, total: result.total, filters }, loading: false, error: null });
-      // The open note follows a newer copy of its row, so another session's
-      // edit shows in the inspector; an older one (a read that raced a write) does not.
-      const open = this.state.selectedNote;
-      const fresh = open === null ? undefined : result.notes.find((note) => note.id === open.id);
-      if (fresh !== undefined && open !== null && fresh._rev > open._rev) this.set({ selectedNote: fresh });
+      this.setSlice('notes', {
+        data: { notes: result.notes, total: result.total, nextOffset: result.next_offset, filters },
+        loading: false,
+        error: null,
+      });
+    } catch (err) {
+      if (seq !== this.notesSeq) return;
+      this.fail('notes', err);
+      return;
+    }
+    await this.refreshOpenNote(client);
+  }
+
+  /** The next `note.list` page, appended; a reload or a new filter meanwhile drops it. */
+  async loadMoreNotes(): Promise<void> {
+    const { filters, nextOffset } = this.state.notes.data;
+    const client = this.client;
+    if (filters === null || nextOffset === null || client === null) return;
+    const seq = this.notesSeq;
+    this.startLoading('notes');
+    try {
+      const result = await client.request<NoteListResult>('note.list', noteListParams(filters, nextOffset));
+      if (seq !== this.notesSeq) return;
+      const current = this.state.notes.data;
+      this.setSlice('notes', {
+        data: { ...current, notes: [...current.notes, ...result.notes], total: result.total, nextOffset: result.next_offset },
+        loading: false,
+        error: null,
+      });
     } catch (err) {
       if (seq !== this.notesSeq) return;
       this.fail('notes', err);
     }
+  }
+
+  /**
+   * The open note follows a newer copy of itself, so another session's edit
+   * shows and its `expected_rev` stays current: from the list when the list
+   * holds it, else from `note.get`. Gone is a notice, not an error. An older
+   * copy (a read that raced a write) is ignored.
+   */
+  private async refreshOpenNote(client: ApiClient): Promise<void> {
+    const open = this.state.selectedNote;
+    if (open === null) return;
+    let fresh = this.state.notes.data.notes.find((note) => note.id === open.id);
+    if (fresh === undefined) {
+      try {
+        fresh = await client.request<Note>('note.get', { id: open.id });
+      } catch (err) {
+        if (this.state.selectedNote?.id !== open.id) return;
+        if (err instanceof ApiError && err.code === 'not_found') {
+          this.set({ selectedNote: null, noteNotice: `Note #${open.short_id} is gone: it was removed elsewhere.` });
+        }
+        return;
+      }
+    }
+    const now = this.state.selectedNote;
+    if (now !== null && now.id === fresh.id && fresh._rev > now._rev) this.set({ selectedNote: fresh });
   }
 
   /** Repeat the last `note.list`; nothing before the screen first read one. */
@@ -611,7 +664,7 @@ export class DashboardStore {
   }
 
   selectNote(note: Note | null): void {
-    this.set({ selectedNote: note });
+    this.set({ selectedNote: note, noteNotice: null });
   }
 
   async addNote(body: string): Promise<Note> {

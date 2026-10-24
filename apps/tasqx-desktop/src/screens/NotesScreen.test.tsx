@@ -41,15 +41,15 @@ describe('NotesScreen', () => {
     expect(within(grid()).getByText('Buy a new keyboard')).toBeInTheDocument();
   });
 
-  it('captures a note on Enter, clears the field and re-reads the list', async () => {
-    const it = await openNotes({ 'note.add': noteRow({ short_id: 3, body: 'new idea' }) });
+  it('captures a note on Enter, verbatim, clears the field and re-reads the list', async () => {
+    const it = await openNotes({ 'note.add': noteRow({ short_id: 3, body: '  new idea ' }) });
     it.transport.clearCalls();
 
     const input = screen.getByLabelText('Capture');
-    await it.user.type(input, 'new idea{Enter}');
+    await it.user.type(input, '  new idea {Enter}');
 
     await waitFor(() => expect(it.transport.countOf('note.list')).toBe(1));
-    expect(it.transport.calls[0]).toMatchObject({ method: 'note.add', params: { body: 'new idea' } });
+    expect(it.transport.calls[0]).toMatchObject({ method: 'note.add', params: { body: '  new idea ' } });
     expect(input).toHaveValue('');
   });
 
@@ -180,6 +180,38 @@ describe('NotesScreen', () => {
     expect(it.transport.calls.find((call) => call.method === 'note.promote')?.params).toMatchObject({ to: 'memory' });
     expect(within(panel).queryByRole('button', { name: /Promote/ })).not.toBeInTheDocument();
     expect(within(panel).queryByRole('button', { name: 'Unarchive' })).not.toBeInTheDocument();
+  });
+
+  it('says how many notes are not loaded yet, and loads the next page on request', async () => {
+    const it = await openNotes({
+      'note.list': (params: Record<string, unknown>) =>
+        params['offset'] === 2
+          ? noteList([noteRow({ short_id: 9, body: 'the oldest one' })], { total: 3, next_offset: null })
+          : noteList([LINKED, PLAIN], { total: 3, next_offset: 2 }),
+    });
+
+    expect(screen.getByText('Showing 2 of 3 notes')).toBeInTheDocument();
+    await it.user.click(screen.getByRole('button', { name: 'Load more' }));
+
+    await waitFor(() => expect(within(grid()).getByText('the oldest one')).toBeInTheDocument());
+    expect(within(grid()).getByText('Read later')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Load more' })).not.toBeInTheDocument();
+    expect(screen.queryByText(/Showing/)).not.toBeInTheDocument();
+  });
+
+  it('starts every note afresh: a pending remove or an error does not carry over to the next', async () => {
+    const it = await openNotes({ 'note.update': fails('conflict', 'note #2 changed under you') });
+    await it.user.click(within(grid()).getByText('Read later'));
+    await it.user.click(within(inspector()).getByRole('button', { name: 'Archive' }));
+    await within(inspector()).findByRole('alert');
+    await it.user.click(within(inspector()).getByRole('button', { name: 'Remove note' }));
+    expect(within(inspector()).getByText('Remove permanently?')).toBeInTheDocument();
+
+    await it.user.click(within(grid()).getByText('Buy a new keyboard'));
+
+    expect(within(inspector()).getByRole('heading', { name: 'Note #1' })).toBeInTheDocument();
+    expect(within(inspector()).queryByText('Remove permanently?')).not.toBeInTheDocument();
+    expect(within(inspector()).queryByRole('alert')).not.toBeInTheDocument();
   });
 
   it('removes the open note only after the confirm, and clears the inspector', async () => {

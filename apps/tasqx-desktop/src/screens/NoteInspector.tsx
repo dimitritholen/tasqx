@@ -44,6 +44,7 @@ export function NoteInspector() {
   const note = state.selectedNote;
 
   if (note === null) {
+    if (state.noteNotice !== null) return <EmptyState title="Note closed" message={state.noteNotice} />;
     return <EmptyState title="Nothing selected" message="Pick a note to see it here." />;
   }
 

@@ -76,7 +76,7 @@ function ConnectedApp() {
   useUpdateCheckOnStart();
   const route = useRoute();
   const { state, controller } = useConnection();
-  const { store } = useStore();
+  const { state: dashboard, store } = useStore();
   const View = SCREEN_VIEWS[route.screen];
 
   // The daemon's pushes reach the store only while this is mounted; the
@@ -146,7 +146,8 @@ function ConnectedApp() {
           route.screen === 'memory' ? (
             <MemoryInspector onChanged={() => void store.reloadMemoryResults()} />
           ) : route.screen === 'notes' ? (
-            <NoteInspector />
+            // Keyed on the note, so a pending remove or an error stays with the note it was for.
+            <NoteInspector key={dashboard.selectedNote?.id ?? 'none'} />
           ) : route.screen === 'graph' ? (
             <GraphInspector />
           ) : (
