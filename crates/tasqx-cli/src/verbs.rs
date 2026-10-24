@@ -1681,6 +1681,13 @@ pub(crate) fn run_note(
         }
         if mark.is_none() && crate::argv::names_a_note(first) {
             if words.len() == 1 {
+                // Printing files nothing: refused like `archive --project`,
+                // never silently dropped.
+                if project.is_some() {
+                    return Err(tasqx_core::ApiError::bad_request(format!(
+                        "`tasqx note {first}` prints a note and takes no --project"
+                    )));
+                }
                 let result = be.call("note.get", &json!({ "id": first }))?;
                 let text = render::note_shown(ctx, &result, crate::clock::now());
                 return Ok((result, text));
