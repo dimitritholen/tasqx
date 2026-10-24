@@ -43,15 +43,32 @@ fn bin(dir: &Path) -> Command {
 fn stub_claude(bin_dir: &Path) {
     #[cfg(unix)]
     {
-        use std::os::unix::fs::PermissionsExt;
         let f = bin_dir.join("claude");
         if !f.exists() {
-            std::fs::write(&f, "#!/bin/sh\nexit 0\n").unwrap();
-            std::fs::set_permissions(&f, std::fs::Permissions::from_mode(0o755)).unwrap();
+            write_script(&f, "#!/bin/sh\nexit 0\n");
         }
     }
     #[cfg(windows)]
     std::fs::write(bin_dir.join("claude.exe"), b"").unwrap();
+}
+
+/// Write an executable script from a child `sh`, so this multi-threaded test
+/// binary never holds a write fd on it: a sibling test's forked child would
+/// inherit that fd, and running the script meanwhile fails with ETXTBSY.
+#[cfg(unix)]
+fn write_script(path: &Path, text: &str) {
+    let ok = Command::new("sh")
+        .args([
+            "-c",
+            "printf '%s' \"$2\" > \"$1\" && chmod 755 \"$1\"",
+            "sh",
+        ])
+        .arg(path)
+        .arg(text)
+        .status()
+        .unwrap()
+        .success();
+    assert!(ok, "cannot write {}", path.display());
 }
 
 fn run(c: &mut Command) -> (i32, String, String) {
@@ -260,23 +277,20 @@ fn an_unknown_only_name_exits_2_naming_the_valid_ones() {
 /// `<name>-home.txt`, then runs the shell line `then`.
 #[cfg(unix)]
 fn fake_cli(dir: &Path, name: &str, then: &str) -> (PathBuf, PathBuf, PathBuf) {
-    use std::os::unix::fs::PermissionsExt;
     let bin_dir = dir.join("bin");
     std::fs::create_dir_all(&bin_dir).unwrap();
     stub_claude(&bin_dir);
     let calls = dir.join(format!("{name}-calls.txt"));
     let home = dir.join(format!("{name}-home.txt"));
     let script = bin_dir.join(name);
-    std::fs::write(
+    write_script(
         &script,
-        format!(
+        &format!(
             "#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{}'\nprintf '%s' \"$HOME\" > '{}'\n{then}\n",
             calls.display(),
             home.display()
         ),
-    )
-    .unwrap();
-    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+    );
     (bin_dir, calls, home)
 }
 

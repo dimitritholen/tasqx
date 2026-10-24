@@ -1143,13 +1143,18 @@ mod annotation_body_tests {
 mod editor_body_tests {
     use super::editor_body;
 
-    /// A fake editor: a script that writes `body` to the file it is given.
+    /// A fake editor: `sh` running a script that writes `body` to the file it is given.
     fn fake(tag: &str, body: &str) -> String {
-        use std::os::unix::fs::PermissionsExt;
+        script(tag, &format!("printf '%s' '{body}' > \"$1\"\n"))
+    }
+
+    /// `sh <script>`, never the script itself: exec'ing a file this test binary just
+    /// wrote fails with ETXTBSY while a sibling test's forked child still holds the
+    /// write fd it inherited, so the script is only ever read.
+    fn script(tag: &str, text: &str) -> String {
         let p = std::env::temp_dir().join(format!("tasqx-fakeed-{tag}-{}.sh", std::process::id()));
-        std::fs::write(&p, format!("#!/bin/sh\nprintf '%s' '{body}' > \"$1\"\n")).unwrap();
-        std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
-        p.display().to_string()
+        std::fs::write(&p, text).unwrap();
+        format!("sh {}", p.display())
     }
 
     #[test]
@@ -1159,11 +1164,7 @@ mod editor_body_tests {
 
     /// Like `fake`, but `body` goes through printf's escapes (`\n`).
     fn fake_raw(tag: &str, body: &str) -> String {
-        use std::os::unix::fs::PermissionsExt;
-        let p = std::env::temp_dir().join(format!("tasqx-fakeed-{tag}-{}.sh", std::process::id()));
-        std::fs::write(&p, format!("#!/bin/sh\nprintf '{body}' > \"$1\"\n")).unwrap();
-        std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
-        p.display().to_string()
+        script(tag, &format!("printf '{body}' > \"$1\"\n"))
     }
 
     #[test]
