@@ -928,6 +928,17 @@
   grid-template-columns: 48px minmax(200px, 1fr) 64px 96px 96px;
 }
 
+/* base.css strips links bare; a link in a note body has to read as one. */
+.note-body a {
+  color: var(--color-accent);
+  text-decoration: underline;
+  overflow-wrap: anywhere;
+}
+
+.note-body a:hover {
+  text-decoration-thickness: 2px;
+}
+
 .note-actions {
   display: flex;
   flex-wrap: wrap;
