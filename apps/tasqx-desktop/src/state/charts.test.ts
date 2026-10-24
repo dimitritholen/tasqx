@@ -120,14 +120,30 @@ describe('cfd', () => {
     expect(cfd.bucket).toBe('hour');
     expect(cfd.rows).toHaveLength(5);
     const last = cfd.rows[cfd.rows.length - 1]!.counts;
-    expect(last).toEqual({ backlog: 0, pending: 1, active: 0, done: 1, cancelled: 1 });
-    expect(cfd.rows[0]!.counts).toEqual({ backlog: 1, pending: 1, active: 0, done: 0, cancelled: 0 });
+    expect(last).toEqual({ triage: 0, backlog: 0, pending: 1, active: 0, done: 1, cancelled: 1 });
+    expect(cfd.rows[0]!.counts).toEqual({ triage: 0, backlog: 1, pending: 1, active: 0, done: 0, cancelled: 0 });
   });
 
   test('only the given tasks count, and events that change no status are skipped', () => {
     const cfd = buildCfd(events, new Set(['a']));
-    expect(cfd.rows.at(-1)!.counts).toEqual({ backlog: 0, pending: 1, active: 0, done: 0, cancelled: 0 });
+    expect(cfd.rows.at(-1)!.counts).toEqual({ triage: 0, backlog: 0, pending: 1, active: 0, done: 0, cancelled: 0 });
     expect(cfd.used).toBe(2);
+  });
+
+  test('triage is a band: accept leaves it, a reopened proposal goes back to it (D238)', () => {
+    const cfd = buildCfd(
+      [
+        ev('p', 'add', '2026-09-01T10:00:00Z', { status: 'triage' }),
+        ev('q', 'add', '2026-09-01T10:01:00Z', { status: 'triage' }),
+        ev('p', 'accept', '2026-09-01T11:00:00Z', { from: 'triage' }),
+        ev('q', 'cancel', '2026-09-01T12:00:00Z', { from: 'triage' }),
+        ev('q', 'reopen', '2026-09-01T13:00:00Z', { from: 'cancelled', to: 'triage' }),
+      ],
+      new Set(['p', 'q']),
+    );
+    expect(cfd.rows[0]!.counts.triage).toBe(2);
+    expect(cfd.rows[1]!.counts).toMatchObject({ triage: 1, pending: 1 });
+    expect(cfd.rows.at(-1)!.counts).toMatchObject({ triage: 1, pending: 1, cancelled: 0 });
   });
 
   test('a span past three days buckets by day', () => {

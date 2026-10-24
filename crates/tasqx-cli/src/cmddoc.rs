@@ -569,7 +569,7 @@ pub const COMMAND_REF: &[CmdDoc] = &[
         aliases: &[],
         method: "task.triage",
         summary: "Decline a proposal from triage: it is cancelled.",
-        usage: "tasqx decline <ref> [--reason text]",
+        usage: "tasqx decline <ref> [--reason text] [--holder id] [--force-claim]",
         examples: &[ex_norun(
             "tasqx decline 12 --reason \"out of scope for this release\"",
             "the reason is kept as a note on the task",
@@ -585,7 +585,7 @@ pub const COMMAND_REF: &[CmdDoc] = &[
         aliases: &[],
         method: "task.triage",
         summary: "Mark a proposal in triage a duplicate of another task.",
-        usage: "tasqx duplicate <ref> --of <ref>",
+        usage: "tasqx duplicate <ref> --of <ref> [--holder id] [--force-claim]",
         examples: &[ex_norun(
             "tasqx duplicate 12 --of 7",
             "cancels 12, moves its notes to 7 and links the two",

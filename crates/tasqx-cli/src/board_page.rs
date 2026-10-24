@@ -28,7 +28,12 @@ pub(crate) const NONCE_SLOT: &str = "__NONCE__";
 const COLUMNS: [(&str, &str, &str); 6] = [
     ("triage", "Triage", "status:triage"),
     ("backlog", "Backlog", "status:backlog"),
-    ("blocked", "Blocked", "@blocked"),
+    // D238: a blocked proposal stays in Triage, never here too.
+    (
+        "blocked",
+        "Blocked",
+        "@blocked and (status:backlog or status:pending or status:active)",
+    ),
     ("ready", "Ready", "@working"),
     ("active", "Active", "status:active"),
     ("done", "Done", "completed.after:-7d"),
@@ -142,7 +147,7 @@ body[data-writes="0"] .w{display:none}
 
 const SCRIPT: &str = r###"(()=>{
 "use strict";
-const COLS=[["triage","Triage","status:triage"],["backlog","Backlog","status:backlog"],["blocked","Blocked","@blocked"],["ready","Ready","@working"],["active","Active","status:active"],["done","Done","completed.after:-7d"]];
+const COLS=[["triage","Triage","status:triage"],["backlog","Backlog","status:backlog"],["blocked","Blocked","@blocked and (status:backlog or status:pending or status:active)"],["ready","Ready","@working"],["active","Active","status:active"],["done","Done","completed.after:-7d"]];
 const $=id=>document.getElementById(id);
 const el=(t,c,x)=>{const e=document.createElement(t);if(c)e.className=c;if(x!=null)e.textContent=x;return e};
 const W=document.body.dataset.writes==="1",SHELL=document.documentElement.dataset.shellHolder;
@@ -464,6 +469,20 @@ mod tests {
     fn proposals_have_a_column_and_are_never_offered_start() {
         assert!(COLUMNS.iter().any(|c| c.2 == "status:triage"));
         assert!(SCRIPT.contains("from===\"triage\""));
+        // A blocked proposal is in Triage only.
+        use tasqx_core::{dispatch, Engine};
+        let e = Engine::open_in_memory().expect("store");
+        dispatch(&e, "task.add", &serde_json::json!({ "title": "b" })).expect("add");
+        dispatch(
+            &e,
+            "task.add",
+            &serde_json::json!({ "title": "p", "status": "triage", "depends_on": [1] }),
+        )
+        .expect("add");
+        let (_, _, blocked) = COLUMNS[2];
+        let rows = dispatch(&e, "task.list", &serde_json::json!({ "filter": blocked }))
+            .expect("the Blocked query parses");
+        assert_eq!(rows["total"], 0, "{rows}");
         assert!(!SCRIPT.contains("s===\"triage\")b(\"Start\""));
     }
 

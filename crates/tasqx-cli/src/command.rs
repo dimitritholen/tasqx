@@ -738,6 +738,12 @@ pub(super) enum Command {
         /// Why it was declined; stored as a note on the task.
         #[arg(long)]
         reason: Option<String>,
+        /// The claim holder acting, for a task claimed with `claim --holder` (D236).
+        #[arg(long, value_name = "ID")]
+        holder: Option<String>,
+        /// Act although another holder has a live claim on it (D236).
+        #[arg(long)]
+        force_claim: bool,
     },
     /// Mark a task in triage a duplicate of another: it is cancelled, its
     /// notes move to the original and the two are linked (maps to task.triage).
@@ -749,6 +755,12 @@ pub(super) enum Command {
         /// The task it repeats.
         #[arg(long, value_name = "ID", add = crate::complete::candidates::task_ids())]
         of: String,
+        /// The claim holder acting, for a task claimed with `claim --holder` (D236).
+        #[arg(long, value_name = "ID")]
+        holder: Option<String>,
+        /// Act although another holder has a live claim on it (D236).
+        #[arg(long)]
+        force_claim: bool,
     },
     /// Reopen a done/cancelled task (maps to task.reopen).
     #[command(after_help = crate::cmddoc::after_help("reopen"))]

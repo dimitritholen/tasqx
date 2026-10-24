@@ -3929,7 +3929,9 @@ fn the_read_only_refusal_names_the_flag_that_fixes_it() {
 /// D238 added `tasqx_triage_task` and the `status`, `discovered_from` and
 /// `client` arguments on `tasqx_add_task` (whose description was tightened to
 /// stay under the per-tool cap). Measured beside every tool above: 37 tools,
-/// 41,679 bytes, so the cap moved from 40,832 to 41,728.
+/// 41,679 bytes, so the cap moved from 40,832 to 41,728. Its second review
+/// added `actor` and `force_claim` on `tasqx_triage_task` (D236's claim guard
+/// on decline and duplicate): 37 tools, 41,818 bytes, so 41,856.
 ///
 /// The floor is not zero. With every `description` key removed from the roster
 /// the same serialization is 11,597 bytes of schema skeleton — property names,
@@ -3941,7 +3943,7 @@ fn the_read_only_refusal_names_the_flag_that_fixes_it() {
 fn the_whole_tool_roster_stays_inside_its_per_prompt_budget() {
     const MAX_DESCRIPTION: usize = 800;
     const MAX_ENTRY: usize = 3_072;
-    const MAX_ROSTER: usize = 41_728;
+    const MAX_ROSTER: usize = 41_856;
 
     let engine = engine();
     let server = McpServer::new(&engine, Scope::Write);

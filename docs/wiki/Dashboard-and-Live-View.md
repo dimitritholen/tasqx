@@ -127,7 +127,7 @@ Like `watch`, `board` needs a running
 
 The columns are the states tasqx already derives, each headed by the filter
 that fills it: **Triage** `status:triage` (proposals, D238), **Backlog**
-`status:backlog`, **Blocked** `@blocked`, **Ready**
+`status:backlog`, **Blocked** `@blocked` (a blocked proposal stays in Triage), **Ready**
 `@working`, **Active** `status:active` (one at a time) and **Done**
 `completed.after:-7d`. Inside a column cards are ordered by urgency, on the
 same scale and in the same three bands as `tasqx list`; a `▶` marks the running

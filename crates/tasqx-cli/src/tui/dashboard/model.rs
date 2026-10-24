@@ -172,11 +172,16 @@ impl Task {
 
     /// Open and past its deadline at `now`, by core's one definition of overdue
     /// (D131, `tasqx_core::filter::overdue_at`).
+    /// A proposal waiting in triage (D238).
+    pub fn is_triage(&self) -> bool {
+        self.status.as_str() == tasqx_core::types::Status::Triage.as_str()
+    }
+
     /// A proposal in triage is never overdue: nobody has agreed to its date
     /// yet (D238).
     pub fn is_overdue(&self, now: Timestamp) -> bool {
         self.status.is_open()
-            && self.status.as_str() != tasqx_core::types::Status::Triage.as_str()
+            && !self.is_triage()
             && self
                 .due
                 .is_some_and(|d| tasqx_core::filter::overdue_at(d, now))
@@ -347,9 +352,14 @@ pub fn group_tasks(rows: Vec<Task>, now: Timestamp, sort: Sort) -> Tasks {
     // was that "a task finished four minutes ago is exactly what this answers".
     // Dropping closed rows there would fold the panel in and lose the question
     // it existed to answer.
+    // D238: a proposal is not ranked and has no agreed deadline, so the urgency
+    // and due orders leave it out; `touched` still shows it.
     let mut rows: Vec<Task> = match sort {
         Sort::Touched => rows,
-        _ => rows.into_iter().filter(|t| t.status.is_open()).collect(),
+        _ => rows
+            .into_iter()
+            .filter(|t| t.status.is_open() && !t.is_triage())
+            .collect(),
     };
     let total = rows.len();
     let overdue_of = |t: &Task| t.is_overdue(now);
@@ -637,9 +647,10 @@ pub fn build_sorted(src: Sources<'_>, now: Timestamp, today: Date, sort: Sort) -
         }
     }
     let overdue_now = rows.iter().filter(|t| t.is_overdue(now)).count();
+    // D238: a proposal counts under triage, never under blocked.
     let blocked_now = rows
         .iter()
-        .filter(|t| t.status.is_open() && t.blocked)
+        .filter(|t| t.status.is_open() && !t.is_triage() && t.blocked)
         .count();
 
     // ---- PULSE: how the work is moving -----------------------------------
@@ -736,10 +747,7 @@ pub fn build_sorted(src: Sources<'_>, now: Timestamp, today: Date, sort: Sort) -
         // from the panels", now that there is one panel to take them from.
         overdue: overdue_now,
         blocked: blocked_now,
-        triage: all
-            .iter()
-            .filter(|t| t.status.as_str() == tasqx_core::types::Status::Triage.as_str())
-            .count(),
+        triage: all.iter().filter(|t| t.is_triage()).count(),
         done_week: all
             .iter()
             .filter(|t| t.completed.is_some_and(|c| c.as_second() >= week_ago))

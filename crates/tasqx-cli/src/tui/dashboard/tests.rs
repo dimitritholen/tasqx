@@ -2575,9 +2575,11 @@ fn the_header_counts_the_proposals_in_triage() {
             "urgency": 0.0, "wait": null
         })
     };
+    let mut blocked_proposal = row(1, "triage");
+    blocked_proposal["blocked"] = json!(true);
     d = model::build(
         Sources {
-            tasks: &json!({ "count": 2, "tasks": [row(1, "triage"), row(2, "pending")] }),
+            tasks: &json!({ "count": 2, "tasks": [blocked_proposal, row(2, "pending")] }),
             summary: &json!({ "groups": [] }),
             projects: &json!({ "count": 0, "projects": [] }),
             events: &json!({ "count": 0, "events": [] }),
@@ -2588,6 +2590,10 @@ fn the_header_counts_the_proposals_in_triage() {
         date(2026, 8, 5),
     );
     assert_eq!(d.status.triage, 1);
+    assert_eq!(
+        d.status.blocked, 0,
+        "a blocked proposal counts under triage only"
+    );
     let th = theme::load("nord", None);
     let text: String = panels::status_line(&d.status, 200, &th, &caps())
         .iter()
