@@ -80,13 +80,58 @@ fn note_captures_its_words_verbatim_and_echoes_the_number() {
     assert_eq!(s.json(&["list"])["count"], 0);
 }
 
+/// Prose that opens with a subverb's word is a note; a subverb alone, or
+/// followed by a number, is a command typed the wrong way round and refused
+/// with the right spelling. After `--` it is text again.
 #[test]
-fn a_first_word_that_is_a_subverb_is_text() {
+fn a_first_word_that_is_a_subverb_is_text_unless_it_reads_as_a_command() {
     let s = Store::new("subverb-text");
-    let n = s.json(&["note", "edit", "the", "readme"]);
-    assert_eq!(n["body"], "edit the readme");
-    let n = s.json(&["note", "rm"]);
-    assert_eq!(n["body"], "rm");
+    assert_eq!(
+        s.json(&["note", "edit", "the", "readme"])["body"],
+        "edit the readme"
+    );
+    assert_eq!(
+        s.json(&["note", "promote", "Jan", "to", "lead"])["body"],
+        "promote Jan to lead"
+    );
+    for (args, hint) in [
+        (
+            &["note", "archive", "7"][..],
+            "did you mean: tasqx note 7 archive?",
+        ),
+        (&["note", "rm"][..], "did you mean: tasqx note <n> rm?"),
+        (&["note", "edit"][..], "did you mean: tasqx note <n> edit?"),
+    ] {
+        let out = s.run(args);
+        assert_eq!(out.status.code(), Some(2), "{args:?}");
+        let err = String::from_utf8_lossy(&out.stderr);
+        assert!(err.contains(hint), "{args:?}: {err}");
+        assert!(err.contains("put -- before it"), "{err}");
+    }
+    assert_eq!(s.json(&["note", "--", "archive", "7"])["body"], "archive 7");
+    assert_eq!(s.listed(&[]), vec![3, 2, 1]);
+}
+
+/// The pre-pass marks one word with one marker and the consumer strips that
+/// one; a user's own leading `\u{2}` is stored verbatim, by add and edit alike.
+#[test]
+fn a_literal_leading_marker_is_stored_verbatim() {
+    let s = Store::new("marker");
+    let n = s.json(&["note", "\u{2}hello", "\u{2}\u{2}world"]);
+    assert_eq!(n["body"], "\u{2}hello \u{2}\u{2}world");
+    let n = s.json(&["note", "1", "edit", "\u{2}hi", "\u{2}there"]);
+    assert_eq!(n["body"], "\u{2}hi \u{2}there");
+    let n = s.json(&["note", "--", "\u{2}7"]);
+    assert_eq!(n["body"], "\u{2}7");
+}
+
+/// The empty-list hint points at `--all` only when it was not given.
+#[test]
+fn the_empty_hint_names_all_only_when_it_was_not_given() {
+    let s = Store::new("empty-hint");
+    assert!(s.ok(&["notes"]).contains("`--all`"));
+    assert!(!s.ok(&["notes", "--links", "--all"]).contains("--all"));
+    assert!(!s.ok(&["notes", "--archived"]).contains("--all"));
 }
 
 /// `note` was `annotate`'s alias: `tasqx note 42 "…"` annotated task 42. It is

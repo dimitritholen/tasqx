@@ -492,6 +492,34 @@ fn the_note_text_marker_never_reaches_a_candidate() {
     }
 }
 
+/// Completion follows the parser (D241): a subverb follows a note's id, so the
+/// first word after `note` is never offered one, and the word after an id is.
+#[test]
+fn note_subverbs_are_offered_after_an_id_and_never_first() {
+    const SUBVERBS: [&str; 5] = ["edit", "archive", "unarchive", "rm", "promote"];
+    let got = |cursor, words: &[&str]| {
+        let out = complete_bash(cursor, words);
+        assert_eq!(out.status.code(), Some(0), "{words:?}");
+        candidates(&out)
+    };
+    for first in ["", "ed", "pro"] {
+        let c = got(2, &["tasqx", "note", first]);
+        assert!(
+            !c.iter().any(|c| SUBVERBS.contains(&c.as_str())),
+            "`note {first}<TAB>` offered a subverb: {c:?}"
+        );
+    }
+    let after_id = got(3, &["tasqx", "note", "7", ""]);
+    for s in SUBVERBS {
+        assert!(
+            after_id.contains(&s.to_string()),
+            "{s} missing: {after_id:?}"
+        );
+    }
+    assert!(!after_id.iter().any(|c| c == "--project"), "{after_id:?}");
+    assert_eq!(got(3, &["tasqx", "note", "7", "ar"]), vec!["archive"]);
+}
+
 #[test]
 fn a_filter_token_beginning_with_a_dash_does_not_derail_the_completer() {
     let out = complete_bash(2, &["tasqx", "list", "-needs"]);
