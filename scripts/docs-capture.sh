@@ -304,7 +304,8 @@ capture_pipe() {
 # Two things a captured row can read answer from whichever machine is
 # capturing rather than from the pinned store, both found on CI after passing
 # on a Mac (#740 PR #145 review): `ripwire_on_path` (D178) — `tasqx setup`'s
-# hint line AND every MCP `initialize`'s own `instructions` — scans `$PATH`,
+# hint line AND (until task #924 dropped the line) every MCP `initialize`'s
+# own `instructions` — scans `$PATH`,
 # so it answers differently depending on whether the CAPTURING machine
 # happens to have `ripwire` installed. And `session_rulings`' workdir-ancestor
 # project inference (D157) reads `std::env::current_dir()`: GitHub Actions
