@@ -17,11 +17,12 @@ export interface NoteFilters {
 
 export const DEFAULT_NOTE_FILTERS: NoteFilters = { query: '', links: false, status: 'open' };
 
-export function noteListParams(filters: NoteFilters): Record<string, unknown> {
+export function noteListParams(filters: NoteFilters, offset = 0): Record<string, unknown> {
   const query = filters.query.trim();
   return {
     status: filters.status,
     limit: NOTES_PAGE,
+    ...(offset > 0 ? { offset } : {}),
     ...(filters.links ? { links: true } : {}),
     ...(query !== '' ? { query } : {}),
   };
@@ -38,18 +39,35 @@ export interface BodySegment {
   href?: string;
 }
 
-// A link runs to the next whitespace or quote; trailing sentence punctuation
-// and closing brackets are prose, not part of it.
-const LINK_RE = /https?:\/\/[^\s<>"']+/gi;
-const TRAILING_RE = /[.,;:!?)\]}]+$/;
+// A link runs to the next whitespace or quote. Case-sensitive on the scheme,
+// as the engine's `has_links` is, so a row's link badge and its body agree.
+const LINK_RE = /https?:\/\/[^\s<>"']+/g;
+const TRAILING = '.,;:!?)]}';
+
+/** Trailing punctuation is prose, except a `)` closing a `(` inside the link. */
+function trimTrailing(href: string): string {
+  let end = href.length;
+  while (end > 0 && TRAILING.includes(href[end - 1]!)) {
+    const head = href.slice(0, end);
+    if (head.endsWith(')') && head.split('(').length > head.split(')').length - 1) break;
+    end -= 1;
+  }
+  return href.slice(0, end);
+}
+
+/** `https://google.com@evil.com/` reads as one host and goes to another. */
+function hasUserinfo(href: string): boolean {
+  const authority = href.slice(href.indexOf('//') + 2).split(/[/?#]/)[0] ?? '';
+  return authority.includes('@');
+}
 
 /** A body cut into plain text and the http(s) links in it, in order. */
 export function splitLinks(body: string): BodySegment[] {
   const segments: BodySegment[] = [];
   let at = 0;
   for (const match of body.matchAll(LINK_RE)) {
-    const href = match[0].replace(TRAILING_RE, '');
-    if (!/^https?:\/\/[^/]/i.test(href)) continue;
+    const href = trimTrailing(match[0]);
+    if (!/^https?:\/\/[^/]/.test(href) || hasUserinfo(href)) continue;
     if (match.index > at) segments.push({ text: body.slice(at, match.index) });
     segments.push({ text: href, href });
     at = match.index + href.length;

@@ -5,6 +5,10 @@ describe('noteListParams', () => {
     expect(noteListParams(DEFAULT_NOTE_FILTERS)).toEqual({ status: 'open', limit: NOTES_PAGE });
   });
 
+  it('pages from an offset when given one', () => {
+    expect(noteListParams(DEFAULT_NOTE_FILTERS, 100)).toEqual({ status: 'open', limit: NOTES_PAGE, offset: 100 });
+  });
+
   it('sends links only when asked, and the trimmed query only when there is one', () => {
     expect(noteListParams({ query: '  rust  ', links: true, status: 'all' })).toEqual({
       status: 'all',
@@ -34,14 +38,38 @@ describe('splitLinks', () => {
     expect(splitLinks('just words')).toEqual([{ text: 'just words' }]);
   });
 
-  it('marks every http and https link, case-insensitively, between the plain text', () => {
-    expect(splitLinks('see https://a.example/x and HTTP://b.example then')).toEqual([
+  it('marks every http and https link between the plain text', () => {
+    expect(splitLinks('see https://a.example/x and http://b.example then')).toEqual([
       { text: 'see ' },
       { text: 'https://a.example/x', href: 'https://a.example/x' },
       { text: ' and ' },
-      { text: 'HTTP://b.example', href: 'HTTP://b.example' },
+      { text: 'http://b.example', href: 'http://b.example' },
       { text: ' then' },
     ]);
+  });
+
+  it('is case-sensitive on the scheme, as the engine\'s has_links is', () => {
+    expect(splitLinks('HTTP://b.example Https://c.example')).toEqual([{ text: 'HTTP://b.example Https://c.example' }]);
+  });
+
+  it('keeps a closing paren the link itself opened, and drops one the prose opened', () => {
+    expect(splitLinks('see https://en.wikipedia.org/wiki/Foo_(bar).')).toEqual([
+      { text: 'see ' },
+      { text: 'https://en.wikipedia.org/wiki/Foo_(bar)', href: 'https://en.wikipedia.org/wiki/Foo_(bar)' },
+      { text: '.' },
+    ]);
+    expect(splitLinks('(https://en.wikipedia.org/wiki/Foo_(bar))')).toEqual([
+      { text: '(' },
+      { text: 'https://en.wikipedia.org/wiki/Foo_(bar)', href: 'https://en.wikipedia.org/wiki/Foo_(bar)' },
+      { text: ')' },
+    ]);
+  });
+
+  it('does not link a URL carrying a user name, which reads as one host and goes to another', () => {
+    expect(splitLinks('https://google.com@evil.com/ and https://u:p@x.example/')).toEqual([
+      { text: 'https://google.com@evil.com/ and https://u:p@x.example/' },
+    ]);
+    expect(splitLinks('https://x.example/a@b')).toEqual([{ text: 'https://x.example/a@b', href: 'https://x.example/a@b' }]);
   });
 
   it('leaves trailing sentence punctuation and a closing bracket out of the link', () => {

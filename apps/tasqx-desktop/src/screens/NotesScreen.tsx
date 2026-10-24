@@ -6,7 +6,7 @@ import type { Note } from '../api/types';
 import { DEFAULT_NOTE_FILTERS, noteHeadline } from '../state/notes';
 import type { NoteFilters } from '../state/notes';
 import { useStore } from '../state/store';
-import { EmptyState, ErrorState, Field, Pill, Skeleton } from '../ui/primitives';
+import { Button, EmptyState, ErrorState, Field, Pill, Skeleton } from '../ui/primitives';
 import { MEMORY_DEBOUNCE_MS } from './MemoryScreen';
 import { Dash } from './TaskTable';
 import { useListEntry } from './useListEntry';
@@ -35,12 +35,12 @@ function CaptureForm() {
 
   async function onSubmit(event: FormEvent): Promise<void> {
     event.preventDefault();
-    const text = body.trim();
-    if (text === '' || busy) return;
+    // Stored verbatim, as the engine keeps it; only an all-blank body is refused.
+    if (body.trim() === '' || busy) return;
     setBusy(true);
     setError(null);
     try {
-      await store.addNote(text);
+      await store.addNote(body);
       setBody('');
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -222,6 +222,15 @@ export function NotesScreen() {
       </div>
 
       <NoteRows notes={state.notes.data.notes} onRetry={() => void store.runNotesQuery(filters)} />
+
+      {state.notes.data.nextOffset !== null && (
+        <div className="notes-more">
+          <span className="muted">{`Showing ${state.notes.data.notes.length} of ${state.notes.data.total} notes`}</span>
+          <Button size="sm" loading={state.notes.loading} onClick={() => void store.loadMoreNotes()}>
+            Load more
+          </Button>
+        </div>
+      )}
     </div>
   );
 }

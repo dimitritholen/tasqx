@@ -368,6 +368,53 @@ describe('DashboardStore notes', () => {
     expect(store.getState().selectedNote?.body).toBe('rev 4');
   });
 
+  it('re-reads an open note the filtered list no longer holds, so its revision stays fresh', async () => {
+    const { transport, store } = await connected({
+      'core.capabilities': NOTE_CAPABILITIES,
+      'note.list': noteList([]),
+      'note.get': noteRow({ short_id: 7, status: 'archived', _rev: 5 }),
+    });
+    store.selectNote(noteRow({ short_id: 7, _rev: 4 }));
+
+    await store.runNotesQuery(DEFAULT_NOTE_FILTERS);
+
+    expect(transport.calls.find((call) => call.method === 'note.get')?.params).toEqual({ id: 'note-uuid-7' });
+    expect(store.getState().selectedNote).toMatchObject({ status: 'archived', _rev: 5 });
+    expect(store.getState().noteNotice).toBeNull();
+  });
+
+  it('closes the inspector with a notice when the open note is gone', async () => {
+    const { store } = await connected({
+      'core.capabilities': NOTE_CAPABILITIES,
+      'note.list': noteList([]),
+      'note.get': fails('not_found', 'note not found: 7'),
+    });
+    store.selectNote(noteRow({ short_id: 7, _rev: 4 }));
+
+    await store.runNotesQuery(DEFAULT_NOTE_FILTERS);
+
+    expect(store.getState().selectedNote).toBeNull();
+    expect(store.getState().noteNotice).toBe('Note #7 is gone: it was removed elsewhere.');
+  });
+
+  it('appends the next page on loadMoreNotes, from the offset the last page named', async () => {
+    const { transport, store } = await connected({
+      'core.capabilities': NOTE_CAPABILITIES,
+      'note.list': (params: Record<string, unknown>) =>
+        params['offset'] === 2
+          ? noteList([noteRow({ short_id: 1 })], { total: 3, next_offset: null })
+          : noteList([noteRow({ short_id: 3 }), noteRow({ short_id: 2 })], { total: 3, next_offset: 2 }),
+    });
+    await store.runNotesQuery(DEFAULT_NOTE_FILTERS);
+    expect(store.getState().notes.data).toMatchObject({ total: 3, nextOffset: 2 });
+
+    await store.loadMoreNotes();
+
+    expect(transport.calls.at(-1)?.params).toMatchObject({ offset: 2, status: 'open' });
+    expect(store.getState().notes.data.notes.map((note) => note.short_id)).toEqual([3, 2, 1]);
+    expect(store.getState().notes.data.nextOffset).toBeNull();
+  });
+
   it('reloads nothing before a first read has set the filters', async () => {
     const { transport, store } = await connected({ 'core.capabilities': NOTE_CAPABILITIES });
     await store.reloadNotes();
