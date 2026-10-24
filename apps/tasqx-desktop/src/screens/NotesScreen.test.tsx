@@ -103,6 +103,19 @@ describe('NotesScreen', () => {
     open.mockRestore();
   });
 
+  it('says so when the host refuses to open a link, rather than doing nothing', async () => {
+    const it = await openNotes();
+    const open = vi.spyOn(window, 'open').mockImplementation(() => {
+      throw new Error('link holds a backslash');
+    });
+    await it.user.click(within(grid()).getByText('Read later'));
+
+    await it.user.click(within(inspector()).getByRole('link', { name: 'https://example.com/post' }));
+
+    expect(await within(inspector()).findByRole('alert')).toHaveTextContent('link holds a backslash');
+    open.mockRestore();
+  });
+
   it('is driven from the keyboard: j enters the list, j moves, Enter opens', async () => {
     const it = await openNotes();
 

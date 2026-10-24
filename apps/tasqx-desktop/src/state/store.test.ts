@@ -415,6 +415,43 @@ describe('DashboardStore notes', () => {
     expect(store.getState().notes.data.nextOffset).toBeNull();
   });
 
+  it('keeps every loaded page on a reload, reading them again from the top in one call', async () => {
+    const page = (from: number, count: number) =>
+      Array.from({ length: count }, (_, at) => noteRow({ short_id: 1000 - from - at }));
+    const { transport, store } = await connected({
+      'core.capabilities': NOTE_CAPABILITIES,
+      'note.list': (params: Record<string, unknown>) => {
+        const offset = Number(params['offset'] ?? 0);
+        const limit = Number(params['limit']);
+        const next = offset + limit < 300 ? offset + limit : null;
+        return noteList(page(offset, Math.min(limit, 300 - offset)), { total: 300, next_offset: next });
+      },
+    });
+    await store.runNotesQuery(DEFAULT_NOTE_FILTERS);
+    await store.loadMoreNotes();
+    await store.loadMoreNotes();
+    expect(store.getState().notes.data.notes).toHaveLength(300);
+    transport.clearCalls();
+
+    await store.reloadNotes();
+
+    expect(transport.calls.map((call) => call.params)).toEqual([{ status: 'open', limit: 300 }]);
+    expect(store.getState().notes.data.notes).toHaveLength(300);
+  });
+
+  it('drops a row the next page repeats, when a note added between pages shifted it', async () => {
+    const { store } = await connected({
+      'core.capabilities': NOTE_CAPABILITIES,
+      'note.list': (params: Record<string, unknown>) =>
+        params['offset'] === 2
+          ? noteList([noteRow({ short_id: 2 }), noteRow({ short_id: 1 })], { total: 4, next_offset: null })
+          : noteList([noteRow({ short_id: 3 }), noteRow({ short_id: 2 })], { total: 3, next_offset: 2 }),
+    });
+    await store.runNotesQuery(DEFAULT_NOTE_FILTERS);
+    await store.loadMoreNotes();
+    expect(store.getState().notes.data.notes.map((note) => note.short_id)).toEqual([3, 2, 1]);
+  });
+
   it('reloads nothing before a first read has set the filters', async () => {
     const { transport, store } = await connected({ 'core.capabilities': NOTE_CAPABILITIES });
     await store.reloadNotes();
