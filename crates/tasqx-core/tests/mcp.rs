@@ -83,12 +83,12 @@ fn full_protocol_sequence() {
     }));
     assert!(note.is_none(), "notifications must not produce a response");
 
-    // 3. tools/list — all 42 tools present, each with an inputSchema.
+    // 3. tools/list — all 43 tools present, each with an inputSchema.
     let listed = server
         .handle_message(&json!({ "jsonrpc": "2.0", "id": 2, "method": "tools/list" }))
         .expect("tools/list is a request");
     let tools = listed["result"]["tools"].as_array().expect("tools array");
-    assert_eq!(tools.len(), 42, "expected 42 tools");
+    assert_eq!(tools.len(), 43, "expected 43 tools");
     assert!(tools.iter().any(|t| t["name"] == "tasqx_next"));
     let names: Vec<&str> = tools.iter().map(|t| t["name"].as_str().unwrap()).collect();
     for expected in [
@@ -274,10 +274,11 @@ fn read_scope_tools_list_hides_write_tools() {
     // added browsing to that same read-only set. D137's `tasqx_outcomes` joined
     // them for the same reason: an agent that cannot write should still be able
     // to see its own record, and D136's `tasqx_brief_task` for the reason
-    // beside it — orienting is a read. D241's `tasqx_list_notes` is a read.
+    // beside it — orienting is a read. D241's `tasqx_list_notes` and
+    // `tasqx_get_note` are reads.
     assert_eq!(
         tools.len(),
-        11,
+        12,
         "read scope should list only the read tools"
     );
     for t in tools {
@@ -3934,7 +3935,9 @@ fn the_read_only_refusal_names_the_flag_that_fixes_it() {
 /// on decline and duplicate): 37 tools, 41,818 bytes, so 41,856.
 ///
 /// D241 added the five note tools. Measured beside every tool above: 42
-/// tools, 45,323 bytes, so the cap moved from 41,856 to 45,568.
+/// tools, 45,323 bytes, so the cap moved from 41,856 to 45,568. Its addendum
+/// added `tasqx_get_note` and `max_body_bytes` on `tasqx_list_notes`: 43
+/// tools, 46,060 bytes, so 46,080.
 ///
 /// The floor is not zero. With every `description` key removed from the roster
 /// the same serialization is 11,597 bytes of schema skeleton — property names,
@@ -3946,7 +3949,7 @@ fn the_read_only_refusal_names_the_flag_that_fixes_it() {
 fn the_whole_tool_roster_stays_inside_its_per_prompt_budget() {
     const MAX_DESCRIPTION: usize = 800;
     const MAX_ENTRY: usize = 3_072;
-    const MAX_ROSTER: usize = 45_568;
+    const MAX_ROSTER: usize = 46_080;
 
     let engine = engine();
     let server = McpServer::new(&engine, Scope::Write);
@@ -5243,4 +5246,68 @@ fn list_notes_is_paged_by_default() {
     assert_eq!(page["count"], json!(20), "{page}");
     assert_eq!(page["total"], json!(25), "{page}");
     assert_eq!(page["next_offset"], json!(20), "{page}");
+}
+
+// ---- D241 addendum: note bodies are bounded per response ---------------------
+
+/// A default `tasqx_list_notes` page of twenty enormous notes fits the
+/// response budget because each body is cut and marked, and `tasqx_get_note`
+/// is the read that returns one whole: at D148's default cap, then every byte
+/// once `max_body_bytes` is raised to the `body_bytes` the cut reported.
+#[test]
+fn a_page_of_huge_notes_fits_the_budget_and_one_is_read_whole_by_get_note() {
+    let engine = engine();
+    for i in 0..25 {
+        tasqx_core::dispatch(
+            &engine,
+            "note.add",
+            &json!({ "body": format!("note {i} {}", "Read later — https://example.com/a.\n".repeat(3_000)) }),
+        )
+        .expect("note.add");
+    }
+    let server = McpServer::new(&engine, Scope::Read);
+
+    let out = call(&server, 1, "tasqx_list_notes", json!({}));
+    assert!(!is_error(&out), "{out}");
+    let sent = serde_json::to_string(&out).expect("json").len();
+    assert!(sent < 24_576, "a default page answered {sent} bytes");
+    let page = tool_text(&out);
+    assert_eq!(
+        page["count"],
+        json!(20),
+        "the page is not shortened: {page}"
+    );
+    let full = page["notes"][0]["body_bytes"].as_u64().expect("body_bytes");
+    for note in page["notes"].as_array().expect("notes") {
+        assert_eq!(note["body_truncated"], json!(true), "{note}");
+    }
+
+    let one = tool_text(&call(&server, 2, "tasqx_get_note", json!({ "id": 25 })));
+    assert_eq!(one["body_truncated"], json!(true), "D148's default cap");
+    assert_eq!(one["body"].as_str().expect("body").len(), 16_384);
+    let whole = tool_text(&call(
+        &server,
+        3,
+        "tasqx_get_note",
+        json!({ "id": 25, "max_body_bytes": full }),
+    ));
+    assert!(
+        whole.get("body_truncated").is_none(),
+        "{}",
+        whole["body_bytes"]
+    );
+    assert_eq!(whole["body"].as_str().expect("body").len() as u64, full);
+}
+
+/// Promotion is final and archives the note, so a host gating on
+/// `destructiveHint` must gate it (D241 addendum).
+#[test]
+fn promoting_a_note_is_destructive() {
+    let tools = listed_annotations();
+    let promote = &tools
+        .iter()
+        .find(|(n, _)| n == "tasqx_promote_note")
+        .expect("listed")
+        .1;
+    assert_eq!(promote["destructiveHint"], json!(true));
 }

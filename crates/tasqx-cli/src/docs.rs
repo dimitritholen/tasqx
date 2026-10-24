@@ -646,17 +646,19 @@ const METHODS: [(&str, &str, &str); 63] = [
     (
         "note.list",
         "<code>status?</code>, <code>links?</code>, <code>query?</code>, <code>project?</code>, \
-         <code>limit?</code>, <code>offset?</code>",
+         <code>limit?</code>, <code>offset?</code>, <code>max_body_bytes?</code>",
         "<code>{count, total, next_offset, notes}</code> — the D70 page, newest first, bodies \
-         whole. <code>status</code> is <code>open</code> (default), <code>archived</code> or \
+         whole unless <code>max_body_bytes</code> cuts one (D148's <code>body_truncated</code> \
+         and <code>body_bytes</code>). <code>status</code> is <code>open</code> (default), <code>archived</code> or \
          <code>all</code>; <code>links</code> keeps only bodies holding an \
          <code>http://</code> or <code>https://</code> link; <code>query</code> is a \
          case-insensitive substring, not a ranked search (D241).",
     ),
     (
         "note.get",
-        "<code>id</code>",
-        "One note, by uuid or short id (D241).",
+        "<code>id</code>, <code>max_body_bytes?</code>",
+        "One note, by uuid or short id, cut like <code>note.list</code>'s rows when \
+         <code>max_body_bytes</code> is given (D241).",
     ),
     (
         "note.update",

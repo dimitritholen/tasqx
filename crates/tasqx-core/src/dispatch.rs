@@ -383,10 +383,18 @@ pub const PARAMS: &[(&str, &[&str], bool)] = &[
     ("note.add", &["body", "project"], false),
     (
         "note.list",
-        &["status", "links", "query", "project", "limit", "offset"],
+        &[
+            "status",
+            "links",
+            "query",
+            "project",
+            "limit",
+            "offset",
+            "max_body_bytes",
+        ],
         false,
     ),
-    ("note.get", &["id"], false),
+    ("note.get", &["id", "max_body_bytes"], false),
     (
         "note.update",
         &["id", "body", "project", "status", "expected_rev"],
