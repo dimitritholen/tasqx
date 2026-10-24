@@ -174,7 +174,9 @@ Run commands from the worktree, one plain command per call.
    changes nothing and says `already recorded` (it restates the note only
    when what holds the task back has changed). So a retry after a failed call
    is safe too. A criterion that honestly did not pass is closed with
-   `tasqx_complete_task` once, as before.
+   `tasqx_complete_task` once, as before. When the task is claimed, the
+   event acts as its claim holder, so the completion ends the claim; and a
+   task the merge already completed and you reopened stays open on a replay.
 
 7. **Print one closing line, no card.** A landed task is a routine event,
    not a decision (D164). Checks ticked or left open honestly, and what the

@@ -506,6 +506,18 @@ fn article_for_status(status: Status) -> &'static str {
 /// message, into the done event as bare short_ids, and into the response as
 /// `{short_id, title}` — and a tuple would leave each of those three sites
 /// spelling `.0`/`.1`/`.2` for itself.
+/// D239: what a merge's completion found inside its transaction.
+pub(super) enum MergeDone {
+    /// Completed, with `task.done`'s answer.
+    Completed(Value),
+    /// What holds it back, worded (checks not passed, open blockers).
+    Held(String),
+    /// No longer open: done or cancelled.
+    NotOpen(Status),
+    /// Completable, but there is no live delivery note to pin yet.
+    NeedsNote,
+}
+
 pub(super) struct OpenBlocker {
     pub(super) short_id: i64,
     title: String,
@@ -1375,21 +1387,34 @@ impl Engine {
     /// become unblocked — both consequences of the same commit, so history and
     /// state cannot disagree about them.
     pub fn task_done(&self, p: &Value) -> Result<Value, ApiError> {
-        Ok(self.task_done_pinned(p, None)?.unwrap_or_default())
+        match self.task_done_inner(p, None)? {
+            MergeDone::Completed(out) => Ok(out),
+            _ => Err(ApiError::internal("task.done answered without completing")),
+        }
     }
 
-    /// `task.done`, or with `pin` (D239) a merge's completion: the note `pin`
-    /// names — written in its own commit before — becomes the delivery note
-    /// by id, and the decision is re-read inside this transaction. A task
-    /// that is no longer open, has a check that has not passed, or is blocked
-    /// answers `None` and nothing is written. A pinned completion also
-    /// completes a backlog task: a merged PR is delivered work whatever the
-    /// schedule said. Without `pin` the answer is always `Some`.
-    pub(super) fn task_done_pinned(
+    /// A merge's completion (D239). The decision is made here, inside the
+    /// completing transaction and nowhere else: a task no longer open is
+    /// [`MergeDone::NotOpen`], one with a check that has not passed or an
+    /// open blocker is [`MergeDone::Held`] with the reasons worded, and one
+    /// with no live note `pin` to pin as its delivery note is
+    /// [`MergeDone::NeedsNote`] — the caller writes the note in its own commit
+    /// and asks again. Only then is it completed, the note pinned by id. A
+    /// merge also completes a backlog task: a merged PR is delivered work
+    /// whatever the schedule said.
+    pub(super) fn task_done_merged(
         &self,
         p: &Value,
         pin: Option<&str>,
-    ) -> Result<Option<Value>, ApiError> {
+    ) -> Result<MergeDone, ApiError> {
+        self.task_done_inner(p, Some(pin))
+    }
+
+    fn task_done_inner(
+        &self,
+        p: &Value,
+        merge: Option<Option<&str>>,
+    ) -> Result<MergeDone, ApiError> {
         // Pure params first (#12/#13): correlation metadata and any
         // self-reported token usage are validated before the write lock,
         // exactly like every other parse-then-lock mutation.
@@ -1417,29 +1442,31 @@ impl Engine {
         let tx = self.begin_mutation()?;
         let task = self.resolve_ref_on(&tx, p)?;
         guard_rev(expected_rev, &task)?;
-        if pin.is_some() {
-            let open = matches!(
+        if let Some(pin) = merge {
+            if !matches!(
                 task.status,
                 Status::Pending | Status::Active | Status::Backlog
-            );
-            let unproven: i64 = tx.query_row(
-                "SELECT COUNT(*) FROM checks WHERE task_id = ?1 AND state <> 'passed'",
-                params![task.id],
-                |r| r.get(0),
-            )?;
+            ) {
+                return Ok(MergeDone::NotOpen(task.status));
+            }
+            let held = self.merge_hold_back(&tx, &task.id)?;
+            if !held.is_empty() {
+                return Ok(MergeDone::Held(held));
+            }
             let pinned: i64 = tx.query_row(
                 "SELECT COUNT(*) FROM annotations WHERE id = ?1 AND task_id = ?2 \
                  AND removed IS NULL",
                 params![pin, task.id],
                 |r| r.get(0),
             )?;
-            if !open || unproven > 0 || pinned == 0 || !self.open_blockers(&task.id)?.is_empty() {
-                return Ok(None);
+            if pinned == 0 {
+                return Ok(MergeDone::NeedsNote);
             }
         }
+        let pin = merge.flatten();
         match task.status {
             Status::Pending | Status::Active => {}
-            Status::Backlog if pin.is_some() => {}
+            Status::Backlog if merge.is_some() => {}
             Status::Backlog => {
                 return Err(ApiError::conflict(format!(
                     "cannot complete a backlog task (only pending|active -> done){}",
@@ -1757,7 +1784,52 @@ impl Engine {
                 )
             });
         }
-        Ok(Some(out))
+        Ok(MergeDone::Completed(out))
+    }
+
+    /// What holds a merged task back (D239), worded for its note: the checks
+    /// that have not passed, then the open blockers. Empty when nothing does.
+    fn merge_hold_back(&self, tx: &Connection, task_id: &str) -> Result<String, ApiError> {
+        let mut unmet: Vec<String> = Vec::new();
+        {
+            let mut stmt = tx.prepare(
+                "SELECT state, body FROM checks WHERE task_id = ?1 AND state <> 'passed' \
+                 ORDER BY position",
+            )?;
+            let rows = stmt.query_map(params![task_id], |r| {
+                Ok(format!(
+                    "{} \"{}\"",
+                    r.get::<_, String>(0)?,
+                    r.get::<_, String>(1)?
+                ))
+            })?;
+            for row in rows {
+                unmet.push(row?);
+            }
+        }
+        let blockers: Vec<String> = self
+            .open_blockers(task_id)?
+            .iter()
+            .map(|b| format!("#{}", b.short_id))
+            .collect();
+        let mut why = Vec::new();
+        if !unmet.is_empty() {
+            let noun = if unmet.len() == 1 { "check" } else { "checks" };
+            why.push(format!(
+                "{} {noun} not passed: {}",
+                unmet.len(),
+                unmet.join("; ")
+            ));
+        }
+        if !blockers.is_empty() {
+            why.push(format!("blocked by {}", blockers.join(", ")));
+        }
+        Ok(why.join("; "))
+    }
+
+    /// D236: the holder of `task_id`'s live claim, if there is one.
+    pub(super) fn live_claim_holder(&self, task_id: &str) -> Result<Option<String>, ApiError> {
+        Ok(live_claim_on(&self.conn, task_id, crate::clock::now())?.map(|(by, _)| by))
     }
 
     /// If `template` carries a recurrence rule, create the next instance inside

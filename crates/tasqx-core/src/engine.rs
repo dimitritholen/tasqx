@@ -919,6 +919,33 @@ fn nullable_string(v: &Value, field: &str) -> Result<Value, ApiError> {
 /// This adds only that context — the rule itself stays in the validator, since a
 /// second copy of the grammar here is exactly how import drifted out of step in
 /// the first place.
+/// Insert one note on `task`, bump its rev and log `annotation.add` — the
+/// write `annotation.add` makes, shared with `git.event`'s notes (D239), in
+/// the caller's transaction.
+fn write_note(
+    tx: &Transaction,
+    task: &Task,
+    id: &str,
+    body: &str,
+    ts: &str,
+) -> Result<(), ApiError> {
+    tx.execute(
+        "INSERT INTO annotations (id, task_id, body, created) VALUES (?1, ?2, ?3, ?4)",
+        params![id, task.id, body, ts],
+    )?;
+    tx.execute(
+        "UPDATE tasks SET rev=?1, modified=?2 WHERE id=?3",
+        params![task.rev + 1, ts, task.id],
+    )?;
+    insert_event(
+        tx,
+        Entity::Task,
+        &task.id,
+        "annotation.add",
+        &json!({ "id": id, "body": body }),
+    )
+}
+
 fn import_field<T>(id: &str, field: &str, r: Result<T, ApiError>) -> Result<T, ApiError> {
     r.map_err(|e| ApiError::bad_request(format!("store.import: task {id}, {field}: {}", e.message)))
 }

@@ -11,6 +11,7 @@
 //! ref (`noted`), never on matching annotation text: a retry writes a note
 //! that is missing and never one that is already there.
 
+use super::task::MergeDone;
 use super::*;
 
 /// The events a caller can report.
@@ -52,14 +53,33 @@ fn ref_row(r: &rusqlite::Row<'_>, at: usize) -> rusqlite::Result<Value> {
     }))
 }
 
-/// One task's refs, oldest first.
+/// Oldest first, by the instant each was recorded — parsed, never compared
+/// as text: `…:10Z` and `…:10.5Z` sort the wrong way round as strings —
+/// then branch, PR, commit, then the ref itself.
+fn sort_refs(refs: &mut [Value]) {
+    let kind = |v: &Value| match v["kind"].as_str() {
+        Some("branch") => 0,
+        Some("pr") => 1,
+        _ => 2,
+    };
+    refs.sort_by(|a, b| {
+        let at = |v: &Value| v["created"].as_str().and_then(parse_ts);
+        at(a)
+            .cmp(&at(b))
+            .then(kind(a).cmp(&kind(b)))
+            .then(a["ref"].as_str().cmp(&b["ref"].as_str()))
+    });
+}
+
+/// One task's refs, oldest first ([`sort_refs`]).
 pub(super) fn refs_of(conn: &Connection, task_id: &str) -> Result<Vec<Value>, ApiError> {
     let mut stmt = conn.prepare(&format!(
-        "SELECT {REF_COLS} FROM task_git_refs WHERE task_id = ?1 \
-         ORDER BY created, instr('branch pr commit', kind), ref"
+        "SELECT {REF_COLS} FROM task_git_refs WHERE task_id = ?1"
     ))?;
     let rows = stmt.query_map(params![task_id], |r| ref_row(r, 0))?;
-    Ok(rows.collect::<Result<_, _>>()?)
+    let mut refs: Vec<Value> = rows.collect::<Result<_, _>>()?;
+    sort_refs(&mut refs);
+    Ok(refs)
 }
 
 /// The refs of the given tasks, keyed by task uuid — the export reads only
@@ -72,8 +92,7 @@ pub(super) fn refs_for(
     for chunk in ids.chunks(500) {
         let marks = vec!["?"; chunk.len()].join(",");
         let mut stmt = conn.prepare(&format!(
-            "SELECT task_id, {REF_COLS} FROM task_git_refs WHERE task_id IN ({marks}) \
-             ORDER BY task_id, created, instr('branch pr commit', kind), ref"
+            "SELECT task_id, {REF_COLS} FROM task_git_refs WHERE task_id IN ({marks})"
         ))?;
         let rows = stmt.query_map(rusqlite::params_from_iter(chunk.iter()), |r| {
             Ok((r.get::<_, String>(0)?, ref_row(r, 1)?))
@@ -83,6 +102,7 @@ pub(super) fn refs_for(
             out.entry(task).or_default().push(v);
         }
     }
+    out.values_mut().for_each(|refs| sort_refs(refs));
     Ok(out)
 }
 
@@ -235,6 +255,22 @@ pub(super) fn import_refs(
     Ok(changed && merge)
 }
 
+/// What `git.event` has already done for a branch, kept on its branch row
+/// (`noted`) as JSON: the PR (or branch) it started the task for, the fact
+/// its last note stated, the delivery note it wrote, and the note it
+/// completed the task with. A retry reads these, never annotation text.
+#[derive(Default, serde::Serialize, serde::Deserialize, PartialEq, Clone)]
+struct Facts {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    started: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    note: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    merged: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    completed: Option<String>,
+}
+
 impl Engine {
     // ---- git.event -------------------------------------------------------------
 
@@ -243,10 +279,11 @@ impl Engine {
     /// (the PR URL), `sha?` (the merge commit), `task?` (a ref overriding the
     /// branch's `task/<id>-<slug>`; null is absent).
     ///
-    /// Every event re-evaluates its outcome, replay or not: `merged` completes
-    /// a task once nothing holds it back, `opened` starts one still pending.
-    /// A merged ref never moves back; an event that loses to it, or to a later
-    /// change, answers `changed: false` with a `reason`.
+    /// Every event re-evaluates its outcome, replay or not, against what this
+    /// branch has already done (its stored facts): `opened` starts a pending task at
+    /// most once per PR, and `merged` completes it once nothing holds it back
+    /// — and never again after the user reopened it. It acts as the task's
+    /// live claim holder when there is one (D236), else as the shell.
     pub fn git_event(&self, p: &Value) -> Result<Value, ApiError> {
         crate::storage::as_actor(Some("git".to_string()), || self.git_event_as_git(p))
     }
@@ -290,7 +327,7 @@ impl Engine {
         if let (Some(s), "merged") = (&sha, kind.as_str()) {
             rows.push(("commit", s.clone()));
         }
-        // The ref the event is about, and the one its notes are keyed on.
+        // The ref whose state the event is about; its facts live on the branch.
         let anchor = match &pr {
             Some(url) => ("pr", url.clone()),
             None => ("branch", branch.clone()),
@@ -339,10 +376,8 @@ impl Engine {
                 "status": status,
                 "transition": transition,
                 "note": note,
-                "reason": match changed {
-                    true => None,
-                    false => Some(reason.unwrap_or_else(|| "already recorded".to_string())),
-                },
+                // Whenever there is one, changed or not.
+                "reason": reason.or_else(|| (!changed).then(|| "already recorded".to_string())),
             })
         };
         let status = task.status;
@@ -351,27 +386,41 @@ impl Engine {
             return Ok(answer(wrote, status.as_str(), None, None, Some(reason)));
         }
 
-        let (anchor_at, noted): (String, Option<String>) = self.conn.query_row(
-            "SELECT modified, noted FROM task_git_refs WHERE task_id = ?1 AND kind = ?2 \
-             AND ref = ?3",
+        let (anchor_at,): (String,) = self.conn.query_row(
+            "SELECT modified FROM task_git_refs WHERE task_id = ?1 AND kind = ?2 AND ref = ?3",
             params![task.id, anchor.0, anchor.1],
-            |r| Ok((r.get(0)?, r.get(1)?)),
+            |r| Ok((r.get(0)?,)),
         )?;
-        let noted = noted.unwrap_or_default();
+        let stored: Option<String> = self.conn.query_row(
+            "SELECT noted FROM task_git_refs WHERE task_id = ?1 AND kind = 'branch' AND ref = ?2",
+            params![task.id, branch],
+            |r| r.get(0),
+        )?;
+        let facts: Facts = stored
+            .as_deref()
+            .and_then(|s| serde_json::from_str(s).ok())
+            .unwrap_or_default();
         let r = json!(task.id);
         let label = pr.clone().unwrap_or_else(|| branch.clone());
         let merged = match &sha {
             Some(s) => format!("Merged {label} ({s})"),
             None => format!("Merged {label}"),
         };
+        // D236: a git event acts for the task's live claim holder, else as
+        // the shell, so the claim's own guards pass and `done` ends it.
+        let holder = self.live_claim_holder(&task.id)?;
         // A note is written when the fact it states is not the one last
-        // noted on the ref; the note and the fact are one commit.
+        // noted for this branch; the note and the fact are one commit.
         let note = |fact: String, body: String| -> Result<Value, ApiError> {
-            if noted == fact {
+            if facts.note.as_deref() == Some(fact.as_str()) {
                 return Ok(answer(wrote, status.as_str(), None, None, None));
             }
+            let next = Facts {
+                note: Some(fact),
+                ..facts.clone()
+            };
             let id = crate::clock::uuid_v7().to_string();
-            self.git_note(&task.id, &anchor, &id, &body, &fact)?;
+            self.git_facts(&task.id, &branch, &next, Some((&id, &body)))?;
             Ok(answer(
                 true,
                 status.as_str(),
@@ -380,95 +429,99 @@ impl Engine {
                 None,
             ))
         };
-        match (kind.as_str(), status) {
-            ("opened", Status::Pending) => {
-                self.task_start_via(&json!({ "ref": r, "keep": true }), Some("git"))?;
-                Ok(answer(true, "active", Some("started"), None, None))
-            }
-            ("opened", Status::Active) => Ok(answer(wrote, status.as_str(), None, None, None)),
-            ("opened", _) => note(
-                format!("opened:{anchor_at}"),
-                format!(
-                    "{label} opened; #{} is {}, so it was not started",
-                    task.short_id,
-                    status.as_str()
-                ),
-            ),
-            ("merged", Status::Pending | Status::Active | Status::Backlog) => {
-                let unmet: Vec<String> = self
-                    .checks_of(&task.id)?
-                    .iter()
-                    .filter(|c| c["state"] != "passed")
-                    .map(|c| {
+        match kind.as_str() {
+            "opened" => {
+                if facts.started.as_deref() == Some(label.as_str()) {
+                    let reason = format!("{label} already started this task once");
+                    return Ok(answer(wrote, status.as_str(), None, None, Some(reason)));
+                }
+                match status {
+                    Status::Pending => {
+                        let mut start = json!({ "ref": r, "keep": true });
+                        if let Some(h) = &holder {
+                            start["holder"] = json!(h);
+                        }
+                        self.task_start_via(&start, Some("git"))?;
+                        let next = Facts {
+                            started: Some(label.clone()),
+                            ..facts.clone()
+                        };
+                        self.git_facts(&task.id, &branch, &next, None)?;
+                        Ok(answer(true, "active", Some("started"), None, None))
+                    }
+                    Status::Active => Ok(answer(wrote, status.as_str(), None, None, None)),
+                    _ => note(
+                        format!("opened:{anchor_at}"),
                         format!(
-                            "{} \"{}\"",
-                            c["state"].as_str().unwrap_or("open"),
-                            c["body"].as_str().unwrap_or("")
-                        )
-                    })
-                    .collect();
-                let blockers: Vec<String> = self
-                    .open_blockers(&task.id)?
-                    .iter()
-                    .map(|b| format!("#{}", b.short_id))
-                    .collect();
-                if !unmet.is_empty() || !blockers.is_empty() {
-                    let mut why = Vec::new();
-                    if !unmet.is_empty() {
-                        let noun = if unmet.len() == 1 { "check" } else { "checks" };
-                        why.push(format!(
-                            "{} {noun} not passed: {}",
-                            unmet.len(),
-                            unmet.join("; ")
-                        ));
-                    }
-                    if !blockers.is_empty() {
-                        why.push(format!("blocked by {}", blockers.join(", ")));
-                    }
-                    let why = why.join("; ");
-                    return note(
-                        format!("held:{why}"),
-                        format!("{merged}{NOT_COMPLETED}{why}"),
-                    );
+                            "{label} opened; #{} is {}, so it was not started",
+                            task.short_id,
+                            status.as_str()
+                        ),
+                    ),
                 }
-                // The delivery note: the one this ref already wrote, if it is
-                // still there, else a new one in its own commit.
+            }
+            "merged" => {
+                let open = matches!(status, Status::Pending | Status::Active | Status::Backlog);
+                if open && facts.completed.is_some() {
+                    let reason = "this merge completed the task once and it was reopened since; \
+                                  it stays open"
+                        .to_string();
+                    return Ok(answer(wrote, status.as_str(), None, None, Some(reason)));
+                }
+                let mut done_params = json!({ "ref": r });
+                if let Some(h) = &holder {
+                    done_params["actor"] = json!(h);
+                }
+                let mut facts = facts.clone();
                 let mut changed = wrote;
-                let pin = match noted.strip_prefix("merged:") {
-                    Some(id) if self.live_note(&task.id, id)? => id.to_string(),
-                    _ => {
-                        let id = crate::clock::uuid_v7().to_string();
-                        self.git_note(&task.id, &anchor, &id, &merged, &format!("merged:{id}"))?;
-                        changed = true;
-                        id
+                // At most twice: once to learn a note is needed, once to pin it.
+                for _ in 0..2 {
+                    match self.task_done_merged(&done_params, facts.merged.as_deref())? {
+                        MergeDone::Completed(done) => {
+                            let next = Facts {
+                                completed: facts.merged.clone(),
+                                ..facts.clone()
+                            };
+                            self.git_facts(&task.id, &branch, &next, None)?;
+                            return Ok(answer(
+                                true,
+                                done["status"].as_str().unwrap_or("done"),
+                                Some("completed"),
+                                Some(merged),
+                                None,
+                            ));
+                        }
+                        MergeDone::Held(why) => {
+                            return note(
+                                format!("held:{why}"),
+                                format!("{merged}{NOT_COMPLETED}{why}"),
+                            )
+                        }
+                        MergeDone::NotOpen(_) if facts.merged.is_some() => {
+                            return Ok(answer(changed, status.as_str(), None, None, None));
+                        }
+                        MergeDone::NotOpen(st) => {
+                            return note(
+                                format!("merged-while:{}", st.as_str()),
+                                format!("{merged} while the task was {}", st.as_str()),
+                            )
+                        }
+                        MergeDone::NeedsNote => {
+                            let id = crate::clock::uuid_v7().to_string();
+                            facts.merged = Some(id.clone());
+                            self.git_facts(&task.id, &branch, &facts, Some((&id, &merged)))?;
+                            changed = true;
+                        }
                     }
-                };
-                // The decision is re-read inside the completing transaction.
-                match self.task_done_pinned(&json!({ "ref": r }), Some(&pin))? {
-                    Some(done) => Ok(answer(
-                        true,
-                        done["status"].as_str().unwrap_or("done"),
-                        Some("completed"),
-                        Some(merged),
-                        None,
-                    )),
-                    None => Ok(answer(
-                        changed,
-                        status.as_str(),
-                        None,
-                        None,
-                        Some("the task changed while the merge was being recorded".to_string()),
-                    )),
                 }
+                Ok(answer(
+                    changed,
+                    status.as_str(),
+                    None,
+                    None,
+                    Some("the delivery note went missing while the merge was recorded".to_string()),
+                ))
             }
-            // A task this ref already completed: nothing left to do.
-            ("merged", _) if noted.starts_with("merged:") => {
-                Ok(answer(wrote, status.as_str(), None, None, None))
-            }
-            ("merged", _) => note(
-                format!("merged-while:{}", status.as_str()),
-                format!("{merged} while the task was {}", status.as_str()),
-            ),
             _ => note(
                 format!("closed:{anchor_at}"),
                 format!("{label} closed without merging"),
@@ -476,55 +529,43 @@ impl Engine {
         }
     }
 
-    /// Write one `git.event` note and the fact it states on the ref, in one
-    /// commit with one `annotation.add` event.
-    fn git_note(
+    /// Store a branch's [`Facts`], with the note they record when there is
+    /// one, in one commit: the note's `annotation.add` is its event, else a
+    /// `git.ref` bookkeeping event that `undo` steps over.
+    fn git_facts(
         &self,
         task_id: &str,
-        anchor: &(&str, String),
-        note_id: &str,
-        body: &str,
-        fact: &str,
+        branch: &str,
+        facts: &Facts,
+        note: Option<(&str, &str)>,
     ) -> Result<(), ApiError> {
+        let noted = serde_json::to_string(facts)
+            .map_err(|e| ApiError::internal(format!("git facts: {e}")))?;
         let tx = self.begin_mutation()?;
         let task = self.resolve_ref_value_on(&tx, &json!(task_id))?;
-        let ts = now();
         tx.execute(
-            "INSERT INTO annotations (id, task_id, body, created) VALUES (?1, ?2, ?3, ?4)",
-            params![note_id, task.id, body, ts],
+            "UPDATE task_git_refs SET noted = ?1 WHERE task_id = ?2 AND kind = 'branch' \
+             AND ref = ?3",
+            params![noted, task.id, branch],
         )?;
-        tx.execute(
-            "UPDATE tasks SET rev=?1, modified=?2 WHERE id=?3",
-            params![task.rev + 1, ts, task.id],
-        )?;
-        tx.execute(
-            "UPDATE task_git_refs SET noted = ?1 WHERE task_id = ?2 AND kind = ?3 AND ref = ?4",
-            params![fact, task.id, anchor.0, anchor.1],
-        )?;
-        insert_event(
-            &tx,
-            Entity::Task,
-            &task.id,
-            "annotation.add",
-            &json!({ "id": note_id, "body": body }),
-        )?;
+        match note {
+            Some((id, body)) => super::write_note(&tx, &task, id, body, &now())?,
+            None => insert_event(
+                &tx,
+                Entity::Task,
+                &task.id,
+                "git.ref",
+                &json!({ "branch": branch, "noted": noted }),
+            )?,
+        }
         tx.commit()
-    }
-
-    /// Whether `id` is a live note on the task.
-    fn live_note(&self, task_id: &str, id: &str) -> Result<bool, ApiError> {
-        let n: i64 = self.conn.query_row(
-            "SELECT COUNT(*) FROM annotations WHERE id = ?1 AND task_id = ?2 AND removed IS NULL",
-            params![id, task_id],
-            |r| r.get(0),
-        )?;
-        Ok(n > 0)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::short_id_of_branch;
+    use crate::engine::task::MergeDone;
     use crate::engine::Engine;
     use serde_json::json;
 
@@ -543,7 +584,7 @@ mod tests {
     /// one committed; inside its own transaction it finds the task done and
     /// writes nothing.
     #[test]
-    fn a_pinned_completion_of_a_task_already_done_is_none() {
+    fn a_merged_completion_of_a_task_already_done_writes_nothing() {
         let e = Engine::open_in_memory().unwrap();
         e.task_add(&json!({ "title": "raced" })).unwrap();
         let out = e
@@ -557,11 +598,10 @@ mod tests {
             .unwrap()
             .to_string();
         let events = e.event_list(&json!({})).unwrap()["count"].clone();
-        assert_eq!(
-            e.task_done_pinned(&json!({ "ref": 1 }), Some(&pin))
-                .unwrap(),
-            None
-        );
+        let again = e
+            .task_done_merged(&json!({ "ref": 1 }), Some(&pin))
+            .unwrap();
+        assert!(matches!(again, MergeDone::NotOpen(_)));
         assert_eq!(e.event_list(&json!({})).unwrap()["count"], events);
     }
 }
