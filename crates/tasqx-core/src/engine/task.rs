@@ -1789,7 +1789,11 @@ impl Engine {
 
     /// What holds a merged task back (D239), worded for its note: the checks
     /// that have not passed, then the open blockers. Empty when nothing does.
-    fn merge_hold_back(&self, tx: &Connection, task_id: &str) -> Result<String, ApiError> {
+    pub(super) fn merge_hold_back(
+        &self,
+        tx: &Connection,
+        task_id: &str,
+    ) -> Result<String, ApiError> {
         let mut unmet: Vec<String> = Vec::new();
         {
             let mut stmt = tx.prepare(

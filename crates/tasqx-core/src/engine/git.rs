@@ -12,6 +12,8 @@
 //! that is missing and never one that is already there.
 
 use super::task::MergeDone;
+use std::collections::BTreeMap;
+
 use super::*;
 
 /// The events a caller can report.
@@ -243,12 +245,20 @@ pub(super) fn import_refs(
             false,
         )? == Upsert::Wrote;
         if wrote {
-            // The row's first sighting keeps its own `created`.
-            tx.execute(
-                "UPDATE task_git_refs SET created = ?1 WHERE task_id = ?2 AND kind = ?3 \
-                 AND ref = ?4 AND created > ?1",
-                params![created, id, kind, r],
+            // The row's first sighting keeps its own `created`, compared as
+            // instants: `…:10Z` and `…:10.5Z` order wrongly as text.
+            let held: String = tx.query_row(
+                "SELECT created FROM task_git_refs WHERE task_id = ?1 AND kind = ?2 AND ref = ?3",
+                params![id, kind, r],
+                |row| row.get(0),
             )?;
+            if parse_ts(&created) < parse_ts(&held) {
+                tx.execute(
+                    "UPDATE task_git_refs SET created = ?1 WHERE task_id = ?2 AND kind = ?3 \
+                     AND ref = ?4",
+                    params![created, id, kind, r],
+                )?;
+            }
         }
         changed |= wrote;
     }
@@ -256,19 +266,27 @@ pub(super) fn import_refs(
 }
 
 /// What `git.event` has already done for a branch, kept on its branch row
-/// (`noted`) as JSON: the PR (or branch) it started the task for, the fact
-/// its last note stated, the delivery note it wrote, and the note it
-/// completed the task with. A retry reads these, never annotation text.
+/// (`noted`) as JSON, keyed per PR (its URL, else the merge sha, else the
+/// branch): the PRs that started the task, the fact the last note stated,
+/// the delivery note each merge wrote and the note each completed the task
+/// with. A report reads these under the write lock, never annotation text.
 #[derive(Default, serde::Serialize, serde::Deserialize, PartialEq, Clone)]
 struct Facts {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    started: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    started: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     note: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    merged: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    completed: Option<String>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    merged: BTreeMap<String, String>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    completed: BTreeMap<String, String>,
+}
+
+/// What a report leaves to do once its decision is committed.
+enum Then {
+    Nothing,
+    Start,
+    Complete(String),
 }
 
 impl Engine {
@@ -280,10 +298,12 @@ impl Engine {
     /// branch's `task/<id>-<slug>`; null is absent).
     ///
     /// Every event re-evaluates its outcome, replay or not, against what this
-    /// branch has already done (its stored facts): `opened` starts a pending task at
-    /// most once per PR, and `merged` completes it once nothing holds it back
-    /// — and never again after the user reopened it. It acts as the task's
-    /// live claim holder when there is one (D236), else as the shell.
+    /// branch has already done (its stored facts), read and written under the
+    /// write lock so concurrent reports serialise: `opened` starts a pending
+    /// task at most once per PR, and `merged` completes it once nothing holds
+    /// it back — and never again for that PR after the user reopened it. It
+    /// acts as the task's live claim holder when there is one (D236), else as
+    /// the shell.
     pub fn git_event(&self, p: &Value) -> Result<Value, ApiError> {
         crate::storage::as_actor(Some("git".to_string()), || self.git_event_as_git(p))
     }
@@ -296,11 +316,16 @@ impl Engine {
                 GIT_EVENTS.join("|")
             )));
         }
-        let branch = req_str(p, "branch")?.trim().to_string();
+        // One spelling per branch, PR and commit, however it was pasted.
+        let raw = req_str(p, "branch")?;
+        let branch = raw.trim();
+        let branch = branch
+            .strip_prefix("refs/heads/")
+            .unwrap_or(branch)
+            .to_string();
         if branch.is_empty() {
             return Err(crate::util::empty_string("branch"));
         }
-        // One spelling per PR and per commit, however it was pasted.
         let pr = opt_str_nonempty(p, "pr")?
             .map(|u| u.trim().trim_end_matches('/').to_string())
             .filter(|u| !u.is_empty());
@@ -327,14 +352,28 @@ impl Engine {
         if let (Some(s), "merged") = (&sha, kind.as_str()) {
             rows.push(("commit", s.clone()));
         }
-        // The ref whose state the event is about; its facts live on the branch.
+        // The ref whose state the event is about; the facts live on the branch.
         let anchor = match &pr {
             Some(url) => ("pr", url.clone()),
             None => ("branch", branch.clone()),
         };
+        // Which PR the facts are about: its URL, else the merge, else the branch.
+        let key = pr
+            .clone()
+            .or_else(|| sha.clone())
+            .unwrap_or_else(|| branch.clone());
+        let label = pr.clone().unwrap_or_else(|| branch.clone());
+        let merged = match &sha {
+            Some(s) => format!("Merged {label} ({s})"),
+            None => format!("Merged {label}"),
+        };
 
+        // One IMMEDIATE transaction: the refs, the facts read under the write
+        // lock, the decision and the note it writes. A second report for the
+        // branch waits here and sees the first one's facts.
         let tx = self.begin_mutation()?;
         let task = self.resolve_ref_value_on(&tx, &target)?;
+        let status = task.status;
         let ts = now();
         let mut wrote = false;
         let mut anchor_kept: Option<String> = None;
@@ -346,218 +385,237 @@ impl Engine {
                 Upsert::Kept(_) => {}
             }
         }
-        if wrote {
-            tx.execute(
-                "UPDATE tasks SET rev=?1, modified=?2 WHERE id=?3",
-                params![task.rev + 1, ts, task.id],
-            )?;
-            insert_event(
-                &tx,
-                Entity::Task,
-                &task.id,
-                "git.ref",
-                &json!({ "event": kind, "branch": branch, "pr": pr, "sha": sha }),
-            )?;
-            tx.commit()?;
-        } else {
-            drop(tx);
-        }
-
-        let answer = |changed: bool,
-                      status: &str,
-                      transition: Option<&str>,
-                      note: Option<String>,
-                      reason: Option<String>| {
-            json!({
-                "changed": changed,
-                "event": kind,
-                "short_id": task.short_id,
-                "title": task.title,
-                "status": status,
-                "transition": transition,
-                "note": note,
-                // Whenever there is one, changed or not.
-                "reason": reason.or_else(|| (!changed).then(|| "already recorded".to_string())),
-            })
-        };
-        let status = task.status;
-        if let Some(held) = anchor_kept {
-            let reason = format!("{} {} is already {held}", anchor.0, anchor.1);
-            return Ok(answer(wrote, status.as_str(), None, None, Some(reason)));
-        }
-
-        let (anchor_at,): (String,) = self.conn.query_row(
-            "SELECT modified FROM task_git_refs WHERE task_id = ?1 AND kind = ?2 AND ref = ?3",
-            params![task.id, anchor.0, anchor.1],
-            |r| Ok((r.get(0)?,)),
+        let (anchor_at, stored): (String, Option<String>) = tx.query_row(
+            "SELECT a.modified, b.noted FROM task_git_refs a, task_git_refs b \
+             WHERE a.task_id = ?1 AND a.kind = ?2 AND a.ref = ?3 \
+             AND b.task_id = ?1 AND b.kind = 'branch' AND b.ref = ?4",
+            params![task.id, anchor.0, anchor.1, branch],
+            |r| Ok((r.get(0)?, r.get(1)?)),
         )?;
-        let stored: Option<String> = self.conn.query_row(
-            "SELECT noted FROM task_git_refs WHERE task_id = ?1 AND kind = 'branch' AND ref = ?2",
-            params![task.id, branch],
-            |r| r.get(0),
-        )?;
-        let facts: Facts = stored
+        let held_facts: Facts = stored
             .as_deref()
             .and_then(|s| serde_json::from_str(s).ok())
             .unwrap_or_default();
-        let r = json!(task.id);
-        let label = pr.clone().unwrap_or_else(|| branch.clone());
-        let merged = match &sha {
-            Some(s) => format!("Merged {label} ({s})"),
-            None => format!("Merged {label}"),
-        };
-        // D236: a git event acts for the task's live claim holder, else as
-        // the shell, so the claim's own guards pass and `done` ends it.
-        let holder = self.live_claim_holder(&task.id)?;
-        // A note is written when the fact it states is not the one last
-        // noted for this branch; the note and the fact are one commit.
-        let note = |fact: String, body: String| -> Result<Value, ApiError> {
+        let mut facts = held_facts.clone();
+        let mut reason: Option<String> = None;
+        let mut note: Option<(String, String)> = None;
+        let mut then = Then::Nothing;
+        let mut transition: Option<&str> = None;
+        // A note is due when the fact it states is not the one last noted;
+        // it reads and moves the CURRENT facts, never a copy taken earlier.
+        fn due(facts: &mut Facts, fact: String, body: String) -> Option<(String, String)> {
             if facts.note.as_deref() == Some(fact.as_str()) {
-                return Ok(answer(wrote, status.as_str(), None, None, None));
+                return None;
             }
-            let next = Facts {
-                note: Some(fact),
-                ..facts.clone()
-            };
-            let id = crate::clock::uuid_v7().to_string();
-            self.git_facts(&task.id, &branch, &next, Some((&id, &body)))?;
-            Ok(answer(
-                true,
-                status.as_str(),
-                Some("annotated"),
-                Some(body),
-                None,
-            ))
-        };
-        match kind.as_str() {
-            "opened" => {
-                if facts.started.as_deref() == Some(label.as_str()) {
-                    let reason = format!("{label} already started this task once");
-                    return Ok(answer(wrote, status.as_str(), None, None, Some(reason)));
+            facts.note = Some(fact);
+            Some((crate::clock::uuid_v7().to_string(), body))
+        }
+        let open = matches!(status, Status::Pending | Status::Active | Status::Backlog);
+        if let Some(held) = &anchor_kept {
+            reason = Some(format!("{} {} is already {held}", anchor.0, anchor.1));
+        } else {
+            match kind.as_str() {
+                "opened" if facts.started.contains(&label) => {
+                    reason = Some(format!("{label} already started this task once"));
                 }
-                match status {
-                    Status::Pending => {
-                        let mut start = json!({ "ref": r, "keep": true });
-                        if let Some(h) = &holder {
-                            start["holder"] = json!(h);
-                        }
-                        self.task_start_via(&start, Some("git"))?;
-                        let next = Facts {
-                            started: Some(label.clone()),
-                            ..facts.clone()
-                        };
-                        self.git_facts(&task.id, &branch, &next, None)?;
-                        Ok(answer(true, "active", Some("started"), None, None))
+                "opened" if matches!(status, Status::Pending | Status::Active) => {
+                    // Recorded for an active task too: the user's later stop stands.
+                    facts.started.push(label.clone());
+                    if status == Status::Pending {
+                        then = Then::Start;
                     }
-                    Status::Active => Ok(answer(wrote, status.as_str(), None, None, None)),
-                    _ => note(
+                }
+                "opened" => {
+                    note = due(
+                        &mut facts,
                         format!("opened:{anchor_at}"),
                         format!(
                             "{label} opened; #{} is {}, so it was not started",
                             task.short_id,
                             status.as_str()
                         ),
-                    ),
+                    )
                 }
-            }
-            "merged" => {
-                let open = matches!(status, Status::Pending | Status::Active | Status::Backlog);
-                if open && facts.completed.is_some() {
-                    let reason = "this merge completed the task once and it was reopened since; \
-                                  it stays open"
-                        .to_string();
-                    return Ok(answer(wrote, status.as_str(), None, None, Some(reason)));
+                "merged" if open && facts.completed.contains_key(&key) => {
+                    reason = Some(
+                        "this merge completed the task once and it was reopened since; it \
+                         stays open"
+                            .to_string(),
+                    );
                 }
-                let mut done_params = json!({ "ref": r });
-                if let Some(h) = &holder {
-                    done_params["actor"] = json!(h);
-                }
-                let mut facts = facts.clone();
-                let mut changed = wrote;
-                // At most twice: once to learn a note is needed, once to pin it.
-                for _ in 0..2 {
-                    match self.task_done_merged(&done_params, facts.merged.as_deref())? {
-                        MergeDone::Completed(done) => {
-                            let next = Facts {
-                                completed: facts.merged.clone(),
-                                ..facts.clone()
-                            };
-                            self.git_facts(&task.id, &branch, &next, None)?;
-                            return Ok(answer(
-                                true,
-                                done["status"].as_str().unwrap_or("done"),
-                                Some("completed"),
-                                Some(merged),
-                                None,
-                            ));
-                        }
-                        MergeDone::Held(why) => {
-                            return note(
-                                format!("held:{why}"),
-                                format!("{merged}{NOT_COMPLETED}{why}"),
-                            )
-                        }
-                        MergeDone::NotOpen(_) if facts.merged.is_some() => {
-                            return Ok(answer(changed, status.as_str(), None, None, None));
-                        }
-                        MergeDone::NotOpen(st) => {
-                            return note(
-                                format!("merged-while:{}", st.as_str()),
-                                format!("{merged} while the task was {}", st.as_str()),
-                            )
-                        }
-                        MergeDone::NeedsNote => {
+                "merged" if open => {
+                    let why = self.merge_hold_back(&tx, &task.id)?;
+                    if !why.is_empty() {
+                        note = due(
+                            &mut facts,
+                            format!("held:{why}"),
+                            format!("{merged}{NOT_COMPLETED}{why}"),
+                        );
+                    } else {
+                        let live = match facts.merged.get(&key) {
+                            Some(id) => tx.query_row(
+                                "SELECT COUNT(*) FROM annotations WHERE id = ?1 AND task_id = ?2 \
+                                 AND removed IS NULL",
+                                params![id, task.id],
+                                |r| r.get::<_, i64>(0),
+                            )? > 0,
+                            None => false,
+                        };
+                        if !live {
                             let id = crate::clock::uuid_v7().to_string();
-                            facts.merged = Some(id.clone());
-                            self.git_facts(&task.id, &branch, &facts, Some((&id, &merged)))?;
-                            changed = true;
+                            facts.merged.insert(key.clone(), id.clone());
+                            note = Some((id, merged.clone()));
                         }
+                        then = Then::Complete(facts.merged[&key].clone());
                     }
                 }
-                Ok(answer(
-                    changed,
-                    status.as_str(),
-                    None,
-                    None,
-                    Some("the delivery note went missing while the merge was recorded".to_string()),
-                ))
+                "merged" if facts.merged.contains_key(&key) => {}
+                "merged" => {
+                    note = due(
+                        &mut facts,
+                        format!("merged-while:{}", status.as_str()),
+                        format!("{merged} while the task was {}", status.as_str()),
+                    )
+                }
+                _ => {
+                    note = due(
+                        &mut facts,
+                        format!("closed:{anchor_at}"),
+                        format!("{label} closed without merging"),
+                    )
+                }
             }
-            _ => note(
-                format!("closed:{anchor_at}"),
-                format!("{label} closed without merging"),
-            ),
         }
+        let facts_moved = facts != held_facts;
+        if facts_moved {
+            self.store_facts(&tx, &task.id, &branch, &facts, &ts)?;
+        }
+        if wrote || facts_moved || note.is_some() {
+            // One rev bump and one event per commit: the note's own (which
+            // bumps the rev), else the bookkeeping one.
+            match &note {
+                Some((id, body)) => super::write_note(&tx, &task, id, body, &ts)?,
+                None => {
+                    tx.execute(
+                        "UPDATE tasks SET rev=?1, modified=?2 WHERE id=?3",
+                        params![task.rev + 1, ts, task.id],
+                    )?;
+                    insert_event(
+                        &tx,
+                        Entity::Task,
+                        &task.id,
+                        "git.ref",
+                        &json!({ "event": kind, "branch": branch, "pr": pr, "sha": sha }),
+                    )?;
+                }
+            }
+            tx.commit()?;
+        } else {
+            drop(tx);
+        }
+        let mut changed = wrote || facts_moved || note.is_some();
+        let mut status_now = status.as_str().to_string();
+        let mut note_text = note
+            .as_ref()
+            .filter(|(_, body)| *body != merged || matches!(then, Then::Nothing))
+            .map(|(_, body)| body.clone());
+        if note_text.is_some() {
+            transition = Some("annotated");
+        }
+
+        // D236: a git event acts for the task's live claim holder, else as
+        // the shell, so the claim's own guards pass and `done` ends it.
+        let holder = self.live_claim_holder(&task.id)?;
+        let r = json!(task.id);
+        match then {
+            Then::Nothing => {}
+            Then::Start => {
+                let mut start = json!({ "ref": r, "keep": true });
+                if let Some(h) = &holder {
+                    start["holder"] = json!(h);
+                }
+                self.task_start_via(&start, Some("git"))?;
+                changed = true;
+                status_now = "active".to_string();
+                transition = Some("started");
+            }
+            Then::Complete(pin) => {
+                let mut done = json!({ "ref": r });
+                if let Some(h) = &holder {
+                    done["actor"] = json!(h);
+                }
+                match self.task_done_merged(&done, Some(&pin))? {
+                    MergeDone::Completed(out) => {
+                        let mut facts = facts.clone();
+                        facts.completed.insert(key.clone(), pin);
+                        self.git_record_facts(&task.id, &branch, &facts)?;
+                        changed = true;
+                        status_now = out["status"].as_str().unwrap_or("done").to_string();
+                        transition = Some("completed");
+                        note_text = Some(merged.clone());
+                    }
+                    // Changed between the decision and the completion.
+                    MergeDone::NotOpen(st) => {
+                        reason = Some(format!("the task is {} now", st.as_str()));
+                    }
+                    MergeDone::Held(why) => {
+                        reason = Some(format!("not completed: {why}; report it again"));
+                    }
+                    MergeDone::NeedsNote => {
+                        reason = Some(
+                            "the delivery note went missing; report the merge again".to_string(),
+                        );
+                    }
+                }
+            }
+        }
+        Ok(json!({
+            "changed": changed,
+            "event": kind,
+            "short_id": task.short_id,
+            "title": task.title,
+            "status": status_now,
+            "transition": transition,
+            "note": note_text,
+            // Whenever there is one, changed or not.
+            "reason": reason.or_else(|| (!changed).then(|| "already recorded".to_string())),
+        }))
     }
 
-    /// Store a branch's [`Facts`], with the note they record when there is
-    /// one, in one commit: the note's `annotation.add` is its event, else a
-    /// `git.ref` bookkeeping event that `undo` steps over.
-    fn git_facts(
+    /// Write a branch's [`Facts`] in the caller's transaction, bumping the
+    /// row's `modified` so a merge import carries them.
+    fn store_facts(
         &self,
+        tx: &Connection,
         task_id: &str,
         branch: &str,
         facts: &Facts,
-        note: Option<(&str, &str)>,
+        ts: &str,
     ) -> Result<(), ApiError> {
         let noted = serde_json::to_string(facts)
             .map_err(|e| ApiError::internal(format!("git facts: {e}")))?;
+        tx.execute(
+            "UPDATE task_git_refs SET noted = ?1, modified = ?2 WHERE task_id = ?3 \
+             AND kind = 'branch' AND ref = ?4",
+            params![noted, ts, task_id, branch],
+        )?;
+        Ok(())
+    }
+
+    /// Record a branch's facts after the completion, in a commit of their own
+    /// with a `git.ref` bookkeeping event that `undo` steps over.
+    fn git_record_facts(&self, task_id: &str, branch: &str, facts: &Facts) -> Result<(), ApiError> {
         let tx = self.begin_mutation()?;
         let task = self.resolve_ref_value_on(&tx, &json!(task_id))?;
-        tx.execute(
-            "UPDATE task_git_refs SET noted = ?1 WHERE task_id = ?2 AND kind = 'branch' \
-             AND ref = ?3",
-            params![noted, task.id, branch],
+        let ts = now();
+        self.store_facts(&tx, &task.id, branch, facts, &ts)?;
+        insert_event(
+            &tx,
+            Entity::Task,
+            &task.id,
+            "git.ref",
+            &json!({ "branch": branch, "completed": true }),
         )?;
-        match note {
-            Some((id, body)) => super::write_note(&tx, &task, id, body, &now())?,
-            None => insert_event(
-                &tx,
-                Entity::Task,
-                &task.id,
-                "git.ref",
-                &json!({ "branch": branch, "noted": noted }),
-            )?,
-        }
         tx.commit()
     }
 }
@@ -573,7 +631,6 @@ mod tests {
     fn branch_names_resolve_to_their_short_id() {
         assert_eq!(short_id_of_branch("task/2329-git-pr-links"), Some(2329));
         assert_eq!(short_id_of_branch("task/12-x-rebased"), Some(12));
-        assert_eq!(short_id_of_branch("refs/heads/task/7-v3"), Some(7));
         assert_eq!(short_id_of_branch("task/7"), Some(7));
         assert_eq!(short_id_of_branch("task/x7-y"), None);
         assert_eq!(short_id_of_branch("main"), None);
