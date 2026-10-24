@@ -297,21 +297,7 @@ impl Engine {
         let tx = self.begin_mutation()?;
         let task = self.resolve_ref_on(&tx, p)?;
         super::task::guard_rev(expected_rev, &task)?;
-        tx.execute(
-            "INSERT INTO annotations (id, task_id, body, created) VALUES (?1, ?2, ?3, ?4)",
-            params![id, task.id, body, ts],
-        )?;
-        tx.execute(
-            "UPDATE tasks SET rev=?1, modified=?2 WHERE id=?3",
-            params![task.rev + 1, ts, task.id],
-        )?;
-        insert_event(
-            &tx,
-            Entity::Task,
-            &task.id,
-            "annotation.add",
-            &json!({ "id": id, "body": body }),
-        )?;
+        super::write_note(&tx, &task, &id, &body, &ts)?;
         tx.commit()?;
 
         // The body comes BACK, and that is a ruling rather than an oversight

@@ -205,10 +205,12 @@ A branch named `task/<id>-<slug>` names its task, whatever follows the id
 - **closed** adds a note and leaves the status alone.
 
 `tasqx show` lists the branch, the PR and the merge commit under `git`.
-Reporting `merged` again after the checks are fixed completes the task, and
-`opened` again starts a task that is still pending. An event whose outcome
-already holds changes nothing, and so does one a recorded merge settled
-(`closed` after `merged`); both say why.
+Reporting `merged` again after the checks are fixed completes the task. A PR
+starts its task once: reporting `opened` again after you stopped it does
+nothing, and a task a merge completed that you reopened stays open. An event
+whose outcome already holds changes nothing, and so does one a recorded merge
+settled (`closed` after `merged`); both say why. When someone holds a claim on
+the task, the event acts as that holder.
 
 tasqx never asks GitHub, or any network. Something that watched the PR tells
 it: a script reading `gh pr view --json`, a CI step, a git hook.

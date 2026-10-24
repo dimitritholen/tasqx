@@ -393,15 +393,20 @@ fn a_blocked_merge_restates_only_when_what_blocks_it_changes() {
 }
 
 #[test]
-fn an_opened_replay_starts_a_task_that_is_still_pending() {
+fn opened_starts_a_task_at_most_once_per_pr() {
     let e = engine();
     let a = add(&e, "stopped since");
     let branch = format!("task/{a}-o");
     event(&e, "opened", &branch, json!({ "pr": PR }));
     call(&e, "task.stop", json!({ "ref": a })).unwrap();
+    // A redelivery after the user stopped it: the user's stop stands.
     let out = event(&e, "opened", &branch, json!({ "pr": PR }));
-    assert_eq!(out["changed"], true, "{out}");
-    assert_eq!(get(&e, a)["status"], "active");
+    assert_eq!(out["changed"], false, "{out}");
+    assert!(
+        out["reason"].as_str().is_some_and(|r| r.contains("once")),
+        "{out}"
+    );
+    assert_eq!(get(&e, a)["status"], "pending");
 }
 
 #[test]
@@ -475,7 +480,10 @@ fn the_delivery_note_is_pinned_by_id_in_the_completing_transaction() {
     );
     // The note and the completion are one commit: the done event is the
     // newest, the note's add right before it.
-    let log = events(&e, a);
+    let log: Vec<Value> = events(&e, a)
+        .into_iter()
+        .filter(|ev| ev["op"] != "git.ref")
+        .collect();
     assert_eq!(log[0]["op"], "done");
     assert_eq!(log[1]["op"], "annotation.add");
     assert_eq!(log[1]["payload"]["id"], t["delivered_annotation_id"]);
@@ -641,4 +649,89 @@ fn a_retry_writes_the_note_a_failed_call_left_missing() {
         .last()
         .unwrap()
         .contains("closed without merging"));
+}
+
+// ---- review round 3 ---------------------------------------------------------
+
+#[test]
+fn the_fact_lives_on_the_branch_so_with_or_without_pr_there_is_one_note() {
+    let e = engine();
+    let a = add(&e, "one note");
+    call(&e, "check.add", json!({ "ref": a, "body": "open" })).unwrap();
+    let branch = format!("task/{a}-b");
+    event(&e, "merged", &branch, json!({ "pr": PR }));
+    let n = notes(&e, a).len();
+    let out = event(&e, "merged", &branch, json!({}));
+    assert_eq!(out["changed"], false, "{out}");
+    assert_eq!(notes(&e, a).len(), n);
+}
+
+#[test]
+fn a_reason_is_kept_when_the_event_still_changed_something() {
+    let e = engine();
+    let a = add(&e, "merged, then closed from another branch");
+    event(&e, "merged", &format!("task/{a}-x"), json!({ "pr": PR }));
+    let out = event(&e, "closed", "other-branch", json!({ "pr": PR, "task": a }));
+    assert_eq!(out["changed"], true, "{out}");
+    assert!(
+        out["reason"].as_str().is_some_and(|r| r.contains("merged")),
+        "{out}"
+    );
+}
+
+#[test]
+fn a_merge_does_not_complete_again_a_task_the_user_reopened() {
+    let e = engine();
+    let a = add(&e, "reopened by hand");
+    let branch = format!("task/{a}-r");
+    let extra = json!({ "pr": PR, "sha": "f1" });
+    event(&e, "merged", &branch, extra.clone());
+    call(&e, "task.reopen", json!({ "ref": a })).unwrap();
+    let out = event(&e, "merged", &branch, extra);
+    assert_eq!(out["changed"], false, "{out}");
+    assert!(
+        out["reason"]
+            .as_str()
+            .is_some_and(|r| r.contains("reopened")),
+        "{out}"
+    );
+    assert_ne!(get(&e, a)["status"], "done");
+}
+
+#[test]
+fn a_git_event_acts_for_the_live_claim_holder() {
+    let e = engine();
+    let a = add(&e, "claimed");
+    call(&e, "task.claim", json!({ "ref": a, "actor": "agent-1" })).unwrap();
+    let branch = format!("task/{a}-c");
+    let out = event(&e, "opened", &branch, json!({ "pr": PR }));
+    assert_eq!(out["transition"], "started", "{out}");
+    let start = events(&e, a)
+        .into_iter()
+        .find(|ev| ev["op"] == "start")
+        .expect("a start event");
+    assert_eq!(start["payload"]["holder"], "agent-1", "{start}");
+    let out = event(&e, "merged", &branch, json!({ "pr": PR }));
+    assert_eq!(out["transition"], "completed", "{out}");
+    assert!(get(&e, a)["claimed_by"].is_null(), "done ends the claim");
+}
+
+#[test]
+fn refs_are_ordered_by_instant_not_by_text() {
+    let e = engine();
+    let a = add(&e, "ordered");
+    let mut doc = call(&e, "store.export", json!({})).unwrap();
+    doc["tasks"][0]["git_refs"] = json!([
+        {
+            "id": "019f0000-0000-7000-8000-0000000000h1", "kind": "branch",
+            "ref": "task/x", "state": "open", "created": "2026-01-01T00:00:10.5Z"
+        },
+        {
+            "id": "019f0000-0000-7000-8000-0000000000h2", "kind": "pr",
+            "ref": PR, "state": "open", "created": "2026-01-01T00:00:10Z"
+        }
+    ]);
+    call(&e, "store.import", doc).unwrap();
+    let kinds: Vec<String> = refs(&e, a).into_iter().map(|(k, _, _)| k).collect();
+    assert_eq!(kinds, vec!["pr", "branch"], "10s comes before 10.5s");
 }

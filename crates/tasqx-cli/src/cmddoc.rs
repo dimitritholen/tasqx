@@ -796,8 +796,10 @@ pub const COMMAND_REF: &[CmdDoc] = &[
              nothing blocks it; otherwise the task stays open and a note names what did not \
              pass. `opened` on a task that cannot start, and `closed`, only add a note. Every \
              write is recorded under the actor `git`.",
-            "Report `merged` again once the checks are fixed and it completes the task; \
-             `opened` again starts a task that is still pending. An event whose outcome \
+            "Report `merged` again once the checks are fixed and it completes the task. A PR \
+             starts its task once, and a task its merge completed that you reopened stays \
+             open: a repeat never overrides you. When the task is claimed, the event acts \
+             as the claim holder. An event whose outcome \
              already holds, or one a recorded merge settled (`closed` after `merged`), \
              changes nothing and says why.",
         ],
