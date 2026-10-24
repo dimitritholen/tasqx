@@ -51,6 +51,9 @@ export function attachEvents(
     void refreshReport(controller.client, store);
   });
 
+  // A note's event carries no body, so the Notes list is re-read whole (D241).
+  const scheduleNotesRefresh = debounced(() => void store.reloadNotes().catch(() => undefined));
+
   // The open task: every event for it, whatever its op, re-reads the row and
   // the inspector together. A draft is not touched — the new server copy lands
   // beside it and the conflict panel compares the two.
@@ -67,6 +70,10 @@ export function attachEvents(
     const { entity, short_id: shortId } = event.data;
     if (entity === 'project') {
       void refreshProjects(controller.client, store);
+      return;
+    }
+    if (entity === 'note') {
+      scheduleNotesRefresh();
       return;
     }
     // Docs and links have no screen in #691.

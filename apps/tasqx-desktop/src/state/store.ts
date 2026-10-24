@@ -12,6 +12,9 @@ import type {
   MemoryDoc,
   MemoryListResult,
   MemorySearchResult,
+  Note,
+  NoteListResult,
+  NotePromoteResult,
   Project,
   Summary,
   TaskDetail,
@@ -27,6 +30,7 @@ import {
   type MemoryFilters,
   type MemoryResultRow,
 } from './memory';
+import { noteListParams, type NoteFilters } from './notes';
 import { graphDataOf, graphQueryParams, mergeGraphData, promoteInGraphData } from './graph';
 import { draftChanges, newDraft, type EditField, type TaskDraft } from './edit';
 import type { GraphData, GraphPins, GraphRequest } from './graph';
@@ -99,6 +103,13 @@ export interface MemoryDetail {
   links: Link[];
 }
 
+/** `note.list`'s answer for the filters it was read with; null filters before the first read. */
+export interface NoteResults {
+  notes: Note[];
+  total: number;
+  filters: NoteFilters | null;
+}
+
 /** What the Graph inspector shows: one node or one edge of the loaded neighbourhood. */
 export type GraphSelection = { kind: 'node'; id: string } | { kind: 'edge'; id: string } | null;
 
@@ -117,6 +128,9 @@ export interface DashboardState {
   memoryResults: Slice<MemoryResults>;
   memorySelection: MemorySelection;
   memoryDetail: Slice<MemoryDetail>;
+  notes: Slice<NoteResults>;
+  /** The note open in the inspector, as its last read or write answered it. */
+  selectedNote: Note | null;
   /** The loaded neighbourhood, merged across expansions; null before the first query. */
   graph: Slice<GraphData | null>;
   /** The request `graph` answers — what an expansion and a reload repeat. */
@@ -138,6 +152,7 @@ export type SliceKey =
   | 'activity'
   | 'memoryResults'
   | 'memoryDetail'
+  | 'notes'
   | 'graph';
 
 function idle<T>(data: T): Slice<T> {
@@ -156,6 +171,8 @@ function initialState(): DashboardState {
     memoryResults: idle<MemoryResults>({ rows: [], matched: null, storeEmpty: false, filters: DEFAULT_MEMORY_FILTERS }),
     memorySelection: null,
     memoryDetail: idle<MemoryDetail>(idleMemoryDetail()),
+    notes: idle<NoteResults>({ notes: [], total: 0, filters: null }),
+    selectedNote: null,
     graph: idle<GraphData | null>(null),
     graphRequest: null,
     graphSelection: null,
@@ -179,6 +196,8 @@ export class DashboardStore {
   private memorySeq = 0;
   /** The same guard for `graph.query`: only the newest load or expansion lands. */
   private graphSeq = 0;
+  /** The same guard for `note.list`. */
+  private notesSeq = 0;
 
   getState(): DashboardState {
     return this.state;
@@ -559,6 +578,73 @@ export class DashboardStore {
     }
     await this.client.request('annotation.remove', { ref: taskRef, annotation_id: annotationId });
     await this.refreshMemoryTask(taskRef);
+  }
+
+  /** `note.list` for the Notes screen; a superseded answer drops itself, as runMemoryQuery's does. */
+  async runNotesQuery(filters: NoteFilters): Promise<void> {
+    const seq = ++this.notesSeq;
+    const client = this.client;
+    if (client === null) {
+      this.fail('notes', new ApiError('transport_unavailable', 'transport unavailable: not connected'));
+      return;
+    }
+    this.startLoading('notes');
+    try {
+      const result = await client.request<NoteListResult>('note.list', noteListParams(filters));
+      if (seq !== this.notesSeq) return;
+      this.setSlice('notes', { data: { notes: result.notes, total: result.total, filters }, loading: false, error: null });
+      // The open note follows its row, so another session's edit shows in the inspector.
+      const open = this.state.selectedNote;
+      const fresh = open === null ? undefined : result.notes.find((note) => note.id === open.id);
+      if (fresh !== undefined) this.set({ selectedNote: fresh });
+    } catch (err) {
+      if (seq !== this.notesSeq) return;
+      this.fail('notes', err);
+    }
+  }
+
+  /** Repeat the last `note.list`; nothing before the screen first read one. */
+  async reloadNotes(): Promise<void> {
+    const filters = this.state.notes.data.filters;
+    if (filters !== null) await this.runNotesQuery(filters);
+  }
+
+  selectNote(note: Note | null): void {
+    this.set({ selectedNote: note });
+  }
+
+  async addNote(body: string): Promise<Note> {
+    const note = await this.requireClient().request<Note>('note.add', { body });
+    await this.reloadNotes();
+    return note;
+  }
+
+  /** Archive or unarchive, pinned to the revision on screen (D75). */
+  async setNoteStatus(note: Note, status: Note['status']): Promise<void> {
+    const updated = await this.requireClient().request<Note>('note.update', {
+      id: note.id,
+      status,
+      expected_rev: note._rev,
+    });
+    this.set({ selectedNote: updated });
+    await this.reloadNotes();
+  }
+
+  async promoteNote(note: Note, to: 'task' | 'memory'): Promise<NotePromoteResult> {
+    const result = await this.requireClient().request<NotePromoteResult>('note.promote', {
+      id: note.id,
+      to,
+      expected_rev: note._rev,
+    });
+    this.set({ selectedNote: result.note });
+    await this.reloadNotes();
+    return result;
+  }
+
+  async removeNote(note: Note): Promise<void> {
+    await this.requireClient().request('note.remove', { id: note.id });
+    if (this.state.selectedNote?.id === note.id) this.set({ selectedNote: null });
+    await this.reloadNotes();
   }
 
   private async refreshMemoryTask(taskRef: number): Promise<void> {
