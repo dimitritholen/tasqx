@@ -225,6 +225,18 @@ const ANNOTATION_PAGE: u64 = 20;
 /// the CLI, which has no payload limit at all.
 const ANNOTATION_BODY_CAP: u64 = 16_384;
 
+/// How many BYTES of one note body a `tasqx_list_notes` row carries when the
+/// caller names no `max_body_bytes` (D241 addendum).
+///
+/// [`ANNOTATION_BODY_CAP`]'s cut and marker, at a size a PAGE can afford:
+/// twenty rows of 640 bytes plus their keys sit under
+/// [`RESPONSE_BUDGET_BYTES`] for plain prose, where twenty bodies at 16 KB
+/// would be thirteen times it. A note is quick capture, so an ordinary one
+/// is never cut; one that is reads whole through `tasqx_get_note`. A budget,
+/// not a guarantee: escaping can double a body's bytes on the wire, and an
+/// explicit `limit` above [`MEMORY_LIST_PAGE`] multiplies the rows.
+const NOTE_LIST_BODY_CAP: u64 = 640;
+
 /// How many tasks `tasqx_list_tasks` returns when the caller names no `limit`.
 ///
 /// A STARTING page, not the answer: like [`ANNOTATION_PAGE`] it bounds rows,
@@ -453,11 +465,6 @@ fn with_correlation(mut schema: Value) -> Value {
 /// A reason is not a formality. "Nobody asked for it" is a fine reason and is
 /// written as such; what is not allowed is an omission with nothing beside it.
 const UNEXPOSED_METHODS: &[(&str, &str)] = &[
-    (
-        "note.get",
-        "note.list returns full bodies, so an agent never needs a second read of one note \
-         (D241).",
-    ),
     (
         "task.triage_list",
         "`tasqx_list_tasks` with `status:triage` already lists the inbox for an agent; the \
@@ -1959,9 +1966,10 @@ fn build_tool_specs() -> Vec<ToolSpec> {
             write: false,
             destructive: false,
             idempotent: true,
-            description: "List notes, newest first, bodies whole, paged like \
-                `tasqx_list_tasks`. `query` is a case-insensitive substring, not a ranked \
-                search; each row says `has_links` (D241).",
+            description: "List notes, newest first, paged like `tasqx_list_tasks`. A \
+                body over `max_body_bytes` is cut and marked `body_truncated`; \
+                `tasqx_get_note` reads it whole. `query` is a case-insensitive substring, not \
+                a ranked search; each row says `has_links` (D241).",
             schema: json!({
                 "type": "object",
                 "properties": {
@@ -1974,8 +1982,27 @@ fn build_tool_specs() -> Vec<ToolSpec> {
                     "query": { "type": "string", "description": "A substring of the body, any case." },
                     "project": { "type": "string" },
                     "limit": { "type": "integer", "minimum": 0, "description": format!("Default {MEMORY_LIST_PAGE}.") },
-                    "offset": { "type": "integer", "minimum": 0, "description": "Pass the previous response's `next_offset`." }
+                    "offset": { "type": "integer", "minimum": 0, "description": "Pass the previous response's `next_offset`." },
+                    "max_body_bytes": { "type": "integer", "minimum": 0, "description": format!("Default {NOTE_LIST_BODY_CAP}.") }
                 }
+            }),
+        },
+        ToolSpec {
+            name: "tasqx_get_note",
+            method: "note.get",
+            write: false,
+            destructive: false,
+            idempotent: true,
+            description: "Read one note. A body over `max_body_bytes` is cut and marked \
+                `body_truncated` with its real `body_bytes`; raise the cap to that to read \
+                every byte (D148, D241).",
+            schema: json!({
+                "type": "object",
+                "properties": {
+                    "id": { "type": "string", "description": "The note's uuid or short id." },
+                    "max_body_bytes": { "type": "integer", "minimum": 0, "description": format!("Default {ANNOTATION_BODY_CAP}.") }
+                },
+                "required": ["id"]
             }),
         },
         ToolSpec {
@@ -2019,7 +2046,7 @@ fn build_tool_specs() -> Vec<ToolSpec> {
             name: "tasqx_promote_note",
             method: "note.promote",
             write: true,
-            destructive: false,
+            destructive: true,
             idempotent: false,
             description: "File a note as a task or a memory doc in one transaction, then \
                 archive it with `promoted_to` naming what it became. The title is `title` or \
@@ -2856,11 +2883,15 @@ impl<'e> McpServer<'e> {
         // A JSON `null` counts as absent, the D32 reading this file already
         // applies to `view` and `client`: a client that serializes unset
         // optionals as null must get the default, not an uncapped answer.
-        if spec.method == "task.get" || spec.method == "task.brief" {
-            if let Some(obj) = args.as_object_mut() {
-                if obj.get("max_body_bytes").is_none_or(Value::is_null) {
-                    obj.insert("max_body_bytes".to_string(), json!(ANNOTATION_BODY_CAP));
-                }
+        // D241 addendum: the same cut on note bodies, smaller on the page.
+        let body_cap = match spec.method {
+            "task.get" | "task.brief" | "note.get" => Some(ANNOTATION_BODY_CAP),
+            "note.list" => Some(NOTE_LIST_BODY_CAP),
+            _ => None,
+        };
+        if let (Some(cap), Some(obj)) = (body_cap, args.as_object_mut()) {
+            if obj.get("max_body_bytes").is_none_or(Value::is_null) {
+                obj.insert("max_body_bytes".to_string(), json!(cap));
             }
         }
 
@@ -4262,7 +4293,7 @@ mod tests {
                 "memory.get" | "memory.update" | "memory.remove" => json!({ "id": doc }),
                 "memory.add" => json!({ "title": "t", "body": "b" }),
                 "note.add" => json!({ "body": "b" }),
-                "note.update" | "note.remove" => {
+                "note.get" | "note.update" | "note.remove" => {
                     dispatch(&e, "note.add", &json!({ "body": "n" })).expect("seed a note");
                     json!({ "id": 1 })
                 }
@@ -4341,6 +4372,8 @@ mod tests {
         // the "below the floor is refused" half for the wrong reason.
         e.task_add(&json!({ "title": "probe" }))
             .expect("seed a task");
+        // And one note, for `tasqx_get_note`'s cap behind its required `id`.
+        dispatch(&e, "note.add", &json!({ "body": "probe" })).expect("seed a note");
         let mut probed = 0;
         for spec in tool_specs() {
             let required: Vec<&str> = spec.schema["required"]
@@ -4367,6 +4400,9 @@ mod tests {
                         }
                         "query" => {
                             call.insert("query".to_string(), json!("probe"));
+                        }
+                        "id" => {
+                            call.insert("id".to_string(), json!(1));
                         }
                         other => panic!(
                             "tool `{}` bounds `{name}` at {min} behind a required `{other}` this \

@@ -332,8 +332,9 @@ fn migrate(conn: &Connection) -> Result<(), ApiError> {
 
         -- D241: quick-capture notes, neither tasks nor memory docs. Their own
         -- short_id counter (`next_note_short_id`), so a note never spends a
-        -- task number (D4). `promoted_to` is `task:#<short_id>` or
-        -- `memory:<doc id>` once `note.promote` filed it.
+        -- task number (D4). `promoted_to` is `task:<uuid>` or
+        -- `memory:<uuid>` once `note.promote` filed it: by uuid, because a
+        -- merge can renumber a task and never re-ids one.
         INSERT OR IGNORE INTO meta(key, value) VALUES ('next_note_short_id', 1);
         CREATE TABLE IF NOT EXISTS notes (
             id          TEXT PRIMARY KEY,

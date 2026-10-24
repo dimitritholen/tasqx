@@ -625,3 +625,32 @@ fn a_merge_adopting_a_promotion_logs_the_row_written_and_lifts_the_rev() {
     assert_eq!(ev["op"], json!("import"), "{ev}");
     assert_eq!(ev["payload"]["status"], json!("archived"), "{ev}");
 }
+
+/// D148's cut, on a note: `max_body_bytes` returns a prefix on a character
+/// boundary marked with `body_truncated` and the real `body_bytes`, leaves a
+/// body that fits untouched, and absent means whole (D241 addendum).
+#[test]
+fn max_body_bytes_cuts_a_long_note_marked_and_leaves_a_short_one_whole() {
+    let e = engine();
+    add(&e, "short");
+    let long = format!("{}é", "x".repeat(9));
+    add(&e, &long);
+
+    let page = call(&e, "note.list", json!({ "max_body_bytes": 10 })).unwrap();
+    let cut = &page["notes"][0];
+    assert_eq!(
+        cut["body"],
+        json!("x".repeat(9)),
+        "the é straddles byte 10: {cut}"
+    );
+    assert_eq!(cut["body_truncated"], json!(true));
+    assert_eq!(cut["body_bytes"], json!(long.len()));
+    let whole = &page["notes"][1];
+    assert!(whole.get("body_truncated").is_none() && whole.get("body_bytes").is_none());
+
+    let got = call(&e, "note.get", json!({ "id": 2, "max_body_bytes": 10 })).unwrap();
+    assert_eq!(got["body_truncated"], json!(true));
+    let got = call(&e, "note.get", json!({ "id": 2 })).unwrap();
+    assert_eq!(got["body"], json!(long), "no cap named, the body is whole");
+    assert!(got.get("body_truncated").is_none());
+}

@@ -54,6 +54,17 @@ fn note_row(r: &rusqlite::Row) -> rusqlite::Result<Value> {
     }))
 }
 
+/// D148's cut on a read's body (D241 addendum): a prefix marked with
+/// `body_truncated` and the real `body_bytes`, or the body whole on `None`.
+fn capped(mut note: Value, cap: Option<u64>) -> Value {
+    if let Some(obj) = note.as_object_mut() {
+        if let Some(Value::String(body)) = obj.remove("body") {
+            super::task::put_body(obj, body, cap);
+        }
+    }
+    note
+}
+
 /// The `id` param: a note's uuid or its short id, as a number or a string.
 fn note_ref(p: &Value) -> Result<&Value, ApiError> {
     p.get("id")
@@ -173,8 +184,10 @@ impl Engine {
     /// `note.list` — a D70 page of notes, newest first. Params: `status`
     /// (`open` default, `archived`, `all`), `links` (only bodies holding an
     /// `http://` or `https://` link), `query` (a case-insensitive substring
-    /// of the body, never a ranked search), `project`, `limit`, `offset`.
+    /// of the body, never a ranked search), `project`, `limit`, `offset`,
+    /// `max_body_bytes` (D148's per-body cut; absent means whole).
     pub fn note_list(&self, p: &Value) -> Result<Value, ApiError> {
+        let max_body = opt_u64(p, "max_body_bytes")?;
         let status = opt_str(p, "status")?.unwrap_or_else(|| NOTE_LIST_STATUSES[0].to_string());
         if !NOTE_LIST_STATUSES.contains(&status.as_str()) {
             return Err(ApiError::bad_request(format!(
@@ -235,7 +248,9 @@ impl Engine {
              ORDER BY short_id DESC LIMIT :limit OFFSET :offset"
         ))?;
         let notes: Vec<Value> = stmt
-            .query_map(row_params.as_slice(), note_row)?
+            .query_map(row_params.as_slice(), |r| {
+                note_row(r).map(|n| capped(n, max_body))
+            })?
             .collect::<Result<_, _>>()?;
         let reached = offset + notes.len() as u64;
         let next_offset = if limit_i64 == Some(0) || (reached as i64) >= total {
@@ -251,9 +266,11 @@ impl Engine {
         }))
     }
 
-    /// `note.get` — one note, by uuid or short id.
+    /// `note.get` — one note, by uuid or short id; `max_body_bytes` as on
+    /// `note.list`.
     pub fn note_get(&self, p: &Value) -> Result<Value, ApiError> {
-        note_lookup(&self.conn, note_ref(p)?)
+        let max_body = opt_u64(p, "max_body_bytes")?;
+        Ok(capped(note_lookup(&self.conn, note_ref(p)?)?, max_body))
     }
 
     /// `note.update` — change a note's `body`, `project` or `status`

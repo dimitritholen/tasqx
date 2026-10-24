@@ -13,9 +13,11 @@ bump for tasqx-core.
 ### Added
 
 - **Notes** (D241, #926). `note.add`, `note.list`, `note.get`, `note.update`,
-  `note.remove` and `note.promote` on the JSON API, and five MCP tools
-  (`tasqx_add_note`, `tasqx_list_notes`, `tasqx_update_note`,
-  `tasqx_remove_note`, `tasqx_promote_note`). A note scores no urgency, stays out
+  `note.remove` and `note.promote` on the JSON API, and six MCP tools
+  (`tasqx_add_note`, `tasqx_list_notes`, `tasqx_get_note`, `tasqx_update_note`,
+  `tasqx_remove_note`, `tasqx_promote_note`). `note.list` and `note.get` take
+  `max_body_bytes`, D148's marked cut; over MCP a listed body is cut at 640
+  bytes and `tasqx_get_note` reads it whole. A note scores no urgency, stays out
   of `@working`, reports and memory search, and travels in `store.export` /
   `store.import` like a memory doc. `note.promote` files it as a task or a memory
   doc in one transaction and archives it; promotion is final.

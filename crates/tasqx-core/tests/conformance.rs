@@ -1263,11 +1263,14 @@ const NOTE_HAS_LINKS: &[Field] = &[
 
 const R_NOTE: Shape = &[NOTE_EXPORT_ROW, NOTE_HAS_LINKS];
 
+/// D241 addendum: the two reads that take `max_body_bytes` carry D148's pair.
+const R_NOTE_READ: Shape = &[NOTE_EXPORT_ROW, NOTE_HAS_LINKS, ANNOTATION_CAP];
+
 const R_NOTE_LIST: Shape = &[&[
     req("count", Ty::Int),
     req("total", Ty::Int),
     nul("next_offset", Ty::Int),
-    req_of("notes", Ty::Array, R_NOTE),
+    req_of("notes", Ty::Array, R_NOTE_READ),
 ]];
 
 const R_NOTE_REMOVE: Shape = &[&[
@@ -2809,7 +2812,8 @@ fn cases() -> Vec<Case> {
             |e| {
                 e.note_add(&json!({ "body": "see https://example.com" }))
                     .expect("note");
-                json!({ "status": "all", "links": true, "query": "example", "limit": 10, "offset": 0 })
+                // A cap shorter than the body, so D148's pair is observed.
+                json!({ "status": "all", "links": true, "query": "example", "limit": 10, "offset": 0, "max_body_bytes": 3 })
             },
             R_NOTE_LIST,
         ),
@@ -2818,9 +2822,9 @@ fn cases() -> Vec<Case> {
             "one note by short id",
             |e| {
                 e.note_add(&json!({ "body": "find me" })).expect("note");
-                json!({ "id": 1 })
+                json!({ "id": 1, "max_body_bytes": 3 })
             },
-            R_NOTE,
+            R_NOTE_READ,
         ),
         case(
             "note.update",

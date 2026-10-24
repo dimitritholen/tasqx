@@ -555,7 +555,7 @@ pub(super) struct OpenBlocker {
 /// `body_bytes` is the ORIGINAL length, because it is the one fact the reader
 /// cannot recover from what arrived, and the renderer needs it to name the
 /// exact call that reads the note whole.
-fn put_body(row: &mut Map<String, Value>, body: String, cap: Option<u64>) {
+pub(super) fn put_body(row: &mut Map<String, Value>, body: String, cap: Option<u64>) {
     let original = body.len();
     let cap = match cap {
         Some(c) => usize::try_from(c).unwrap_or(usize::MAX),

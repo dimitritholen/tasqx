@@ -2244,13 +2244,17 @@ pub fn result_shape(method: &str) -> &'static [(&'static str, &'static [FieldDoc
             ("result.docs[]", MEMORY_LIST_ROW),
         ],
         "memory.update" => &[("result", R_MEMORY_UPDATE)],
-        "note.add" | "note.get" | "note.update" => {
-            &[("result", NOTE_EXPORT_ROW), ("result", NOTE_HAS_LINKS)]
-        }
+        "note.add" | "note.update" => &[("result", NOTE_EXPORT_ROW), ("result", NOTE_HAS_LINKS)],
+        "note.get" => &[
+            ("result", NOTE_EXPORT_ROW),
+            ("result", NOTE_HAS_LINKS),
+            ("result", ANNOTATION_CAP),
+        ],
         "note.list" => &[
             ("result", R_NOTE_LIST),
             ("result.notes[]", NOTE_EXPORT_ROW),
             ("result.notes[]", NOTE_HAS_LINKS),
+            ("result.notes[]", ANNOTATION_CAP),
         ],
         "note.remove" => &[("result", R_NOTE_REMOVE)],
         "note.promote" => &[

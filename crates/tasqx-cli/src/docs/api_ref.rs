@@ -796,13 +796,6 @@ pub(super) fn describe(text: &str) -> String {
 /// is none to state.
 const PARAM_DOCS: &[(&str, &str, &str, &str, &str)] = &[
     (
-        "note.get",
-        "id",
-        "integer or string",
-        "",
-        "The note's uuid or its short id (D241).",
-    ),
-    (
         "note.list",
         "project",
         "string",
