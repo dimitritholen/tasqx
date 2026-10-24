@@ -1078,19 +1078,29 @@ fn execute(cli: Cli) -> Exit {
         Some(Command::Accept { r#ref }) => {
             verbs::run_triage(&mut backend, &ctx, r#ref, json!({ "action": "accept" }))
         }
-        Some(Command::Decline { r#ref, reason }) => {
+        Some(Command::Decline {
+            r#ref,
+            reason,
+            holder,
+            force_claim,
+        }) => {
             let mut p = json!({ "action": "decline" });
             if let Some(r) = reason {
                 p["reason"] = json!(r);
             }
+            verbs::claim_params(&mut p, holder, force_claim);
             verbs::run_triage(&mut backend, &ctx, r#ref, p)
         }
-        Some(Command::Duplicate { r#ref, of }) => verbs::run_triage(
-            &mut backend,
-            &ctx,
+        Some(Command::Duplicate {
             r#ref,
-            json!({ "action": "duplicate", "of": of }),
-        ),
+            of,
+            holder,
+            force_claim,
+        }) => {
+            let mut p = json!({ "action": "duplicate", "of": of });
+            verbs::claim_params(&mut p, holder, force_claim);
+            verbs::run_triage(&mut backend, &ctx, r#ref, p)
+        }
         Some(Command::Undo) => run_undo(&mut backend, &ctx),
         Some(Command::Annotate {
             r#ref,

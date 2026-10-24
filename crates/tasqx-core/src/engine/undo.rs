@@ -180,6 +180,11 @@ pub const UNDOABLE_OPS: [&str; 12] = [
 /// to invent from; idempotent writes the log cannot tell apart).
 pub const NOT_UNDOABLE: &[(&str, &str)] = &[
     (
+        "duplicate",
+        "Marking a duplicate cancelled the proposal, moved its notes and linked it to the \
+         original in one step (D238); `tasqx reopen <ref>` brings the proposal back to triage.",
+    ),
+    (
         "add",
         "A task cannot be un-created without stranding the short_id D4 promises never to \
          recycle; `tasqx cancel <ref>` retires it instead.",

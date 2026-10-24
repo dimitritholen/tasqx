@@ -437,10 +437,14 @@ pub(crate) fn run_list(
 /// a status missing from one of them makes tasks stop appearing without anything
 /// failing. There is no `@open` keyword in the grammar to lean on: `KEYWORDS` is
 /// `@working` and `@blocked`, and neither is this set.
+///
+/// `triage` is open and left out (D238): a proposal has no date anyone has
+/// agreed to, so it is neither scheduled nor overdue until it is accepted.
+/// `tasqx agenda status:triage` names it and shows it.
 pub(crate) fn open_statuses_filter() -> String {
     tasqx_core::types::Status::ALL
         .iter()
-        .filter(|s| s.is_open())
+        .filter(|s| s.is_open() && **s != tasqx_core::types::Status::Triage)
         .map(|s| format!("status:{}", s.as_str()))
         .collect::<Vec<_>>()
         .join(" or ")

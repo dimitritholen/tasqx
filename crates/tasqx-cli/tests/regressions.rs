@@ -6778,3 +6778,28 @@ fn list_matches_title_words_and_status_any_sees_closed_tasks() {
     let s = run(&["list", "chore", "status:all"]);
     assert!(s.contains("Old closed chore"), "status:all too: {s}");
 }
+
+/// D238: a proposal has no agreed date, so the agenda leaves it out by default
+/// — not even as overdue — and shows it only when the filter names triage.
+#[test]
+fn agenda_leaves_proposals_out_unless_asked() {
+    let dir = fresh_config_dir("agenda-triage");
+    let run = |args: &[&str]| {
+        bin("agenda-triage", &dir)
+            .args(args)
+            .output()
+            .expect("run tasqx")
+    };
+    assert!(run(&["init", "triageproj"]).status.success());
+    for args in [
+        &["add", "Late proposal", "due:-5d", "--triage"][..],
+        &["add", "Late work", "due:-5d"][..],
+    ] {
+        assert!(run(args).status.success(), "{args:?}");
+    }
+    let text = String::from_utf8_lossy(&run(&["agenda"]).stdout).to_string();
+    assert!(text.contains("Late work"), "{text}");
+    assert!(!text.contains("Late proposal"), "{text}");
+    let asked = String::from_utf8_lossy(&run(&["agenda", "status:triage"]).stdout).to_string();
+    assert!(asked.contains("Late proposal"), "{asked}");
+}

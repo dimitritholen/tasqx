@@ -4267,6 +4267,10 @@ impl Engine {
             _ => {}
         }
         let expected_rev = opt_i64(p, "expected_rev")?;
+        // D236: decline and duplicate close the task, so a live claim guards
+        // them exactly as it guards `task.cancel`.
+        let actor = opt_str_nonempty(p, "actor")?;
+        let force_claim = opt_bool(p, "force_claim")?.unwrap_or(false);
 
         let tx = self.begin_mutation()?;
         let task = self.resolve_ref_value_on(&tx, &target)?;
@@ -4291,6 +4295,16 @@ impl Engine {
                 Some(o)
             }
             None => None,
+        };
+        let closed = if action == "accept" {
+            None
+        } else {
+            Some(claim_close_guard(
+                &tx,
+                &task,
+                actor.as_deref(),
+                force_claim,
+            )?)
         };
 
         let ts = now();
@@ -4334,6 +4348,15 @@ impl Engine {
             if let Some(o) = &original {
                 payload["duplicate_of"] = json!(o.id);
             }
+            // D236: the claim this ends, so `undo` of a decline puts it back.
+            if let Some(c) = &closed {
+                if let Some((by, until)) = &c.stored {
+                    payload["claim"] = json!({ "holder": by, "expires": until });
+                }
+                if let Some(by) = &c.forced {
+                    payload["claim_forced"] = json!(by);
+                }
+            }
             insert_event(&tx, Entity::Task, &task.id, "cancel", &payload)?;
         }
         if let Some(o) = &original {
@@ -4367,6 +4390,16 @@ impl Engine {
                 tx.execute("UPDATE tasks SET rev=?1 WHERE id=?2", params![rev, task.id])?;
             }
             super::graph::link_tasks(&tx, &task.id, &o.id, "duplicates", &ts)?;
+            // The newest event, always — even when the link was already there
+            // — so `undo` refuses the duplicate whole instead of taking back
+            // only its cancel.
+            insert_event(
+                &tx,
+                Entity::Task,
+                &task.id,
+                "duplicate",
+                &json!({ "of": o.id, "moved": moved }),
+            )?;
         }
         // A proposal can block other work; closing it releases them (D11).
         let unblocked = if action == "accept" {
@@ -4499,7 +4532,7 @@ impl Engine {
             Entity::Task,
             &task.id,
             "reopen",
-            &json!({ "from": task.status.as_str() }),
+            &json!({ "from": task.status.as_str(), "to": to.as_str() }),
         )?;
         // Read AFTER the UPDATE, so the reopened task is already back among
         // its dependents' unresolved blockers and the count below is the one
@@ -4548,20 +4581,16 @@ impl Engine {
     }
 }
 
-/// One string field out of an event payload.
-///
-/// A function taking the key as a parameter rather than a literal
-/// `.get("actor")` chain: D32's guard bans that shape across the engine because
-/// it cannot tell an absent value from a wrong-typed one.
 /// D238: whether the newest cancellation of `task_id` left `triage` — a
 /// `cancel` event (decline, duplicate, cancel) or a `modify` that set
-/// `cancelled`, whose `before` names the status it replaced.
+/// `cancelled`, whose `before` names the status it replaced. Newest by
+/// `rowid`, the order the rows arrived, as `event.revert` reads it (#422).
 fn cancelled_from_triage(tx: &rusqlite::Transaction, task_id: &str) -> Result<bool, ApiError> {
     let payload: Option<(String, String)> = tx
         .query_row(
             "SELECT op, payload FROM events WHERE entity_id = ?1 \
              AND (op = 'cancel' OR (op = 'modify' AND payload LIKE '%\"status\"%')) \
-             ORDER BY id DESC LIMIT 1",
+             ORDER BY rowid DESC LIMIT 1",
             params![task_id],
             |r| Ok((r.get(0)?, r.get(1)?)),
         )
@@ -4578,6 +4607,11 @@ fn cancelled_from_triage(tx: &rusqlite::Transaction, task_id: &str) -> Result<bo
     Ok(from == Status::Triage.as_str())
 }
 
+/// One string field out of an event payload.
+///
+/// A function taking the key as a parameter rather than a literal
+/// `.get("actor")` chain: D32's guard bans that shape across the engine because
+/// it cannot tell an absent value from a wrong-typed one.
 fn payload_field(payload: &Value, key: &str) -> Option<String> {
     payload.get(key).and_then(Value::as_str).map(str::to_string)
 }

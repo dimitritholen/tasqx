@@ -314,6 +314,10 @@ fn reopening_a_declined_or_duplicate_proposal_puts_it_back_in_triage() {
         let out = ok(&e, "task.reopen", json!({ "ref": t }));
         assert_eq!(out["status"], "triage", "#{t}: {out}");
         assert_eq!(status(&e, t), "triage", "#{t}");
+        // The event names where it went, for a replay (the desktop's CFD).
+        let events = ok(&e, "event.list", json!({ "ref": t }));
+        assert_eq!(events["events"][0]["op"], "reopen");
+        assert_eq!(events["events"][0]["payload"]["to"], "triage");
     }
     // A task cancelled from pending still reopens to pending.
     ok(&e, "task.cancel", json!({ "ref": original }));
@@ -400,4 +404,65 @@ fn the_inbox_is_one_read_oldest_first_with_client_origin_and_a_page() {
     assert!(rest["tasks"][0]["client"].is_null());
     assert!(rest["tasks"][0]["discovered_from"].is_null());
     assert!(rest["next_offset"].is_null());
+}
+
+#[test]
+fn decline_and_duplicate_respect_a_claim_and_undo_restores_it() {
+    let e = engine();
+    let original = add(&e, json!({}));
+    let t = add(&e, json!({ "status": "triage" }));
+    ok(
+        &e,
+        "task.claim",
+        json!({ "ref": t, "actor": "agent-9", "lease": "24h" }),
+    );
+    for p in [
+        json!({ "ref": t, "action": "decline", "actor": "someone" }),
+        json!({ "ref": t, "action": "duplicate", "of": original, "actor": "someone" }),
+    ] {
+        let err = call(&e, "task.triage", p).unwrap_err();
+        assert_eq!(err.code, ErrorCode::Conflict, "{}", err.message);
+        assert!(err.message.contains("agent-9"), "{}", err.message);
+    }
+    ok(
+        &e,
+        "task.triage",
+        json!({ "ref": t, "action": "decline", "actor": "agent-9" }),
+    );
+    ok(&e, "event.revert", json!({}));
+    let got = ok(&e, "task.get", json!({ "ref": t }));
+    assert_eq!(got["status"], "triage");
+    assert_eq!(
+        got["claimed_by"], "agent-9",
+        "undo restores the claim: {got}"
+    );
+    let out = ok(
+        &e,
+        "task.triage",
+        json!({ "ref": t, "action": "decline", "actor": "x", "force_claim": true }),
+    );
+    assert_eq!(out["status"], "cancelled");
+}
+
+#[test]
+fn a_repeated_duplicate_is_refused_by_undo_whole() {
+    let e = engine();
+    let original = add(&e, json!({}));
+    let t = add(&e, json!({ "status": "triage" }));
+    ok(
+        &e,
+        "task.triage",
+        json!({ "ref": t, "action": "duplicate", "of": original }),
+    );
+    ok(&e, "task.reopen", json!({ "ref": t }));
+    // The `duplicates` link is already there, so no `link.add` is written.
+    ok(
+        &e,
+        "task.triage",
+        json!({ "ref": t, "action": "duplicate", "of": original }),
+    );
+    let err = call(&e, "event.revert", json!({})).unwrap_err();
+    assert_eq!(err.code, ErrorCode::Conflict);
+    assert!(err.message.contains("`duplicate`"), "{}", err.message);
+    assert_eq!(status(&e, t), "cancelled", "nothing was half undone");
 }

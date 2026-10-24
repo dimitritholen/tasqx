@@ -734,6 +734,7 @@
 
 /* Status → fill, from the status tokens; done is dimmed so open work reads first. */
 .chart {
+  --chart-triage: var(--color-warning);
   --chart-backlog: var(--status-backlog);
   --chart-pending: var(--status-pending);
   --chart-active: var(--status-active);
@@ -801,6 +802,9 @@
   height: 12px;
 }
 
+[data-status='triage'] {
+  --chart-fill: var(--chart-triage);
+}
 [data-status='backlog'] {
   --chart-fill: var(--chart-backlog);
 }

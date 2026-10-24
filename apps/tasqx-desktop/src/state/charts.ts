@@ -298,7 +298,8 @@ export const urgencyOpacity = (urgency: number): number => 0.35 + Math.min(1, ur
 
 // ---- CFD ------------------------------------------------------------------
 
-export const CFD_STATUSES = ['backlog', 'pending', 'active', 'done', 'cancelled'] as const;
+/** Bottom band first. `triage` (D238) is a proposal not yet accepted. */
+export const CFD_STATUSES = ['triage', 'backlog', 'pending', 'active', 'done', 'cancelled'] as const;
 export type CfdStatus = (typeof CFD_STATUSES)[number];
 export type CfdCounts = Record<CfdStatus, number>;
 export interface CfdRow {
@@ -322,8 +323,11 @@ export function statusAfter(event: EventRow): string | null {
     case 'start':
       return 'active';
     case 'stop':
-    case 'reopen':
+    case 'accept':
       return 'pending';
+    case 'reopen':
+      // D238: a reopened proposal goes back to triage, and the event says so.
+      return typeof payload['to'] === 'string' ? payload['to'] : 'pending';
     case 'done':
       return 'done';
     case 'cancel':
@@ -350,7 +354,7 @@ export function buildCfd(events: EventRow[], ids: Set<string>): Cfd {
   const bucket = last - first > 3 * DAY ? 'day' : 'hour';
   const cut = bucket === 'day' ? 10 : 13;
   const state = new Map<string, string>();
-  const counts: CfdCounts = { backlog: 0, pending: 0, active: 0, done: 0, cancelled: 0 };
+  const counts: CfdCounts = { triage: 0, backlog: 0, pending: 0, active: 0, done: 0, cancelled: 0 };
   const bump = (status: string | undefined, by: number) => {
     if (status !== undefined && status in counts) counts[status as CfdStatus] += by;
   };

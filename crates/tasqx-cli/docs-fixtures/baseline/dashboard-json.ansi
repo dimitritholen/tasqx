@@ -159,7 +159,7 @@
         "truncated": false
       },
       {
-        "open": 5,
+        "open": 4,
         "overdue": 0,
         "project": "website",
         "rows": [
@@ -226,25 +226,9 @@
             "title": "Archive last year's analytics dashboards",
             "tracked_secs": 0,
             "urgency": 2.0
-          },
-          {
-            "active_since": null,
-            "blocked": false,
-            "completed": null,
-            "due": null,
-            "estimate_secs": null,
-            "id": "dace715d-e182-4c12-b451-8a51c24a5fb0",
-            "modified": "2026-09-14T15:40:00Z",
-            "priority": null,
-            "project": "website",
-            "short_id": 62,
-            "status": "triage",
-            "title": "Retry the flaky checkout e2e test",
-            "tracked_secs": 0,
-            "urgency": 0.0
           }
         ],
-        "total": 5,
+        "total": 4,
         "truncated": false
       },
       {
@@ -305,7 +289,7 @@
         "truncated": false
       },
       {
-        "open": 4,
+        "open": 3,
         "overdue": 0,
         "project": "api",
         "rows": [
@@ -356,25 +340,9 @@
             "title": "Add OpenAPI examples for every endpoint",
             "tracked_secs": 0,
             "urgency": 4.0
-          },
-          {
-            "active_since": null,
-            "blocked": false,
-            "completed": null,
-            "due": null,
-            "estimate_secs": null,
-            "id": "05b816d3-f767-4afa-8bbe-bcfb91453934",
-            "modified": "2026-09-15T15:40:00Z",
-            "priority": null,
-            "project": "api",
-            "short_id": 63,
-            "status": "triage",
-            "title": "Cache the pricing API response",
-            "tracked_secs": 0,
-            "urgency": 0.0
           }
         ],
-        "total": 4,
+        "total": 3,
         "truncated": false
       },
       {
@@ -420,7 +388,7 @@
       }
     ],
     "sort": "urgency",
-    "total": 17
+    "total": 15
   },
   "today": "2026-09-16",
   "window_days": 7

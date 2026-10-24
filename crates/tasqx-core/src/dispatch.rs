@@ -212,7 +212,15 @@ pub const PARAMS: &[(&str, &[&str], bool)] = &[
     // mark a duplicate `of` another task.
     (
         "task.triage",
-        &["ref", "action", "reason", "of", "expected_rev"],
+        &[
+            "ref",
+            "action",
+            "reason",
+            "of",
+            "expected_rev",
+            "actor",
+            "force_claim",
+        ],
         false,
     ),
     // D238: the inbox, in one read.

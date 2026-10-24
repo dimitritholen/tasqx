@@ -1411,7 +1411,9 @@ fn build_tool_specs() -> Vec<ToolSpec> {
                         "type": ["integer", "string"],
                         "description": "The task it duplicates (action `duplicate`)."
                     },
-                    "expected_rev": lifecycle_rev_schema()
+                    "expected_rev": lifecycle_rev_schema(),
+                    "actor": { "type": "string", "description": "Holder (D236)." },
+                    "force_claim": { "type": "boolean", "description": "Override another holder's claim." }
                 },
                 "required": ["ref", "action"]
             }),
