@@ -16,6 +16,22 @@ fn add(e: &Engine, body: &str) -> Value {
     call(e, "note.add", json!({ "body": body })).expect("note.add")
 }
 
+/// `ts` moved by `secs`. A merge orders by timestamp, so a test that needs
+/// one side LATER says so in the payload instead of sleeping and hoping two
+/// writes land in different milliseconds.
+fn shifted(ts: &Value, secs: i64) -> Value {
+    let t: jiff::Timestamp = ts.as_str().expect("a timestamp").parse().expect("RFC 3339");
+    json!(t
+        .checked_add(jiff::SignedDuration::from_secs(secs))
+        .expect("in range")
+        .to_string())
+}
+
+/// The one note's `modified` in a payload, set relative to `held`.
+fn note_modified_after(doc: &mut Value, held: &Value, secs: i64) {
+    doc["notes"][0]["modified"] = shifted(&held["modified"], secs);
+}
+
 #[test]
 fn a_note_is_added_with_its_own_short_id_counter_and_leaves_tasks_alone() {
     let e = engine();
@@ -341,6 +357,13 @@ fn a_merge_carries_a_note_removal() {
     call(&a, "note.remove", json!({ "id": 1 })).unwrap();
     let mut gone = call(&a, "store.export", json!({})).unwrap();
     gone["merge"] = json!(true);
+    // Removed in the same millisecond as the add, the tie goes to the event
+    // ids; an hour later it is the latest word by construction.
+    for ev in gone["events"].as_array_mut().expect("events") {
+        if ev["op"] == "note.remove" {
+            ev["ts"] = shifted(&ev["ts"], 3_600);
+        }
+    }
     call(&b, "store.import", gone).unwrap();
     let left = call(&b, "note.list", json!({ "status": "all" })).unwrap();
     assert_eq!(left["total"], json!(0), "{left}");
@@ -353,10 +376,11 @@ fn a_merge_takes_the_later_edit_of_one_note() {
     let doc = call(&a, "store.export", json!({})).unwrap();
     let b = engine();
     call(&b, "store.import", doc).unwrap();
-    std::thread::sleep(std::time::Duration::from_millis(5));
     call(&a, "note.update", json!({ "id": 1, "body": "v2" })).unwrap();
     let mut newer = call(&a, "store.export", json!({})).unwrap();
     newer["merge"] = json!(true);
+    let held = call(&b, "note.get", json!({ "id": 1 })).unwrap();
+    note_modified_after(&mut newer, &held, 3_600);
     call(&b, "store.import", newer).unwrap();
     let got = call(&b, "note.get", json!({ "id": 1 })).unwrap();
     assert_eq!(got["body"], json!("v2"), "{got}");
@@ -399,13 +423,16 @@ fn a_promotion_survives_a_merge_with_a_later_edit_from_the_other_side() {
     )
     .unwrap();
     call(&a, "note.promote", json!({ "id": 1, "to": "task" })).unwrap();
-    std::thread::sleep(std::time::Duration::from_millis(5));
     call(&b, "note.update", json!({ "id": 1, "body": "v2 later" })).unwrap();
 
-    // Both directions: the later edit's body lands, the promotion stays.
-    for (into, from) in [(&a, &b), (&b, &a)] {
+    // Both directions: the later edit's body lands, the promotion stays. b's
+    // edit is made later in the payload, and a's copy earlier, rather than by
+    // a sleep between the two writes.
+    for (into, from, secs) in [(&a, &b, 3_600), (&b, &a, -3_600)] {
         let mut doc = call(from, "store.export", json!({})).unwrap();
         doc["merge"] = json!(true);
+        let held = call(into, "note.get", json!({ "id": 1 })).unwrap();
+        note_modified_after(&mut doc, &held, secs);
         call(into, "store.import", doc).unwrap();
         let got = call(into, "note.get", json!({ "id": 1 })).unwrap();
         assert_eq!(got["status"], json!("archived"), "{got}");
@@ -611,10 +638,11 @@ fn a_merge_adopting_a_promotion_logs_the_row_written_and_lifts_the_rev() {
         call(&a, "note.update", json!({ "id": 1, "body": body })).unwrap();
     }
     call(&a, "note.promote", json!({ "id": 1, "to": "task" })).unwrap();
-    std::thread::sleep(std::time::Duration::from_millis(5));
     call(&b, "note.update", json!({ "id": 1, "body": "b later" })).unwrap();
     let mut doc = call(&a, "store.export", json!({})).unwrap();
     doc["merge"] = json!(true);
+    let held = call(&b, "note.get", json!({ "id": 1 })).unwrap();
+    note_modified_after(&mut doc, &held, -3_600);
     call(&b, "store.import", doc).unwrap();
     let got = call(&b, "note.get", json!({ "id": 1 })).unwrap();
     assert_eq!(got["body"], json!("b later"), "{got}");
