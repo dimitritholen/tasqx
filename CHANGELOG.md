@@ -4,6 +4,27 @@ What changed in each tasqx release, newest first. Every release also lists its
 commits on the [releases page](https://github.com/dimitritholen/tasqx/releases),
 where the binaries, checksums and installers are.
 
+## 0.16.0
+
+Quick-capture notes: an idea or a URL to read later, kept apart from tasks and
+memory until it is promoted into one. A new `Entity` variant makes this a minor
+bump for tasqx-core.
+
+### Added
+
+- **Notes** (D241, #926). `note.add`, `note.list`, `note.get`, `note.update`,
+  `note.remove` and `note.promote` on the JSON API, and five MCP tools
+  (`tasqx_add_note`, `tasqx_list_notes`, `tasqx_update_note`,
+  `tasqx_remove_note`, `tasqx_promote_note`). A note scores no urgency, stays out
+  of `@working`, reports and memory search, and travels in `store.export` /
+  `store.import` like a memory doc. `note.promote` files it as a task or a memory
+  doc in one transaction and archives it; promotion is final.
+
+### Changed
+
+- **tasqx-core: `Entity` gains `Note`.** Code that matches `Entity`
+  exhaustively needs the new arm.
+
 ## 0.15.0
 
 A filter finds a task by its words, `tasqx sync` keeps stores in step through a
