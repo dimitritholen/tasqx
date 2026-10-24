@@ -728,8 +728,13 @@ impl Engine {
         for r in dep_refs {
             self.resolve_ref_value_on(&self.conn, r)?;
         }
-        let (similar, skipped) =
-            self.similar_tasks(&title, landing.as_deref(), super::similar::TASK_THRESHOLD);
+        // Inside a caller's transaction the write lock is already held, and
+        // the comparison would run under it; `note.promote` drops the warning
+        // from its answer anyway, so it is not computed there at all.
+        let (similar, skipped) = match outer {
+            Some(_) => (json!([]), false),
+            None => self.similar_tasks(&title, landing.as_deref(), super::similar::TASK_THRESHOLD),
+        };
 
         let own = match outer {
             Some(_) => None,

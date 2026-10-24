@@ -176,7 +176,9 @@ fn promoting_to_a_task_creates_it_archives_the_note_and_keeps_the_long_body() {
     let short = out["task"]["short_id"].as_i64().expect("a task");
     assert_eq!(out["task"]["title"], json!("Ship the notes slice"));
     assert_eq!(out["note"]["status"], json!("archived"));
-    assert_eq!(out["note"]["promoted_to"], json!(format!("task:#{short}")));
+    let target = format!("task:{}", out["task"]["id"].as_str().unwrap());
+    assert_eq!(out["note"]["promoted_to"], json!(target));
+    assert_eq!(out["note"]["promoted_task_short_id"], json!(short));
     let task = call(&e, "task.get", json!({ "ref": short })).unwrap();
     let notes = task["annotations"].as_array().unwrap();
     assert_eq!(notes.len(), 1, "{task}");
@@ -188,11 +190,7 @@ fn promoting_to_a_task_creates_it_archives_the_note_and_keeps_the_long_body() {
     // A second promote is refused, naming where it went.
     let err = call(&e, "note.promote", json!({ "id": n["id"], "to": "memory" })).unwrap_err();
     assert_eq!(err.code, ErrorCode::Conflict);
-    assert!(
-        err.message.contains(&format!("task:#{short}")),
-        "{}",
-        err.message
-    );
+    assert!(err.message.contains(&target), "{}", err.message);
 }
 
 #[test]
@@ -385,4 +383,125 @@ fn a_filtered_export_scopes_notes_like_docs() {
             .any(|ev| ev["entity"] == "note" && ev["entity_id"] != notes[0]["id"]),
         "an excluded note's events must not leak"
     );
+}
+
+/// Review round 1, item 1: promotion is terminal and survives a merge,
+/// whichever side was edited later.
+#[test]
+fn a_promotion_survives_a_merge_with_a_later_edit_from_the_other_side() {
+    let a = engine();
+    add(&a, "v1");
+    let b = engine();
+    call(
+        &b,
+        "store.import",
+        call(&a, "store.export", json!({})).unwrap(),
+    )
+    .unwrap();
+    call(&a, "note.promote", json!({ "id": 1, "to": "task" })).unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(5));
+    call(&b, "note.update", json!({ "id": 1, "body": "v2 later" })).unwrap();
+
+    // Both directions: the later edit's body lands, the promotion stays.
+    for (into, from) in [(&a, &b), (&b, &a)] {
+        let mut doc = call(from, "store.export", json!({})).unwrap();
+        doc["merge"] = json!(true);
+        call(into, "store.import", doc).unwrap();
+        let got = call(into, "note.get", json!({ "id": 1 })).unwrap();
+        assert_eq!(got["status"], json!("archived"), "{got}");
+        assert!(
+            got["promoted_to"]
+                .as_str()
+                .unwrap_or("")
+                .starts_with("task:"),
+            "{got}"
+        );
+        assert_eq!(got["body"], json!("v2 later"), "{got}");
+        let again = call(into, "note.promote", json!({ "id": 1, "to": "task" })).unwrap_err();
+        assert_eq!(again.code, ErrorCode::Conflict);
+    }
+}
+
+/// Item 2: a read resolves the promoted task's short id in this store; the
+/// export carries no derived key.
+#[test]
+fn reads_resolve_the_promoted_tasks_short_id_and_the_export_does_not() {
+    let e = engine();
+    add(&e, "ship it");
+    let out = call(&e, "note.promote", json!({ "id": 1, "to": "task" })).unwrap();
+    let listed = call(&e, "note.list", json!({ "status": "all" })).unwrap();
+    assert_eq!(
+        listed["notes"][0]["promoted_task_short_id"],
+        out["task"]["short_id"]
+    );
+    add(&e, "a doc");
+    let doc = call(&e, "note.promote", json!({ "id": 2, "to": "memory" })).unwrap();
+    assert_eq!(doc["note"]["promoted_task_short_id"], Value::Null);
+    let export = call(&e, "store.export", json!({})).unwrap();
+    assert!(export["notes"][0].get("promoted_task_short_id").is_none());
+}
+
+/// Item 3: renumbering a colliding note never cascades onto a note that had
+/// no conflict, and is reported.
+#[test]
+fn an_import_renumbers_a_colliding_note_above_the_whole_payload() {
+    let a = engine();
+    let first = add(&a, "a1");
+    add(&a, "a2");
+    let payload = call(&a, "store.export", json!({})).unwrap();
+    let b = engine();
+    add(&b, "held");
+    let out = call(&b, "store.import", payload).unwrap();
+    assert_eq!(
+        out["notes_renumbered"],
+        json!([{ "id": first["id"], "from": 1, "to": 3 }]),
+        "{out}"
+    );
+    assert_eq!(
+        call(&b, "note.get", json!({ "id": 2 })).unwrap()["body"],
+        json!("a2")
+    );
+}
+
+#[test]
+fn an_import_refuses_two_notes_claiming_one_short_id() {
+    let a = engine();
+    add(&a, "a1");
+    add(&a, "a2");
+    let mut payload = call(&a, "store.export", json!({})).unwrap();
+    payload["notes"][1]["short_id"] = json!(1);
+    let err = call(&engine(), "store.import", payload).unwrap_err();
+    assert_eq!(err.code, ErrorCode::Conflict, "{}", err.message);
+}
+
+/// Item 4: a repeated note id is refused, and only rows written are counted.
+#[test]
+fn an_import_refuses_a_repeated_note_id_and_counts_only_rows_written() {
+    let a = engine();
+    add(&a, "a1");
+    let mut payload = call(&a, "store.export", json!({})).unwrap();
+    let row = payload["notes"][0].clone();
+    payload["notes"].as_array_mut().unwrap().push(row);
+    let err = call(&engine(), "store.import", payload).unwrap_err();
+    assert_eq!(err.code, ErrorCode::Conflict, "{}", err.message);
+
+    let mut same = call(&a, "store.export", json!({})).unwrap();
+    same["merge"] = json!(true);
+    let out = call(&a, "store.import", same).unwrap();
+    assert_eq!(
+        out["notes_imported"],
+        json!(0),
+        "the store's copy stood: {out}"
+    );
+}
+
+/// Item 5: a promoted note cannot be reopened.
+#[test]
+fn a_promoted_note_cannot_be_reopened() {
+    let e = engine();
+    add(&e, "x");
+    call(&e, "note.promote", json!({ "id": 1, "to": "task" })).unwrap();
+    let err = call(&e, "note.update", json!({ "id": 1, "status": "open" })).unwrap_err();
+    assert_eq!(err.code, ErrorCode::Conflict);
+    assert!(err.message.contains("task:"), "{}", err.message);
 }

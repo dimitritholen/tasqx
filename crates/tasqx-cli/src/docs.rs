@@ -636,7 +636,7 @@ const METHODS: [(&str, &str, &str); 63] = [
         "note.add",
         "<code>body</code>, <code>project?</code>",
         "The note: <code>{id, short_id, body, project, status, promoted_to, created, modified, \
-         _rev, has_links}</code> (D241). A quick-capture note is neither a task nor a memory \
+         _rev, has_links, promoted_task_short_id}</code> (D241). A quick-capture note is neither a task nor a memory \
          doc: it scores no urgency, stays out of <code>@working</code> and reports, and \
          <code>memory.search</code> never sees it. Its <code>short_id</code> comes from its own \
          counter. <code>project</code> must name a live project.",
@@ -678,8 +678,8 @@ const METHODS: [(&str, &str, &str); 63] = [
          default), with the full body as its first annotation when the title does not say all \
          of it; <code>to: memory</code> files a doc through <code>memory.add</code>'s. The \
          title is <code>title</code> or the body's first line cut at 80 characters. The note is \
-         archived with <code>promoted_to</code> naming what it became, and a promoted note is \
-         refused (D241).",
+         archived with <code>promoted_to</code> naming what it became by uuid; promotion is \
+         terminal, so a promoted note is refused and cannot be reopened (D241).",
     ),
     (
         "tokens.recompute",
@@ -776,7 +776,7 @@ const METHODS: [(&str, &str, &str); 63] = [
          <code>dry_run?</code>, <code>merge?</code>, <code>path?</code>",
         "<code>{imported, projects_imported, projects_created, docs_imported, docs_declared, \
          events_imported, events_logged, links_imported, default_project, renumbered, \
-         docs_merged, notes_imported, dry_run, merged, project_description_conflicts, \
+         docs_merged, notes_imported, notes_renumbered, dry_run, merged, project_description_conflicts, \
          deduplicated}</code>. \
          A task already in \
          the store at a higher <code>_rev</code> than the payload's refuses the whole import \
