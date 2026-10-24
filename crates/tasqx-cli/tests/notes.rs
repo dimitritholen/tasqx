@@ -166,6 +166,24 @@ fn a_bare_id_prints_the_note_whole() {
     assert_eq!(s.json(&["note", "1"])["body"], "first line\nsecond line");
 }
 
+/// Printing a note files nothing, so `--project` beside a bare id is a usage
+/// error, as it is beside `archive` and `rm`, never silently dropped.
+#[test]
+fn a_bare_id_with_a_project_is_a_usage_error() {
+    let s = Store::new("show-project");
+    s.ok(&["init", "p"]);
+    s.ok(&["note", "one"]);
+    for args in [
+        &["note", "1", "--project", "p"][..],
+        &["note", "--project", "p", "1"][..],
+    ] {
+        let out = s.run(args);
+        assert_eq!(out.status.code(), Some(2), "{args:?}");
+        assert!(out.stdout.is_empty(), "{args:?} printed the note");
+    }
+    assert_eq!(s.listed(&["--all"]), vec![1], "nothing was stored");
+}
+
 #[test]
 fn edit_archive_unarchive_and_rm() {
     let s = Store::new("change");
