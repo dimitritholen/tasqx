@@ -15,8 +15,7 @@ export function isTauri(): boolean {
  * Open a web link in the system browser. In Tauri the host validates and opens
  * it (`open_url`); a dev browser opens a new tab with no handle back to this one.
  */
-export function openUrl(url: string): Promise<void> {
+export async function openUrl(url: string): Promise<void> {
   if (isTauri()) return invoke('open_url', { url });
   window.open(url, '_blank', 'noopener');
-  return Promise.resolve();
 }

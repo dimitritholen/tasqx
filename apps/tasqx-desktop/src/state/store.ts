@@ -30,7 +30,7 @@ import {
   type MemoryFilters,
   type MemoryResultRow,
 } from './memory';
-import { noteListParams, type NoteFilters } from './notes';
+import { noteListParams, NOTES_PAGE, type NoteFilters } from './notes';
 import { graphDataOf, graphQueryParams, mergeGraphData, promoteInGraphData } from './graph';
 import { draftChanges, newDraft, type EditField, type TaskDraft } from './edit';
 import type { GraphData, GraphPins, GraphRequest } from './graph';
@@ -586,7 +586,7 @@ export class DashboardStore {
   }
 
   /** `note.list` for the Notes screen; a superseded answer drops itself, as runMemoryQuery's does. */
-  async runNotesQuery(filters: NoteFilters): Promise<void> {
+  async runNotesQuery(filters: NoteFilters, limit = NOTES_PAGE): Promise<void> {
     const seq = ++this.notesSeq;
     const client = this.client;
     if (client === null) {
@@ -595,7 +595,7 @@ export class DashboardStore {
     }
     this.startLoading('notes');
     try {
-      const result = await client.request<NoteListResult>('note.list', noteListParams(filters));
+      const result = await client.request<NoteListResult>('note.list', noteListParams(filters, 0, limit));
       if (seq !== this.notesSeq) return;
       this.setSlice('notes', {
         data: { notes: result.notes, total: result.total, nextOffset: result.next_offset, filters },
@@ -621,8 +621,12 @@ export class DashboardStore {
       const result = await client.request<NoteListResult>('note.list', noteListParams(filters, nextOffset));
       if (seq !== this.notesSeq) return;
       const current = this.state.notes.data;
+      // A note added between pages shifts the offset, so the next page can
+      // repeat a row; a row skipped after a removal is set right by the next reload.
+      const held = new Set(current.notes.map((note) => note.id));
+      const added = result.notes.filter((note) => !held.has(note.id));
       this.setSlice('notes', {
-        data: { ...current, notes: [...current.notes, ...result.notes], total: result.total, nextOffset: result.next_offset },
+        data: { ...current, notes: [...current.notes, ...added], total: result.total, nextOffset: result.next_offset },
         loading: false,
         error: null,
       });
@@ -657,10 +661,13 @@ export class DashboardStore {
     if (now !== null && now.id === fresh.id && fresh._rev > now._rev) this.set({ selectedNote: fresh });
   }
 
-  /** Repeat the last `note.list`; nothing before the screen first read one. */
+  /**
+   * Repeat the last `note.list`, every loaded page in one read from the top, so
+   * a write after Load more keeps the user's place; nothing before a first read.
+   */
   async reloadNotes(): Promise<void> {
-    const filters = this.state.notes.data.filters;
-    if (filters !== null) await this.runNotesQuery(filters);
+    const { filters, notes } = this.state.notes.data;
+    if (filters !== null) await this.runNotesQuery(filters, Math.max(NOTES_PAGE, notes.length));
   }
 
   selectNote(note: Note | null): void {

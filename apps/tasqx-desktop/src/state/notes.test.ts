@@ -5,6 +5,10 @@ describe('noteListParams', () => {
     expect(noteListParams(DEFAULT_NOTE_FILTERS)).toEqual({ status: 'open', limit: NOTES_PAGE });
   });
 
+  it('reads a longer first page when asked, so a reload keeps every loaded row', () => {
+    expect(noteListParams(DEFAULT_NOTE_FILTERS, 0, 300)).toEqual({ status: 'open', limit: 300 });
+  });
+
   it('pages from an offset when given one', () => {
     expect(noteListParams(DEFAULT_NOTE_FILTERS, 100)).toEqual({ status: 'open', limit: NOTES_PAGE, offset: 100 });
   });
@@ -63,6 +67,14 @@ describe('splitLinks', () => {
       { text: 'https://en.wikipedia.org/wiki/Foo_(bar)', href: 'https://en.wikipedia.org/wiki/Foo_(bar)' },
       { text: ')' },
     ]);
+  });
+
+  it('links only what the host would open: no backslash, control character or overlong link', () => {
+    for (const refused of ['https://x\\y/', 'https://x.example/?a=\\b', 'https://x.example/\u0001', 'https://x.example/\u0085']) {
+      expect(splitLinks(refused)).toEqual([{ text: refused }]);
+    }
+    const long = `https://x.example/${'a'.repeat(2048)}`;
+    expect(splitLinks(long)).toEqual([{ text: long }]);
   });
 
   it('does not link a URL carrying a user name, which reads as one host and goes to another', () => {

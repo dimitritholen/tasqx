@@ -17,10 +17,11 @@ import { RemoveConfirm } from './MemoryInspector';
  * final, so a promoted note offers neither another promote nor an unarchive.
  */
 
-function Body({ body }: { body: string }) {
+function Body({ body, onError }: { body: string; onError: (message: string) => void }) {
   function open(event: MouseEvent<HTMLAnchorElement>, href: string): void {
     event.preventDefault();
-    void openUrl(href).catch(() => undefined);
+    // The host refuses what it will not open; say so rather than do nothing.
+    openUrl(href).catch((err: unknown) => onError(err instanceof Error ? err.message : String(err)));
   }
   return (
     <p className="note-body">
@@ -81,7 +82,7 @@ export function NoteInspector() {
       <section className="inspector-section" aria-labelledby="note-body">
         <h3 id="note-body">Body</h3>
         {/* Untrusted text, never HTML: only the links are elements. */}
-        <Body body={note.body} />
+        <Body body={note.body} onError={setError} />
       </section>
 
       <dl className="inspector-fields">

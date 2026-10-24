@@ -17,11 +17,11 @@ export interface NoteFilters {
 
 export const DEFAULT_NOTE_FILTERS: NoteFilters = { query: '', links: false, status: 'open' };
 
-export function noteListParams(filters: NoteFilters, offset = 0): Record<string, unknown> {
+export function noteListParams(filters: NoteFilters, offset = 0, limit = NOTES_PAGE): Record<string, unknown> {
   const query = filters.query.trim();
   return {
     status: filters.status,
-    limit: NOTES_PAGE,
+    limit,
     ...(offset > 0 ? { offset } : {}),
     ...(filters.links ? { links: true } : {}),
     ...(query !== '' ? { query } : {}),
@@ -55,10 +55,28 @@ function trimTrailing(href: string): string {
   return href.slice(0, end);
 }
 
-/** `https://google.com@evil.com/` reads as one host and goes to another. */
-function hasUserinfo(href: string): boolean {
+/** The longest link the host's `open_url` hands on. */
+const MAX_LINK_LEN = 2048;
+
+// C0, DEL and C1 controls: the host refuses every one of them.
+// eslint-disable-next-line no-control-regex
+const CONTROL_RE = /[\u0000-\u001f\u007f-\u009f]/;
+
+/**
+ * Whether the host's `open_url` would open `href`, so a link is shown only
+ * when a click can work: no userinfo (`https://google.com@evil.com/` reads as
+ * one host and goes to another), no backslash anywhere, no control character,
+ * at most `MAX_LINK_LEN` bytes. Whitespace never reaches here (LINK_RE stops at it).
+ */
+function openable(href: string): boolean {
   const authority = href.slice(href.indexOf('//') + 2).split(/[/?#]/)[0] ?? '';
-  return authority.includes('@');
+  return (
+    /^https?:\/\/[^/]/.test(href) &&
+    !authority.includes('@') &&
+    !href.includes('\\') &&
+    !CONTROL_RE.test(href) &&
+    new TextEncoder().encode(href).length <= MAX_LINK_LEN
+  );
 }
 
 /** A body cut into plain text and the http(s) links in it, in order. */
@@ -67,7 +85,7 @@ export function splitLinks(body: string): BodySegment[] {
   let at = 0;
   for (const match of body.matchAll(LINK_RE)) {
     const href = trimTrailing(match[0]);
-    if (!/^https?:\/\/[^/]/.test(href) || hasUserinfo(href)) continue;
+    if (!openable(href)) continue;
     if (match.index > at) segments.push({ text: body.slice(at, match.index) });
     segments.push({ text: href, href });
     at = match.index + href.length;
