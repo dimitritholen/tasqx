@@ -439,7 +439,11 @@ pub(crate) fn run_dashboard(be: &mut Backend, ctx: &Ctx) -> Result<Option<String
                 )?);
             }
             Some(Action::Notes) => {
-                run_notes_screen(be, ctx, tui::notes::Filter::default())?;
+                if let Some(said) =
+                    after_notes(run_notes_screen(be, ctx, tui::notes::Filter::default()))
+                {
+                    app.say(said);
+                }
                 // A promote there is a task here.
                 let now = crate::clock::now();
                 app.replace(dashboard_data(
@@ -453,6 +457,13 @@ pub(crate) fn run_dashboard(be: &mut Backend, ctx: &Ctx) -> Result<Option<String
             _ => return Ok(picked),
         }
     }
+}
+
+/// What the dashboard does with the notes browser's outcome: a line for its
+/// status bar when the browser ended on an error (a list it could not read
+/// again after a write), so the dashboard stays rather than closing with it.
+pub(crate) fn after_notes(outcome: Result<(), ApiError>) -> Option<String> {
+    outcome.err().map(|e| format!("notes: {}", e.message))
 }
 
 /// What the dashboard does with `pick`'s outcome, pulled out of the loop so a
@@ -701,6 +712,16 @@ mod tests {
         );
         assert!(picked.is_none());
         assert!(after_pick(Err(ApiError::internal("disk")), &mut picked).is_err());
+    }
+
+    /// The notes browser opened with `N` ends on an error only when it could
+    /// not read the notes again after a write. That is said on the
+    /// dashboard's status line, and the dashboard stays.
+    #[test]
+    fn a_notes_browser_that_fails_is_said_and_the_dashboard_stays() {
+        assert_eq!(after_notes(Ok(())), None);
+        let said = after_notes(Err(ApiError::internal("database is locked")));
+        assert_eq!(said.as_deref(), Some("notes: database is locked"));
     }
 
     /// D128: leaving `pick` is exit 0 now, so the dashboard's `p` gets an `Ok`
