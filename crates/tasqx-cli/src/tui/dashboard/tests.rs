@@ -1079,6 +1079,7 @@ fn the_intents_the_loop_has_to_act_on_are_returned_not_swallowed() {
         Some(Action::List(vec![]))
     );
     assert_eq!(a.on_key(key(KeyCode::Char('r'))), Some(Action::Refresh));
+    assert_eq!(a.on_key(key(KeyCode::Char('N'))), Some(Action::Notes));
     // R toggles locally and must NOT ask the loop to do anything.
     assert_eq!(a.on_key(key(KeyCode::Char('R'))), None);
     assert!(!a.auto_refresh());
@@ -1189,7 +1190,7 @@ fn a_refresh_keeps_the_cursor_on_the_same_task_not_the_same_row_index() {
 fn every_binding_is_documented_in_the_help_overlay() {
     let documented: String = KEYS.iter().map(|k| k.keys).collect::<Vec<_>>().join(" ");
     for probe in [
-        "1-6", "tab", "j / k", "g / G", "r", "R", "w", "p", "l", "?", "q", "ctrl-c",
+        "1-6", "tab", "j / k", "g / G", "r", "R", "w", "p", "N", "l", "?", "q", "ctrl-c",
     ] {
         assert!(
             documented.contains(probe),
@@ -1838,7 +1839,7 @@ fn a_single_row_panel_spends_its_row_on_data() {
 #[test]
 fn an_open_overlay_is_modal_and_no_key_reaches_behind_it() {
     // Every key the screen answers to, plus a few it does not.
-    const KEYS_SWEPT: [KeyCode; 20] = [
+    const KEYS_SWEPT: [KeyCode; 21] = [
         KeyCode::Char('1'),
         KeyCode::Char('4'),
         KeyCode::Tab,
@@ -1852,6 +1853,7 @@ fn an_open_overlay_is_modal_and_no_key_reaches_behind_it() {
         KeyCode::Char('w'),
         KeyCode::Enter,
         KeyCode::Char('p'),
+        KeyCode::Char('N'),
         KeyCode::Char('l'),
         KeyCode::Char('?'),
         KeyCode::Char('q'),

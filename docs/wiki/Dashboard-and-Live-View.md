@@ -5,10 +5,11 @@ the live one possible.
 
 ## Screens and pipes
 
-Five commands open a screen instead of printing a table, and each answers a
+Six commands open a screen instead of printing a table, and each answers a
 pipe in its own way. `tasqx pick`, `tasqx dashboard` and `tasqx config edit`
 refuse one outright rather than write escape codes into it.
-`tasqx memory list` prints its one-line-per-doc table instead, and
+`tasqx memory list` and `tasqx notes` print their one-line-per-row tables
+instead, and
 `tasqx watch` prints each update as it arrives rather than repainting a screen
 — it needs a running daemon either way. `tasqx board` is the same live view in
 a browser.
@@ -19,6 +20,7 @@ a browser.
 | `tasqx dashboard` | the overview, and what a bare `tasqx` opens |
 | `tasqx config edit` | settings, previewing a theme as you move over it |
 | `tasqx memory list` | your docs, with the one under the cursor beside them |
+| `tasqx notes` | your notes: read, archive, promote or remove one |
 | `tasqx watch` | a table repainted on every change (needs a daemon) |
 
 `tasqx list` never opens a screen. It is the verb that always prints the
@@ -40,9 +42,12 @@ counts what matters
 | `tasqx dashboard` | The same screen, spelled out |
 | `tasqx --json dashboard` | The panel data as one JSON document, no screen |
 
-- It's read-only, with one exception: `p` opens the task browser,
+- It's read-only, with two exceptions: `p` opens the task browser,
   [`pick`](Working-on-Tasks.md#tasqx-pick). Enter there reads a task, and `s`
-  starts it and brings you back. `q`, Esc and Ctrl-C all close the dashboard.
+  starts it and brings you back. `N` opens the
+  [notes browser](Notes.md#the-notes-browser), where a note can be archived,
+  promoted or removed; closing it brings you back. `q`, Esc and Ctrl-C all
+  close the dashboard.
 - Blocked work stays visible here, which is the point: the default task list
   hides it. D80 folded the old NOW, NEXT UP, DUE, BLOCKED and RECENT panels
   into the one TASKS panel, so a blocked task keeps its row there (and its

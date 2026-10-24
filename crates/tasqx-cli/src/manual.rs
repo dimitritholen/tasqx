@@ -1636,7 +1636,7 @@ mod tests {
             !lower.contains("every one of them says so"),
             "the page still claims every screen refuses a pipe:\n{page}"
         );
-        for plain_one in ["memory list", "watch"] {
+        for plain_one in ["memory list", "notes", "watch"] {
             assert!(
                 page.contains(plain_one),
                 "{plain_one} is not named:\n{page}"
@@ -1656,6 +1656,7 @@ mod tests {
             "tasqx dashboard",
             "tasqx config edit",
             "tasqx memory list",
+            "tasqx notes",
             "tasqx watch",
         ];
         for screen in screens {

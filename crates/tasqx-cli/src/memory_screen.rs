@@ -86,6 +86,7 @@ pub(crate) fn run_memory_screen(
 /// `tasqx`, one verb over: both streams on a terminal, no `--json`, a window
 /// big enough to draw in. And no `--limit` or `--offset`: asking for a page
 /// is a script's question, and the answer to it is the table.
+/// `tasqx notes` opens the notes browser by the same rule (task #929).
 pub(crate) fn memory_screen_active(
     caps: &Caps,
     json: bool,
