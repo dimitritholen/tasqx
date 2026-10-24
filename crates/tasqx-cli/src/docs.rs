@@ -169,7 +169,7 @@ const VERBS: [(&str, &str, &str); 55] = [
 
 /// The method table the JSON API page renders: `(method, params, returns)`.
 /// Single source, same reason as [`VERBS`].
-const METHODS: [(&str, &str, &str); 57] = [
+const METHODS: [(&str, &str, &str); 63] = [
     (
         "project.create",
         "<code>name</code>, <code>description?</code>",
@@ -633,6 +633,55 @@ const METHODS: [(&str, &str, &str); 57] = [
          naming both revs.",
     ),
     (
+        "note.add",
+        "<code>body</code>, <code>project?</code>",
+        "The note: <code>{id, short_id, body, project, status, promoted_to, created, modified, \
+         _rev, has_links}</code> (D241). A quick-capture note is neither a task nor a memory \
+         doc: it scores no urgency, stays out of <code>@working</code> and reports, and \
+         <code>memory.search</code> never sees it. Its <code>short_id</code> comes from its own \
+         counter. <code>project</code> must name a live project.",
+    ),
+    (
+        "note.list",
+        "<code>status?</code>, <code>links?</code>, <code>query?</code>, <code>project?</code>, \
+         <code>limit?</code>, <code>offset?</code>",
+        "<code>{count, total, next_offset, notes}</code> — the D70 page, newest first, bodies \
+         whole. <code>status</code> is <code>open</code> (default), <code>archived</code> or \
+         <code>all</code>; <code>links</code> keeps only bodies holding an \
+         <code>http://</code> or <code>https://</code> link; <code>query</code> is a \
+         case-insensitive substring, not a ranked search (D241).",
+    ),
+    (
+        "note.get",
+        "<code>id</code>",
+        "One note, by uuid or short id (D241).",
+    ),
+    (
+        "note.update",
+        "<code>id</code>, <code>body?</code>, <code>project?</code>, <code>status?</code>, \
+         <code>expected_rev?</code>",
+        "The note after the change. <code>status: archived</code> archives it and \
+         <code>open</code> brings it back; <code>expected_rev</code> mismatched is a \
+         <code>conflict</code> naming both revs (D241).",
+    ),
+    (
+        "note.remove",
+        "<code>id</code>",
+        "<code>{id, short_id, removed}</code> — deletes the note for good; \
+         <code>event.revert</code> refuses it (D241).",
+    ),
+    (
+        "note.promote",
+        "<code>id</code>, <code>to</code>, <code>title?</code>, <code>expected_rev?</code>",
+        "<code>{note, task|doc}</code> — in one transaction, <code>to: task</code> files a \
+         task through <code>task.add</code>'s own write (the note's project, else the \
+         default), with the full body as its first annotation when the title does not say all \
+         of it; <code>to: memory</code> files a doc through <code>memory.add</code>'s. The \
+         title is <code>title</code> or the body's first line cut at 80 characters. The note is \
+         archived with <code>promoted_to</code> naming what it became, and a promoted note is \
+         refused (D241).",
+    ),
+    (
         "tokens.recompute",
         "<code>dry_run?</code>",
         "<code>{dry_run, tasks, totals}</code>. Re-runs log-parse attribution over stored \
@@ -703,8 +752,9 @@ const METHODS: [(&str, &str, &str); 57] = [
     (
         "store.export",
         "<code>filter?</code>, <code>include_unscoped?</code>, <code>out_path?</code>",
-        "<code>{tasks, projects, dropped_projects, docs, dropped_docs, links, dropped_links, \
-         events, dropped_events, default_project, dropped_dependencies}</code>. \
+        "<code>{tasks, projects, dropped_projects, docs, dropped_docs, notes, dropped_notes, \
+         links, dropped_links, events, dropped_events, default_project, \
+         dropped_dependencies}</code>. Notes are scoped like docs (D241). \
          <code>events</code> is the whole audit log except the bookkeeping rows a `store.import` \
          itself writes. An unfiltered export carries \
          every project/doc/link/event (D12) but a removed doc's history before its removal \
@@ -722,11 +772,12 @@ const METHODS: [(&str, &str, &str); 57] = [
     (
         "store.import",
         "<code>tasks</code>, <code>projects?</code>, <code>default_project?</code>, \
-         <code>docs?</code>, <code>events?</code>, <code>links?</code>, <code>dry_run?</code>, \
-         <code>merge?</code>, <code>path?</code>",
+         <code>docs?</code>, <code>events?</code>, <code>links?</code>, <code>notes?</code>, \
+         <code>dry_run?</code>, <code>merge?</code>, <code>path?</code>",
         "<code>{imported, projects_imported, projects_created, docs_imported, docs_declared, \
          events_imported, events_logged, links_imported, default_project, renumbered, \
-         docs_merged, dry_run, merged, project_description_conflicts, deduplicated}</code>. \
+         docs_merged, notes_imported, dry_run, merged, project_description_conflicts, \
+         deduplicated}</code>. \
          A task already in \
          the store at a higher <code>_rev</code> than the payload's refuses the whole import \
          (conflict) rather than silently discarding the annotations, tags and edges added since. \
@@ -2581,12 +2632,12 @@ mod tests {
         // (#222) did, 9 -> 10 when `memory.list` (#133) did, 10 -> 11 when
         // `report.outcomes` (D137) did, 11 -> 12 when `link.list` (D160) did,
         // 12 -> 13 when `memory.refresh` (#789) did, 13 -> 14 when `task.next`
-        // (D213) did, 14 -> 15 when `task.triage_list` (D238) did, and a floor
-        // that drifts
+        // (D213) did, 14 -> 15 when `task.triage_list` (D238) did, 15 -> 16 when
+        // `note.list` (D241) did, and a floor that drifts
         // below the truth is a guard that has stopped guarding.
         assert_eq!(
-            checked, 15,
-            "expected to check all 15 bare-callable return shapes; a row that stopped being \
+            checked, 16,
+            "expected to check all 16 bare-callable return shapes; a row that stopped being \
              checkable is coverage lost silently"
         );
     }

@@ -209,7 +209,7 @@ pub(super) fn page() -> String {
 /// `tokens.recompute` files under `token` with `token.add`/`token.remove` — the
 /// two spellings are one subject, and a reader looking for "what tasqx knows
 /// about token spend" should not have to know that one of the three is plural.
-const GROUPS: [(&str, &str); 17] = [
+const GROUPS: [(&str, &str); 18] = [
     ("project", "Project methods"),
     ("task", "Task methods"),
     ("tag", "Tag methods"),
@@ -219,6 +219,7 @@ const GROUPS: [(&str, &str); 17] = [
     ("link", "Link methods"),
     ("graph", "Graph methods"),
     ("memory", "Memory methods"),
+    ("note", "Note methods"),
     ("token", "Token methods"),
     ("report", "Report methods"),
     ("store", "Store methods"),
@@ -795,6 +796,41 @@ pub(super) fn describe(text: &str) -> String {
 /// is none to state.
 const PARAM_DOCS: &[(&str, &str, &str, &str, &str)] = &[
     (
+        "note.get",
+        "id",
+        "integer or string",
+        "",
+        "The note's uuid or its short id (D241).",
+    ),
+    (
+        "note.list",
+        "project",
+        "string",
+        "",
+        "Only notes filed under this project.",
+    ),
+    (
+        "note.update",
+        "status",
+        "string",
+        "",
+        "`archived` archives the note, `open` brings it back (D241).",
+    ),
+    (
+        "note.promote",
+        "to",
+        "string",
+        "",
+        "`task` or `memory`: what the note becomes (D241).",
+    ),
+    (
+        "store.import",
+        "notes",
+        "array of object",
+        "",
+        "The document's quick-capture notes (D241), as `store.export` writes them. Optional; a document without the key imports no notes.",
+    ),
+    (
         "task.triage_list",
         "limit",
         "integer",
@@ -1107,7 +1143,7 @@ const PARAM_DOCS: &[(&str, &str, &str, &str, &str)] = &[
         "entity",
         "string",
         "",
-        "Only events about this kind of thing: `task`, `project`, `doc` or `link`. An unknown name is refused, not read as a filter matching nothing.",
+        "Only events about this kind of thing: `task`, `project`, `doc`, `link` or `note`. An unknown name is refused, not read as a filter matching nothing.",
     ),
     (
         "event.list",
@@ -1793,6 +1829,48 @@ const EXAMPLES: &[Example] = &[
         why: "",
     },
     Example {
+        method: "note.add",
+        request: r#"{"tasqx":"1","id":"n1","method":"note.add","params":{"body":"try the new tracing exporter","project":"infra"}}"#,
+        fixture: "",
+        response: r#"{"id":"n1","ok":true,"result":{"_rev":0,"body":"try the new tracing exporter","created":"2026-09-16T09:00:00Z","has_links":false,"id":"019f5a10-1c2d-7e3f-8a4b-5c6d7e8f9a0b","modified":"2026-09-16T09:00:00Z","project":"infra","promoted_to":null,"short_id":3,"status":"open"},"tasqx":"1"}"#,
+        why: "the answer carries the new note's uuid, a v7 id whose random half differs on every run, so a capture could never be reproduced (D149).",
+    },
+    Example {
+        method: "note.list",
+        request: r#"{"tasqx":"1","id":"n2","method":"note.list","params":{"links":true}}"#,
+        fixture: "api-note-list",
+        response: "",
+        why: "",
+    },
+    Example {
+        method: "note.get",
+        request: r#"{"tasqx":"1","id":"n3","method":"note.get","params":{"id":2}}"#,
+        fixture: "api-note-get",
+        response: "",
+        why: "",
+    },
+    Example {
+        method: "note.update",
+        request: r#"{"tasqx":"1","id":"n4","method":"note.update","params":{"id":2,"status":"archived","expected_rev":0}}"#,
+        fixture: "api-note-update",
+        response: "",
+        why: "",
+    },
+    Example {
+        method: "note.remove",
+        request: r#"{"tasqx":"1","id":"n5","method":"note.remove","params":{"id":2}}"#,
+        fixture: "api-note-remove",
+        response: "",
+        why: "",
+    },
+    Example {
+        method: "note.promote",
+        request: r#"{"tasqx":"1","id":"n6","method":"note.promote","params":{"id":2,"to":"task"}}"#,
+        fixture: "",
+        response: r#"{"id":"n6","ok":true,"result":{"note":{"_rev":1,"body":"idea: a dark-mode toggle in the docs header","created":"2026-09-15T16:05:00Z","has_links":false,"id":"019f5a10-0000-7000-8000-00000000b002","modified":"2026-09-16T09:00:00Z","project":null,"promoted_to":"task:#63","short_id":2,"status":"archived"},"task":{"id":"019f5a10-2d3e-7f40-9b5c-6d7e8f9a0b1c","project":"website","short_id":63,"status":"pending","title":"idea: a dark-mode toggle in the docs header"}},"tasqx":"1"}"#,
+        why: "the answer carries the new task's uuid, a v7 id whose random half differs on every run, so a capture could never be reproduced (D149).",
+    },
+    Example {
         method: "report.summary",
         request: r#"{"tasqx":"1","id":"r1","method":"report.summary","params":{"group_by":"project"}}"#,
         fixture: "api-report-summary",
@@ -1810,7 +1888,7 @@ const EXAMPLES: &[Example] = &[
         method: "store.export",
         request: r#"{"tasqx":"1","id":"x1","method":"store.export","params":{"filter":"+docs"}}"#,
         fixture: "",
-        response: r##"{"id":"x1","ok":true,"result":{"default_project":"website","docs":[{"_rev":0,"body":"# Pricing page…","created":"2026-09-09T09:15:00Z","id":"0787b26d-9e2e-4be5-ab66-ec953102fad3","modified":"2026-09-11T09:15:00Z","origin_mtime":null,"origin_path":null,"origin_size":null,"project":"website","source":"notes/pricing.md","standing":false,"title":"pricing-page-decisions"}],"dropped_dependencies":0,"dropped_docs":1,"dropped_events":2,"dropped_links":0,"dropped_projects":0,"events":[{"actor":"user","entity":"task","entity_id":"46773aad-c4aa-435a-abe1-fcde8ce09658","id":"37e2265e-0745-46cf-ab75-44127cc95bc2","op":"add","payload":{"title":"Write the migration guide for SDK 3.0"},"ts":"2026-08-26T10:00:00Z"}],"links":[{"created_at":"2026-09-11T09:20:00Z","from":"task:46773aad-c4aa-435a-abe1-fcde8ce09658","id":"5f0a7c21-3d64-4a0e-9b8f-2c1d7e4a6b90","metadata":null,"relation":"references","to":"memory:0787b26d-9e2e-4be5-ab66-ec953102fad3"}],"projects":[{"archived":false,"created":"2026-06-18T09:00:00Z","description":"Public REST API and its SDKs","id":"309d6b79-965e-4a32-9ae4-45508201e2bd","name":"api"}],"tasks":[{"…":"one whole task per row"}]},"tasqx":"1"}"##,
+        response: r##"{"id":"x1","ok":true,"result":{"default_project":"website","docs":[{"_rev":0,"body":"# Pricing page…","created":"2026-09-09T09:15:00Z","id":"0787b26d-9e2e-4be5-ab66-ec953102fad3","modified":"2026-09-11T09:15:00Z","origin_mtime":null,"origin_path":null,"origin_size":null,"project":"website","source":"notes/pricing.md","standing":false,"title":"pricing-page-decisions"}],"dropped_dependencies":0,"dropped_docs":1,"dropped_notes":1,"notes":[{"_rev":0,"body":"read https://www.rfc-editor.org/rfc/rfc9457 before the error-format change","created":"2026-09-14T11:20:00Z","id":"019f5a10-0000-7000-8000-00000000b001","modified":"2026-09-14T11:20:00Z","project":"api","promoted_to":null,"short_id":1,"status":"open"}],"dropped_events":2,"dropped_links":0,"dropped_projects":0,"events":[{"actor":"user","entity":"task","entity_id":"46773aad-c4aa-435a-abe1-fcde8ce09658","id":"37e2265e-0745-46cf-ab75-44127cc95bc2","op":"add","payload":{"title":"Write the migration guide for SDK 3.0"},"ts":"2026-08-26T10:00:00Z"}],"links":[{"created_at":"2026-09-11T09:20:00Z","from":"task:46773aad-c4aa-435a-abe1-fcde8ce09658","id":"5f0a7c21-3d64-4a0e-9b8f-2c1d7e4a6b90","metadata":null,"relation":"references","to":"memory:0787b26d-9e2e-4be5-ab66-ec953102fad3"}],"projects":[{"archived":false,"created":"2026-06-18T09:00:00Z","description":"Public REST API and its SDKs","id":"309d6b79-965e-4a32-9ae4-45508201e2bd","name":"api"}],"tasks":[{"…":"one whole task per row"}]},"tasqx":"1"}"##,
         why: "the real answer is the entire store — every task, project, doc, link and audit row, in one payload. What matters here is its shape, so this example is a single row of each with the bodies elided.",
     },
     Example {
@@ -2211,6 +2289,14 @@ mod tests {
             // desktop client, and `tasqx api graph.query` is the way from a
             // terminal.
             "graph.query",
+            // D241: the note verbs are a later slice (#927); `tasqx api
+            // note.*` is the way until then.
+            "note.add",
+            "note.list",
+            "note.get",
+            "note.update",
+            "note.remove",
+            "note.promote",
         ]
         .into_iter()
         .collect();

@@ -65,7 +65,7 @@ pub(super) struct Object {
 const ON_A_TASK: &str = "On a task";
 
 /// The ten objects, in sidebar order.
-pub(super) const OBJECTS: [Object; 11] = [
+pub(super) const OBJECTS: [Object; 12] = [
     Object {
         id: "obj-task",
         name: "Task",
@@ -181,6 +181,20 @@ pub(super) const OBJECTS: [Object; 11] = [
             ("", "", d::MEMORY_LIST_ROW),
         ],
         example: ("memory.get", "", &[]),
+    },
+    Object {
+        id: "obj-note",
+        name: "Note",
+        lead: "A note is a quick capture — an idea, a URL to read later, a line of brainstorm — \
+               kept apart from the work and the knowledge (D241). It is not a task, so it scores \
+               no urgency and stays out of <code>@working</code> and reports, and not a memory \
+               document, so search never offers it as knowledge. <code>note.promote</code> files \
+               one as a task or a memory document and archives it naming what it became. Its \
+               short id comes from a counter of its own; removing one is permanent.",
+        namespaces: &["note"],
+        linked: &[],
+        groups: &[("", "", d::NOTE_EXPORT_ROW), ("", "", d::NOTE_HAS_LINKS)],
+        example: ("note.get", "", &[]),
     },
     Object {
         id: "obj-link",
