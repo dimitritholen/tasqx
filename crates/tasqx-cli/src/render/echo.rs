@@ -1481,12 +1481,14 @@ pub fn git_event(ctx: &Ctx, result: &Value, task: &Value, now: Timestamp) -> Str
         (true, _) => "recorded",
     };
     let mut card = Card::new(task, outcome(ctx, word));
-    let note = match changed {
-        true => s(result, "note"),
-        false => s(result, "reason"),
-    };
-    if !note.is_empty() {
-        card.words = Some(san(&note));
+    // The note it wrote, and the reason whenever there is one, changed or not.
+    let parts: Vec<String> = [s(result, "note"), s(result, "reason")]
+        .into_iter()
+        .filter(|t| !t.is_empty())
+        .map(|t| san(&t))
+        .collect();
+    if !parts.is_empty() {
+        card.words = Some(parts.join(" — "));
     }
     card.context = Context::NONE;
     draw(ctx, card, now)

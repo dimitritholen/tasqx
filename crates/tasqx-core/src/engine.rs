@@ -912,13 +912,6 @@ fn nullable_string(v: &Value, field: &str) -> Result<Value, ApiError> {
     }
 }
 
-/// Attach the offending task and column to a validator's own error.
-///
-/// `store.import` is the one caller that processes many tasks per request, so
-/// `could not parse date: "whenever"` alone does not say which of them to edit.
-/// This adds only that context — the rule itself stays in the validator, since a
-/// second copy of the grammar here is exactly how import drifted out of step in
-/// the first place.
 /// Insert one note on `task`, bump its rev and log `annotation.add` — the
 /// write `annotation.add` makes, shared with `git.event`'s notes (D239), in
 /// the caller's transaction.
@@ -946,6 +939,13 @@ fn write_note(
     )
 }
 
+/// Attach the offending task and column to a validator's own error.
+///
+/// `store.import` is the one caller that processes many tasks per request, so
+/// `could not parse date: "whenever"` alone does not say which of them to edit.
+/// This adds only that context — the rule itself stays in the validator, since a
+/// second copy of the grammar here is exactly how import drifted out of step in
+/// the first place.
 fn import_field<T>(id: &str, field: &str, r: Result<T, ApiError>) -> Result<T, ApiError> {
     r.map_err(|e| ApiError::bad_request(format!("store.import: task {id}, {field}: {}", e.message)))
 }

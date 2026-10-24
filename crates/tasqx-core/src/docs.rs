@@ -379,7 +379,7 @@ pub const GIT_REF_ROW: &[FieldDoc] = &[
     n(
         "noted",
         "string",
-        "On a branch row, what `git.event` has already done for that branch (JSON: the PR that started the task, the fact its last note stated, the delivery note, the note it completed the task with), so a retry writes a missing note, never a duplicate, and never overrides the user. Null before any.",
+        "On a branch row, what `git.event` has already done for that branch (JSON keyed per PR: the PRs that started the task, the fact its last note stated, the delivery note, the note it completed the task with), so a retry writes a missing note, never a duplicate, and never overrides the user. Null before any.",
     ),
 ];
 

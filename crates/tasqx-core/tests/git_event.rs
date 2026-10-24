@@ -735,3 +735,171 @@ fn refs_are_ordered_by_instant_not_by_text() {
     let kinds: Vec<String> = refs(&e, a).into_iter().map(|(k, _, _)| k).collect();
     assert_eq!(kinds, vec!["pr", "branch"], "10s comes before 10.5s");
 }
+
+// ---- final round --------------------------------------------------------------
+
+#[test]
+fn both_spellings_of_a_branch_share_one_row() {
+    let e = engine();
+    let a = add(&e, "one branch");
+    event(&e, "opened", &format!("refs/heads/task/{a}-x"), json!({}));
+    event(&e, "closed", &format!("  task/{a}-x "), json!({}));
+    let branches: Vec<(String, String, String)> = refs(&e, a)
+        .into_iter()
+        .filter(|(k, _, _)| k == "branch")
+        .collect();
+    assert_eq!(
+        branches,
+        vec![("branch".into(), format!("task/{a}-x"), "closed".into())]
+    );
+}
+
+#[test]
+fn concurrent_merge_reports_from_two_processes_write_one_note() {
+    let dir = std::env::temp_dir().join(format!(
+        "tasqx-git-race-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("tasks.db");
+    let path = path.to_str().unwrap().to_string();
+    let first = Engine::open(&path).unwrap();
+    let a = add(&first, "raced");
+    drop(first);
+    for _ in 0..5 {
+        let barrier = std::sync::Barrier::new(2);
+        std::thread::scope(|s| {
+            for _ in 0..2 {
+                s.spawn(|| {
+                    let e = Engine::open(&path).unwrap();
+                    barrier.wait();
+                    event(
+                        &e,
+                        "merged",
+                        &format!("task/{a}-r"),
+                        json!({ "pr": PR, "sha": "aa" }),
+                    );
+                });
+            }
+        });
+    }
+    let e = Engine::open(&path).unwrap();
+    let delivery = notes(&e, a)
+        .iter()
+        .filter(|n| **n == format!("Merged {PR} (aa)"))
+        .count();
+    assert_eq!(delivery, 1, "{:?}", notes(&e, a));
+    assert_eq!(get(&e, a)["status"], "done");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_different_pr_from_the_same_branch_may_complete_a_reopened_task() {
+    let e = engine();
+    let a = add(&e, "second PR");
+    let branch = format!("task/{a}-p");
+    event(&e, "merged", &branch, json!({ "pr": PR, "sha": "01" }));
+    call(&e, "task.reopen", json!({ "ref": a })).unwrap();
+    let second = "https://github.com/o/r/pull/8";
+    let out = event(&e, "merged", &branch, json!({ "pr": second, "sha": "02" }));
+    assert_eq!(out["transition"], "completed", "{out}");
+    assert_eq!(get(&e, a)["status"], "done");
+}
+
+#[test]
+fn a_held_then_fixed_merge_writes_one_delivery_note() {
+    let e = engine();
+    let a = add(&e, "held then fixed");
+    let id =
+        call(&e, "check.add", json!({ "ref": a, "body": "c" })).unwrap()["check"]["id"].clone();
+    let branch = format!("task/{a}-h");
+    event(&e, "merged", &branch, json!({ "pr": PR }));
+    call(
+        &e,
+        "check.set",
+        json!({ "ref": a, "check_id": id, "state": "passed" }),
+    )
+    .unwrap();
+    event(&e, "merged", &branch, json!({ "pr": PR }));
+    event(&e, "merged", &branch, json!({ "pr": PR }));
+    let delivery = notes(&e, a)
+        .iter()
+        .filter(|n| **n == format!("Merged {PR}"))
+        .count();
+    assert_eq!(delivery, 1, "{:?}", notes(&e, a));
+    assert_eq!(get(&e, a)["status"], "done");
+}
+
+#[test]
+fn a_change_of_facts_moves_the_branch_row_so_a_merge_carries_it() {
+    let e = engine();
+    let a = add(&e, "facts move");
+    let id =
+        call(&e, "check.add", json!({ "ref": a, "body": "c" })).unwrap()["check"]["id"].clone();
+    let branch = format!("task/{a}-m");
+    event(&e, "merged", &branch, json!({ "pr": PR }));
+    let at = |e: &Engine| {
+        get(e, a)["git_refs"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|g| g["kind"] == "branch")
+            .unwrap()["modified"]
+            .as_str()
+            .unwrap()
+            .to_string()
+    };
+    let before = at(&e);
+    std::thread::sleep(std::time::Duration::from_millis(5));
+    call(
+        &e,
+        "check.set",
+        json!({ "ref": a, "check_id": id, "state": "passed" }),
+    )
+    .unwrap();
+    event(&e, "merged", &branch, json!({ "pr": PR }));
+    assert_ne!(at(&e), before, "the facts moved, so modified did");
+}
+
+#[test]
+fn an_import_keeps_the_earliest_created_by_instant() {
+    let e = engine();
+    let a = add(&e, "created");
+    let row = |created: &str, modified: &str| {
+        json!([{
+            "id": "019f0000-0000-7000-8000-0000000000k1", "kind": "branch",
+            "ref": "task/x", "state": "open", "created": created, "modified": modified
+        }])
+    };
+    let mut doc = call(&e, "store.export", json!({})).unwrap();
+    doc["tasks"][0]["git_refs"] = row("2026-01-01T00:00:10.5Z", "2026-01-01T00:00:10.5Z");
+    call(&e, "store.import", doc.clone()).unwrap();
+    let mut later = call(&e, "store.export", json!({})).unwrap();
+    later["tasks"][0]["git_refs"] = row("2026-01-01T00:00:10Z", "2026-01-02T00:00:00Z");
+    later["tasks"][0]["git_refs"][0]["state"] = json!("closed");
+    later["merge"] = json!(true);
+    call(&e, "store.import", later).unwrap();
+    let g = get(&e, a)["git_refs"][0].clone();
+    let created = g["created"].as_str().unwrap();
+    assert!(
+        created.starts_with("2026-01-01T00:00:10") && !created.contains(".5"),
+        "{g}"
+    );
+}
+
+#[test]
+fn opened_on_an_active_task_records_the_start_for_that_pr() {
+    let e = engine();
+    let a = add(&e, "already running");
+    call(&e, "task.start", json!({ "ref": a })).unwrap();
+    let branch = format!("task/{a}-s");
+    event(&e, "opened", &branch, json!({ "pr": PR }));
+    call(&e, "task.stop", json!({ "ref": a })).unwrap();
+    let out = event(&e, "opened", &branch, json!({ "pr": PR }));
+    assert_eq!(out["changed"], false, "{out}");
+    assert_eq!(get(&e, a)["status"], "pending");
+}
