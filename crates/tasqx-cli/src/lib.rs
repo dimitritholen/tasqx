@@ -2994,13 +2994,12 @@ mod tests {
         let connector =
             workspace_connector("tasqx-remote-dir").expect("run `cargo test --workspace` first");
         let exe = format!("tasqx-remote-dir{}", std::env::consts::EXE_SUFFIX);
-        std::fs::copy(&connector, bin.join(&exe)).unwrap();
+        // A link, not a copy: a copy is a write fd that a sibling test's forked
+        // child can inherit, and exec'ing the copy meanwhile fails with ETXTBSY.
         #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(bin.join(&exe), std::fs::Permissions::from_mode(0o755))
-                .unwrap();
-        }
+        std::os::unix::fs::symlink(&connector, bin.join(&exe)).unwrap();
+        #[cfg(not(unix))]
+        std::fs::copy(&connector, bin.join(&exe)).unwrap();
         let mut dirs = vec![bin.clone()];
         dirs.extend(std::env::split_paths(
             &std::env::var_os("PATH").unwrap_or_default(),

@@ -50,6 +50,16 @@ fn connector_binary() -> PathBuf {
     found
 }
 
+/// Put the built binary `from` at `to`. A link, not a copy: a copy is a write
+/// fd that a sibling test's forked child can inherit, and running the copy
+/// meanwhile fails with ETXTBSY.
+fn link_exe(from: &Path, to: &Path) {
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(from, to).expect("link the connector");
+    #[cfg(not(unix))]
+    std::fs::copy(from, to).expect("copy the connector");
+}
+
 /// One test's world: a `bin` dir holding the connector, a remote folder, and
 /// the machines.
 struct World {
@@ -63,7 +73,7 @@ impl World {
         let bin = root.join("bin");
         std::fs::create_dir_all(&bin).expect("create bin dir");
         let exe = format!("{CONNECTOR}{}", std::env::consts::EXE_SUFFIX);
-        std::fs::copy(connector_binary(), bin.join(exe)).expect("copy the connector");
+        link_exe(&connector_binary(), &bin.join(exe));
         std::fs::create_dir_all(root.join("remote")).expect("create the remote folder");
         let mut dirs = vec![bin];
         dirs.extend(std::env::split_paths(
@@ -82,14 +92,13 @@ impl World {
             "{} is missing: build the workspace",
             built.display()
         );
-        std::fs::copy(built, self.root.join("bin").join(exe)).expect("copy the connector");
+        link_exe(&built, &self.root.join("bin").join(exe));
     }
 
     /// The same connector again under another name, as a second connector.
     fn install_as(&self, name: &str) {
         let exe = format!("tasqx-remote-{name}{}", std::env::consts::EXE_SUFFIX);
-        std::fs::copy(connector_binary(), self.root.join("bin").join(exe))
-            .expect("copy the connector");
+        link_exe(&connector_binary(), &self.root.join("bin").join(exe));
     }
 
     fn remote(&self) -> PathBuf {
