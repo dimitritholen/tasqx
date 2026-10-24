@@ -593,10 +593,11 @@ export class DashboardStore {
       const result = await client.request<NoteListResult>('note.list', noteListParams(filters));
       if (seq !== this.notesSeq) return;
       this.setSlice('notes', { data: { notes: result.notes, total: result.total, filters }, loading: false, error: null });
-      // The open note follows its row, so another session's edit shows in the inspector.
+      // The open note follows a newer copy of its row, so another session's
+      // edit shows in the inspector; an older one (a read that raced a write) does not.
       const open = this.state.selectedNote;
       const fresh = open === null ? undefined : result.notes.find((note) => note.id === open.id);
-      if (fresh !== undefined) this.set({ selectedNote: fresh });
+      if (fresh !== undefined && open !== null && fresh._rev > open._rev) this.set({ selectedNote: fresh });
     } catch (err) {
       if (seq !== this.notesSeq) return;
       this.fail('notes', err);

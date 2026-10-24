@@ -11,6 +11,8 @@ export { GraphInspector } from './GraphInspector';
 export { GraphScreen } from './GraphScreen';
 export { MemoryInspector } from './MemoryInspector';
 export { MemoryScreen } from './MemoryScreen';
+export { NoteInspector } from './NoteInspector';
+export { NotesScreen } from './NotesScreen';
 export { ProjectsScreen } from './ProjectsScreen';
 export { ReportsScreen } from './ReportsScreen';
 export { TaskInspector } from './TaskInspector';

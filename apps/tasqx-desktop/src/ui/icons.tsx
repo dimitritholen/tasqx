@@ -20,6 +20,7 @@ const PATHS = {
       <path d="M3 8c0 1.1 2.2 2 5 2s5-.9 5-2" />
     </>
   ),
+  notes: <path d="M3 2.5h10v7.5l-4 3.5H3zM9 13.5V10h4M5.5 5.5h5M5.5 8h3" />,
   graph: (
     <>
       <circle cx="8" cy="3.5" r="1.8" />

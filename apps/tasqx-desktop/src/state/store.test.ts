@@ -7,12 +7,16 @@ import {
   type DashboardState,
 } from './store';
 import { DEFAULT_MEMORY_FILTERS } from './memory';
+import { DEFAULT_NOTE_FILTERS } from './notes';
 import {
   fails,
   linkRow,
   MEMORY_CAPABILITIES,
   memoryDoc,
   memoryHit,
+  NOTE_CAPABILITIES,
+  noteList,
+  noteRow,
   ScriptedTransport,
   taskDetail,
   taskList,
@@ -344,5 +348,29 @@ describe('DashboardStore memory', () => {
 
     await store.selectMemoryDoc('d1');
     expect(store.getState().memoryDetail.error?.code).toBe('transport_unavailable');
+  });
+});
+
+describe('DashboardStore notes', () => {
+  it('moves the open note to a newer list copy and never back to an older one', async () => {
+    let rev = 2;
+    const { store } = await connected({
+      'core.capabilities': NOTE_CAPABILITIES,
+      'note.list': () => noteList([noteRow({ short_id: 1, body: `rev ${rev}`, _rev: rev })]),
+    });
+    store.selectNote(noteRow({ short_id: 1, body: 'rev 3', _rev: 3 }));
+
+    await store.runNotesQuery(DEFAULT_NOTE_FILTERS);
+    expect(store.getState().selectedNote?.body).toBe('rev 3');
+
+    rev = 4;
+    await store.reloadNotes();
+    expect(store.getState().selectedNote?.body).toBe('rev 4');
+  });
+
+  it('reloads nothing before a first read has set the filters', async () => {
+    const { transport, store } = await connected({ 'core.capabilities': NOTE_CAPABILITIES });
+    await store.reloadNotes();
+    expect(transport.calls).toEqual([]);
   });
 });

@@ -3,6 +3,7 @@ import { loadBaseline } from '../../api/baseline';
 import { ConnectionController } from '../../api/connection';
 import type { EventFrame } from '../../api/envelope';
 import { attachEvents } from '../../state/events';
+import { DEFAULT_NOTE_FILTERS } from '../../state/notes';
 import { DashboardStore, selectCards } from '../../state/store';
 import { NodeSocketTransport } from '../nodeTransport';
 import { ScratchDaemon, until } from '../scratchDaemon';
@@ -86,5 +87,43 @@ describe('a real daemon over a real socket', { timeout: 60_000 }, () => {
     expect(store.getState().taskPage.total).toBe(4);
 
     detach();
+  });
+
+  it('captures, finds and promotes a note through the real note.* shapes, its events never forcing a resync', async () => {
+    expect(startupFailure, 'the daemon has to run for this test to mean anything').toBe('');
+
+    const store = new DashboardStore();
+    const notes = new ConnectionController({
+      transport: new NodeSocketTransport(daemon!.socketAddress),
+      loadBaseline: (client) => loadBaseline(client, store),
+    });
+    const detach = attachEvents(notes, store);
+    try {
+      await notes.start();
+      await store.runNotesQuery(DEFAULT_NOTE_FILTERS);
+      expect(store.getState().notes.data.notes).toEqual([]);
+
+      await store.addNote('read later https://example.com/post');
+      await store.addNote('plain thought');
+      await store.runNotesQuery({ ...DEFAULT_NOTE_FILTERS, links: true });
+      const [linked] = store.getState().notes.data.notes;
+      expect(store.getState().notes.data.notes).toHaveLength(1);
+      expect(linked).toMatchObject({ short_id: 1, status: 'open', has_links: true, promoted_to: null });
+
+      const promoted = await store.promoteNote(linked!, 'task');
+      expect(promoted.task).toMatchObject({ title: 'read later https://example.com/post' });
+      expect(promoted.note).toMatchObject({ status: 'archived', promoted_task_short_id: promoted.task!.short_id });
+      expect(promoted.note.promoted_to).toBe(`task:${promoted.task!.id}`);
+
+      await store.runNotesQuery({ ...DEFAULT_NOTE_FILTERS, query: 'THOUGHT' });
+      expect(store.getState().notes.data.notes.map((note) => note.body)).toEqual(['plain thought']);
+
+      // The writes' own pushes have had time to arrive; none of them may read as unknown.
+      await new Promise((done) => setTimeout(done, 500));
+      expect(notes.getState().resyncReasons.filter((why) => why.includes('note'))).toEqual([]);
+    } finally {
+      detach();
+      await notes.stop();
+    }
   });
 });

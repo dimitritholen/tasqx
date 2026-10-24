@@ -33,7 +33,7 @@ beforeEach(() => {
 test('the sidebar lists every screen and marks the current one', () => {
   renderShell();
   const nav = screen.getByRole('navigation', { name: 'Screens' });
-  const labels = ['Dashboard', 'Tasks', 'Projects', 'Memory', 'Graph', 'Reports', 'Settings'];
+  const labels = ['Dashboard', 'Tasks', 'Projects', 'Memory', 'Notes', 'Graph', 'Reports', 'Settings'];
   for (const label of labels) {
     expect(within(nav).getByRole('link', { name: label })).toHaveAttribute('title', label);
   }
@@ -135,6 +135,10 @@ test('the g sequences navigate and r refreshes', () => {
   fireEvent.keyDown(document.body, { key: 'g' });
   fireEvent.keyDown(document.body, { key: 'm' });
   expect(window.location.hash).toBe('#/memory');
+
+  fireEvent.keyDown(document.body, { key: 'g' });
+  fireEvent.keyDown(document.body, { key: 'n' });
+  expect(window.location.hash).toBe('#/notes');
 
   fireEvent.keyDown(document.body, { key: 'g' });
   fireEvent.keyDown(document.body, { key: 'd' });
