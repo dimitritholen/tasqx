@@ -327,6 +327,27 @@ pub const NOT_UNDOABLE: &[(&str, &str)] = &[
          update` again with the old text is the way back.",
     ),
     (
+        "note.add",
+        "A note is not a task and undo walks the task log (D241); `tasqx api note.remove \
+         {\"id\": <id>}` deletes the note you name.",
+    ),
+    (
+        "note.update",
+        "The event records the note's NEW project, status and rev, never the body it \
+         replaced (D241); `tasqx api note.update` again with the old values is the way back.",
+    ),
+    (
+        "note.remove",
+        "The event records the note's id and project, not its text, so there is nothing to \
+         put back (D241); `tasqx api note.add` files it again.",
+    ),
+    (
+        "note.promote",
+        "Promoting wrote a task or a memory doc and archived the note in one step (D241); \
+         `tasqx cancel <ref>` or `tasqx memory rm <id>` retires what it made, and `tasqx api \
+         note.update {\"id\": <id>, \"status\": \"open\"}` reopens the note.",
+    ),
+    (
         "undo",
         "There is no redo: reversing an undo would only toggle the same change back and forth \
          forever; change it again with the verb that changes it.",

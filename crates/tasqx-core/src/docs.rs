@@ -1529,6 +1529,115 @@ pub const MEMORY_LIST_ROW: &[FieldDoc] = &[
     f("standing", "boolean", "Whether it is a standing ruling (D156) — on every row, not only on a page filtered by `standing`."),
 ];
 
+/// One note (D241), as `store.export` carries it: the stored row.
+pub const NOTE_EXPORT_ROW: &[FieldDoc] = &[
+    f("id", "string", "The note's uuid."),
+    f("short_id", "integer", "The note's own small number, from a counter tasks do not share — what `note.get` takes beside the uuid."),
+    f("body", "string", "The whole body, stored and returned verbatim."),
+    n("project", "string", "The project it is filed under, or null."),
+    f("status", "string", "`open` or `archived`."),
+    n("promoted_to", "string", "Where `note.promote` filed it — `task:#<short_id>` or `memory:<doc id>` — or null while it has not been promoted."),
+    f("created", "string", "When it was captured."),
+    f("modified", "string", "When it last changed."),
+    f("_rev", "integer", "The row's revision counter, bumped by every write. Send it back as `expected_rev` to make a change conditional."),
+];
+
+/// What a read adds to [`NOTE_EXPORT_ROW`]: derived, never stored, so a
+/// backup does not carry it (D241).
+pub const NOTE_HAS_LINKS: &[FieldDoc] = &[f(
+    "has_links",
+    "boolean",
+    "Whether the body holds an `http://` or `https://` link — derived on every read, the same test `note.list {links: true}` filters on.",
+)];
+
+/// `note.list`'s result (D241).
+pub const R_NOTE_LIST: &[FieldDoc] = &[
+    f("count", "integer", "How many notes came back."),
+    f("total", "integer", "How many notes match before the page."),
+    n(
+        "next_offset",
+        "integer",
+        "The `offset` that fetches the next page; null once nothing is left.",
+    ),
+    f("notes", "array", "The notes, newest first, bodies whole."),
+];
+
+/// `note.remove`'s result (D241).
+pub const R_NOTE_REMOVE: &[FieldDoc] = &[
+    f("id", "string", "The note that is gone."),
+    f(
+        "short_id",
+        "integer",
+        "Its short id, which is never reused.",
+    ),
+    f(
+        "removed",
+        "boolean",
+        "Always true on success. Removal is permanent and outside `undo`.",
+    ),
+];
+
+/// `note.promote`'s result (D241).
+pub const R_NOTE_PROMOTE: &[FieldDoc] = &[
+    f(
+        "note",
+        "object",
+        "The note after the promote: archived, with `promoted_to` naming what it became.",
+    ),
+    o(
+        "task",
+        "object",
+        "The task it became, on `to: task`; absent on `to: memory`.",
+    ),
+    o(
+        "doc",
+        "object",
+        "The memory doc it became, on `to: memory`; absent on `to: task`.",
+    ),
+];
+
+/// The task `note.promote` made.
+pub const NOTE_PROMOTED_TASK: &[FieldDoc] = &[
+    f("id", "string", "The task's uuid."),
+    f(
+        "short_id",
+        "integer",
+        "The task's short id — the small number every `ref` accepts.",
+    ),
+    f(
+        "title",
+        "string",
+        "Its title: the one given, or the body's first line cut at 80 characters.",
+    ),
+    f("status", "string", "Its status, as `task.add` answers it."),
+    n(
+        "project",
+        "string",
+        "The project it landed in — the note's, else the store's default — or null.",
+    ),
+];
+
+/// The memory doc `note.promote` made.
+pub const NOTE_PROMOTED_DOC: &[FieldDoc] = &[
+    f("id", "string", "The doc's uuid — what `memory.get` takes."),
+    f(
+        "title",
+        "string",
+        "Its title: the one given, or the body's first line cut at 80 characters.",
+    ),
+    n(
+        "project",
+        "string",
+        "The note's project, which scopes the doc, or null.",
+    ),
+    f(
+        "standing",
+        "boolean",
+        "Always false: a promoted note is ordinary memory (D156).",
+    ),
+    f("created", "string", "When it was stored."),
+];
+
 /// `memory.update`'s result.
 pub const R_MEMORY_UPDATE: &[FieldDoc] = &[
     f("id", "string", "The doc that changed."),
@@ -1738,6 +1847,16 @@ pub const R_STORE_EXPORT: &[FieldDoc] = &[
         "How many memory docs a filtered export left out, scoped or unscoped.",
     ),
     f(
+        "notes",
+        "array",
+        "Every quick-capture note (D241), scoped like `docs`: a note's project in scope, an unscoped one only with `include_unscoped`. The stored row, without the derived `has_links`.",
+    ),
+    f(
+        "dropped_notes",
+        "integer",
+        "How many notes a filtered export left out, scoped or unscoped.",
+    ),
+    f(
         "links",
         "array",
         "Every explicit link (D160) whose BOTH ends are nodes this document carries — the same row `link.list` pages.",
@@ -1813,7 +1932,7 @@ pub const PROJECT_EXPORT_ROW: &[FieldDoc] = &[
 /// One row of the append-only audit log.
 pub const EVENT_ROW: &[FieldDoc] = &[
     f("id", "string", "The event's uuid."),
-    f("entity", "string", "What kind of thing it happened to: `task`, `project`, `doc` or `link`."),
+    f("entity", "string", "What kind of thing it happened to: `task`, `project`, `doc`, `link` or `note`."),
     f("entity_id", "string", "That thing's uuid."),
     f("op", "string", "What happened: `add`, `done`, `start`, `stop`, `tag.remove`, …"),
     n("payload", "object", "The op's own vocabulary. Null only for a row whose payload will not parse — a corrupt store."),
@@ -1829,10 +1948,11 @@ pub const R_STORE_IMPORT: &[FieldDoc] = &[
     f("docs_imported", "integer", "How many knowledge docs came in."),
     f("docs_declared", "boolean", "Whether the document had a `docs` section at all — an empty one told apart from a missing one (#179)."),
     f("events_imported", "integer", "How many audit rows came in."),
-    f("events_logged", "integer", "How many audit rows the import wrote about itself — an `import` per task and project, a `memory.add` per doc — on top of `events_imported`; an export never carries them (#1116)."),
+    f("events_logged", "integer", "How many audit rows the import wrote about itself — an `import` per task, project and note, a `memory.add` per doc — on top of `events_imported`; an export never carries them (#1116)."),
     f("links_imported", "integer", "How many explicit links came in (D181) — an edge this store already held under a different id counts, because that is the same edge stated twice. Zero for a document with no `links` section."),
     n("default_project", "string", "The default project after the import, or null."),
     f("renumbered", "array", "Every task whose `short_id` a DIFFERENT task in this store already held, as `{id, from, to}` — it kept its id and took the next free number (D177). Empty when nothing moved."),
+    f("notes_imported", "integer", "How many notes the document's `notes` section carried in (D241): a new note keeps its short id unless one here holds it, a known one is replaced, or on `merge` takes the later `modified`. Zero for a document with none."),
     f("docs_merged", "array", "Every memory doc that landed on a doc this store already held under the same `source`, as `{source, kept_id, dropped_id, took}` — the stored id is kept, the payload's is dropped, and `took` is `payload` when the payload's `modified` was later (its title, body, project and standing were written) or `store` when it was not (nothing was written). `dropped_id` is null when the payload doc carried no `id` of its own, rather than a minted one a dry run would then roll back. D183. Empty when nothing merged."),
     f("dry_run", "boolean", "Echoes the `dry_run` param (D184). True means every row above was written and then rolled back — the answer describes what WOULD have happened, not what is now on disk."),
     f("merged", "array", "Every task this store ALREADY held that `merge` unioned rather than replaced, as `{id, took, from_payload, from_store, tracked_delta_seconds}`. Each scalar field group follows the side whose latest event touched it (D189); `from_payload` and `from_store` name the fields that differed and the side each was taken from, and `took` is `payload` or `store` when one side supplied all of them, `mixed` when both did, and D185's later-`modified` side when none differed. `tracked_delta_seconds` is how far the tracked total moved: the total is counted from the union of both event logs, plus the larger of the two sides' totals the logs do not explain. Its annotations, checks, tokens, tags and edges are unioned either way, less every row whose removal, in either event log, is later than its last write (D197). D185. Empty when `merge` was not asked for, or when the document carried nothing this store had seen."),
@@ -2118,6 +2238,22 @@ pub fn result_shape(method: &str) -> &'static [(&'static str, &'static [FieldDoc
             ("result.docs[]", MEMORY_LIST_ROW),
         ],
         "memory.update" => &[("result", R_MEMORY_UPDATE)],
+        "note.add" | "note.get" | "note.update" => {
+            &[("result", NOTE_EXPORT_ROW), ("result", NOTE_HAS_LINKS)]
+        }
+        "note.list" => &[
+            ("result", R_NOTE_LIST),
+            ("result.notes[]", NOTE_EXPORT_ROW),
+            ("result.notes[]", NOTE_HAS_LINKS),
+        ],
+        "note.remove" => &[("result", R_NOTE_REMOVE)],
+        "note.promote" => &[
+            ("result", R_NOTE_PROMOTE),
+            ("result.note", NOTE_EXPORT_ROW),
+            ("result.note", NOTE_HAS_LINKS),
+            ("result.task", NOTE_PROMOTED_TASK),
+            ("result.doc", NOTE_PROMOTED_DOC),
+        ],
         "report.summary" => &[
             ("result", R_REPORT_SUMMARY),
             ("result.groups[]", SUMMARY_GROUP_ROW),
@@ -2155,6 +2291,7 @@ pub fn result_shape(method: &str) -> &'static [(&'static str, &'static [FieldDoc
             ("result.tasks[].git_refs[]", GIT_REF_ROW),
             ("result.projects[]", PROJECT_EXPORT_ROW),
             ("result.docs[]", DOC_EXPORT_ROW),
+            ("result.notes[]", NOTE_EXPORT_ROW),
             ("result.links[]", LINK_ROW),
             ("result.events[]", EVENT_ROW),
         ],

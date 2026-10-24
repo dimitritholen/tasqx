@@ -379,6 +379,25 @@ pub const PARAMS: &[(&str, &[&str], bool)] = &[
         ],
         false,
     ),
+    // D241: quick-capture notes, outside tasks and memory alike.
+    ("note.add", &["body", "project"], false),
+    (
+        "note.list",
+        &["status", "links", "query", "project", "limit", "offset"],
+        false,
+    ),
+    ("note.get", &["id"], false),
+    (
+        "note.update",
+        &["id", "body", "project", "status", "expected_rev"],
+        false,
+    ),
+    ("note.remove", &["id"], false),
+    (
+        "note.promote",
+        &["id", "to", "title", "expected_rev"],
+        false,
+    ),
     // The D50 Decision 3 one-shot history repair. `dry_run` defaults to TRUE —
     // report the per-task delta, write nothing — and must be explicitly false
     // to apply; it is the one method in this table built to delete
@@ -412,6 +431,7 @@ pub const PARAMS: &[(&str, &[&str], bool)] = &[
             "docs",
             "events",
             "links",
+            "notes",
             "dry_run",
             "merge",
             "path",
@@ -550,6 +570,12 @@ pub fn dispatch(engine: &Engine, method: &str, params: &Value) -> Result<Value, 
         "memory.refresh" => engine.memory_refresh(params),
         "memory.list" => engine.memory_list(params),
         "memory.update" => engine.memory_update(params),
+        "note.add" => engine.note_add(params),
+        "note.list" => engine.note_list(params),
+        "note.get" => engine.note_get(params),
+        "note.update" => engine.note_update(params),
+        "note.remove" => engine.note_remove(params),
+        "note.promote" => engine.note_promote(params),
         "report.summary" => engine.report_summary(params),
         "report.outcomes" => engine.report_outcomes(params),
         "store.export" => engine.store_export(params),

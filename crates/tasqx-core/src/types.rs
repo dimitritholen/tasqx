@@ -39,12 +39,21 @@ pub enum Entity {
     /// side would hide every link written between two docs, and a caller
     /// asking "what happened to this edge" has only the link's own id.
     Link,
+    /// A quick-capture note (D241): neither a task nor a memory doc, so its
+    /// events are filed under neither.
+    Note,
 }
 
 impl Entity {
     /// Every variant. Hand-written like [`Status::ALL`], and pinned by the same
     /// exhaustiveness test, because Rust has no way to enumerate a plain enum.
-    pub const ALL: [Entity; 4] = [Entity::Task, Entity::Project, Entity::Doc, Entity::Link];
+    pub const ALL: [Entity; 5] = [
+        Entity::Task,
+        Entity::Project,
+        Entity::Doc,
+        Entity::Link,
+        Entity::Note,
+    ];
 
     /// The wire spelling written into `events.entity` — the exact lowercase word
     /// [`Entity::parse`] round-trips, and the only text any writer may store.
@@ -54,6 +63,7 @@ impl Entity {
             Entity::Project => "project",
             Entity::Doc => "doc",
             Entity::Link => "link",
+            Entity::Note => "note",
         }
     }
 
@@ -66,6 +76,7 @@ impl Entity {
             "project" => Some(Entity::Project),
             "doc" => Some(Entity::Doc),
             "link" => Some(Entity::Link),
+            "note" => Some(Entity::Note),
             _ => None,
         }
     }
@@ -582,7 +593,7 @@ mod tests {
         seen.sort_unstable();
         seen.dedup();
         assert_eq!(seen.len(), before, "Entity::ALL contains a duplicate");
-        assert_eq!(before, 4, "Entity::ALL must list every variant");
+        assert_eq!(before, 5, "Entity::ALL must list every variant");
         for e in Entity::ALL {
             assert_eq!(
                 Entity::parse(e.as_str()),
