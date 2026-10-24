@@ -66,7 +66,7 @@ export const KNOWN_OPS = new Set([
   'add', 'adjust_tracked', 'annotation.add', 'annotation.move', 'annotation.remove', 'annotation.update',
   'archive', 'cancel', 'check.add', 'check.remove', 'check.set', 'create', 'dependency.add',
   'dependency.remove', 'done', 'import', 'link.add', 'link.remove', 'memory.add', 'memory.remove',
-  'memory.update', 'modify', 'reminded', 'reopen', 'start', 'stop', 'store.import', 'tag.add',
+  'memory.update', 'modify', 'note.add', 'note.promote', 'note.remove', 'note.update', 'reminded', 'reopen', 'start', 'stop', 'store.import', 'tag.add',
   'tag.normalize', 'tag.remove', 'token.add', 'token.remove', 'tokens.attributed', 'unarchive', 'undo', 'use',
 ]);
 

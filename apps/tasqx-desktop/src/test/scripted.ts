@@ -9,6 +9,8 @@ import type {
   MemoryDoc,
   MemoryHit,
   MemoryListRow,
+  Note,
+  NoteListResult,
   Project,
   TaskDetail,
   TaskListResult,
@@ -91,6 +93,21 @@ export const MEMORY_CAPABILITIES: Capabilities = {
     'annotation.add': ['ref', 'body'],
     'annotation.remove': ['ref', 'annotation_id'],
     'link.list': ['ref', 'relation', 'limit', 'offset'],
+  },
+};
+
+/** `SCRIPTED_CAPABILITIES` plus the Notes screen's methods (D241, #928; dispatch.rs PARAMS). */
+export const NOTE_CAPABILITIES: Capabilities = {
+  ...SCRIPTED_CAPABILITIES,
+  methods: [...SCRIPTED_CAPABILITIES.methods, 'note.add', 'note.list', 'note.get', 'note.update', 'note.remove', 'note.promote'],
+  params: {
+    ...SCRIPTED_CAPABILITIES.params,
+    'note.add': ['body', 'project'],
+    'note.list': ['status', 'links', 'query', 'project', 'limit', 'offset'],
+    'note.get': ['id'],
+    'note.update': ['id', 'body', 'project', 'status', 'expected_rev'],
+    'note.remove': ['id'],
+    'note.promote': ['id', 'to', 'title', 'expected_rev'],
   },
 };
 
@@ -315,6 +332,27 @@ export function memoryDoc(overrides: Partial<MemoryDoc> & { id: string }): Memor
     origin_size: null,
     ...overrides,
   };
+}
+
+/** A default-field note, as `note.list` answers one; override only what the test is about. */
+export function noteRow(overrides: Partial<Note> & { short_id: number }): Note {
+  return {
+    id: `note-uuid-${overrides.short_id}`,
+    body: `Note ${overrides.short_id}`,
+    project: null,
+    status: 'open',
+    promoted_to: null,
+    created: EPOCH,
+    modified: EPOCH,
+    _rev: 0,
+    has_links: false,
+    promoted_task_short_id: null,
+    ...overrides,
+  };
+}
+
+export function noteList(notes: Note[], overrides: Partial<NoteListResult> = {}): NoteListResult {
+  return { count: notes.length, total: notes.length, next_offset: null, notes, ...overrides };
 }
 
 /** A default-field `link.list` row; override only what the test is about. */

@@ -1,9 +1,12 @@
 import { loadBaseline } from '../api/baseline';
 import { ConnectionController } from '../api/connection';
 import { attachEvents, REFRESH_DEBOUNCE_MS } from './events';
+import { DEFAULT_NOTE_FILTERS } from './notes';
 import { DashboardStore } from './store';
 import {
   fails,
+  NOTE_CAPABILITIES,
+  noteList,
   project,
   ScriptedTransport,
   taskDetail,
@@ -227,6 +230,24 @@ describe('attachEvents', () => {
     await vi.advanceTimersByTimeAsync(REFRESH_DEBOUNCE_MS);
 
     expect(transport.methods).toEqual(['project.list']);
+    detach();
+  });
+
+  it('re-reads the notes list once per burst of note events, and only after the Notes screen has read one', async () => {
+    const { transport, store, detach } = await live({ 'core.capabilities': NOTE_CAPABILITIES, 'note.list': noteList([]) });
+
+    transport.pushEvent({ entity: 'note', op: 'note.add', entity_id: 'n1', short_id: 1 });
+    await vi.advanceTimersByTimeAsync(REFRESH_DEBOUNCE_MS);
+    expect(transport.countOf('note.list')).toBe(0);
+
+    await store.runNotesQuery(DEFAULT_NOTE_FILTERS);
+    transport.clearCalls();
+    transport.pushEvent({ entity: 'note', op: 'note.update', entity_id: 'n1', short_id: 1, _rev: 1 });
+    transport.pushEvent({ entity: 'note', op: 'note.promote', entity_id: 'n1', short_id: 1, _rev: 2 });
+    await vi.advanceTimersByTimeAsync(REFRESH_DEBOUNCE_MS);
+
+    // The heartbeat may have spoken in between; only the reads count here.
+    expect(transport.methods.filter((method) => method !== 'core.capabilities')).toEqual(['note.list']);
     detach();
   });
 
