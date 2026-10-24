@@ -1090,11 +1090,15 @@ pub const COMMAND_REF: &[CmdDoc] = &[
             ),
             ex_norun("tasqx note 3 promote memory", "file it as a memory doc instead"),
             ex_norun("tasqx note 3 rm", "delete it for good"),
+            ex_norun(
+                "tasqx note -- -5 degrees tonight",
+                "after --, a number or a leading dash is text",
+            ),
         ],
         notes: &[
             "A note is not a task: it has no urgency, stays out of `@working`, `next` and the reports, and `memory search` never sees it. Notes have their own numbers, so note 3 and task 3 are different things.",
             "The text is stored verbatim, words joined by spaces; quote it to keep a shell from reading `#`, `*` or `?`. No `project:` sugar: a note's words are its own, so --project files it.",
-            "The id comes first and the subverb after it, as on every task verb. Any other first word is text, so `tasqx note edit the readme` notes \"edit the readme\". A number followed by text is refused (exit 2): `tasqx note 42 \"…\"` once annotated task 42, and that is `tasqx annotate 42 \"…\"` now.",
+            "The id comes first and the subverb after it, as on every task verb. Any other first word is text, so `tasqx note edit the readme` notes \"edit the readme\". A number followed by text is refused (exit 2): `tasqx note 42 \"…\"` once annotated task 42, and that is `tasqx annotate 42 \"…\"` now. After `--` every word is text: `tasqx note -- 7` notes \"7\". A flag the subverb does not take is a usage error (exit 2), wherever it stands.",
             "`promote task` files a task in the note's project (else your default), titled --title or the note's first line, the whole note as its first annotation when the title does not say all of it; `promote memory` files a memory doc. Either way the note is archived with a pointer to what it became, in one transaction. Promotion is final: a promoted note cannot be promoted again or unarchived.",
             "`rm` is permanent and `tasqx undo` does not cover notes; `archive` is the way to put one out of sight.",
         ],

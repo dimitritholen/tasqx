@@ -470,6 +470,28 @@ fn candidates(out: &std::process::Output) -> Vec<String> {
 /// absence is the assertion, and it is one no other guard in the suite makes,
 /// because every existing guard exercises the parse path rather than the
 /// completion path.
+/// `note`'s pre-pass marks a subverb's name typed as the first word with a
+/// control character (D241's CLI). The marker must never reach a candidate,
+/// and the completer must answer on every shape of a `note` line.
+#[test]
+fn the_note_text_marker_never_reaches_a_candidate() {
+    for (cursor, words) in [
+        (2, &["tasqx", "note", "ed"][..]),
+        (2, &["tasqx", "note", "edit"][..]),
+        (3, &["tasqx", "note", "edit", ""][..]),
+        (3, &["tasqx", "note", "3", "ar"][..]),
+        (4, &["tasqx", "note", "3", "archive", ""][..]),
+        (3, &["tasqx", "note", "--", "7"][..]),
+    ] {
+        let out = complete_bash(cursor, words);
+        assert_eq!(out.status.code(), Some(0), "{words:?}");
+        assert!(out.stderr.is_empty(), "{words:?}: {:?}", out.stderr);
+        for c in candidates(&out) {
+            assert!(!c.contains('\u{2}'), "{words:?} offered {c:?}");
+        }
+    }
+}
+
 #[test]
 fn a_filter_token_beginning_with_a_dash_does_not_derail_the_completer() {
     let out = complete_bash(2, &["tasqx", "list", "-needs"]);

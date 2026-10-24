@@ -1672,7 +1672,11 @@ pub(crate) fn run_note(
             .map(|w| w.trim_start_matches(crate::argv::NOTE_TEXT).to_string())
             .collect();
         let first = words.first().map(String::as_str).unwrap_or_default();
-        if crate::argv::names_a_note(first) {
+        // Marked by the pre-pass after `--` (or as a subverb's name): text.
+        let marked = text
+            .first()
+            .is_some_and(|w| w.starts_with(crate::argv::NOTE_TEXT));
+        if !marked && crate::argv::names_a_note(first) {
             if words.len() == 1 {
                 let result = be.call("note.get", &json!({ "id": first }))?;
                 let text = render::note_shown(ctx, &result, crate::clock::now());
@@ -1693,7 +1697,13 @@ pub(crate) fn run_note(
     };
     let (result, text) = match action {
         NoteAction::Edit { id, text } => {
-            let result = be.call("note.update", &json!({ "id": id, "body": text.join(" ") }))?;
+            // Pinned to the rev read here, so an edit landing in between is
+            // a conflict rather than overwritten.
+            let held = be.call("note.get", &json!({ "id": id }))?;
+            let result = be.call(
+                "note.update",
+                &json!({ "id": id, "body": text.join(" "), "expected_rev": held["_rev"] }),
+            )?;
             let text = note_echo(ctx, "Updated note", &result, true);
             (result, text)
         }
@@ -1708,8 +1718,20 @@ pub(crate) fn run_note(
             (result, text)
         }
         NoteAction::Rm { id } => {
+            // Read first: the removal's answer no longer carries the text,
+            // and the echo says what is gone.
+            let gone = be.call("note.get", &json!({ "id": id }))?;
             let result = be.call("note.remove", &json!({ "id": id }))?;
-            let text = note_echo(ctx, "Removed note", &result, false);
+            let head = note_echo(ctx, "Removed note", &result, false);
+            let head = head.trim_end();
+            let plain = format!("Removed note #{}", result["short_id"]);
+            let room = ctx.cols.saturating_sub(render::width(&plain) + 5);
+            let line = render::san(render::note_first_line(gone["body"].as_str().unwrap_or("")));
+            let text = format!(
+                "{head}  {}  {}\n",
+                ctx.mid(),
+                render::truncate(&line, room, ctx.caps.unicode)
+            );
             (result, text)
         }
         NoteAction::Promote { id, to, title } => {

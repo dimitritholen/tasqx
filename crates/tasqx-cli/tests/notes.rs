@@ -232,3 +232,91 @@ fn promote_to_memory_takes_a_title() {
     assert_eq!(doc["body"], "deploys go blue-green");
     assert_eq!(s.json(&["list"])["count"], 0);
 }
+
+/// Review round 1: flags typed before the id used to turn `7 archive` into
+/// the text of a NEW note. A subverb after an id is a command wherever the
+/// flags stand; one the subverb lacks is clap's usage error, never a note.
+#[test]
+fn an_id_and_a_subverb_are_a_command_whatever_flags_come_first() {
+    let s = Store::new("flags-first");
+    s.ok(&["init", "p"]);
+    s.ok(&["note", "one"]);
+    s.ok(&["note", "two"]);
+
+    let parse = |out: String| -> Value { serde_json::from_str(&out).unwrap() };
+    assert_eq!(s.json(&["note", "1", "archive"])["status"], "archived");
+    assert_eq!(
+        parse(s.ok(&["note", "--json", "1", "unarchive"]))["status"],
+        "open"
+    );
+    assert_eq!(
+        parse(s.ok(&["note", "1", "archive", "--json"]))["status"],
+        "archived"
+    );
+
+    for args in [
+        &["note", "--project", "p", "2", "archive"][..],
+        &["note", "--project", "p", "2", "rm"][..],
+    ] {
+        assert_eq!(s.run(args).status.code(), Some(2), "{args:?}");
+    }
+    // Nothing was stored and nothing was removed.
+    assert_eq!(s.listed(&["--all"]), vec![2, 1]);
+    assert_eq!(s.json(&["note", "2"])["status"], "open");
+}
+
+/// After `--` every word is text, a number or a leading dash included.
+#[test]
+fn after_a_double_dash_everything_is_text() {
+    let s = Store::new("dashdash");
+    assert_eq!(s.json(&["note", "--", "7"])["body"], "7");
+    assert_eq!(
+        s.json(&["note", "--", "-5", "degrees"])["body"],
+        "-5 degrees"
+    );
+    assert_eq!(s.json(&["note", "--", "1", "archive"])["body"], "1 archive");
+    assert_eq!(s.listed(&[]), vec![3, 2, 1]);
+}
+
+#[test]
+fn refusals_exit_with_their_codes() {
+    let s = Store::new("refusals");
+    for args in [
+        &["note", "9", "archive"][..],
+        &["note", "9", "edit", "x"][..],
+        &["note", "9", "rm"][..],
+        &["note", "9"][..],
+    ] {
+        assert_eq!(s.run(args).status.code(), Some(4), "{args:?}");
+    }
+    s.ok(&["note", "an idea"]);
+    s.ok(&["note", "1", "promote", "task"]);
+    assert_eq!(
+        s.run(&["note", "1", "promote", "memory"]).status.code(),
+        Some(5)
+    );
+    assert_eq!(s.run(&["note", "1", "unarchive"]).status.code(), Some(5));
+}
+
+/// `rm` says what it removed, cut to the terminal.
+#[test]
+fn rm_echoes_the_text_it_removed_cut_to_the_width() {
+    let s = Store::new("rm-echo");
+    s.ok(&["note", &"gone words ".repeat(20)]);
+    let out = s.ok(&["note", "1", "rm"]);
+    let line = out.lines().next().unwrap();
+    assert!(line.starts_with("Removed note #1  -  gone words"), "{out}");
+    assert!(line.chars().count() <= 80, "{line}");
+    assert!(line.ends_with("..."), "{line}");
+}
+
+/// `edit` pins the rev it read and sends it as `expected_rev`; the rev moves
+/// by one per edit. (A write landing between the read and the update cannot
+/// be staged from here; the engine's own tests prove the conflict.)
+#[test]
+fn edit_pins_the_rev_it_read() {
+    let s = Store::new("edit-rev");
+    s.ok(&["note", "v1"]);
+    assert_eq!(s.json(&["note", "1", "edit", "v2"])["_rev"], 1);
+    assert_eq!(s.json(&["note", "1", "edit", "v3"])["_rev"], 2);
+}
