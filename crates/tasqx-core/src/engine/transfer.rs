@@ -1500,9 +1500,9 @@ impl Engine {
         } else {
             merge_removals::Ledger::default()
         };
-        let notes_imported = match opt_array(p, "notes")? {
+        let (notes_imported, notes_renumbered) = match opt_array(p, "notes")? {
             Some(rows) => super::notes::import_notes(&tx, rows, merge, &note_removals)?,
-            None => 0,
+            None => (0, Vec::new()),
         };
 
         // #176: the event log half of a restore, optional so a document
@@ -2762,6 +2762,10 @@ impl Engine {
             "docs_merged": docs_merged,
             // D241: how many notes the document carried in.
             "notes_imported": notes_imported,
+            // D241: `{id, from, to}` per note whose short id another note here
+            // held — the D177 rule, under its own key so `renumbered` stays
+            // about tasks.
+            "notes_renumbered": notes_renumbered,
             // D185: every task this store already held that `merge` unioned
             // rather than replaced. Always present, empty when `merge` was not
             // asked for or the document carried nothing this store had seen.

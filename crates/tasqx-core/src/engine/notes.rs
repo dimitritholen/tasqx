@@ -23,7 +23,11 @@ pub const NOTE_PROMOTE_TARGETS: [&str; 2] = ["task", "memory"];
 /// before the `…` that says it was cut.
 const NOTE_TITLE_CHARS: usize = 80;
 
-const NOTE_COLS: &str = "id, short_id, body, project, status, promoted_to, created, modified, rev";
+/// The stored columns, then the derived short id of the task `promoted_to`
+/// names, read in this store so a merge that renumbered it reads right.
+const NOTE_COLS: &str =
+    "id, short_id, body, project, status, promoted_to, created, modified, rev, \
+     (SELECT t.short_id FROM tasks t WHERE notes.promoted_to = 'task:' || t.id)";
 
 /// Whether a body carries a web link. Derived on every read and never
 /// stored; `note.list {links: true}` asks SQL the same question.
@@ -45,6 +49,7 @@ fn note_row(r: &rusqlite::Row) -> rusqlite::Result<Value> {
         "created": r.get::<_, String>(6)?,
         "modified": r.get::<_, String>(7)?,
         "_rev": r.get::<_, i64>(8)?,
+        "promoted_task_short_id": r.get::<_, Option<i64>>(9)?,
     }))
 }
 
@@ -281,6 +286,15 @@ impl Engine {
         if let Some(name) = &project {
             require_live_project(&tx, name)?;
         }
+        // Promotion is terminal (D241): a promoted note stays archived as the
+        // record of what it became, so it can never read open but promoted.
+        if let (Some("open"), Some(target)) = (status.as_deref(), note["promoted_to"].as_str()) {
+            return Err(ApiError::conflict(format!(
+                "note #{} was promoted to {target} and stays archived; cancel that task or \
+                 remove that doc to take the promotion back",
+                note["short_id"]
+            )));
+        }
         let id = note["id"].as_str().unwrap_or_default().to_string();
         let rev = note["_rev"].as_i64().unwrap_or_default() + 1;
         let new_project = project.or_else(|| note["project"].as_str().map(str::to_string));
@@ -383,7 +397,8 @@ impl Engine {
                 "status": task["status"],
                 "project": task["project"],
             });
-            format!("task:#{short}")
+            // By uuid: a merge can renumber the task, never re-id it.
+            format!("task:{}", task["id"].as_str().unwrap_or_default())
         } else {
             let doc_id = crate::clock::uuid_v7().to_string();
             insert_new_doc(
@@ -460,6 +475,7 @@ pub(super) fn export_notes(
         if in_scope(v["project"].as_str()) {
             if let Some(o) = v.as_object_mut() {
                 o.remove("has_links");
+                o.remove("promoted_task_short_id");
             }
             out.push(v);
         } else {
@@ -471,18 +487,59 @@ pub(super) fn export_notes(
 
 /// D241: the payload's `notes`, in `store.import`'s transaction. A note this
 /// store does not hold lands whole, keeping its short id unless another note
-/// here holds that number, when it takes the next free one. One it holds is
-/// replaced on a restore, refused when the payload's `_rev` is older; on a
-/// `merge` the later `modified` wins, a tie keeping the store's copy, and a
-/// note whose removal in either log is the latest word on it (D197) is not
-/// written back. Answers how many notes the payload carried in.
+/// here holds that number, when it takes one above the whole payload (D177)
+/// and is listed in the answer's `notes_renumbered`. One it holds is replaced
+/// on a restore, refused when the payload's `_rev` is older; on a `merge` the
+/// later `modified` wins, a tie keeping the store's copy, except that a
+/// promotion on either side is terminal and survives; and a note whose
+/// removal in either log is the latest word on it (D197) is not written
+/// back. A payload repeating a note id (#180) or giving two notes one short
+/// id (#796) is refused before anything lands. Answers how many rows were
+/// written, and the renumbered notes as `{id, from, to}`.
 pub(super) fn import_notes(
     tx: &Transaction,
     rows: &[Value],
     merge: bool,
     removals: &super::merge_removals::Ledger,
-) -> Result<i64, ApiError> {
+) -> Result<(i64, Vec<Value>), ApiError> {
+    // The whole-document questions first, as the task pass asks them: an id
+    // twice, one short id claimed by two notes, and the floor every minted
+    // number must clear so a renumber never lands on a later row's number.
+    let mut ids: HashSet<String> = HashSet::new();
+    let mut claims: HashMap<i64, String> = HashMap::new();
+    let mut floor: Option<i64> = None;
+    for nv in rows {
+        // Unreadable values are skipped here and refused by name below.
+        let Ok(Some(id)) = opt_str(nv, "id") else {
+            continue;
+        };
+        if !ids.insert(id.clone()) {
+            return Err(ApiError::conflict(format!(
+                "store.import: note {id} appears more than once in this document's `notes` \
+                 array — one id addresses exactly one note"
+            )));
+        }
+        let Ok(Some(n)) = opt_i64(nv, "short_id") else {
+            continue;
+        };
+        floor = floor.max(Some(n));
+        let claimed = claims.entry(n).or_insert_with(|| id.clone());
+        if *claimed != id {
+            return Err(ApiError::conflict(format!(
+                "store.import: note {id} carries short_id {n}, which note {claimed} in the same \
+                 payload already claims — one short_id addresses exactly one note"
+            )));
+        }
+    }
+    if let Some(n) = floor {
+        let above = n.checked_add(1).ok_or_else(|| {
+            ApiError::bad_request(format!("store.import: note short_id {n} is out of range"))
+        })?;
+        crate::storage::bump_note_short_id_floor(tx, above)?;
+    }
+
     let mut imported = 0i64;
+    let mut renumbered: Vec<Value> = Vec::new();
     for nv in rows {
         let nv = import_shape("", "note", nv)?;
         import_keys("", "note", nv, IMPORT_NOTE_KEYS)?;
@@ -524,16 +581,25 @@ pub(super) fn import_notes(
         {
             continue;
         }
-        let stored: Option<(i64, String)> = tx
+        let stored: Option<(i64, String, Option<String>)> = tx
             .query_row(
-                "SELECT rev, modified FROM notes WHERE id = ?1",
+                "SELECT rev, modified, promoted_to FROM notes WHERE id = ?1",
                 params![nid],
-                |r| Ok((r.get(0)?, r.get(1)?)),
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
             )
             .optional()?;
         match stored {
-            Some((held_rev, held_modified)) if merge => {
-                if parse_ts(&modified) > parse_ts(&held_modified) {
+            Some((held_rev, held_modified, held_promoted)) if merge => {
+                // Promotion is terminal: whichever side promoted, the merged
+                // row keeps it, archived; the rest follows later-`modified`.
+                let promoted = held_promoted.clone().or(promoted_to.clone());
+                let later = parse_ts(&modified) > parse_ts(&held_modified);
+                let wrote = if later {
+                    let status = if promoted.is_some() {
+                        "archived"
+                    } else {
+                        status.as_str()
+                    };
                     tx.execute(
                         "UPDATE notes SET body = ?2, project = ?3, status = ?4, \
                          promoted_to = ?5, modified = ?6, rev = ?7 WHERE id = ?1",
@@ -542,14 +608,27 @@ pub(super) fn import_notes(
                             body,
                             project,
                             status,
-                            promoted_to,
+                            promoted,
                             modified,
                             held_rev.max(rev) + 1
                         ],
                     )?;
+                    true
+                } else if held_promoted.is_none() && promoted.is_some() {
+                    tx.execute(
+                        "UPDATE notes SET status = 'archived', promoted_to = ?2, \
+                         rev = rev + 1 WHERE id = ?1",
+                        params![nid, promoted],
+                    )?;
+                    true
+                } else {
+                    false
+                };
+                if !wrote {
+                    continue;
                 }
             }
-            Some((held_rev, _)) if held_rev > rev => {
+            Some((held_rev, _, _)) if held_rev > rev => {
                 return Err(ApiError::conflict(format!(
                     "store.import: note {nid} carries _rev {rev}, but the store already holds \
                      it at _rev {held_rev} — importing it would roll the note back"
@@ -583,15 +662,17 @@ pub(super) fn import_notes(
                         .is_some(),
                     None => true,
                 };
+                // The counter already sits above the whole payload, so a
+                // minted number cannot be one a later row still claims.
                 let number = match short_id.filter(|_| !held) {
-                    Some(n) => {
-                        let floor = n.checked_add(1).ok_or_else(|| {
-                            field("short_id", ApiError::bad_request("out of range"))
-                        })?;
-                        crate::storage::bump_note_short_id_floor(tx, floor)?;
-                        n
+                    Some(n) => n,
+                    None => {
+                        let minted = alloc_note_short_id(tx)?;
+                        if let Some(from) = short_id {
+                            renumbered.push(json!({ "id": nid, "from": from, "to": minted }));
+                        }
+                        minted
                     }
-                    None => alloc_note_short_id(tx)?,
                 };
                 tx.execute(
                     "INSERT INTO notes (id, short_id, body, project, status, promoted_to, \
@@ -620,7 +701,7 @@ pub(super) fn import_notes(
         )?;
         imported += 1;
     }
-    Ok(imported)
+    Ok((imported, renumbered))
 }
 
 /// D197 for notes: delete every stored note whose removal is the latest word

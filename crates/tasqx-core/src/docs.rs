@@ -1536,7 +1536,7 @@ pub const NOTE_EXPORT_ROW: &[FieldDoc] = &[
     f("body", "string", "The whole body, stored and returned verbatim."),
     n("project", "string", "The project it is filed under, or null."),
     f("status", "string", "`open` or `archived`."),
-    n("promoted_to", "string", "Where `note.promote` filed it — `task:#<short_id>` or `memory:<doc id>` — or null while it has not been promoted."),
+    n("promoted_to", "string", "Where `note.promote` filed it — `task:<uuid>` or `memory:<uuid>` — or null while it has not been promoted. Terminal: a promoted note stays archived, and a merge keeps the promotion from either side."),
     f("created", "string", "When it was captured."),
     f("modified", "string", "When it last changed."),
     f("_rev", "integer", "The row's revision counter, bumped by every write. Send it back as `expected_rev` to make a change conditional."),
@@ -1544,10 +1544,15 @@ pub const NOTE_EXPORT_ROW: &[FieldDoc] = &[
 
 /// What a read adds to [`NOTE_EXPORT_ROW`]: derived, never stored, so a
 /// backup does not carry it (D241).
-pub const NOTE_HAS_LINKS: &[FieldDoc] = &[f(
+pub const NOTE_HAS_LINKS: &[FieldDoc] = &[
+    f(
     "has_links",
     "boolean",
     "Whether the body holds an `http://` or `https://` link — derived on every read, the same test `note.list {links: true}` filters on.",
+), n(
+    "promoted_task_short_id",
+    "integer",
+    "The short id the task `promoted_to` names holds in this store, read at the call so a renumbered task reads right; null when the note was not promoted to a task or the task is gone.",
 )];
 
 /// `note.list`'s result (D241).
@@ -1952,6 +1957,7 @@ pub const R_STORE_IMPORT: &[FieldDoc] = &[
     f("links_imported", "integer", "How many explicit links came in (D181) — an edge this store already held under a different id counts, because that is the same edge stated twice. Zero for a document with no `links` section."),
     n("default_project", "string", "The default project after the import, or null."),
     f("renumbered", "array", "Every task whose `short_id` a DIFFERENT task in this store already held, as `{id, from, to}` — it kept its id and took the next free number (D177). Empty when nothing moved."),
+    f("notes_renumbered", "array", "Every note whose `short_id` a DIFFERENT note in this store already held, as `{id, from, to}` — it kept its id and took a number above the whole payload (D177's rule, D241). Empty when nothing moved."),
     f("notes_imported", "integer", "How many notes the document's `notes` section carried in (D241): a new note keeps its short id unless one here holds it, a known one is replaced, or on `merge` takes the later `modified`. Zero for a document with none."),
     f("docs_merged", "array", "Every memory doc that landed on a doc this store already held under the same `source`, as `{source, kept_id, dropped_id, took}` — the stored id is kept, the payload's is dropped, and `took` is `payload` when the payload's `modified` was later (its title, body, project and standing were written) or `store` when it was not (nothing was written). `dropped_id` is null when the payload doc carried no `id` of its own, rather than a minted one a dry run would then roll back. D183. Empty when nothing merged."),
     f("dry_run", "boolean", "Echoes the `dry_run` param (D184). True means every row above was written and then rolled back — the answer describes what WOULD have happened, not what is now on disk."),

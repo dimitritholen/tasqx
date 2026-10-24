@@ -343,9 +343,9 @@ pub const NOT_UNDOABLE: &[(&str, &str)] = &[
     ),
     (
         "note.promote",
-        "Promoting wrote a task or a memory doc and archived the note in one step (D241); \
-         `tasqx cancel <ref>` or `tasqx memory rm <id>` retires what it made, and `tasqx api \
-         note.update {\"id\": <id>, \"status\": \"open\"}` reopens the note.",
+        "Promoting wrote a task or a memory doc and archived the note in one step, and \
+         promotion is terminal (D241): `tasqx cancel <ref>` or `tasqx memory rm <id>` takes it \
+         back, and the note stays archived as the record of the promotion.",
     ),
     (
         "undo",

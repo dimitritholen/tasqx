@@ -1255,7 +1255,11 @@ const NOTE_EXPORT_ROW: &[Field] = &[
 ];
 
 /// D241: derived on every read, so the export row does not carry it.
-const NOTE_HAS_LINKS: &[Field] = &[req("has_links", Ty::Bool)];
+const NOTE_HAS_LINKS: &[Field] = &[
+    req("has_links", Ty::Bool),
+    // Review round 1: the short id `promoted_to`'s task holds here.
+    nul("promoted_task_short_id", Ty::Int),
+];
 
 const R_NOTE: Shape = &[NOTE_EXPORT_ROW, NOTE_HAS_LINKS];
 
@@ -1741,6 +1745,7 @@ const R_STORE_IMPORT: Shape = &[&[
     req("docs_merged", Ty::Array),
     // D241: how many notes the document carried in.
     req("notes_imported", Ty::Int),
+    req("notes_renumbered", Ty::Array),
     // D184: echoes the `dry_run` param — always present, false on a real run.
     req("dry_run", Ty::Bool),
     // D185: every known task `merge` unioned instead of replacing, and (D189)

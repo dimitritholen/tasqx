@@ -1832,7 +1832,7 @@ const EXAMPLES: &[Example] = &[
         method: "note.add",
         request: r#"{"tasqx":"1","id":"n1","method":"note.add","params":{"body":"try the new tracing exporter","project":"infra"}}"#,
         fixture: "",
-        response: r#"{"id":"n1","ok":true,"result":{"_rev":0,"body":"try the new tracing exporter","created":"2026-09-16T09:00:00Z","has_links":false,"id":"019f5a10-1c2d-7e3f-8a4b-5c6d7e8f9a0b","modified":"2026-09-16T09:00:00Z","project":"infra","promoted_to":null,"short_id":3,"status":"open"},"tasqx":"1"}"#,
+        response: r#"{"id":"n1","ok":true,"result":{"_rev":0,"body":"try the new tracing exporter","created":"2026-09-16T09:00:00Z","has_links":false,"id":"019f5a10-1c2d-7e3f-8a4b-5c6d7e8f9a0b","modified":"2026-09-16T09:00:00Z","project":"infra","promoted_task_short_id":null,"promoted_to":null,"short_id":3,"status":"open"},"tasqx":"1"}"#,
         why: "the answer carries the new note's uuid, a v7 id whose random half differs on every run, so a capture could never be reproduced (D149).",
     },
     Example {
@@ -1867,7 +1867,7 @@ const EXAMPLES: &[Example] = &[
         method: "note.promote",
         request: r#"{"tasqx":"1","id":"n6","method":"note.promote","params":{"id":2,"to":"task"}}"#,
         fixture: "",
-        response: r#"{"id":"n6","ok":true,"result":{"note":{"_rev":1,"body":"idea: a dark-mode toggle in the docs header","created":"2026-09-15T16:05:00Z","has_links":false,"id":"019f5a10-0000-7000-8000-00000000b002","modified":"2026-09-16T09:00:00Z","project":null,"promoted_to":"task:#63","short_id":2,"status":"archived"},"task":{"id":"019f5a10-2d3e-7f40-9b5c-6d7e8f9a0b1c","project":"website","short_id":63,"status":"pending","title":"idea: a dark-mode toggle in the docs header"}},"tasqx":"1"}"#,
+        response: r#"{"id":"n6","ok":true,"result":{"note":{"_rev":1,"body":"idea: a dark-mode toggle in the docs header","created":"2026-09-15T16:05:00Z","has_links":false,"id":"019f5a10-0000-7000-8000-00000000b002","modified":"2026-09-16T09:00:00Z","project":null,"promoted_task_short_id":63,"promoted_to":"task:019f5a10-2d3e-7f40-9b5c-6d7e8f9a0b1c","short_id":2,"status":"archived"},"task":{"id":"019f5a10-2d3e-7f40-9b5c-6d7e8f9a0b1c","project":"website","short_id":63,"status":"pending","title":"idea: a dark-mode toggle in the docs header"}},"tasqx":"1"}"#,
         why: "the answer carries the new task's uuid, a v7 id whose random half differs on every run, so a capture could never be reproduced (D149).",
     },
     Example {
