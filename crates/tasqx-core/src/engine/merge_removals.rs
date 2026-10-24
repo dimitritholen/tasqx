@@ -206,6 +206,26 @@ pub(super) fn doc_ledger(log: &[(String, LoggedEvent)]) -> Ledger {
     ledger
 }
 
+/// The key a note is known by (D241): its id. Notes have no second identity.
+pub(super) fn note_key(id: &str) -> String {
+    format!("note:{id}")
+}
+
+/// The ledger of notes over `(entity_id, event)` pairs from both logs. The
+/// `import` a `store.import` writes is bookkeeping, no write of the note's.
+pub(super) fn note_ledger(log: &[(String, LoggedEvent)]) -> Ledger {
+    let mut ledger = Ledger::default();
+    for (entity_id, ev) in log {
+        let removal = match ev.op.as_str() {
+            "note.remove" => true,
+            "note.add" | "note.update" | "note.promote" => false,
+            _ => continue,
+        };
+        ledger.note(note_key(entity_id), ev, removal);
+    }
+    ledger
+}
+
 /// The ledger of links over `(entity_id, event)` pairs from both logs. A
 /// `link.remove` written before D197 names no edge, so it is known by its id
 /// alone.

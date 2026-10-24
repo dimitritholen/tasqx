@@ -1241,6 +1241,63 @@ const R_MEMORY_UPDATE: Shape = &[&[
     req("modified", Ty::Str),
 ]];
 
+/// D241: one note, as `store.export` carries it — the stored row.
+const NOTE_EXPORT_ROW: &[Field] = &[
+    req("id", Ty::Str),
+    req("short_id", Ty::Int),
+    req("body", Ty::Str),
+    nul("project", Ty::Str),
+    req("status", Ty::Str),
+    nul("promoted_to", Ty::Str),
+    req("created", Ty::Str),
+    req("modified", Ty::Str),
+    req("_rev", Ty::Int),
+];
+
+/// D241: derived on every read, so the export row does not carry it.
+const NOTE_HAS_LINKS: &[Field] = &[req("has_links", Ty::Bool)];
+
+const R_NOTE: Shape = &[NOTE_EXPORT_ROW, NOTE_HAS_LINKS];
+
+const R_NOTE_LIST: Shape = &[&[
+    req("count", Ty::Int),
+    req("total", Ty::Int),
+    nul("next_offset", Ty::Int),
+    req_of("notes", Ty::Array, R_NOTE),
+]];
+
+const R_NOTE_REMOVE: Shape = &[&[
+    req("id", Ty::Str),
+    req("short_id", Ty::Int),
+    req("removed", Ty::Bool),
+]];
+
+const R_NOTE_PROMOTE: Shape = &[&[
+    req_of("note", Ty::Object, R_NOTE),
+    opt_of(
+        "task",
+        Ty::Object,
+        &[&[
+            req("id", Ty::Str),
+            req("short_id", Ty::Int),
+            req("title", Ty::Str),
+            req("status", Ty::Str),
+            nul("project", Ty::Str),
+        ]],
+    ),
+    opt_of(
+        "doc",
+        Ty::Object,
+        &[&[
+            req("id", Ty::Str),
+            req("title", Ty::Str),
+            nul("project", Ty::Str),
+            req("standing", Ty::Bool),
+            req("created", Ty::Str),
+        ]],
+    ),
+]];
+
 const IMPORTED_DOC_ROW: &[Field] = &[
     req("id", Ty::Str),
     req("title", Ty::Str),
@@ -1630,6 +1687,9 @@ const R_STORE_EXPORT: Shape = &[&[
     // D171: how many memory docs a filtered export left out — scoped to a
     // project it does not carry, or unscoped without `include_unscoped`.
     req("dropped_docs", Ty::Int),
+    // D241: quick-capture notes, scoped like docs, and the count left out.
+    req_of("notes", Ty::Array, &[NOTE_EXPORT_ROW]),
+    req("dropped_notes", Ty::Int),
     // D181: the graph's explicit edges, in the SAME row shape `link.list`
     // freezes, because it is the same table read through the same function.
     req_of("links", Ty::Array, &[LINK_ROW]),
@@ -1679,6 +1739,8 @@ const R_STORE_IMPORT: Shape = &[&[
     // reason: the payload's id is gone afterwards. `dropped_id` is null when
     // the payload doc carried no `id` of its own (#801).
     req("docs_merged", Ty::Array),
+    // D241: how many notes the document carried in.
+    req("notes_imported", Ty::Int),
     // D184: echoes the `dry_run` param — always present, false on a real run.
     req("dry_run", Ty::Bool),
     // D185: every known task `merge` unioned instead of replacing, and (D189)
@@ -2727,6 +2789,72 @@ fn cases() -> Vec<Case> {
             R_MEMORY_UPDATE,
         ),
         case(
+            "note.add",
+            "a note with a link, filed under a project",
+            |e| {
+                e.project_create(&json!({ "name": "home" }))
+                    .expect("project");
+                json!({ "body": "read https://example.com", "project": "home" })
+            },
+            R_NOTE,
+        ),
+        case(
+            "note.list",
+            "every status, searched and filtered to links",
+            |e| {
+                e.note_add(&json!({ "body": "see https://example.com" }))
+                    .expect("note");
+                json!({ "status": "all", "links": true, "query": "example", "limit": 10, "offset": 0 })
+            },
+            R_NOTE_LIST,
+        ),
+        case(
+            "note.get",
+            "one note by short id",
+            |e| {
+                e.note_add(&json!({ "body": "find me" })).expect("note");
+                json!({ "id": 1 })
+            },
+            R_NOTE,
+        ),
+        case(
+            "note.update",
+            "a note archived and corrected at its rev",
+            |e| {
+                e.note_add(&json!({ "body": "draft" })).expect("note");
+                json!({ "id": 1, "body": "better", "status": "archived", "expected_rev": 0 })
+            },
+            R_NOTE,
+        ),
+        case(
+            "note.remove",
+            "a note, by short id",
+            |e| {
+                e.note_add(&json!({ "body": "gone soon" })).expect("note");
+                json!({ "id": 1 })
+            },
+            R_NOTE_REMOVE,
+        ),
+        case(
+            "note.promote",
+            "a note filed as a task",
+            |e| {
+                e.note_add(&json!({ "body": "ship it\nwith detail" }))
+                    .expect("note");
+                json!({ "id": 1, "to": "task", "expected_rev": 0 })
+            },
+            R_NOTE_PROMOTE,
+        ),
+        case(
+            "note.promote",
+            "a note filed as a memory doc under a given title",
+            |e| {
+                e.note_add(&json!({ "body": "a lesson" })).expect("note");
+                json!({ "id": 1, "to": "memory", "title": "Lesson" })
+            },
+            R_NOTE_PROMOTE,
+        ),
+        case(
             "report.summary",
             "grouped by project, with three metrics selected",
             |e| {
@@ -2986,6 +3114,8 @@ fn cases() -> Vec<Case> {
                 // D236's conditional pair: a claimed open task — by the shell,
                 // whose anonymous clock #1 runs on.
                 e.task_claim(&json!({ "ref": 1 })).expect("claim");
+                // D241: a note, so the `notes` row shape is checked.
+                e.note_add(&json!({ "body": "an idea" })).expect("note");
                 json!({})
             },
             R_STORE_EXPORT,

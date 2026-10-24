@@ -599,6 +599,18 @@ impl Engine {
     /// by whatever reads it. A future `wait`/`scheduled` starts the task in
     /// `backlog`; [`effective_status`] releases it without any further command.
     pub fn task_add(&self, p: &Value) -> Result<Value, ApiError> {
+        self.task_add_within(p, None)
+    }
+
+    /// `task.add`, written in `outer` when the caller already holds the
+    /// write transaction — D241's `note.promote`, whose task, annotation and
+    /// note change commit together or not at all — and in one of its own
+    /// otherwise. Only the transaction differs: every refusal is the same.
+    pub(super) fn task_add_within(
+        &self,
+        p: &Value,
+        outer: Option<&Transaction>,
+    ) -> Result<Value, ApiError> {
         let title = req_str(p, "title")?;
         // Gap fix A1: with no explicit project, inherit the default set by
         // `project.create` (init). An explicit project always wins.
@@ -719,16 +731,22 @@ impl Engine {
         let (similar, skipped) =
             self.similar_tasks(&title, landing.as_deref(), super::similar::TASK_THRESHOLD);
 
-        let tx = self.begin_mutation()?;
+        let own = match outer {
+            Some(_) => None,
+            None => Some(self.begin_mutation()?),
+        };
+        let tx: &Transaction = outer
+            .or(own.as_deref())
+            .expect("a write transaction: the caller's, or one opened here");
         // Resolve both explicit and inherited routing inside the IMMEDIATE
         // transaction. Otherwise an archive can clear/retire the default after
         // this command reads it but before this write obtains its lock.
         let project = match &explicit_project {
             Some(name) => Some(name.clone()),
-            None => get_config(&tx, DEFAULT_PROJECT_KEY)?,
+            None => get_config(tx, DEFAULT_PROJECT_KEY)?,
         };
         if let Some(name) = &project {
-            require_live_project(&tx, name)?;
+            require_live_project(tx, name)?;
         }
         // D213: resolved before anything is written, so a missing prerequisite
         // refuses the add without consuming a short_id. A new task has no
@@ -736,16 +754,16 @@ impl Engine {
         // one edge.
         let mut targets: Vec<Task> = Vec::new();
         for r in dep_refs {
-            let t = self.resolve_ref_value_on(&tx, r)?;
+            let t = self.resolve_ref_value_on(tx, r)?;
             if !targets.iter().any(|x| x.id == t.id) {
                 targets.push(t);
             }
         }
         let origin = match discovered_from {
-            Some(r) => Some(self.resolve_ref_value_on(&tx, r)?),
+            Some(r) => Some(self.resolve_ref_value_on(tx, r)?),
             None => None,
         };
-        let short_id = alloc_short_id(&tx)?;
+        let short_id = alloc_short_id(tx)?;
         tx.execute(
             &format!(
                 "INSERT INTO tasks ({TASK_COLS}) VALUES \
@@ -777,7 +795,7 @@ impl Engine {
             ],
         )?;
         for tag in &tags {
-            ensure_tag_link(&tx, &id, tag)?;
+            ensure_tag_link(tx, &id, tag)?;
         }
         let mut add_payload = json!({
             "title": title,
@@ -791,7 +809,7 @@ impl Engine {
         if let Some(c) = &client {
             add_payload["client"] = json!(c);
         }
-        insert_event(&tx, Entity::Task, &id, "add", &add_payload)?;
+        insert_event(tx, Entity::Task, &id, "add", &add_payload)?;
         // D213: the same rows and events `check.add` and `dependency.add`
         // write, so a store replays them identically; `rev` ends at one per
         // event, as it does when the calls are made one by one.
@@ -804,7 +822,7 @@ impl Engine {
                 params![cid, id, body, position as i64, ts],
             )?;
             insert_event(
-                &tx,
+                tx,
                 Entity::Task,
                 &id,
                 "check.add",
@@ -819,7 +837,7 @@ impl Engine {
                 params![id, target.id],
             )?;
             insert_event(
-                &tx,
+                tx,
                 Entity::Task,
                 &id,
                 "dependency.add",
@@ -840,9 +858,11 @@ impl Engine {
         };
         // D238: the task this one was found while working on.
         if let Some(o) = &origin {
-            super::graph::link_tasks(&tx, &id, &o.id, "derived_from", &ts)?;
+            super::graph::link_tasks(tx, &id, &o.id, "derived_from", &ts)?;
         }
-        tx.commit()?;
+        if let Some(own) = own {
+            own.commit()?;
+        }
 
         let mut out = json!({
             "id": id,

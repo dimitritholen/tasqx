@@ -14,6 +14,7 @@ mod git;
 mod graph;
 mod memory;
 mod merge_removals;
+mod notes;
 mod projects;
 mod relationships;
 mod similar;
@@ -40,6 +41,7 @@ pub use git::{GIT_EVENTS, IMPORT_GIT_REF_KEYS};
 pub use memory::{
     SessionDoc, SessionRulings, MEMORY_MIN_SIMILARITY, MEMORY_SCOPES, MEMORY_SEARCH_MODES,
 };
+pub use notes::{NOTE_LIST_STATUSES, NOTE_PROMOTE_TARGETS, NOTE_STATUSES};
 pub use undo::{NOT_UNDOABLE, UNDOABLE_OPS};
 
 use std::collections::{HashMap, HashSet};
@@ -1683,6 +1685,7 @@ macro_rules! engine_sources {
                 "engine/merge_removals.rs",
                 include_str!("engine/merge_removals.rs"),
             ),
+            ("engine/notes.rs", include_str!("engine/notes.rs")),
             ("engine/projects.rs", include_str!("engine/projects.rs")),
             (
                 "engine/relationships.rs",

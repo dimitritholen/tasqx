@@ -330,6 +330,24 @@ fn migrate(conn: &Connection) -> Result<(), ApiError> {
         );
         CREATE INDEX IF NOT EXISTS idx_checks_task ON checks(task_id, position);
 
+        -- D241: quick-capture notes, neither tasks nor memory docs. Their own
+        -- short_id counter (`next_note_short_id`), so a note never spends a
+        -- task number (D4). `promoted_to` is `task:#<short_id>` or
+        -- `memory:<doc id>` once `note.promote` filed it.
+        INSERT OR IGNORE INTO meta(key, value) VALUES ('next_note_short_id', 1);
+        CREATE TABLE IF NOT EXISTS notes (
+            id          TEXT PRIMARY KEY,
+            short_id    INTEGER NOT NULL UNIQUE,
+            body        TEXT NOT NULL,
+            project     TEXT,
+            status      TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open', 'archived')),
+            promoted_to TEXT,
+            created     TEXT NOT NULL,
+            modified    TEXT NOT NULL,
+            rev         INTEGER NOT NULL DEFAULT 0
+        );
+        CREATE INDEX IF NOT EXISTS idx_notes_status ON notes(status, created);
+
         -- D239: the branch, PR and merge commit a task was delivered through,
         -- recorded by `git.event` from what a caller reports (tasqx never asks
         -- GitHub). `kind` is branch|pr|commit, `ref` the branch name, the PR
@@ -1112,6 +1130,34 @@ pub fn alloc_short_id(tx: &Transaction) -> Result<i64, ApiError> {
     Ok(cur)
 }
 
+/// D241: allocate the next note `short_id` from its own counter, never the
+/// tasks' — the same never-recycle rule as [`alloc_short_id`].
+pub fn alloc_note_short_id(tx: &Transaction) -> Result<i64, ApiError> {
+    let cur: i64 = tx.query_row(
+        "SELECT value FROM meta WHERE key = 'next_note_short_id'",
+        [],
+        |r| r.get(0),
+    )?;
+    let next = cur.checked_add(1).ok_or_else(|| {
+        ApiError::conflict(format!("the note short_id space is exhausted at {cur}"))
+    })?;
+    tx.execute(
+        "UPDATE meta SET value = ?1 WHERE key = 'next_note_short_id'",
+        params![next],
+    )?;
+    Ok(cur)
+}
+
+/// D241: raise the note counter to at least `n`, as `store.import` brings
+/// notes in with their own numbers. Never lowers it.
+pub fn bump_note_short_id_floor(tx: &Transaction, n: i64) -> Result<(), ApiError> {
+    tx.execute(
+        "UPDATE meta SET value = ?1 WHERE key = 'next_note_short_id' AND value < ?1",
+        params![n],
+    )?;
+    Ok(())
+}
+
 /// Ensure the monotonic `short_id` counter is at least `n` (used by
 /// `store.import`, which carries its own short_ids in and must never later
 /// re-mint one). Never lowers the counter.
@@ -1161,8 +1207,8 @@ pub fn clear_config(tx: &Transaction, key: &str) -> Result<bool, ApiError> {
 /// state change it records, so state and history can never diverge.
 ///
 /// `entity` is the typed [`Entity`], not a `&str`, so the only spellings the
-/// column may ever hold are the enum's four variants — `task`, `project`,
-/// `doc` (D41) and `link` (D160) — rather than a literal hand-typed at each call site. That is what
+/// column may ever hold are the enum's variants — `task`, `project`,
+/// `doc` (D41), `link` (D160) and `note` (D241) — rather than a literal hand-typed at each call site. That is what
 /// lets `event.list` state its accepted set from [`Entity::ALL`] instead of
 /// keeping a second list in sync with these writers.
 pub fn insert_event(

@@ -762,6 +762,47 @@ fn upsert_doc(tx: &Transaction, ts: &str, d: &DocWrite<'_>) -> Result<(), ApiErr
     )
 }
 
+/// A brand-new doc, as `memory.add` writes it.
+pub(super) struct NewDoc<'a> {
+    pub id: &'a str,
+    pub title: &'a str,
+    pub body: &'a str,
+    pub source: Option<&'a str>,
+    pub project: Option<&'a str>,
+    pub standing: bool,
+    pub ts: &'a str,
+}
+
+/// Insert a brand-new doc and log its `memory.add`, in the caller's
+/// transaction: `memory.add`'s write, shared with D241's `note.promote`. The
+/// vectors are the caller's to store; a doc without them is embedded by the
+/// next reconcile, as any other is.
+pub(super) fn insert_new_doc(tx: &Transaction, d: &NewDoc<'_>) -> Result<(), ApiError> {
+    let search_body = crate::frontmatter::flatten(d.body).into_owned();
+    tx.execute(
+        "INSERT INTO docs \
+         (id, source, title, body, search_body, project, standing, created, modified) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?8)",
+        params![
+            d.id,
+            d.source,
+            d.title,
+            d.body,
+            search_body,
+            d.project,
+            d.standing,
+            d.ts
+        ],
+    )?;
+    insert_event(
+        tx,
+        Entity::Doc,
+        d.id,
+        "memory.add",
+        &json!({ "title": d.title, "source": d.source, "project": d.project, "standing": d.standing }),
+    )
+}
+
 /// A doc that names an origin file, as `memory.refresh` reads it back.
 struct OriginDoc {
     id: String,
@@ -831,22 +872,19 @@ impl Engine {
         );
         let tx = self.begin_mutation()?;
         refuse_source_held_elsewhere(&tx, source.as_deref(), &id)?;
-        tx.execute(
-            "INSERT INTO docs \
-             (id, source, title, body, search_body, project, standing, created, modified) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?8)",
-            params![id, source, title, body, search_body, project, standing, ts],
-        )?;
+        let row = NewDoc {
+            id: &id,
+            title: &title,
+            body: &body,
+            source: source.as_deref(),
+            project: project.as_deref(),
+            standing,
+            ts: &ts,
+        };
+        insert_new_doc(&tx, &row)?;
         if let Some(v) = &vectors {
             super::vectors::store_doc_vectors(&tx, &id, v)?;
         }
-        insert_event(
-            &tx,
-            Entity::Doc,
-            &id,
-            "memory.add",
-            &json!({ "title": title, "source": source, "project": project, "standing": standing }),
-        )?;
         let mut out = json!({ "id": id, "title": title, "project": project, "standing": standing, "created": ts });
         if standing {
             // The soft cap, counted inside the same transaction as the INSERT

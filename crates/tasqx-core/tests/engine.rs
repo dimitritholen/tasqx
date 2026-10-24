@@ -21,7 +21,7 @@ use tasqx_core::{dispatch, handle_envelope, storage, Engine, ErrorCode};
 /// vocabulary scan — and two copies of "which files hold the engine" is exactly
 /// the drift that once left `engine/tokens.rs` and `engine/reports.rs` unscanned
 /// for as long as they had existed.
-const SOURCES: [(&str, &str); 17] = [
+const SOURCES: [(&str, &str); 18] = [
     ("engine.rs", include_str!("../src/engine.rs")),
     (
         "engine/commands.rs",
@@ -38,6 +38,7 @@ const SOURCES: [(&str, &str); 17] = [
         "engine/merge_removals.rs",
         include_str!("../src/engine/merge_removals.rs"),
     ),
+    ("engine/notes.rs", include_str!("../src/engine/notes.rs")),
     (
         "engine/projects.rs",
         include_str!("../src/engine/projects.rs"),
@@ -1775,8 +1776,15 @@ fn every_handler_that_opens_a_mutation_also_appends_an_event() {
     // cannot become the hiding place this guard exists to close.
     // D236: `task_claim` and `task_start` both write a lease through
     // `write_claim`, which appends the `claim`/`renew`/`takeover` event.
-    const EVENT_VIA_HELPER: [&str; 4] =
-        ["upsert_doc(", "write_claim(", "write_note(", "insert_link("];
+    // D241: `memory_add` lands its doc through `insert_new_doc`, the write
+    // `note.promote` shares.
+    const EVENT_VIA_HELPER: [&str; 5] = [
+        "upsert_doc(",
+        "write_claim(",
+        "write_note(",
+        "insert_link(",
+        "insert_new_doc(",
+    ];
     for helper in EVENT_VIA_HELPER {
         // `fn NAME(` at any visibility: `insert_link` is `pub(super)` (D238).
         let decl = format!("fn {}(", helper.trim_end_matches('('));

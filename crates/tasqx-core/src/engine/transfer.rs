@@ -133,6 +133,11 @@ impl Engine {
 
         let (docs, dropped_docs) = self.export_docs(needed_projects.as_ref(), include_unscoped)?;
         let doc_ids: HashSet<&str> = docs.iter().filter_map(|d| d["id"].as_str()).collect();
+        // D241: notes travel scoped exactly like docs.
+        let (notes, dropped_notes) = super::notes::export_notes(&self.conn, &|project| {
+            doc_in_scope(needed_projects.as_ref(), include_unscoped, project)
+        })?;
+        let note_ids: HashSet<&str> = notes.iter().filter_map(|n| n["id"].as_str()).collect();
         let (projects, dropped_projects) = self.export_projects(needed_projects.as_ref())?;
         let project_ids: HashSet<&str> = projects.iter().filter_map(|p| p["id"].as_str()).collect();
 
@@ -179,6 +184,7 @@ impl Engine {
             Ok(ids)
         };
         let (live_docs, live_links) = (live("SELECT id FROM docs")?, live("SELECT id FROM links")?);
+        let live_notes = live("SELECT id FROM notes")?;
         let removal_travels = |entity: Entity, entity_id: &str, payload: &Value| match entity {
             Entity::Doc => {
                 !live_docs.contains(entity_id)
@@ -199,6 +205,14 @@ impl Engine {
                     && (needed_projects.is_none()
                         || (carries(&payload["from"]) && carries(&payload["to"])))
             }
+            Entity::Note => {
+                !live_notes.contains(entity_id)
+                    && doc_in_scope(
+                        needed_projects.as_ref(),
+                        include_unscoped,
+                        payload["project"].as_str(),
+                    )
+            }
             _ => false,
         };
         let (events, dropped_events, skipped_events) = self.export_events(
@@ -206,6 +220,7 @@ impl Engine {
             &doc_ids,
             &project_ids,
             &link_ids,
+            &note_ids,
             &removal_travels,
         )?;
 
@@ -261,6 +276,9 @@ impl Engine {
             // doc with no project is nobody's in particular.
             "docs": docs,
             "dropped_docs": dropped_docs,
+            // D241: quick-capture notes, scoped like docs.
+            "notes": notes,
+            "dropped_notes": dropped_notes,
             // D160/D181: the graph's own edges. A backup used to restore with
             // none of them, beside an event log describing every edge that was
             // supposed to be there. Scoped on EVERY export — a link travels
@@ -785,6 +803,7 @@ impl Engine {
         doc_ids: &HashSet<&str>,
         project_ids: &HashSet<&str>,
         link_ids: &HashSet<&str>,
+        note_ids: &HashSet<&str>,
         removal_travels: &dyn Fn(Entity, &str, &Value) -> bool,
     ) -> Result<(Vec<Value>, i64, i64), ApiError> {
         let mut stmt = self.conn.prepare(
@@ -812,6 +831,7 @@ impl Engine {
             let removal = |kind: Entity| {
                 let op_removes = match kind {
                     Entity::Doc => op == "memory.remove",
+                    Entity::Note => op == "note.remove",
                     _ => op == "link.remove",
                 };
                 op_removes && removal_travels(kind, &entity_id, &payload)
@@ -820,6 +840,11 @@ impl Engine {
                 Some(Entity::Task) => present.contains(entity_id.as_str()),
                 Some(Entity::Doc) => doc_ids.contains(entity_id.as_str()) || removal(Entity::Doc),
                 Some(Entity::Project) => project_ids.contains(entity_id.as_str()),
+                // D241: a note's events go where the note goes, plus the
+                // removal of one gone from this store, as for a doc.
+                Some(Entity::Note) => {
+                    note_ids.contains(entity_id.as_str()) || removal(Entity::Note)
+                }
                 // D181: the `links` table IS part of the archive now, so a link
                 // event is scoped to the link this document carries, exactly
                 // like the three kinds above. It used to travel whole, which on
@@ -1460,6 +1485,25 @@ impl Engine {
                 docs_imported += 1;
             }
         }
+
+        // D241: notes, optional so a document written before them still
+        // imports. On a merge, a removal in either log that is the latest word
+        // on a note deletes it here and keeps it from being written back.
+        let note_removals = if merge {
+            let log = union_log(
+                Self::stored_entity_events(&tx, Entity::Note)?,
+                payload_entity_events(p, Entity::Note),
+            );
+            let ledger = merge_removals::note_ledger(&log);
+            super::notes::delete_removed_notes(&tx, &ledger)?;
+            ledger
+        } else {
+            merge_removals::Ledger::default()
+        };
+        let notes_imported = match opt_array(p, "notes")? {
+            Some(rows) => super::notes::import_notes(&tx, rows, merge, &note_removals)?,
+            None => 0,
+        };
 
         // #176: the event log half of a restore, optional so a document
         // written before it existed still imports. Faithfully replays the
@@ -2716,6 +2760,8 @@ impl Engine {
             // D183: every doc that merged onto a row this store already held
             // under the same `source`, and which copy's text won.
             "docs_merged": docs_merged,
+            // D241: how many notes the document carried in.
+            "notes_imported": notes_imported,
             // D185: every task this store already held that `merge` unioned
             // rather than replaced. Always present, empty when `merge` was not
             // asked for or the document carried nothing this store had seen.
