@@ -100,8 +100,8 @@ three more near-identical fixtures.
 **`setup-list` and the two `mcp-initialize-*` rows are `pipe-isolated`, not
 plain `pipe`.** CI's first run of this corpus (#740 PR #145) passed on a Mac
 and failed on ubuntu, on exactly these three: `ripwire_on_path` (D178) — read
-by `tasqx setup`'s hint line AND by every MCP `initialize`'s own
-`instructions` — scans `$PATH`, so it answered differently depending on
+by `tasqx setup`'s hint line AND, until task #924 dropped the line, by every
+MCP `initialize`'s own `instructions` — scans `$PATH`, so it answered differently depending on
 whether the CAPTURING machine happened to have `ripwire` installed. And
 `session_rulings`' workdir-ancestor project inference (D157) reads the
 process's own working directory: GitHub Actions checks this repo out under

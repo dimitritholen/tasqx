@@ -1964,8 +1964,8 @@ pub fn tool_docs() -> Vec<ToolDoc> {
 
 /// Whether `ripwire` — the code-mapping binary tasqx never calls, downloads
 /// or spawns itself (D178) — is on this process's `PATH`. A directory scan
-/// and nothing else: no spawn, no network, so `initialize` and `tasqx setup`
-/// can answer the question before any tool is chosen.
+/// and nothing else: no spawn, no network, so `tasqx setup` can answer the
+/// question without running anything.
 pub fn ripwire_on_path() -> bool {
     let Some(path) = std::env::var_os("PATH") else {
         return false;
@@ -2036,12 +2036,6 @@ pub fn instructions(scope: Scope) -> String {
         only the contract; the reasoning behind a rule is in DESIGN.md §12 under the D-number the \
         description cites, which tasqx_search_memory finds once those docs are imported (D155).";
 
-    // D178: tasqx never calls ripwire, only says whether it is there.
-    const RIPWIRE_FOUND: &str = "ripwire is on PATH: map before you grep (ripwire <dir> \
-        --for=\"<task>\" --legend=compact).";
-    const RIPWIRE_MISSING: &str = "No code mapper on PATH: tell the user once that `tasqx setup` \
-        shows how to install ripwire.";
-
     let mut parts = vec![INTRO, SEARCH];
     if scope.allows_write() {
         parts.push(TRACK);
@@ -2050,11 +2044,6 @@ pub fn instructions(scope: Scope) -> String {
         parts.push(READ_ONLY);
     }
     parts.push(SEED);
-    parts.push(if ripwire_on_path() {
-        RIPWIRE_FOUND
-    } else {
-        RIPWIRE_MISSING
-    });
     parts.join("\n\n")
 }
 
