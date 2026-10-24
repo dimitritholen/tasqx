@@ -479,9 +479,23 @@ def main():
                       "relation": "derived_from"})
         sid += 1
 
+    # D241's quick-capture notes, with literal ids like the git refs above:
+    # `api note.*` prints them, and drawing them from `id_rng` would tie the
+    # notes to every id minted before them.
+    notes = [
+        {"id": "019f5a10-0000-7000-8000-00000000b001", "short_id": 1,
+         "body": "read https://www.rfc-editor.org/rfc/rfc9457 before the error-format change",
+         "project": "api", "status": "open", "promoted_to": None,
+         "created": iso(day(-2, 11, 20)), "modified": iso(day(-2, 11, 20)), "_rev": 0},
+        {"id": "019f5a10-0000-7000-8000-00000000b002", "short_id": 2,
+         "body": "idea: a dark-mode toggle in the docs header", "project": None,
+         "status": "open", "promoted_to": None,
+         "created": iso(day(-1, 16, 5)), "modified": iso(day(-1, 16, 5)), "_rev": 0},
+    ]
+
     payload = {"default_project": "website", "docs": docs, "dropped_dependencies": [],
                "events": sorted(events, key=lambda e: e["ts"]), "links": links,
-               "projects": projects, "tasks": tasks}
+               "notes": notes, "projects": projects, "tasks": tasks}
 
     OUT.parent.mkdir(parents=True, exist_ok=True)
     for suffix in ("", "-wal", "-shm"):
