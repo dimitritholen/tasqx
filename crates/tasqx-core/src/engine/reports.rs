@@ -270,9 +270,7 @@ impl Engine {
             }
             // Shared with the filter DSL's `due.before:now` (#148) so this
             // count and that query can no longer independently drift.
-            // D238: a proposal has no deadline anyone has agreed to yet.
-            let live = t.status.is_open() && t.status != Status::Triage;
-            if is_overdue(live, t.due.as_deref(), now_ts) {
+            if is_overdue(t.status.can_be_overdue(), t.due.as_deref(), now_ts) {
                 agg.overdue += 1;
             }
         }

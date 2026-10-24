@@ -531,7 +531,8 @@ fn eval_pred(p: &Pred, ctx: &MatchCtx) -> bool {
         Pred::TagInclude(t) => ctx.tags.iter().any(|x| x == t),
         Pred::TagExclude(t) => !ctx.tags.iter().any(|x| x == t),
         Pred::Working => matches!(ctx.status, Status::Pending | Status::Active) && !ctx.blocked,
-        Pred::Blocked => ctx.blocked,
+        // D238: a proposal waits in triage, never under @blocked.
+        Pred::Blocked => ctx.blocked && ctx.status != Status::Triage,
         Pred::DueBefore(bound) => instant_cmp(ctx.due, *bound, true),
         Pred::DueAfter(bound) => instant_cmp(ctx.due, *bound, false),
         // The same comparator on a different column — deliberately not a second

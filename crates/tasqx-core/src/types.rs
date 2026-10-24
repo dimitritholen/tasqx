@@ -195,6 +195,13 @@ impl Status {
         !self.is_terminal()
     }
 
+    /// True when a task in this status can be overdue (D131): open and not a
+    /// proposal — nobody has agreed to a triage task's date yet (D238). The
+    /// one answer every overdue count, and the reminder schedule, ask.
+    pub fn can_be_overdue(self) -> bool {
+        self.is_open() && self != Status::Triage
+    }
+
     /// True when this status counts toward report aggregations (DESIGN §12-D24):
     /// everything except `cancelled`. Abandoned work is not work; completed work
     /// is, which is why this is not the same question as [`Status::is_open`].

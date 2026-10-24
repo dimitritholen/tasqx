@@ -362,7 +362,8 @@ const METHODS: [(&str, &str, &str); 57] = [
         "<code>{short_id, title, action, status, _rev, unblocked}</code> (D238). Settles a \
          task in triage: <code>accept</code> makes it pending (or backlog, while a future date \
          holds it); <code>decline</code> cancels it, keeping <code>reason</code> as a note; \
-         <code>duplicate</code> cancels it, moves its notes to <code>of</code> and links the \
+         <code>duplicate</code> cancels it, moves its notes and dependents to <code>of</code> \
+         and links the \
          two with <code>duplicates</code>, adding <code>of</code> and \
          <code>moved_annotations</code>. A task not in triage is a <code>conflict</code>; a \
          decline or duplicate of a task another holder claims is one too, unless \

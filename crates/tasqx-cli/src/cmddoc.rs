@@ -588,7 +588,7 @@ pub const COMMAND_REF: &[CmdDoc] = &[
         usage: "tasqx duplicate <ref> --of <ref> [--holder id] [--force-claim]",
         examples: &[ex_norun(
             "tasqx duplicate 12 --of 7",
-            "cancels 12, moves its notes to 7 and links the two",
+            "cancels 12, moves its notes and dependents to 7 and links the two",
         )],
         notes: &[
             "The proposal is cancelled, its notes move to the original (as `annotate --move` would) and a `duplicates` link joins the two. `tasqx undo` does not take it back: the newest event is the link, which it refuses by name (D238).",

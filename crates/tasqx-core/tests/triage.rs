@@ -466,3 +466,56 @@ fn a_repeated_duplicate_is_refused_by_undo_whole() {
     assert!(err.message.contains("`duplicate`"), "{}", err.message);
     assert_eq!(status(&e, t), "cancelled", "nothing was half undone");
 }
+
+#[test]
+fn duplicate_moves_the_proposals_dependents_onto_the_original() {
+    let e = engine();
+    let original = add(&e, json!({}));
+    let dup = add(&e, json!({ "status": "triage" }));
+    let waiting = add(&e, json!({ "depends_on": [dup] }));
+    // `original` waits on `waiting`: re-pointing `cyclic` would close a cycle.
+    let cyclic = add(&e, json!({ "depends_on": [dup] }));
+    ok(
+        &e,
+        "dependency.add",
+        json!({ "ref": original, "depends_on": cyclic }),
+    );
+    let out = ok(
+        &e,
+        "task.triage",
+        json!({ "ref": dup, "action": "duplicate", "of": original }),
+    );
+    let deps = |t: i64| ok(&e, "task.get", json!({ "ref": t }))["depends_on"].clone();
+    assert_eq!(deps(waiting), json!([original]), "{out}");
+    assert_eq!(deps(cyclic), json!([]), "a cycle-closing edge is dropped");
+    assert!(
+        listed(&e, "@blocked").contains(&waiting),
+        "still waits, now on the original"
+    );
+}
+
+#[test]
+fn a_blocked_proposal_is_not_at_blocked_and_not_overdue_on_its_project() {
+    let e = engine();
+    ok(&e, "project.create", json!({ "name": "p" }));
+    let blocker = add(&e, json!({ "project": "p" }));
+    add(
+        &e,
+        json!({ "status": "triage", "depends_on": [blocker], "project": "p",
+                   "due": "2000-01-01T00:00:00Z" }),
+    );
+    assert!(listed(&e, "@blocked").is_empty());
+    let archived = ok(&e, "project.archive", json!({ "name": "p" }));
+    assert_eq!(archived["open_overdue"], 0, "{archived}");
+}
+
+#[test]
+fn a_proposal_with_a_reminder_is_not_scheduled() {
+    let e = engine();
+    add(
+        &e,
+        json!({ "status": "triage", "remind": "2999-01-01T00:00:00Z" }),
+    );
+    let heap = tasqx_core::scheduler::ReminderScheduler::rebuild(&e).expect("rebuild");
+    assert_eq!(heap.len(), 0);
+}
