@@ -549,6 +549,23 @@ fn an_import_refuses_a_malformed_or_open_promotion() {
     let id = base["notes"][0]["id"].as_str().unwrap().to_string();
     for (status, target) in [
         ("archived", "task:nonexistent".to_string()),
+        // Round 3: only the canonical spelling resolves on a read.
+        (
+            "archived",
+            "task:{019f5a10-0000-7000-8000-00000000b001}".to_string(),
+        ),
+        (
+            "archived",
+            "task:urn:uuid:019f5a10-0000-7000-8000-00000000b001".to_string(),
+        ),
+        (
+            "archived",
+            "task:019f5a1000007000800000000000b001".to_string(),
+        ),
+        (
+            "archived",
+            "task:019F5A10-0000-7000-8000-00000000B001".to_string(),
+        ),
         (
             "archived",
             "board:019f5a10-0000-7000-8000-00000000b001".to_string(),

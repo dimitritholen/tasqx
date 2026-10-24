@@ -567,14 +567,17 @@ pub(super) fn import_notes(
             ));
         }
         let promoted_to = opt_str_nonempty(nv, "promoted_to")?;
-        // The trust boundary: a promotion names its target by uuid, and a
+        // The trust boundary: a promotion names its target by its canonical
+        // hyphenated lowercase uuid, the only spelling a read resolves, and a
         // promoted note is never open (D241). A target this store lacks is
         // legal; reads answer null for it.
         if let Some(target) = &promoted_to {
             let well_formed = target
                 .strip_prefix("task:")
                 .or_else(|| target.strip_prefix("memory:"))
-                .is_some_and(|id| Uuid::parse_str(id).is_ok());
+                .is_some_and(|id| {
+                    Uuid::parse_str(id).is_ok_and(|u| u.hyphenated().to_string() == id)
+                });
             if !well_formed {
                 return Err(field(
                     "promoted_to",
