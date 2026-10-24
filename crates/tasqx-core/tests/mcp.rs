@@ -3937,7 +3937,8 @@ fn the_read_only_refusal_names_the_flag_that_fixes_it() {
 /// D241 added the five note tools. Measured beside every tool above: 42
 /// tools, 45,323 bytes, so the cap moved from 41,856 to 45,568. Its addendum
 /// added `tasqx_get_note` and `max_body_bytes` on `tasqx_list_notes`: 43
-/// tools, 46,060 bytes, so 46,080.
+/// tools, 46,060 bytes, so 46,080. Its review said on both note tools not to
+/// write a cut body back: 46,179 bytes, so 46,208.
 ///
 /// The floor is not zero. With every `description` key removed from the roster
 /// the same serialization is 11,597 bytes of schema skeleton — property names,
@@ -3949,7 +3950,7 @@ fn the_read_only_refusal_names_the_flag_that_fixes_it() {
 fn the_whole_tool_roster_stays_inside_its_per_prompt_budget() {
     const MAX_DESCRIPTION: usize = 800;
     const MAX_ENTRY: usize = 3_072;
-    const MAX_ROSTER: usize = 46_080;
+    const MAX_ROSTER: usize = 46_208;
 
     let engine = engine();
     let server = McpServer::new(&engine, Scope::Write);
@@ -5310,4 +5311,55 @@ fn promoting_a_note_is_destructive() {
         .expect("listed")
         .1;
     assert_eq!(promote["destructiveHint"], json!(true));
+}
+
+/// A cut row written back would destroy the note's tail for good — notes have
+/// no undo (D241) — so `tasqx_update_note` refuses a body that is a strict
+/// prefix of the stored one, while a real edit still lands (D241 addendum).
+#[test]
+fn a_cut_note_body_written_back_is_refused_and_a_real_edit_passes() {
+    let engine = engine();
+    tasqx_core::dispatch(&engine, "note.add", &json!({ "body": "keep every word" }))
+        .expect("note.add");
+    let server = McpServer::new(&engine, Scope::Write);
+
+    let page = tool_text(&call(
+        &server,
+        1,
+        "tasqx_list_notes",
+        json!({ "max_body_bytes": 5 }),
+    ));
+    let cut = page["notes"][0].clone();
+    assert_eq!(cut["body_truncated"], json!(true), "{cut}");
+    let out = call(
+        &server,
+        2,
+        "tasqx_update_note",
+        json!({ "id": cut["id"], "body": cut["body"] }),
+    );
+    assert!(is_error(&out), "{out}");
+    assert_eq!(
+        out["result"]["structuredContent"]["error"]["code"],
+        json!("conflict")
+    );
+    let held = tasqx_core::dispatch(&engine, "note.get", &json!({ "id": 1 })).expect("get");
+    assert_eq!(held["body"], json!("keep every word"), "the note is intact");
+
+    let out = call(
+        &server,
+        3,
+        "tasqx_update_note",
+        json!({ "id": 1, "body": "keep every word, and more" }),
+    );
+    assert!(!is_error(&out), "{out}");
+    let out = call(
+        &server,
+        4,
+        "tasqx_update_note",
+        json!({ "id": 1, "body": "new text" }),
+    );
+    assert!(
+        !is_error(&out),
+        "a shorter body that is not a prefix is an edit: {out}"
+    );
 }

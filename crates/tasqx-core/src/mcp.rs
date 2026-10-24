@@ -1968,7 +1968,7 @@ fn build_tool_specs() -> Vec<ToolSpec> {
             idempotent: true,
             description: "List notes, newest first, paged like `tasqx_list_tasks`. A \
                 body over `max_body_bytes` is cut and marked `body_truncated`; \
-                `tasqx_get_note` reads it whole. `query` is a case-insensitive substring, not \
+                `tasqx_get_note` reads it whole. Never write a cut body back. `query` is a case-insensitive substring, not \
                 a ranked search; each row says `has_links` (D241).",
             schema: json!({
                 "type": "object",
@@ -2012,7 +2012,8 @@ fn build_tool_specs() -> Vec<ToolSpec> {
             destructive: true,
             idempotent: false,
             description: "Change a note's body, project or status; `status: archived` \
-                archives it and `open` brings it back. An omitted `expected_rev` pins the \
+                archives it and `open` brings it back. A body that is a prefix of the stored \
+                one, as a `body_truncated` row is, is a `conflict`. An omitted `expected_rev` pins the \
                 current `_rev`, so a concurrent edit is a `conflict` (D241).",
             schema: json!({
                 "type": "object",
@@ -2678,6 +2679,32 @@ impl<'e> McpServer<'e> {
                     };
                     if let Some(rev) = self.current_memory_rev(read, obj.get("id")) {
                         obj.insert("expected_rev".to_string(), json!(rev));
+                    }
+                }
+            }
+        }
+        // D241 addendum: this transport cuts note bodies, and a note has no
+        // undo, so a cut read written back would lose the tail for good. A
+        // body that is a strict prefix of the stored one is refused here;
+        // `note.update` itself stays unguarded for a deliberate shortening.
+        if spec.method == "note.update" {
+            if let Some(obj) = args.as_object() {
+                if let (Some(id), Some(body)) =
+                    (obj.get("id"), obj.get("body").and_then(Value::as_str))
+                {
+                    let held = dispatch(self.engine, "note.get", &json!({ "id": id })).ok();
+                    if let Some(stored) = held.as_ref().and_then(|n| n["body"].as_str()) {
+                        if stored.len() > body.len() && stored.starts_with(body) {
+                            return Err(tool_error(
+                                "conflict",
+                                format!(
+                                    "this body is a prefix of the stored note — probably a cut \
+                                     read; read it whole with tasqx_get_note (max_body_bytes = \
+                                     {}) and resend",
+                                    stored.len()
+                                ),
+                            ));
+                        }
                     }
                 }
             }
