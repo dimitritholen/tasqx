@@ -304,26 +304,29 @@ impl App {
         let n = &self.notes[i];
         let (id, short_id, rev) = (n.id.clone(), n.short_id, n.rev);
         Some(match code {
+            KeyCode::Char('x') => {
+                self.confirm = Some(i);
+                Outcome::Stay
+            }
+            // The key bar offers neither `a` nor a promote on a promoted
+            // note, since the engine refuses both; pressed anyway, the screen
+            // answers rather than asking the API.
+            _ if n.promoted.is_some() => {
+                let to = n.promoted.clone().unwrap_or_default();
+                self.echo = Some((
+                    format!(
+                        "Note #{short_id} was already promoted to {to}, and stays archived as its record"
+                    ),
+                    true,
+                ));
+                Outcome::Stay
+            }
             KeyCode::Char('a') => Outcome::Do(Op::Status {
                 id,
                 short_id,
                 rev,
                 to: if n.archived { "open" } else { "archived" },
             }),
-            KeyCode::Char('x') => {
-                self.confirm = Some(i);
-                Outcome::Stay
-            }
-            // The key bar does not offer these on a promoted note; pressed
-            // anyway, the screen answers rather than asking the API.
-            _ if n.promoted.is_some() => {
-                let to = n.promoted.clone().unwrap_or_default();
-                self.echo = Some((
-                    format!("Note #{short_id} was already promoted to {to}"),
-                    true,
-                ));
-                Outcome::Stay
-            }
             _ => Outcome::Do(Op::Promote {
                 id,
                 short_id,
@@ -362,8 +365,8 @@ impl App {
         self.body_lines().len().saturating_sub(self.detail_rows())
     }
 
-    /// The key table for what is on screen, less the promote keys on a
-    /// promoted note: the bar never offers a write the note cannot take.
+    /// The key table for what is on screen, less `a` and the promote keys on
+    /// a promoted note: the bar never offers a write the note cannot take.
     fn keys(&self) -> Vec<&'static Key> {
         let table = match (self.confirm.is_some(), self.ls.mode) {
             (true, _) => CONFIRM_KEYS,
@@ -374,7 +377,7 @@ impl App {
         let promoted = self.selected().is_some_and(|n| n.promoted.is_some());
         table
             .iter()
-            .filter(|k| !(promoted && matches!(k.keys, "t" | "m")))
+            .filter(|k| !(promoted && matches!(k.keys, "a" | "t" | "m")))
             .collect()
     }
 }
@@ -1099,10 +1102,14 @@ mod tests {
     /// `a` on an archived note brings it back.
     #[test]
     fn a_on_an_archived_note_unarchives_it() {
-        let mut a = app_with(Filter {
-            show: Show::Archived,
-            ..Filter::default()
-        });
+        let mut a = App::new(
+            vec![note(5, "set aside", "archived", None)],
+            Filter {
+                show: Show::Archived,
+                ..Filter::default()
+            },
+            true,
+        );
         assert!(matches!(
             a.on_key(ch('a')),
             Outcome::Do(Op::Status { to: "open", .. })
@@ -1182,6 +1189,21 @@ mod tests {
         let open = app();
         let bar = row(&draw(&open, 140, 24), 23);
         assert!(bar.contains("task") && bar.contains("memory"), "{bar}");
+    }
+
+    /// The engine refuses to unarchive a promoted note, so the bar does not
+    /// offer `a` on one, and `a` pressed anyway is answered on screen.
+    #[test]
+    fn a_promoted_note_offers_no_archive_key() {
+        let mut a = app_with(Filter {
+            show: Show::Archived,
+            ..Filter::default()
+        });
+        let bar = row(&draw(&a, 140, 24), 23);
+        assert!(!bar.contains("archive"), "{bar}");
+        assert_eq!(a.on_key(ch('a')), Outcome::Stay, "a promoted note was sent");
+        let screen = all(&draw(&a, 140, 24));
+        assert!(screen.contains("Note #1 was already promoted"), "{screen}");
     }
 
     /// A refusal from the API is a line on the screen, never the end of it.
