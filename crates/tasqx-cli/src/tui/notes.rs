@@ -704,13 +704,22 @@ pub fn render(app: &App, theme: &Theme, caps: &Caps, frame: &mut Frame) {
     };
     let position = (app.ls.mode == Mode::Detail && app.confirm.is_none())
         .then(|| (app.ls.scroll, app.detail_rows(), app.body_lines().len()));
+    // `a` is named for what it will do to the note under the cursor.
+    let unarchive = app.selected().is_some_and(|n| n.archived);
     let keys: Vec<Key> = app
         .keys()
         .into_iter()
         .map(|k| Key {
             keys: k.keys,
             help: k.help,
-            footer: k.footer.as_ref().map(|h| Hint { ..*h }),
+            footer: k.footer.as_ref().map(|h| Hint {
+                word: if k.keys == "a" && unarchive {
+                    "unarchive"
+                } else {
+                    h.word
+                },
+                ..*h
+            }),
         })
         .collect();
     let spans = tui::key_bar(
@@ -1114,6 +1123,31 @@ mod tests {
             a.on_key(ch('a')),
             Outcome::Do(Op::Status { to: "open", .. })
         ));
+    }
+
+    /// The bar says what `a` will do to the note under the cursor.
+    #[test]
+    fn the_a_label_follows_the_note_under_the_cursor() {
+        let mut a = App::new(
+            vec![
+                note(6, "still open", "open", None),
+                note(5, "set aside", "archived", None),
+            ],
+            Filter {
+                show: Show::All,
+                ..Filter::default()
+            },
+            true,
+        );
+        a.observe(140, 24);
+        let bar = row(&draw(&a, 140, 24), 23);
+        assert!(
+            bar.contains("a archive") && !bar.contains("unarchive"),
+            "{bar}"
+        );
+        a.on_key(ch('j'));
+        let bar = row(&draw(&a, 140, 24), 23);
+        assert!(bar.contains("a unarchive"), "{bar}");
     }
 
     /// A note key acts only when pressed plain. Ctrl-a is GNU screen's
