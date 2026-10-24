@@ -212,9 +212,10 @@ fn escape_check_body(cmd: &clap::Command, argv: &mut [OsString], at: usize) {
     }
 }
 
-/// Marks a word of a note's text that clap would otherwise take for a subverb;
-/// `verbs::run_note` strips it. A control character, for [`ESCAPED_DASH`]'s
-/// reason.
+/// Marks the first word of a note's text when it must be read as text: a
+/// subverb's name clap would otherwise take for the subcommand, or anything
+/// after `--`, which `verbs::run_note` would otherwise read as an id.
+/// `run_note` strips it. A control character, for [`ESCAPED_DASH`]'s reason.
 pub(crate) const NOTE_TEXT: char = '\u{2}';
 
 /// A short id or a UUID: the only words `tasqx note` reads as naming a note.
@@ -224,43 +225,64 @@ pub(crate) fn names_a_note(tok: &str) -> bool {
 }
 
 /// `tasqx note <ID> <subverb> …` is how a change to a note is typed, the id
-/// first like every task verb, but clap reads a subcommand only in first
-/// place. So the subverb is moved in front of the id here. Every other first
-/// word is text: a note that opens with a subverb's name (`tasqx note edit
-/// the readme`) has that word marked with [`NOTE_TEXT`], so clap takes it as
-/// the text it is.
-fn reorder_note(cmd: &clap::Command, argv: &mut [OsString], at: usize) {
+/// first like every task verb, but clap reads a subcommand only right after
+/// `note`. So the subverb is moved there, ahead of any flag, and the flags
+/// typed before the id then reach the subverb, which refuses one it lacks
+/// (`note --project p 7 archive` exits 2 instead of noting "archive 7"). Every
+/// other first word is text: a note that opens with a subverb's name (`tasqx
+/// note edit the readme`), or any word after `--`, is marked with
+/// [`NOTE_TEXT`].
+fn reorder_note(cmd: &clap::Command, argv: &mut Vec<OsString>, at: usize) {
     let Some(note) = cmd.find_subcommand("note") else {
         return;
     };
-    let mut j = at + 1;
-    while let Some(tok) = argv.get(j).and_then(|t| t.to_str()) {
-        if tok == "--" {
-            return;
-        }
-        if let Some(long) = tok.strip_prefix("--") {
-            if !long.contains('=') && long_value_follows(note, long) {
-                j += 1;
+    // The next positional at or after `j`, flags and their values skipped;
+    // `Err` carries the index just past a `--`.
+    let next = |argv: &[OsString], mut j: usize| -> Result<usize, usize> {
+        while let Some(tok) = argv.get(j).and_then(|t| t.to_str()) {
+            if tok == "--" {
+                return Err(j + 1);
             }
-        } else if let Some(short) = declared_short(note, tok) {
-            if short_takes_value(note, short) {
-                j += 1;
+            if let Some(long) = tok.strip_prefix("--") {
+                if !long.contains('=') && long_value_follows(note, long) {
+                    j += 1;
+                }
+            } else if let Some(short) = declared_short(note, tok) {
+                if short_takes_value(note, short) {
+                    j += 1;
+                }
+            } else {
+                return Ok(j);
             }
-        } else {
-            break;
+            j += 1;
         }
-        j += 1;
-    }
-    let word = |k: usize| argv.get(k).and_then(|t| t.to_str()).map(str::to_string);
+        Ok(j)
+    };
+    let word =
+        |argv: &[OsString], k: usize| argv.get(k).and_then(|t| t.to_str()).map(str::to_string);
     let subverb = |w: &Option<String>| {
         w.as_deref()
             .is_some_and(|w| note.get_subcommands().any(|c| c.get_name() == w))
     };
-    let (first, second) = (word(j), word(j + 1));
-    if first.as_deref().is_some_and(names_a_note) && subverb(&second) {
-        argv.swap(j, j + 1);
+    let mark = |argv: &mut Vec<OsString>, k: usize| {
+        if let Some(w) = word(argv, k) {
+            argv[k] = OsString::from(format!("{NOTE_TEXT}{w}"));
+        }
+    };
+    let j = match next(argv, at + 1) {
+        Ok(j) => j,
+        Err(after) => return mark(argv, after),
+    };
+    let first = word(argv, j);
+    if first.as_deref().is_some_and(names_a_note) {
+        if let Ok(k) = next(argv, j + 1) {
+            if subverb(&word(argv, k)) {
+                let s = argv.remove(k);
+                argv.insert(at + 1, s);
+            }
+        }
     } else if subverb(&first) {
-        argv[j] = OsString::from(format!("{NOTE_TEXT}{}", first.unwrap_or_default()));
+        mark(argv, j);
     }
 }
 

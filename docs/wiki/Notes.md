@@ -24,6 +24,8 @@ tasqx note https://www.rfc-editor.org/rfc/rfc9457 --project api
 - Quote the text when it holds characters your shell reads (`#`, `*`, `?`,
   `&`).
 - Notes have their own numbers. Note 3 and task 3 are different things.
+- Put `--` before text that is a number or starts with `-`, so it is not
+  read as a note's number or a flag: `tasqx note -- -5 degrees tonight`.
 
 Read one whole, with its project and the day you added it:
 
