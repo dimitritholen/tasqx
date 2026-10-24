@@ -230,10 +230,14 @@ impl App {
         if ctrl && key.code == KeyCode::Char('c') {
             return Outcome::Quit;
         }
+        // Shift is how a capital is typed; any other modifier makes a
+        // chord, and a chord never writes (GNU screen's prefix is ctrl-a,
+        // and tmux sends esc+key as alt).
+        let plain = (key.modifiers - KeyModifiers::SHIFT).is_empty();
         self.echo = None;
         if let Some(i) = self.confirm.take() {
             let n = &self.notes[i];
-            if key.code == KeyCode::Char('y') {
+            if plain && key.code == KeyCode::Char('y') {
                 return Outcome::Do(Op::Remove {
                     id: n.id.clone(),
                     short_id: n.short_id,
@@ -244,7 +248,7 @@ impl App {
             return Outcome::Stay;
         }
         if matches!(self.ls.mode, Mode::List | Mode::Detail) {
-            if let Some(out) = self.note_key(key.code) {
+            if let Some(out) = self.note_key(key.code, plain) {
                 return out;
             }
         }
@@ -279,7 +283,12 @@ impl App {
     }
 
     /// The writes, and `l`. `None` leaves the key to the list.
-    fn note_key(&mut self, code: KeyCode) -> Option<Outcome> {
+    fn note_key(&mut self, code: KeyCode, plain: bool) -> Option<Outcome> {
+        // A chord on a note key is swallowed, the list.rs rule: neither a
+        // write nor anything else.
+        if !plain && matches!(code, KeyCode::Char('a' | 't' | 'm' | 'x' | 'l')) {
+            return Some(Outcome::Stay);
+        }
         if code == KeyCode::Char('l') && self.ls.mode == Mode::List {
             self.filter.links = !self.filter.links;
             self.refilter();
@@ -1081,6 +1090,39 @@ mod tests {
             a.on_key(ch('a')),
             Outcome::Do(Op::Status { to: "open", .. })
         ));
+    }
+
+    /// A note key acts only when pressed plain. Ctrl-a is GNU screen's
+    /// prefix and tmux sends Esc+key as Alt, so a chord that archived,
+    /// promoted or removed a note would write on a keystroke meant for
+    /// something else.
+    #[test]
+    fn a_chord_on_a_note_key_never_writes() {
+        let chord = |c: char, m: KeyModifiers| KeyEvent::new(KeyCode::Char(c), m);
+        for detail in [false, true] {
+            for key in [
+                chord('a', KeyModifiers::CONTROL),
+                chord('t', KeyModifiers::ALT),
+                chord('m', KeyModifiers::ALT),
+                chord('x', KeyModifiers::CONTROL),
+                chord('l', KeyModifiers::ALT),
+            ] {
+                let mut a = app();
+                if detail {
+                    a.on_key(press(KeyCode::Enter));
+                }
+                let before = (a.confirm, a.filter.links);
+                assert_eq!(a.on_key(key), Outcome::Stay, "{key:?} acted");
+                assert_eq!((a.confirm, a.filter.links), before, "{key:?} acted");
+            }
+        }
+        let mut a = app();
+        a.on_key(ch('x'));
+        assert_eq!(
+            a.on_key(chord('y', KeyModifiers::CONTROL)),
+            Outcome::Stay,
+            "ctrl-y removed the note"
+        );
     }
 
     /// `x` asks first; only y removes, and anything else keeps the note.
