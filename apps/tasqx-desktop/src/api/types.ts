@@ -233,6 +233,60 @@ export interface MemoryDoc {
   origin_size: number | null;
 }
 
+/** One quick-capture note (D241): `note.add`/`.get`/`.update`'s answer and `note.list`'s row. */
+export interface Note {
+  id: string;
+  short_id: number;
+  body: string;
+  project: string | null;
+  status: 'open' | 'archived';
+  /** `task:<uuid>` or `memory:<uuid>` once promoted; terminal. */
+  promoted_to: string | null;
+  created: string;
+  modified: string;
+  _rev: number;
+  /** Derived on read: the body holds an `http://` or `https://` link. */
+  has_links: boolean;
+  promoted_task_short_id: number | null;
+}
+
+export interface NoteListResult {
+  count: number;
+  total: number;
+  next_offset: number | null;
+  notes: Note[];
+}
+
+export interface NoteRemoveResult {
+  id: string;
+  short_id: number;
+  removed: boolean;
+}
+
+/** The task `note.promote {to: task}` made. */
+export interface NotePromotedTask {
+  id: string;
+  short_id: number;
+  title: string;
+  status: string;
+  project: string | null;
+}
+
+/** The memory doc `note.promote {to: memory}` made. */
+export interface NotePromotedDoc {
+  id: string;
+  title: string;
+  project: string | null;
+  standing: boolean;
+  created: string;
+}
+
+export interface NotePromoteResult {
+  note: Note;
+  task?: NotePromotedTask;
+  doc?: NotePromotedDoc;
+}
+
 /** One explicit cross-entity link (D160); `link.list`'s row. */
 export interface Link {
   id: string;
