@@ -58,9 +58,21 @@ release also trims tasqx-core's public API, which is why it is a minor bump.
   `dependency.remove`, answer `conflict` when the task has moved on. `event.revert`
   can be made conditional on the caller's own last write, and a request envelope
   takes an optional `actor` that lands in `events.actor` (D232, #638, #639).
+- **Breaking: `note` is no longer an alias of `annotate`.** `tasqx note` captures
+  a quick note now (below). `tasqx note 42 "…"`, which annotated task 42, is
+  refused with exit 2 and the hint `tasqx annotate 42 "…"`; scripts that used the
+  alias need `annotate` (D241, #927).
 
 ### Added
 
+- **Quick notes, outside the backlog** (D241, #926, #927). `tasqx note <text…>`
+  jots down an idea or a URL to read later: no urgency, no `@working`, no report,
+  and memory search never sees it. `tasqx notes` lists them (`--links`,
+  `--archived`, `--all`, `--search`, `--project`), `tasqx note <id>` prints one,
+  and `tasqx note <id> edit|archive|unarchive|rm` changes it. `tasqx note <id>
+  promote task|memory` files it as a task or a memory doc and archives it, in one
+  transaction. The API is `note.*`; MCP has `tasqx_add_note`, `tasqx_list_notes`,
+  `tasqx_update_note`, `tasqx_remove_note` and `tasqx_promote_note`.
 - **Task claims, so two agents never work the same task.** `tasqx claim` and
   `tasqx_claim_task` take a lease (30m by default, 24h at most; claiming again
   renews) that keeps another holder from starting, stopping, completing or
