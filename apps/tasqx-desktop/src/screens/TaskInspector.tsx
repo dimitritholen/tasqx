@@ -1,6 +1,6 @@
 import type { ReactNode } from 'react';
 
-import type { Annotation, Blocker, Check, TaskDetail } from '../api/types';
+import type { Annotation, Blocker, Check, GitRef, TaskDetail } from '../api/types';
 import { formatDuration, relativeTime } from '../state/relative';
 import { useStore } from '../state/store';
 import { Button, EmptyState, ErrorState, Skeleton } from '../ui/primitives';
@@ -81,6 +81,23 @@ function Checks({ taskRef, checks }: { taskRef: number; checks: Check[] }) {
               {check.body}
               {check.evidence !== null && <span className="check-evidence muted">{check.evidence}</span>}
             </span>
+          </li>
+        ))}
+      </ul>
+    </section>
+  );
+}
+
+/** Where the work went (D239), spelled as `tasqx show` spells it. */
+function GitRefs({ refs }: { refs: GitRef[] }) {
+  if (refs.length === 0) return null;
+  return (
+    <section className="inspector-section" aria-labelledby="inspector-git">
+      <h3 id="inspector-git">Git</h3>
+      <ul className="link-list">
+        {refs.map((g) => (
+          <li key={g.id} className="mono">
+            {g.kind === 'commit' ? `commit ${g.ref}` : `${g.kind} ${g.ref} · ${g.state}`}
           </li>
         ))}
       </ul>
@@ -190,6 +207,7 @@ export function TaskInspector() {
       <Links label="Blocked by" ids={task.unmet_blockers.map((blocker) => blocker.short_id)} names={task.unmet_blockers} />
       <Links label="Blocks" ids={task.blocks} names={[]} />
       <Checks taskRef={task.short_id} checks={task.checks} />
+      <GitRefs refs={task.git_refs ?? []} />
       <QuickAdds task={task} />
       <Annotations task={task} onOlder={() => void store.loadOlderAnnotations()} busy={loading} />
     </div>

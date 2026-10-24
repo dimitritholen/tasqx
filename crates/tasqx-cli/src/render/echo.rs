@@ -1466,6 +1466,32 @@ pub fn annotated(ctx: &Ctx, result: &Value, task: &Value, now: Timestamp, word: 
     draw(ctx, card, now)
 }
 
+/// `tasqx git event` (D239): what the event moved, and the note it wrote. A
+/// replay says so, because "nothing happened" is the answer it was asked for.
+pub fn git_event(ctx: &Ctx, result: &Value, task: &Value, now: Timestamp) -> String {
+    let changed = result
+        .get("changed")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let word = match (changed, s(result, "transition").as_str()) {
+        (false, _) => "already recorded",
+        (true, "started") => "started",
+        (true, "completed") => "completed",
+        (true, "annotated") => "noted",
+        (true, _) => "recorded",
+    };
+    let mut card = Card::new(task, outcome(ctx, word));
+    let note = match changed {
+        true => s(result, "note"),
+        false => s(result, "reason"),
+    };
+    if !note.is_empty() {
+        card.words = Some(san(&note));
+    }
+    card.context = Context::NONE;
+    draw(ctx, card, now)
+}
+
 /// `tasqx unannotate` (D113). The id the user typed is not echoed back, and
 /// the text never is: what the line owes the reader is that it is permanent.
 pub fn annotation_removed(ctx: &Ctx, task: &Value, now: Timestamp) -> String {

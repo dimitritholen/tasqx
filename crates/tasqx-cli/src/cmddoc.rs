@@ -768,6 +768,43 @@ pub const COMMAND_REF: &[CmdDoc] = &[
         topic: Topic::Capturing,
     },
     CmdDoc {
+        verb: "git",
+        aliases: &[],
+        method: "git.event",
+        summary: "Let a pull request start or complete its task.",
+        usage: "tasqx git event <opened|merged|closed> --branch <branch> [--pr <url>] [--sha <sha>] [--task <ref>]",
+        examples: &[
+            ex_norun(
+                "tasqx git event opened --branch task/42-pricing --pr https://github.com/acme/web/pull/7",
+                "a pending task becomes active",
+            ),
+            ex_norun(
+                "tasqx git event merged --branch task/42-pricing --pr https://github.com/acme/web/pull/7 --sha 4f9c2e1",
+                "complete it, the PR in the delivery note",
+            ),
+            ex_norun(
+                "tasqx git event closed --branch fix-typo --pr https://github.com/acme/web/pull/8 --task 43",
+                "a branch that names no task",
+            ),
+        ],
+        notes: &[
+            "tasqx never asks GitHub, or any network. Something that watched the PR reports \
+             it: a script reading `gh pr view --json`, a CI step, a git hook.",
+            "A branch named `task/<id>-<slug>` names its task, whatever follows the id \
+             (`task/42-pricing-rebased`, `task/42-v3`). `--task` names it when the branch does not.",
+            "`merged` completes the task only when every check passed (or it has none) and \
+             nothing blocks it; otherwise the task stays open and a note names what did not \
+             pass. `opened` on a task that cannot start, and `closed`, only add a note. Every \
+             write is recorded under the actor `git`.",
+            "Report `merged` again once the checks are fixed and it completes the task; \
+             `opened` again starts a task that is still pending. An event whose outcome \
+             already holds, or one a recorded merge settled (`closed` after `merged`), \
+             changes nothing and says why.",
+        ],
+        see_also: &["done", "check", "show"],
+        topic: Topic::Automation,
+    },
+    CmdDoc {
         verb: "brief",
         aliases: &[],
         method: "task.brief",

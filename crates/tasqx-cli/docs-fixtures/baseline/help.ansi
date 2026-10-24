@@ -17,6 +17,7 @@ Commands:
   show         Show a task's full detail incl. tags/annotations/deps (maps to task.get)
   brief        Everything needed before starting a task, in one read (maps to task.brief)
   check        Acceptance criteria on a task (maps to check.add/set/remove)
+  git          Record a PR event on the task its branch names (maps to git.event)
   cancel       Cancel a task (maps to task.cancel)
   reopen       Reopen a done/cancelled task (maps to task.reopen)
   undo         Undo the last thing this store recorded (maps to event.revert)

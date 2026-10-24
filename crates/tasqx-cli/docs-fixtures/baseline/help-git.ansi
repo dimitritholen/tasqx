@@ -1,0 +1,26 @@
+Record a PR event on the task its branch names (maps to git.event)
+
+Usage: tasqx git [OPTIONS] <COMMAND>
+
+Commands:
+  event  Report a PR event: opened starts the task, merged completes it when every check passed, closed adds a note. tasqx never asks GitHub
+
+Options:
+      --json             Print the raw JSON API result instead of the human table
+      --theme <THEME>    Theme name (built-in nord|gruvbox|dracula|solarized|mono, or a user file). Overrides $TASQX_THEME and the config file (DESIGN.md §8)
+      --socket <SOCKET>  Local socket / named-pipe address of a tasqx daemon. Overrides $TASQX_SOCK. When a daemon is reachable, one-shot commands route through it (single writer); otherwise they run in-process. A set $TASQX_DB naming a different store than that daemon's is refused. Also selects the address for `daemon` and `watch`
+      --no-daemon        Never route through a daemon; always run one-shot in-process (the pre-daemon behaviour). Escape hatch for scripts
+  -h, --help             Print help
+  -V, --version          Print version
+
+EXAMPLES
+  tasqx git event opened --branch task/42-pricing --pr https://github.com/acme/web/pull/7    # a pending task becomes active
+  tasqx git event merged --branch task/42-pricing --pr https://github.com/acme/web/pull/7 --sha 4f9c2e1    # complete it, the PR in the delivery note
+  tasqx git event closed --branch fix-typo --pr https://github.com/acme/web/pull/8 --task 43    # a branch that names no task
+
+NOTE  tasqx never asks GitHub, or any network. Something that watched the PR reports it: a script reading `gh pr view --json`, a CI step, a git hook.
+      A branch named `task/<id>-<slug>` names its task, whatever follows the id (`task/42-pricing-rebased`, `task/42-v3`). `--task` names it when the branch does not.
+      `merged` completes the task only when every check passed (or it has none) and nothing blocks it; otherwise the task stays open and a note names what did not pass. `opened` on a task that cannot start, and `closed`, only add a note. Every write is recorded under the actor `git`.
+      Report `merged` again once the checks are fixed and it completes the task; `opened` again starts a task that is still pending. An event whose outcome already holds, or one a recorded merge settled (`closed` after `merged`), changes nothing and says why.
+
+See also: done · check · show        Full manual: tasqx manual

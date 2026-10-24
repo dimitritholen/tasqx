@@ -107,6 +107,11 @@ const EXAMPLE_SCREENS: &[(&str, &str, &str)] = &[
         "tasqx check add 1 the notes name every breaking change",
         "check-echo",
     ),
+    (
+        "git",
+        "tasqx git event merged --branch task/42-pricing --pr https://github.com/acme/web/pull/7 --sha 4f9c2e1",
+        "git-echo",
+    ),
     ("brief", "tasqx brief 1", "brief"),
     ("report", "tasqx report", "report"),
     ("chart", "tasqx chart burndown --days 30", "chart-burndown"),

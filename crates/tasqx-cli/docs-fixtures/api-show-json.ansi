@@ -21,6 +21,7 @@
   "estimate": "PT3H",
   "first_annotation": null,
   "fresh_tokens": 0,
+  "git_refs": [],
   "id": "ea7f7301-c9b4-43b5-afc3-eec055c2d7f4",
   "modified": "2026-08-15T10:00:00Z",
   "over": null,

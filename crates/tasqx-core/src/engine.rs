@@ -10,6 +10,7 @@
 
 mod commands;
 mod field_merge;
+mod git;
 mod graph;
 mod memory;
 mod merge_removals;
@@ -35,6 +36,7 @@ mod transfer;
 mod undo;
 mod vectors;
 
+pub use git::{GIT_EVENTS, IMPORT_GIT_REF_KEYS};
 pub use memory::{
     SessionDoc, SessionRulings, MEMORY_MIN_SIMILARITY, MEMORY_SCOPES, MEMORY_SEARCH_MODES,
 };
@@ -977,6 +979,9 @@ pub const IMPORT_TASK_KEYS: &[&str] = &[
     // D236: a claim's holder and expiry, present only on a claimed task.
     "claimed_by",
     "claim_expires",
+    // D239: the branch, PR and merge commit, present only on a task that has
+    // any.
+    "git_refs",
 ];
 
 /// Every key an exported annotation object can carry. D34.
@@ -1644,6 +1649,7 @@ macro_rules! engine_sources {
                 "engine/field_merge.rs",
                 include_str!("engine/field_merge.rs"),
             ),
+            ("engine/git.rs", include_str!("engine/git.rs")),
             ("engine/graph.rs", include_str!("engine/graph.rs")),
             ("engine/memory.rs", include_str!("engine/memory.rs")),
             (

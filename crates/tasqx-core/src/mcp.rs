@@ -465,6 +465,13 @@ const UNEXPOSED_METHODS: &[(&str, &str)] = &[
         "tasqx has an undo (D54) and an agent cannot reach it, which is the sharpest single          omission on this list. It stays off until the tool can show what it is about to          undo: `event.revert` acts on the last matching event, and its blast radius depends          on store state the calling agent has not read. A destructive one-shot whose effect          the caller cannot see is not a tool, it is a coin flip.",
     ),
     (
+        "git.event",
+        "a PR event is reported by whatever watched the PR — the land skill reading `gh pr \
+         view`, a CI step, a git hook — through `tasqx git event` (D239). An agent that \
+         claimed a merge would be reporting a fact it has not seen; it completes a task with \
+         `tasqx_complete_task` and cites the merge as evidence.",
+    ),
+    (
         "graph.query",
         "an agent already reaches the graph's ends: `tasqx_search_memory` returns the docs and \
          annotations the inferred half would match, and `tasqx_get_task` returns a task's notes, \

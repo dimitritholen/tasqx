@@ -200,6 +200,8 @@ fn cases(tmp: &str) -> Vec<(Case, Vec<String>)> {
         // `--list` only reads, and `--home` keeps it off the developer's own
         // `~/.claude`; installing is `tests/setup.rs`'s business.
         c("setup", &["setup", "--list", "--home", "SETUP_HOME"]),
+        // `closed` only adds a note, so no later case sees a status it moved.
+        c("git", &["git", "event", "closed", "--branch", "task/1-x"]),
         c_fresh("import", &["import", "IMPORT_FILE"]),
         // `--status` only reads: no connector is set up in this store's
         // config, so it answers `set_up: false` without running one. Syncing

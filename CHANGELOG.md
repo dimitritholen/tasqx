@@ -48,6 +48,12 @@ release also trims tasqx-core's public API, which is why it is a minor bump.
   still show claimed work, with its holder; `@claimed` lists live claims.
   Starting a task never stops another holder's running task while that holder
   claims it (D236, #2328).
+- **`tasqx git event` lets a pull request move its task** (D239, #2329). A branch
+  named `task/<id>-<slug>` names the task; `opened` starts it, `merged` completes it
+  with `Merged <pr> (<sha>)` as the delivery note when every check passed, and
+  `closed` adds a note. The branch, PR and merge commit are listed by `show`, `brief`
+  and the desktop inspector, and travel with export, import and sync. tasqx never
+  asks GitHub: the caller reports the event (API `git.event`).
 - **`tasqx sync`** pulls, merges and pushes a store's snapshot through a
   `tasqx-remote-<name>` connector (folder and Cloudflare R2 ship), sealed with
   XChaCha20-Poly1305 under a key from the store's passphrase (D198-D202).

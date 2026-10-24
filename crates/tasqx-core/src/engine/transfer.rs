@@ -95,8 +95,16 @@ impl Engine {
         // Pass 2: emit, keeping only edges whose target is also being emitted.
         let mut dropped = 0i64;
         let mut out = Vec::with_capacity(selected.len());
+        // D239: conditional like `tokens` — absent on a task with no refs, so
+        // an older tasqx's closed key gate still reads every other task.
+        let ids: Vec<&str> = selected.iter().map(|s| s.task.id.as_str()).collect();
+        let mut git_refs = super::git::refs_for(&self.conn, &ids)?;
         for snapshot in &selected {
-            out.push(Self::export_task(snapshot, &present, &mut dropped, now_ts));
+            let mut task = Self::export_task(snapshot, &present, &mut dropped, now_ts);
+            if let Some(refs) = git_refs.remove(&snapshot.task.id) {
+                task["git_refs"] = json!(refs);
+            }
+            out.push(task);
         }
 
         // D171 (finding #627): an export that narrows `tasks` used to still
@@ -2275,6 +2283,7 @@ impl Engine {
 
             Self::import_annotations(&tx, id, tv, merging, take_payload, &removed)?;
             let checks_updated = Self::import_checks(&tx, id, tv, merging, now_ts, &removed)?;
+            let refs_updated = super::git::import_refs(&tx, id, tv, merging, now_ts)?;
             Self::import_token_measurements(&tx, id, tv, merging)?;
 
             // Edges are deferred to pass 2: a payload may list a target *after*
@@ -2302,6 +2311,7 @@ impl Engine {
                 // the edges it inserts.
                 let changed = write
                     || checks_updated
+                    || refs_updated
                     || removals_applied
                     || Self::child_row_count(&tx, id)? != children_before;
                 merged.push(MergedTask {

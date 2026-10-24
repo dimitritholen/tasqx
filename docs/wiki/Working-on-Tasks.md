@@ -184,6 +184,35 @@ tasqx reopen 42
 If open tasks depended on it, they become blocked again — the mirror image of
 what `done` unblocked. The answer names them.
 
+## tasqx git
+
+Record what happened to a task's pull request, and let the task follow it.
+
+```console
+tasqx git event opened --branch task/42-pricing --pr https://github.com/acme/web/pull/7
+tasqx git event merged --branch task/42-pricing --pr https://github.com/acme/web/pull/7 --sha 4f9c2e1
+tasqx git event closed --branch fix-typo --pr https://github.com/acme/web/pull/8 --task 43
+```
+
+A branch named `task/<id>-<slug>` names its task, whatever follows the id
+(`task/42-pricing-rebased` too); `--task` names it when the branch does not.
+
+- **opened** starts a pending task. It stops no other timer.
+- **merged** completes the task, with `Merged <pr> (<sha>)` as its delivery
+  note, but only when every check passed (or it has none) and nothing blocks
+  it. Otherwise the task stays open and a note names the checks that did not
+  pass.
+- **closed** adds a note and leaves the status alone.
+
+`tasqx show` lists the branch, the PR and the merge commit under `git`.
+Reporting `merged` again after the checks are fixed completes the task, and
+`opened` again starts a task that is still pending. An event whose outcome
+already holds changes nothing, and so does one a recorded merge settled
+(`closed` after `merged`); both say why.
+
+tasqx never asks GitHub, or any network. Something that watched the PR tells
+it: a script reading `gh pr view --json`, a CI step, a git hook.
+
 ## tasqx pick
 
 *Aliases: `p`, `fzf`*

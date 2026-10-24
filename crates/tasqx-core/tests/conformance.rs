@@ -783,6 +783,7 @@ const R_TASK_GET: Shape = &[
     TASK_CARD_NOTES,
     TASK_BUDGET_GAUGE,
     TASK_CHECKS,
+    TASK_GIT_REFS,
     TASK_CORE,
     TASK_LIVE_TIME,
     TASK_GET_RELATIONS,
@@ -1279,6 +1280,34 @@ const TASK_CHECK: &[Field] = &[
 
 const TASK_CHECKS: &[Field] = &[req_of("checks", Ty::Array, &[TASK_CHECK])];
 
+/// D239: one branch, PR or merge commit recorded by `git.event`. A PR's `ref`
+/// is its URL.
+const GIT_REF: &[Field] = &[
+    req("id", Ty::Str),
+    req("kind", Ty::Str),
+    req("ref", Ty::Str),
+    req("state", Ty::Str),
+    req("created", Ty::Str),
+    req("modified", Ty::Str),
+    nul("noted", Ty::Str),
+];
+
+const TASK_GIT_REFS: &[Field] = &[req_of("git_refs", Ty::Array, &[GIT_REF])];
+
+/// Conditional on an export, like `tokens`: absent on a task with none.
+const TASK_EXPORT_GIT_REFS: &[Field] = &[opt_of("git_refs", Ty::Array, &[GIT_REF])];
+
+const R_GIT_EVENT: Shape = &[&[
+    req("changed", Ty::Bool),
+    req("event", Ty::Str),
+    req("short_id", Ty::Int),
+    req("title", Ty::Str),
+    req("status", Ty::Str),
+    nul("transition", Ty::Str),
+    nul("note", Ty::Str),
+    nul("reason", Ty::Str),
+]];
+
 const R_CHECK_ADD: Shape = &[&[
     req("short_id", Ty::Int),
     req_of("check", Ty::Object, &[TASK_CHECK]),
@@ -1360,6 +1389,7 @@ const R_TASK_BRIEF_TASK: Shape = &[
     TASK_CARD_NOTES,
     TASK_BUDGET_GAUGE,
     TASK_CHECKS,
+    TASK_GIT_REFS,
     TASK_CORE,
     TASK_LIVE_TIME,
     TASK_GET_RELATIONS,
@@ -1554,6 +1584,7 @@ const R_STORE_EXPORT: Shape = &[&[
             // D138: an export is self-contained (D12, D37), so the criteria
             // travel with the task like its annotations do.
             TASK_CHECKS,
+            TASK_EXPORT_GIT_REFS,
             TASK_EXPORT_SPAWNED_FROM,
             TASK_EXPORT_CLAIM,
         ],
@@ -1797,6 +1828,16 @@ fn plain_task(e: &Engine) -> Value {
 /// nobody is holding. It is also the only route to a tombstone: the row is
 /// written by `annotation.add` and emptied by `annotation.remove`, and nothing
 /// else in the API produces one.
+/// Record a closed PR on `r` (D239), so the `git_refs` row shape is checked:
+/// an empty array would leave every key under it unexamined.
+fn pr_on(e: &Engine, r: i64) {
+    e.git_event(&json!({
+        "event": "closed", "branch": "task/x", "task": r,
+        "pr": "https://github.com/o/r/pull/7"
+    }))
+    .expect("git.event");
+}
+
 fn scrub_one(e: &Engine, r: i64) {
     let doomed = e
         .annotation_add(&json!({ "ref": r, "body": "pasted a secret by mistake" }))
@@ -1980,6 +2021,7 @@ fn cases() -> Vec<Case> {
                 e.annotation_add(&json!({ "ref": 1, "body": "a note" }))
                     .expect("annotate");
                 scrub_one(e, 1);
+                pr_on(e, 1);
                 // D138: marked, so `evidence` is observed non-null — an
                 // optional key no fixture emits is documentation rather than a
                 // frozen shape.
@@ -2013,6 +2055,7 @@ fn cases() -> Vec<Case> {
                 e.annotation_add(&json!({ "ref": 1, "body": "a note" }))
                     .expect("annotate");
                 scrub_one(e, 1);
+                pr_on(e, 1);
                 // D138: `checks` is on every `task.get`, so every case that
                 // freezes that shape has to emit a row — the suite refuses to
                 // freeze a row shape no fixture produces.
@@ -2035,6 +2078,7 @@ fn cases() -> Vec<Case> {
                 e.annotation_add(&json!({ "ref": 1, "body": "still going" }))
                     .expect("annotate");
                 scrub_one(e, 1);
+                pr_on(e, 1);
                 e.check_add(&json!({ "ref": 1, "body": "the criterion" }))
                     .expect("check");
                 e.token_add(&self_report(1)).expect("token");
@@ -2657,6 +2701,18 @@ fn cases() -> Vec<Case> {
             R_CHECK_SET,
         ),
         case(
+            "git.event",
+            "a merged PR on a task with no checks, which completes it",
+            |e| {
+                plain_task(e);
+                json!({
+                    "event": "merged", "branch": "task/1-x",
+                    "pr": "https://github.com/o/r/pull/7", "sha": "abc1234"
+                })
+            },
+            R_GIT_EVENT,
+        ),
+        case(
             "check.remove",
             "a criterion that was the wrong thing to ask",
             |e| {
@@ -2718,6 +2774,7 @@ fn cases() -> Vec<Case> {
                 subject["spawned_from"] = predecessor;
                 e.store_import(&doc).expect("re-import as a spawn");
                 scrub_one(e, 1);
+                pr_on(e, 1);
                 e.check_add(&json!({ "ref": 1, "body": "the criterion" }))
                     .expect("check");
                 e.token_add(&self_report(1)).expect("token");
@@ -2793,6 +2850,8 @@ fn cases() -> Vec<Case> {
                 // without one leaves that row's nested keys unexamined.
                 e.check_add(&json!({ "ref": 2, "body": "a second criterion" }))
                     .expect("check");
+                pr_on(e, 1);
+                pr_on(e, 2);
                 let doc = e
                     .memory_add(&json!({ "title": "kept", "body": "knowledge", "source": "x.md" }))
                     .expect("doc");

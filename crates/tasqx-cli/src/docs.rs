@@ -74,7 +74,7 @@ mod obj_ref;
 /// which is unassertable prose-equivalence. So the column is gone and the page
 /// renders [`crate::cmddoc`]'s summary instead. One string per verb, used by
 /// both surfaces, with no second copy left to drift.
-const VERBS: [(&str, &str, &str); 50] = [
+const VERBS: [(&str, &str, &str); 51] = [
     ("init", "—", "project.create"),
     ("use", "—", "project.use"),
     ("archive", "—", "project.archive"),
@@ -130,6 +130,7 @@ const VERBS: [(&str, &str, &str); 50] = [
     ("projects", "—", "project.list"),
     ("brief", "—", "task.brief"),
     ("check", "—", "check.add + check.set + check.remove"),
+    ("git", "—", "git.event"),
     ("report", "—", "report.summary + report.outcomes"),
     ("chart", "—", "event.list"),
     ("theme", "—", "— (no store)"),
@@ -164,7 +165,7 @@ const VERBS: [(&str, &str, &str); 50] = [
 
 /// The method table the JSON API page renders: `(method, params, returns)`.
 /// Single source, same reason as [`VERBS`].
-const METHODS: [(&str, &str, &str); 54] = [
+const METHODS: [(&str, &str, &str); 55] = [
     (
         "project.create",
         "<code>name</code>, <code>description?</code>",
@@ -752,6 +753,19 @@ const METHODS: [(&str, &str, &str); 54] = [
          event must be that task's, and with <code>expected_rev</code> the task must still \
          be at that rev; otherwise it is <code>conflict</code> and nothing is undone, so a \
          client undoing its own last write cannot take back a later one.",
+    ),
+    (
+        "git.event",
+        "<code>event</code>, <code>branch</code>, <code>pr?</code>, <code>sha?</code>, \
+         <code>task?</code>",
+        "<code>{changed, event, short_id, title, status, transition, note, reason}</code>. Records the \
+         branch, PR and merge commit on the task the branch <code>task/&lt;id&gt;-&lt;slug&gt;</code> \
+         (or <code>task</code>) names, and moves it: <code>opened</code> starts a pending task, \
+         <code>merged</code> completes it only when every check passed and nothing blocks it, \
+         <code>closed</code> adds a note. Every event re-evaluates the outcome, so a repeated \
+         <code>merged</code> completes a task whose checks were fixed since; one whose outcome \
+         already holds, or that a recorded merge already settled, answers \
+         <code>changed: false</code> with a <code>reason</code>. tasqx never calls GitHub (D239).",
     ),
     (
         "reminder.fire",

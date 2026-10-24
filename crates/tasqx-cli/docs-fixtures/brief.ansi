@@ -8,6 +8,8 @@
 [1;38;2;191;97;106m▌[0m [38;2;138;138;138mcreated[0m     16 Aug (31 days ago)
 [1;38;2;191;97;106m▌[0m [38;2;138;138;138mmodified[0m    16 Aug (31 days ago)
 [1;38;2;191;97;106m▌[0m [38;2;138;138;138mrev[0m         1
+[1;38;2;191;97;106m▌[0m [38;2;138;138;138mgit[0m         branch task/51-sdk-migration-guide · open
+[1;38;2;191;97;106m▌[0m [38;2;138;138;138mgit[0m         pr https://github.com/acme/api/pull/412 · open
 [1;38;2;191;97;106m▌[0m
 [1;38;2;191;97;106m▌[0m 1 [x] Every renamed symbol has a row in the table
 [1;38;2;191;97;106m▌[0m 2 [x] One worked example per SDK (js, py, go)

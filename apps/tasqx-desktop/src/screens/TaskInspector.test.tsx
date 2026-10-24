@@ -34,6 +34,19 @@ const DETAIL = taskDetail({
   annotations_total: 3,
   annotations_next_offset: 2,
   annotations_removed: [{ id: 'gone', removed: '2026-09-02T09:00:00.000Z' }],
+  git_refs: [
+    { id: 'g1', kind: 'branch', ref: 'task/2-dashboard', state: 'merged', created: '2026-09-04T09:00:00.000Z', modified: '2026-09-04T09:00:00.000Z', noted: null },
+    {
+      id: 'g2',
+      kind: 'pr',
+      ref: 'https://github.com/o/r/pull/7',
+      state: 'merged',
+      created: '2026-09-04T09:00:00.000Z',
+      modified: '2026-09-04T09:00:00.000Z',
+      noted: null,
+    },
+    { id: 'g3', kind: 'commit', ref: 'abc1234', state: 'merged', created: '2026-09-04T09:00:00.000Z', modified: '2026-09-04T09:00:00.000Z', noted: null },
+  ],
 });
 
 function inspector(): HTMLElement {
@@ -103,6 +116,20 @@ describe('TaskInspector', () => {
     const items = within(checks).getAllByRole('listitem');
     expect(items.map((item) => item.textContent?.slice(0, 3))).toEqual(['[x]', '[ ]', '[!]']);
     expect(items[0]).toHaveTextContent('TaskTable.test.tsx');
+  });
+
+  it('lists the branch, the PR and the merge commit git.event recorded (D239)', async () => {
+    await live(baselineScript(PAGE, { 'task.get': DETAIL }), '#/tasks?sel=2');
+
+    const git = within(inspector()).getByRole('region', { name: 'Git' });
+    const items = within(git)
+      .getAllByRole('listitem')
+      .map((item) => item.textContent ?? '');
+    expect(items).toEqual([
+      'branch task/2-dashboard · merged',
+      'pr https://github.com/o/r/pull/7 · merged',
+      'commit abc1234',
+    ]);
   });
 
   it('lists annotations newest first, with the tombstones the store keeps', async () => {

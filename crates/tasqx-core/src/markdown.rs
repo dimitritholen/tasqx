@@ -166,10 +166,39 @@ pub fn task_detail(result: &Value, opts: &DetailOpts) -> String {
     row(&mut out, "rev", &rev.to_string());
 
     checks(&mut out, result);
+    git_refs(&mut out, result);
     tokens(&mut out, result);
     annotations(&mut out, result, opts);
 
     out
+}
+
+/// D239: the branch, PR and merge commit `git.event` recorded, one per line.
+/// Only rendered when there is at least one, the rule [`checks`] follows.
+fn git_refs(out: &mut String, result: &Value) {
+    let lines = git_ref_lines(result);
+    if lines.is_empty() {
+        return;
+    }
+    out.push_str(&format!("\n### Git ({})\n\n", lines.len()));
+    for line in lines {
+        out.push_str(&format!("- {line}\n"));
+    }
+}
+
+/// `branch task/7-x · open`, `pr <url> · merged`, `commit abc1234`: a commit
+/// only exists once merged, so its state says nothing.
+pub fn git_ref_lines(task: &Value) -> Vec<String> {
+    array_of(task, "git_refs")
+        .iter()
+        .map(|g| {
+            let (kind, r) = (str_of(g, "kind"), sanitize(&str_of(g, "ref")));
+            match kind.as_str() {
+                "commit" => format!("commit {r}"),
+                _ => format!("{kind} {r} · {}", str_of(g, "state")),
+            }
+        })
+        .collect()
 }
 
 /// D138's acceptance criteria, as a checklist. Only rendered when there is at
@@ -1250,6 +1279,14 @@ fn card_rows(task: &Value, neighbourhood: Option<&Value>, opts: &CardOpts) -> Ve
         rows.push(Row {
             label: "Checks".to_string(),
             lines,
+        });
+    }
+    // D239: where the work went, one ref a line.
+    let git = git_ref_lines(task);
+    if !git.is_empty() {
+        rows.push(Row {
+            label: "Git".to_string(),
+            lines: git.iter().flat_map(|l| wrap_hanging(l, 2)).collect(),
         });
     }
 

@@ -130,10 +130,12 @@ Run commands from the worktree, one plain command per call.
    narrow viewport through CDP (see `docs/maintainers/terminal-style.md`
    §14); use it rather than `--window-size`.
 
-6. **Annotate, clean up by hand, then close the task exactly once.** Write
-   the delivery annotation first (plain-language paragraph on top, then the
-   commit hashes, the diff stat, what was deliberately skipped) and mark the
-   checks with `tasqx_set_check` (`check_id`, `state: "passed"`, `evidence`).
+6. **Annotate, clean up by hand, then close the task through its merge
+   event.** Write the detail annotation first (plain-language paragraph on
+   top, then the commit hashes, the diff stat, what was deliberately skipped)
+   and mark the checks with `tasqx_set_check` (`check_id`, `state: "passed"`,
+   `evidence`) — before the merge event below, which completes the task only
+   when every check has passed.
 
    Do not reach for `tasqx-work --done <id>`: a rebase merge rewrites the
    commit hashes, so the task branch is never an ancestor of `main` and the
@@ -153,10 +155,26 @@ Run commands from the worktree, one plain command per call.
    `backup/<id>-*` branch, in the same pass.
 
    A `+` line from `git cherry` means a commit did not land; stop and find
-   out why before deleting anything. Then `tasqx_complete_task` with
-   `evidence` (its `checks_passed` wants check ids, not bodies; the checks
-   are already marked, so evidence alone is enough). Complete once — a
-   second completion of a done task is refused.
+   out why before deleting anything. Then feed the merge to tasqx (D239),
+   reading the three values off the PR rather than typing them:
+
+   ```console
+   $ gh pr view <n> --json url,headRefName,mergeCommit
+   $ tasqx git event merged --branch <headRefName> --pr <url> --sha <mergeCommit.oid>
+   ```
+
+   The outcome: tasqx records the branch, the PR and the merge commit on the
+   task (`tasqx show <id>` lists them under `git`) and, when every check
+   passed and nothing blocks it, completes the task with the delivery note
+   `Merged <url> (<sha>)`, attributed to `git` — the echo says `completed`.
+   If a check is still open or failed, or a dependency blocks it, the task
+   stays open and the echo says `noted`, with a note naming each one. Mark
+   the checks honestly, then run the same `tasqx git event merged` line
+   again: it completes the task once nothing holds it back, and otherwise
+   changes nothing and says `already recorded` (it restates the note only
+   when what holds the task back has changed). So a retry after a failed call
+   is safe too. A criterion that honestly did not pass is closed with
+   `tasqx_complete_task` once, as before.
 
 7. **Print one closing line, no card.** A landed task is a routine event,
    not a decision (D164). Checks ticked or left open honestly, and what the
@@ -167,7 +185,8 @@ Run commands from the worktree, one plain command per call.
 
 PR state is MERGED, `git log main` shows the commits, `git worktree list`
 has no entry for the task, the installed `tasqx --version` reports the new
-build, and the task's status is `done` with its checks marked.
+build, and the task's status is `done` with its checks marked and its branch,
+PR and merge commit listed under `git` in `tasqx show`.
 
 ## Why this order
 

@@ -209,7 +209,7 @@ pub(super) fn page() -> String {
 /// `tokens.recompute` files under `token` with `token.add`/`token.remove` — the
 /// two spellings are one subject, and a reader looking for "what tasqx knows
 /// about token spend" should not have to know that one of the three is plural.
-const GROUPS: [(&str, &str); 16] = [
+const GROUPS: [(&str, &str); 17] = [
     ("project", "Project methods"),
     ("task", "Task methods"),
     ("tag", "Tag methods"),
@@ -223,6 +223,7 @@ const GROUPS: [(&str, &str); 16] = [
     ("report", "Report methods"),
     ("store", "Store methods"),
     ("event", "Event methods"),
+    ("git", "Git methods"),
     ("reminder", "Reminder methods"),
     ("core", "Core methods"),
     ("otlp", "OTLP methods"),
@@ -1263,6 +1264,41 @@ const PARAM_DOCS: &[(&str, &str, &str, &str, &str)] = &[
         "Check every doc and report, without writing anything. The same answer the real sweep would give — which docs would be re-read, which files are gone — so it can be looked at before a store full of documents is rewritten.",
     ),
     (
+        "git.event",
+        "event",
+        "string",
+        "",
+        "`opened`, `merged` or `closed`: what happened to the PR.",
+    ),
+    (
+        "git.event",
+        "branch",
+        "string",
+        "",
+        "The PR's branch. `task/<id>-<slug>` names the task, whatever follows the id.",
+    ),
+    (
+        "git.event",
+        "pr",
+        "string",
+        "",
+        "The PR's URL, recorded as a ref and named in the note the event writes.",
+    ),
+    (
+        "git.event",
+        "sha",
+        "string",
+        "",
+        "The merge commit's sha. Recorded on `merged` only.",
+    ),
+    (
+        "git.event",
+        "task",
+        "integer or string",
+        "",
+        "The task, when the branch does not name it; it overrides the branch when both do.",
+    ),
+    (
         "reminder.fire",
         "ref",
         "integer or string",
@@ -1741,6 +1777,13 @@ const EXAMPLES: &[Example] = &[
         fixture: "",
         response: r#"{"id":"u1","ok":true,"result":{"_rev":5,"restored":{"tags":["ops"]},"reverted":{"event":"9c2b4d61-1f77-4a0c-9c1e-2b8e5d3a7f40","op":"tag.remove","ts":"2026-09-16T09:00:00Z"},"short_id":53,"title":"Move nightly backups to object storage"},"tasqx":"1"}"#,
         why: "it undoes whatever is NEWEST in the log, so its answer depends on store state a fixture cannot pin — and on the demo store the newest event is a `start`, which undo refuses by name rather than reversing.",
+    },
+    Example {
+        method: "git.event",
+        request: r#"{"tasqx":"1","id":"ge1","method":"git.event","params":{"event":"merged","branch":"task/51-sdk-migration-guide","pr":"https://github.com/acme/api/pull/412","sha":"4f9c2e1"}}"#,
+        fixture: "api-git-event",
+        response: "",
+        why: "",
     },
     Example {
         method: "reminder.fire",

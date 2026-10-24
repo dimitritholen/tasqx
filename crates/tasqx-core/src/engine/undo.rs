@@ -256,6 +256,12 @@ pub const NOT_UNDOABLE: &[(&str, &str)] = &[
          windows (D50).",
     ),
     (
+        "git.ref",
+        "A `git.ref` event is bookkeeping of what a PR event reported, and undo steps over it to \
+         the change before (D239); the transition it caused (`start`, `done`, a note) is its own \
+         event and undoes on its own.",
+    ),
+    (
         "reminded",
         "A `reminded` event is the dedupe key stopping a reminder firing twice, not a store \
          change; `tasqx modify <ref> --clear remind` stops the reminder instead.",
@@ -397,7 +403,7 @@ impl Engine {
         // module header.
         let newest: Option<(String, String, String, Option<String>, String)> = tx
             .query_row(
-                "SELECT id, entity_id, op, payload, ts FROM events WHERE op <> 'briefed' \
+                "SELECT id, entity_id, op, payload, ts FROM events WHERE op NOT IN ('briefed', 'git.ref') \
                  ORDER BY rowid DESC LIMIT 1",
                 [],
                 |r| {
@@ -432,7 +438,7 @@ impl Engine {
                 let prior: Option<(String, String, String, Option<String>, String)> = tx
                     .query_row(
                         "SELECT id, entity_id, op, payload, ts FROM events \
-                         WHERE op <> 'briefed' ORDER BY rowid DESC LIMIT 1 OFFSET 1",
+                         WHERE op NOT IN ('briefed', 'git.ref') ORDER BY rowid DESC LIMIT 1 OFFSET 1",
                         [],
                         |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
                     )

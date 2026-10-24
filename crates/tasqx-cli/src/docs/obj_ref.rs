@@ -65,7 +65,7 @@ pub(super) struct Object {
 const ON_A_TASK: &str = "On a task";
 
 /// The ten objects, in sidebar order.
-pub(super) const OBJECTS: [Object; 10] = [
+pub(super) const OBJECTS: [Object; 11] = [
     Object {
         id: "obj-task",
         name: "Task",
@@ -241,6 +241,21 @@ pub(super) const OBJECTS: [Object; 10] = [
         linked: &[],
         groups: &[("", "", d::EVENT_ROW)],
         example: ("event.list", "/events/0", &[]),
+    },
+    Object {
+        id: "obj-git-ref",
+        name: "Git ref",
+        lead: "A git ref is a branch, a PR or a merge commit a task was delivered through \
+               (D239). <code>git.event</code> records them from what a caller reports — tasqx \
+               never asks GitHub — and a task's refs are read under <code>git_refs</code>.",
+        namespaces: &["git"],
+        linked: &[],
+        groups: &[
+            ("", "", d::GIT_REF_ROW),
+            (ON_A_TASK, "", d::TASK_GIT_REFS),
+            (ON_A_TASK, "", d::TASK_EXPORT_GIT_REFS),
+        ],
+        example: ("task.get", "/git_refs/1", &[]),
     },
     Object {
         id: "obj-measurement",
