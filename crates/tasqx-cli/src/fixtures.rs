@@ -90,6 +90,7 @@ screens![
     "dashboard",
     "pick",
     "memory-browser",
+    "notes-browser",
     "api-show-json",
     "api-project-use",
     "api-project-archive",

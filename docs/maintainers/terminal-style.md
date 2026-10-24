@@ -9,7 +9,7 @@ and 140 columns. None of them were visible to a fully green test suite, and two
 of them — the gauge's resolution and its inverted ranking — could not have been
 found any other way. §14 is the loop that makes that cheap.
 
-`list`, `agenda`, the dashboard, the memory browser, `memory search`,
+`list`, `agenda`, the dashboard, the memory browser, the notes browser, `memory search`,
 `pick`, `show`, `next`, `why`, `projects`, `report`, `theme list`,
 `theme show`, `tasqx manual`, `tasqx about` and the write echoes (`add` and
 every verb that changes something, D126) carry the style. `config list` and `tokens recompute`

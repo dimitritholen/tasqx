@@ -23,5 +23,6 @@ EXAMPLES
 NOTE  One line per note: its number, its first line, a link mark (`↗`, `L` without Unicode) when it holds an http:// or https:// link, its project and the day it was added. A note that is only a link is never cut, so it stays copyable; its row runs past the terminal instead.
       Open notes by default; --archived shows the archived ones (promoted notes among them), --all both. --search is a plain substring, not a ranked search.
       `tasqx note <id>` prints one note whole.
+      On a terminal it opens a full-screen browser over the same notes instead, and the flags set where it opens; piped, or with --json, it prints the table. `j`/`k` move, `g`/`G` jump to the ends, `/` searches the text, `enter` reads a note whole (a link is shown whole, never opened), `esc` clears the search or leaves, `q` leaves. `a` archives or unarchives the note under the cursor, `t` and `m` promote it to a task or a memory doc, `x` removes it after a y/n, `l` keeps only the notes holding a link. Every write carries the revision the screen read, so a note changed elsewhere is a conflict on the screen, not a lost write. The dashboard's `N` opens the same browser.
 
 See also: note · memory        Full manual: tasqx manual

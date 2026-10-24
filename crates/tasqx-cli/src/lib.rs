@@ -31,6 +31,7 @@ pub mod fixtures;
 mod html;
 mod manual;
 mod memory_screen;
+mod notes_screen;
 mod pick_screen;
 mod render;
 mod serve;
@@ -49,6 +50,7 @@ use backend::*;
 use dashboard_screen::*;
 use docs_open::*;
 use memory_screen::*;
+use notes_screen::*;
 use pick_screen::*;
 use serve::*;
 use settings::*;
@@ -901,6 +903,36 @@ fn execute(cli: Cli) -> Exit {
         let paged = limit.is_some() || *offset > 0 || *standing;
         if memory_screen_active(&ctx.caps, cli.json, paged, term_size, stdout_tty, stdin_tty) {
             if let Err(e) = run_memory_screen(&mut backend, &ctx, project.as_deref()) {
+                eprintln!("error [{}]: {}", code_str(&e), e.message);
+                exit(e.exit_code());
+            }
+            return Exit::SelfFramed;
+        }
+    }
+
+    // `notes` on a terminal is the notes browser (task #929), opened by the
+    // memory browser's rule: `notes` has no paging flags, so nothing else
+    // turns a person's question into a script's.
+    if let Some(Command::Notes {
+        links,
+        archived,
+        all,
+        search,
+        project,
+    }) = &cli.command
+    {
+        if memory_screen_active(&ctx.caps, cli.json, false, term_size, stdout_tty, stdin_tty) {
+            let filter = tui::notes::Filter {
+                show: match (archived, all) {
+                    (true, _) => tui::notes::Show::Archived,
+                    (_, true) => tui::notes::Show::All,
+                    _ => tui::notes::Show::Open,
+                },
+                links: *links,
+                query: search.clone().unwrap_or_default(),
+                project: project.clone(),
+            };
+            if let Err(e) = run_notes_screen(&mut backend, &ctx, filter) {
                 eprintln!("error [{}]: {}", code_str(&e), e.message);
                 exit(e.exit_code());
             }

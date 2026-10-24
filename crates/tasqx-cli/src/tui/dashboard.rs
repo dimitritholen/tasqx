@@ -68,6 +68,9 @@ pub enum Action {
     /// to, so tearing the terminal down for it would flicker the whole
     /// dashboard to show one card.
     Detail(i64),
+    /// Hand over to the notes browser (D241, task #929), and come back here
+    /// when it closes, as [`Action::Pick`] does.
+    Notes,
 }
 
 /// The screen's state. A pure state machine: keys in, intents out, no terminal.
@@ -564,6 +567,7 @@ impl App {
                 }
             }
             KeyCode::Char('p') => Some(Action::Pick(self.focused_scope())),
+            KeyCode::Char('N') => Some(Action::Notes),
             KeyCode::Char('l') => Some(Action::List(self.focused_scope())),
             KeyCode::Char('?') => {
                 self.help = !self.help;
@@ -1428,6 +1432,15 @@ pub const KEYS: &[Key] = &[
             keys: "p",
             word: "pick",
             rank: 2,
+        }),
+    },
+    Key {
+        keys: "N",
+        help: "browse your notes: a archives, t and m promote, x removes",
+        footer: Some(Hint {
+            keys: "N",
+            word: "notes",
+            rank: 13,
         }),
     },
     Key {

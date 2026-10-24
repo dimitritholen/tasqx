@@ -116,6 +116,7 @@ api-report-summary	pipe	100	-	api	-	{"tasqx":"1","id":"r1","method":"report.summ
 dashboard	tui	132	36	dashboard	-	-
 pick	tui	120	40	pick	-	-
 memory-browser	tui	120	40	memory list	-	-
+notes-browser	tui	120	40	notes	-	-
 
 # --- API reference request/response pairs (#647) ---
 #

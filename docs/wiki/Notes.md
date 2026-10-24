@@ -2,8 +2,8 @@
 
 A note is for the thing you want to write down before it gets away: an idea,
 a link to read later, a question for tomorrow. It is not a task. It has no
-due date and no urgency, it stays out of `tasqx list`, `next`, the dashboard
-and the reports, and memory search never sees it. Write it in a second and
+due date and no urgency, it stays out of `tasqx list`, `next`, the dashboard's
+panels and the reports, and memory search never sees it. Write it in a second and
 forget it safely.
 
 When a note turns out to matter, promote it: it becomes a task, or a memory
@@ -91,6 +91,33 @@ the edge of the terminal instead.
 tasqx notes --links
 tasqx notes --search exporter --all
 ```
+
+### The notes browser
+
+On a terminal, `tasqx notes` opens a full-screen browser over the same
+notes, and the flags above decide where it opens: `--search` becomes the
+search you can edit, `--archived` and `--all` choose which notes it holds.
+Piped, or with `--json`, it prints the table.
+
+| Key | What it does |
+|---|---|
+| `j` / `k` | move down / up (the arrows too) |
+| `g` / `G` | first / last note |
+| `/` | search the notes' text, every word you type |
+| Enter | read the note whole; a link is shown in full and never opened |
+| Esc | clear the search; with none, leave (in a note, back to the list) |
+| `q` | leave (in a note, back to the list) |
+| `a` | archive the note, or bring an archived one back |
+| `t` | promote it to a task |
+| `m` | promote it to a memory doc |
+| `x` | remove it for good, after you answer `y` |
+| `l` | show only the notes holding a link, or all of them again |
+
+Each change says what it did on the line above the keys, and a refusal is
+shown there too: a note someone changed after the browser read it is
+refused rather than overwritten, and the list is read again. A promoted note
+does not offer `t` and `m`. From the [dashboard](Dashboard-and-Live-View.md),
+`N` opens the same browser, and closing it takes you back.
 
 ## Promote a note
 

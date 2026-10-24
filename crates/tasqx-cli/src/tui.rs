@@ -14,6 +14,7 @@ pub mod dashboard;
 pub(crate) mod fuzzy;
 pub(crate) mod list;
 pub mod memory;
+pub mod notes;
 pub mod pick;
 pub mod settings;
 pub mod setup;

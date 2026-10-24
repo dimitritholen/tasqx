@@ -438,6 +438,17 @@ pub(crate) fn run_dashboard(be: &mut Backend, ctx: &Ctx) -> Result<Option<String
                     now.to_zoned(jiff::tz::TimeZone::UTC).date(),
                 )?);
             }
+            Some(Action::Notes) => {
+                run_notes_screen(be, ctx, tui::notes::Filter::default())?;
+                // A promote there is a task here.
+                let now = crate::clock::now();
+                app.replace(dashboard_data(
+                    be,
+                    app.window_days(),
+                    now,
+                    now.to_zoned(jiff::tz::TimeZone::UTC).date(),
+                )?);
+            }
             // Quit, or nothing left to do.
             _ => return Ok(picked),
         }
