@@ -27,7 +27,8 @@ const NOTE_TITLE_CHARS: usize = 80;
 /// names, read in this store so a merge that renumbered it reads right.
 const NOTE_COLS: &str =
     "id, short_id, body, project, status, promoted_to, created, modified, rev, \
-     (SELECT t.short_id FROM tasks t WHERE notes.promoted_to = 'task:' || t.id)";
+     (SELECT t.short_id FROM tasks t WHERE substr(notes.promoted_to, 1, 5) = 'task:' \
+     AND t.id = substr(notes.promoted_to, 6))";
 
 /// Whether a body carries a web link. Derived on every read and never
 /// stored; `note.list {links: true}` asks SQL the same question.
@@ -290,8 +291,9 @@ impl Engine {
         // record of what it became, so it can never read open but promoted.
         if let (Some("open"), Some(target)) = (status.as_deref(), note["promoted_to"].as_str()) {
             return Err(ApiError::conflict(format!(
-                "note #{} was promoted to {target} and stays archived; cancel that task or \
-                 remove that doc to take the promotion back",
+                "note #{} was promoted to {target}: promotion is final and the note stays \
+                 archived as its record. If that task or doc is unwanted, cancel or remove it, \
+                 and add a new note to capture the idea again",
                 note["short_id"]
             )));
         }
@@ -565,6 +567,31 @@ pub(super) fn import_notes(
             ));
         }
         let promoted_to = opt_str_nonempty(nv, "promoted_to")?;
+        // The trust boundary: a promotion names its target by uuid, and a
+        // promoted note is never open (D241). A target this store lacks is
+        // legal; reads answer null for it.
+        if let Some(target) = &promoted_to {
+            let well_formed = target
+                .strip_prefix("task:")
+                .or_else(|| target.strip_prefix("memory:"))
+                .is_some_and(|id| Uuid::parse_str(id).is_ok());
+            if !well_formed {
+                return Err(field(
+                    "promoted_to",
+                    ApiError::bad_request(format!(
+                        "{target:?} is not `task:<uuid>` or `memory:<uuid>`"
+                    )),
+                ));
+            }
+            if status == "open" {
+                return Err(field(
+                    "status",
+                    ApiError::bad_request(format!(
+                        "`open` with promoted_to {target:?}: a promoted note is archived"
+                    )),
+                ));
+            }
+        }
         let now_ts = crate::clock::now();
         let created = opt_when(nv, "created", now_ts)
             .map_err(|e| field("created", e))?
@@ -588,18 +615,15 @@ pub(super) fn import_notes(
                 |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
             )
             .optional()?;
+        let held_promoted = stored.as_ref().and_then(|(_, _, p)| p.clone());
+        let adopts = held_promoted.is_none() && promoted_to.is_some();
+        // Every write below lands this pair, whichever path it takes.
+        let (status, promoted_to) = settle_promotion(held_promoted, promoted_to, status);
         match stored {
-            Some((held_rev, held_modified, held_promoted)) if merge => {
-                // Promotion is terminal: whichever side promoted, the merged
-                // row keeps it, archived; the rest follows later-`modified`.
-                let promoted = held_promoted.clone().or(promoted_to.clone());
-                let later = parse_ts(&modified) > parse_ts(&held_modified);
-                let wrote = if later {
-                    let status = if promoted.is_some() {
-                        "archived"
-                    } else {
-                        status.as_str()
-                    };
+            Some((held_rev, held_modified, _)) if merge => {
+                // The task rule (D185): the kept row's rev clears both sides'.
+                let merged_rev = held_rev.max(rev).saturating_add(1);
+                if parse_ts(&modified) > parse_ts(&held_modified) {
                     tx.execute(
                         "UPDATE notes SET body = ?2, project = ?3, status = ?4, \
                          promoted_to = ?5, modified = ?6, rev = ?7 WHERE id = ?1",
@@ -608,23 +632,17 @@ pub(super) fn import_notes(
                             body,
                             project,
                             status,
-                            promoted,
+                            promoted_to,
                             modified,
-                            held_rev.max(rev) + 1
+                            merged_rev
                         ],
                     )?;
-                    true
-                } else if held_promoted.is_none() && promoted.is_some() {
+                } else if adopts {
                     tx.execute(
-                        "UPDATE notes SET status = 'archived', promoted_to = ?2, \
-                         rev = rev + 1 WHERE id = ?1",
-                        params![nid, promoted],
+                        "UPDATE notes SET status = ?2, promoted_to = ?3, rev = ?4 WHERE id = ?1",
+                        params![nid, status, promoted_to, merged_rev],
                     )?;
-                    true
                 } else {
-                    false
-                };
-                if !wrote {
                     continue;
                 }
             }
@@ -691,17 +709,34 @@ pub(super) fn import_notes(
                 )?;
             }
         }
-        // Bookkeeping, like a task's: `store.export` never carries an `import`.
+        // Bookkeeping, like a task's: `store.export` never carries an
+        // `import`. It names the row as written, not as the payload had it.
         insert_event(
             tx,
             Entity::Note,
             &nid,
             "import",
-            &json!({ "status": status }),
+            &json!({ "status": status, "promoted_to": promoted_to }),
         )?;
         imported += 1;
     }
     Ok((imported, renumbered))
+}
+
+/// D241's one invariant for every `store.import` write of a note — insert,
+/// restore and merge alike: a note with `promoted_to` is archived, and a
+/// promotion this store already holds is never dropped by an import. Answers
+/// the `(status, promoted_to)` the write lands.
+fn settle_promotion(
+    held: Option<String>,
+    payload: Option<String>,
+    status: String,
+) -> (String, Option<String>) {
+    let promoted = held.or(payload);
+    match promoted {
+        Some(_) => ("archived".to_string(), promoted),
+        None => (status, None),
+    }
 }
 
 /// D197 for notes: delete every stored note whose removal is the latest word
@@ -735,5 +770,29 @@ mod tests {
         assert!(t.chars().count() <= 81, "{t}");
         let unbroken = "x".repeat(100);
         assert_eq!(note_title(&unbroken), format!("{}…", "x".repeat(80)));
+    }
+
+    /// Review round 2, item 4: the promoted task's short id is a key lookup
+    /// on `tasks.id`, never a scan of every task per note.
+    #[test]
+    fn the_promoted_task_lookup_searches_the_tasks_key() {
+        let e = crate::Engine::open_in_memory().unwrap();
+        let mut stmt = e
+            .conn
+            .prepare(&format!(
+                "EXPLAIN QUERY PLAN SELECT {} FROM notes",
+                super::NOTE_COLS
+            ))
+            .unwrap();
+        let plan: Vec<String> = stmt
+            .query_map([], |r| r.get::<_, String>(3))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert!(
+            plan.iter().any(|d| d.starts_with("SEARCH t USING")),
+            "{plan:?}"
+        );
+        assert!(!plan.iter().any(|d| d.starts_with("SCAN t")), "{plan:?}");
     }
 }

@@ -504,4 +504,107 @@ fn a_promoted_note_cannot_be_reopened() {
     let err = call(&e, "note.update", json!({ "id": 1, "status": "open" })).unwrap_err();
     assert_eq!(err.code, ErrorCode::Conflict);
     assert!(err.message.contains("task:"), "{}", err.message);
+    // An archived record can still be corrected.
+    let fixed = call(
+        &e,
+        "note.update",
+        json!({ "id": 1, "body": "x, corrected" }),
+    )
+    .unwrap();
+    assert_eq!(fixed["status"], json!("archived"));
+}
+
+/// Review round 2, item 1: a plain restore never drops a held promotion.
+#[test]
+fn a_restore_never_drops_a_held_promotion() {
+    let a = engine();
+    add(&a, "v1");
+    let b = engine();
+    call(
+        &b,
+        "store.import",
+        call(&a, "store.export", json!({})).unwrap(),
+    )
+    .unwrap();
+    call(&a, "note.promote", json!({ "id": 1, "to": "task" })).unwrap();
+    call(&b, "note.update", json!({ "id": 1, "body": "v2" })).unwrap();
+    call(
+        &a,
+        "store.import",
+        call(&b, "store.export", json!({})).unwrap(),
+    )
+    .unwrap();
+    let got = call(&a, "note.get", json!({ "id": 1 })).unwrap();
+    assert_eq!(got["status"], json!("archived"), "{got}");
+    assert!(got["promoted_to"].as_str().is_some(), "{got}");
+    assert_eq!(got["body"], json!("v2"), "{got}");
+}
+
+/// Item 2: an incoherent promotion in a payload is refused at the door.
+#[test]
+fn an_import_refuses_a_malformed_or_open_promotion() {
+    let a = engine();
+    add(&a, "x");
+    let base = call(&a, "store.export", json!({})).unwrap();
+    let id = base["notes"][0]["id"].as_str().unwrap().to_string();
+    for (status, target) in [
+        ("archived", "task:nonexistent".to_string()),
+        (
+            "archived",
+            "board:019f5a10-0000-7000-8000-00000000b001".to_string(),
+        ),
+        (
+            "open",
+            "task:019f5a10-0000-7000-8000-00000000b001".to_string(),
+        ),
+    ] {
+        let mut doc = base.clone();
+        doc["notes"][0]["status"] = json!(status);
+        doc["notes"][0]["promoted_to"] = json!(target);
+        let err = call(&engine(), "store.import", doc).unwrap_err();
+        assert_eq!(err.code, ErrorCode::BadRequest, "{target}: {}", err.message);
+        assert!(err.message.contains(&id), "{}", err.message);
+    }
+    // A target this store does not hold is still legal.
+    let mut doc = base.clone();
+    doc["notes"][0]["status"] = json!("archived");
+    doc["notes"][0]["promoted_to"] = json!("task:019f5a10-0000-7000-8000-00000000b001");
+    let e = engine();
+    call(&e, "store.import", doc).unwrap();
+    assert_eq!(
+        call(&e, "note.get", json!({ "id": 1 })).unwrap()["promoted_task_short_id"],
+        Value::Null
+    );
+}
+
+/// Item 3: a merge that adopts a promotion logs what it wrote, and the rev
+/// clears both sides' (`max(held, payload) + 1`, the task rule).
+#[test]
+fn a_merge_adopting_a_promotion_logs_the_row_written_and_lifts_the_rev() {
+    let a = engine();
+    add(&a, "v0");
+    let b = engine();
+    call(
+        &b,
+        "store.import",
+        call(&a, "store.export", json!({})).unwrap(),
+    )
+    .unwrap();
+    for body in ["v1", "v2", "v3"] {
+        call(&a, "note.update", json!({ "id": 1, "body": body })).unwrap();
+    }
+    call(&a, "note.promote", json!({ "id": 1, "to": "task" })).unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(5));
+    call(&b, "note.update", json!({ "id": 1, "body": "b later" })).unwrap();
+    let mut doc = call(&a, "store.export", json!({})).unwrap();
+    doc["merge"] = json!(true);
+    call(&b, "store.import", doc).unwrap();
+    let got = call(&b, "note.get", json!({ "id": 1 })).unwrap();
+    assert_eq!(got["body"], json!("b later"), "{got}");
+    assert_eq!(got["status"], json!("archived"), "{got}");
+    assert_eq!(got["_rev"], json!(5), "max(1, 4) + 1: {got}");
+    let events = call(&b, "event.list", json!({ "entity": "note", "limit": 1 })).unwrap();
+    let ev = &events["events"][0];
+    assert_eq!(ev["op"], json!("import"), "{ev}");
+    assert_eq!(ev["payload"]["status"], json!("archived"), "{ev}");
 }
