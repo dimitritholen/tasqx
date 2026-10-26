@@ -199,8 +199,6 @@ succeeds.
 
 ## tasqx annotate
 
-*Alias: `note`*
-
 Attach a timestamped note to a task. The text is stored exactly as you typed
 it — multi-line, markdown, links, all preserved.
 

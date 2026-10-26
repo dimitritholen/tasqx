@@ -25,7 +25,7 @@ the text it could not store.
 
 tasqx holds a backlog of tasks and one searchable index over two things: knowledge
 docs, and the annotations written on tasks. Reach it over MCP (`tasqx_*` tools) and,
-for the verbs MCP does not carry (`next`, `undo`, `memory import`, `report --html`),
+for the verbs MCP does not carry (`undo`, `memory import`, `report --html`),
 the `tasqx` CLI — always spell the verb (`tasqx list`, never a bare `tasqx`, which opens
 a full-screen dashboard and hangs a tool call). Use it instead of in-conversation todo
 lists and instead of any other memory file.
@@ -145,20 +145,19 @@ Import is the bulk load; `tasqx_add_memory` in a loop is not.
 
 ## The one way re-importing bites
 
-"Spell the directory the same way every time" is a real instruction, not politeness. The
-source key is the file path as it was handed in, so two spellings of one directory are
-two documents:
+The source key is the repo's directory name plus the file's path inside the repo,
+not the path as it was handed in, so the obvious spellings of one directory land
+on the same document:
 
-    tasqx memory import ~/notes        # 1 hit
-    tasqx memory import ~/notes/       # still 1 hit — the trailing slash collapses
-    tasqx memory import ~/./notes      # 2 hits, and both are the same file
+    tasqx memory import ~/notes        # 1 doc
+    tasqx memory import ~/notes/       # the same doc, unchanged
+    tasqx memory import ~/./notes      # the same doc, unchanged
 
-The middle line is why this is worth spelling out: the obvious variation is harmless, so
-the habit that would catch the harmful one never forms. Nothing warns you, and the
-duplicate is invisible until a search returns the same paragraph twice under two paths.
-`tasqx memory search` prints the source path with each hit, which is how you spot it,
-and `tasqx_remove_memory` (or `tasqx memory rm <id>`) on the wrong-spelling copy is the
-fix.
+What makes a second document is a key written under another root or by an older
+build. Import tells you when it sees one: `is an older key of the same file as`,
+with the `tasqx memory rm <id>` that removes the old copy. `tasqx_remove_memory`
+does the same over MCP, and `tasqx memory search` prints the source path with
+each hit, which is how you spot one the note did not catch.
 
 ## Where this stops
 

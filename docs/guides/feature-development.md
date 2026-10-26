@@ -49,7 +49,7 @@ See ADR-012 for the locking decision.'
 ## Work it, one task at a time
 
 - `tasqx next`: the single highest-urgency unblocked task
-- `tasqx done 1`: prints `unblocked #2`
+- `tasqx done 1`: prints `#2  unblocked - <title>` under the done line for each task it released
 
 ```console
 tasqx next
@@ -66,6 +66,6 @@ what you have not started yet.
 
 ## Where this stops
 
-tasqx is single-user and local. There are no assignees, no sprints, no boards. The
-moment a second person needs to work the same backlog, you have outgrown this
-pattern.
+tasqx is single-user and local. There are no sprints, and `tasqx claim` keeps agents off the same task but
+assigns nothing to a person. The moment a second person needs to work the same
+backlog, you have outgrown this pattern.

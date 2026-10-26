@@ -230,8 +230,9 @@ Remove one document, permanently, by id.
 tasqx memory rm 019f8422-7b3e-7c41-a2d9-6f1b0e5c8a12
 ```
 
-This is the one genuinely permanent delete in tasqx, and it exists on purpose:
-something stored wrong needs a way to be retracted. It is outside `undo`.
+This is a permanent delete, like `tasqx unannotate` and removing a note, and
+it exists on purpose: something stored wrong needs a way to be retracted. It is
+outside `undo`.
 
 Reach for it only when the document should not exist at all. To fix what one
 *says*, [`tasqx memory update`](#tasqx-memory-update) rewrites it in place and

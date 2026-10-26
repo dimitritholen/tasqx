@@ -142,9 +142,8 @@ Safety properties worth knowing:
 - **There's no bulk-delete tool, on purpose.** Cancelling goes through the
   same reversible, logged path as everything else, so an agent can't quietly
   destroy a week of work.
-- The one permanent delete (`remove_memory`, for retracting a wrongly stored
-  document) says so in its own description, so the host's confirmation gate
-  applies.
+- The permanent deletes (`remove_memory`, `remove_annotation`, `remove_note`)
+  each say so in their description, so the host's confirmation gate applies.
 - **`initialize` answers with `instructions`,** a scope-aware workflow the
   host may inject into the agent's system prompt; under read-only scope it
   names no write tool. It also carries the session's standing memory docs,
