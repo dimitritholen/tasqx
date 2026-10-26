@@ -19,6 +19,7 @@ task, and where to find help.
 | `use` | Choose your default project | [Projects](Projects.md#tasqx-use) |
 | `projects` | List your projects | [Projects](Projects.md#tasqx-projects) |
 | `archive` | Retire a project | [Projects](Projects.md#tasqx-archive) |
+| `unarchive` | Bring a retired project back | [Projects](Projects.md#tasqx-unarchive) |
 
 **Write things down**
 
@@ -50,6 +51,7 @@ task, and where to find help.
 | `start` / `stop` | Track time on a task | [Working on Tasks](Working-on-Tasks.md#tasqx-start) |
 | `claim` | Hold a task so other agents skip it | [Working on Tasks](Working-on-Tasks.md#tasqx-claim) |
 | `release` | Give a claim up | [Working on Tasks](Working-on-Tasks.md#tasqx-release) |
+| `adjust` | Correct the time tracked on a task | [Working on Tasks](Working-on-Tasks.md#tasqx-adjust) |
 | `done` | Complete a task | [Working on Tasks](Working-on-Tasks.md#tasqx-done) |
 | `cancel` | Cancel a task (reversibly) | [Working on Tasks](Working-on-Tasks.md#tasqx-cancel) |
 | `reopen` | Bring a finished task back | [Working on Tasks](Working-on-Tasks.md#tasqx-reopen) |
@@ -65,6 +67,7 @@ task, and where to find help.
 |---|---|---|
 | `dashboard` | Full-screen overview of everything | [Dashboard and Live View](Dashboard-and-Live-View.md#tasqx-dashboard) |
 | `watch` | A task list that updates itself | [Dashboard and Live View](Dashboard-and-Live-View.md#tasqx-watch) |
+| `board` | The live view as a browser kanban you drag cards on | [Dashboard and Live View](Dashboard-and-Live-View.md#tasqx-board) |
 | `report` | Summary counts, in the terminal or as HTML | [Reports and Charts](Reports-and-Charts.md#tasqx-report) |
 | `chart` | Throughput, heatmap and burndown charts | [Reports and Charts](Reports-and-Charts.md#tasqx-chart) |
 

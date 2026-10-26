@@ -34,6 +34,27 @@ Worth knowing:
   where your `$TASQX_DB` names a different file than the daemon serves, so
   the daemon was passed over.
 
+### Every setting
+
+`tasqx config list` prints these with their live value and source.
+
+| Setting | Default | What it does |
+|---|---|---|
+| `theme.name` | `nord` | The terminal theme ([below](#tasqx-theme)). Also `--theme` and `$TASQX_THEME` |
+| `dashboard.enabled` | `true` | A bare `tasqx` on a terminal opens the dashboard; `false` prints the list instead. `$TASQX_DASHBOARD` overrides it |
+| `dashboard.panels` | `tasks,projects,burndown,pulse,effort,tokens` | Which panels the dashboard draws, in tab order |
+| `dashboard.refresh` | `auto` | `auto` re-reads on a timer, `manual` only on `r` |
+| `dashboard.window` | `week` | The burndown window it opens on (`week`, `14d`, `30d`); `w` cycles it |
+| `notify.enabled` | `false` | Lets the daemon raise OS notifications for reminders |
+| `tokens.enabled` | `false` | Lets the daemon attribute AI token use from local tool transcripts |
+| `otlp.enabled` | `false` | Runs a local OTLP/HTTP receiver in the daemon for token telemetry |
+| `otlp.port` | `4318` | The port it binds on 127.0.0.1 |
+| `board.port` | `0` | The port `tasqx board` binds; `0` takes a free one each run, a fixed one keeps the board's token so a bookmark survives |
+| `daemon.idle_timeout` | `0` | Minutes of idleness after which `tasqx daemon` exits; `0` stays up |
+| `default_project` | none | Where a bare `tasqx add` files; kept in the store, set with `tasqx use` |
+| `mcp.add_status` | `pending` | Status of a task added over MCP when the call names none; `triage` holds agent proposals until `tasqx accept` |
+| `detail.time_format` | `both` | How `show` and the MCP task view write timestamps: `iso`, `relative` or `both` |
+
 ## tasqx theme
 
 | Command | What it does |

@@ -113,6 +113,26 @@ open is not refused; it is counted, and `tasqx_outcomes` reports the count.
 `tasqx_add_dependency` lets the agent decompose a feature itself: capture subtasks
 with `tasqx_add_task`, wire the order, then work the chain.
 
+## Several agents, proposals and notes
+
+- **Claims.** With more than one agent on a store, `tasqx_claim_task` first and
+  `tasqx_release_task` when done: a claimed task leaves the other agents'
+  `next` and `@working`, and `@claimed` lists what is held. See
+  [Working on Tasks](../wiki/Working-on-Tasks.md#tasqx-claim).
+- **Proposals.** `tasqx config set mcp.add_status triage` makes every task an
+  agent adds a proposal that waits for your `tasqx triage`, `accept`, `decline`
+  or `duplicate`. See [Working on Tasks](../wiki/Working-on-Tasks.md#tasqx-triage).
+- **Duplicates.** `tasqx_add_task` returns `similar`, the open tasks in the same
+  project that read like the new one; look before adding another.
+- **Notes.** `tasqx_add_note` and its siblings capture a thought that is not yet
+  a task or a memory doc. See [Notes](../wiki/Notes.md).
+- **Pull requests.** `tasqx git event` lets a PR start or complete its task. See
+  [Working on Tasks](../wiki/Working-on-Tasks.md#tasqx-git).
+- **Stale rulings.** A memory hit carries `stale_refs`, the files and symbols
+  it cites that the checkout no longer has. See [Memory](../wiki/Memory.md).
+- **Setup.** `tasqx setup --list` shows what is installed and `--only retro`
+  installs one item. See [AI Agents and Automation](../wiki/AI-Agents-and-Automation.md).
+
 ## Give the agent memory
 
 `tasqx memory import docs/` turns a directory of markdown docs — ADRs, runbooks,

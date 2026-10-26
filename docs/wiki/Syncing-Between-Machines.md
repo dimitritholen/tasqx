@@ -93,8 +93,9 @@ store exactly the way `tasqx import --merge` does (see
 [Import and Export](Import-and-Export.md#tasqx-import)), then exports and
 pushes the result back. If another machine pushed in between, it merges that
 too and tries again, three times at most; failing on the third names it a
-conflict and says to run `tasqx sync` again — nothing already merged is lost,
-since merging is idempotent. When the remote already holds exactly this store
+conflict and says to run `tasqx sync` again (exit code 5, `conflict`, so a script
+can retry on it) — nothing already merged is lost, since merging is idempotent.
+Sync has no MCP tool: it runs in your shell, not from an agent session. When the remote already holds exactly this store
 (nothing changed on either side), nothing is pushed.
 
 `tasqx sync --status` prints the connector, the last version synced
@@ -134,7 +135,9 @@ Off a terminal, every setup field must come from `--set` (a missing one is
 refused, naming it) or the environment — a secret field still cannot come
 from `--set`. For `tasqx-remote-r2` specifically, `TASQX_R2_SECRET_ACCESS_KEY`
 answers the Secret Access Key without a keyring, which a headless box may not
-have. The sync passphrase itself, needed by `sync setup` and read again by
+have. `TASQX_R2_ENDPOINT` replaces the default `https://<account_id>.r2.cloudflarestorage.com`
+for a bucket in a jurisdiction, such as `https://<account_id>.eu.r2.cloudflarestorage.com`
+for the EU. The sync passphrase itself, needed by `sync setup` and read again by
 every later `sync`, comes from `TASQX_SYNC_PASSPHRASE`.
 
 ```console

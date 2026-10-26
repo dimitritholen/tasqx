@@ -158,6 +158,14 @@ tasqx done 42
   --force` completes it anyway; the override is recorded on the completion
   and `tasqx report --outcomes` counts it under FORCED. Cancelling a blocked
   task never needs the flag.
+- Report what the work cost with `--tool`, `--model` and `--input-tokens`,
+  `--output-tokens`, `--cache-read-tokens`, `--cache-creation-tokens` (or one
+  unsplit `--total-tokens`). Any count records a measurement; `--tool` and
+  `--model` alone still land on the completion.
+
+```console
+tasqx done 42 --tool claude-code --model claude-opus-5 --input-tokens 4200 --output-tokens 900
+```
 
 ## tasqx cancel
 

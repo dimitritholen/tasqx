@@ -62,7 +62,11 @@ nobody annotated — the ones that taught the next session nothing. CALIB is the
 median tracked-over-estimate ratio, which is the "4h tasks are 9h tasks"
 sentence above as a number. DROPPED is work that was started and then
 cancelled. FORCED counts completions that overrode an open blocker with
-`--force`.
+`--force`. OVER counts completions that went past their token budget, UNPROVEN
+those that closed with an acceptance check still open or failed, and UNBRIEFED
+those whose task nobody ran `tasqx brief` on first; each is read against the
+completions that could have been one. [Reports and Charts](../wiki/Reports-and-Charts.md#tasqx-report)
+has the full column table.
 
 Every rate reads `count/n`, never a percentage, and the reason is worth a
 sentence at a standup: 3/12 and 3/3 are the same percentage and very different

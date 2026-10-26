@@ -21,7 +21,8 @@ tasqx export project:work > work.json
 tasqx export --out backup.json
 ```
 
-- The document carries projects, your memory docs, the graph's links and your
+- The document carries projects, your memory docs, your [quick-capture
+  notes](Notes.md), the graph's links and your
   default-project setting too, so a restore gives back the store, not just its
   tasks.
 - A filtered export that cuts across a dependency (one task in, its
@@ -37,7 +38,8 @@ tasqx export --out backup.json
   document, so the edge to it is dropped and counted under `dropped_links` like
   any other. Any *other* filter scopes those
   four to what the exported tasks actually need, and reports what it left out
-  (`dropped_projects`, `dropped_docs`, `dropped_links`, `dropped_events`):
+  (`dropped_projects`, `dropped_docs`, `dropped_notes`, `dropped_links`,
+  `dropped_events`; notes follow a doc's project rule):
   sharing
   `tasqx export project:ledger` no longer ships every other project's
   knowledge along with it. A doc that carries no project ships only with
@@ -330,7 +332,8 @@ forward reference is fine.
 ## Checking a restore
 
 A store exported and imported into an empty one comes back with every task,
-project, memory doc, link, check, tag, dependency, timer and note, and the
+project, memory doc, quick-capture note, link, check, tag, dependency, timer
+and task annotation, and the
 event history behind them. Counted straight from the database, three numbers
 still differ, on purpose, and `tasqx export --out backup.json` names each one
 under the path it wrote (`--json` gives the counts as fields):
