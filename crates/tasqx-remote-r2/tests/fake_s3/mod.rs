@@ -48,6 +48,8 @@ struct State {
     seen: Vec<Seen>,
     /// Canned answers for the next requests: (status, S3 error code).
     forced: VecDeque<(u16, &'static str)>,
+    /// Answer the next PUT as R2 did on 2026-10-26 (D244).
+    reject_early: bool,
     etags: u64,
 }
 
@@ -89,6 +91,15 @@ impl FakeS3 {
         self.state.lock().unwrap().forced.push_back((status, code));
     }
 
+    /// Answer the next PUT as R2 does when it rejects one: read the headers
+    /// and a little of the body, send 412 PreconditionFailed, and close with
+    /// the rest unread. Closing over unread bytes makes the kernel reset the
+    /// connection, so a client still writing a body larger than the socket
+    /// buffers fails its write (EPIPE or ECONNRESET) and never sees the 412.
+    pub fn reject_next_put_early(&self) {
+        self.state.lock().unwrap().reject_early = true;
+    }
+
     pub fn seen(&self) -> Vec<Seen> {
         self.state.lock().unwrap().seen.clone()
     }
@@ -117,6 +128,25 @@ fn serve(stream: TcpStream, port: u16, state: &Mutex<State>) {
         }
         let (k, v) = h.split_once(':').unwrap();
         headers.insert(k.trim().to_ascii_lowercase(), v.trim().to_string());
+    }
+    if method == "PUT" && std::mem::take(&mut state.lock().unwrap().reject_early) {
+        let mut some = vec![0; 64 * 1024];
+        let _ = reader.read(&mut some);
+        state.lock().unwrap().seen.push(Seen {
+            method,
+            path,
+            headers,
+            body: Vec::new(),
+        });
+        let (status, _, reply) = error(412, "PreconditionFailed");
+        let head = format!(
+            "HTTP/1.1 {status} X\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+            reply.len()
+        );
+        let mut out = &stream;
+        let _ = out.write_all(head.as_bytes());
+        let _ = out.write_all(&reply);
+        return;
     }
     let len: usize = headers
         .get("content-length")
@@ -231,6 +261,10 @@ fn answer(seen: &Seen, port: u16, state: &Mutex<State>) -> (u16, Vec<(String, St
                 Some("bytes=0-0") => (206, quoted(etag), bytes[..1].to_vec()),
                 _ => (200, quoted(etag), bytes.clone()),
             },
+        },
+        "HEAD" => match st.objects.get(&seen.path) {
+            None => error(404, "NoSuchKey"),
+            Some((etag, _)) => (200, quoted(etag), Vec::new()),
         },
         "PUT" => {
             let current = st.objects.get(&seen.path).map(|(e, _)| e.clone());

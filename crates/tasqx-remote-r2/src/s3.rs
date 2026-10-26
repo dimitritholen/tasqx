@@ -111,6 +111,28 @@ pub struct Client {
     secret: String,
 }
 
+/// Why [`Client::send`] got no response.
+#[derive(Debug)]
+pub struct SendError {
+    pub message: String,
+    /// The connection failed under the request (refused, reset, broken
+    /// pipe): not a timeout, and not a request that was never built. A PUT
+    /// that fails so may have been rejected, or landed, unseen (D244).
+    pub transport: bool,
+}
+
+impl From<SendError> for String {
+    fn from(e: SendError) -> Self {
+        e.message
+    }
+}
+
+impl std::fmt::Display for SendError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.message)
+    }
+}
+
 /// What a PUT carries: the open file and the SHA-256 of its bytes.
 pub struct Upload {
     pub file: File,
@@ -156,10 +178,14 @@ impl Client {
         path: &str,
         headers: &[(&str, &str)],
         upload: Option<Upload>,
-    ) -> Result<http::Response<ureq::Body>, String> {
+    ) -> Result<http::Response<ureq::Body>, SendError> {
+        let local = |message: String| SendError {
+            message,
+            transport: false,
+        };
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
-            .map_err(|_| "the system clock is set before 1970".to_string())?
+            .map_err(|_| local("the system clock is set before 1970".to_string()))?
             .as_secs();
         let amz_date = sigv4::amz_date(now);
         let payload = upload
@@ -202,12 +228,16 @@ impl Client {
                 .map_err(|e| e.to_string())
                 .map(|r| self.agent.run(r)),
         }
-        .map_err(|e| format!("cannot build the request: {e}"))?;
+        .map_err(|e| local(format!("cannot build the request: {e}")))?;
         sent.map_err(|e| match e {
-            ureq::Error::Timeout(_) => {
-                format!("R2 at {} did not answer in time ({e})", self.base())
-            }
-            e => format!("cannot reach R2 at {}: {e}", self.base()),
+            ureq::Error::Timeout(_) => local(format!(
+                "R2 at {} did not answer in time ({e})",
+                self.base()
+            )),
+            e => SendError {
+                message: format!("cannot reach R2 at {}: {e}", self.base()),
+                transport: true,
+            },
         })
     }
 }
@@ -336,6 +366,7 @@ mod tests {
         let endpoint = Endpoint::parse(&format!("https://127.0.0.1:{port}")).unwrap();
         let client = Client::new(endpoint, "AKID", "secret");
         let err = client.send("GET", "/b/k", &[], None).unwrap_err();
-        assert!(err.contains("cannot reach R2"), "{err}");
+        assert!(err.message.contains("cannot reach R2"), "{err}");
+        assert!(err.transport, "{err}");
     }
 }
