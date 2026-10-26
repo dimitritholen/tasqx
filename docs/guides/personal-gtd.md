@@ -19,6 +19,10 @@ Dates take natural language â€” `tomorrow`, `friday 17:00`, `in 3 days`, `eom` â
 reminders anchor to the due date, so when the due date moves, the reminder moves
 with it.
 
+Not sure it is a task yet? `tasqx note "read the RFC about retries"` captures it
+outside your list, and `tasqx notes` shows them later; see
+[Notes](../wiki/Notes.md).
+
 ## Look only at what matters
 
 `tasqx list` is the working set: pending and active tasks that are not blocked,

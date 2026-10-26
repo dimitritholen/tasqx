@@ -57,6 +57,11 @@ tasqx start 1
 tasqx done 1
 ```
 
+If your pull requests follow the `task/<id>-<slug>` branch naming, `tasqx git event`
+can start and complete the task from the PR itself; see
+[Working on Tasks](../wiki/Working-on-Tasks.md#tasqx-git). Moving to another
+machine? See [Syncing Between Machines](../wiki/Syncing-Between-Machines.md).
+
 `done` announces what its completion released — you never have to work out what is
 next by hand. `tasqx list project:myapp.checkout` shows the whole feature;
 `tasqx report project:myapp.checkout` totals the feature's estimates — done work

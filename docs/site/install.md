@@ -48,6 +48,14 @@ cargo install --path crates/tasqx-cli --force
 Requires Rust 1.95 or newer. On Windows the MSVC toolchain is discovered
 automatically — you do not need it on your PATH.
 
+That installs `tasqx` alone. To [sync between machines](Syncing-Between-Machines.md),
+also build the connector you use:
+
+```console
+cargo install --path crates/tasqx-remote-dir --force
+cargo install --path crates/tasqx-remote-r2 --force
+```
+
 ## Sixty seconds with tasqx
 
 Create a project, capture some work, and look at it.

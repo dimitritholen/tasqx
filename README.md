@@ -41,7 +41,7 @@ shell.
 
 ## Quick start
 
-**1. Install.** macOS and Linux with Homebrew, Windows with Scoop:
+**1. Install.** macOS and x86-64 Linux with Homebrew, Windows with Scoop:
 
 ```console
 brew install dimitritholen/tasqx/tasqx

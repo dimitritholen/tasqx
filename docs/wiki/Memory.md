@@ -69,6 +69,9 @@ tasqx memory search blue-green
   be. Lower finds more distant paraphrases, and more noise.
 - The model reads English; text in another language is found mostly where the
   query shares its words.
+- `--scope docs` or `--scope annotations` searches only one half (default `all`).
+  `--source-prefix docs/adr/` keeps only the docs whose source starts with that
+  text (literal, case-sensitive) and leaves annotations out.
 - Power users can pass `--raw` for FTS5 operator syntax (words only).
 - The answer includes the query that actually ran, so "no hits" is
   distinguishable from "nothing stored about this".
