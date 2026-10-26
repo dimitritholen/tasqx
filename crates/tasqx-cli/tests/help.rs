@@ -10,9 +10,19 @@ use tasqx_cli::cmddoc::{RunKind, COMMAND_REF};
 /// file its `init`/`add` examples into the developer's real store and then
 /// judge that store instead of the scratch one it set up. Global flag, so it
 /// rides in front of every subcommand these tests reach.
+///
+/// `TASQX_DB` and `TASQX_CONFIG_DIR` are set too (D242): a test that reaches
+/// the store without naming one (`config edit`, `--help`) would otherwise open
+/// and migrate the developer's real platform store. A test that needs a
+/// particular path overrides both with a later `.env`.
 fn bin() -> Command {
+    static N: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    let n = N.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let db = std::env::temp_dir().join(format!("tasqx-help-bin-{}-{n}", std::process::id()));
     let mut c = Command::new(env!("CARGO_BIN_EXE_tasqx"));
-    c.arg("--no-daemon");
+    c.arg("--no-daemon")
+        .env("TASQX_DB", db.join("tasks.db"))
+        .env("TASQX_CONFIG_DIR", "");
     c
 }
 
