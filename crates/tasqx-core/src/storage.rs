@@ -158,10 +158,52 @@ fn configure(conn: &Connection) -> Result<(), ApiError> {
     Ok(())
 }
 
+/// The columns `task_git_refs` has today, for [`reconcile_task_git_refs`].
+const TASK_GIT_REFS_COLUMNS: [&str; 8] = [
+    "id", "task_id", "kind", "ref", "state", "created", "modified", "noted",
+];
+
+/// D242: `CREATE TABLE IF NOT EXISTS` leaves a `task_git_refs` an unreleased
+/// build created in another shape untouched, and every read then fails on a
+/// missing column. No released build ever wrote the table, so a stale empty
+/// one is dropped (the batch below recreates it) and a stale one holding rows
+/// is refused by name, never rewritten blind.
+fn reconcile_task_git_refs(conn: &Connection) -> Result<(), ApiError> {
+    let have: Vec<String> = conn
+        .prepare("SELECT name FROM pragma_table_info('task_git_refs')")
+        .and_then(|mut q| q.query_map([], |r| r.get(0))?.collect())
+        .map_err(|e| ApiError::internal(format!("cannot inspect task_git_refs: {e}")))?;
+    if have.is_empty() {
+        return Ok(()); // no such table yet
+    }
+    let missing: Vec<&str> = TASK_GIT_REFS_COLUMNS
+        .into_iter()
+        .filter(|c| !have.iter().any(|h| h == c))
+        .collect();
+    if missing.is_empty() {
+        return Ok(());
+    }
+    let rows: i64 = conn
+        .query_row("SELECT COUNT(*) FROM task_git_refs", [], |r| r.get(0))
+        .map_err(|e| ApiError::internal(format!("cannot inspect task_git_refs: {e}")))?;
+    if rows > 0 {
+        return Err(ApiError::internal(format!(
+            "table task_git_refs is missing column(s) {} and holds {rows} row(s): \
+             a pre-release build created it in an older shape, and tasqx will not \
+             rewrite rows it cannot map. Export what you need, then drop the table \
+             (DROP TABLE task_git_refs) and reopen the store (D242)",
+            missing.join(", ")
+        )));
+    }
+    conn.execute_batch("DROP TABLE task_git_refs")
+        .map_err(|e| ApiError::internal(format!("cannot recreate task_git_refs: {e}")))
+}
+
 /// Idempotent schema migration. Creates all MVP entity tables plus the
 /// append-only event log and the `meta` counter table, with indices sized for
 /// the §5 list filters (status, project, due, tag).
 fn migrate(conn: &Connection) -> Result<(), ApiError> {
+    reconcile_task_git_refs(conn)?;
     conn.execute_batch(
         r#"
         CREATE TABLE IF NOT EXISTS meta (
@@ -1656,6 +1698,53 @@ pub fn ensure_tag_link(tx: &Transaction, task_id: &str, tag_name: &str) -> Resul
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const ROUND1_GIT_REFS: &str = "CREATE TABLE task_git_refs (id TEXT PRIMARY KEY, \
+        task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE, kind TEXT NOT NULL, \
+        ref TEXT NOT NULL, url TEXT, state TEXT NOT NULL, created TEXT NOT NULL, \
+        UNIQUE(task_id, kind, ref))";
+
+    fn git_refs_columns(conn: &Connection) -> Vec<String> {
+        conn.prepare("SELECT name FROM pragma_table_info('task_git_refs')")
+            .unwrap()
+            .query_map([], |r| r.get(0))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap()
+    }
+
+    /// D242: an empty `task_git_refs` in an unreleased shape is recreated.
+    #[test]
+    fn an_empty_round_one_task_git_refs_is_recreated() {
+        let conn = open_in_memory().unwrap();
+        conn.execute_batch(&format!("DROP TABLE task_git_refs; {ROUND1_GIT_REFS}"))
+            .unwrap();
+
+        migrate(&conn).unwrap();
+
+        let cols = git_refs_columns(&conn);
+        assert!(cols.iter().any(|c| c == "modified") && cols.iter().any(|c| c == "noted"));
+        assert!(!cols.iter().any(|c| c == "url"), "{cols:?}");
+    }
+
+    /// D242: one holding rows is refused, naming the table and the columns.
+    #[test]
+    fn a_round_one_task_git_refs_with_rows_is_refused_by_name() {
+        let conn = open_in_memory().unwrap();
+        conn.execute_batch(&format!(
+            "DROP TABLE task_git_refs; {ROUND1_GIT_REFS};
+             INSERT INTO tasks (id, short_id, title, status, created, modified)
+                VALUES ('t',1,'x','pending','t','t');
+             INSERT INTO task_git_refs VALUES ('g','t','branch','b',NULL,'open','x');"
+        ))
+        .unwrap();
+
+        let err = migrate(&conn).unwrap_err().message;
+
+        assert!(err.contains("task_git_refs"), "{err}");
+        assert!(err.contains("modified, noted"), "{err}");
+        assert!(err.contains("pre-release"), "{err}");
+    }
 
     fn fk_count(conn: &Connection) -> usize {
         conn.prepare("PRAGMA foreign_key_list(dependencies)")
