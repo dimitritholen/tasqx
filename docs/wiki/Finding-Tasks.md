@@ -126,11 +126,15 @@ Everything that lists tasks (`list`, `agenda`, `pick`, `watch`, `report`,
 | Filter | Matches |
 |---|---|
 | `project:work` | In a project |
-| `status:pending` | By status |
+| `proj:work` | The same as `project:` |
+| `status:pending` | By status: `triage`, `backlog`, `pending`, `active`, `done`, `cancelled` |
+| `priority:high` | By priority: `H`, `M`, `L`, or `high`, `medium`, `low` |
 | `+api` | Has a tag |
 | `-api` | Does NOT have a tag |
 | `due.before:friday` | Due before a date |
 | `due.after:monday` | Due after a date |
+| `completed.before:friday` | Finished before a date |
+| `completed.after:monday` | Finished after a date (pair it with `status:done`) |
 | `weekly review` | Title contains every word, any case |
 | `'"memory explorer"'` | Title contains the phrase |
 | `title:review` | The same, spelled as a key |
