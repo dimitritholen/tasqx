@@ -14,6 +14,8 @@ One small grammar, used everywhere a query is taken: `list`, `report`, `export`,
 | `+api` | Tasks tagged `api`. |
 | `-api` | Tasks *not* tagged `api`. |
 | `project:work.tasqx` | Exact project match. |
+| `proj:work` | The same as `project:`. |
+| `priority:high` | Exact priority: `H`, `M`, `L`, or `high`, `medium`, `low`. |
 | `status:pending` | Exact status: `triage`, `backlog`, `pending`, `active`, `done`, `cancelled`. `backlog` is the date-held backlog; a proposal in `triage` (D238) is never in it. |
 | `status:any` | Every status, `done` and `cancelled` included; also spelled `status:all`. Overrides a default that hides closed tasks. |
 | `weekly review` | Free text: a bare word is a case-insensitive substring of the title, and several words must all appear. Quote a phrase to match it as one — `"memory explorer"`. `title:review` and `title:"weekly planning"` are the explicit spelling; `%` and `_` are ordinary characters. |
@@ -21,6 +23,9 @@ One small grammar, used everywhere a query is taken: `list`, `report`, `export`,
 | `@blocked` | Open, with at least one dependency that is not yet done or cancelled. Also spelled `+blocked` or `status:blocked`. |
 | `due.before:<date>` | Due strictly before that instant. Takes any date `due:` takes — `tomorrow`, `friday`, `2026-07-25`, `eom`, `"in 3 days"`, or a full RFC3339 instant. |
 | `due.after:<date>` | Due strictly after that instant. Same date grammar. |
+| `completed.before:<date>` | Finished strictly before that instant. Same date grammar; pair with `status:done`. |
+| `completed.after:<date>` | Finished strictly after that instant. Same date grammar. |
+| `@claimed` | Under a live claim, whoever holds it. |
 
 ## Values with spaces
 

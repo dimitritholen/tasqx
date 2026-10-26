@@ -1091,3 +1091,42 @@ fn every_fixture_excerpt_is_in_its_capture() {
     // Floor: seven blocks were fixture-backed when this guard was written.
     assert!(seen >= 7, "only {seen} fixture-backed blocks found");
 }
+
+/// The two filter tables must name every predicate the grammar accepts. The
+/// lists are the pub vocabulary in tasqx-core, so a predicate added there and
+/// forgotten here fails this test rather than shipping undocumented (#4107).
+#[test]
+fn the_filter_tables_name_every_grammar_predicate() {
+    use tasqx_core::filter::{CLAIM_KEYWORDS, KEYWORDS, VALUE_PREFIXES};
+    let table_of = |path: &str, heading: &str| {
+        let text = read_text(&Path::new(env!("CARGO_MANIFEST_DIR")).join(path));
+        let rest = text
+            .split(heading)
+            .nth(1)
+            .unwrap_or_else(|| panic!("{path}: no {heading}"));
+        rest.split("\n## ").next().unwrap().to_string()
+    };
+    let tables = [
+        (
+            "docs/wiki/Finding-Tasks.md",
+            table_of("../../docs/wiki/Finding-Tasks.md", "## The filter language"),
+        ),
+        (
+            "docs/site/filters.md",
+            table_of("../../docs/site/filters.md", "## Predicates"),
+        ),
+    ];
+    let wanted = VALUE_PREFIXES
+        .iter()
+        .map(|(p, _)| *p)
+        .chain(KEYWORDS)
+        .chain(CLAIM_KEYWORDS);
+    for token in wanted {
+        for (page, table) in &tables {
+            assert!(
+                table.contains(&format!("`{token}")),
+                "{page}: filter table lacks `{token}`"
+            );
+        }
+    }
+}
