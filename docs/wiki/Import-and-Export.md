@@ -239,7 +239,8 @@ differed and the side it came from, and how much tracked time arrived. A note or
 follows its own last edit, so a `passed` recorded here is not rolled back by a
 copy that never saw it pass, and a note follows the task's. A task the document
 carries and this store has never seen is imported exactly as it would be
-without the flag.
+without the flag. A memory doc both stores hold under the same id keeps the
+copy with the later `modified`, whatever its `_rev`; a tie keeps the one here.
 
 Removals travel too. A tag, check, note, dependency edge, link or memory doc
 removed on one machine stays removed when that machine merges the other's
