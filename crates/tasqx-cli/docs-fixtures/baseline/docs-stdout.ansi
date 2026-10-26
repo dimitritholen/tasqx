@@ -410,7 +410,7 @@ identical code. There is exactly one dispatch table.</p>
 table inside the <em>same</em> SQLite transaction as the change itself. The log cannot
 drift from the data, because there is no window in which one exists without the
 other. That is what makes <a href="#wiki-reports-and-charts--tasqx-chart">charts</a>, <a href="#wiki-dates-reminders-and-recurrence--it-fires-exactly-once">reminder dedupe</a>,
-and a future sync possible without a migration.</p>
+and sync possible without a migration.</p>
 <h3 id="h-where-your-data-lives">Where your data lives</h3><div class="tw"><table class="grid"><thead><tr><th id="overview-tbl1-h0">What</th><th id="overview-tbl1-h1">Where</th></tr></thead><tbody>
 <tr><td data-label="What" headers="overview-tbl1-h0">Store</td><td data-label="Where" headers="overview-tbl1-h1"><code>$TASQX_DB</code> if set, else the platform data dir: <code>%APPDATA%\tasqx\tasqx\data\tasks.db</code> on Windows (the doubled segment is what the <code>directories</code> crate produces from organization + application), <code>~/.local/share/tasqx/tasks.db</code> on Linux, <code>~/Library/Application Support/dev.tasqx.tasqx/tasks.db</code> on macOS</td></tr>
 <tr><td data-label="What" headers="overview-tbl1-h0">Config</td><td data-label="Where" headers="overview-tbl1-h1"><code>$TASQX_CONFIG_DIR/config.toml</code>, else the platform config dir</td></tr>
@@ -598,7 +598,7 @@ matching nothing.</p>
 <div class="callout warn"><span class="tag">Careful</span>
 <p><strong>Unknown tokens are rejected.</strong> A token the grammar does not
 recognise is an error naming the token, not a term that matches everything.
-So <code>tasqx list "priority:H"</code> fails — <code>priority:</code> is not a predicate —
+So <code>tasqx list "colour:red"</code> fails — <code>colour:</code> is not a predicate —
 instead of silently listing every task. The same goes for a dangling <code>or</code> or
 an unclosed <code>(</code>. Values follow the same rule when the set of them is
 <em>closed</em>: <code>status:</code> and a date bound have a fixed list of accepted values,
@@ -730,8 +730,9 @@ platform's data directory. <code>tasqx config store</code> tells you exactly whi
 command would write to. Back it up any time with
 <a href="#wiki-import-and-export"><code>tasqx export</code></a>.</p>
 <div class="pagenav"><a class="prev" href="#filters"><span class="pn-k">Previous</span><span class="pn-l">Filter grammar</span></a><a class="next" href="#wiki-projects"><span class="pn-k">Next</span><span class="pn-l">Projects</span></a></div></section><section class="page" id="wiki-projects"><h2>Projects</h2><p>A project in tasqx is just a name that groups tasks — <code>work</code>, <code>home</code>,
-<code>kitchen-remodel</code>. No folder is created, nothing appears on your disk. Tasks
-always belong to exactly one project.</p>
+<code>kitchen-remodel</code>. No folder is created, nothing appears on your disk. A task
+belongs to at most one project: <code>tasqx add</code> with no default project files it
+under none, and <code>tasqx modify --clear project</code> takes it out of one.</p>
 <h3 id="wiki-projects--tasqx-init">tasqx init</h3>
 <p>Create a project.</p>
 <div class="snip"><div class="snip-h"><span class="dollar">$</span><button class="copy" type="button">Copy</button></div><pre class="cmd"><code>tasqx init work
@@ -917,7 +918,6 @@ event naming every <code>from</code> → <code>to</code> it applied — <code>ev
 command tells you which tags the task does have. A typo never quietly
 succeeds.</p>
 <h3 id="wiki-adding-and-editing-tasks--tasqx-annotate">tasqx annotate</h3>
-<p><em>Alias: <code>note</code></em></p>
 <p>Attach a timestamped note to a task. The text is stored exactly as you typed
 it — multi-line, markdown, links, all preserved.</p>
 <div class="snip"><div class="snip-h"><span class="dollar">$</span><button class="copy" type="button">Copy</button></div><pre class="cmd"><code>tasqx annotate 42 Called the plumber, waiting on a quote</code></pre></div>
@@ -1381,7 +1381,7 @@ take it back — undoing a <code>start</code> is <code>tasqx stop</code>, undoin
 <code>tasqx unarchive</code>.</li>
 <li>Undoing a <strong><code>done</code></strong> puts the task back in the status it left. If it was
 running, the interval reopens and its time comes back off the total; criteria
-the completion proved (<code>--check</code>) go back to open. If completing it spawned
+the completion proved (an agent's <code>checks_passed</code>) go back to open. If completing it spawned
 the next instance of a recurring task, that instance is removed too — but only
 while nothing has touched it. Touch it (annotate it, change it, start it) and
 undo refuses, naming it, rather than throw your work away. A completion that
@@ -2216,8 +2216,9 @@ with <a href="#wiki-memory--tasqx-memory-update"><code>tasqx memory update</code
 <h3 id="wiki-memory--tasqx-memory-rm">tasqx memory rm</h3>
 <p>Remove one document, permanently, by id.</p>
 <div class="snip"><div class="snip-h"><span class="dollar">$</span><button class="copy" type="button">Copy</button></div><pre class="cmd"><code>tasqx memory rm 019f8422-7b3e-7c41-a2d9-6f1b0e5c8a12</code></pre></div>
-<p>This is the one genuinely permanent delete in tasqx, and it exists on purpose:
-something stored wrong needs a way to be retracted. It is outside <code>undo</code>.</p>
+<p>This is a permanent delete, like <code>tasqx unannotate</code> and removing a note, and
+it exists on purpose: something stored wrong needs a way to be retracted. It is
+outside <code>undo</code>.</p>
 <p>Reach for it only when the document should not exist at all. To fix what one
 <em>says</em>, <a href="#wiki-memory--tasqx-memory-update"><code>tasqx memory update</code></a> rewrites it in place and
 keeps the id — no permanent loss, and nothing stale left in the index.</p>
@@ -2457,9 +2458,8 @@ authentication.)</li>
 <li><strong>There's no bulk-delete tool, on purpose.</strong> Cancelling goes through the
 same reversible, logged path as everything else, so an agent can't quietly
 destroy a week of work.</li>
-<li>The one permanent delete (<code>remove_memory</code>, for retracting a wrongly stored
-document) says so in its own description, so the host's confirmation gate
-applies.</li>
+<li>The permanent deletes (<code>remove_memory</code>, <code>remove_annotation</code>, <code>remove_note</code>)
+each say so in their description, so the host's confirmation gate applies.</li>
 <li><strong><code>initialize</code> answers with <code>instructions</code>,</strong> a scope-aware workflow the
 host may inject into the agent's system prompt; under read-only scope it
 names no write tool. It also carries the session's standing memory docs,
@@ -2716,41 +2716,55 @@ scope drops it comes back with no default rather than a document
 </ul>
 <div class="snip"><div class="snip-h"><span class="dollar">$</span><button class="copy" type="button">Copy</button></div><pre class="cmd"><code>tasqx export project:work --include-unscoped &gt; work-and-global.json</code></pre></div>
 <p>With no filter you get everything. With a
-<a href="#wiki-finding-tasks--the-filter-language">filter</a> you get a slice. Human output <em>is</em> the JSON array — there is no separate
+<a href="#wiki-finding-tasks--the-filter-language">filter</a> you get a slice. Human output <em>is</em> the JSON document — there is no separate
 pretty mode to drift from it.</p>
-<div class="snip"><div class="snip-h"><span class="dollar">$</span><button class="copy" type="button">Copy</button></div><pre class="cmd"><code>tasqx export +api</code></pre><pre class="out"><code>[
-  {
-    &quot;_rev&quot;: 4,
-    &quot;annotations&quot;: [
-      {
-        &quot;body&quot;: &quot;Blocked on the D12 decision&quot;,
-        &quot;created&quot;: &quot;2026-07-16T08:51:09.6830568Z&quot;,
-        &quot;id&quot;: &quot;019f6a1f-62f3-75f0-bf57-e5ff9c7c452a&quot;
-      }
-    ],
-    &quot;completed&quot;: null,
-    &quot;created&quot;: &quot;2026-07-16T08:51:09.2509427Z&quot;,
-    &quot;depends_on&quot;: [],
-    &quot;due&quot;: &quot;2026-07-17T00:00:00Z&quot;,
-    &quot;estimate&quot;: &quot;PT4H&quot;,
-    &quot;id&quot;: &quot;019f6a1f-6142-70d3-be5b-e28dc6060e6c&quot;,
-    &quot;modified&quot;: &quot;2026-07-16T08:51:09.6830568Z&quot;,
-    &quot;priority&quot;: &quot;H&quot;,
-    &quot;project&quot;: &quot;work.tasqx&quot;,
-    &quot;recurrence&quot;: null,
-    &quot;remind&quot;: null,
-    &quot;scheduled&quot;: null,
-    &quot;short_id&quot;: 1,
-    &quot;status&quot;: &quot;pending&quot;,
-    &quot;tags&quot;: [
-      &quot;api&quot;,
-      &quot;release&quot;
-    ],
-    &quot;title&quot;: &quot;Ship the v1 JSON API freeze&quot;,
-    &quot;urgency&quot;: 17.5,
-    &quot;wait&quot;: null
-  }
-]</code></pre></div><h4 id="wiki-import-and-export--filtered-exports-and-dependency-edges"><span id="h-filtered-exports-and-dependency-edges"></span>Filtered exports and dependency edges</h4>
+<div class="snip"><div class="snip-h"><span class="dollar">$</span><button class="copy" type="button">Copy</button></div><pre class="cmd"><code>tasqx export +api</code></pre><pre class="out"><code>{
+  &quot;default_project&quot;: &quot;work&quot;,
+  &quot;docs&quot;: [],
+  &quot;dropped_dependencies&quot;: 0,
+  &quot;dropped_docs&quot;: 0,
+  &quot;dropped_events&quot;: 0,
+  &quot;dropped_links&quot;: 0,
+  &quot;dropped_notes&quot;: 0,
+  &quot;dropped_projects&quot;: 0,
+  &quot;events&quot;: [ ... ],
+  &quot;links&quot;: [],
+  &quot;notes&quot;: [],
+  &quot;projects&quot;: [ ... ],
+  &quot;tasks&quot;: [
+    {
+      &quot;_rev&quot;: 4,
+      &quot;annotations&quot;: [
+        {
+          &quot;body&quot;: &quot;Blocked on the D12 decision&quot;,
+          &quot;created&quot;: &quot;2026-07-16T08:51:09.6830568Z&quot;,
+          &quot;id&quot;: &quot;019f6a1f-62f3-75f0-bf57-e5ff9c7c452a&quot;
+        }
+      ],
+      &quot;completed&quot;: null,
+      &quot;created&quot;: &quot;2026-07-16T08:51:09.2509427Z&quot;,
+      &quot;depends_on&quot;: [],
+      &quot;due&quot;: &quot;2026-07-17T00:00:00Z&quot;,
+      &quot;estimate&quot;: &quot;PT4H&quot;,
+      &quot;id&quot;: &quot;019f6a1f-6142-70d3-be5b-e28dc6060e6c&quot;,
+      &quot;modified&quot;: &quot;2026-07-16T08:51:09.6830568Z&quot;,
+      &quot;priority&quot;: &quot;H&quot;,
+      &quot;project&quot;: &quot;work.tasqx&quot;,
+      &quot;recurrence&quot;: null,
+      &quot;remind&quot;: null,
+      &quot;scheduled&quot;: null,
+      &quot;short_id&quot;: 1,
+      &quot;status&quot;: &quot;pending&quot;,
+      &quot;tags&quot;: [
+        &quot;api&quot;,
+        &quot;release&quot;
+      ],
+      &quot;title&quot;: &quot;Ship the v1 JSON API freeze&quot;,
+      &quot;urgency&quot;: 17.5,
+      &quot;wait&quot;: null
+    }
+  ]
+}</code></pre></div><h4 id="wiki-import-and-export--filtered-exports-and-dependency-edges"><span id="h-filtered-exports-and-dependency-edges"></span>Filtered exports and dependency edges</h4>
 <p>A filter selects a subset, so a dependency pointing <em>out</em> of that subset cannot
 travel with it — the target is not in the document. Those edges are trimmed, and
 you are told, on <strong>stderr</strong>:</p>
@@ -2823,9 +2837,9 @@ the import — a project it already knew keeps its own row, and the link follows
 it there. A link naming an end that is neither in the document nor already
 here refuses the whole import, naming the link and the missing end, rather
 than restoring an edge nothing can see.</p>
-<p>Import is also the one way to un-archive a project: the export document
-records each project's archived flag, and importing restores it. See
-<a href="#wiki-projects--tasqx-archive">Projects</a>.</p>
+<p>The export document also records each project's archived flag, and importing
+restores it. To un-archive a project directly, use
+<a href="#wiki-projects--tasqx-unarchive"><code>tasqx unarchive</code></a>.</p>
 <p>A project this store already knows keeps its own description when it has one:
 projects carry no <code>modified</code> stamp the way a task does, so there is no
 later-wins comparison to make, only a present-vs-absent one. A non-empty local
@@ -2966,7 +2980,7 @@ Cloudflare R2 setup, what merges and wins, secrets, headless/CI use and the
 <tr><td data-label="Want" headers="wiki-import-and-export-tbl0-h0">Version your tasks in git</td><td data-label="Do" headers="wiki-import-and-export-tbl0-h1"><code>tasqx export &gt; tasks.json &amp;&amp; git commit -am wip</code> — canonical output means clean diffs.</td></tr>
 <tr><td data-label="Want" headers="wiki-import-and-export-tbl0-h0">Move to another machine</td><td data-label="Do" headers="wiki-import-and-export-tbl0-h1"><code>tasqx export &gt; all.json</code>, copy, <code>tasqx import all.json</code></td></tr>
 <tr><td data-label="Want" headers="wiki-import-and-export-tbl0-h0">Hand one project to a colleague</td><td data-label="Do" headers="wiki-import-and-export-tbl0-h1"><code>tasqx export project:work.tasqx &gt; slice.json</code> — mind the edge note.</td></tr>
-<tr><td data-label="Want" headers="wiki-import-and-export-tbl0-h0">Query beyond the filter grammar</td><td data-label="Do" headers="wiki-import-and-export-tbl0-h1"><code>tasqx export | jq '[.[] | select(.urgency &gt; 15)]'</code></td></tr>
+<tr><td data-label="Want" headers="wiki-import-and-export-tbl0-h0">Query beyond the filter grammar</td><td data-label="Do" headers="wiki-import-and-export-tbl0-h1"><code>tasqx export | jq '[.tasks[] | select(.urgency &gt; 15)]'</code></td></tr>
 </tbody></table></div><h3 id="wiki-import-and-export--good-habits">Good habits</h3>
 <p>A dated backup, in one line:</p>
 <div class="snip"><div class="snip-h"><span class="dollar">$</span><button class="copy" type="button">Copy</button></div><pre class="cmd"><code>tasqx export --out &quot;backup-$(date +%F).json&quot;</code></pre></div>
@@ -3291,7 +3305,7 @@ See ADR-012 for the locking decision.&#39;</code></pre></div>
 <h3 id="guide-feature-development--work-it--one-task-at-a-time">Work it, one task at a time</h3>
 <ul>
 <li><code>tasqx next</code>: the single highest-urgency unblocked task</li>
-<li><code>tasqx done 1</code>: prints <code>unblocked #2</code></li>
+<li><code>tasqx done 1</code>: prints <code>#2  unblocked - &lt;title&gt;</code> under the done line for each task it released</li>
 </ul>
 <div class="snip"><div class="snip-h"><span class="dollar">$</span><button class="copy" type="button">Copy</button></div><pre class="cmd"><code>tasqx next
 tasqx start 1
@@ -3303,9 +3317,9 @@ included, since a plain report skips only cancelled tasks. Name a status when
 you want less: <code>tasqx report "project:myapp.checkout status:pending"</code> totals
 what you have not started yet.</p>
 <h3 id="guide-feature-development--where-this-stops">Where this stops</h3>
-<p>tasqx is single-user and local. There are no assignees, no sprints, no boards. The
-moment a second person needs to work the same backlog, you have outgrown this
-pattern.</p>
+<p>tasqx is single-user and local. There are no sprints, and <code>tasqx claim</code> keeps agents off the same task but
+assigns nothing to a person. The moment a second person needs to work the same
+backlog, you have outgrown this pattern.</p>
 <div class="pagenav"><a class="prev" href="#wiki-shell-completion"><span class="pn-k">Previous</span><span class="pn-l">Shell Completion</span></a><a class="next" href="#guide-personal-gtd"><span class="pn-k">Next</span><span class="pn-l">Personal task management with tasqx</span></a></div></section><section class="page" id="guide-personal-gtd"><h2>Personal task management with tasqx</h2><p>The capture-everything, trust-the-list workflow. The design goal: adding a task is
 one line with no ceremony, and the list you look at shows only what is actionable
 now.</p>
@@ -3521,9 +3535,9 @@ of the session.</p>
 <li><code>tasqx_modify_task</code> is optimistic-concurrency-checked: the server pins the
 task's revision before writing, so if you edited the task in another shell
 mid-flight the agent gets a <code>conflict</code> and re-reads instead of clobbering.
-The other writes — complete, tag, annotate, timers, dependencies — carry no
-revision guard and are last-write-wins, which is why field edits belong on
-modify.</li>
+The other writes — complete, tag, annotate, timers, dependencies — take an
+optional <code>expected_rev</code> but the server does not pin one for you, so without it
+they are last-write-wins, which is why field edits belong on modify.</li>
 <li>There is deliberately no bulk-delete tool. Cancelling goes through the same
 reversible, logged path as everything else.</li>
 <li>Every agent action lands in the append-only event log, so <code>tasqx chart</code> and the
@@ -3549,7 +3563,7 @@ the text it could not store.</p>
 
 tasqx holds a backlog of tasks and one searchable index over two things: knowledge
 docs, and the annotations written on tasks. Reach it over MCP (`tasqx_*` tools) and,
-for the verbs MCP does not carry (`next`, `undo`, `memory import`, `report --html`),
+for the verbs MCP does not carry (`undo`, `memory import`, `report --html`),
 the `tasqx` CLI — always spell the verb (`tasqx list`, never a bare `tasqx`, which opens
 a full-screen dashboard and hangs a tool call). Use it instead of in-conversation todo
 lists and instead of any other memory file.
@@ -3661,18 +3675,17 @@ sections and keep the search half, which works read-only by design. A store the 
 only reads is thinner than one it maintains, and still worth the paste.</p>
 <p>Import is the bulk load; <code>tasqx_add_memory</code> in a loop is not.</p>
 <h3 id="guide-agent-starter-prompt--the-one-way-re-importing-bites">The one way re-importing bites</h3>
-<p>"Spell the directory the same way every time" is a real instruction, not politeness. The
-source key is the file path as it was handed in, so two spellings of one directory are
-two documents:</p>
-<pre class="plain"><code>tasqx memory import ~/notes        # 1 hit
-tasqx memory import ~/notes/       # still 1 hit — the trailing slash collapses
-tasqx memory import ~/./notes      # 2 hits, and both are the same file</code></pre>
-<p>The middle line is why this is worth spelling out: the obvious variation is harmless, so
-the habit that would catch the harmful one never forms. Nothing warns you, and the
-duplicate is invisible until a search returns the same paragraph twice under two paths.
-<code>tasqx memory search</code> prints the source path with each hit, which is how you spot it,
-and <code>tasqx_remove_memory</code> (or <code>tasqx memory rm &lt;id&gt;</code>) on the wrong-spelling copy is the
-fix.</p>
+<p>The source key is the repo's directory name plus the file's path inside the repo,
+not the path as it was handed in, so the obvious spellings of one directory land
+on the same document:</p>
+<pre class="plain"><code>tasqx memory import ~/notes        # 1 doc
+tasqx memory import ~/notes/       # the same doc, unchanged
+tasqx memory import ~/./notes      # the same doc, unchanged</code></pre>
+<p>What makes a second document is a key written under another root or by an older
+build. Import tells you when it sees one: <code>is an older key of the same file as</code>,
+with the <code>tasqx memory rm &lt;id&gt;</code> that removes the old copy. <code>tasqx_remove_memory</code>
+does the same over MCP, and <code>tasqx memory search</code> prints the source path with
+each hit, which is how you spot one the note did not catch.</p>
 <h3 id="guide-agent-starter-prompt--where-this-stops">Where this stops</h3>
 <p>A pasted prompt is a suggestion the client re-reads at its own discretion, so it will
 not survive an aggressively compacted context the way a tool description does. In Claude
@@ -3924,7 +3937,7 @@ way <code>tasqx-remote-dir</code> answers it:</p>
 <pre class="plain" data-lang="json"><code>{
   &quot;protocol&quot;: 1,
   &quot;name&quot;: &quot;dir&quot;,
-  &quot;version&quot;: &quot;0.14.0&quot;,
+  &quot;version&quot;: &quot;0.16.0&quot;,
   &quot;fields&quot;: [
     {
       &quot;key&quot;: &quot;path&quot;,
@@ -4002,7 +4015,7 @@ core crate, not copied into each connector: add it as a dev-dependency with
 <code>features = ["conformance"]</code>, same as both shipped connectors do, and call
 <code>run</code> on your own built binary.</p>
 <pre class="plain" data-lang="toml"><code>[dev-dependencies]
-tasqx-core = { version = &quot;0.14&quot;, features = [&quot;conformance&quot;] }</code></pre>
+tasqx-core = { version = &quot;0.16&quot;, features = [&quot;conformance&quot;] }</code></pre>
 <p>Then, in a test of your own, import <code>remote::conformance::{self, Setup}</code> off
 that dev-dependency, build a <code>Setup { program, work_dir, good, bad }</code> — the
 executable under test, a scratch directory the suite may fill, the values
