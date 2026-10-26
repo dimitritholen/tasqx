@@ -95,6 +95,17 @@ jobs:
       - run: cargo test --workspace --all-targets --no-fail-fast
         env:
           RUSTFLAGS: -D warnings
+      # D242: no test may resolve the platform default store. A test-spawned
+      # binary that does migrates (and on a developer machine, corrupts) the
+      # real store. Windows is skipped: its data dir is not worth guessing.
+      - name: No test touched the platform store
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          for f in "$HOME/.local/share/tasqx/tasks.db" \
+                   "$HOME/Library/Application Support/dev.tasqx.tasqx/tasks.db"; do
+            if [ -e "$f" ]; then echo "a test created the platform store: $f"; exit 1; fi
+          done
 
   # Shell completion, EXECUTED rather than compared against a string.
   #

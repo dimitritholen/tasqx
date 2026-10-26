@@ -1,0 +1,6 @@
+# D242: every process cargo launches (`cargo test` children, `cargo run`) gets a
+# scratch store under target/, so a dev build or a test that forgets to name a
+# store never opens the developer's real platform store. No `force`: a
+# TASQX_DB set explicitly still wins.
+[env]
+TASQX_DB = { value = "target/cargo-env-store/tasks.db", relative = true }
