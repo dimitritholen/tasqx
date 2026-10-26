@@ -112,8 +112,10 @@ task, and where to find help.
   follow, or the engine returned `internal`), `2` bad request, `4` not found,
   `5` conflict, `6` unsupported API version. They don't change between
   releases.
-- **Nothing is silently destroyed.** There is no hard delete. `cancel` is
+- **Nothing is silently destroyed.** A task has no hard delete: `cancel` is
   reversible with `reopen`, and every change lands in an append-only event log.
+  Only a note, an annotation or a memory doc can be removed for good;
+  `unannotate` and `note rm` say they are permanent and outside `undo`.
 
 ## Honest edges
 
@@ -122,7 +124,7 @@ twelve operations, and refuses everything else by name along with the verb that
 does take it back. `tasqx agenda` is a day-grouped list, not the week grid the
 spec sketched. The full-screen views (`tasqx dashboard`, `tasqx pick`, the memory
 browser, `tasqx config edit`, `tasqx setup`) let you browse and start work, but
-not edit or complete a task in place. Plugins and sync are specified in
-`DESIGN.md` and don't exist yet; they were designed together so adding them
-later doesn't touch the data model, but "designed" is doing a lot of work in
-that sentence.
+not edit or complete a task in place. Plugins are specified in
+`DESIGN.md` and don't exist yet; they were designed alongside sync, which has
+shipped, so adding them later doesn't touch the data model, but "designed" is
+doing a lot of work in that sentence.

@@ -31,7 +31,7 @@ Adding, modifying, completing — each writes its row to an append-only `events`
 table inside the *same* SQLite transaction as the change itself. The log cannot
 drift from the data, because there is no window in which one exists without the
 other. That is what makes [charts](Reports-and-Charts.md#tasqx-chart), [reminder dedupe](Dates-Reminders-and-Recurrence.md#it-fires-exactly-once),
-and a future sync possible without a migration.
+and sync possible without a migration.
 
 ## Where your data lives
 

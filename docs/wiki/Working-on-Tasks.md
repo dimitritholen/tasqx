@@ -338,7 +338,7 @@ tasqx undo
   `tasqx unarchive`.
 - Undoing a **`done`** puts the task back in the status it left. If it was
   running, the interval reopens and its time comes back off the total; criteria
-  the completion proved (`--check`) go back to open. If completing it spawned
+  the completion proved (an agent's `checks_passed`) go back to open. If completing it spawned
   the next instance of a recurring task, that instance is removed too — but only
   while nothing has touched it. Touch it (annotate it, change it, start it) and
   undo refuses, naming it, rather than throw your work away. A completion that

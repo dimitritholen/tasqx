@@ -35,7 +35,7 @@ way `tasqx-remote-dir` answers it:
 {
   "protocol": 1,
   "name": "dir",
-  "version": "0.14.0",
+  "version": "0.16.0",
   "fields": [
     {
       "key": "path",
@@ -149,7 +149,7 @@ core crate, not copied into each connector: add it as a dev-dependency with
 
 ```toml
 [dev-dependencies]
-tasqx-core = { version = "0.14", features = ["conformance"] }
+tasqx-core = { version = "0.16", features = ["conformance"] }
 ```
 
 Then, in a test of your own, import `remote::conformance::{self, Setup}` off

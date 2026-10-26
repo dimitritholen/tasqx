@@ -52,44 +52,58 @@ tasqx export project:work --include-unscoped > work-and-global.json
 ```
 
 With no filter you get everything. With a
-[filter](Finding-Tasks.md#the-filter-language) you get a slice. Human output *is* the JSON array — there is no separate
+[filter](Finding-Tasks.md#the-filter-language) you get a slice. Human output *is* the JSON document — there is no separate
 pretty mode to drift from it.
 
 ```console
 $ tasqx export +api
-[
-  {
-    "_rev": 4,
-    "annotations": [
-      {
-        "body": "Blocked on the D12 decision",
-        "created": "2026-07-16T08:51:09.6830568Z",
-        "id": "019f6a1f-62f3-75f0-bf57-e5ff9c7c452a"
-      }
-    ],
-    "completed": null,
-    "created": "2026-07-16T08:51:09.2509427Z",
-    "depends_on": [],
-    "due": "2026-07-17T00:00:00Z",
-    "estimate": "PT4H",
-    "id": "019f6a1f-6142-70d3-be5b-e28dc6060e6c",
-    "modified": "2026-07-16T08:51:09.6830568Z",
-    "priority": "H",
-    "project": "work.tasqx",
-    "recurrence": null,
-    "remind": null,
-    "scheduled": null,
-    "short_id": 1,
-    "status": "pending",
-    "tags": [
-      "api",
-      "release"
-    ],
-    "title": "Ship the v1 JSON API freeze",
-    "urgency": 17.5,
-    "wait": null
-  }
-]
+{
+  "default_project": "work",
+  "docs": [],
+  "dropped_dependencies": 0,
+  "dropped_docs": 0,
+  "dropped_events": 0,
+  "dropped_links": 0,
+  "dropped_notes": 0,
+  "dropped_projects": 0,
+  "events": [ ... ],
+  "links": [],
+  "notes": [],
+  "projects": [ ... ],
+  "tasks": [
+    {
+      "_rev": 4,
+      "annotations": [
+        {
+          "body": "Blocked on the D12 decision",
+          "created": "2026-07-16T08:51:09.6830568Z",
+          "id": "019f6a1f-62f3-75f0-bf57-e5ff9c7c452a"
+        }
+      ],
+      "completed": null,
+      "created": "2026-07-16T08:51:09.2509427Z",
+      "depends_on": [],
+      "due": "2026-07-17T00:00:00Z",
+      "estimate": "PT4H",
+      "id": "019f6a1f-6142-70d3-be5b-e28dc6060e6c",
+      "modified": "2026-07-16T08:51:09.6830568Z",
+      "priority": "H",
+      "project": "work.tasqx",
+      "recurrence": null,
+      "remind": null,
+      "scheduled": null,
+      "short_id": 1,
+      "status": "pending",
+      "tags": [
+        "api",
+        "release"
+      ],
+      "title": "Ship the v1 JSON API freeze",
+      "urgency": 17.5,
+      "wait": null
+    }
+  ]
+}
 ```
 
 ### Filtered exports and dependency edges
@@ -197,9 +211,9 @@ it there. A link naming an end that is neither in the document nor already
 here refuses the whole import, naming the link and the missing end, rather
 than restoring an edge nothing can see.
 
-Import is also the one way to un-archive a project: the export document
-records each project's archived flag, and importing restores it. See
-[Projects](Projects.md#tasqx-archive).
+The export document also records each project's archived flag, and importing
+restores it. To un-archive a project directly, use
+[`tasqx unarchive`](Projects.md#tasqx-unarchive).
 
 A project this store already knows keeps its own description when it has one:
 projects carry no `modified` stamp the way a task does, so there is no
@@ -402,7 +416,7 @@ Cloudflare R2 setup, what merges and wins, secrets, headless/CI use and the
 | Version your tasks in git | `tasqx export > tasks.json && git commit -am wip` — canonical output means clean diffs. |
 | Move to another machine | `tasqx export > all.json`, copy, `tasqx import all.json` |
 | Hand one project to a colleague | `tasqx export project:work.tasqx > slice.json` — mind the edge note. |
-| Query beyond the filter grammar | `tasqx export \| jq '[.[] \| select(.urgency > 15)]'` |
+| Query beyond the filter grammar | `tasqx export \| jq '[.tasks[] \| select(.urgency > 15)]'` |
 
 ## Good habits
 

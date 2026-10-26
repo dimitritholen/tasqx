@@ -1,8 +1,9 @@
 # Projects
 
 A project in tasqx is just a name that groups tasks — `work`, `home`,
-`kitchen-remodel`. No folder is created, nothing appears on your disk. Tasks
-always belong to exactly one project.
+`kitchen-remodel`. No folder is created, nothing appears on your disk. A task
+belongs to at most one project: `tasqx add` with no default project files it
+under none, and `tasqx modify --clear project` takes it out of one.
 
 ## tasqx init
 

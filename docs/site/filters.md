@@ -79,7 +79,7 @@ matching nothing.
 
 > **Careful** **Unknown tokens are rejected.** A token the grammar does not
 > recognise is an error naming the token, not a term that matches everything.
-> So `tasqx list "priority:H"` fails — `priority:` is not a predicate —
+> So `tasqx list "colour:red"` fails — `colour:` is not a predicate —
 > instead of silently listing every task. The same goes for a dangling `or` or
 > an unclosed `(`. Values follow the same rule when the set of them is
 > *closed*: `status:` and a date bound have a fixed list of accepted values,

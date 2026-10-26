@@ -166,9 +166,9 @@ of the session.
 - `tasqx_modify_task` is optimistic-concurrency-checked: the server pins the
   task's revision before writing, so if you edited the task in another shell
   mid-flight the agent gets a `conflict` and re-reads instead of clobbering.
-  The other writes — complete, tag, annotate, timers, dependencies — carry no
-  revision guard and are last-write-wins, which is why field edits belong on
-  modify.
+  The other writes — complete, tag, annotate, timers, dependencies — take an
+  optional `expected_rev` but the server does not pin one for you, so without it
+  they are last-write-wins, which is why field edits belong on modify.
 - There is deliberately no bulk-delete tool. Cancelling goes through the same
   reversible, logged path as everything else.
 - Every agent action lands in the append-only event log, so `tasqx chart` and the
