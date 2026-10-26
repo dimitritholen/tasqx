@@ -5118,3 +5118,11 @@ The root is always the caller's, never the engine process's working directory, w
 **Not done.** `.claude/gate.sh` has no platform-store check: a developer machine legitimately has one, so it would always alarm. The scratch-`HOME` run of the whole workspace is the manual proof.
 
 **Where:** `.cargo/config.toml`, `bin()` in `tests/help.rs`, the CI step after `cargo test`, `reconcile_task_git_refs` in `storage.rs` (tests `*_round_one_task_git_refs_*`).
+
+### D243 — On a merge, a memory doc this store holds under the same id is decided by `modified`, never `_rev`: the later copy's text lands on the row's own counter, a tie or an older copy writes nothing (task #3236; amends #84's guard, extends D183, D185)
+
+**Decision.** With `merge`, a payload doc whose id this store already holds skips #84's `_rev` guard and the plain upsert. When its `modified` is strictly later, its title, body, `search_body`, project, standing and `modified` are written and the row's `rev` becomes `rev + 1` (D143); on a tie or an older payload the row is left untouched. It is not listed in `docs_merged`: that field reports two ids folded into one (D183), and here there is one id and nothing dropped, the way a task or note decided by `modified` is not listed either. The remap and the `memory.add` event are unchanged. Without `merge`, the guard and the upsert are unchanged.
+
+**Why.** `tasqx sync` refused a doc at `_rev` 21 because the store held it at 22. Two stores mint `_rev` independently, so the counters are not comparable — D185 already skipped the task guard on a merge and D183 the doc guard for a source collision; this same-id path was missed. The upsert also took the payload whenever its `_rev` was not lower, so an older copy with a higher count overwrote a newer local edit: data loss. `modified` is the one stamp both machines mean the same thing by. Notes (D241) already follow this rule in `import_notes`.
+
+**Where:** the doc loop of `store_import` in `engine/transfer.rs` (tests `store_import_merge_*_same_id_doc_*`).

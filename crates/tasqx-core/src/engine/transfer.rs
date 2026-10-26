@@ -1428,23 +1428,39 @@ impl Engine {
                 // #84: the doc counterpart of the #177 guard above. An older
                 // payload would rewind the doc's body and rev, reopening D143's
                 // stale-`expected_rev` clobber; same or higher rev still passes (D12).
-                let stored_rev: Option<i64> = tx
-                    .query_row("SELECT rev FROM docs WHERE id = ?1", params![did], |r| {
-                        r.get(0)
-                    })
+                let stored: Option<(i64, String)> = tx
+                    .query_row(
+                        "SELECT rev, modified FROM docs WHERE id = ?1",
+                        params![did],
+                        |r| Ok((r.get(0)?, r.get(1)?)),
+                    )
                     .optional()?;
-                if let Some(stored) = stored_rev.filter(|s| *s > rev) {
+                if let Some((_, held_modified)) = stored.as_ref().filter(|_| merge) {
+                    // D243: on a merge the two `_rev`s were minted on stores
+                    // that never saw each other's writes, so neither the guard
+                    // nor the plain upsert below may decide; D183's rule does —
+                    // the later `modified` carries the text onto the row's own
+                    // counter (D143), and a tie or an older payload writes nothing.
+                    if parse_ts(&modified) > parse_ts(held_modified) {
+                        tx.execute(
+                            "UPDATE docs SET title = ?2, body = ?3, search_body = ?4, \
+                             project = ?5, standing = ?6, modified = ?7, rev = rev + 1 \
+                             WHERE id = ?1",
+                            params![did, title, body, search_body, project, standing, modified],
+                        )?;
+                    }
+                } else if let Some(held) = stored.map(|(r, _)| r).filter(|s| *s > rev) {
                     return Err(ApiError::conflict(format!(
                         "store.import: doc {did} carries _rev {rev}, but the store already \
-                             holds it at _rev {stored} — this payload is older than what is \
+                             holds it at _rev {held} — this payload is older than what is \
                              already here, and importing it would roll its title and body back \
                              to a stale copy (run `tasqx export` first for a merge target, or \
                              drop this doc from the payload)"
                     )));
-                }
-                super::memory::refuse_source_held_elsewhere(&tx, source.as_deref(), &did)?;
-                tx.execute(
-                    "INSERT INTO docs \
+                } else {
+                    super::memory::refuse_source_held_elsewhere(&tx, source.as_deref(), &did)?;
+                    tx.execute(
+                        "INSERT INTO docs \
                      (id, source, title, body, search_body, project, rev, standing, \
                       created, modified, origin_path, origin_mtime, origin_size) \
                      VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13) \
@@ -1455,22 +1471,23 @@ impl Engine {
                      created=excluded.created, modified=excluded.modified, \
                      origin_path=excluded.origin_path, origin_mtime=excluded.origin_mtime, \
                      origin_size=excluded.origin_size",
-                    params![
-                        did,
-                        source,
-                        title,
-                        body,
-                        search_body,
-                        project,
-                        rev,
-                        standing,
-                        created,
-                        modified,
-                        origin_path,
-                        origin_mtime,
-                        origin_size
-                    ],
-                )?;
+                        params![
+                            did,
+                            source,
+                            title,
+                            body,
+                            search_body,
+                            project,
+                            rev,
+                            standing,
+                            created,
+                            modified,
+                            origin_path,
+                            origin_mtime,
+                            origin_size
+                        ],
+                    )?;
+                }
                 // D181: the identity today — the upsert keys on the doc's own
                 // id — and stated through the table anyway, so #782's
                 // source-merge has one place to say otherwise.
@@ -6523,6 +6540,81 @@ mod tests {
             e.store_export(&json!({})).expect("export")["docs"][0]["body"],
             json!("v2"),
             "the refusal wrote nothing"
+        );
+    }
+
+    /// D243: a merge of a doc this store holds under the SAME id lets the
+    /// later `modified` decide, never `_rev` — the two stores minted their
+    /// counters independently (D185's reasoning, one table over). Seeds the
+    /// store at `_rev` 22 and merges a payload copy onto it.
+    fn merge_same_id_doc(payload_rev: i64, payload_modified: &str) -> (Engine, Value) {
+        const ID: &str = "0193aaaa-0000-7000-8000-0000000000a6";
+        let e = Engine::open_in_memory().expect("open");
+        e.store_import(&json!({
+            "tasks": [],
+            "docs": [{
+                "id": ID,
+                "source": "docs/a.md",
+                "title": "this store's title",
+                "body": "this store's body",
+                "modified": "2026-09-02T00:00:00Z",
+                "_rev": 22,
+            }],
+        }))
+        .expect("seed");
+        let before = e.store_export(&json!({})).expect("export");
+        let r = e
+            .store_import(&json!({
+                "merge": true,
+                "tasks": [],
+                "docs": [{
+                    "id": ID,
+                    "source": "docs/a.md",
+                    "title": "the other store's title",
+                    "body": "the other store's body",
+                    "modified": payload_modified,
+                    "_rev": payload_rev,
+                }],
+            }))
+            .expect("a merge never refuses a doc over its `_rev`");
+        assert_eq!(
+            r["docs_merged"],
+            json!([]),
+            "one id is not two identities: {r}"
+        );
+        (e, before)
+    }
+
+    #[test]
+    fn store_import_merge_takes_a_later_same_id_doc_despite_a_lower_rev() {
+        let (e, _) = merge_same_id_doc(21, "2026-09-03T00:00:00Z");
+        let doc = &e.store_export(&json!({})).expect("export")["docs"][0];
+        assert_eq!(doc["body"], json!("the other store's body"), "{doc}");
+        assert_eq!(doc["title"], json!("the other store's title"), "{doc}");
+        assert_eq!(
+            doc["_rev"],
+            json!(23),
+            "the kept row's own counter, one past where it stood (D143): {doc}"
+        );
+    }
+
+    #[test]
+    fn store_import_merge_keeps_a_newer_same_id_doc_against_a_higher_rev() {
+        let (e, before) = merge_same_id_doc(99, "2026-09-01T00:00:00Z");
+        assert_eq!(
+            e.store_export(&json!({})).expect("export"),
+            before,
+            "an older payload must not overwrite a newer local edit, whatever its `_rev`"
+        );
+    }
+
+    #[test]
+    fn store_import_merge_keeps_the_stored_same_id_doc_on_a_modified_tie() {
+        let (e, before) = merge_same_id_doc(30, "2026-09-02T00:00:00Z");
+        assert_eq!(
+            e.store_export(&json!({})).expect("export"),
+            before,
+            "a tie keeps the store's copy"
         );
     }
 
