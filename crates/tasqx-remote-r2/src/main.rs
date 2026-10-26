@@ -34,7 +34,9 @@
 //! side: `If-Match: "<version>"`, or `If-None-Match: *` for a push onto an
 //! empty remote. R2 evaluates that atomically, so 412 Precondition Failed —
 //! or 409 ConditionalRequestConflict, when another conditional write on the
-//! same key is in flight — is a conflict that changed nothing.
+//! same key is in flight — is a conflict that changed nothing. A PUT whose
+//! connection breaks before its answer is read is followed by one HEAD, and
+//! a remote that moved past the expected version is a conflict too (D244).
 
 mod s3;
 mod secret;
@@ -101,6 +103,12 @@ enum Stop {
 impl From<String> for Stop {
     fn from(s: String) -> Self {
         Self::Failed(s)
+    }
+}
+
+impl From<s3::SendError> for Stop {
+    fn from(e: s3::SendError) -> Self {
+        Self::Failed(e.message)
     }
 }
 
@@ -427,12 +435,16 @@ fn push(store: &dyn Store, in_path: &Path, expected: Option<&str>) -> Result<Val
         }
         None => ("if-none-match", "*"),
     };
-    let resp = client.send(
+    let resp = match client.send(
         "PUT",
         &config.path(),
         &[condition],
         Some(Upload { file, sha256 }),
-    )?;
+    ) {
+        Ok(resp) => resp,
+        Err(e) if e.transport => return after_lost_put(&client, &config, expected, e.message),
+        Err(e) => return Err(e.into()),
+    };
     match resp.status().as_u16() {
         200 => {
             let version = s3::etag(&resp)
@@ -448,6 +460,44 @@ fn push(store: &dyn Store, in_path: &Path, expected: Option<&str>) -> Result<Val
                 _ => Err(format!("push failed: R2 answered {failure}").into()),
             }
         }
+    }
+}
+
+/// The PUT's connection broke before its answer was read: R2 answers a
+/// rejected PUT early and closes, and the rest of the body then fails to
+/// write (D244). One HEAD says whether the remote has moved past `expected`.
+/// A move is a conflict even when the move was this PUT landing, since the
+/// caller's next pull and merge of its own snapshot change nothing.
+fn after_lost_put(
+    client: &Client,
+    config: &Config,
+    expected: Option<&str>,
+    lost: String,
+) -> Result<Value, Stop> {
+    let resp = client
+        .send("HEAD", &config.path(), &[], None)
+        .map_err(|e| format!("push failed: {lost}; a HEAD to check the remote failed too: {e}"))?;
+    let status = resp.status().as_u16();
+    let now = s3::etag(&resp);
+    match (status, now.as_deref(), expected) {
+        (200, _, None) => Err(Stop::Conflict),
+        (200, Some(now), Some(v)) if now != v => Err(Stop::Conflict),
+        (200, Some(now), Some(_)) => Err(format!(
+            "push failed: {lost}; the remote is still at {now}, so it did not land"
+        )
+        .into()),
+        (404, _, _) => {
+            Err(format!("push failed: {lost}; a HEAD found no object there either").into())
+        }
+        _ => Err(format!(
+            "push failed: {lost}; a HEAD to check the remote answered HTTP {status}{}",
+            if now.is_none() {
+                " without an ETag"
+            } else {
+                ""
+            }
+        )
+        .into()),
     }
 }
 

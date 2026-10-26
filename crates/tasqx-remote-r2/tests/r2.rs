@@ -184,6 +184,65 @@ fn a_409_conditional_request_conflict_is_a_conflict() {
     assert_eq!(push_bytes(&c, &work, b"mine", None), PushOutcome::Conflict);
 }
 
+/// Bigger than any socket buffer on loopback, so a client still writing it
+/// when the fake resets the connection fails mid-body (D244).
+const LARGE: usize = 32 * 1024 * 1024;
+
+/// The fake rejects the PUT early and resets; the PUT fails with an IO error.
+fn push_rejected_early(
+    c: &Connector,
+    s3: &FakeS3,
+    work: &Path,
+    expected: Option<&str>,
+) -> Result<PushOutcome, String> {
+    s3.reject_next_put_early();
+    let blob = work.join("outgoing");
+    std::fs::write(&blob, vec![7u8; LARGE]).unwrap();
+    c.push(&blob, expected).map_err(|e| e.to_string())
+}
+
+#[test]
+fn a_put_reset_mid_body_onto_a_moved_remote_is_a_conflict() {
+    let (work, s3, c) = configured("early-412");
+    s3.seed("tasqx/snapshot.tqx", "theirs", b"theirs");
+    assert_eq!(
+        push_rejected_early(&c, &s3, &work, Some("stale")),
+        Ok(PushOutcome::Conflict)
+    );
+    let seen: Vec<String> = s3.seen().into_iter().map(|r| r.method).collect();
+    assert_eq!(seen[seen.len() - 2..], ["PUT", "HEAD"], "{seen:?}");
+}
+
+#[test]
+fn a_put_reset_mid_body_onto_an_occupied_empty_expectation_is_a_conflict() {
+    let (work, s3, c) = configured("early-412-none");
+    s3.seed("tasqx/snapshot.tqx", "theirs", b"theirs");
+    assert_eq!(
+        push_rejected_early(&c, &s3, &work, None),
+        Ok(PushOutcome::Conflict)
+    );
+}
+
+#[test]
+fn a_put_reset_mid_body_onto_an_empty_remote_keeps_the_transport_error() {
+    let (work, s3, c) = configured("early-412-empty");
+    let msg = push_rejected_early(&c, &s3, &work, None).unwrap_err();
+    assert!(msg.contains("cannot reach R2"), "{msg}");
+    assert!(msg.contains("no object"), "{msg}");
+}
+
+#[test]
+fn a_put_reset_mid_body_onto_an_unmoved_remote_names_the_version() {
+    let (work, s3, c) = configured("early-412-same");
+    s3.seed("tasqx/snapshot.tqx", "v1", b"v1");
+    let msg = push_rejected_early(&c, &s3, &work, Some("v1")).unwrap_err();
+    assert!(
+        msg.contains("cannot reach R2"),
+        "the transport error is kept: {msg}"
+    );
+    assert!(msg.contains("still at v1"), "{msg}");
+}
+
 /// Exit code 2 on a conflict, seen without the runner in between.
 #[test]
 fn a_conflict_exits_2() {
