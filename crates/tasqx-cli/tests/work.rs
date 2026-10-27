@@ -198,6 +198,13 @@ fn work_claims_times_spawns_claude_with_its_context_and_cleans_up_after() {
     assert_eq!(s.read("claude.mode").trim(), "-rw-------");
     // In-process, the agent's own tasqx is pointed at this very store.
     assert_eq!(s.env_of("claude", "TASQX_DB"), s.db.display().to_string());
+    // ...and not at a socket this process did not route through, which may
+    // serve another store.
+    assert_eq!(
+        s.env_of("claude", "TASQX_SOCK"),
+        "",
+        "an inherited socket leaked"
+    );
 
     // The session id is on the start event, for later token attribution.
     let log = s.event_list(r#"{"ref":"1"}"#);
@@ -383,9 +390,10 @@ fn work_through_a_lost_daemon(tag: &str, restart: bool) -> (Store, Output, Strin
         ),
     );
     let first = Daemon::start(&s, &sock);
+    // No TASQX_DB here: the store is the daemon's, and only it can say which.
     let work = Command::new(env!("CARGO_BIN_EXE_tasqx"))
         .env("TASQX_CONFIG_DIR", &s.dir)
-        .env("TASQX_DB", &s.db)
+        .env_remove("TASQX_DB")
         .env_remove("TASQX_SOCK")
         .env_remove("TASQX_NOW")
         .env("PATH", format!("{}:/usr/bin:/bin", s.bin.display()))
@@ -395,7 +403,7 @@ fn work_through_a_lost_daemon(tag: &str, restart: bool) -> (Store, Output, Strin
         .spawn()
         .expect("spawn tasqx work");
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
-    while s.read("claude.during").is_empty() {
+    while s.read("claude.argv").is_empty() {
         assert!(std::time::Instant::now() < deadline, "the agent never ran");
         std::thread::sleep(std::time::Duration::from_millis(20));
     }
@@ -420,6 +428,10 @@ fn through_a_daemon_the_agent_gets_the_socket_and_cleanup_survives_a_lost_connec
     assert!(t["claimed_by"].is_null(), "claim left held: {t}");
     assert!(!stderr(&out).contains("tasqx stop"), "{}", stderr(&out));
     assert_eq!(s.env_of("claude", "TASQX_SOCK"), sock);
+    // `tasqx mcp serve` opens TASQX_DB and never the socket, so the agent is
+    // told the daemon's store file too.
+    let told = std::fs::canonicalize(s.env_of("claude", "TASQX_DB")).ok();
+    assert_eq!(told, std::fs::canonicalize(&s.db).ok(), "TASQX_DB");
 }
 
 /// A cleanup that cannot reach the store says so, naming the commands that
@@ -448,4 +460,21 @@ fn an_agent_that_finishes_the_task_itself_leaves_cleanup_silent() {
     assert!(out.status.success(), "{out:?}");
     assert_eq!(s.task("1")["status"], "done");
     assert!(!stderr(&out).contains("warning"), "{}", stderr(&out));
+}
+
+/// `--json` is a declared carve-out: the agent owns stdout, so nothing is
+/// appended after what it printed, and stderr says why.
+#[test]
+fn json_leaves_stdout_to_the_agent() {
+    let s = Store::new("json");
+    s.seed();
+    s.fake_agent_then("claude", 0, "echo agent-output");
+    let out = s.run(&["--json", "work", "1", "--agent", "claude"]);
+    assert!(out.status.success(), "{out:?}");
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "agent-output\n");
+    assert!(
+        stderr(&out).contains("`work` does not honour --json"),
+        "{}",
+        stderr(&out)
+    );
 }

@@ -313,8 +313,9 @@ nothing is asked: a missing ref or agent exits 2 and names the flag to pass.
 
 The agent also gets `TASQX_WORK_TASK`, `TASQX_WORK_SESSION` and
 `TASQX_WORK_CONTEXT` in its environment, and the store `tasqx work` used
-(`TASQX_SOCK` or `TASQX_DB`), so the agent's own tasqx calls reach the same
-store. Claude Code gets the context through
+(`TASQX_DB`, plus `TASQX_SOCK` through a daemon), so the agent's own tasqx
+calls reach the same store. The agent owns the terminal, so `--json` does not
+apply to `tasqx work`. Claude Code gets the context through
 `--append-system-prompt-file` and Codex through `-c developer_instructions`.
 tasqx never edits `~/.claude` or `~/.codex`.
 

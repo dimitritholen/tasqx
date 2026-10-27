@@ -239,6 +239,10 @@ pub const JSON_CARVE_OUTS: &[(&str, &str)] = &[
         "manual",
         "a human reading surface: themed prose, no machine-relevant facts",
     ),
+    (
+        "work",
+        "the agent it launches owns stdout until it exits; a JSON result after it would not parse",
+    ),
 ];
 
 /// Every subcommand clap knows, derived from the parser rather than listed, so
@@ -525,7 +529,12 @@ pub fn run() {
     // "honours --json unless declared otherwise" a property of the code shape
     // rather than a promise five call sites have to keep independently.
     match execute(cli) {
-        Exit::SelfFramed => {}
+        Exit::SelfFramed => {
+            let code = EXIT_AFTER.with(std::cell::Cell::get);
+            if code != 0 {
+                exit(code);
+            }
+        }
         Exit::Out(Ok((result, render))) => {
             if json {
                 emit(&format!(
@@ -765,7 +774,9 @@ fn execute(cli: Cli) -> Exit {
     }
     // `work` refuses above the store-open for the same reason: a question it
     // cannot ask off a terminal creates no database (D245).
+    let mut work_exit = None;
     if let Some(Command::Work { r#ref, agent }) = &cli.command {
+        work_exit = Some(Exit::self_framed("work", cli.json));
         let interactive = tui::is_interactive(&ctx.caps);
         if let Some(e) = work::refusal(r#ref.as_deref(), agent.as_deref(), interactive) {
             return Exit::Out(Err(e));
@@ -1259,7 +1270,12 @@ fn execute(cli: Cli) -> Exit {
             holder,
         }) => run_next(&mut backend, &ctx, &filter, card, ascii, holder),
         Some(Command::Pick { filter, holder }) => run_pick(&mut backend, &ctx, &filter, holder),
-        Some(Command::Work { r#ref, agent }) => work::run_work(&mut backend, &ctx, r#ref, agent),
+        Some(Command::Work { r#ref, agent }) => {
+            match work::run_work(&mut backend, &ctx, r#ref, agent) {
+                Ok(_) => return work_exit.expect("the work gate framed it"),
+                Err(e) => Err(e),
+            }
+        }
         Some(Command::Why { r#ref, card, ascii }) => {
             run_why(&mut backend, &ctx, r#ref, card, ascii)
         }
