@@ -695,6 +695,15 @@ pub const R_TASK_BRIEF: &[FieldDoc] = &[
         "object",
         "Present only on a recurrence spawn: the previous occurrence and what it delivered (D170).",
     ),
+    // Absent unless asked for, and then null when there are no rulings.
+    FieldDoc {
+        null_ok: true,
+        ..o(
+            "rulings_section",
+            "string",
+            "Present only with `rulings: true`: the standing rulings for the project of `workdir`, ranked for this task with the docs it pins first (D246), as the MCP handshake words them; null when there are none (D248).",
+        )
+    },
 ];
 
 /// D136's neighbourhood: what the task waits on, and what it releases.

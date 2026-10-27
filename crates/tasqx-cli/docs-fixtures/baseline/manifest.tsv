@@ -108,6 +108,7 @@ help-next	pipe	100	-	next --help	-	-
 help-dashboard	pipe	100	-	dashboard --help	-	-
 help-pick	pipe	100	-	pick --help	-	-
 help-work	pipe	100	-	work --help	-	-
+help-hook	pipe	100	-	hook --help	-	-
 help-why	pipe	100	-	why --help	-	-
 help-api	pipe	100	-	api --help	-	-
 help-daemon	pipe	100	-	daemon --help	-	-

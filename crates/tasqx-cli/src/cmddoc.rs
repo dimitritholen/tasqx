@@ -356,6 +356,24 @@ pub const COMMAND_REF: &[CmdDoc] = &[
         topic: Topic::Automation,
     },
     CmdDoc {
+        verb: "hook",
+        aliases: &[],
+        method: "— (no store)",
+        summary: "The hook command `tasqx work` registers with the agent.",
+        usage: "tasqx hook claude",
+        examples: &[
+            // `NoRun`: the agent runs it, with its event JSON on stdin.
+            ex_norun("tasqx hook claude", "what Claude Code runs on a session event"),
+        ],
+        notes: &[
+            "`tasqx work --agent claude` registers this one command for the session's `SessionStart` and `SessionEnd` events through `--settings`, without touching `~/.claude` (D248). The command never varies; the event is read from the JSON the agent writes on stdin.",
+            "It acts only inside the `tasqx work` session it was registered for: without `TASQX_WORK_TASK`, or when the input's `session_id` is not `TASQX_WORK_SESSION`, it does nothing. Both events record nothing yet; a work session's tokens are measured when the task completes.",
+            "It never breaks the agent: input it cannot read or an event it does not know is one line on stderr, and it exits 0. You do not run it yourself.",
+        ],
+        see_also: &["work"],
+        topic: Topic::Automation,
+    },
+    CmdDoc {
         verb: "show",
         aliases: &["get"],
         method: "task.get",

@@ -580,6 +580,17 @@ const UNEXPOSED_METHODS: &[(&str, &str)] = &[
 /// these, so the omission is a recorded decision rather than a hidden param.
 const PINNED_ARGS: &[(&str, &str, &str)] = &[
     (
+        "tasqx_brief_task",
+        "rulings",
+        "this session already received its standing rulings in `initialize`; the section on \
+         `task.brief` is for a caller that starts an agent, `tasqx work` (D248).",
+    ),
+    (
+        "tasqx_brief_task",
+        "workdir",
+        "it only names the project for `rulings`, which this tool does not take (D248).",
+    ),
+    (
         "tasqx_search_memory",
         "workdir",
         "`stale_refs` is checked in the session's own checkout, the directory this server \

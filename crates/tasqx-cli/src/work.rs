@@ -246,13 +246,8 @@ pub(crate) fn decide(
 
 /// The start context: who launched the agent and on what, the task's brief
 /// (`tasqx_brief_task`'s markdown), what "done" means or that it must be
-/// asked, and the standing rulings for the task's project.
-pub(crate) fn start_context(
-    brief: &Value,
-    rulings: &Value,
-    actor: &str,
-    opts: &DetailOpts,
-) -> String {
+/// asked, and the standing rulings `task.brief` ranked for the task (D246).
+pub(crate) fn start_context(brief: &Value, actor: &str, opts: &DetailOpts) -> String {
     let task = &brief["task"];
     let sid = task["short_id"].as_i64().unwrap_or(0);
     let mut out = format!(
@@ -270,29 +265,25 @@ pub(crate) fn start_context(
              tasqx_add_check.\n",
         );
     }
-    let project = task["project"].as_str();
-    let standing: Vec<String> = rulings["docs"]
-        .as_array()
-        .map(Vec::as_slice)
-        .unwrap_or_default()
-        .iter()
-        .filter(|d| d["project"].is_null() || d["project"].as_str() == project)
-        .map(|d| {
-            format!(
-                "- {} (read it with tasqx_get_memory, id {})",
-                d["title"].as_str().unwrap_or(""),
-                d["id"].as_str().unwrap_or("")
-            )
-        })
-        .collect();
-    if !standing.is_empty() {
-        out.push_str(
-            "\n## Standing rulings\n\nRecorded by the user or an earlier session; follow them.\n\n",
-        );
-        out.push_str(&standing.join("\n"));
+    if let Some(rulings) = brief["rulings_section"].as_str() {
+        out.push_str("\n## Standing rulings\n\n");
+        out.push_str(rulings.trim_end());
         out.push('\n');
     }
     out
+}
+
+/// The one hook command, for every event and every session (D248): Codex
+/// trusts a hook by the hash of its definition, so it never varies, and the
+/// event comes from the hook's stdin.
+pub const HOOK_COMMAND: &str = "tasqx hook claude";
+
+/// The `--settings` JSON that registers [`HOOK_COMMAND`] on the Claude hook
+/// events `tasqx hook claude` handles. Layered on the user's own settings by
+/// Claude for this session only.
+fn claude_settings() -> String {
+    let group = json!([{ "hooks": [{ "type": "command", "command": HOOK_COMMAND }] }]);
+    json!({ "hooks": { "SessionStart": group, "SessionEnd": group } }).to_string()
 }
 
 /// How each agent CLI takes the context (D245, verified against claude 2.x
@@ -309,6 +300,8 @@ pub(crate) fn agent_args(
             session.into(),
             "--append-system-prompt-file".into(),
             path.into(),
+            "--settings".into(),
+            claude_settings().into(),
         ],
         _ => vec![
             "-c".into(),
@@ -326,9 +319,14 @@ pub(crate) fn agent_args(
 fn launch(be: &mut Backend, ctx: &Ctx, task_ref: &str, agent: &'static str) -> CmdOutcome {
     // Reads first: a ref that does not resolve fails here, having written
     // nothing.
-    let brief = be.call("task.brief", &json!({ "ref": task_ref }))?;
+    // The rulings are those for this directory's project, the one the
+    // agent's own MCP session infers too.
+    let workdir = std::env::current_dir().ok();
+    let brief = be.call(
+        "task.brief",
+        &json!({ "ref": task_ref, "rulings": true, "workdir": workdir }),
+    )?;
     let sid = brief["task"]["short_id"].as_i64().unwrap_or(0);
-    let rulings = be.call("memory.list", &json!({ "standing": true }))?;
     let program = on_path(agent)
         .ok_or_else(|| ApiError::not_found(format!("`{agent}` is not on PATH"), None))?;
 
@@ -338,7 +336,7 @@ fn launch(be: &mut Backend, ctx: &Ctx, task_ref: &str, agent: &'static str) -> C
         time: ctx.time_format,
         now: crate::clock::now(),
     };
-    let context = start_context(&brief, &rulings, &actor, &opts);
+    let context = start_context(&brief, &actor, &opts);
     let path = std::env::temp_dir().join(format!("tasqx-work-{session}.md"));
     // Owner-only and never over an existing file: the brief and the rulings
     // are nobody else's to read in a shared temp dir.
@@ -453,6 +451,46 @@ fn cleanup(be: &mut Backend, method: &str, params: &Value, fix: &str) {
             "tasqx: warning: {method} did not happen ({}); run `{fix}`",
             e.message
         );
+    }
+}
+
+/// `tasqx hook claude` (D248): what Claude Code runs on a hook event. It
+/// acts only inside the `tasqx work` session it was registered for, and never
+/// breaks the agent: every fault is a stderr line and the exit is 0.
+pub(crate) fn run_hook() {
+    // Outside a work session (a hook copied into someone's own settings),
+    // the input is not even read.
+    if std::env::var_os("TASQX_WORK_TASK").is_none() {
+        return;
+    }
+    let mut input = String::new();
+    use std::io::Read;
+    let parsed = std::io::stdin()
+        .read_to_string(&mut input)
+        .map_err(|e| e.to_string())
+        .and_then(|_| serde_json::from_str::<Value>(&input).map_err(|e| e.to_string()));
+    let hook = match parsed {
+        Ok(v) => v,
+        Err(e) => return eprintln!("{HOOK_COMMAND}: unreadable hook input: {e}"),
+    };
+    // Another session's hook, a nested `claude` say, is not this one's.
+    let session = std::env::var("TASQX_WORK_SESSION").ok();
+    if session.is_none() || hook["session_id"].as_str() != session.as_deref() {
+        return;
+    }
+    if let Err(e) = on_event(hook["hook_event_name"].as_str().unwrap_or(""), &hook) {
+        eprintln!("{HOOK_COMMAND}: {e}");
+    }
+}
+
+/// One arm per Claude hook event `work` registers; adding an event is an arm
+/// here and a key in [`claude_settings`].
+fn on_event(event: &str, _hook: &Value) -> Result<(), String> {
+    match event {
+        // Entry points: the handoff (#4177) and the per-turn push (#4185)
+        // hang off these. Tokens are measured when the task completes.
+        "SessionStart" | "SessionEnd" => Ok(()),
+        other => Err(format!("no handler for hook event {other:?}")),
     }
 }
 
@@ -628,27 +666,29 @@ mod tests {
     }
 
     #[test]
-    fn a_context_without_checks_asks_for_done_and_lists_only_this_projects_rulings() {
+    fn a_context_without_checks_asks_for_done_and_carries_the_briefs_rulings_section() {
         let opts = DetailOpts {
             time: TimeFormat::Iso,
             now: crate::clock::now(),
         };
-        let brief =
-            json!({ "task": { "short_id": 7, "title": "T", "project": "a", "checks": [] } });
-        let rulings = json!({ "docs": [
-            { "id": "1", "title": "mine", "project": "a" },
-            { "id": "2", "title": "everyone's", "project": null },
-            { "id": "3", "title": "theirs", "project": "b" },
-        ] });
-        let ctx = start_context(&brief, &rulings, "work:claude:1", &opts);
+        let brief = json!({
+            "task": { "short_id": 7, "title": "T", "project": "a", "checks": [] },
+            "rulings_section": "Standing rulings for project a.\n- mine: its gist\n",
+        });
+        let ctx = start_context(&brief, "work:claude:1", &opts);
         assert!(ctx.contains("tasqx_add_check"), "{ctx}");
         assert!(ctx.contains("actor: \"work:claude:1\""), "{ctx}");
-        assert!(ctx.contains("mine") && ctx.contains("everyone's"), "{ctx}");
-        assert!(!ctx.contains("theirs"), "{ctx}");
+        assert!(ctx.contains("## Standing rulings"), "{ctx}");
+        assert!(ctx.contains("- mine: its gist"), "{ctx}");
 
-        let checked = json!({ "task": { "short_id": 7, "title": "T", "checks": [{ "body": "it works", "state": "open" }] } });
-        let ctx = start_context(&checked, &json!({}), "a", &opts);
+        // No rulings (`null`): no heading.
+        let checked = json!({
+            "task": { "short_id": 7, "title": "T", "checks": [{ "body": "it works", "state": "open" }] },
+            "rulings_section": null,
+        });
+        let ctx = start_context(&checked, "a", &opts);
         assert!(!ctx.contains("tasqx_add_check"), "{ctx}");
         assert!(ctx.contains("it works"), "{ctx}");
+        assert!(!ctx.contains("Standing rulings"), "{ctx}");
     }
 }

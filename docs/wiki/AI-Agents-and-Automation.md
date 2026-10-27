@@ -293,7 +293,8 @@ tasqx work 12 --agent claude
 
 Before the agent starts, tasqx claims the task for 24 hours and starts its
 timer. The agent gets the task's brief, its acceptance checks and your
-standing rulings for the project as start context. When the task has no
+standing rulings as start context: the rulings for this directory's project,
+ranked for the task, with the ones it pins first. When the task has no
 checks yet, the agent is told to ask you what "done" means and to record it
 with `tasqx_add_check` before it starts. When the agent exits, the timer stops
 and the claim is released. The agent's exit code is the command's.
@@ -318,6 +319,17 @@ calls reach the same store. The agent owns the terminal, so `--json` does not
 apply to `tasqx work`. Claude Code gets the context through
 `--append-system-prompt-file` and Codex through `-c developer_instructions`.
 tasqx never edits `~/.claude` or `~/.codex`.
+
+## tasqx hook
+
+For Claude Code, `tasqx work` also registers one hook command for the session,
+`tasqx hook claude`, on the `SessionStart` and `SessionEnd` events, through
+`--settings`. You do not run it yourself. The command is always the same; it reads the event from the JSON
+Claude writes on its stdin. It acts only inside the `tasqx work` session it was
+registered for, and it never breaks the agent: anything it cannot do is one
+line on stderr, and it exits 0. Neither event records anything yet. The
+session's tokens are measured from its transcript when the task completes, so
+a task that is never completed shows no tokens for its work sessions.
 
 ## tasqx api
 

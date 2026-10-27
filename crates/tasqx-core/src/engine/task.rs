@@ -3771,6 +3771,17 @@ impl Engine {
         if let Some(last) = self.last_time(&task.id)? {
             out["last_time"] = last;
         }
+        // D248: the D246 rulings section for this task, on request; the
+        // project is read off `workdir`, the caller's directory, as the MCP
+        // handshake reads it off its own.
+        if opt_bool(p, "rulings")? == Some(true) {
+            let workdir = opt_str_nonempty(p, "workdir")?.map(std::path::PathBuf::from);
+            out["rulings_section"] = json!(crate::mcp::McpServer::rulings_section(
+                self,
+                workdir.as_deref(),
+                Some(&json!(task.short_id)),
+            )?);
+        }
         // D227: the read is over, so the record is written outside the
         // snapshot (a deferred read cannot upgrade without risking
         // SQLITE_BUSY_SNAPSHOT).

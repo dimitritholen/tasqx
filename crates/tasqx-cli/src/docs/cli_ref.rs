@@ -145,6 +145,10 @@ const EXAMPLE_SCREENS: &[(&str, &str, &str)] = &[
 /// so adding a verb forces the question to be answered rather than skipped.
 const NO_SCREEN: &[(&str, &str)] = &[
     (
+        "hook",
+        "the agent runs it with its own event JSON on stdin, and it prints nothing.",
+    ),
+    (
         "work",
         "it hands the terminal to an agent CLI, and the capture has none to run.",
     ),

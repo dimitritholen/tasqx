@@ -243,6 +243,10 @@ pub const JSON_CARVE_OUTS: &[(&str, &str)] = &[
         "work",
         "the agent it launches owns stdout until it exits; a JSON result after it would not parse",
     ),
+    (
+        "hook",
+        "run by the agent on its own events: it prints nothing and exits 0, so the agent never breaks on it",
+    ),
 ];
 
 /// Every subcommand clap knows, derived from the parser rather than listed, so
@@ -636,6 +640,12 @@ fn execute(cli: Cli) -> Exit {
         Some(Command::Daemon { db }) => {
             let exit = Exit::self_framed("daemon", cli.json);
             run_daemon(cli.socket.as_deref(), db.as_deref());
+            return exit;
+        }
+        // D248: no store, no theme; exit 0 whatever happens.
+        Some(Command::Hook { .. }) => {
+            let exit = Exit::self_framed("hook", cli.json);
+            work::run_hook();
             return exit;
         }
         _ => {}
@@ -1287,6 +1297,7 @@ fn execute(cli: Cli) -> Exit {
         Some(Command::Api) => unreachable!("handled above"),
         Some(Command::Daemon { .. }) => unreachable!("handled above"),
         Some(Command::Mcp { .. }) => unreachable!("handled above"),
+        Some(Command::Hook { .. }) => unreachable!("handled above"),
         Some(Command::About { .. }) => unreachable!("handled above"),
         Some(Command::Manual { .. }) => unreachable!("handled above"),
         Some(Command::Completions { .. }) => unreachable!("handled above"),

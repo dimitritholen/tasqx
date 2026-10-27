@@ -79,6 +79,7 @@ task, and where to find help.
 | `setup` | Connect tasqx to Claude Code: MCP server and skills | [AI Agents and Automation](AI-Agents-and-Automation.md#tasqx-setup) |
 | `mcp` | The built-in server for AI agents | [AI Agents and Automation](AI-Agents-and-Automation.md#tasqx-mcp) |
 | `api` | Call the JSON API directly | [AI Agents and Automation](AI-Agents-and-Automation.md#tasqx-api) |
+| `hook` | The hook command `tasqx work` registers with the agent | [AI Agents and Automation](AI-Agents-and-Automation.md#tasqx-hook) |
 | `daemon` | A long-running server for live updates | [AI Agents and Automation](AI-Agents-and-Automation.md#tasqx-daemon) |
 | `tokens` | Repair AI token accounting | [AI Agents and Automation](AI-Agents-and-Automation.md#tasqx-tokens) |
 

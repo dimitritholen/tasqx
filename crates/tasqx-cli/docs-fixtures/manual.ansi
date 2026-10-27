@@ -24,6 +24,7 @@
   dashboard    Open the overview screen, or ask for its panels as data.
   pick         Browse tasks on a full-screen list: read one, search them, start one.
   work         Launch your agent CLI (claude or codex) bound to a task.
+  hook         The hook command `tasqx work` registers with the agent.
   show         Show one task in full detail.
   why          Explain a task's urgency score.
   start        Mark a task active.
