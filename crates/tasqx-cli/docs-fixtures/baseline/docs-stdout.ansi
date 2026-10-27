@@ -456,7 +456,10 @@ cd tasqx
 cargo install --path crates/tasqx-cli --force</code></pre></div>
 <p>Requires Rust 1.95 or newer. On Windows the MSVC toolchain is discovered
 automatically — you do not need it on your PATH.</p>
-<h3 id="h-sixty-seconds-with-tasqx">Sixty seconds with tasqx</h3>
+<p>That installs <code>tasqx</code> alone. To <a href="#wiki-syncing-between-machines">sync between machines</a>,
+also build the connector you use:</p>
+<div class="snip"><div class="snip-h"><span class="dollar">$</span><button class="copy" type="button">Copy</button></div><pre class="cmd"><code>cargo install --path crates/tasqx-remote-dir --force
+cargo install --path crates/tasqx-remote-r2 --force</code></pre></div><h3 id="h-sixty-seconds-with-tasqx">Sixty seconds with tasqx</h3>
 <p>Create a project, capture some work, and look at it.</p>
 <div class="snip"><div class="snip-h"><span class="dollar">$</span><button class="copy" type="button">Copy</button></div><pre class="cmd"><code>tasqx init work.tasqx --desc &quot;The tasqx project itself&quot;</code></pre><pre class="out"><code>work.tasqx
 created   now your default project</code></pre></div>
@@ -550,6 +553,8 @@ DATE       := any date `due:` accepts      # tomorrow, friday, 2026-07-25,
 <tr><td data-label="Predicate" headers="filters-tbl0-h0"><code>+api</code></td><td data-label="Matches" headers="filters-tbl0-h1">Tasks tagged <code>api</code>.</td></tr>
 <tr><td data-label="Predicate" headers="filters-tbl0-h0"><code>-api</code></td><td data-label="Matches" headers="filters-tbl0-h1">Tasks <em>not</em> tagged <code>api</code>.</td></tr>
 <tr><td data-label="Predicate" headers="filters-tbl0-h0"><code>project:work.tasqx</code></td><td data-label="Matches" headers="filters-tbl0-h1">Exact project match.</td></tr>
+<tr><td data-label="Predicate" headers="filters-tbl0-h0"><code>proj:work</code></td><td data-label="Matches" headers="filters-tbl0-h1">The same as <code>project:</code>.</td></tr>
+<tr><td data-label="Predicate" headers="filters-tbl0-h0"><code>priority:high</code></td><td data-label="Matches" headers="filters-tbl0-h1">Exact priority: <code>H</code>, <code>M</code>, <code>L</code>, or <code>high</code>, <code>medium</code>, <code>low</code>.</td></tr>
 <tr><td data-label="Predicate" headers="filters-tbl0-h0"><code>status:pending</code></td><td data-label="Matches" headers="filters-tbl0-h1">Exact status: <code>triage</code>, <code>backlog</code>, <code>pending</code>, <code>active</code>, <code>done</code>, <code>cancelled</code>. <code>backlog</code> is the date-held backlog; a proposal in <code>triage</code> (D238) is never in it.</td></tr>
 <tr><td data-label="Predicate" headers="filters-tbl0-h0"><code>status:any</code></td><td data-label="Matches" headers="filters-tbl0-h1">Every status, <code>done</code> and <code>cancelled</code> included; also spelled <code>status:all</code>. Overrides a default that hides closed tasks.</td></tr>
 <tr><td data-label="Predicate" headers="filters-tbl0-h0"><code>weekly review</code></td><td data-label="Matches" headers="filters-tbl0-h1">Free text: a bare word is a case-insensitive substring of the title, and several words must all appear. Quote a phrase to match it as one — <code>"memory explorer"</code>. <code>title:review</code> and <code>title:"weekly planning"</code> are the explicit spelling; <code>%</code> and <code>_</code> are ordinary characters.</td></tr>
@@ -557,6 +562,9 @@ DATE       := any date `due:` accepts      # tomorrow, friday, 2026-07-25,
 <tr><td data-label="Predicate" headers="filters-tbl0-h0"><code>@blocked</code></td><td data-label="Matches" headers="filters-tbl0-h1">Open, with at least one dependency that is not yet done or cancelled. Also spelled <code>+blocked</code> or <code>status:blocked</code>.</td></tr>
 <tr><td data-label="Predicate" headers="filters-tbl0-h0"><code>due.before:&lt;date&gt;</code></td><td data-label="Matches" headers="filters-tbl0-h1">Due strictly before that instant. Takes any date <code>due:</code> takes — <code>tomorrow</code>, <code>friday</code>, <code>2026-07-25</code>, <code>eom</code>, <code>"in 3 days"</code>, or a full RFC3339 instant.</td></tr>
 <tr><td data-label="Predicate" headers="filters-tbl0-h0"><code>due.after:&lt;date&gt;</code></td><td data-label="Matches" headers="filters-tbl0-h1">Due strictly after that instant. Same date grammar.</td></tr>
+<tr><td data-label="Predicate" headers="filters-tbl0-h0"><code>completed.before:&lt;date&gt;</code></td><td data-label="Matches" headers="filters-tbl0-h1">Finished strictly before that instant. Same date grammar; pair with <code>status:done</code>.</td></tr>
+<tr><td data-label="Predicate" headers="filters-tbl0-h0"><code>completed.after:&lt;date&gt;</code></td><td data-label="Matches" headers="filters-tbl0-h1">Finished strictly after that instant. Same date grammar.</td></tr>
+<tr><td data-label="Predicate" headers="filters-tbl0-h0"><code>@claimed</code></td><td data-label="Matches" headers="filters-tbl0-h1">Under a live claim, whoever holds it.</td></tr>
 </tbody></table></div><h3 id="h-values-with-spaces">Values with spaces</h3>
 <p>A space separates predicates, so a project whose name contains one must be
 double-quoted — <code>project:"Home Renovation"</code>. (A tag never contains one: tags are
@@ -971,6 +979,9 @@ out).</p>
 <tr><td data-label="Command" headers="wiki-finding-tasks-tbl0-h0"><code>tasqx list</code></td><td data-label="What it does" headers="wiki-finding-tasks-tbl0-h1">The working set</td></tr>
 <tr><td data-label="Command" headers="wiki-finding-tasks-tbl0-h0"><code>tasqx list project:work +api</code></td><td data-label="What it does" headers="wiki-finding-tasks-tbl0-h1">Narrowed</td></tr>
 <tr><td data-label="Command" headers="wiki-finding-tasks-tbl0-h0"><code>tasqx list due.before:friday</code></td><td data-label="What it does" headers="wiki-finding-tasks-tbl0-h1">Deadline pressure only</td></tr>
+<tr><td data-label="Command" headers="wiki-finding-tasks-tbl0-h0"><code>tasqx list --sort due --limit 20</code></td><td data-label="What it does" headers="wiki-finding-tasks-tbl0-h1">Order by a key (<code>-due</code> for descending, repeat or comma-separate several); the default is <code>-urgency</code></td></tr>
+<tr><td data-label="Command" headers="wiki-finding-tasks-tbl0-h0"><code>tasqx list --fields short_id,title,due</code></td><td data-label="What it does" headers="wiki-finding-tasks-tbl0-h1">Return only those fields, mostly for <code>--json</code></td></tr>
+<tr><td data-label="Command" headers="wiki-finding-tasks-tbl0-h0"><code>tasqx list --holder me</code></td><td data-label="What it does" headers="wiki-finding-tasks-tbl0-h1">Choose work as holder <code>me</code>: with <code>@working</code>, tasks someone else has claimed are left out</td></tr>
 </tbody></table></div>
 <p>A list shows at most 100 rows. When more match, the head says so (<code>100 of 192 tasks</code>) and a last line gives the command for the rest: <code>--offset 100</code> for the
 next page, <code>--limit 192</code> for all of them (<code>--limit</code> tops out at 10,000).
@@ -1045,11 +1056,15 @@ with <code>+ - |</code>.</p>
 <code>export</code>) takes the same filter expressions:</p>
 <div class="tw"><table class="grid"><thead><tr><th id="wiki-finding-tasks-tbl2-h0">Filter</th><th id="wiki-finding-tasks-tbl2-h1">Matches</th></tr></thead><tbody>
 <tr><td data-label="Filter" headers="wiki-finding-tasks-tbl2-h0"><code>project:work</code></td><td data-label="Matches" headers="wiki-finding-tasks-tbl2-h1">In a project</td></tr>
-<tr><td data-label="Filter" headers="wiki-finding-tasks-tbl2-h0"><code>status:pending</code></td><td data-label="Matches" headers="wiki-finding-tasks-tbl2-h1">By status</td></tr>
+<tr><td data-label="Filter" headers="wiki-finding-tasks-tbl2-h0"><code>proj:work</code></td><td data-label="Matches" headers="wiki-finding-tasks-tbl2-h1">The same as <code>project:</code></td></tr>
+<tr><td data-label="Filter" headers="wiki-finding-tasks-tbl2-h0"><code>status:pending</code></td><td data-label="Matches" headers="wiki-finding-tasks-tbl2-h1">By status: <code>triage</code>, <code>backlog</code>, <code>pending</code>, <code>active</code>, <code>done</code>, <code>cancelled</code></td></tr>
+<tr><td data-label="Filter" headers="wiki-finding-tasks-tbl2-h0"><code>priority:high</code></td><td data-label="Matches" headers="wiki-finding-tasks-tbl2-h1">By priority: <code>H</code>, <code>M</code>, <code>L</code>, or <code>high</code>, <code>medium</code>, <code>low</code></td></tr>
 <tr><td data-label="Filter" headers="wiki-finding-tasks-tbl2-h0"><code>+api</code></td><td data-label="Matches" headers="wiki-finding-tasks-tbl2-h1">Has a tag</td></tr>
 <tr><td data-label="Filter" headers="wiki-finding-tasks-tbl2-h0"><code>-api</code></td><td data-label="Matches" headers="wiki-finding-tasks-tbl2-h1">Does NOT have a tag</td></tr>
 <tr><td data-label="Filter" headers="wiki-finding-tasks-tbl2-h0"><code>due.before:friday</code></td><td data-label="Matches" headers="wiki-finding-tasks-tbl2-h1">Due before a date</td></tr>
 <tr><td data-label="Filter" headers="wiki-finding-tasks-tbl2-h0"><code>due.after:monday</code></td><td data-label="Matches" headers="wiki-finding-tasks-tbl2-h1">Due after a date</td></tr>
+<tr><td data-label="Filter" headers="wiki-finding-tasks-tbl2-h0"><code>completed.before:friday</code></td><td data-label="Matches" headers="wiki-finding-tasks-tbl2-h1">Finished before a date</td></tr>
+<tr><td data-label="Filter" headers="wiki-finding-tasks-tbl2-h0"><code>completed.after:monday</code></td><td data-label="Matches" headers="wiki-finding-tasks-tbl2-h1">Finished after a date (pair it with <code>status:done</code>)</td></tr>
 <tr><td data-label="Filter" headers="wiki-finding-tasks-tbl2-h0"><code>weekly review</code></td><td data-label="Matches" headers="wiki-finding-tasks-tbl2-h1">Title contains every word, any case</td></tr>
 <tr><td data-label="Filter" headers="wiki-finding-tasks-tbl2-h0"><code>'"memory explorer"'</code></td><td data-label="Matches" headers="wiki-finding-tasks-tbl2-h1">Title contains the phrase</td></tr>
 <tr><td data-label="Filter" headers="wiki-finding-tasks-tbl2-h0"><code>title:review</code></td><td data-label="Matches" headers="wiki-finding-tasks-tbl2-h1">The same, spelled as a key</td></tr>
@@ -1197,8 +1212,12 @@ names them. Finishing work tells you what it made possible.</li>
 <li>A task with dependencies still open is refused, naming them. <code>tasqx done 42 --force</code> completes it anyway; the override is recorded on the completion
 and <code>tasqx report --outcomes</code> counts it under FORCED. Cancelling a blocked
 task never needs the flag.</li>
+<li>Report what the work cost with <code>--tool</code>, <code>--model</code> and <code>--input-tokens</code>,
+<code>--output-tokens</code>, <code>--cache-read-tokens</code>, <code>--cache-creation-tokens</code> (or one
+unsplit <code>--total-tokens</code>). Any count records a measurement; <code>--tool</code> and
+<code>--model</code> alone still land on the completion.</li>
 </ul>
-<h3 id="wiki-working-on-tasks--tasqx-cancel">tasqx cancel</h3>
+<div class="snip"><div class="snip-h"><span class="dollar">$</span><button class="copy" type="button">Copy</button></div><pre class="cmd"><code>tasqx done 42 --tool claude-code --model claude-opus-5 --input-tokens 4200 --output-tokens 900</code></pre></div><h3 id="wiki-working-on-tasks--tasqx-cancel">tasqx cancel</h3>
 <p><em>Aliases: <code>delete</code>, <code>del</code>, <code>rm</code></em></p>
 <p>Cancel a task. This is as close to "delete" as tasqx gets, on purpose: the
 task keeps its history, stays in the event log, and comes back with <code>reopen</code>.</p>
@@ -2082,6 +2101,9 @@ query: exact words only, the way search worked before meaning was added.
 be. Lower finds more distant paraphrases, and more noise.</li>
 <li>The model reads English; text in another language is found mostly where the
 query shares its words.</li>
+<li><code>--scope docs</code> or <code>--scope annotations</code> searches only one half (default <code>all</code>).
+<code>--source-prefix docs/adr/</code> keeps only the docs whose source starts with that
+text (literal, case-sensitive) and leaves annotations out.</li>
 <li>Power users can pass <code>--raw</code> for FTS5 operator syntax (words only).</li>
 <li>The answer includes the query that actually ran, so "no hits" is
 distinguishable from "nothing stored about this".</li>
@@ -2342,7 +2364,7 @@ the idea again, write a new note.</p>
 note asks for nothing.</p>
 <p>Every command here takes <code>--json</code> and prints the API's answer. Agents reach
 notes through the MCP tools <code>tasqx_add_note</code>, <code>tasqx_list_notes</code>,
-<code>tasqx_update_note</code>, <code>tasqx_remove_note</code> and <code>tasqx_promote_note</code>.</p>
+<code>tasqx_get_note</code> (one note whole), <code>tasqx_update_note</code>, <code>tasqx_remove_note</code> and <code>tasqx_promote_note</code>.</p>
 <div class="pagenav"><a class="prev" href="#wiki-memory"><span class="pn-k">Previous</span><span class="pn-l">Memory</span></a><a class="next" href="#wiki-ai-agents-and-automation"><span class="pn-k">Next</span><span class="pn-l">AI Agents and Automation</span></a></div></section><section class="page" id="wiki-ai-agents-and-automation"><h2>AI Agents and Automation</h2><p>tasqx treats an AI agent as a normal user. There's one JSON API underneath
 everything; the CLI is one client of it, and the built-in MCP server is
 another. An agent gets the same data, the same rules and the same safety
@@ -2688,7 +2710,8 @@ backup as it was, and prints where it went and what it left out</li>
 tasqx export project:work &gt; work.json
 tasqx export --out backup.json</code></pre></div>
 <ul>
-<li>The document carries projects, your memory docs, the graph's links and your
+<li>The document carries projects, your memory docs, your <a href="#wiki-notes">quick-capture
+notes</a>, the graph's links and your
 default-project setting too, so a restore gives back the store, not just its
 tasks.</li>
 <li>A filtered export that cuts across a dependency (one task in, its
@@ -2704,7 +2727,8 @@ one pointing at an annotation you removed: a removed annotation is not in the
 document, so the edge to it is dropped and counted under <code>dropped_links</code> like
 any other. Any <em>other</em> filter scopes those
 four to what the exported tasks actually need, and reports what it left out
-(<code>dropped_projects</code>, <code>dropped_docs</code>, <code>dropped_links</code>, <code>dropped_events</code>):
+(<code>dropped_projects</code>, <code>dropped_docs</code>, <code>dropped_notes</code>, <code>dropped_links</code>,
+<code>dropped_events</code>; notes follow a doc's project rule):
 sharing
 <code>tasqx export project:ledger</code> no longer ships every other project's
 knowledge along with it. A doc that carries no project ships only with
@@ -2927,7 +2951,8 @@ Payload order does not matter — tasks are written first, edges second, so a
 forward reference is fine.</p>
 <h3 id="wiki-import-and-export--checking-a-restore">Checking a restore</h3>
 <p>A store exported and imported into an empty one comes back with every task,
-project, memory doc, link, check, tag, dependency, timer and note, and the
+project, memory doc, quick-capture note, link, check, tag, dependency, timer
+and task annotation, and the
 event history behind them. Counted straight from the database, three numbers
 still differ, on purpose, and <code>tasqx export --out backup.json</code> names each one
 under the path it wrote (<code>--json</code> gives the counts as fields):</p>
@@ -3071,9 +3096,11 @@ store exactly the way <code>tasqx import --merge</code> does (see
 <a href="#wiki-import-and-export--tasqx-import">Import and Export</a>), then exports and
 pushes the result back. If another machine pushed in between, it merges that
 too and tries again, three times at most; failing on the third names it a
-conflict and says to run <code>tasqx sync</code> again — nothing already merged is lost,
-since merging is idempotent. When the remote already holds exactly this store
-(nothing changed on either side), nothing is pushed.</p>
+conflict and says to run <code>tasqx sync</code> again (exit code 5, <code>conflict</code>, so a
+script can retry on it) — nothing already merged is lost, since merging is
+idempotent. When the remote already holds exactly this store (nothing changed
+on either side), nothing is pushed. Sync has no MCP tool: it runs in your
+shell, not from an agent session.</p>
 <p><code>tasqx sync --status</code> prints the connector, the last version synced
 (eight characters) and when (<code>today</code>, <code>2d ago</code>, <code>never synced</code>, or
 <code>not set up</code> before the first setup).</p>
@@ -3106,8 +3133,11 @@ its own copy of the secret in the OS keyring, not in a file.</p>
 refused, naming it) or the environment — a secret field still cannot come
 from <code>--set</code>. For <code>tasqx-remote-r2</code> specifically, <code>TASQX_R2_SECRET_ACCESS_KEY</code>
 answers the Secret Access Key without a keyring, which a headless box may not
-have. The sync passphrase itself, needed by <code>sync setup</code> and read again by
-every later <code>sync</code>, comes from <code>TASQX_SYNC_PASSPHRASE</code>.</p>
+have. <code>TASQX_R2_ENDPOINT</code> replaces the default
+<code>https://&lt;account_id&gt;.r2.cloudflarestorage.com</code> for a bucket in a jurisdiction,
+such as <code>https://&lt;account_id&gt;.eu.r2.cloudflarestorage.com</code> for the EU. The sync
+passphrase itself, needed by <code>sync setup</code> and read again by every later <code>sync</code>,
+comes from <code>TASQX_SYNC_PASSPHRASE</code>.</p>
 <div class="snip"><div class="snip-h"><span class="dollar">$</span><button class="copy" type="button">Copy</button></div><pre class="cmd"><code>TASQX_R2_SECRET_ACCESS_KEY=... TASQX_SYNC_PASSPHRASE=... \
   tasqx sync setup r2 --set account_id=... --set bucket=tasqx \
     --set access_key_id=... --set object_key=
@@ -3160,10 +3190,27 @@ to, and why: through a running daemon, or in-process — including the case
 where your <code>$TASQX_DB</code> names a different file than the daemon serves, so
 the daemon was passed over.</li>
 </ul>
-<h3 id="wiki-settings-and-themes--tasqx-theme">tasqx theme</h3><div class="tw"><table class="grid"><thead><tr><th id="wiki-settings-and-themes-tbl1-h0">Command</th><th id="wiki-settings-and-themes-tbl1-h1">What it does</th></tr></thead><tbody>
-<tr><td data-label="Command" headers="wiki-settings-and-themes-tbl1-h0"><code>tasqx theme list</code></td><td data-label="What it does" headers="wiki-settings-and-themes-tbl1-h1">Built-ins + your own theme files</td></tr>
-<tr><td data-label="Command" headers="wiki-settings-and-themes-tbl1-h0"><code>tasqx theme show nord</code></td><td data-label="What it does" headers="wiki-settings-and-themes-tbl1-h1">Preview a theme's colors and roles</td></tr>
-<tr><td data-label="Command" headers="wiki-settings-and-themes-tbl1-h0"><code>tasqx theme set nord</code></td><td data-label="What it does" headers="wiki-settings-and-themes-tbl1-h1">Persist the choice</td></tr>
+<h4 id="wiki-settings-and-themes--every-setting">Every setting</h4>
+<p><code>tasqx config list</code> prints these with their live value and source.</p>
+<div class="tw"><table class="grid"><thead><tr><th id="wiki-settings-and-themes-tbl1-h0">Setting</th><th id="wiki-settings-and-themes-tbl1-h1">Default</th><th id="wiki-settings-and-themes-tbl1-h2">What it does</th></tr></thead><tbody>
+<tr><td data-label="Setting" headers="wiki-settings-and-themes-tbl1-h0"><code>theme.name</code></td><td data-label="Default" headers="wiki-settings-and-themes-tbl1-h1"><code>nord</code></td><td data-label="What it does" headers="wiki-settings-and-themes-tbl1-h2">The terminal theme (<a href="#wiki-settings-and-themes--tasqx-theme">below</a>). Also <code>--theme</code> and <code>$TASQX_THEME</code></td></tr>
+<tr><td data-label="Setting" headers="wiki-settings-and-themes-tbl1-h0"><code>dashboard.enabled</code></td><td data-label="Default" headers="wiki-settings-and-themes-tbl1-h1"><code>true</code></td><td data-label="What it does" headers="wiki-settings-and-themes-tbl1-h2">A bare <code>tasqx</code> on a terminal opens the dashboard; <code>false</code> prints the list instead. <code>$TASQX_DASHBOARD</code> overrides it</td></tr>
+<tr><td data-label="Setting" headers="wiki-settings-and-themes-tbl1-h0"><code>dashboard.panels</code></td><td data-label="Default" headers="wiki-settings-and-themes-tbl1-h1"><code>tasks,projects,burndown,pulse,effort,tokens</code></td><td data-label="What it does" headers="wiki-settings-and-themes-tbl1-h2">Which panels the dashboard draws, in tab order</td></tr>
+<tr><td data-label="Setting" headers="wiki-settings-and-themes-tbl1-h0"><code>dashboard.refresh</code></td><td data-label="Default" headers="wiki-settings-and-themes-tbl1-h1"><code>auto</code></td><td data-label="What it does" headers="wiki-settings-and-themes-tbl1-h2"><code>auto</code> re-reads on a timer, <code>manual</code> only on <code>r</code></td></tr>
+<tr><td data-label="Setting" headers="wiki-settings-and-themes-tbl1-h0"><code>dashboard.window</code></td><td data-label="Default" headers="wiki-settings-and-themes-tbl1-h1"><code>week</code></td><td data-label="What it does" headers="wiki-settings-and-themes-tbl1-h2">The burndown window it opens on (<code>week</code>, <code>14d</code>, <code>30d</code>); <code>w</code> cycles it</td></tr>
+<tr><td data-label="Setting" headers="wiki-settings-and-themes-tbl1-h0"><code>notify.enabled</code></td><td data-label="Default" headers="wiki-settings-and-themes-tbl1-h1"><code>false</code></td><td data-label="What it does" headers="wiki-settings-and-themes-tbl1-h2">Lets the daemon raise OS notifications for reminders</td></tr>
+<tr><td data-label="Setting" headers="wiki-settings-and-themes-tbl1-h0"><code>tokens.enabled</code></td><td data-label="Default" headers="wiki-settings-and-themes-tbl1-h1"><code>false</code></td><td data-label="What it does" headers="wiki-settings-and-themes-tbl1-h2">Lets the daemon attribute AI token use from local tool transcripts</td></tr>
+<tr><td data-label="Setting" headers="wiki-settings-and-themes-tbl1-h0"><code>otlp.enabled</code></td><td data-label="Default" headers="wiki-settings-and-themes-tbl1-h1"><code>false</code></td><td data-label="What it does" headers="wiki-settings-and-themes-tbl1-h2">Runs a local OTLP/HTTP receiver in the daemon for token telemetry</td></tr>
+<tr><td data-label="Setting" headers="wiki-settings-and-themes-tbl1-h0"><code>otlp.port</code></td><td data-label="Default" headers="wiki-settings-and-themes-tbl1-h1"><code>4318</code></td><td data-label="What it does" headers="wiki-settings-and-themes-tbl1-h2">The port it binds on 127.0.0.1</td></tr>
+<tr><td data-label="Setting" headers="wiki-settings-and-themes-tbl1-h0"><code>board.port</code></td><td data-label="Default" headers="wiki-settings-and-themes-tbl1-h1"><code>0</code></td><td data-label="What it does" headers="wiki-settings-and-themes-tbl1-h2">The port <code>tasqx board</code> binds; <code>0</code> takes a free one each run, a fixed one keeps the board's token so a bookmark survives</td></tr>
+<tr><td data-label="Setting" headers="wiki-settings-and-themes-tbl1-h0"><code>daemon.idle_timeout</code></td><td data-label="Default" headers="wiki-settings-and-themes-tbl1-h1"><code>0</code></td><td data-label="What it does" headers="wiki-settings-and-themes-tbl1-h2">Minutes of idleness after which <code>tasqx daemon</code> exits; <code>0</code> stays up</td></tr>
+<tr><td data-label="Setting" headers="wiki-settings-and-themes-tbl1-h0"><code>default_project</code></td><td data-label="Default" headers="wiki-settings-and-themes-tbl1-h1">none</td><td data-label="What it does" headers="wiki-settings-and-themes-tbl1-h2">Where a bare <code>tasqx add</code> files; kept in the store, set with <code>tasqx use</code></td></tr>
+<tr><td data-label="Setting" headers="wiki-settings-and-themes-tbl1-h0"><code>mcp.add_status</code></td><td data-label="Default" headers="wiki-settings-and-themes-tbl1-h1"><code>pending</code></td><td data-label="What it does" headers="wiki-settings-and-themes-tbl1-h2">Status of a task added over MCP when the call names none; <code>triage</code> holds agent proposals until <code>tasqx accept</code></td></tr>
+<tr><td data-label="Setting" headers="wiki-settings-and-themes-tbl1-h0"><code>detail.time_format</code></td><td data-label="Default" headers="wiki-settings-and-themes-tbl1-h1"><code>both</code></td><td data-label="What it does" headers="wiki-settings-and-themes-tbl1-h2">How <code>show</code> and the MCP task view write timestamps: <code>iso</code>, <code>relative</code> or <code>both</code></td></tr>
+</tbody></table></div><h3 id="wiki-settings-and-themes--tasqx-theme">tasqx theme</h3><div class="tw"><table class="grid"><thead><tr><th id="wiki-settings-and-themes-tbl2-h0">Command</th><th id="wiki-settings-and-themes-tbl2-h1">What it does</th></tr></thead><tbody>
+<tr><td data-label="Command" headers="wiki-settings-and-themes-tbl2-h0"><code>tasqx theme list</code></td><td data-label="What it does" headers="wiki-settings-and-themes-tbl2-h1">Built-ins + your own theme files</td></tr>
+<tr><td data-label="Command" headers="wiki-settings-and-themes-tbl2-h0"><code>tasqx theme show nord</code></td><td data-label="What it does" headers="wiki-settings-and-themes-tbl2-h1">Preview a theme's colors and roles</td></tr>
+<tr><td data-label="Command" headers="wiki-settings-and-themes-tbl2-h0"><code>tasqx theme set nord</code></td><td data-label="What it does" headers="wiki-settings-and-themes-tbl2-h1">Persist the choice</td></tr>
 </tbody></table></div>
 <p>Built-ins: <code>nord</code>, <code>gruvbox</code>, <code>dracula</code>, <code>solarized</code>, <code>mono</code> — plus any theme
 file you drop in yourself. A one-off try is
@@ -3202,11 +3249,11 @@ table lays out for a fixed 100 columns and two runs of the same store stay
 diffable.</p>
 </div>
 <p>Four environment variables override the detection:</p>
-<div class="tw"><table class="grid"><thead><tr><th id="wiki-settings-and-themes-tbl2-h0">Variable</th><th id="wiki-settings-and-themes-tbl2-h1">Effect</th></tr></thead><tbody>
-<tr><td data-label="Variable" headers="wiki-settings-and-themes-tbl2-h0"><code>NO_COLOR</code></td><td data-label="Effect" headers="wiki-settings-and-themes-tbl2-h1">Set to anything: drop all colour, keep bold/underline. Wins over everything below.</td></tr>
-<tr><td data-label="Variable" headers="wiki-settings-and-themes-tbl2-h0"><code>CLICOLOR_FORCE</code></td><td data-label="Effect" headers="wiki-settings-and-themes-tbl2-h1">Set to anything but <code>0</code>: force colour even through a pipe — for <code>less -R</code> and CI logs.</td></tr>
-<tr><td data-label="Variable" headers="wiki-settings-and-themes-tbl2-h0"><code>TASQX_FORCE_COLOR</code></td><td data-label="Effect" headers="wiki-settings-and-themes-tbl2-h1">Set to anything: same as <code>CLICOLOR_FORCE</code>, scoped to tasqx.</td></tr>
-<tr><td data-label="Variable" headers="wiki-settings-and-themes-tbl2-h0"><code>COLUMNS</code></td><td data-label="Effect" headers="wiki-settings-and-themes-tbl2-h1">How many columns wide to lay tables out. Beats both the terminal's own answer and the piped default — for a multiplexer that misreports its size, or to pin the width of captured output. Clamped to 40–160.</td></tr>
+<div class="tw"><table class="grid"><thead><tr><th id="wiki-settings-and-themes-tbl3-h0">Variable</th><th id="wiki-settings-and-themes-tbl3-h1">Effect</th></tr></thead><tbody>
+<tr><td data-label="Variable" headers="wiki-settings-and-themes-tbl3-h0"><code>NO_COLOR</code></td><td data-label="Effect" headers="wiki-settings-and-themes-tbl3-h1">Set to anything: drop all colour, keep bold/underline. Wins over everything below.</td></tr>
+<tr><td data-label="Variable" headers="wiki-settings-and-themes-tbl3-h0"><code>CLICOLOR_FORCE</code></td><td data-label="Effect" headers="wiki-settings-and-themes-tbl3-h1">Set to anything but <code>0</code>: force colour even through a pipe — for <code>less -R</code> and CI logs.</td></tr>
+<tr><td data-label="Variable" headers="wiki-settings-and-themes-tbl3-h0"><code>TASQX_FORCE_COLOR</code></td><td data-label="Effect" headers="wiki-settings-and-themes-tbl3-h1">Set to anything: same as <code>CLICOLOR_FORCE</code>, scoped to tasqx.</td></tr>
+<tr><td data-label="Variable" headers="wiki-settings-and-themes-tbl3-h0"><code>COLUMNS</code></td><td data-label="Effect" headers="wiki-settings-and-themes-tbl3-h1">How many columns wide to lay tables out. Beats both the terminal's own answer and the piped default — for a multiplexer that misreports its size, or to pin the width of captured output. Clamped to 40–160.</td></tr>
 </tbody></table></div><div class="pagenav"><a class="prev" href="#wiki-syncing-between-machines"><span class="pn-k">Previous</span><span class="pn-l">Syncing Between Machines</span></a><a class="next" href="#wiki-shell-completion"><span class="pn-k">Next</span><span class="pn-l">Shell Completion</span></a></div></section><section class="page" id="wiki-shell-completion"><h2>Shell Completion</h2><p>Tab completion for bash, zsh, fish, elvish and PowerShell — the same five
 shells on Linux, macOS and Windows. It completes more than most tools: verbs,
 flags, value sets, file paths, <em>your actual task ids</em>, project and tag names,
@@ -3310,6 +3357,10 @@ See ADR-012 for the locking decision.&#39;</code></pre></div>
 <div class="snip"><div class="snip-h"><span class="dollar">$</span><button class="copy" type="button">Copy</button></div><pre class="cmd"><code>tasqx next
 tasqx start 1
 tasqx done 1</code></pre></div>
+<p>If your pull requests follow the <code>task/&lt;id&gt;-&lt;slug&gt;</code> branch naming, <code>tasqx git event</code>
+can start and complete the task from the PR itself; see
+<a href="#wiki-working-on-tasks--tasqx-git">Working on Tasks</a>. Moving to another
+machine? See <a href="#wiki-syncing-between-machines">Syncing Between Machines</a>.</p>
 <p><code>done</code> announces what its completion released — you never have to work out what is
 next by hand. <code>tasqx list project:myapp.checkout</code> shows the whole feature;
 <code>tasqx report project:myapp.checkout</code> totals the feature's estimates — done work
@@ -3332,6 +3383,9 @@ tasqx add &quot;Call the dentist due:tomorrow remind:-1h&quot;</code></pre></div
 <p>Dates take natural language — <code>tomorrow</code>, <code>friday 17:00</code>, <code>in 3 days</code>, <code>eom</code> — and
 reminders anchor to the due date, so when the due date moves, the reminder moves
 with it.</p>
+<p>Not sure it is a task yet? <code>tasqx note "read the RFC about retries"</code> captures it
+outside your list, and <code>tasqx notes</code> shows them later; see
+<a href="#wiki-notes">Notes</a>.</p>
 <h3 id="guide-personal-gtd--look-only-at-what-matters">Look only at what matters</h3>
 <p><code>tasqx list</code> is the working set: pending and active tasks that are not blocked,
 hottest first. (A bare <code>tasqx</code> opens the dashboard on a terminal, and prints this
@@ -3391,7 +3445,11 @@ nobody annotated — the ones that taught the next session nothing. CALIB is the
 median tracked-over-estimate ratio, which is the "4h tasks are 9h tasks"
 sentence above as a number. DROPPED is work that was started and then
 cancelled. FORCED counts completions that overrode an open blocker with
-<code>--force</code>.</p>
+<code>--force</code>. OVER counts completions that went past their token budget, UNPROVEN
+those that closed with an acceptance check still open or failed, and UNBRIEFED
+those whose task nobody ran <code>tasqx brief</code> on first; each is read against the
+completions that could have been one. <a href="#wiki-reports-and-charts--tasqx-report">Reports and Charts</a>
+has the full column table.</p>
 <p>Every rate reads <code>count/n</code>, never a percentage, and the reason is worth a
 sentence at a standup: 3/12 and 3/3 are the same percentage and very different
 news. Check the denominator before you act on the number — a rework rate over
@@ -3489,6 +3547,26 @@ names them in <code>checks_passed</code> on completion. Completing with a criter
 open is not refused; it is counted, and <code>tasqx_outcomes</code> reports the count.</p>
 <p><code>tasqx_add_dependency</code> lets the agent decompose a feature itself: capture subtasks
 with <code>tasqx_add_task</code>, wire the order, then work the chain.</p>
+<h3 id="guide-ai-agent-workflow--several-agents--proposals-and-notes">Several agents, proposals and notes</h3>
+<ul>
+<li><strong>Claims.</strong> With more than one agent on a store, <code>tasqx_claim_task</code> first and
+<code>tasqx_release_task</code> when done: a claimed task leaves the other agents'
+<code>next</code> and <code>@working</code>, and <code>@claimed</code> lists what is held. See
+<a href="#wiki-working-on-tasks--tasqx-claim">Working on Tasks</a>.</li>
+<li><strong>Proposals.</strong> <code>tasqx config set mcp.add_status triage</code> makes every task an
+agent adds a proposal that waits for your <code>tasqx triage</code>, <code>accept</code>, <code>decline</code>
+or <code>duplicate</code>. See <a href="#wiki-working-on-tasks--tasqx-triage">Working on Tasks</a>.</li>
+<li><strong>Duplicates.</strong> <code>tasqx_add_task</code> returns <code>similar</code>, the open tasks in the same
+project that read like the new one; look before adding another.</li>
+<li><strong>Notes.</strong> <code>tasqx_add_note</code> and its siblings capture a thought that is not yet
+a task or a memory doc. See <a href="#wiki-notes">Notes</a>.</li>
+<li><strong>Pull requests.</strong> <code>tasqx git event</code> lets a PR start or complete its task. See
+<a href="#wiki-working-on-tasks--tasqx-git">Working on Tasks</a>.</li>
+<li><strong>Stale rulings.</strong> A memory hit carries <code>stale_refs</code>, the files and symbols
+it cites that the checkout no longer has. See <a href="#wiki-memory">Memory</a>.</li>
+<li><strong>Setup.</strong> <code>tasqx setup --list</code> shows what is installed and <code>--only retro</code>
+installs one item. See <a href="#wiki-ai-agents-and-automation">AI Agents and Automation</a>.</li>
+</ul>
 <h3 id="guide-ai-agent-workflow--give-the-agent-memory">Give the agent memory</h3>
 <p><code>tasqx memory import docs/</code> turns a directory of markdown docs — ADRs, runbooks,
 company patterns — into a searchable knowledge store. <code>tasqx_brief_task</code> consults
