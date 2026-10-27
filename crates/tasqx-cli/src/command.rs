@@ -1282,12 +1282,14 @@ pub(super) enum Command {
     /// waits for it (D245). Before it starts, the task is claimed and its timer
     /// started; the agent gets the task's brief, its acceptance checks and the
     /// project's standing rulings as start context, and TASQX_WORK_TASK,
-    /// TASQX_WORK_SESSION and TASQX_WORK_CONTEXT in its environment. When it
+    /// TASQX_WORK_SESSION and TASQX_WORK_CONTEXT in its environment, with
+    /// TASQX_SOCK or TASQX_DB naming the store this command used. When it
     /// exits, the timer stops and the claim is released, and its exit code is
     /// this command's.
     ///
-    /// Without a ref, the `pick` browser opens over the working set with the
-    /// cursor on what `tasqx next` would answer; enter launches. Without
+    /// Without a ref, the `pick` browser opens over the working set (less
+    /// tasks someone has claimed or that are running) with the cursor on what
+    /// `tasqx next` would answer; enter launches. Without
     /// --agent, the remembered `work.agent` is used, else the one agent on
     /// PATH, else one question among them whose answer is remembered. Off a
     /// terminal nothing is asked: a missing ref or agent is refused with exit

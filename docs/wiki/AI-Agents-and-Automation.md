@@ -301,7 +301,8 @@ and the claim is released. The agent's exit code is the command's.
 Every argument is optional:
 
 - `tasqx work` without a ref opens the [`pick`](Getting-Started.md) browser on
-  what `tasqx next` would answer. Enter launches.
+  what `tasqx next` would answer. Enter launches. Tasks someone has claimed
+  and tasks that are already running are left out.
 - Without `--agent`, tasqx uses the agent you chose last time. If only one is
   installed, it uses that one. Otherwise it asks once, with the default under
   Enter, and remembers the answer. `tasqx config set work.agent codex` changes
@@ -311,7 +312,9 @@ Leaving the browser or the question changes nothing. In a script or a pipe
 nothing is asked: a missing ref or agent exits 2 and names the flag to pass.
 
 The agent also gets `TASQX_WORK_TASK`, `TASQX_WORK_SESSION` and
-`TASQX_WORK_CONTEXT` in its environment. Claude Code gets the context through
+`TASQX_WORK_CONTEXT` in its environment, and the store `tasqx work` used
+(`TASQX_SOCK` or `TASQX_DB`), so the agent's own tasqx calls reach the same
+store. Claude Code gets the context through
 `--append-system-prompt-file` and Codex through `-c developer_instructions`.
 tasqx never edits `~/.claude` or `~/.codex`.
 
