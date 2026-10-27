@@ -1569,7 +1569,7 @@ fn attribution_tick(
     // be large and must never be parsed while holding the engine mutex.
     let pending = {
         let g = lock_recover(&sh.engine);
-        attribution::pending_attributions_located(&g)?
+        attribution::pending_with_sessions(&g)?
     };
 
     let mut wrote_any = false;
@@ -1587,9 +1587,10 @@ fn attribution_tick(
     // short_id, so a throttle keyed on one global string would see two failing
     // tasks alternate and count every line as a transition.
     errors.begin_tick();
-    for (pa, neighbours) in &pending {
+    for (pa, neighbours, sessions) in &pending {
         // Heavy transcript parse, OFF the lock.
-        let result = match attribution::compute_attribution_located(pa, neighbours, now) {
+        let result = match attribution::compute_attribution_sessions(pa, neighbours, sessions, now)
+        {
             Ok(r) => r,
             Err(e) => {
                 errors.report(
@@ -3911,6 +3912,75 @@ mod tests {
             conf, "high",
             "explicit path + session id => high confidence"
         );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// D247 (#4190): `tasqx work` puts `session_id` + `client` on the start
+    /// event only, and the user completes with a plain `tasqx done`. Both work
+    /// sessions are measured by the tick, each exactly once, a concurrent
+    /// Claude session in the same window is not, and `tokens.recompute`
+    /// leaves the one measurement as it is.
+    #[test]
+    fn a_plain_done_is_measured_from_every_work_session_since_the_previous_done() {
+        let _guard = crate::tokens::DISCOVERY_ENV
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let sh = shared(Engine::open_in_memory().unwrap());
+        let dir = attr_test_dir("work-sessions");
+        let proj = dir.join("projects").join("proj");
+        std::fs::create_dir_all(&proj).unwrap();
+
+        let id = add_task(&sh, "work it");
+        let start = |session: &str| {
+            let g = lock_recover(&sh.engine);
+            g.task_start(&json!({ "ref": id, "session_id": session, "client": "claude" }))
+                .unwrap();
+        };
+        start("work-s1");
+        {
+            let g = lock_recover(&sh.engine);
+            g.task_stop(&json!({ "ref": id })).unwrap();
+        }
+        start("work-s2");
+        let in_window = crate::clock::now().to_string();
+        let line = |msg: &str, input: u64| {
+            format!(
+                r#"{{"timestamp":"{in_window}","message":{{"id":"{msg}","usage":{{"input_tokens":{input},"output_tokens":1}}}}}}"#
+            )
+        };
+        std::fs::write(proj.join("work-s1.jsonl"), line("m1", 100)).unwrap();
+        std::fs::write(proj.join("work-s2.jsonl"), line("m2", 20)).unwrap();
+        // Another Claude session running at the same time, on other work.
+        std::fs::write(proj.join("other.jsonl"), line("m3", 3)).unwrap();
+        complete(&sh, json!({ "ref": id }));
+
+        let input_sum = |sh: &Shared| {
+            count(
+                sh,
+                "SELECT COALESCE(SUM(input_tokens), 0) FROM token_usage WHERE source = 'log-parse'",
+            )
+        };
+        crate::attribution::tests::with_isolated_roots(&dir, || {
+            let mut errors = ErrorTransition::default();
+            for _ in 0..2 {
+                attribution_tick(
+                    &sh,
+                    -1,
+                    crate::clock::now(),
+                    &attribution::attribute_one,
+                    &mut errors,
+                )
+                .unwrap();
+            }
+            assert_eq!(count(&sh, N_MEASUREMENTS), 1, "one measurement, once");
+            assert_eq!(input_sum(&sh), 120, "both sessions, not the other one");
+
+            let g = lock_recover(&sh.engine);
+            g.token_recompute(&json!({ "dry_run": false })).unwrap();
+        });
+        assert_eq!(count(&sh, N_MEASUREMENTS), 1, "recompute keeps it once");
+        assert_eq!(input_sum(&sh), 120, "recompute keeps both sessions");
 
         let _ = std::fs::remove_dir_all(&dir);
     }
