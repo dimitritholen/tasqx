@@ -278,6 +278,27 @@ pub(crate) fn start_context(brief: &Value, actor: &str, opts: &DetailOpts) -> St
 /// event comes from the hook's stdin.
 pub const HOOK_COMMAND: &str = "tasqx hook claude";
 
+/// Codex's one hook command (D249), constant for the same reason: it is
+/// trusted once through `/hooks` and then on every run.
+pub const CODEX_HOOK_COMMAND: &str = "tasqx hook codex";
+
+/// The `-c` overrides that register [`CODEX_HOOK_COMMAND`] on the Codex
+/// hook events `tasqx hook codex` handles, for this run only.
+fn codex_hooks() -> Vec<std::ffi::OsString> {
+    ["SessionStart", "SessionEnd"]
+        .iter()
+        .flat_map(|event| {
+            [
+                "-c".into(),
+                format!(
+                    "hooks.{event}=[{{hooks=[{{type=\"command\",command=\"{CODEX_HOOK_COMMAND}\"}}]}}]"
+                )
+                .into(),
+            ]
+        })
+        .collect()
+}
+
 /// The `--settings` JSON that registers [`HOOK_COMMAND`] on the Claude hook
 /// events `tasqx hook claude` handles. Layered on the user's own settings by
 /// Claude for this session only.
@@ -303,14 +324,17 @@ pub(crate) fn agent_args(
             "--settings".into(),
             claude_settings().into(),
         ],
-        _ => vec![
+        _ => [
             "-c".into(),
             format!(
                 "developer_instructions={}",
                 toml_edit::Value::from(context).to_string().trim()
             )
             .into(),
-        ],
+        ]
+        .into_iter()
+        .chain(codex_hooks())
+        .collect(),
     }
 }
 
@@ -346,6 +370,13 @@ fn launch(be: &mut Backend, ctx: &Ctx, task_ref: &str, agent: &'static str) -> C
     // are nobody else's to read in a shared temp dir.
     verbs::write_new(&path, &context)
         .map_err(|e| ApiError::internal(format!("cannot write {}: {e}", path.display())))?;
+    // Codex picks its own session id, and its SessionStart hook appends it
+    // here (D249); created the same way, so the hook only ever appends.
+    let sessions = (agent == "codex").then(|| path.with_extension("sessions"));
+    if let Some(file) = &sessions {
+        verbs::write_new(file, "")
+            .map_err(|e| ApiError::internal(format!("cannot write {}: {e}", file.display())))?;
+    }
     // The agent's own tasqx (its MCP server, a `tasqx` it runs) must reach
     // the store this claim is in: the daemon this process routed through, or
     // the file it holds in-process.
@@ -387,6 +418,13 @@ fn launch(be: &mut Backend, ctx: &Ctx, task_ref: &str, agent: &'static str) -> C
         )
     });
     let was_started = started.is_ok();
+    // Where the interval began: a rollout codex started before it is not
+    // this launch's (D249).
+    let since = started.as_ref().ok().and_then(|v| {
+        v["interval_started"]
+            .as_str()
+            .and_then(|t| t.parse::<jiff::Timestamp>().ok())
+    });
     let ran = started.and_then(|_| {
         // Ctrl-C belongs to the agent: tasqx must outlive it to clean up.
         let _ = ctrlc::set_handler(|| {});
@@ -399,6 +437,7 @@ fn launch(be: &mut Backend, ctx: &Ctx, task_ref: &str, agent: &'static str) -> C
             .env("TASQX_WORK_TASK", sid.to_string())
             .env("TASQX_WORK_SESSION", &session)
             .env("TASQX_WORK_CONTEXT", &path)
+            .envs(sessions.iter().map(|f| ("TASQX_WORK_SESSIONS", f)))
             .envs(route)
             .status()
             .map_err(|e| ApiError::internal(format!("could not run {}: {e}", program.display())))
@@ -412,10 +451,17 @@ fn launch(be: &mut Backend, ctx: &Ctx, task_ref: &str, agent: &'static str) -> C
     if was_started {
         let fix = format!("tasqx stop {sid} --holder {actor}");
         cleanup(be, "task.stop", &params, &fix);
+        if let (Some(file), Some(since), Some(cwd)) = (&sessions, since, &workdir) {
+            let ids = codex_sessions(file, cwd, since);
+            record_sessions(be, &params, &ids);
+        }
     }
     let fix = format!("tasqx release {sid} --holder {actor}");
     cleanup(be, "task.release", &params, &fix);
     let _ = std::fs::remove_file(&path);
+    if let Some(file) = &sessions {
+        let _ = std::fs::remove_file(file);
+    }
 
     // shortcut: a child killed by a signal reports 1, not 128+signal.
     let code = ran?.code().unwrap_or(1);
@@ -424,6 +470,92 @@ fn launch(be: &mut Backend, ctx: &Ctx, task_ref: &str, agent: &'static str) -> C
         json!({ "launched": true, "short_id": sid, "agent": agent, "session_id": session, "exit_code": code }),
         String::new(),
     ))
+}
+
+/// Codex's own ids for the session(s) this launch ran (D249): those its
+/// SessionStart hook wrote to `file`, else the rollout codex started in `cwd`
+/// since `since`. That fallback means the hook did not run, which is said
+/// once; two such rollouts (another codex beside this one) leave the launch's
+/// unknown, and none is taken.
+fn codex_sessions(
+    file: &std::path::Path,
+    cwd: &std::path::Path,
+    since: jiff::Timestamp,
+) -> Vec<String> {
+    let hooked: Vec<String> = std::fs::read_to_string(file)
+        .unwrap_or_default()
+        .lines()
+        .map(str::to_string)
+        .collect();
+    if !hooked.is_empty() {
+        return hooked;
+    }
+    let found = tasqx_core::tokens::codex::sessions_started(
+        &tasqx_core::tokens::codex::default_roots(),
+        cwd,
+        since,
+    );
+    if found.is_empty() {
+        // No session at all: codex never got that far, and has no hook to
+        // be told about.
+        return found;
+    }
+    hint_once();
+    if found.len() > 1 {
+        eprintln!(
+            "tasqx: warning: {} codex sessions started in this directory while it ran, and \
+             which was this one is unknown: none is recorded, so its tokens are not measured",
+            found.len()
+        );
+        return Vec::new();
+    }
+    found
+}
+
+/// Each id on a start of the task, where D247's fallback finds the session's
+/// rollout by it. The clock is already stopped, so this is a start and a
+/// stop at the same moment: no time is added. `keep`, so no other clock is
+/// stopped. A refusal (the agent closed the task) is fine and silent.
+fn record_sessions(be: &mut Backend, params: &Value, ids: &[String]) {
+    for id in ids {
+        let mut start = params.clone();
+        start["session_id"] = json!(id);
+        start["client"] = json!("codex");
+        start["keep"] = json!(true);
+        match be.call("task.start", &start) {
+            Ok(_) => {
+                let fix = format!(
+                    "tasqx stop {} --holder {}",
+                    params["ref"],
+                    params["actor"].as_str().unwrap_or("")
+                );
+                cleanup(be, "task.stop", params, &fix);
+            }
+            Err(e) if e.code == ErrorCode::Internal => eprintln!(
+                "tasqx: warning: codex session {id} was not recorded ({}); its tokens will \
+                 not be measured",
+                e.message
+            ),
+            Err(_) => {}
+        }
+    }
+}
+
+/// The one-time hint that codex skipped the hook (D249), remembered in the
+/// `work.codex_hook_hint` setting.
+fn hint_once() {
+    let setting = config::find("work.codex_hook_hint").expect("work.codex_hook_hint is a setting");
+    if config::toml_value(None, setting).as_deref() == Some("false") {
+        return;
+    }
+    eprintln!(
+        "tasqx: codex did not run its `{CODEX_HOOK_COMMAND}` hook, so tasqx found the session \
+         from its rollout instead. Codex skips a hook until you trust it: run /hooks in codex \
+         once and trust `{CODEX_HOOK_COMMAND}`. (Said once.)"
+    );
+    if let Err(e) = config::write_value(None, setting, "false") {
+        eprintln!("tasqx: note: could not remember the hint: {}", e.message);
+    }
 }
 
 /// A new connection to the daemon `be` routes through; `false` when there is
@@ -458,15 +590,20 @@ fn cleanup(be: &mut Backend, method: &str, params: &Value, fix: &str) {
     }
 }
 
-/// `tasqx hook claude` (D248): what Claude Code runs on a hook event. It
-/// acts only inside the `tasqx work` session it was registered for, and never
-/// breaks the agent: every fault is a stderr line and the exit is 0.
-pub(crate) fn run_hook() {
+/// `tasqx hook claude|codex` (D248, D249): what the agent runs on a hook
+/// event. It acts only inside the `tasqx work` session it was registered
+/// for, and never breaks the agent: every fault is a stderr line and the exit
+/// is 0.
+pub(crate) fn run_hook(agent: &str) {
     // Outside a work session (a hook copied into someone's own settings),
-    // the input is not even read.
-    if std::env::var_os("TASQX_WORK_TASK").is_none() {
+    // the input is not even read. A codex session is one that named a file
+    // for codex's id.
+    if std::env::var_os("TASQX_WORK_TASK").is_none()
+        || (agent == "codex" && std::env::var_os("TASQX_WORK_SESSIONS").is_none())
+    {
         return;
     }
+    let command = format!("tasqx hook {agent}");
     let mut input = String::new();
     use std::io::Read;
     let parsed = std::io::stdin()
@@ -475,27 +612,47 @@ pub(crate) fn run_hook() {
         .and_then(|_| serde_json::from_str::<Value>(&input).map_err(|e| e.to_string()));
     let hook = match parsed {
         Ok(v) => v,
-        Err(e) => return eprintln!("{HOOK_COMMAND}: unreadable hook input: {e}"),
+        Err(e) => return eprintln!("{command}: unreadable hook input: {e}"),
     };
-    // Another session's hook, a nested `claude` say, is not this one's.
+    // Claude runs under the id `work` chose, so another id is another
+    // session's hook, a nested `claude` say. Codex picks its own id.
     let session = std::env::var("TASQX_WORK_SESSION").ok();
-    if session.is_none() || hook["session_id"].as_str() != session.as_deref() {
+    if agent == "claude" && (session.is_none() || hook["session_id"].as_str() != session.as_deref())
+    {
         return;
     }
-    if let Err(e) = on_event(hook["hook_event_name"].as_str().unwrap_or(""), &hook) {
-        eprintln!("{HOOK_COMMAND}: {e}");
+    if let Err(e) = on_event(agent, hook["hook_event_name"].as_str().unwrap_or(""), &hook) {
+        eprintln!("{command}: {e}");
     }
 }
 
-/// One arm per Claude hook event `work` registers; adding an event is an arm
-/// here and a key in [`claude_settings`].
-fn on_event(event: &str, _hook: &Value) -> Result<(), String> {
+/// One arm per hook event `work` registers; adding an event is an arm here
+/// and a key in [`claude_settings`] or [`codex_hooks`].
+fn on_event(agent: &str, event: &str, hook: &Value) -> Result<(), String> {
     match event {
+        "SessionStart" if agent == "codex" => append_session(hook),
         // Entry points: the handoff (#4177) and the per-turn push (#4185)
         // hang off these. Tokens are measured when the task completes.
         "SessionStart" | "SessionEnd" => Ok(()),
         other => Err(format!("no handler for hook event {other:?}")),
     }
+}
+
+/// Codex's SessionStart: its own session id, appended to the file `work`
+/// created for it, which `launch` records on the task after codex exits
+/// (D249). Never creates the file: it is `work`'s, made owner-only.
+fn append_session(hook: &Value) -> Result<(), String> {
+    use std::io::Write;
+    let id = hook["session_id"]
+        .as_str()
+        .filter(|s| !s.is_empty())
+        .ok_or("SessionStart without a session_id")?;
+    let file = std::env::var_os("TASQX_WORK_SESSIONS").unwrap_or_default();
+    std::fs::OpenOptions::new()
+        .append(true)
+        .open(&file)
+        .and_then(|mut f| writeln!(f, "{id}"))
+        .map_err(|e| format!("cannot record session {id}: {e}"))
 }
 
 #[cfg(test)]

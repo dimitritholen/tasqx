@@ -50,8 +50,10 @@ A plain `tasqx done` can be measured too, from the sessions the task's starts
 named, as `tasqx work` records them: each distinct session since the task's
 previous completion is considered once. That needs the recorded session id to
 match the agent's own transcript. Claude Code sessions launched by `tasqx work`
-match; Codex sessions launched by it record a launcher id, not Codex's own
-session id, so they are not measured yet.
+match. Codex picks its own session id, so `tasqx work` records it when Codex
+exits: the id its `tasqx hook codex` hook reported, or, while that hook is not
+trusted, the one rollout Codex started in the launch directory. When two Codex
+sessions started there during the launch, neither is recorded.
 
 Given a session id, Claude Code and Codex read only the matching session's
 transcript, so another session running at the same time is not counted. When a

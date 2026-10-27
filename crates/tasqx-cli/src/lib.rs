@@ -643,9 +643,9 @@ fn execute(cli: Cli) -> Exit {
             return exit;
         }
         // D248: no store, no theme; exit 0 whatever happens.
-        Some(Command::Hook { .. }) => {
+        Some(Command::Hook { agent }) => {
             let exit = Exit::self_framed("hook", cli.json);
-            work::run_hook();
+            work::run_hook(agent);
             return exit;
         }
         _ => {}

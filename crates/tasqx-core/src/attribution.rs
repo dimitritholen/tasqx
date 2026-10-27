@@ -1167,7 +1167,7 @@ const MAX_LOCATE_FILES: usize = 100_000;
 /// doc). The subagent and mtime filters run INSIDE the walk, so only
 /// eligible files count toward [`MAX_LOCATE_FILES`]: a real `~/.claude` with
 /// thousands of old or subagent files must not drop a session by read order.
-fn locate_candidates(roots: &[PathBuf], since: Timestamp) -> Vec<PathBuf> {
+pub(crate) fn locate_candidates(roots: &[PathBuf], since: Timestamp) -> Vec<PathBuf> {
     let eligible = |p: &Path, mtime: std::time::SystemTime| {
         !is_subagent_file(p) && Timestamp::try_from(mtime).is_ok_and(|t| t >= since)
     };
@@ -5161,6 +5161,48 @@ pub(crate) mod tests {
         let input = tick_input(&engine, &dir, id);
         let _ = std::fs::remove_dir_all(&dir);
         assert_eq!(input, 120, "the Claude session and the Codex session");
+    }
+
+    /// D249: `tasqx work --agent codex` starts under a launcher id codex
+    /// never uses, and records codex's own id on a second start after codex
+    /// exits. The session is measured over the window from the first start,
+    /// so the spend made before the id was recorded is the task's.
+    #[test]
+    fn a_codex_id_recorded_after_the_session_measures_it_from_the_launch() {
+        let dir = fallback_dir("codex-late-id");
+        let engine = Engine::open_in_memory().unwrap();
+        let id = engine.task_add(&json!({ "title": "t" })).unwrap()["short_id"]
+            .as_i64()
+            .unwrap();
+        engine
+            .task_start(&json!({ "ref": id, "session_id": "launcher", "client": "codex" }))
+            .unwrap();
+        let at = crate::clock::now().to_string();
+        engine.task_stop(&json!({ "ref": id })).unwrap();
+        engine
+            .task_start(
+                &json!({ "ref": id, "session_id": "x-real", "client": "codex", "keep": true }),
+            )
+            .unwrap();
+        engine.task_stop(&json!({ "ref": id })).unwrap();
+        let codex = dir.join(".codex").join("sessions");
+        std::fs::create_dir_all(&codex).unwrap();
+        std::fs::write(
+            codex.join("rollout-x-real.jsonl"),
+            [
+                r#"{"type":"session_meta","payload":{"id":"x-real"}}"#.to_string(),
+                format!(
+                    r#"{{"timestamp":"{at}","type":"event_msg","payload":{{"type":"token_count","info":{{"total_token_usage":{{"input_tokens":20,"cached_input_tokens":0,"output_tokens":1,"reasoning_output_tokens":0,"total_tokens":21}},"last_token_usage":{{"input_tokens":20,"cached_input_tokens":0,"output_tokens":1,"reasoning_output_tokens":0,"total_tokens":21}}}}}}}}"#
+                ),
+            ]
+            .join("\n"),
+        )
+        .unwrap();
+        engine.task_done(&json!({ "ref": id })).unwrap();
+
+        let input = tick_input(&engine, &dir, id);
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(input, 20, "the codex session, found by its own id");
     }
 
     /// D247: a fallback task is never a located neighbour. Agent A, working
