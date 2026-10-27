@@ -48,7 +48,7 @@ fn fixture(e: &Engine) -> (String, String, String) {
 /// other closed vocabulary here refuses one (D34): by naming the whole set, so
 /// the correction is one glance away rather than one round trip.
 #[test]
-fn an_unregistered_relation_is_refused_and_names_the_six() {
+fn an_unregistered_relation_is_refused_and_names_the_seven() {
     let e = engine();
     fixture(&e);
     let err = call(
@@ -65,6 +65,7 @@ fn an_unregistered_relation_is_refused_and_names_the_six() {
         "derived_from",
         "contradicts",
         "duplicates",
+        "pins",
     ] {
         assert!(
             err.message.contains(known),

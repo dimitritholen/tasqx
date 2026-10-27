@@ -1215,7 +1215,7 @@ pub const LINK_ROW: &[FieldDoc] = &[
     f("id", "string", "The link's uuid — what `link.remove` takes."),
     f("from", "string", "The node the link starts at, as `<type>:<uuid>`: `task:`, `memory:`, `annotation:` or `project:`."),
     f("to", "string", "The node the link points at, spelled the same way."),
-    f("relation", "string", "What the link asserts: `references`, `supersedes`, `implements_decision`, `derived_from`, `contradicts` or `duplicates` (D238)."),
+    f("relation", "string", "What the link asserts: `references`, `supersedes`, `implements_decision`, `derived_from`, `contradicts`, `duplicates` (D238) or `pins` (D246)."),
     n("metadata", "object", "The caller's own object, stored verbatim and never interpreted, or null."),
     f("created_at", "string", "When the link was written. Named `created_at` because `link.add` answers with a boolean `created` beside it."),
 ];

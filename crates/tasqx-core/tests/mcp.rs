@@ -807,9 +807,9 @@ fn the_title_only_fallback_counts_stale_refs_and_stays_in_budget() {
         );
     }
     let text = rulings_of(&McpServer::new(&engine, Scope::Write).with_workdir(Some(repo)));
-    assert!(text.contains("only titles are shown"), "{text}");
+    // D246: the oldest rule falls past the gists, so it counts its refs.
+    assert!(text.contains("the rest only their title"), "{text}");
     assert!(text.contains("- rule 0 [stale_refs: 20]"), "{text}");
-    assert!(!text.contains("a_rather_long_module_name"), "{text}");
     assert!(
         text.len() <= tasqx_core::mcp::STANDING_RULINGS_BUDGET,
         "{} bytes:\n{text}",
@@ -1010,35 +1010,146 @@ fn the_footer_counts_every_topical_doc_not_only_the_ones_read() {
     );
 }
 
-/// #96/D157: standing docs are never dropped. When their gists overflow the
-/// budget every title is still listed, and the section says to consolidate.
+/// #96/D157, amended by D246: standing docs are never dropped. When their
+/// gists overflow the budget, the top-ranked ones keep their gist until the
+/// budget is full, every other title is still listed, and the section says
+/// how many got a gist and to consolidate.
 #[test]
-fn an_oversized_standing_set_lists_every_title_and_warns() {
+fn an_oversized_standing_set_gives_the_top_rulings_their_gist_and_lists_the_rest() {
     let engine = engine();
     engine.project_create(&json!({ "name": "alpha" })).unwrap();
     let long = "gisttext ".repeat(40);
-    for i in 0..20 {
+    // The oldest gist is short enough to fit where the long ones stopped:
+    // the gists are still the first ones, not whichever fit.
+    add_doc(&engine, "ruling 0", "brief", Some("alpha"), true);
+    for i in 1..20 {
         add_doc(&engine, &format!("ruling {i}"), &long, Some("alpha"), true);
     }
     add_doc(&engine, "topical doc", "fill", Some("alpha"), false);
 
     let text = rulings_of(&McpServer::new(&engine, Scope::Write));
-    for i in 0..20 {
-        assert!(
-            text.contains(&format!("\n- ruling {i}\n")),
-            "ruling {i}:\n{text}"
-        );
+    assert!(text.contains("\n- ruling 0\n"), "{text}");
+    let with_gist = text.matches(": gisttext").count();
+    assert!(
+        with_gist > 0 && with_gist < 19,
+        "{with_gist} gists:\n{text}"
+    );
+    // D157's order is newest first, so the gists are the newest rulings'
+    // and nothing past the first title-only entry carries one.
+    for i in 1..20 {
+        let gist = text.contains(&format!("\n- ruling {i}: gisttext"));
+        let bare = text.contains(&format!("\n- ruling {i}\n"));
+        assert!(gist != bare, "ruling {i}:\n{text}");
+        assert_eq!(gist, i >= 20 - with_gist, "ruling {i}:\n{text}");
     }
-    assert!(!text.contains("gisttext"), "{text}");
     assert!(!text.contains("topical doc"), "{text}");
     assert!(
         text.ends_with(&format!(
-            "\n20 standing rulings exceed the {}-byte session budget, so only titles are \
-             shown; list them with `tasqx memory list --standing` and merge or clear some.",
+            "\n20 standing rulings exceed the {}-byte session budget, so the first \
+             {with_gist} carry their gist and the rest only their title; list them with \
+             `tasqx memory list --standing` and merge or clear some.",
             tasqx_core::mcp::STANDING_RULINGS_BUDGET
         )),
         "{text}"
     );
+    assert!(
+        text.len() <= tasqx_core::mcp::STANDING_RULINGS_BUDGET,
+        "{} bytes:\n{text}",
+        text.len()
+    );
+}
+
+/// The overflowing store the D246 task tests share: twenty newer rulings on
+/// nothing in particular, and the oldest one, about signing keys, last in
+/// D157's order. Task 1 is about signing keys, task 2 about nothing in it.
+fn signing_store() -> Engine {
+    let engine = engine();
+    engine.project_create(&json!({ "name": "alpha" })).unwrap();
+    add_doc(
+        &engine,
+        "signing ruling",
+        "Release signing keys rotate every quarter.",
+        Some("alpha"),
+        true,
+    );
+    let long = "gisttext ".repeat(40);
+    for i in 0..20 {
+        add_doc(&engine, &format!("ruling {i}"), &long, Some("alpha"), true);
+    }
+    for title in ["rotate the release signing keys", "tidy the changelog"] {
+        engine
+            .task_add(&json!({ "title": title, "project": "alpha" }))
+            .unwrap();
+    }
+    engine
+}
+
+fn section_for(engine: &Engine, task: Option<Value>) -> String {
+    McpServer::rulings_section(engine, None, task.as_ref())
+        .unwrap()
+        .expect("a section")
+}
+
+/// D246: with a task known, a ruling relevant to it outranks newer irrelevant
+/// ones and keeps its gist; without one, D157's order leaves it a title.
+#[test]
+fn with_a_task_a_relevant_ruling_outranks_newer_irrelevant_ones() {
+    let engine = signing_store();
+    let gist = "\n- signing ruling: Release signing keys rotate every quarter.";
+
+    let plain = section_for(&engine, None);
+    assert!(plain.contains("\n- signing ruling\n"), "{plain}");
+
+    let text = section_for(&engine, Some(json!(1)));
+    assert!(text.contains(gist), "{text}");
+    assert!(
+        text.len() <= tasqx_core::mcp::STANDING_RULINGS_BUDGET,
+        "{text}"
+    );
+    // The same handshake text `initialize` sends when no task is known.
+    assert_eq!(plain, rulings_of(&McpServer::new(&engine, Scope::Write)));
+    // A task the ruling has nothing to do with leaves D157's order alone.
+    assert_eq!(section_for(&engine, Some(json!(2))), plain);
+}
+
+/// D246: a ruling pinned on a task (a `pins` link from the task to the doc)
+/// arrives in full, first, in every section for that task, and only for it,
+/// even when the pins alone outgrow the budget.
+#[test]
+fn a_ruling_pinned_on_a_task_arrives_in_full_ahead_of_ranking() {
+    let engine = signing_store();
+    let docs = engine
+        .memory_list(&json!({ "standing": true, "limit": 50 }))
+        .unwrap();
+    let pinned: Vec<String> = (0..14).map(|i| format!("ruling {i}")).collect();
+    for d in docs["docs"].as_array().unwrap() {
+        if pinned.iter().any(|t| d["title"] == t.as_str()) {
+            let to = format!("memory:{}", d["id"].as_str().unwrap());
+            engine
+                .link_add(&json!({ "from": 2, "to": to, "relation": "pins" }))
+                .unwrap();
+        }
+    }
+
+    let text = section_for(&engine, Some(json!(2)));
+    assert!(
+        text.len() > tasqx_core::mcp::STANDING_RULINGS_BUDGET,
+        "{text}"
+    );
+    let entries: Vec<&str> = text.lines().filter(|l| l.starts_with("- ")).collect();
+    for (i, line) in entries[..14].iter().enumerate() {
+        assert!(line.contains(": gisttext"), "entry {i}:\n{text}");
+        let title = line[2..].split(':').next().unwrap();
+        assert!(pinned.iter().any(|t| t == title), "entry {i}:\n{text}");
+    }
+    assert_eq!(entries.len(), 21, "each ruling once:\n{text}");
+    // Per task: the other task and the plain handshake do not carry the pin.
+    for other in [
+        section_for(&engine, Some(json!(1))),
+        section_for(&engine, None),
+    ] {
+        assert!(other.contains("\n- ruling 0\n"), "{other}");
+    }
 }
 
 #[test]

@@ -2381,7 +2381,8 @@ impl<'e> McpServer<'e> {
             Some(v) if SUPPORTED_PROTOCOL_VERSIONS.contains(&v) => v,
             _ => PROTOCOL_VERSION,
         };
-        let mut instructions = match self.rulings_section() {
+        let rulings = Self::rulings_section(self.engine, self.workdir.as_deref(), None);
+        let mut instructions = match rulings.ok().flatten() {
             // D141: what to do with the tools, not just which ones exist. Read
             // off the session's own scope, because the read variant may not
             // name a tool this server will refuse. D157 appends the session's
@@ -2439,22 +2440,27 @@ impl<'e> McpServer<'e> {
     }
 
     /// The standing-rulings section `initialize` appends (#96, D157), or
-    /// `None` when there is nothing to show or the store cannot be read —
-    /// the handshake must never fail on account of this section.
+    /// `None` when there is nothing to show. `initialize` passes no `task` and
+    /// sends nothing when this errs: the handshake must never fail on account of
+    /// this section. A caller that knows its task passes the task's ref (D246).
     ///
     /// Standing docs are never dropped: when their gists overflow
-    /// [`STANDING_RULINGS_BUDGET`] every title is still listed, with a
-    /// warning to consolidate. Topical fill, when any is shown, sits under
-    /// its own "Recent notes ... (context, not rulings)" heading, after
-    /// every standing entry (PR #48 review) — it never reads as one. It
-    /// names no write tool, since read-only sessions receive it too.
-    fn rulings_section(&self) -> Option<String> {
-        let (r, stale_refs) = self
-            .engine
-            .session_rulings_with_refs(self.workdir.as_deref())
-            .ok()?;
+    /// [`STANDING_RULINGS_BUDGET`] the first ones keep their gist while the
+    /// budget lasts and every other title is still listed, with a warning to
+    /// consolidate. With a task, the rulings it pins come first and always
+    /// in full, then the rest by relevance to it (D246). Topical fill, when
+    /// any is shown, sits under its own "Recent notes ... (context, not
+    /// rulings)" heading, after every standing entry (PR #48 review) — it
+    /// never reads as one. It names no write tool, since read-only sessions
+    /// receive it too.
+    pub fn rulings_section(
+        engine: &Engine,
+        workdir: Option<&std::path::Path>,
+        task: Option<&Value>,
+    ) -> Result<Option<String>, crate::error::ApiError> {
+        let (r, stale_refs, pinned) = engine.session_rulings_with_refs(workdir, task)?;
         if r.standing.is_empty() && r.topical.is_empty() {
-            return None;
+            return Ok(None);
         }
         const FOLLOW: &str = "Follow them: they were recorded by the user or an earlier \
             session and hold until cleared.";
@@ -2515,16 +2521,39 @@ impl<'e> McpServer<'e> {
             .collect();
         let standing_len: usize = standing.iter().map(String::len).sum();
         if out.len() + standing_len > STANDING_RULINGS_BUDGET {
-            for (d, refs) in r.standing.iter().zip(&stale_refs) {
-                out.push_str(&entry(d, refs, false));
+            // D246: the first rulings keep their gist while the budget lasts, the
+            // pinned ones whatever it costs; every other one is its title.
+            let total = r.standing.len();
+            let footer = |gists: usize| {
+                format!(
+                    "\n{total} standing rulings exceed the {STANDING_RULINGS_BUDGET}-byte session \
+                     budget, so the first {gists} carry their gist and the rest only their title; \
+                     list them with `tasqx memory list --standing` and merge or clear some."
+                )
+            };
+            let titles: Vec<String> = r
+                .standing
+                .iter()
+                .zip(&stale_refs)
+                .map(|(d, refs)| entry(d, refs, false))
+                .collect();
+            // What is left for gists once every title and the longest footer fit.
+            let mut room = STANDING_RULINGS_BUDGET.saturating_sub(
+                out.len() + titles.iter().map(String::len).sum::<usize>() + footer(total).len(),
+            );
+            let mut gists = 0;
+            for (i, (full, title)) in standing.iter().zip(&titles).enumerate() {
+                let extra = full.len().saturating_sub(title.len());
+                if i < pinned || (gists == i && extra <= room) {
+                    room = room.saturating_sub(extra);
+                    out.push_str(full);
+                    gists += 1;
+                } else {
+                    out.push_str(title);
+                }
             }
-            out.push_str(&format!(
-                "\n{} standing rulings exceed the {STANDING_RULINGS_BUDGET}-byte session budget, \
-                 so only titles are shown; list them with `tasqx memory list --standing` and \
-                 merge or clear some.",
-                r.standing.len()
-            ));
-            return Some(out);
+            out.push_str(&footer(gists));
+            return Ok(Some(out));
         }
         out.extend(standing);
 
@@ -2582,7 +2611,7 @@ impl<'e> McpServer<'e> {
         // `initialize_result` already supplies; and a section where nothing
         // fit is no section at all, so the instructions stay byte-identical.
         let out = out.trim_start_matches('\n');
-        (!out.is_empty()).then(|| out.to_string())
+        Ok((!out.is_empty()).then(|| out.to_string()))
     }
 
     /// Execute a `tools/call`. Always returns a CallToolResult value (never a

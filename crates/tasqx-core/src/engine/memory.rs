@@ -2314,17 +2314,22 @@ impl Engine {
         &self,
         workdir: Option<&std::path::Path>,
     ) -> Result<SessionRulings, ApiError> {
-        Ok(self.session_rulings_with_refs(workdir)?.0)
+        Ok(self.session_rulings_with_refs(workdir, None)?.0)
     }
 
     /// [`Engine::session_rulings`] plus, per standing doc in order, the refs
     /// it cites that are gone from the session's working tree (D235). Kept
     /// beside the public type rather than on it, so `SessionDoc` gains no
     /// field until a minor release (#815).
+    ///
+    /// D246: with `task` (a task ref), the docs that task pins (a `pins`
+    /// link) lead the standing list, then the rest ranked by relevance to
+    /// the task, D157's order breaking ties; the third value counts the pins.
     pub(crate) fn session_rulings_with_refs(
         &self,
         workdir: Option<&std::path::Path>,
-    ) -> Result<(SessionRulings, Vec<Vec<String>>), ApiError> {
+        task: Option<&Value>,
+    ) -> Result<(SessionRulings, Vec<Vec<String>>, usize), ApiError> {
         // D235: the toplevel is resolved once; the project is read off it.
         let top = workdir.and_then(crate::memory_doc::RefRoot::at);
         let project = self.project_for(workdir, top.as_ref())?;
@@ -2338,63 +2343,91 @@ impl Engine {
         // — the gist this feeds is the first paragraph, cut at 240 bytes,
         // and 4 KB comfortably covers a frontmatter block ahead of it
         // without loading a doc whole.
-        let docs = |sql: &str, check: bool| -> Result<Vec<(SessionDoc, Vec<String>)>, ApiError> {
-            let mut stmt = self.conn.prepare(sql)?;
-            let rows = stmt.query_map(params![name], |r| {
-                let body: String = r.get(1)?;
-                let stale_refs = match (check, &top) {
-                    (true, Some(top)) => {
-                        crate::memory_doc::verify_refs(
-                            r.get::<_, Option<String>>(2)?.as_deref(),
-                            &body,
-                            r.get::<_, Option<String>>(3)?.as_deref(),
-                            Some(top),
-                        )
-                        .stale_refs
-                    }
-                    _ => Vec::new(),
-                };
-                Ok((
-                    SessionDoc {
-                        title: r.get(0)?,
-                        body,
-                    },
-                    stale_refs,
-                ))
-            })?;
-            Ok(rows.collect::<Result<_, _>>()?)
+        type Row = (String, SessionDoc, Vec<String>);
+        let docs =
+            |sql: &str, check: bool, args: &[&dyn rusqlite::ToSql]| -> Result<Vec<Row>, ApiError> {
+                let mut stmt = self.conn.prepare(sql)?;
+                let rows = stmt.query_map(args, |r| {
+                    let body: String = r.get(2)?;
+                    let stale_refs = match (check, &top) {
+                        (true, Some(top)) => {
+                            crate::memory_doc::verify_refs(
+                                r.get::<_, Option<String>>(3)?.as_deref(),
+                                &body,
+                                r.get::<_, Option<String>>(4)?.as_deref(),
+                                Some(top),
+                            )
+                            .stale_refs
+                        }
+                        _ => Vec::new(),
+                    };
+                    Ok((
+                        r.get(0)?,
+                        SessionDoc {
+                            title: r.get(1)?,
+                            body,
+                        },
+                        stale_refs,
+                    ))
+                })?;
+                Ok(rows.collect::<Result<_, _>>()?)
+            };
+        let check = top.is_some();
+        let cols = if check {
+            "d.id, d.title, d.body, d.source, d.project"
+        } else {
+            "d.id, d.title, substr(d.body, 1, 4096)"
         };
         // D144's newest-modified key. `project = NULL` matches nothing, so
         // with no project inferred only the unscoped standing docs remain.
-        let check = top.is_some();
-        let standing = docs(
-            if check {
-                "SELECT title, body, source, project FROM docs \
-                 WHERE standing = 1 AND (project = ?1 OR project IS NULL) \
-                 ORDER BY project IS NULL, rtrim(modified, 'Z') DESC, id DESC"
-            } else {
-                "SELECT title, substr(body, 1, 4096) FROM docs \
-                 WHERE standing = 1 AND (project = ?1 OR project IS NULL) \
-                 ORDER BY project IS NULL, rtrim(modified, 'Z') DESC, id DESC"
-            },
+        let mut standing = docs(
+            &format!(
+                "SELECT {cols} FROM docs d \
+                 WHERE d.standing = 1 AND (d.project = ?1 OR d.project IS NULL) \
+                 ORDER BY d.project IS NULL, rtrim(d.modified, 'Z') DESC, d.id DESC"
+            ),
             check,
+            &[&name],
         )?;
+        let mut pinned = 0;
+        if let Some(task) = task {
+            let (task_id, relevant) = self.task_relevant_doc_ids(task)?;
+            let pins = docs(
+                &format!(
+                    "SELECT {cols} FROM links l JOIN docs d ON d.id = l.to_id \
+                     WHERE l.from_type = 'task' AND l.from_id = ?1 \
+                       AND l.to_type = 'memory' AND l.relation = 'pins' \
+                     ORDER BY rtrim(d.modified, 'Z') DESC, d.id DESC"
+                ),
+                check,
+                &[&task_id],
+            )?;
+            standing.retain(|(id, ..)| !pins.iter().any(|(pin, ..)| pin == id));
+            // A stable sort, so D157's order stands among equally relevant docs.
+            standing.sort_by_key(|(id, ..)| {
+                relevant.iter().position(|r| r == id).unwrap_or(usize::MAX)
+            });
+            pinned = pins.len();
+            standing.splice(0..0, pins);
+        }
         // Never unscoped: `memory import` stores every ADR unscoped, so the
         // newest unscoped docs are an arbitrary slice (D157).
         // PR #48 review: `LIMIT 256` bounds what session start ever reads —
         // 256 is well above the most entries a 3,072-byte section could ever
         // render, since every rendered entry is at least 4 bytes ("\n- " plus
         // a title).
-        let (standing, stale): (Vec<SessionDoc>, Vec<Vec<String>>) = standing.into_iter().unzip();
+        let (standing, stale): (Vec<SessionDoc>, Vec<Vec<String>>) =
+            standing.into_iter().map(|(_, d, s)| (d, s)).unzip();
         let topical = docs(
-            "SELECT title, substr(body, 1, 4096) FROM docs \
-             WHERE standing = 0 AND project = ?1 \
-             ORDER BY rtrim(modified, 'Z') DESC, id DESC \
+            "SELECT d.id, d.title, substr(d.body, 1, 4096) FROM docs d \
+             WHERE d.standing = 0 AND d.project = ?1 \
+             ORDER BY rtrim(d.modified, 'Z') DESC, d.id DESC \
              LIMIT 256",
             false,
+            &[&name],
         )?
         .into_iter()
-        .map(|(d, _)| d)
+        .map(|(_, d, _)| d)
         .collect();
         let topical_total: i64 = self.conn.query_row(
             "SELECT COUNT(*) FROM docs WHERE standing = 0 AND project = ?1",
@@ -2409,6 +2442,7 @@ impl Engine {
                 topical_total: topical_total as usize,
             },
             stale,
+            pinned,
         ))
     }
 
