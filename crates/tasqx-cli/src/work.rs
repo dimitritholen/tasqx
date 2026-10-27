@@ -347,12 +347,23 @@ fn launch(be: &mut Backend, ctx: &Ctx, task_ref: &str, agent: &'static str) -> C
     // The agent's own tasqx (its MCP server, a `tasqx` it runs) must reach
     // the store this claim is in: the daemon this process routed through, or
     // the file it holds in-process.
-    let route: Vec<(&str, std::ffi::OsString)> = match be.remote_socket() {
-        Some(sock) => vec![("TASQX_SOCK", sock.into())],
-        None => db_path()
-            .map(|db| vec![("TASQX_DB", db.into_os_string())])
-            .unwrap_or_default(),
+    // Through a daemon that is its socket AND its store file, because `tasqx
+    // mcp serve` opens TASQX_DB and never asks the socket. In-process it is
+    // the file, and no inherited socket that may serve another store.
+    let mut route: Vec<(&str, std::ffi::OsString)> = Vec::new();
+    let in_process = be.remote_socket().is_none();
+    if let Some(sock) = be.remote_socket() {
+        route.push(("TASQX_SOCK", sock.into()));
+    }
+    let db = match in_process {
+        true => db_path().ok().map(PathBuf::into_os_string),
+        false => be.call("core.capabilities", &json!({}))?["store"]
+            .as_str()
+            .map(Into::into),
     };
+    if let Some(db) = db {
+        route.push(("TASQX_DB", db));
+    }
 
     // The store writes, right before the spawn.
     let claim = be.call(
@@ -369,7 +380,11 @@ fn launch(be: &mut Backend, ctx: &Ctx, task_ref: &str, agent: &'static str) -> C
     let ran = started.and_then(|_| {
         // Ctrl-C belongs to the agent: tasqx must outlive it to clean up.
         let _ = ctrlc::set_handler(|| {});
-        std::process::Command::new(&program)
+        let mut child = std::process::Command::new(&program);
+        if in_process {
+            child.env_remove("TASQX_SOCK");
+        }
+        child
             .args(agent_args(agent, &session, &path, &context))
             .env("TASQX_WORK_TASK", sid.to_string())
             .env("TASQX_WORK_SESSION", &session)

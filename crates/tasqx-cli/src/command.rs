@@ -1283,7 +1283,8 @@ pub(super) enum Command {
     /// started; the agent gets the task's brief, its acceptance checks and the
     /// project's standing rulings as start context, and TASQX_WORK_TASK,
     /// TASQX_WORK_SESSION and TASQX_WORK_CONTEXT in its environment, with
-    /// TASQX_SOCK or TASQX_DB naming the store this command used. When it
+    /// TASQX_DB (and TASQX_SOCK, through a daemon) naming the store this
+    /// command used. When it
     /// exits, the timer stops and the claim is released, and its exit code is
     /// this command's.
     ///
