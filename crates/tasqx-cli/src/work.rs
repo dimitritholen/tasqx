@@ -314,18 +314,22 @@ pub(crate) fn agent_args(
     }
 }
 
+/// `task.brief`'s params for the launch: the rulings are those for this
+/// directory's project, the one the agent's own MCP session infers too. A
+/// directory that is not UTF-8 cannot be named in JSON without loss, so it
+/// sends none, as the MCP server does.
+fn brief_params(task_ref: &str, workdir: Option<&std::path::Path>) -> Value {
+    let workdir = workdir.and_then(std::path::Path::to_str);
+    json!({ "ref": task_ref, "rulings": true, "workdir": workdir })
+}
+
 /// Claim, start, spawn, wait; then stop, release and clean up whatever the
 /// child did, and hand its exit code on.
 fn launch(be: &mut Backend, ctx: &Ctx, task_ref: &str, agent: &'static str) -> CmdOutcome {
     // Reads first: a ref that does not resolve fails here, having written
     // nothing.
-    // The rulings are those for this directory's project, the one the
-    // agent's own MCP session infers too.
     let workdir = std::env::current_dir().ok();
-    let brief = be.call(
-        "task.brief",
-        &json!({ "ref": task_ref, "rulings": true, "workdir": workdir }),
-    )?;
+    let brief = be.call("task.brief", &brief_params(task_ref, workdir.as_deref()))?;
     let sid = brief["task"]["short_id"].as_i64().unwrap_or(0);
     let program = on_path(agent)
         .ok_or_else(|| ApiError::not_found(format!("`{agent}` is not on PATH"), None))?;
@@ -539,6 +543,20 @@ mod tests {
         assert_eq!(parse_answer("0", o), None);
         assert_eq!(parse_answer("3", o), None);
         assert_eq!(parse_answer("q", o), None);
+    }
+
+    /// A directory that is not UTF-8 cannot be named in JSON: the brief is
+    /// asked without one (no project inferred), never a panic.
+    #[cfg(unix)]
+    #[test]
+    fn a_non_utf8_directory_sends_no_workdir_rather_than_panicking() {
+        use std::os::unix::ffi::OsStrExt;
+        let dir = std::path::Path::new(std::ffi::OsStr::from_bytes(b"/tmp/caf\xe9"));
+        let p = brief_params("7", Some(dir));
+        assert!(p["workdir"].is_null(), "{p}");
+        assert_eq!(p["rulings"], true);
+        let p = brief_params("7", Some(std::path::Path::new("/tmp/x")));
+        assert_eq!(p["workdir"], "/tmp/x");
     }
 
     #[test]
