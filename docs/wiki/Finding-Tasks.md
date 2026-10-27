@@ -37,7 +37,7 @@ tasqx next
 ```
 
 `--card` prints that task as the same 72-column box-drawn card `tasqx show
---card` draws (D146), meant for pasting into a document rather than reading
+--card` draws, meant for pasting into a document rather than reading
 at a terminal; `--ascii` draws its borders with `+ - |`.
 
 ## tasqx agenda
@@ -117,7 +117,7 @@ this one, are an illustration; the rows are the contract.
 If tasqx ranks something surprisingly high or low, this is where the answer
 is.
 
-`--card` prints the D146 box card first, with this same arithmetic underneath
+`--card` prints the box card first, with this same arithmetic underneath
 it instead of the plain text header above; `--ascii` draws the card's borders
 with `+ - |`.
 
@@ -177,13 +177,11 @@ The same rule is what lets you pass a whole expression as one argument:
 `report` takes one axis, as its first word, and refuses `report project priority`;
 write `title:priority` to match that word in titles.
 
-`add` and `modify` split their sugar with the same scanner, but the write side
-also honours the argument boundary your shell drew, so an unquoted multi-word
-value is not refused there: it either `not_found`s (no project named by the
-leading word) or — once a project happens to be named exactly that leading
-word — files the task there and welds the remainder onto the title.
-`tasqx add "paint" project:Home Renovation` becomes project `Home`, title
-"paint Renovation". Use the quoted spelling on both sides and this cannot
+`add` and `modify` do not refuse an unquoted multi-word value: it is either
+`not_found` (no project named by the leading word) or, when a project is named
+exactly that leading word, the task is filed there and the remainder is welded
+onto the title. `tasqx add "paint" project:Home Renovation` becomes project
+`Home`, title "paint Renovation". Quote it on both sides and this cannot
 happen: `tasqx add "paint" project:"Home Renovation"`.
 
 Write `\"` for a literal quote and `\\` for a literal backslash — a name
