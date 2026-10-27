@@ -1982,7 +1982,7 @@ open it on a plane — it renders the same.</p>
 <tr><td data-label="Column" headers="wiki-reports-and-charts-tbl2-h0">REWORK</td><td data-label="What it counts" headers="wiki-reports-and-charts-tbl2-h1">Completions that were later reopened</td></tr>
 <tr><td data-label="Column" headers="wiki-reports-and-charts-tbl2-h0">FORCED</td><td data-label="What it counts" headers="wiki-reports-and-charts-tbl2-h1">Completions that overrode open blockers</td></tr>
 <tr><td data-label="Column" headers="wiki-reports-and-charts-tbl2-h0">SILENT</td><td data-label="What it counts" headers="wiki-reports-and-charts-tbl2-h1">Completions carrying no annotation</td></tr>
-<tr><td data-label="Column" headers="wiki-reports-and-charts-tbl2-h0">UNBRIEFED</td><td data-label="What it counts" headers="wiki-reports-and-charts-tbl2-h1">Completions of a task that no <code>tasqx brief</code>, or <code>tasqx_start_timer</code> that carried memory, was ever read for</td></tr>
+<tr><td data-label="Column" headers="wiki-reports-and-charts-tbl2-h0">UNBRIEFED</td><td data-label="What it counts" headers="wiki-reports-and-charts-tbl2-h1">Completions of a task with no <code>tasqx brief</code>, and no <code>tasqx_start_timer</code> that carried memory, on record</td></tr>
 <tr><td data-label="Column" headers="wiki-reports-and-charts-tbl2-h0">CALIB</td><td data-label="What it counts" headers="wiki-reports-and-charts-tbl2-h1">Median tracked-over-estimate, and how many completions had both</td></tr>
 <tr><td data-label="Column" headers="wiki-reports-and-charts-tbl2-h0">DROPPED</td><td data-label="What it counts" headers="wiki-reports-and-charts-tbl2-h1">Work that was started and then cancelled</td></tr>
 <tr><td data-label="Column" headers="wiki-reports-and-charts-tbl2-h0">OVER</td><td data-label="What it counts" headers="wiki-reports-and-charts-tbl2-h1">Completions that went past their token budget, of those that had one</td></tr>
@@ -3447,8 +3447,9 @@ sentence above as a number. DROPPED is work that was started and then
 cancelled. FORCED counts completions that overrode an open blocker with
 <code>--force</code>. OVER counts completions that went past their token budget, UNPROVEN
 those that closed with an acceptance check still open or failed, and UNBRIEFED
-those whose task nobody ran <code>tasqx brief</code> on first; each is read against the
-completions that could have been one. <a href="#wiki-reports-and-charts--tasqx-report">Reports and Charts</a>
+those whose task has no recorded <code>tasqx brief</code> (or memory-carrying
+<code>tasqx_start_timer</code>); each is read against the completions that could have been
+one. <a href="#wiki-reports-and-charts--tasqx-report">Reports and Charts</a>
 has the full column table.</p>
 <p>Every rate reads <code>count/n</code>, never a percentage, and the reason is worth a
 sentence at a standup: 3/12 and 3/3 are the same percentage and very different
@@ -3553,9 +3554,9 @@ with <code>tasqx_add_task</code>, wire the order, then work the chain.</p>
 <code>tasqx_release_task</code> when done: a claimed task leaves the other agents'
 <code>next</code> and <code>@working</code>, and <code>@claimed</code> lists what is held. See
 <a href="#wiki-working-on-tasks--tasqx-claim">Working on Tasks</a>.</li>
-<li><strong>Proposals.</strong> <code>tasqx config set mcp.add_status triage</code> makes every task an
-agent adds a proposal that waits for your <code>tasqx triage</code>, <code>accept</code>, <code>decline</code>
-or <code>duplicate</code>. See <a href="#wiki-working-on-tasks--tasqx-triage">Working on Tasks</a>.</li>
+<li><strong>Proposals.</strong> <code>tasqx config set mcp.add_status triage</code> makes a task an
+agent adds over MCP without naming a <code>status</code> a proposal that waits for your
+<code>tasqx triage</code>, <code>accept</code>, <code>decline</code> or <code>duplicate</code>. See <a href="#wiki-working-on-tasks--tasqx-triage">Working on Tasks</a>.</li>
 <li><strong>Duplicates.</strong> <code>tasqx_add_task</code> returns <code>similar</code>, the open tasks in the same
 project that read like the new one; look before adding another.</li>
 <li><strong>Notes.</strong> <code>tasqx_add_note</code> and its siblings capture a thought that is not yet

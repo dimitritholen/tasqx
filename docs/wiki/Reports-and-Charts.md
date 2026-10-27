@@ -143,7 +143,7 @@ api           7     6     0/6     0/6     0/6  ×1.17 n3      1/7   1/2         
 | REWORK | Completions that were later reopened |
 | FORCED | Completions that overrode open blockers |
 | SILENT | Completions carrying no annotation |
-| UNBRIEFED | Completions of a task that no `tasqx brief`, or `tasqx_start_timer` that carried memory, was ever read for |
+| UNBRIEFED | Completions of a task with no `tasqx brief`, and no `tasqx_start_timer` that carried memory, on record |
 | CALIB | Median tracked-over-estimate, and how many completions had both |
 | DROPPED | Work that was started and then cancelled |
 | OVER | Completions that went past their token budget, of those that had one |

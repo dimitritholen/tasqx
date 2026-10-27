@@ -119,9 +119,9 @@ with `tasqx_add_task`, wire the order, then work the chain.
   `tasqx_release_task` when done: a claimed task leaves the other agents'
   `next` and `@working`, and `@claimed` lists what is held. See
   [Working on Tasks](../wiki/Working-on-Tasks.md#tasqx-claim).
-- **Proposals.** `tasqx config set mcp.add_status triage` makes every task an
-  agent adds a proposal that waits for your `tasqx triage`, `accept`, `decline`
-  or `duplicate`. See [Working on Tasks](../wiki/Working-on-Tasks.md#tasqx-triage).
+- **Proposals.** `tasqx config set mcp.add_status triage` makes a task an
+  agent adds over MCP without naming a `status` a proposal that waits for your
+  `tasqx triage`, `accept`, `decline` or `duplicate`. See [Working on Tasks](../wiki/Working-on-Tasks.md#tasqx-triage).
 - **Duplicates.** `tasqx_add_task` returns `similar`, the open tasks in the same
   project that read like the new one; look before adding another.
 - **Notes.** `tasqx_add_note` and its siblings capture a thought that is not yet

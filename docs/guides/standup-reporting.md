@@ -64,8 +64,9 @@ sentence above as a number. DROPPED is work that was started and then
 cancelled. FORCED counts completions that overrode an open blocker with
 `--force`. OVER counts completions that went past their token budget, UNPROVEN
 those that closed with an acceptance check still open or failed, and UNBRIEFED
-those whose task nobody ran `tasqx brief` on first; each is read against the
-completions that could have been one. [Reports and Charts](../wiki/Reports-and-Charts.md#tasqx-report)
+those whose task has no recorded `tasqx brief` (or memory-carrying
+`tasqx_start_timer`); each is read against the completions that could have been
+one. [Reports and Charts](../wiki/Reports-and-Charts.md#tasqx-report)
 has the full column table.
 
 Every rate reads `count/n`, never a percentage, and the reason is worth a
