@@ -2390,8 +2390,9 @@ impl Engine {
             &[&name],
         )?;
         let mut pinned = 0;
+        let mut task_id = None;
         if let Some(task) = task {
-            let (task_id, relevant) = self.task_relevant_doc_ids(task)?;
+            let (id, relevant) = self.task_relevant_doc_ids(task)?;
             let pins = docs(
                 &format!(
                     "SELECT {cols} FROM links l JOIN docs d ON d.id = l.to_id \
@@ -2400,7 +2401,7 @@ impl Engine {
                      ORDER BY rtrim(d.modified, 'Z') DESC, d.id DESC"
                 ),
                 check,
-                &[&task_id],
+                &[&id],
             )?;
             standing.retain(|(id, ..)| !pins.iter().any(|(pin, ..)| pin == id));
             // A stable sort, so D157's order stands among equally relevant docs.
@@ -2409,7 +2410,13 @@ impl Engine {
             });
             pinned = pins.len();
             standing.splice(0..0, pins);
+            task_id = Some(id);
         }
+        // D246: a doc the task pins is already listed above, so topical fill
+        // neither repeats it nor counts it as left out. `?2` NULL pins nothing.
+        const UNPINNED: &str = "id NOT IN (SELECT to_id FROM links \
+             WHERE from_type = 'task' AND from_id = ?2 AND to_type = 'memory' \
+               AND relation = 'pins')";
         // Never unscoped: `memory import` stores every ADR unscoped, so the
         // newest unscoped docs are an arbitrary slice (D157).
         // PR #48 review: `LIMIT 256` bounds what session start ever reads —
@@ -2419,19 +2426,23 @@ impl Engine {
         let (standing, stale): (Vec<SessionDoc>, Vec<Vec<String>>) =
             standing.into_iter().map(|(_, d, s)| (d, s)).unzip();
         let topical = docs(
-            "SELECT d.id, d.title, substr(d.body, 1, 4096) FROM docs d \
-             WHERE d.standing = 0 AND d.project = ?1 \
-             ORDER BY rtrim(d.modified, 'Z') DESC, d.id DESC \
-             LIMIT 256",
+            &format!(
+                "SELECT d.id, d.title, substr(d.body, 1, 4096) FROM docs d \
+                 WHERE d.standing = 0 AND d.project = ?1 AND d.{UNPINNED} \
+                 ORDER BY rtrim(d.modified, 'Z') DESC, d.id DESC \
+                 LIMIT 256"
+            ),
             false,
-            &[&name],
+            &[&name, &task_id],
         )?
         .into_iter()
         .map(|(_, d, _)| d)
         .collect();
         let topical_total: i64 = self.conn.query_row(
-            "SELECT COUNT(*) FROM docs WHERE standing = 0 AND project = ?1",
-            params![name],
+            &format!(
+                "SELECT COUNT(*) FROM docs WHERE standing = 0 AND project = ?1 AND {UNPINNED}"
+            ),
+            params![name, task_id],
             |r| r.get(0),
         )?;
         Ok((
