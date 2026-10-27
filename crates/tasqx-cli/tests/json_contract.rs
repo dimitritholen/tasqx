@@ -308,7 +308,11 @@ fn every_non_carved_command_emits_json() {
         for (i, (case, args)) in cases(&tmp).into_iter().enumerate() {
             let mut own = db.clone();
             if case.fresh_store {
-                own.set_file_name(format!("{tag}-case{i}.db"));
+                // The pid keeps concurrent test processes off one another's store.
+                own.set_file_name(format!(
+                    "tasqx-json-{tag}-case{i}-{}.db",
+                    std::process::id()
+                ));
                 let _ = std::fs::remove_file(&own);
             }
             let mut cmd = bin(&cfg, &own);
