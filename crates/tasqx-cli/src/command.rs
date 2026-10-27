@@ -122,9 +122,10 @@ fn similarity_parser(s: &str) -> Result<f64, String> {
 ///
 /// These exist because the attribution engine builds its candidate set only from
 /// events carrying `client`, `session_id` or `transcript_path`
-/// (the "carrying correlation" guard in `attribution::correlated_done_scan`,
-/// which `continue`s past a done event with none of the three): without them a
-/// CLI-driven task is never attributed and silently measures zero. Every one is
+/// (the "carrying correlation" guard in `attribution::correlated_done_scan`; a
+/// done event with none of the three falls back to the session ids on the
+/// task's starts, D247): without them on either a CLI-driven task is never
+/// attributed and silently measures zero. Every one is
 /// optional and none is read from the environment — `tasqx done 4` must stay a
 /// one-word command, and what lands on the event must stay readable off the
 /// command line.

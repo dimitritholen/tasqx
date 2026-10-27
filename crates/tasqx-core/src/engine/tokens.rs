@@ -1139,6 +1139,7 @@ impl Engine {
         }
         .into_iter()
         .filter(|id| !has_other_measurement.contains(id))
+        .filter(|id| !scan.falls_back_to_sessions(id))
         .filter(|id| {
             scan.client_for(id).and_then(crate::attribution::parser_for)
                 == Some(crate::attribution::Parser::ClaudeCode)

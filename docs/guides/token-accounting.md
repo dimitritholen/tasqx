@@ -46,6 +46,12 @@ tasqx done 4 --client "claude-code 2.1" --session-id "$SID" --transcript-path "$
 Parsers exist for Claude Code, Codex, Gemini CLI and GitHub Copilot CLI, picked
 from `--client` by substring — without it no transcript is ever read.
 
+A plain `tasqx done` is measured too when the task's starts named a session,
+as `tasqx work` does: every session started since the task's previous
+completion is read, each once. Given a session id, Claude Code and Codex read
+only that session's transcript, so another session running at the same time is
+not counted.
+
 **Telemetry** — the opt-in OTLP receiver below. Samples are matched to the task
 by session id, and beat log-parsing when both are available.
 
@@ -60,7 +66,7 @@ per-request figures.
 | Telemetry (`otel`) | `high` | Always: samples are matched to the task by session id |
 | Log-parse | `high` | An explicit `--transcript-path`, with the completion's session id confirmed in the file |
 | Log-parse | `medium` | An explicit path to a file with no per-session anchor (Gemini, Copilot) |
-| Log-parse | `low` | No path: the transcript was found by scanning and matched on time overlap alone |
+| Log-parse | `low` | No path: the transcript was found by scanning, narrowed to the session id when one is known (Claude Code, Codex), otherwise matched on time overlap alone |
 | Log-parse | `low` | `tokens recompute` found the transcript gone, so it kept the counts and lowered the grade |
 | Self-report | `medium` | Every report on `done`, `tasqx_add_tokens` and `tokens add`; `token.add` through `tasqx api` also accepts `low` |
 

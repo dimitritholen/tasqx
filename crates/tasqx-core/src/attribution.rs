@@ -44,7 +44,7 @@ use serde_json::{json, Value};
 use crate::engine::Engine;
 use crate::error::ApiError;
 use crate::tokens::{
-    self, codex, TokenTotals, UsageSample, CONFIDENCE_HIGH, CONFIDENCE_LOW, CONFIDENCE_MEDIUM,
+    self, TokenTotals, UsageSample, CONFIDENCE_HIGH, CONFIDENCE_LOW, CONFIDENCE_MEDIUM,
     SOURCE_LOG_PARSE, SOURCE_OTEL, SOURCE_SELF_REPORT,
 };
 
@@ -294,7 +294,10 @@ pub struct PendingAttribution {
     /// [`parser_for`] matches a lowercased substring instead of a fixed set, and
     /// why this doubles as the `tool` label stored on the measurement. `None`
     /// means the completion carried one of the *other* correlation keys but no
-    /// tool label; a `done` with none of the three never enters this queue.
+    /// tool label. A `done` with none of the three takes the latest `client`
+    /// of the starts whose session ids it fell back to (D247), and enters only
+    /// the daemon's crate-private `pending_with_sessions` queue, never this
+    /// public one.
     pub client: Option<String>,
     /// Absolute path to the tool's session transcript, as supplied on `task.done`.
     /// Its presence picks the whole strategy: an explicit path is parsed directly
@@ -308,6 +311,8 @@ pub struct PendingAttribution {
     /// buffered telemetry up by when building this entry, and it is
     /// what must *verify* against the parsed transcript for the measurement to
     /// earn [`CONFIDENCE_HIGH`] — a present but unverifiable id stays MEDIUM.
+    /// Without an explicit path it also narrows Claude Code and Codex
+    /// discovery to that session's transcript (D247).
     pub session_id: Option<String>,
     /// Buffered OTLP samples (#18) whose `session_id` matched this task's, read
     /// from the store during the pending-set build. When non-empty and in-window,
@@ -515,6 +520,21 @@ pub fn compute_attribution_located(
     neighbours: &[LocatedNeighbour],
     now: Timestamp,
 ) -> Result<AttributionResult, ApiError> {
+    compute_attribution_sessions(pa, neighbours, &[], now)
+}
+
+/// [`compute_attribution_located`] for an entry from
+/// [`pending_with_sessions`]: `sessions` is non-empty only for a `done` that
+/// carried no correlation and fell back to the session ids on the task's
+/// starts (D247). Those ids are the whole sample source, so such an entry is
+/// never located by call — a plain `tasqx done` run from some other agent's
+/// shell would locate that agent's transcript instead of the work sessions.
+pub(crate) fn compute_attribution_sessions(
+    pa: &PendingAttribution,
+    neighbours: &[LocatedNeighbour],
+    sessions: &[String],
+    now: Timestamp,
+) -> Result<AttributionResult, ApiError> {
     let tool = normalize_tool_name(&pa.client.clone().unwrap_or_default());
 
     // A completion that already self-reported its spend (#13) is the
@@ -543,6 +563,7 @@ pub fn compute_attribution_located(
             .filter(|s| !s.is_empty())
             .is_none()
             .then(|| pa.client.as_deref().and_then(parser_for))
+            .filter(|_| sessions.is_empty())
             .flatten()
             .map(|parser| {
                 locate_transcripts_by_task_call(
@@ -744,8 +765,17 @@ pub fn compute_attribution_located(
         _ => {
             let located = locate_by_call();
             if located.is_empty() {
+                let wanted: Vec<&str> = if sessions.is_empty() {
+                    pa.session_id
+                        .as_deref()
+                        .filter(|s| !s.is_empty())
+                        .into_iter()
+                        .collect()
+                } else {
+                    sessions.iter().map(String::as_str).collect()
+                };
                 (
-                    discover_samples(parser, pa),
+                    discover_samples(parser, &wanted),
                     false,
                     false,
                     pa.foreign_windows.clone(),
@@ -867,20 +897,21 @@ fn transcript_gave_up(now: Timestamp, window_end: &str) -> bool {
 }
 
 /// Best-effort discovery when no `transcript_path` was supplied: scan the tool's
-/// default roots, bounded, and aggregate every readable file's samples. For
-/// Codex, when the session id is known, restrict to the rollout whose
-/// `session_meta.id` matches — the one anchor discovery has.
-fn discover_samples(parser: Parser, pa: &PendingAttribution) -> Vec<UsageSample> {
+/// default roots, bounded, and aggregate every readable file's samples. When
+/// session ids are known, Claude Code and Codex read only the transcripts one
+/// of them names (filename or line `sessionId`, `session_meta.id`), the one
+/// anchor discovery has (D247 (b)); Gemini and Copilot carry none.
+fn discover_samples(parser: Parser, sessions: &[&str]) -> Vec<UsageSample> {
     let mut out = Vec::new();
     for file in discover_candidates(&parser.default_roots(), MAX_DISCOVERY_FILES) {
-        if parser == Parser::Codex {
-            if let Some(want) = pa.session_id.as_deref().filter(|s| !s.is_empty()) {
-                match codex::session_meta(&file) {
-                    Ok(Some(meta)) if meta.id.as_deref() == Some(want) => {}
-                    // Known-but-different session, or unreadable: skip it.
-                    _ => continue,
-                }
-            }
+        // Known-but-different session, or unreadable: skip it.
+        if matches!(parser, Parser::ClaudeCode | Parser::Codex)
+            && !sessions.is_empty()
+            && !sessions
+                .iter()
+                .any(|sid| parser.session_matches(&file, sid))
+        {
+            continue;
         }
         if let Ok(mut samples) = parser.samples_from_file(&file) {
             out.append(&mut samples);
@@ -1055,6 +1086,10 @@ struct DoneInfo {
     client: Option<String>,
     transcript_path: Option<String>,
     session_id: Option<String>,
+    /// D247: the distinct session ids on the task's starts since its previous
+    /// `done`, filled only when this `done` carried no correlation of its own
+    /// (a plain `tasqx done` after `tasqx work`). Empty otherwise.
+    fallback_sessions: Vec<String>,
     self_reported: bool,
     /// True when a `tokens.attributed` marker already sits past this task's
     /// latest correlated `done`: the task is no longer pending, but its window
@@ -1085,8 +1120,16 @@ struct DoneInfo {
 /// or an equal non-null `session_id`. Two `None`s are NOT a match — an absent
 /// key identifies nothing.
 fn shares_sample_source(a: &DoneInfo, b: &DoneInfo) -> bool {
+    let sessions = |d: &DoneInfo| {
+        d.session_id
+            .clone()
+            .into_iter()
+            .chain(d.fallback_sessions.clone())
+            .collect::<Vec<_>>()
+    };
+    let theirs = sessions(b);
     (a.canon_path.is_some() && a.canon_path == b.canon_path)
-        || (a.session_id.is_some() && a.session_id == b.session_id)
+        || sessions(a).iter().any(|s| theirs.contains(s))
 }
 
 /// One path string's identity for [`shares_sample_source`]:
@@ -1215,7 +1258,45 @@ fn correlated_done_scan(engine: &Engine) -> Result<HashMap<String, DoneInfo>, Ap
     //    Already-attributed tasks are RETAINED (flagged, not skipped): they are
     //    no longer pending, but their windows still contest samples on a shared
     //    transcript or session (D50), so every pending entry needs them.
+    // 2a. D247: every `start` that carried a session id, per task in rowid
+    //     order, as `(rowid, client, session_id)` — what a `done` without any
+    //     correlation falls back to (`tasqx work` puts it on the start only).
+    let mut session_starts: HashMap<String, Vec<(i64, Option<String>, String)>> = HashMap::new();
+    {
+        let mut stmt = conn.prepare(
+            "SELECT entity_id, payload, rowid FROM events \
+             WHERE op = 'start' AND payload LIKE '%session_id%' ORDER BY rowid",
+        )?;
+        let rows = stmt.query_map([], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, Option<String>>(1)?,
+                r.get::<_, i64>(2)?,
+            ))
+        })?;
+        for r in rows {
+            let (task_id, payload, rowid) = r?;
+            let v = payload
+                .as_deref()
+                .and_then(|p| serde_json::from_str::<Value>(p).ok())
+                .unwrap_or(Value::Null);
+            let field = |k: &str| {
+                v.get(k)
+                    .and_then(Value::as_str)
+                    .filter(|s| !s.is_empty())
+                    .map(str::to_string)
+            };
+            if let Some(sid) = field("session_id") {
+                session_starts
+                    .entry(task_id)
+                    .or_default()
+                    .push((rowid, field("client"), sid));
+            }
+        }
+    }
+
     let mut correlated: HashMap<String, DoneInfo> = HashMap::new();
+    let mut last_done: HashMap<String, i64> = HashMap::new();
     {
         let mut stmt = conn.prepare(
             "SELECT entity_id, payload, ts, rowid FROM events WHERE op = 'done' ORDER BY rowid",
@@ -1240,13 +1321,28 @@ fn correlated_done_scan(engine: &Engine) -> Result<HashMap<String, DoneInfo>, Ap
                     .filter(|s| !s.is_empty())
                     .map(str::to_string)
             };
-            let client = field("client");
+            let previous_done = last_done.insert(task_id.clone(), done_rowid).unwrap_or(0);
+            let mut client = field("client");
             let transcript_path = field("transcript_path");
             let session_id = field("session_id");
             // "Carrying correlation" = at least one correlation key present. A
-            // human's `tasqx done 4` has none and is never attributed.
+            // human's `tasqx done 4` has none, so it falls back to the session
+            // ids on the task's starts since its previous `done` (D247), every
+            // work session's, and is attributed only when there are some.
+            let mut fallback_sessions = Vec::new();
             if client.is_none() && transcript_path.is_none() && session_id.is_none() {
-                continue;
+                for (rowid, start_client, sid) in session_starts.get(&task_id).into_iter().flatten()
+                {
+                    if *rowid > previous_done && *rowid < done_rowid {
+                        client = start_client.clone().or(client);
+                        if !fallback_sessions.contains(sid) {
+                            fallback_sessions.push(sid.clone());
+                        }
+                    }
+                }
+                if fallback_sessions.is_empty() {
+                    continue;
+                }
             }
             // A self-report on `task.done` (#13) echoes its measurement into the
             // done payload's `tokens` key. Its presence means the spend is already
@@ -1267,6 +1363,7 @@ fn correlated_done_scan(engine: &Engine) -> Result<HashMap<String, DoneInfo>, Ap
                     client,
                     transcript_path,
                     session_id,
+                    fallback_sessions,
                     self_reported,
                     attributed: is_attributed,
                     canon_path: None,
@@ -1332,6 +1429,7 @@ fn correlated_done_scan(engine: &Engine) -> Result<HashMap<String, DoneInfo>, Ap
                     client,
                     transcript_path,
                     session_id,
+                    fallback_sessions: Vec::new(),
                     self_reported: false,
                     attributed: false,
                     canon_path: None,
@@ -1489,6 +1587,14 @@ impl WindowScan {
     /// row [`recompute_measurement`] could still re-verify against a named
     /// file (an explicit path whose file later vanished must still downgrade,
     /// not be left alone).
+    /// Whether the task's `done` fell back to its starts' session ids (D247):
+    /// those ids are its sample source, so `tokens.recompute` never locates it.
+    pub(crate) fn falls_back_to_sessions(&self, task_id: &str) -> bool {
+        self.correlated
+            .get(task_id)
+            .is_some_and(|info| !info.fallback_sessions.is_empty())
+    }
+
     pub(crate) fn has_explicit_transcript_path(&self, task_id: &str) -> bool {
         self.correlated
             .get(task_id)
@@ -1752,6 +1858,22 @@ pub(crate) fn locate_backfill(
 pub fn pending_attributions_located(
     engine: &Engine,
 ) -> Result<Vec<(PendingAttribution, Vec<LocatedNeighbour>)>, ApiError> {
+    Ok(pending_with_sessions(engine)?
+        .into_iter()
+        .filter(|(_, _, sessions)| sessions.is_empty())
+        .map(|(pa, neighbours, _)| (pa, neighbours))
+        .collect())
+}
+
+/// One [`pending_with_sessions`] entry: the pending task, its located
+/// neighbours, and its D247 fallback session ids.
+pub(crate) type PendingWithSessions = (PendingAttribution, Vec<LocatedNeighbour>, Vec<String>);
+
+/// [`pending_attributions_located`] plus each entry's D247 fallback session
+/// ids, the set [`compute_attribution_sessions`] takes. The public builders
+/// leave those entries out, so a caller of them sees exactly the queue it saw
+/// before D247 and can never measure one without its sessions.
+pub(crate) fn pending_with_sessions(engine: &Engine) -> Result<Vec<PendingWithSessions>, ApiError> {
     let correlated = correlated_done_scan(engine)?;
     if correlated.values().all(|info| info.attributed) {
         return Ok(Vec::new());
@@ -1780,10 +1902,12 @@ pub fn pending_attributions_located(
         // short engine lock (a cheap indexed query — no file I/O) so the compute
         // step can prefer it over log-parsing. An absent session id matches
         // nothing, which is the common (log-parse-only) case.
-        let (otel_samples, otel_tool) = match info.session_id.as_deref() {
-            Some(sid) => engine.otlp_samples_for_session(sid)?,
-            None => (Vec::new(), None),
-        };
+        let (mut otel_samples, mut otel_tool) = (Vec::new(), None);
+        for sid in info.session_id.iter().chain(&info.fallback_sessions) {
+            let (mut samples, tool) = engine.otlp_samples_for_session(sid)?;
+            otel_samples.append(&mut samples);
+            otel_tool = otel_tool.or(tool);
+        }
         let foreign_windows = scan.foreign_windows_for(task_id);
         // And the sample ids ALL other tasks already consumed: banked by
         // identity, refused by identity — whatever the samples' re-parsed
@@ -1828,10 +1952,11 @@ pub fn pending_attributions_located(
                 consumed_sample_ids,
             },
             located_neighbours,
+            info.fallback_sessions.clone(),
         ));
     }
     // Deterministic order for tests and for stable log lines.
-    out.sort_by_key(|(pa, _)| pa.short_id);
+    out.sort_by_key(|(pa, _, _)| pa.short_id);
     Ok(out)
 }
 
@@ -1845,7 +1970,7 @@ pub fn pending_attributions(engine: &Engine) -> Result<Vec<PendingAttribution>, 
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     /// Parse an RFC3339 instant for the `now` argument of `compute_attribution`.
@@ -1904,7 +2029,7 @@ mod tests {
     /// `discovery_finding_nothing_stays_terminal_rather_than_retrying` and
     /// `contested_discovery_samples_stay_terminal_rather_than_retrying`
     /// failed against it before `HOME` was overridden too.
-    fn with_isolated_roots<R>(dir: &Path, f: impl FnOnce() -> R) -> R {
+    pub(crate) fn with_isolated_roots<R>(dir: &Path, f: impl FnOnce() -> R) -> R {
         let prev_cfg = std::env::var_os("CLAUDE_CONFIG_DIR");
         let prev_home = std::env::var_os("HOME");
         let prev_profile = std::env::var_os("USERPROFILE");
@@ -2172,6 +2297,7 @@ mod tests {
             client: Some(client.to_string()),
             transcript_path: Some(canon.to_string_lossy().into_owned()),
             session_id: None,
+            fallback_sessions: Vec::new(),
             self_reported: false,
             attributed: true,
             canon_path: Some(canon.to_path_buf()),
@@ -2841,6 +2967,54 @@ mod tests {
         let r = r.expect("contested discovery must terminate, not retry");
         assert!(!r.found, "the contested sample banks for no one");
         assert_eq!(r.samples, 0);
+    }
+
+    /// D247 (b): Claude discovery given a session id reads only the transcript
+    /// named for it, the way Codex discovery already narrows, so a second
+    /// Claude session running in the same window is not counted too.
+    #[test]
+    fn claude_discovery_given_a_session_id_reads_only_that_sessions_transcript() {
+        let _guard = DISCOVERY_ENV.lock().unwrap_or_else(|e| e.into_inner());
+        let dir = std::env::temp_dir().join(format!(
+            "tasqx-attr-claude-narrow-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let proj = dir.join("projects").join("proj");
+        std::fs::create_dir_all(&proj).unwrap();
+        for (session, input) in [("sess-a", 100), ("sess-b", 7)] {
+            std::fs::write(
+                proj.join(format!("{session}.jsonl")),
+                format!(
+                    r#"{{"timestamp":"2020-01-01T10:10:00.000Z","message":{{"id":"{session}-m","usage":{{"input_tokens":{input},"output_tokens":1}}}}}}"#
+                ),
+            )
+            .unwrap();
+        }
+        let pa = PendingAttribution {
+            task_id: "t".into(),
+            short_id: 1,
+            window_start: "2020-01-01T10:00:00Z".into(),
+            window_end: "2020-01-01T11:00:00Z".into(),
+            client: Some("claude-code".into()),
+            transcript_path: None,
+            session_id: Some("sess-a".into()),
+            otel_samples: Vec::new(),
+            otel_tool: None,
+            self_reported: false,
+            foreign_windows: vec![],
+            consumed_sample_ids: HashSet::new(),
+        };
+        let r = with_isolated_roots(&dir, || {
+            compute_attribution(&pa, ts("2020-01-01T11:05:00Z"))
+        });
+        let _ = std::fs::remove_dir_all(&dir);
+        let r = r.expect("discovery terminates");
+        assert_eq!(r.totals.input, 100, "only sess-a's transcript is read");
+        assert_eq!(r.samples, 1);
     }
 
     /// D188 (a): a self-reported task is superseded by a transcript located
@@ -4405,5 +4579,232 @@ mod tests {
 
     fn count_rows(engine: &Engine, sql: &str) -> i64 {
         engine.conn().query_row(sql, [], |r| r.get(0)).unwrap()
+    }
+
+    /// The pending entry and fallback sessions for one task, by `#n`.
+    fn pending_for(engine: &Engine, short_id: i64) -> Option<(PendingAttribution, Vec<String>)> {
+        pending_with_sessions(engine)
+            .unwrap()
+            .into_iter()
+            .find(|(pa, _, _)| pa.short_id == short_id)
+            .map(|(pa, _, sessions)| (pa, sessions))
+    }
+
+    /// D247 (a): a `done` without correlation takes the session ids of the
+    /// starts since its previous `done`, each once, with the latest start's
+    /// client; starts without a session id give it nothing; a `done` with its
+    /// own correlation ignores the starts; the public builders leave fallback
+    /// entries out; and a fallback session is a shared sample source.
+    #[test]
+    fn a_done_without_correlation_falls_back_to_the_session_ids_since_its_previous_done() {
+        let engine = Engine::open_in_memory().unwrap();
+        let add = |title: &str| {
+            engine.task_add(&json!({ "title": title })).unwrap()["short_id"]
+                .as_i64()
+                .unwrap()
+        };
+        let start = |id: i64, session: Option<&str>, client: &str| {
+            let mut params = json!({ "ref": id, "client": client });
+            if let Some(session) = session {
+                params["session_id"] = json!(session);
+            }
+            engine.task_start(&params).unwrap();
+            engine.task_stop(&json!({ "ref": id })).unwrap();
+        };
+
+        let work = add("work");
+        start(work, Some("s1"), "claude");
+        engine.task_done(&json!({ "ref": work })).unwrap();
+        let (pa, sessions) = pending_for(&engine, work).expect("the plain done is pending");
+        assert_eq!(sessions, ["s1"]);
+        assert_eq!(pa.client.as_deref(), Some("claude"));
+        assert_eq!(pa.session_id, None);
+        assert!(
+            pending_attributions(&engine).unwrap().is_empty(),
+            "the public builders keep their pre-D247 queue"
+        );
+
+        engine.task_reopen(&json!({ "ref": work })).unwrap();
+        start(work, Some("s2"), "codex");
+        assert_eq!(
+            pending_for(&engine, work).unwrap().1,
+            ["s1"],
+            "a start after the done is not that done's"
+        );
+        start(work, Some("s2"), "claude-code");
+        engine.task_done(&json!({ "ref": work })).unwrap();
+        let (pa, sessions) = pending_for(&engine, work).unwrap();
+        assert_eq!(sessions, ["s2"], "only since the previous done, each once");
+        assert_eq!(
+            pa.client.as_deref(),
+            Some("claude-code"),
+            "the latest start's"
+        );
+
+        let bare = add("no session");
+        start(bare, None, "claude");
+        engine.task_done(&json!({ "ref": bare })).unwrap();
+        assert!(
+            pending_for(&engine, bare).is_none(),
+            "no session id, no entry"
+        );
+
+        let own = add("own correlation");
+        start(own, Some("s3"), "claude");
+        engine
+            .task_done(&json!({ "ref": own, "client": "claude", "session_id": "s2" }))
+            .unwrap();
+        let (pa, sessions) = pending_for(&engine, own).unwrap();
+        assert!(
+            sessions.is_empty(),
+            "a done with correlation ignores the starts"
+        );
+        assert_eq!(pa.session_id.as_deref(), Some("s2"));
+        assert_eq!(
+            pa.foreign_windows.len(),
+            1,
+            "`work` read session s2 too, so its window contests this one"
+        );
+    }
+
+    /// D247: buffered telemetry for any of the fallback sessions is read, as
+    /// it is for a `done` that names its session.
+    #[test]
+    fn a_fallback_entry_reads_the_otel_buffer_of_every_session() {
+        let engine = Engine::open_in_memory().unwrap();
+        let id = engine.task_add(&json!({ "title": "t" })).unwrap()["short_id"]
+            .as_i64()
+            .unwrap();
+        for session in ["s1", "s2"] {
+            engine
+                .task_start(&json!({ "ref": id, "session_id": session, "client": "claude" }))
+                .unwrap();
+            engine.task_stop(&json!({ "ref": id })).unwrap();
+            engine
+                .otlp_ingest(&[crate::otlp::OtlpSample {
+                    tool: "claude-code".into(),
+                    session_id: Some(session.into()),
+                    sample: sample("2026-07-24T10:00:00Z", 1, 1),
+                }])
+                .unwrap();
+        }
+        engine.task_done(&json!({ "ref": id })).unwrap();
+        let (pa, _) = pending_for(&engine, id).unwrap();
+        assert_eq!(pa.otel_samples.len(), 2);
+        assert_eq!(pa.otel_tool.as_deref(), Some("claude-code"));
+    }
+
+    /// D247: a fallback entry is measured from its sessions, never located by
+    /// call. Here a plain `tasqx done 42` sits in another agent's transcript;
+    /// locating it would bill that agent's spend to the work.
+    #[test]
+    fn a_fallback_entry_is_not_located_by_call() {
+        let dir = std::env::temp_dir().join(format!(
+            "tasqx-attr-fallback-no-locate-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let proj = dir.join("projects").join("proj");
+        std::fs::create_dir_all(&proj).unwrap();
+        std::fs::write(
+            proj.join("orchestrator.jsonl"),
+            [
+                r#"{"type":"assistant","timestamp":"2026-07-24T10:05:00Z","message":{"id":"m1","usage":{"input_tokens":7,"output_tokens":9}}}"#,
+                r#"{"type":"assistant","timestamp":"2026-07-24T10:06:00Z","message":{"id":"m2","content":[{"type":"tool_use","name":"Bash","input":{"command":"tasqx done 42"}}]}}"#,
+            ]
+            .join("\n"),
+        )
+        .unwrap();
+        std::fs::write(
+            proj.join("work-s1.jsonl"),
+            r#"{"type":"assistant","timestamp":"2026-07-24T10:04:00Z","message":{"id":"w1","usage":{"input_tokens":100,"output_tokens":1}}}"#,
+        )
+        .unwrap();
+        let pa = PendingAttribution {
+            task_id: "uuid-42".into(),
+            short_id: 42,
+            window_start: "2026-07-24T10:00:00Z".into(),
+            window_end: "2026-07-24T10:10:00Z".into(),
+            client: Some("claude".into()),
+            transcript_path: None,
+            session_id: None,
+            otel_samples: Vec::new(),
+            otel_tool: None,
+            self_reported: false,
+            foreign_windows: vec![],
+            consumed_sample_ids: HashSet::new(),
+        };
+
+        let _guard = DISCOVERY_ENV.lock().unwrap_or_else(|e| e.into_inner());
+        let r = with_isolated_roots(&dir, || {
+            compute_attribution_sessions(
+                &pa,
+                &[],
+                &["work-s1".to_string()],
+                ts("2026-07-24T11:05:00Z"),
+            )
+        });
+        let _ = std::fs::remove_dir_all(&dir);
+        let r = r.expect("discovery terminates");
+        assert_eq!(
+            r.totals.input, 100,
+            "the work session, not the orchestrator"
+        );
+    }
+
+    /// D247: `tokens.recompute` does not locate a fallback task either, even
+    /// when the tick found nothing in its sessions.
+    #[test]
+    fn recompute_does_not_locate_a_fallback_task() {
+        let dir = std::env::temp_dir().join(format!(
+            "tasqx-attr-fallback-recompute-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let proj = dir.join("projects").join("proj");
+        std::fs::create_dir_all(&proj).unwrap();
+        let engine = Engine::open_in_memory().unwrap();
+        let id = engine.task_add(&json!({ "title": "t" })).unwrap()["short_id"]
+            .as_i64()
+            .unwrap();
+        engine
+            .task_start(&json!({ "ref": id, "session_id": "gone", "client": "claude" }))
+            .unwrap();
+        let at = crate::clock::now().to_string();
+        std::fs::write(
+            proj.join("orchestrator.jsonl"),
+            [
+                format!(
+                    r#"{{"type":"assistant","timestamp":"{at}","message":{{"id":"m1","usage":{{"input_tokens":7,"output_tokens":9}}}}}}"#
+                ),
+                format!(
+                    r#"{{"type":"assistant","timestamp":"{at}","message":{{"id":"m2","content":[{{"type":"tool_use","name":"Bash","input":{{"command":"tasqx done {id}"}}}}]}}}}"#
+                ),
+            ]
+            .join("\n"),
+        )
+        .unwrap();
+        engine.task_done(&json!({ "ref": id })).unwrap();
+
+        let _guard = DISCOVERY_ENV.lock().unwrap_or_else(|e| e.into_inner());
+        with_isolated_roots(&dir, || {
+            for (pa, neighbours, sessions) in &pending_with_sessions(&engine).unwrap() {
+                let r = compute_attribution_sessions(pa, neighbours, sessions, crate::clock::now())
+                    .unwrap();
+                assert!(!r.found, "session `gone` has no transcript");
+                attribute_one(&engine, pa, &r).unwrap();
+            }
+            engine
+                .token_recompute(&json!({ "dry_run": false }))
+                .unwrap();
+        });
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(count_rows(&engine, "SELECT COUNT(*) FROM token_usage"), 0);
     }
 }
