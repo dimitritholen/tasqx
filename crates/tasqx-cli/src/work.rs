@@ -356,7 +356,15 @@ fn launch(be: &mut Backend, ctx: &Ctx, task_ref: &str, agent: &'static str) -> C
         route.push(("TASQX_SOCK", sock.into()));
     }
     let db = match in_process {
-        true => db_path().ok().map(PathBuf::into_os_string),
+        // Absolute, so an agent that changes directory still opens this file.
+        true => db_path()
+            .ok()
+            .map(|db| {
+                std::fs::canonicalize(&db).unwrap_or_else(|_| {
+                    std::env::current_dir().map_or(db.clone(), |cwd| cwd.join(&db))
+                })
+            })
+            .map(PathBuf::into_os_string),
         false => be.call("core.capabilities", &json!({}))?["store"]
             .as_str()
             .map(Into::into),
