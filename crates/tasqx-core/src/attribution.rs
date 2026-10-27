@@ -1796,6 +1796,10 @@ impl WindowScan {
             .filter(|(other_id, os, oe)| {
                 other_id != task_id
                     && !shares_sample_source(info, &self.correlated[other_id])
+                    // D247: a fallback task's call in another agent's
+                    // transcript is a plain `tasqx done` run from there, not
+                    // evidence that it read that agent's samples.
+                    && self.correlated[other_id].fallback_sessions.is_empty()
                     && parse_window(os, oe).is_some_and(|(os, oe)| os <= we && oe >= ws)
             })
             .filter_map(|(other_id, os, oe)| {
@@ -5031,9 +5035,12 @@ pub(crate) mod tests {
         }
         with_isolated_roots(dir, || {
             for (pa, neighbours, sessions) in &pending_with_sessions(engine).unwrap() {
-                let r = compute_attribution_sessions(pa, neighbours, sessions, crate::clock::now())
-                    .unwrap();
-                attribute_one(engine, pa, &r).unwrap();
+                // A transient (retry) result writes nothing, as on the live tick.
+                if let Ok(r) =
+                    compute_attribution_sessions(pa, neighbours, sessions, crate::clock::now())
+                {
+                    attribute_one(engine, pa, &r).unwrap();
+                }
             }
         });
         for ((k, _), v) in roots.iter().zip(prev) {
@@ -5095,6 +5102,53 @@ pub(crate) mod tests {
         let input = tick_input(&engine, &dir, id);
         let _ = std::fs::remove_dir_all(&dir);
         assert_eq!(input, 120, "the Claude session and the Codex session");
+    }
+
+    /// D247: a fallback task is never a located neighbour. Agent A, working
+    /// on task A in its own session, runs a plain `tasqx done B` for work done
+    /// in session s2; that call in A's transcript is no evidence that B read
+    /// A's samples, so A's usage stays A's.
+    #[test]
+    fn a_plain_done_called_from_another_agents_session_does_not_contest_its_usage() {
+        let dir = fallback_dir("fallback-not-located");
+        let engine = Engine::open_in_memory().unwrap();
+        let add = |title: &str| {
+            engine.task_add(&json!({ "title": title })).unwrap()["short_id"]
+                .as_i64()
+                .unwrap()
+        };
+        let a = add("A");
+        let b = add("B");
+        engine.task_start(&json!({ "ref": a })).unwrap();
+        engine
+            .task_start(&json!({ "ref": b, "session_id": "s2", "client": "claude", "keep": true }))
+            .unwrap();
+        let at = crate::clock::now().to_string();
+        let call = |msg: &str, command: String| {
+            format!(
+                r#"{{"type":"assistant","timestamp":"{at}","message":{{"id":"{msg}","content":[{{"type":"tool_use","name":"Bash","input":{{"command":"{command}"}}}}]}}}}"#
+            )
+        };
+        std::fs::write(
+            dir.join("projects").join("proj").join("agent-a.jsonl"),
+            [
+                format!(
+                    r#"{{"type":"assistant","timestamp":"{at}","message":{{"id":"u1","usage":{{"input_tokens":100,"output_tokens":1}}}}}}"#
+                ),
+                call("c1", format!("tasqx done {b}")),
+                call("c2", format!("tasqx done {a}")),
+            ]
+            .join("\n"),
+        )
+        .unwrap();
+        engine.task_done(&json!({ "ref": b })).unwrap();
+        engine
+            .task_done(&json!({ "ref": a, "client": "claude-code" }))
+            .unwrap();
+
+        let input = tick_input(&engine, &dir, a);
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(input, 100, "A's usage, located by its own call, stays A's");
     }
 
     /// Codex discovery given a session id never widens, as before D247: a
