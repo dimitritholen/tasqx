@@ -878,7 +878,7 @@ fn compute_one(
                     .into_iter()
                     .collect();
                 (
-                    discover_samples(parser, &wanted),
+                    discover_samples(parser, &wanted, locate),
                     false,
                     false,
                     pa.foreign_windows.clone(),
@@ -1004,19 +1004,26 @@ fn transcript_gave_up(now: Timestamp, window_end: &str) -> bool {
 /// session ids are known, Claude Code and Codex read only the transcripts one
 /// of them names (filename or line `sessionId`, `session_meta.id`), the one
 /// anchor discovery has (D247 (b)); Gemini and Copilot carry none.
-fn discover_samples(parser: Parser, sessions: &[&str]) -> Vec<UsageSample> {
+///
+/// `widen` lets a Claude Code scan whose session ids name NO transcript read
+/// the whole window, as it did before D247: a client may pass its own id,
+/// not Claude Code's. A D247 fallback session passes false, since several of
+/// them widened would each count the same window. Codex never widens.
+fn discover_samples(parser: Parser, sessions: &[&str], widen: bool) -> Vec<UsageSample> {
+    let files = discover_candidates(&parser.default_roots(), MAX_DISCOVERY_FILES);
+    let narrows = matches!(parser, Parser::ClaudeCode | Parser::Codex) && !sessions.is_empty();
+    let matched: Vec<bool> = files
+        .iter()
+        .map(|f| narrows && sessions.iter().any(|sid| parser.session_matches(f, sid)))
+        .collect();
+    let scoped = narrows && (parser == Parser::Codex || !widen || matched.iter().any(|&m| m));
     let mut out = Vec::new();
-    for file in discover_candidates(&parser.default_roots(), MAX_DISCOVERY_FILES) {
+    for (file, matched) in files.iter().zip(matched) {
         // Known-but-different session, or unreadable: skip it.
-        if matches!(parser, Parser::ClaudeCode | Parser::Codex)
-            && !sessions.is_empty()
-            && !sessions
-                .iter()
-                .any(|sid| parser.session_matches(&file, sid))
-        {
+        if scoped && !matched {
             continue;
         }
-        if let Ok(mut samples) = parser.samples_from_file(&file) {
+        if let Ok(mut samples) = parser.samples_from_file(file) {
             out.append(&mut samples);
         }
     }
@@ -3179,6 +3186,86 @@ pub(crate) mod tests {
         assert_eq!(r.samples, 1);
     }
 
+    /// D247 (b), as amended on review: a Claude Code session id that names no
+    /// transcript (an MCP client may pass its own id) leaves discovery
+    /// unscoped, as before; one that names a transcript keeps it scoped even
+    /// when that transcript has nothing in the window; and a fallback session
+    /// is never widened, since several of them would each count the window.
+    #[test]
+    fn claude_discovery_widens_only_when_no_transcript_matches_a_completions_session() {
+        let _guard = DISCOVERY_ENV.lock().unwrap_or_else(|e| e.into_inner());
+        let dir = std::env::temp_dir().join(format!(
+            "tasqx-attr-claude-widen-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let proj = dir.join("projects").join("proj");
+        std::fs::create_dir_all(&proj).unwrap();
+        for (session, ts, input) in [
+            ("sess-a", "2020-01-01T10:10:00.000Z", 100),
+            ("sess-b", "2020-01-01T10:10:00.000Z", 7),
+            ("sess-old", "2019-01-01T10:10:00.000Z", 1),
+        ] {
+            std::fs::write(
+                proj.join(format!("{session}.jsonl")),
+                format!(
+                    r#"{{"timestamp":"{ts}","message":{{"id":"{session}-m","usage":{{"input_tokens":{input},"output_tokens":1}}}}}}"#
+                ),
+            )
+            .unwrap();
+        }
+        let pa = |session: &str| PendingAttribution {
+            task_id: "t".into(),
+            short_id: 1,
+            window_start: "2020-01-01T10:00:00Z".into(),
+            window_end: "2020-01-01T11:00:00Z".into(),
+            client: Some("claude-code".into()),
+            transcript_path: None,
+            session_id: Some(session.into()),
+            otel_samples: Vec::new(),
+            otel_tool: None,
+            self_reported: false,
+            foreign_windows: vec![],
+            consumed_sample_ids: HashSet::new(),
+        };
+        let now = ts("2020-01-01T11:05:00Z");
+        let (unmatched, empty_match, fallback) = with_isolated_roots(&dir, || {
+            (
+                compute_attribution(&pa("mcp-own-id"), now).unwrap(),
+                compute_attribution(&pa("sess-old"), now).unwrap(),
+                compute_attribution_sessions(
+                    &pa("mcp-own-id"),
+                    &[],
+                    &[FallbackSession {
+                        session_id: "mcp-own-id".into(),
+                        client: Some("claude".into()),
+                        foreign_windows: vec![],
+                        otel_samples: Vec::new(),
+                        otel_tool: None,
+                    }],
+                    now,
+                )
+                .unwrap(),
+            )
+        });
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(
+            unmatched.totals.input, 107,
+            "no transcript matches: the whole window"
+        );
+        assert_eq!(
+            empty_match.totals.input, 0,
+            "a matching transcript keeps it scoped"
+        );
+        assert_eq!(
+            fallback.totals.input, 0,
+            "a fallback session is never widened"
+        );
+    }
+
     /// D188 (a): a self-reported task is superseded by a transcript located
     /// by its OWN `tasqx_complete_task` call — the stored measurement is the
     /// parsed one, at HIGH confidence, with the transcript's own four buckets
@@ -5008,6 +5095,39 @@ pub(crate) mod tests {
         let input = tick_input(&engine, &dir, id);
         let _ = std::fs::remove_dir_all(&dir);
         assert_eq!(input, 120, "the Claude session and the Codex session");
+    }
+
+    /// Codex discovery given a session id never widens, as before D247: a
+    /// done naming a session no rollout matches reads nothing.
+    #[test]
+    fn codex_discovery_given_an_unmatched_session_id_reads_nothing() {
+        let dir = fallback_dir("codex-unmatched");
+        let engine = Engine::open_in_memory().unwrap();
+        let id = engine.task_add(&json!({ "title": "t" })).unwrap()["short_id"]
+            .as_i64()
+            .unwrap();
+        engine.task_start(&json!({ "ref": id })).unwrap();
+        let at = crate::clock::now().to_string();
+        let codex = dir.join(".codex").join("sessions");
+        std::fs::create_dir_all(&codex).unwrap();
+        std::fs::write(
+            codex.join("rollout-other.jsonl"),
+            [
+                r#"{"type":"session_meta","payload":{"id":"other"}}"#.to_string(),
+                format!(
+                    r#"{{"timestamp":"{at}","type":"event_msg","payload":{{"type":"token_count","info":{{"total_token_usage":{{"input_tokens":20,"cached_input_tokens":0,"output_tokens":1,"reasoning_output_tokens":0,"total_tokens":21}},"last_token_usage":{{"input_tokens":20,"cached_input_tokens":0,"output_tokens":1,"reasoning_output_tokens":0,"total_tokens":21}}}}}}}}"#
+                ),
+            ]
+            .join("\n"),
+        )
+        .unwrap();
+        engine
+            .task_done(&json!({ "ref": id, "client": "codex", "session_id": "nomatch" }))
+            .unwrap();
+
+        let input = tick_input(&engine, &dir, id);
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(input, 0, "another session's rollout is never read");
     }
 
     /// D247: Gemini and Copilot discovery cannot narrow to a session, so two

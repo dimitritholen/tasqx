@@ -3888,11 +3888,18 @@ daemon reads the tool's own transcript afterwards:</p>
 <div class="snip"><div class="snip-h"><span class="dollar">$</span><button class="copy" type="button">Copy</button></div><pre class="cmd"><code>tasqx done 4 --client &quot;claude-code 2.1&quot; --session-id &quot;$SID&quot; --transcript-path &quot;$TP&quot;</code></pre></div>
 <p>Parsers exist for Claude Code, Codex, Gemini CLI and GitHub Copilot CLI, picked
 from <code>--client</code> by substring — without it no transcript is ever read.</p>
-<p>A plain <code>tasqx done</code> is measured too when the task's starts named a session,
-as <code>tasqx work</code> does: every session started since the task's previous
-completion is read, each once. Given a session id, Claude Code and Codex read
-only that session's transcript, so another session running at the same time is
-not counted.</p>
+<p>A plain <code>tasqx done</code> can be measured too, from the sessions the task's starts
+named, as <code>tasqx work</code> records them: each distinct session since the task's
+previous completion is considered once. That needs the recorded session id to
+match the agent's own transcript. Claude Code sessions launched by <code>tasqx work</code>
+match; Codex sessions launched by it record a launcher id, not Codex's own
+session id, so they are not measured yet.</p>
+<p>Given a session id, Claude Code and Codex read only the matching session's
+transcript, so another session running at the same time is not counted. When a
+completion names a Claude Code session that no transcript matches, the scan
+falls back to the whole window. Gemini CLI and GitHub Copilot CLI cannot narrow
+by session, so each one's discovery runs at most once for a task, however many
+of its sessions the task had.</p>
 <p><strong>Telemetry</strong> — the opt-in OTLP receiver below. Samples are matched to the task
 by session id, and beat log-parsing when both are available.</p>
 <h3 id="guide-token-accounting--how-much-to-trust-a-figure">How much to trust a figure</h3>
@@ -3903,7 +3910,7 @@ per-request figures.</p>
 <tr><td data-label="Channel" headers="guide-token-accounting-tbl0-h0">Telemetry (<code>otel</code>)</td><td data-label="Earns" headers="guide-token-accounting-tbl0-h1"><code>high</code></td><td data-label="When" headers="guide-token-accounting-tbl0-h2">Always: samples are matched to the task by session id</td></tr>
 <tr><td data-label="Channel" headers="guide-token-accounting-tbl0-h0">Log-parse</td><td data-label="Earns" headers="guide-token-accounting-tbl0-h1"><code>high</code></td><td data-label="When" headers="guide-token-accounting-tbl0-h2">An explicit <code>--transcript-path</code>, with the completion's session id confirmed in the file</td></tr>
 <tr><td data-label="Channel" headers="guide-token-accounting-tbl0-h0">Log-parse</td><td data-label="Earns" headers="guide-token-accounting-tbl0-h1"><code>medium</code></td><td data-label="When" headers="guide-token-accounting-tbl0-h2">An explicit path to a file with no per-session anchor (Gemini, Copilot)</td></tr>
-<tr><td data-label="Channel" headers="guide-token-accounting-tbl0-h0">Log-parse</td><td data-label="Earns" headers="guide-token-accounting-tbl0-h1"><code>low</code></td><td data-label="When" headers="guide-token-accounting-tbl0-h2">No path: the transcript was found by scanning, narrowed to the session id when one is known (Claude Code, Codex), otherwise matched on time overlap alone</td></tr>
+<tr><td data-label="Channel" headers="guide-token-accounting-tbl0-h0">Log-parse</td><td data-label="Earns" headers="guide-token-accounting-tbl0-h1"><code>low</code></td><td data-label="When" headers="guide-token-accounting-tbl0-h2">No path: the transcript was found by scanning, narrowed to the transcript that matches the session id when one does (Claude Code, Codex), otherwise matched on time overlap alone</td></tr>
 <tr><td data-label="Channel" headers="guide-token-accounting-tbl0-h0">Log-parse</td><td data-label="Earns" headers="guide-token-accounting-tbl0-h1"><code>low</code></td><td data-label="When" headers="guide-token-accounting-tbl0-h2"><code>tokens recompute</code> found the transcript gone, so it kept the counts and lowered the grade</td></tr>
 <tr><td data-label="Channel" headers="guide-token-accounting-tbl0-h0">Self-report</td><td data-label="Earns" headers="guide-token-accounting-tbl0-h1"><code>medium</code></td><td data-label="When" headers="guide-token-accounting-tbl0-h2">Every report on <code>done</code>, <code>tasqx_add_tokens</code> and <code>tokens add</code>; <code>token.add</code> through <code>tasqx api</code> also accepts <code>low</code></td></tr>
 </tbody></table></div>
