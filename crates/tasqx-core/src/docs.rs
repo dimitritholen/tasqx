@@ -695,13 +695,13 @@ pub const R_TASK_BRIEF: &[FieldDoc] = &[
         "object",
         "Present only on a recurrence spawn: the previous occurrence and what it delivered (D170).",
     ),
-    // Absent unless asked for, and then null when there are no rulings.
+    // Absent unless asked for, and then null when there are no rulings and no notes.
     FieldDoc {
         null_ok: true,
         ..o(
             "rulings_section",
             "string",
-            "Present only with `rulings: true`: the standing rulings for the project of `workdir`, ranked for this task with the docs it pins first (D246), as the MCP handshake words them; null when there are none (D248).",
+            "Present only with `rulings: true`: the standing rulings for the project of `workdir`, ranked for this task with the docs it pins first (D246), as the MCP handshake words them, followed by recent non-standing notes under their own \"context, not rulings\" heading; null only when there are neither (D248). A non-null section does not mean a standing ruling exists.",
         )
     },
 ];
