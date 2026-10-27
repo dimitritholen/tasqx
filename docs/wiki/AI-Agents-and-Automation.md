@@ -313,7 +313,8 @@ Leaving the browser or the question changes nothing. In a script or a pipe
 nothing is asked: a missing ref or agent exits 2 and names the flag to pass.
 
 The agent also gets `TASQX_WORK_TASK`, `TASQX_WORK_SESSION` and
-`TASQX_WORK_CONTEXT` in its environment, and the store `tasqx work` used
+`TASQX_WORK_CONTEXT` in its environment (Codex also gets
+`TASQX_WORK_SESSIONS`, see [tasqx hook](#tasqx-hook)), and the store `tasqx work` used
 (`TASQX_DB`, plus `TASQX_SOCK` through a daemon), so the agent's own tasqx
 calls reach the same store. The agent owns the terminal, so `--json` does not
 apply to `tasqx work`. Claude Code gets the context through
@@ -322,18 +323,29 @@ tasqx never edits `~/.claude` or `~/.codex`.
 
 ## tasqx hook
 
-For Claude Code, `tasqx work` also registers one hook command for the session,
-`tasqx hook claude`, on the `SessionStart` and `SessionEnd` events, through
-`--settings`. You do not run it yourself. The command is always the same; it reads the event from the JSON
-Claude writes on its stdin. It acts only inside the `tasqx work` session it was
-registered for, and it never breaks the agent: anything it cannot do is one
-line on stderr, and it exits 0. Neither event records anything yet. The
-session's tokens are measured from its transcript when the task completes, by
-a running daemon with `tokens.enabled` on (it is off by default; see
-[token accounting](../guides/token-accounting.md)). A task that is never
+`tasqx work` also registers one hook command for the session, on the
+`SessionStart` and `SessionEnd` events: `tasqx hook claude` for Claude Code,
+through `--settings`, and `tasqx hook codex` for Codex, through `-c hooks.*`.
+You do not run it yourself. The command is always the same; it reads the event
+from the JSON the agent writes on its stdin. It acts only inside the
+`tasqx work` session it was registered for, and it never breaks the agent:
+anything it cannot do is one line on stderr, and it exits 0.
+
+The session's tokens are measured from its transcript when the task
+completes, by a running daemon with `tokens.enabled` on (it is off by default;
+see [token accounting](../guides/token-accounting.md)). A task that is never
 completed shows no tokens for its work sessions; one completed without that
 setup is measured once such a daemon runs, while the transcript is still on
-disk.
+disk. Codex picks its own session id, and `tasqx hook codex` tells it to
+`tasqx work`, which records it on the task when codex exits.
+
+Codex runs a hook only after you trust it, and skips an untrusted one without
+a word. Trust it once: start `codex`, run `/hooks`, and trust
+`tasqx hook codex`. Until you do, `tasqx work` finds the session from the
+rollout codex wrote in this directory, and tells you once how to trust the
+hook (`work.codex_hook_hint` remembers that it did). When two codex sessions
+started in this directory while it ran, tasqx cannot tell which was its own,
+says so, and records neither.
 
 ## tasqx api
 
