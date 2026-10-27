@@ -23,6 +23,7 @@
   next         The one highest-urgency unblocked task.
   dashboard    Open the overview screen, or ask for its panels as data.
   pick         Browse tasks on a full-screen list: read one, search them, start one.
+  work         Launch your agent CLI (claude or codex) bound to a task.
   show         Show one task in full detail.
   why          Explain a task's urgency score.
   start        Mark a task active.

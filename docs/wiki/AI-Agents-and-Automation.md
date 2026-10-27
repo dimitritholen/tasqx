@@ -281,6 +281,40 @@ starting, annotating before completing — see the
 retrospective that has the agent record what each task taught, see
 [A self-improving agent](../guides/self-improving-agent.md).
 
+## tasqx work
+
+Starts your agent on a task in one command. tasqx runs the official `claude`
+or `codex` binary on your PATH, on this terminal, and waits for it. It holds no
+AI and no credentials of its own: the agent is logged in your way.
+
+```console
+tasqx work 12 --agent claude
+```
+
+Before the agent starts, tasqx claims the task for 24 hours and starts its
+timer. The agent gets the task's brief, its acceptance checks and your
+standing rulings for the project as start context. When the task has no
+checks yet, the agent is told to ask you what "done" means and to record it
+with `tasqx_add_check` before it starts. When the agent exits, the timer stops
+and the claim is released. The agent's exit code is the command's.
+
+Every argument is optional:
+
+- `tasqx work` without a ref opens the [`pick`](Getting-Started.md) browser on
+  what `tasqx next` would answer. Enter launches.
+- Without `--agent`, tasqx uses the agent you chose last time. If only one is
+  installed, it uses that one. Otherwise it asks once, with the default under
+  Enter, and remembers the answer. `tasqx config set work.agent codex` changes
+  the remembered agent.
+
+Leaving the browser or the question changes nothing. In a script or a pipe
+nothing is asked: a missing ref or agent exits 2 and names the flag to pass.
+
+The agent also gets `TASQX_WORK_TASK`, `TASQX_WORK_SESSION` and
+`TASQX_WORK_CONTEXT` in its environment. Claude Code gets the context through
+`--append-system-prompt-file` and Codex through `-c developer_instructions`.
+tasqx never edits `~/.claude` or `~/.codex`.
+
 ## tasqx api
 
 The JSON API without a server: one request envelope in on stdin, one response

@@ -54,6 +54,7 @@ Worth knowing:
 | `default_project` | none | Where a bare `tasqx add` files; kept in the store, set with `tasqx use` |
 | `mcp.add_status` | `pending` | Status of a task added over MCP when the call names none; `triage` holds agent proposals until `tasqx accept` |
 | `detail.time_format` | `both` | How `show` and the MCP task view write timestamps: `iso`, `relative` or `both` |
+| `work.agent` | unset | The agent `tasqx work` launches without `--agent`: `claude` or `codex`. Unset, it asks once and remembers |
 
 ## tasqx theme
 

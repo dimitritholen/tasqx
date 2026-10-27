@@ -145,6 +145,10 @@ const EXAMPLE_SCREENS: &[(&str, &str, &str)] = &[
 /// so adding a verb forces the question to be answered rather than skipped.
 const NO_SCREEN: &[(&str, &str)] = &[
     (
+        "work",
+        "it hands the terminal to an agent CLI, and the capture has none to run.",
+    ),
+    (
         "undo",
         "it reverses the newest event, so a capture would have to record two commands \
          and the manifest records one.",

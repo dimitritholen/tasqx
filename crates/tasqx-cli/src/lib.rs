@@ -46,6 +46,7 @@ mod theme;
 mod tokens;
 mod tui;
 mod verbs;
+mod work;
 use backend::*;
 use dashboard_screen::*;
 use docs_open::*;
@@ -410,6 +411,18 @@ fn take_notes() -> Vec<String> {
     NOTES_AFTER.with(|n| std::mem::take(&mut *n.borrow_mut()))
 }
 
+thread_local! {
+    /// The exit code a successful command hands on: see [`exit_after_output`].
+    static EXIT_AFTER: std::cell::Cell<i32> = const { std::cell::Cell::new(0) };
+}
+
+/// Leave with `code` once the result has been written: `tasqx work` (D245)
+/// succeeds as a command whatever its agent did, and the agent's exit code
+/// is still the one the shell sees.
+pub(crate) fn exit_after_output(code: i32) {
+    EXIT_AFTER.with(|c| c.set(code));
+}
+
 /// Write a finished rendering to stdout, tolerating a reader that stops early.
 ///
 /// NOT `print!`: that panics if stdout closes mid-write, and several of the
@@ -527,6 +540,10 @@ pub fn run() {
                 for note in notes {
                     eprintln!("{note}");
                 }
+            }
+            let code = EXIT_AFTER.with(std::cell::Cell::get);
+            if code != 0 {
+                exit(code);
             }
         }
         Exit::Out(Err(e)) => {
@@ -745,6 +762,14 @@ fn execute(cli: Cli) -> Exit {
     // script on a machine where tasqx has never been run.
     if matches!(&cli.command, Some(Command::Pick { .. })) && !tui::is_interactive(&ctx.caps) {
         return Exit::Out(Err(ApiError::bad_request(PICK_NEEDS_A_TERMINAL)));
+    }
+    // `work` refuses above the store-open for the same reason: a question it
+    // cannot ask off a terminal creates no database (D245).
+    if let Some(Command::Work { r#ref, agent }) = &cli.command {
+        let interactive = tui::is_interactive(&ctx.caps);
+        if let Some(e) = work::refusal(r#ref.as_deref(), agent.as_deref(), interactive) {
+            return Exit::Out(Err(e));
+        }
     }
 
     // The explicit `tasqx dashboard`, gated in the same place and for the same
@@ -1234,6 +1259,7 @@ fn execute(cli: Cli) -> Exit {
             holder,
         }) => run_next(&mut backend, &ctx, &filter, card, ascii, holder),
         Some(Command::Pick { filter, holder }) => run_pick(&mut backend, &ctx, &filter, holder),
+        Some(Command::Work { r#ref, agent }) => work::run_work(&mut backend, &ctx, r#ref, agent),
         Some(Command::Why { r#ref, card, ascii }) => {
             run_why(&mut backend, &ctx, r#ref, card, ascii)
         }

@@ -220,6 +220,26 @@ fn enter_reads_the_task_and_s_starts_it() {
     );
 }
 
+/// D245: `tasqx work`'s chooser opens on `next`'s answer, and Enter picks
+/// the task under the cursor instead of opening its card.
+#[test]
+fn the_chooser_starts_on_the_preselected_task_and_enter_picks_it() {
+    let mut a = app().choosing(Some(47));
+    assert_eq!(a.selected().map(|r| r.short_id), Some(47));
+    assert_eq!(
+        a.on_key(press(KeyCode::Enter)),
+        Some(Action::Start { short_id: 47 })
+    );
+    // A preselect that is not listed leaves the cursor on the first row.
+    let b = app().choosing(Some(999));
+    assert_eq!(b.selected().map(|r| r.short_id), Some(42));
+    // The chooser's bar names enter as the launch.
+    let mut c = app().choosing(None);
+    c.observe(100, 20);
+    assert!(all_text(&draw(&c, 100, 20)).contains("launch"));
+    c.on_key(press(KeyCode::Char('q')));
+}
+
 /// The card is read once per task, and Esc goes back to the row it came from.
 #[test]
 fn the_card_is_asked_for_once_and_esc_returns_to_its_row() {
@@ -592,7 +612,19 @@ fn every_key_in_the_tables_does_something() {
         a
     };
     type State<'a> = (&'a str, &'a [Key], &'a dyn Fn() -> App);
-    let tables: [State; 7] = [
+    let chooser = || setup(Mode::List).choosing(None);
+    let chooser_filtered = || {
+        let mut a = setup(Mode::Search).choosing(None);
+        a.on_key(press(KeyCode::Enter));
+        a
+    };
+    let tables: [State; 9] = [
+        ("chooser", CHOOSE_KEYS, &chooser),
+        (
+            "chooser with a search kept",
+            CHOOSE_FILTERED_KEYS,
+            &chooser_filtered,
+        ),
         ("list", LIST_KEYS, &|| setup(Mode::List)),
         ("list with a search kept", LIST_FILTERED_KEYS, &filtered),
         ("search", SEARCH_KEYS, &|| setup(Mode::Search)),
