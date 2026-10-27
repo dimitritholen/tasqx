@@ -150,7 +150,7 @@ Safety properties worth knowing:
   for the project named by the directory `mcp serve` runs in (or one of its
   parents), else the default project, within a 3 KB budget.
 - **A write-scoped `initialize` also refreshes imported docs from disk**
-  before it answers (D180), so a session opens on the working tree with no
+  before it answers, so a session opens on the working tree with no
   watcher and no daemon job needed; a read-only session skips the sweep, and
   `instructions` names how many docs were refreshed or went missing only when
   that count is not zero.
@@ -209,15 +209,11 @@ paying for it:
 
 Every tool description states its contract — what the call does, what it
 returns, and the one rule you need to call it right — and cites a `D`-number
-when a design decision is behind that rule. The reasoning for the rule is not
-in the description: it is in `DESIGN.md` §12 under that number, and
-`tasqx_search_memory` finds it once the repository's docs have been imported
-with `tasqx memory import`. The descriptions are kept short because they are
-not free. Some clients fetch a tool's schema on first use; most inject the
-whole roster into every request, where it costs on the order of thirty-five
-kilobytes — a few thousand tokens — on every prompt. A guard test in the test
-suite holds that bound, and a `tools/list` handshake against your own build
-measures it exactly.
+when a design decision is behind that rule. The reasoning is in `DESIGN.md`
+§12 under that number, and `tasqx_search_memory` finds it once the repository's
+docs have been imported with `tasqx memory import`. The descriptions are short
+because most clients inject the whole roster into every request, a few
+thousand tokens on every prompt.
 
 A few facts the short descriptions no longer spell out, that you may still
 want to act on:
@@ -269,7 +265,7 @@ want to act on:
   `tasqx config set mcp.add_status triage` and every MCP add that names no
   status lands there. `tasqx_triage_task` (or `tasqx accept`, `decline`,
   `duplicate` at a shell) settles each one; `tasqx triage` lists the inbox
-  with the tool that filed each proposal (D238).
+  with the tool that filed each proposal.
 
 The server's `instructions` block is the short version of how to work, so a
 fresh install already nudges the agent to search before deciding and to write

@@ -67,6 +67,15 @@ The sums come from the `.sha256` files the release workflow publishes beside eac
 archive, so they cannot disagree with what a user downloads. A tag with no
 release fails the script instead of producing a formula with dead URLs.
 
+## The Linux glibc floor
+
+The Linux release binary links the system glibc of the runner it was built on
+(`ubuntu-latest`). To re-derive the floor from a release binary:
+
+```console
+objdump -T tasqx | grep -o 'GLIBC_[0-9.]*' | sort -uV | tail -1
+```
+
 ## What the checks are each for
 
 `brew test` is where the claim this formula exists to make gets checked: it reads

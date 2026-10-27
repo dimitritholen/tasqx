@@ -81,14 +81,11 @@ Honesty about what that buys you:
   Gatekeeper rather than passing it — that is why the install just works.
 - **The Linux build links your system glibc** (SQLite is bundled; there is no
   other runtime). The floor is whatever GitHub's current `ubuntu-latest`
-  provides; re-derive it from a release binary with
-  `objdump -T tasqx | grep -o 'GLIBC_[0-9.]*' | sort -uV | tail -1`. There is
-  no musl build — an older distro builds from source.
+  provides. There is no musl build — an older distro builds from source.
 
 All of it applies to the package-manager routes too: the Homebrew formula and
-the Scoop manifest are generated per release (`scripts/brew-formula.sh`,
-`scripts/scoop-manifest.sh`) from the same published checksums, and point at
-the same unsigned archives.
+the Scoop manifest are generated per release from the same published checksums
+and point at the same unsigned archives.
 
 ## The whole loop is four commands
 
