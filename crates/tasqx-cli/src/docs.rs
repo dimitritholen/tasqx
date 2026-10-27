@@ -494,8 +494,9 @@ const METHODS: [(&str, &str, &str); 63] = [
          <code>annotation:</code>/<code>project:</code> plus an id (a project also by name), and \
          they come back resolved as <code>&lt;type&gt;:&lt;uuid&gt;</code>. <code>relation</code> \
          is one of <code>references</code>, <code>supersedes</code>, \
-         <code>implements_decision</code>, <code>derived_from</code>, <code>contradicts</code>; \
-         anything else is refused by name. Adding the same from/to/relation twice is idempotent \
+         <code>implements_decision</code>, <code>derived_from</code>, <code>contradicts</code>, \
+         <code>duplicates</code> or <code>pins</code> (a task's ruling handed in full to every \
+         session on it, D246); anything else is refused by name. Adding the same from/to/relation twice is idempotent \
          and answers <code>created: false</code> with the id the first call minted; a self-link \
          is refused and a cycle is not. <code>expected_rev</code> guards the <code>from</code> \
          endpoint when it has one (a task or a doc) and is ignored for an annotation or project, \

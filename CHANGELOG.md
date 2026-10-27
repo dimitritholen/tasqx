@@ -28,6 +28,12 @@ bump for tasqx-core.
 
 ### Changed
 
+- **Standing rulings over the session budget keep their gist where it fits**
+  (D246, #4178). The first rulings keep their gist until the 3 KB budget is
+  full and the rest are titles, instead of titles only for all.
+  `McpServer::rulings_section` takes a task, ranks the rulings by relevance to it,
+  and puts first, in full, the rulings the task pins with a `pins` link (a new
+  link relation).
 - **tasqx-core: `Entity` gains `Note`.** Code that matches `Entity`
   exhaustively needs the new arm.
 - **Breaking: `note` is no longer an alias of `annotate`.** `tasqx note 42 "…"`,

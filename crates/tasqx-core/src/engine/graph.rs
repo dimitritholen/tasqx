@@ -95,14 +95,16 @@ pub(super) fn node_id((ty, id): &Node) -> String {
 /// the schema deliberately puts no CHECK on the column.
 ///
 /// `duplicates` (D238) is what `task.triage {action: duplicate}` writes from
-/// the cancelled proposal to the task it repeats.
-pub const LINK_RELATIONS: [&str; 6] = [
+/// the cancelled proposal to the task it repeats. `pins` (D246) runs from a
+/// task to a memory doc that every session on that task is handed in full.
+pub const LINK_RELATIONS: [&str; 7] = [
     "references",
     "supersedes",
     "implements_decision",
     "derived_from",
     "contradicts",
     "duplicates",
+    "pins",
 ];
 
 /// Insert one new link row and its `link.add` event, returning the link's id.

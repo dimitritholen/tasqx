@@ -1164,7 +1164,7 @@ const PARAM_DOCS: &[(&str, &str, &str, &str, &str)] = &[
         "relation",
         "string",
         "",
-        "What the link asserts: `references`, `supersedes`, `implements_decision`, `derived_from` or `contradicts`. Anything else is refused with the list, not stored.",
+        "What the link asserts: `references`, `supersedes`, `implements_decision`, `derived_from`, `contradicts`, `duplicates` or `pins` (D246). Anything else is refused with the list, not stored.",
     ),
     (
         "link.add",

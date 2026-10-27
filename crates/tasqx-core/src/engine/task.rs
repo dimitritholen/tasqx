@@ -3821,6 +3821,37 @@ impl Engine {
         Ok(memory)
     }
 
+    /// D246: the task `r` names, by uuid, and the ids of the docs relevant to
+    /// it, most relevant first: `derived_memory`'s own search (D136's derived
+    /// expression fused with D196's meaning query), docs only. Ranks the
+    /// standing rulings a task-aware session is handed; adds no ranking.
+    pub(crate) fn task_relevant_doc_ids(
+        &self,
+        r: &Value,
+    ) -> Result<(String, Vec<String>), ApiError> {
+        let task = self.resolve_ref_value(r)?;
+        let tags = task_tags(&self.conn, &task.id)?;
+        let project = task.project.as_deref();
+        let Some(expr) = derive_match_expr(&task.title, &tags, project) else {
+            return Ok((task.id, Vec::new()));
+        };
+        // shortcut: a standing doc ranked below 256 other docs counts as
+        // irrelevant; read the standing ids into the search if that bites.
+        let mut p = json!({ "query": expr, "raw": true, "limit": 256, "scope": "docs" });
+        if let Some(project) = project {
+            p["project"] = json!(project);
+            p["include_unscoped"] = json!(true);
+        }
+        let meaning = meaning_query(&task.title, &tags, project);
+        let out = self.memory_search_excluding(&p, Some(&task.id), Some(&meaning))?;
+        let ids = opt_array(&out, "hits")?
+            .into_iter()
+            .flatten()
+            .filter_map(|h| h["id"].as_str().map(str::to_string))
+            .collect();
+        Ok((task.id, ids))
+    }
+
     /// The short_id of the task a recurrence spawned `task_id` from (D170).
     /// The predecessor's short id (D170) and the stored claim (D236), live or
     /// not, in one read of the task's row.
