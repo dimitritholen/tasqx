@@ -1083,7 +1083,7 @@ fn editor_body(editor: &str, initial: &str) -> Result<String, tasqx_core::ApiErr
 
 /// Write `initial` to `path`, which must not exist (`create_new`, 0600 on
 /// unix), so a planted file or symlink there is refused, never followed.
-fn write_new(path: &std::path::Path, initial: &str) -> std::io::Result<()> {
+pub(crate) fn write_new(path: &std::path::Path, initial: &str) -> std::io::Result<()> {
     use std::io::Write as _;
     let mut opts = std::fs::OpenOptions::new();
     opts.write(true).create_new(true);

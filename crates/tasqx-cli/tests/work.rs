@@ -84,15 +84,22 @@ impl Store {
     /// A fake agent named `name` that records into `<dir>/<name>.*` and exits
     /// with `code`.
     fn fake_agent(&self, name: &str, code: i32) {
+        self.fake_agent_then(name, code, "");
+    }
+
+    /// [`Store::fake_agent`], running `then` (shell) just before it exits.
+    fn fake_agent_then(&self, name: &str, code: i32, then: &str) {
         let rec = self.dir.join(name);
         let rec = rec.display();
         let tasqx = env!("CARGO_BIN_EXE_tasqx");
         let script = format!(
             "#!/bin/sh\n\
              for a in \"$@\"; do printf '%s\\n' \"$a\"; done > {rec}.argv\n\
-             env | grep '^TASQX_WORK_' | sort > {rec}.env\n\
+             env | grep '^TASQX_' | sort > {rec}.env\n\
              [ -n \"$TASQX_WORK_CONTEXT\" ] && cat \"$TASQX_WORK_CONTEXT\" > {rec}.context\n\
+             [ -n \"$TASQX_WORK_CONTEXT\" ] && ls -l \"$TASQX_WORK_CONTEXT\" | cut -c1-10 > {rec}.mode\n\
              {tasqx} --no-daemon --json show \"$TASQX_WORK_TASK\" > {rec}.during\n\
+             {then}\n\
              exit {code}\n"
         );
         let path = self.bin.join(name);
@@ -187,6 +194,10 @@ fn work_claims_times_spawns_claude_with_its_context_and_cleans_up_after() {
     assert_eq!(after["status"], "pending", "{after}");
     assert!(after["claimed_by"].is_null(), "{after}");
     assert!(!Path::new(&context).exists(), "context file left behind");
+    // Owner-only: the brief and the rulings are nobody else's to read.
+    assert_eq!(s.read("claude.mode").trim(), "-rw-------");
+    // In-process, the agent's own tasqx is pointed at this very store.
+    assert_eq!(s.env_of("claude", "TASQX_DB"), s.db.display().to_string());
 
     // The session id is on the start event, for later token attribution.
     let log = s.event_list(r#"{"ref":"1"}"#);
@@ -323,4 +334,118 @@ fn a_spawn_that_fails_still_stops_the_timer_and_releases_the_claim() {
     let t = s.task("1");
     assert_eq!(t["status"], "pending", "{t}");
     assert!(t["claimed_by"].is_null(), "{t}");
+}
+
+/// A `tasqx daemon` process serving `db` on `sock`, killed on drop.
+struct Daemon(std::process::Child);
+
+impl Daemon {
+    fn start(s: &Store, sock: &str) -> Daemon {
+        let child = Command::new(env!("CARGO_BIN_EXE_tasqx"))
+            .env("TASQX_CONFIG_DIR", &s.dir)
+            .env("TASQX_DB", &s.db)
+            .env_remove("TASQX_NOW")
+            .args(["--socket", sock, "daemon"])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .expect("spawn tasqx daemon");
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+        while tasqx_core::daemon::try_connect(sock).is_none() {
+            assert!(std::time::Instant::now() < deadline, "daemon never came up");
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        Daemon(child)
+    }
+}
+
+impl Drop for Daemon {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
+}
+
+/// `tasqx --socket <sock> work 1 --agent claude` through a daemon that is
+/// killed while the agent runs, and restarted on the same store when
+/// `restart` is set, before the agent exits.
+fn work_through_a_lost_daemon(tag: &str, restart: bool) -> (Store, Output, String) {
+    let s = Store::new(tag);
+    s.seed();
+    let sock = s.dir.join("d.sock").display().to_string();
+    let marker = s.dir.join("go");
+    s.fake_agent_then(
+        "claude",
+        0,
+        &format!(
+            "n=0; while [ ! -f {m} ] && [ $n -lt 300 ]; do sleep 0.1; n=$((n+1)); done",
+            m = marker.display()
+        ),
+    );
+    let first = Daemon::start(&s, &sock);
+    let work = Command::new(env!("CARGO_BIN_EXE_tasqx"))
+        .env("TASQX_CONFIG_DIR", &s.dir)
+        .env("TASQX_DB", &s.db)
+        .env_remove("TASQX_SOCK")
+        .env_remove("TASQX_NOW")
+        .env("PATH", format!("{}:/usr/bin:/bin", s.bin.display()))
+        .args(["--socket", &sock, "work", "1", "--agent", "claude"])
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .expect("spawn tasqx work");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+    while s.read("claude.during").is_empty() {
+        assert!(std::time::Instant::now() < deadline, "the agent never ran");
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    drop(first);
+    let second = restart.then(|| Daemon::start(&s, &sock));
+    std::fs::write(&marker, "").unwrap();
+    let out = work.wait_with_output().unwrap();
+    drop(second);
+    (s, out, sock)
+}
+
+/// Routed through a daemon: the agent is told the same socket, and when the
+/// connection `work` opened is gone by the time the agent exits (the daemon
+/// drops idle clients after 15 minutes; here it is restarted mid-session),
+/// cleanup reconnects: the timer is stopped and the claim released.
+#[test]
+fn through_a_daemon_the_agent_gets_the_socket_and_cleanup_survives_a_lost_connection() {
+    let (s, out, sock) = work_through_a_lost_daemon("daemon", true);
+    assert!(out.status.success(), "{out:?}");
+    let t = s.task("1");
+    assert_eq!(t["status"], "pending", "timer left running: {t}");
+    assert!(t["claimed_by"].is_null(), "claim left held: {t}");
+    assert!(!stderr(&out).contains("tasqx stop"), "{}", stderr(&out));
+    assert_eq!(s.env_of("claude", "TASQX_SOCK"), sock);
+}
+
+/// A cleanup that cannot reach the store says so, naming the commands that
+/// finish the job, instead of leaving the timer running in silence.
+#[test]
+fn a_cleanup_that_cannot_reach_the_store_names_stop_and_release() {
+    let (_s, out, _) = work_through_a_lost_daemon("daemon-gone", false);
+    let err = stderr(&out);
+    assert!(err.contains("tasqx stop 1"), "{err}");
+    assert!(err.contains("tasqx release 1"), "{err}");
+}
+
+/// An agent that closes the task itself leaves nothing to stop or release:
+/// the refusals cleanup then meets are no warning.
+#[test]
+fn an_agent_that_finishes_the_task_itself_leaves_cleanup_silent() {
+    let s = Store::new("selfdone");
+    s.seed();
+    let tasqx = env!("CARGO_BIN_EXE_tasqx");
+    s.fake_agent_then(
+        "claude",
+        0,
+        &format!("{tasqx} --no-daemon done \"$TASQX_WORK_TASK\" --force-claim >/dev/null"),
+    );
+    let out = s.run(&["work", "1", "--agent", "claude"]);
+    assert!(out.status.success(), "{out:?}");
+    assert_eq!(s.task("1")["status"], "done");
+    assert!(!stderr(&out).contains("warning"), "{}", stderr(&out));
 }

@@ -158,8 +158,7 @@ fn ask_agent(options: &[&'static str]) -> Option<&'static str> {
 /// `task.next`'s answer. `None` when the reader left.
 fn choose_task(be: &mut Backend, ctx: &Ctx) -> Result<Option<i64>, ApiError> {
     let filter = "@working";
-    let listed = pick_candidates(be, filter, Some(tasqx_core::engine::task::SHELL_HOLDER))?;
-    let rows = pick_rows(&listed);
+    let rows = pick_rows(&work_candidates(be)?);
     if rows.is_empty() {
         return Err(no_candidates(filter));
     }
@@ -167,6 +166,19 @@ fn choose_task(be: &mut Backend, ctx: &Ctx) -> Result<Option<i64>, ApiError> {
     let mut app = tui::pick::App::new(rows, ctx, filter, crate::clock::now()).choosing(next);
     tui::with_terminal(|term| pick_loop(term, be, &mut app))
         .map_err(|e| ApiError::internal(format!("terminal error: {e}")))
+}
+
+/// The tasks the chooser offers: `@working` less what the launch could not
+/// claim and start as its own fresh `work:` holder, which no task is held by
+/// yet: a task with a live claim, or with a clock already running.
+fn work_candidates(be: &mut Backend) -> Result<Value, ApiError> {
+    let mut listed = pick_candidates(be, "@working", None)?;
+    if let Some(rows) = listed.get_mut("tasks").and_then(Value::as_array_mut) {
+        rows.retain(|t| t["claimed_by"].is_null() && t["status"] != "active");
+        let n = rows.len();
+        listed["count"] = json!(n);
+    }
+    Ok(listed)
 }
 
 /// Leaving a question: exit 0, nothing written, nothing printed.
@@ -328,8 +340,19 @@ fn launch(be: &mut Backend, ctx: &Ctx, task_ref: &str, agent: &'static str) -> C
     };
     let context = start_context(&brief, &rulings, &actor, &opts);
     let path = std::env::temp_dir().join(format!("tasqx-work-{session}.md"));
-    std::fs::write(&path, &context)
+    // Owner-only and never over an existing file: the brief and the rulings
+    // are nobody else's to read in a shared temp dir.
+    verbs::write_new(&path, &context)
         .map_err(|e| ApiError::internal(format!("cannot write {}: {e}", path.display())))?;
+    // The agent's own tasqx (its MCP server, a `tasqx` it runs) must reach
+    // the store this claim is in: the daemon this process routed through, or
+    // the file it holds in-process.
+    let route: Vec<(&str, std::ffi::OsString)> = match be.remote_socket() {
+        Some(sock) => vec![("TASQX_SOCK", sock.into())],
+        None => db_path()
+            .map(|db| vec![("TASQX_DB", db.into_os_string())])
+            .unwrap_or_default(),
+    };
 
     // The store writes, right before the spawn.
     let claim = be.call(
@@ -351,16 +374,22 @@ fn launch(be: &mut Backend, ctx: &Ctx, task_ref: &str, agent: &'static str) -> C
             .env("TASQX_WORK_TASK", sid.to_string())
             .env("TASQX_WORK_SESSION", &session)
             .env("TASQX_WORK_CONTEXT", &path)
+            .envs(route)
             .status()
             .map_err(|e| ApiError::internal(format!("could not run {}: {e}", program.display())))
     });
 
-    // After the child, whatever happened: the agent may have stopped or
-    // closed the task itself, so a refusal here is not an error.
+    // After the child, whatever happened. The connection sat idle for the
+    // whole session, and the daemon drops a client idle for 15 minutes, so
+    // cleanup starts on a fresh one.
+    reconnect(be);
+    let params = json!({ "ref": sid, "actor": actor });
     if was_started {
-        let _ = be.call("task.stop", &json!({ "ref": sid, "actor": actor }));
+        let fix = format!("tasqx stop {sid} --holder {actor}");
+        cleanup(be, "task.stop", &params, &fix);
     }
-    let _ = be.call("task.release", &json!({ "ref": sid, "actor": actor }));
+    let fix = format!("tasqx release {sid} --holder {actor}");
+    cleanup(be, "task.release", &params, &fix);
     let _ = std::fs::remove_file(&path);
 
     // shortcut: a child killed by a signal reports 1, not 128+signal.
@@ -370,6 +399,38 @@ fn launch(be: &mut Backend, ctx: &Ctx, task_ref: &str, agent: &'static str) -> C
         json!({ "launched": true, "short_id": sid, "agent": agent, "session_id": session, "exit_code": code }),
         String::new(),
     ))
+}
+
+/// A new connection to the daemon `be` routes through; `false` when there is
+/// none to make (in-process, or the daemon is gone).
+fn reconnect(be: &mut Backend) -> bool {
+    let Some(socket) = be.remote_socket().map(str::to_string) else {
+        return false;
+    };
+    match tasqx_core::daemon::try_connect(&socket) {
+        Some(conn) => {
+            *be = Backend::Remote { conn, socket };
+            true
+        }
+        None => false,
+    }
+}
+
+/// One after-session call. A refusal means the agent already stopped or
+/// closed the task, and is fine. A call that fails on the connection is
+/// retried once on a fresh one; a failure after that is said, naming `fix`.
+fn cleanup(be: &mut Backend, method: &str, params: &Value, fix: &str) {
+    let lost = |r: &Result<Value, ApiError>| matches!(r, Err(e) if e.code == ErrorCode::Internal);
+    let mut result = be.call(method, params);
+    if lost(&result) && reconnect(be) {
+        result = be.call(method, params);
+    }
+    if let (true, Err(e)) = (lost(&result), &result) {
+        eprintln!(
+            "tasqx: warning: {method} did not happen ({}); run `{fix}`",
+            e.message
+        );
+    }
 }
 
 #[cfg(test)]
@@ -519,6 +580,28 @@ mod tests {
             t["claimed_by"].is_null() && t["active_since"].is_null(),
             "{t}"
         );
+    }
+
+    /// The chooser offers only what the launch can claim and start: no task
+    /// another holder has claimed, and no task whose clock is already running.
+    #[test]
+    fn the_chooser_offers_only_tasks_the_launch_can_claim() {
+        let mut be = Backend::Local(Engine::open_in_memory().unwrap());
+        for t in ["claimed", "running", "shell's claim", "free"] {
+            be.call("task.add", &json!({ "title": t })).unwrap();
+        }
+        be.call("task.claim", &json!({ "ref": "1", "actor": "builder-2" }))
+            .unwrap();
+        be.call("task.start", &json!({ "ref": "2" })).unwrap();
+        be.call("task.claim", &json!({ "ref": "3" })).unwrap();
+        let listed = work_candidates(&mut be).unwrap();
+        let ids: Vec<i64> = listed["tasks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|t| t["short_id"].as_i64())
+            .collect();
+        assert_eq!(ids, [4]);
     }
 
     #[test]
