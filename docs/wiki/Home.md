@@ -115,8 +115,10 @@ task, and where to find help.
   follow, or the engine returned `internal`), `2` bad request, `4` not found,
   `5` conflict, `6` unsupported API version. They don't change between
   releases.
-- **Nothing is silently destroyed.** A task has no hard delete: `cancel` is
-  reversible with `reopen`, and every change lands in an append-only event log.
+- **Nothing is silently destroyed.** There is no command that deletes a task:
+  `cancel` is reversible with `reopen`, and every change lands in an
+  append-only event log. The one exception is an import or sync that folds a
+  duplicated recurring occurrence into its survivor; it reports each fold.
   Only a note, an annotation or a memory doc can be removed for good;
   `unannotate` and `note rm` say they are permanent and outside `undo`.
 
