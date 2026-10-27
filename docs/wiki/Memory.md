@@ -172,7 +172,7 @@ tasqx memory import docs/adr
   mounted — and the command still exits 0, so a refresh in a script does not
   fail over a file somebody moved. An MCP session runs this same sweep on its
   own `initialize` when its scope allows writes, so an agent's session opens
-  on the working tree without a watcher or a daemon job (D180).
+  on the working tree without a watcher or a daemon job.
 - Each imported document also records where it came from: `origin_path` (the
   file's absolute path on this machine), `origin_mtime` (its modification
   time in unix seconds) and `origin_size` (its size in bytes), all shown by
@@ -216,7 +216,7 @@ The text output lists the stale documents with the references that are gone,
 then a count per status; `--json` lists every document. `--project` checks
 one project's documents. The command exits 0 even when documents are stale,
 because it is a report. Nothing is indexed: it is a file check and a text
-search, run when you ask for it (D235).
+search, run when you ask for it.
 
 A symbol is looked for only in a regular file of at most 4 MB; anything else
 counts as present. A search hit and `memory show --json` carry the same check

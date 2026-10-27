@@ -119,10 +119,9 @@ $ tasqx list
 
 The line above the table says which filter answered and what the answer holds
 beyond its own size — how much of it is late, due before the day is out,
-running, or blocked. The `DUE` cells are dated from Tuesday 14 July 2026, the
-day this page's narrative runs on: a deadline inside the coming week is named by
-its weekday, one further out by its date, and today and tomorrow carry a clock
-when the store holds one.
+running, or blocked. In the `DUE` cells a deadline inside the coming week is named by its weekday,
+one further out by its date, and today and tomorrow carry a clock when the
+store holds one.
 
 That `URG` column is urgency — a computed score, not something you set. The
 letter in front of it is the priority you did set. `tasqx next` is the "what

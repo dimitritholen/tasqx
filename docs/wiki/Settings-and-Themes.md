@@ -67,13 +67,7 @@ Built-ins: `nord`, `gruvbox`, `dracula`, `solarized`, `mono` — plus any theme
 file you drop in yourself. A one-off try is
 `tasqx --theme dracula list`, and `$TASQX_THEME` sets it per environment.
 
-Output degrades cleanly from truecolor terminals down to terminals with no
-color at all, so themes are a nicety, never a requirement.
-
 ### Themes
-
-Five built-ins. Resolution order: `--theme`, `$TASQX_THEME`, `config.toml`,
-default.
 
 ```console
 $ tasqx theme list

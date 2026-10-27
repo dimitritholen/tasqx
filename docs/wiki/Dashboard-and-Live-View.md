@@ -49,9 +49,10 @@ counts what matters
   promoted or removed; closing it brings you back. `q`, Esc and Ctrl-C all
   close the dashboard.
 - Blocked work stays visible here, which is the point: the default task list
-  hides it. D80 folded the old NOW, NEXT UP, DUE, BLOCKED and RECENT panels
-  into the one TASKS panel, so a blocked task keeps its row there (and its
-  `"blocked": true` under `--json`), and the header counts them (`3 blocked`).
+  hides it. There is no BLOCKED panel: the NOW, NEXT UP, DUE, BLOCKED and RECENT
+  panels were folded into the one TASKS panel, so a blocked task keeps its row
+  there (and its `"blocked": true` under `--json`), and the header counts them
+  (`3 blocked`).
 - `--json` is not the screen in text. The document carries a payload for four
   of the six panels — `tasks`, `projects`, `burndown` and `tokens` — beside the
   `status` header it always writes and a `panels` array naming what you asked
@@ -131,7 +132,7 @@ Like `watch`, `board` needs a running
 [daemon](AI-Agents-and-Automation.md#tasqx-daemon). Ctrl-C stops it.
 
 The columns are the states tasqx already derives, each headed by the filter
-that fills it: **Triage** `status:triage` (proposals, D238), **Backlog**
+that fills it: **Triage** `status:triage` (proposals), **Backlog**
 `status:backlog`, **Blocked** `@blocked` (which never holds a proposal), **Ready**
 `@working`, **Active** `status:active` (one at a time) and **Done**
 `completed.after:-7d`. Inside a column cards are ordered by urgency, on the
@@ -236,11 +237,11 @@ path.
 daemon serves, commands route through it as usual. Naming a different file, a
 daemon found on the default socket is passed over and the command runs
 in-process against `$TASQX_DB`; a daemon named by `--socket` or `$TASQX_SOCK` is
-refused with exit 2, naming both files (D204).
+refused with exit 2, naming both files.
 
 Four surfaces never route through a daemon: `api`, `mcp serve`, `chart` and
 `report --html` open the store in-process, always. They refuse an explicit
-`--socket` rather than ignore it (D73), because a flag that names a daemon and
+`--socket` rather than ignore it, because a flag that names a daemon and
 is silently discarded aims your write at a different store than the one you
 asked for.
 
@@ -274,7 +275,7 @@ default, means it never does. Turning the receiver on does not hold it open:
 only exports that actually arrive count as work. An idle exit also leaves a note
 beside `config.toml`: the first command that then fails to reach the daemon
 reports the retirement and which store is no longer being served, because a
-daemon leaving changes where the same command line writes (D74).
+daemon leaving changes where the same command line writes.
 
 Now route a command through it — note this is the ordinary `add`, unchanged:
 

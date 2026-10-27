@@ -1,22 +1,22 @@
 # Giving an agent memory in any client
 
-The `initialize` result now carries an `instructions` field: a condensed form of the
-block below, so a host that surfaces server instructions — Claude Code and others do —
-gets the nudge with no setup at all. The paste block below still earns its place for
-three reasons: hosts that ignore `instructions`, or truncate it; the fuller version here,
-which carries the reasons behind each rule and not just the rule; and the placeholders
-you tune to your setup — the import directory, and cutting the write half for a
-read-only server.
+The `initialize` result carries an `instructions` field: a condensed form of the
+block below, so a host that surfaces server instructions — Claude Code and others
+do — gets the nudge with no setup at all. Paste the block below when your host
+ignores or truncates `instructions`, when you want the reasons behind each rule,
+or to tune the placeholders: the import directory, and cutting the write half for
+a read-only server.
 
-The block below is the full nudge, written so it works anywhere the tools are: `CLAUDE.md`,
-`AGENTS.md`, `.cursorrules` or `.cursor/rules/`, a Zed rules file, a Codex instructions
-file, or the system prompt of a bare MCP host. It covers the backlog as well as memory,
-because the two are one store: an annotation written while working a task is what the
-next session's search finds. Paste it whole. The searching half works under a read-only
-server; the storing and tracking halves need `tasqx mcp serve --scope write`, which
-[Driving tasqx from an AI agent](ai-agent-workflow.md) argues you grant after watching a
-read-only session rather than before — until then the block tells the agent to hand you
-the text it could not store.
+The block works anywhere the tools do: `CLAUDE.md`, `AGENTS.md`, `.cursorrules`
+or `.cursor/rules/`, a Zed rules file, a Codex instructions file, or the system
+prompt of a bare MCP host. It covers the backlog as well as memory, because the
+two are one store: an annotation written while working a task is what the next
+session's search finds. Paste it whole. The searching half works under a
+read-only server; the storing and tracking halves need
+`tasqx mcp serve --scope write`, which
+[Driving tasqx from an AI agent](ai-agent-workflow.md) argues you grant after
+watching a read-only session rather than before — until then the block tells the
+agent to hand you the text it could not store.
 
 ## Paste this
 

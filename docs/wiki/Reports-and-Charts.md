@@ -14,9 +14,7 @@ Summary counts, optionally grouped.
 | `tasqx report status` | Grouped by status (or `priority`) |
 | `tasqx report +urgent` | Any filter narrows the scope |
 
-Two output modes, same numbers:
-
-One self-contained HTML file:
+The same numbers as one self-contained HTML file:
 
 ```console
 tasqx report --html --out review.html
@@ -52,10 +50,6 @@ and a task it depends on elsewhere shows as "a task outside this report".
 `--all` adds cancelled tasks to the search. `--metrics` picks terminal
 columns and is refused with `--html`, and the page is always grouped by
 project, so `tasqx report status --html` is refused too.
-
-Cancelled tasks are not counted unless you pass `--all` or your filter names a
-status explicitly — a report about work shouldn't be padded by work you
-decided not to do.
 
 The TOKENS column names a group's largest bucket with that bucket's own count
 (`cacheR 1.2M`), or `-` when nothing was spent. The four buckets — in, out,
@@ -95,10 +89,6 @@ STATUS                COUNT         EST  OVERDUE     TRACKED        TOKENS
 pending                   4     PT5H30M        2        PT0S   cacheR 1.2M
 ```
 
-TOKENS names the group's largest bucket with that bucket's own count — `cacheR
-1.2M`, or `-` when nothing was spent. The four buckets are never blended into
-one figure; `--json` and the HTML report carry the full split (D48/D50).
-
 ### The HTML report
 
 `tasqx report --html` emits a weekly review as one self-contained file — inline
@@ -110,17 +100,8 @@ $ tasqx report --html --out review.html
 Wrote self-contained HTML report → review.html
 ```
 
-Without `--out` it writes to stdout. The page leads with what changed in the
-period — done, added, net backlog, blocked and overdue, each against the period
-before — then a standup (done yesterday, in progress, blocked and by what, the
-next five and why), a per-project grid, a net-flow chart and the outcomes
-`report --outcomes` counts. The period is the 7 days ending today; `--since` and
-`--until` choose another. Clicking a project scopes every section to it, a
-search covers every task in scope, and a task opens in an overlay with its
-dependencies by title. Annotation bodies stay out of the file unless you pass
-`--with-notes`; a filter naming one project makes a page about that project
-alone. One small inline script does the clicking; the page reads fully without
-it.
+Without `--out` it writes to stdout. One small inline script does the
+clicking; the page reads fully without it.
 
 > **Note** Both HTML surfaces — this report and the `tasqx docs` guide — hold
 > the same line: no CDN, no web fonts, no
