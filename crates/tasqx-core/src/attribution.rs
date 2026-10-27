@@ -553,16 +553,28 @@ pub(crate) fn compute_attribution_sessions(
     }
     let mut out =
         AttributionResult::empty(normalize_tool_name(&pa.client.clone().unwrap_or_default()));
+    let mut unscoped_read: Vec<Parser> = Vec::new();
     for session in sessions {
+        // Gemini and Copilot discovery cannot narrow to a session: every
+        // session would read the same logs, so only the first one does. The
+        // later ones still read their own buffered telemetry.
+        let parser = session.client.as_deref().and_then(parser_for);
+        let unscoped = parser.filter(|p| !matches!(p, Parser::ClaudeCode | Parser::Codex));
+        let read_before = unscoped.is_some_and(|p| unscoped_read.contains(&p));
         let one = PendingAttribution {
-            client: session.client.clone(),
+            client: session.client.clone().filter(|_| !read_before),
             session_id: Some(session.session_id.clone()),
             otel_samples: session.otel_samples.clone(),
             otel_tool: session.otel_tool.clone(),
             foreign_windows: session.foreign_windows.clone(),
             ..pa.clone()
         };
-        out = merge_results(out, compute_one(&one, &[], false, now)?);
+        let result = compute_one(&one, &[], false, now)?;
+        // Telemetry answers before discovery runs; only a log-parse result read the logs.
+        if result.source == SOURCE_LOG_PARSE {
+            unscoped_read.extend(unscoped);
+        }
+        out = merge_results(out, result);
     }
     Ok(out)
 }
@@ -1183,6 +1195,10 @@ struct DoneInfo {
     /// Each as `(session_id, client)`, the client of the latest start that
     /// named that session.
     fallback_sessions: Vec<(String, Option<String>)>,
+    /// D247: the first of those sessions' starts. A fallback window begins
+    /// here, not at the task's first start: an earlier completion banked what
+    /// came before it, and only Claude Code samples carry an id to refuse it by.
+    fallback_start: Option<String>,
     self_reported: bool,
     /// True when a `tokens.attributed` marker already sits past this task's
     /// latest correlated `done`: the task is no longer pending, but its window
@@ -1352,12 +1368,14 @@ fn correlated_done_scan(engine: &Engine) -> Result<HashMap<String, DoneInfo>, Ap
     //    no longer pending, but their windows still contest samples on a shared
     //    transcript or session (D50), so every pending entry needs them.
     // 2a. D247: every `start` that carried a session id, per task in rowid
-    //     order, as `(rowid, client, session_id)` — what a `done` without any
-    //     correlation falls back to (`tasqx work` puts it on the start only).
-    let mut session_starts: HashMap<String, Vec<(i64, Option<String>, String)>> = HashMap::new();
+    //     order, as `(rowid, client, session_id, started)` — what a `done`
+    //     without any correlation falls back to (`tasqx work` puts it on the
+    //     start only).
+    type SessionStart = (i64, Option<String>, String, String);
+    let mut session_starts: HashMap<String, Vec<SessionStart>> = HashMap::new();
     {
         let mut stmt = conn.prepare(
-            "SELECT entity_id, payload, rowid FROM events \
+            "SELECT entity_id, payload, rowid, ts FROM events \
              WHERE op = 'start' AND payload LIKE '%session_id%' ORDER BY rowid",
         )?;
         let rows = stmt.query_map([], |r| {
@@ -1365,10 +1383,11 @@ fn correlated_done_scan(engine: &Engine) -> Result<HashMap<String, DoneInfo>, Ap
                 r.get::<_, String>(0)?,
                 r.get::<_, Option<String>>(1)?,
                 r.get::<_, i64>(2)?,
+                r.get::<_, String>(3)?,
             ))
         })?;
         for r in rows {
-            let (task_id, payload, rowid) = r?;
+            let (task_id, payload, rowid, ts) = r?;
             let v = payload
                 .as_deref()
                 .and_then(|p| serde_json::from_str::<Value>(p).ok())
@@ -1380,10 +1399,12 @@ fn correlated_done_scan(engine: &Engine) -> Result<HashMap<String, DoneInfo>, Ap
                     .map(str::to_string)
             };
             if let Some(sid) = field("session_id") {
-                session_starts
-                    .entry(task_id)
-                    .or_default()
-                    .push((rowid, field("client"), sid));
+                session_starts.entry(task_id).or_default().push((
+                    rowid,
+                    field("client"),
+                    sid,
+                    field("interval_started").unwrap_or(ts),
+                ));
             }
         }
     }
@@ -1423,10 +1444,13 @@ fn correlated_done_scan(engine: &Engine) -> Result<HashMap<String, DoneInfo>, Ap
             // ids on the task's starts since its previous `done` (D247), every
             // work session's, and is attributed only when there are some.
             let mut fallback_sessions = Vec::new();
+            let mut fallback_start = None;
             if client.is_none() && transcript_path.is_none() && session_id.is_none() {
-                for (rowid, start_client, sid) in session_starts.get(&task_id).into_iter().flatten()
+                for (rowid, start_client, sid, started) in
+                    session_starts.get(&task_id).into_iter().flatten()
                 {
                     if *rowid > previous_done && *rowid < done_rowid {
+                        fallback_start.get_or_insert_with(|| started.clone());
                         client = start_client.clone().or(client);
                         match fallback_sessions
                             .iter_mut()
@@ -1463,6 +1487,7 @@ fn correlated_done_scan(engine: &Engine) -> Result<HashMap<String, DoneInfo>, Ap
                     transcript_path,
                     session_id,
                     fallback_sessions,
+                    fallback_start,
                     self_reported,
                     attributed: is_attributed,
                     canon_path: None,
@@ -1529,6 +1554,7 @@ fn correlated_done_scan(engine: &Engine) -> Result<HashMap<String, DoneInfo>, Ap
                     transcript_path,
                     session_id,
                     fallback_sessions: Vec::new(),
+                    fallback_start: None,
                     self_reported: false,
                     attributed: false,
                     canon_path: None,
@@ -1618,6 +1644,11 @@ impl WindowScan {
                     })
                     .unwrap_or(ts);
                 starts.entry(task_id).or_insert(started);
+            }
+        }
+        for (task_id, info) in &correlated {
+            if let Some(started) = &info.fallback_start {
+                starts.insert(task_id.clone(), started.clone());
             }
         }
 
@@ -2428,6 +2459,7 @@ pub(crate) mod tests {
             transcript_path: Some(canon.to_string_lossy().into_owned()),
             session_id: None,
             fallback_sessions: Vec::new(),
+            fallback_start: None,
             self_reported: false,
             attributed: true,
             canon_path: Some(canon.to_path_buf()),
@@ -4904,9 +4936,12 @@ pub(crate) mod tests {
     /// return the input tokens stored for `short_id`.
     fn tick_input(engine: &Engine, dir: &Path, short_id: i64) -> i64 {
         let _guard = DISCOVERY_ENV.lock().unwrap_or_else(|e| e.into_inner());
-        let prev_codex = std::env::var_os("CODEX_HOME");
-        // SAFETY: `DISCOVERY_ENV` is held; restored below.
-        unsafe { std::env::set_var("CODEX_HOME", dir.join(".codex")) };
+        let roots = [("CODEX_HOME", ".codex"), ("GEMINI_DATA_DIR", ".gemini")];
+        let prev: Vec<_> = roots.iter().map(|(k, _)| std::env::var_os(k)).collect();
+        for (k, sub) in roots {
+            // SAFETY: `DISCOVERY_ENV` is held; restored below.
+            unsafe { std::env::set_var(k, dir.join(sub)) };
+        }
         with_isolated_roots(dir, || {
             for (pa, neighbours, sessions) in &pending_with_sessions(engine).unwrap() {
                 let r = compute_attribution_sessions(pa, neighbours, sessions, crate::clock::now())
@@ -4914,9 +4949,11 @@ pub(crate) mod tests {
                 attribute_one(engine, pa, &r).unwrap();
             }
         });
-        match prev_codex {
-            Some(v) => unsafe { std::env::set_var("CODEX_HOME", v) },
-            None => unsafe { std::env::remove_var("CODEX_HOME") },
+        for ((k, _), v) in roots.iter().zip(prev) {
+            match v {
+                Some(v) => unsafe { std::env::set_var(k, v) },
+                None => unsafe { std::env::remove_var(k) },
+            }
         }
         engine
             .conn()
@@ -4971,6 +5008,111 @@ pub(crate) mod tests {
         let input = tick_input(&engine, &dir, id);
         let _ = std::fs::remove_dir_all(&dir);
         assert_eq!(input, 120, "the Claude session and the Codex session");
+    }
+
+    /// D247: Gemini and Copilot discovery cannot narrow to a session, so two
+    /// fallback sessions of one of them read the same logs once, not twice.
+    #[test]
+    fn unscoped_discovery_runs_once_for_several_fallback_sessions() {
+        assert_eq!(unscoped_input(false), 100, "one log, read once");
+        assert_eq!(
+            unscoped_input(true),
+            107,
+            "g1 answered from telemetry without reading the log, so g2 reads it"
+        );
+    }
+
+    /// Two Gemini fallback sessions over one 100-token log; `g1_telemetry`
+    /// also buffers 7 tokens of telemetry for g1.
+    fn unscoped_input(g1_telemetry: bool) -> i64 {
+        let dir = fallback_dir("fallback-unscoped");
+        let engine = Engine::open_in_memory().unwrap();
+        let id = engine.task_add(&json!({ "title": "t" })).unwrap()["short_id"]
+            .as_i64()
+            .unwrap();
+        for session in ["g1", "g2"] {
+            engine
+                .task_start(&json!({ "ref": id, "session_id": session, "client": "gemini" }))
+                .unwrap();
+            engine.task_stop(&json!({ "ref": id })).unwrap();
+        }
+        let at = crate::clock::now().to_string();
+        std::fs::create_dir_all(dir.join(".gemini")).unwrap();
+        std::fs::write(
+            dir.join(".gemini").join("telemetry.jsonl"),
+            format!(
+                r#"{{"attributes":{{"event.name":"gemini_cli.api_response","event.timestamp":"{at}","input_token_count":100,"output_token_count":1,"thoughts_token_count":0,"cached_content_token_count":0}}}}"#
+            ),
+        )
+        .unwrap();
+        if g1_telemetry {
+            engine
+                .otlp_ingest(&[crate::otlp::OtlpSample {
+                    tool: "gemini".into(),
+                    session_id: Some("g1".into()),
+                    sample: sample(&at, 7, 0),
+                }])
+                .unwrap();
+        }
+        engine.task_done(&json!({ "ref": id })).unwrap();
+
+        let input = tick_input(&engine, &dir, id);
+        let _ = std::fs::remove_dir_all(&dir);
+        input
+    }
+
+    /// D247: a reopened task's fallback window starts at the first session
+    /// start after its previous `done`, so a second completion in the same
+    /// session banks only what was spent since. Holds for every client, not
+    /// only those whose samples carry an id.
+    #[test]
+    fn a_reopened_task_falls_back_to_a_window_since_its_previous_done() {
+        let dir = fallback_dir("fallback-reopen");
+        let engine = Engine::open_in_memory().unwrap();
+        let id = engine.task_add(&json!({ "title": "t" })).unwrap()["short_id"]
+            .as_i64()
+            .unwrap();
+        let transcript = dir.join("projects").join("proj").join("s1.jsonl");
+        let line = |msg: &str, input: u64| {
+            format!(
+                r#"{{"timestamp":"{}","message":{{"id":"{msg}","usage":{{"input_tokens":{input},"output_tokens":1}}}}}}"#,
+                crate::clock::now()
+            )
+        };
+        let start = || {
+            engine
+                .task_start(&json!({ "ref": id, "session_id": "s1", "client": "claude" }))
+                .unwrap();
+        };
+
+        start();
+        std::fs::write(&transcript, line("m1", 100)).unwrap();
+        engine.task_done(&json!({ "ref": id })).unwrap();
+        assert_eq!(tick_input(&engine, &dir, id), 100);
+
+        engine.task_reopen(&json!({ "ref": id })).unwrap();
+        // Spent in the cycle's first interval, which is where its window starts.
+        start();
+        let both = format!(
+            "{}\n{}",
+            std::fs::read_to_string(&transcript).unwrap(),
+            line("m2", 20)
+        );
+        std::fs::write(&transcript, both).unwrap();
+        engine.task_stop(&json!({ "ref": id })).unwrap();
+        start();
+        engine.task_done(&json!({ "ref": id })).unwrap();
+        assert_eq!(tick_input(&engine, &dir, id), 120, "100, then 20");
+
+        engine
+            .token_recompute(&json!({ "dry_run": false }))
+            .unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(
+            count_rows(&engine, "SELECT SUM(input_tokens) FROM token_usage"),
+            120,
+            "recompute keeps it"
+        );
     }
 
     /// D247: a neighbour that shares one fallback session contests only that
