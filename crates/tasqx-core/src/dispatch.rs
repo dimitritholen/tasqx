@@ -110,6 +110,9 @@ pub const PARAMS: &[(&str, &[&str], bool)] = &[
             "annotations_limit",
             "annotations_offset",
             "max_body_bytes",
+            // D248: the D246 rulings section, and the directory it is for.
+            "rulings",
+            "workdir",
         ],
         false,
     ),

@@ -1,0 +1,39 @@
+The hook command `tasqx work` registers with the agent (no API call).
+
+The agent runs it on its session events with the event's JSON on stdin (D248). It acts only inside the `tasqx work` session it was registered for, named by TASQX_WORK_TASK and TASQX_WORK_SESSION, and never breaks the agent: anything it cannot do is a line on stderr, and it exits 0. You do not run it yourself.
+
+Usage: tasqx hook [OPTIONS] <AGENT>
+
+Arguments:
+  <AGENT>
+          The agent whose hook this is
+          
+          [possible values: claude]
+
+Options:
+      --json
+          Print the raw JSON API result instead of the human table
+
+      --theme <THEME>
+          Theme name (built-in nord|gruvbox|dracula|solarized|mono, or a user file). Overrides $TASQX_THEME and the config file (DESIGN.md §8)
+
+      --socket <SOCKET>
+          Local socket / named-pipe address of a tasqx daemon. Overrides $TASQX_SOCK. When a daemon is reachable, one-shot commands route through it (single writer); otherwise they run in-process. A set $TASQX_DB naming a different store than that daemon's is refused. Also selects the address for `daemon` and `watch`
+
+      --no-daemon
+          Never route through a daemon; always run one-shot in-process (the pre-daemon behaviour). Escape hatch for scripts
+
+  -h, --help
+          Print help (see a summary with '-h')
+
+  -V, --version
+          Print version
+
+EXAMPLES
+  tasqx hook claude    # what Claude Code runs on a session event
+
+NOTE  `tasqx work --agent claude` registers this one command for the session's `SessionStart` and `SessionEnd` events through `--settings`, without touching `~/.claude` (D248). The command never varies; the event is read from the JSON the agent writes on stdin.
+      It acts only inside the `tasqx work` session it was registered for: without `TASQX_WORK_TASK`, or when the input's `session_id` is not `TASQX_WORK_SESSION`, it does nothing. Both events record nothing yet; a work session's tokens are measured when the task completes.
+      It never breaks the agent: input it cannot read or an event it does not know is one line on stderr, and it exits 0. You do not run it yourself.
+
+See also: work        Full manual: tasqx manual

@@ -470,6 +470,8 @@ fn every_carve_out_states_its_reason() {
         ("manual", &["manual"]),
         // Words where a ref belongs are refused before any agent or store.
         ("work", &["work", "not a ref"]),
+        // Outside a work session it reads nothing and exits at once.
+        ("hook", &["hook", "claude"]),
     ];
     let mut names: Vec<&str> = driven.iter().map(|(n, _)| *n).chain(["daemon"]).collect();
     let mut carved: Vec<&str> = tasqx_cli::JSON_CARVE_OUTS.iter().map(|(n, _)| *n).collect();

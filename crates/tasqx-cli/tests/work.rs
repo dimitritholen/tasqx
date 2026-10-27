@@ -37,6 +37,7 @@ impl Store {
             .env("TASQX_DB", &self.db)
             .env("TASQX_SOCK", self.dir.join("no-daemon.sock"))
             .env("PATH", format!("{}:/usr/bin:/bin", self.bin.display()))
+            .env("HOME", dir_home(&self.dir))
             .env_remove("TASQX_NOW")
             .arg("--no-daemon");
         c
@@ -142,6 +143,11 @@ impl Drop for Store {
     }
 }
 
+/// A HOME of the test's own, so nothing reaches the real `~/.claude`.
+fn dir_home(dir: &Path) -> PathBuf {
+    dir.join("home")
+}
+
 fn stderr(out: &Output) -> String {
     String::from_utf8_lossy(&out.stderr).into_owned()
 }
@@ -160,22 +166,41 @@ fn work_claims_times_spawns_claude_with_its_context_and_cleans_up_after() {
     let context = s.env_of("claude", "TASQX_WORK_CONTEXT");
     assert_eq!(s.env_of("claude", "TASQX_WORK_TASK"), "1");
     assert_eq!(session.len(), 36, "a UUID: {session:?}");
+    // The argv is one line per argument; the --settings JSON is one line.
     let argv: Vec<String> = s.read("claude.argv").lines().map(str::to_string).collect();
     assert_eq!(
-        argv,
+        argv[..5],
         [
             "--session-id",
             session.as_str(),
             "--append-system-prompt-file",
-            context.as_str()
+            context.as_str(),
+            "--settings",
         ],
     );
+    assert_eq!(argv.len(), 6, "{argv:?}");
+    // D248: per-session hooks, every one the same constant command.
+    let settings: Value = serde_json::from_str(&argv[5]).expect("--settings is JSON");
+    let hooks = settings["hooks"].as_object().expect("hooks");
+    let events: Vec<&str> = hooks.keys().map(String::as_str).collect();
+    assert_eq!(events, ["SessionEnd", "SessionStart"], "{settings}");
+    for (event, groups) in hooks {
+        assert_eq!(
+            groups,
+            &serde_json::json!([{ "hooks": [{ "type": "command", "command": "tasqx hook claude" }] }]),
+            "{event}"
+        );
+    }
+    // The user's own Claude settings are not touched.
+    assert!(!s.dir.join("home").join(".claude").exists());
 
     // The start context: the brief, its checks and the project's ruling.
     let ctx = s.read("claude.context");
     assert!(ctx.contains("Fix the login redirect"), "{ctx}");
     assert!(ctx.contains("the redirect lands on /home"), "{ctx}");
     assert!(ctx.contains("Never log tokens"), "{ctx}");
+    // D248: the D246 section, gist included, not a list of titles and ids.
+    assert!(ctx.contains("Tokens stay out of every log line."), "{ctx}");
     assert!(!ctx.contains("tasqx_add_check"), "{ctx}");
 
     // While the agent ran: claimed and timed.
@@ -209,9 +234,17 @@ fn work_claims_times_spawns_claude_with_its_context_and_cleans_up_after() {
         "an inherited socket leaked"
     );
 
-    // The session id is on the start event, for later token attribution.
-    let log = s.event_list(r#"{"ref":"1"}"#);
-    assert!(log.contains(&session), "session id not recorded: {log}");
+    // The session id and the client are on the start event: completion-time
+    // attribution finds the session's transcript through them (D248).
+    let log: Value = serde_json::from_str(&s.event_list(r#"{"ref":"1"}"#)).unwrap();
+    let start = log["result"]["events"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|e| e["op"] == "start")
+        .unwrap_or_else(|| panic!("no start event: {log}"));
+    assert_eq!(start["payload"]["session_id"], session.as_str(), "{start}");
+    assert_eq!(start["payload"]["client"], "claude", "{start}");
 }
 
 #[test]
@@ -503,4 +536,112 @@ fn a_relative_store_path_reaches_the_agent_absolute() {
         std::fs::canonicalize(&told).ok(),
         std::fs::canonicalize(&s.db).ok()
     );
+}
+
+/// `tasqx hook claude` as Claude Code runs it: the hook JSON on stdin, the
+/// work session's env (or none) around it.
+fn hook(s: &Store, env: &[(&str, &str)], stdin: &str) -> Output {
+    use std::io::Write;
+    let mut c = s.tasqx();
+    c.env_remove("TASQX_WORK_TASK")
+        .env_remove("TASQX_WORK_SESSION")
+        .envs(env.iter().copied())
+        .args(["hook", "claude"])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+    let mut child = c.spawn().expect("spawn tasqx hook");
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(stdin.as_bytes())
+        .unwrap();
+    child.wait_with_output().unwrap()
+}
+
+const SESSION: &str = "0199f0e2-0000-7000-8000-000000000001";
+
+fn hook_json(session: &str, event: &str) -> String {
+    format!(
+        r#"{{"session_id":"{session}","transcript_path":"/tmp/x/{session}.jsonl","hook_event_name":"{event}","cwd":"/tmp"}}"#
+    )
+}
+
+/// Silent, exit 0, nothing written: what every hook outcome but a fault is.
+fn assert_silent(s: &Store, out: &Output, before: usize) {
+    assert_eq!(out.status.code(), Some(0), "{out:?}");
+    assert!(out.stdout.is_empty(), "{out:?}");
+    assert_eq!(stderr(out), "", "{out:?}");
+    assert_eq!(s.events(), before, "a hook wrote to the store");
+}
+
+/// D248: in the session it belongs to, SessionStart and SessionEnd are
+/// entry points that record nothing yet; tokens come from completion-time
+/// attribution, not from the hook.
+#[test]
+fn the_hook_in_its_own_session_accepts_start_and_end_and_writes_nothing() {
+    let s = Store::new("hook-match");
+    s.seed();
+    let before = s.events();
+    let env = [("TASQX_WORK_TASK", "1"), ("TASQX_WORK_SESSION", SESSION)];
+    for event in ["SessionStart", "SessionEnd"] {
+        let out = hook(&s, &env, &hook_json(SESSION, event));
+        assert_silent(&s, &out, before);
+    }
+}
+
+/// Another session's hook (a nested `claude`, a stale env) is not this
+/// session's business: silent, even for an event it would complain about.
+#[test]
+fn the_hook_for_another_session_is_silent() {
+    let s = Store::new("hook-other");
+    s.seed();
+    let before = s.events();
+    let env = [("TASQX_WORK_TASK", "1"), ("TASQX_WORK_SESSION", SESSION)];
+    let other = "0199f0e2-0000-7000-8000-000000000002";
+    let out = hook(&s, &env, &hook_json(other, "NoSuchEvent"));
+    assert_silent(&s, &out, before);
+    // No session in the JSON at all is not this session either.
+    let out = hook(&s, &env, r#"{"hook_event_name":"NoSuchEvent"}"#);
+    assert_silent(&s, &out, before);
+    // Nor is a session-less JSON when no session was started.
+    let out = hook(
+        &s,
+        &[("TASQX_WORK_TASK", "1")],
+        r#"{"hook_event_name":"NoSuchEvent"}"#,
+    );
+    assert_silent(&s, &out, before);
+}
+
+/// Outside a `tasqx work` session the hook does nothing, not even read its
+/// input: a hook left in someone's settings never complains.
+#[test]
+fn the_hook_outside_a_work_session_is_silent_whatever_it_is_fed() {
+    let s = Store::new("hook-outside");
+    s.seed();
+    let before = s.events();
+    let out = hook(&s, &[], "not json at all");
+    assert_silent(&s, &out, before);
+}
+
+/// A fault never breaks the agent: unreadable input or an event this build
+/// does not know is said on stderr, and the exit is still 0.
+#[test]
+fn a_hook_fault_goes_to_stderr_and_still_exits_zero() {
+    let s = Store::new("hook-fault");
+    s.seed();
+    let before = s.events();
+    let env = [("TASQX_WORK_TASK", "1"), ("TASQX_WORK_SESSION", SESSION)];
+    for input in [
+        "not json at all".to_string(),
+        hook_json(SESSION, "NoSuchEvent"),
+    ] {
+        let out = hook(&s, &env, &input);
+        assert_eq!(out.status.code(), Some(0), "{out:?}");
+        assert!(out.stdout.is_empty(), "{out:?}");
+        assert!(stderr(&out).contains("tasqx hook claude"), "{out:?}");
+        assert_eq!(s.events(), before);
+    }
+    assert!(stderr(&hook(&s, &env, &hook_json(SESSION, "NoSuchEvent"))).contains("NoSuchEvent"));
 }

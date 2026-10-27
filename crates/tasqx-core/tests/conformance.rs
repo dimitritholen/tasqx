@@ -1519,6 +1519,11 @@ const R_TASK_BRIEF: Shape = &[&[
     req_of("memory", Ty::Object, &[BRIEF_MEMORY]),
     // Present only on a recurrence spawn, like `task.done`'s `spawned`.
     opt_of("last_time", Ty::Object, &[BRIEF_LAST_TIME]),
+    // D248: present only with `rulings: true`, and null when there are none.
+    Field {
+        null_ok: true,
+        ..opt("rulings_section", Ty::Str)
+    },
 ]];
 
 /// One resume row of `task.next` (D213): a task and its newest note.
@@ -2981,7 +2986,15 @@ fn cases() -> Vec<Case> {
                 e.check_add(&json!({ "ref": 1, "body": "the criterion" }))
                     .expect("check");
                 e.token_add(&self_report(1)).expect("token");
-                json!({ "ref": 1, "max_body_bytes": 3, "annotations_limit": 1 })
+                // D248: an unscoped standing ruling, so `rulings: true`
+                // answers a `rulings_section` string.
+                e.memory_add(&json!({
+                    "title": "Standing ruling",
+                    "body": "Quarterly key rotation.",
+                    "standing": true
+                }))
+                .expect("standing doc");
+                json!({ "ref": 1, "max_body_bytes": 3, "annotations_limit": 1, "rulings": true })
             },
             R_TASK_BRIEF,
         ),
@@ -4025,6 +4038,14 @@ fn every_mcp_tool_hands_back_the_frozen_result_of_its_method() {
                 if let Some(obj) = params.as_object_mut() {
                     obj.remove("source");
                     obj.remove("confidence");
+                }
+            }
+            // D248: `tasqx_brief_task` pins `rulings` (the session got its
+            // rulings in `initialize`), so the call goes without it and the
+            // optional `rulings_section` is absent.
+            if tool == "tasqx_brief_task" {
+                if let Some(obj) = params.as_object_mut() {
+                    obj.remove("rulings");
                 }
             }
             // D186: `tasqx_start_timer` gains a `memory` block by default, so

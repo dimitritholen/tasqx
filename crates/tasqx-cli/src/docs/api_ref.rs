@@ -796,6 +796,20 @@ pub(super) fn describe(text: &str) -> String {
 /// is none to state.
 const PARAM_DOCS: &[(&str, &str, &str, &str, &str)] = &[
     (
+        "task.brief",
+        "rulings",
+        "boolean",
+        "",
+        "Add `rulings_section`: the standing rulings for `workdir`'s project, ranked for this task (D246, D248).",
+    ),
+    (
+        "task.brief",
+        "workdir",
+        "string",
+        "",
+        "The caller's directory, which names the project `rulings_section` is for (D248).",
+    ),
+    (
         "note.list",
         "project",
         "string",

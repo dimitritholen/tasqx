@@ -1166,3 +1166,52 @@ fn the_brief_finds_by_meaning_and_still_excludes_the_tasks_own_notes() {
     assert_eq!(m["semantic"]["min_similarity"], json!(0.3), "{m}");
     assert!(m["semantic"]["model"].is_string(), "{m}");
 }
+
+// ---- D248: the D246 rulings section, on request ----------------------------
+
+/// `rulings: true` adds `rulings_section`: `McpServer::rulings_section` for
+/// this task, ranked and pinned as D246 says, text or null; without it the
+/// brief is unchanged. `workdir` is the caller's directory, for the project.
+#[test]
+fn rulings_true_adds_the_d246_section_for_this_task_and_nothing_otherwise() {
+    let e = engine();
+    call(&e, "project.create", json!({ "name": "alpha" })).expect("project");
+    let t = add(
+        &e,
+        "rotate the release signing keys",
+        json!({ "project": "alpha" }),
+    );
+    let before = brief(&e, t);
+    assert!(before.get("rulings_section").is_none(), "{before}");
+
+    let asked = |e: &Engine| {
+        call(
+            e,
+            "task.brief",
+            json!({ "ref": t, "rulings": true, "workdir": "/" }),
+        )
+        .expect("task.brief")
+    };
+    assert!(asked(&e)["rulings_section"].is_null(), "no rulings, null");
+
+    call(
+        &e,
+        "memory.add",
+        json!({ "title": "signing ruling", "body": "Keys rotate quarterly.",
+                "standing": true }),
+    )
+    .expect("memory.add");
+    let want = tasqx_core::McpServer::rulings_section(
+        &e,
+        Some(std::path::Path::new("/")),
+        Some(&json!(t)),
+    )
+    .unwrap()
+    .expect("a section");
+    let got = asked(&e);
+    assert_eq!(got["rulings_section"], json!(want));
+    assert!(want.contains("Keys rotate quarterly."), "{want}");
+    // `rulings: false` is the plain brief.
+    let off = call(&e, "task.brief", json!({ "ref": t, "rulings": false })).unwrap();
+    assert!(off.get("rulings_section").is_none(), "{off}");
+}

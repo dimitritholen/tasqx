@@ -74,7 +74,7 @@ mod obj_ref;
 /// which is unassertable prose-equivalence. So the column is gone and the page
 /// renders [`crate::cmddoc`]'s summary instead. One string per verb, used by
 /// both surfaces, with no second copy left to drift.
-const VERBS: [(&str, &str, &str); 58] = [
+const VERBS: [(&str, &str, &str); 59] = [
     ("init", "—", "project.create"),
     ("use", "—", "project.use"),
     ("archive", "—", "project.archive"),
@@ -103,6 +103,7 @@ const VERBS: [(&str, &str, &str); 58] = [
         "—",
         "task.brief + task.claim + task.start + task.stop + task.release",
     ),
+    ("hook", "—", "— (no store)"),
     ("show", "<code>get</code>", "task.get"),
     ("why", "—", "task.get"),
     ("start", "<code>s</code>", "task.start"),
@@ -715,7 +716,8 @@ const METHODS: [(&str, &str, &str); 63] = [
     (
         "task.brief",
         "<code>ref</code>, <code>memory_limit?</code>, <code>annotations_limit?</code>, \
-         <code>annotations_offset?</code>, <code>max_body_bytes?</code>",
+         <code>annotations_offset?</code>, <code>max_body_bytes?</code>, <code>rulings?</code>, \
+         <code>workdir?</code>",
         "<code>{task, neighbourhood, memory}</code>. Everything needed before starting one task \
          (D136): <code>task</code> is <code>task.get</code>'s own result verbatim; \
          <code>neighbourhood.depends_on</code> names each prerequisite with its NEWEST \
@@ -739,7 +741,11 @@ const METHODS: [(&str, &str, &str); 63] = [
          <code>annotations_offset</code> and <code>max_body_bytes</code> page and cap the \
          TASK half exactly as on <code>task.get</code> (D148, D220): absent, it carries the \
          whole history with every body whole, and <code>annotations_total</code> and \
-         <code>annotations_next_offset</code> say what a page left out.",
+         <code>annotations_next_offset</code> say what a page left out. \
+         <code>rulings: true</code> adds <code>rulings_section</code>: the standing rulings \
+         for the project of <code>workdir</code> (the caller's directory), ranked for this \
+         task with the docs it pins first, as the MCP handshake words them, or \
+         <code>null</code> when there are none (D246, D248).",
     ),
     (
         "report.outcomes",

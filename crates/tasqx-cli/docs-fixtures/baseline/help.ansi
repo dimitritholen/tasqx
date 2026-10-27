@@ -50,6 +50,7 @@ Commands:
   dashboard    Open the dashboard: an overview screen over the working set, deadlines, blocked work, projects, burndown and token spend (DESIGN.md §12-D58)
   pick         Browse tasks on a full-screen list, and start one (maps to task.list, task.get, then task.start)
   work         Launch your agent CLI (claude or codex) bound to a task (maps to task.brief, task.claim, task.start, then task.stop and task.release)
+  hook         The hook command `tasqx work` registers with the agent (no API call)
   why          Explain a task's urgency breakdown (maps to task.get + the D1 formula)
   api          stdio one-shot: read ONE JSON request envelope on stdin, write ONE response
   daemon       Run the long-lived daemon: bind a local socket / named pipe and serve the JSON API to many concurrent clients, pushing live change notifications (DESIGN.md §2). Ctrl-C stops it cleanly
