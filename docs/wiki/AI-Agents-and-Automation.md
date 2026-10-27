@@ -328,8 +328,11 @@ For Claude Code, `tasqx work` also registers one hook command for the session,
 Claude writes on its stdin. It acts only inside the `tasqx work` session it was
 registered for, and it never breaks the agent: anything it cannot do is one
 line on stderr, and it exits 0. Neither event records anything yet. The
-session's tokens are measured from its transcript when the task completes, so
-a task that is never completed shows no tokens for its work sessions.
+session's tokens are measured from its transcript when the task completes, by
+a running daemon with `tokens.enabled` on (it is off by default; see
+[token accounting](../guides/token-accounting.md)). A task that is never
+completed, or completed without that setup, shows no tokens for its work
+sessions.
 
 ## tasqx api
 

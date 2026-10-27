@@ -367,7 +367,7 @@ pub const COMMAND_REF: &[CmdDoc] = &[
         ],
         notes: &[
             "`tasqx work --agent claude` registers this one command for the session's `SessionStart` and `SessionEnd` events through `--settings`, without touching `~/.claude` (D248). The command never varies; the event is read from the JSON the agent writes on stdin.",
-            "It acts only inside the `tasqx work` session it was registered for: without `TASQX_WORK_TASK`, or when the input's `session_id` is not `TASQX_WORK_SESSION`, it does nothing. Both events record nothing yet; a work session's tokens are measured when the task completes.",
+            "It acts only inside the `tasqx work` session it was registered for: without `TASQX_WORK_TASK`, or when the input's `session_id` is not `TASQX_WORK_SESSION`, it does nothing. Both events record nothing yet. A work session's tokens are measured from its transcript when the task completes, by a running daemon with `tasqx config set tokens.enabled true` (off by default); without them nothing is measured.",
             "It never breaks the agent: input it cannot read or an event it does not know is one line on stderr, and it exits 0. You do not run it yourself.",
         ],
         see_also: &["work"],

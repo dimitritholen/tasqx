@@ -266,7 +266,7 @@ pub(crate) fn start_context(brief: &Value, actor: &str, opts: &DetailOpts) -> St
         );
     }
     if let Some(rulings) = brief["rulings_section"].as_str() {
-        out.push_str("\n## Standing rulings\n\n");
+        out.push_str("\n## Project memory\n\n");
         out.push_str(rulings.trim_end());
         out.push('\n');
     }
@@ -696,7 +696,7 @@ mod tests {
         let ctx = start_context(&brief, "work:claude:1", &opts);
         assert!(ctx.contains("tasqx_add_check"), "{ctx}");
         assert!(ctx.contains("actor: \"work:claude:1\""), "{ctx}");
-        assert!(ctx.contains("## Standing rulings"), "{ctx}");
+        assert!(ctx.contains("## Project memory"), "{ctx}");
         assert!(ctx.contains("- mine: its gist"), "{ctx}");
 
         // No rulings (`null`): no heading.
