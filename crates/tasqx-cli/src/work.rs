@@ -513,31 +513,42 @@ fn codex_sessions(
 }
 
 /// Each id on a start of the task, where D247's fallback finds the session's
-/// rollout by it. The clock is already stopped, so this is a start and a
-/// stop at the same moment: no time is added. `keep`, so no other clock is
-/// stopped. A refusal (the agent closed the task) is fine and silent.
+/// rollout by it; what was not recorded is said on stderr.
 fn record_sessions(be: &mut Backend, params: &Value, ids: &[String]) {
     for id in ids {
-        let mut start = params.clone();
-        start["session_id"] = json!(id);
-        start["client"] = json!("codex");
-        start["keep"] = json!(true);
-        match be.call("task.start", &start) {
-            Ok(_) => {
-                let fix = format!(
-                    "tasqx stop {} --holder {}",
-                    params["ref"],
-                    params["actor"].as_str().unwrap_or("")
-                );
-                cleanup(be, "task.stop", params, &fix);
-            }
-            Err(e) if e.code == ErrorCode::Internal => eprintln!(
-                "tasqx: warning: codex session {id} was not recorded ({}); its tokens will \
-                 not be measured",
-                e.message
-            ),
-            Err(_) => {}
+        if let Some(why) = record_session(be, params, id) {
+            eprintln!(
+                "tasqx: warning: codex session {id} was not recorded ({why}); its tokens will \
+                 not be measured"
+            );
         }
+    }
+}
+
+/// One id, recorded as a start and a stop at the same moment: the clock is
+/// already stopped, so no time is added; `keep`, so no other clock is
+/// stopped. `None` when recorded, or refused because the agent closed the
+/// task; otherwise why it was not recorded.
+fn record_session(be: &mut Backend, params: &Value, id: &str) -> Option<String> {
+    let mut start = params.clone();
+    start["session_id"] = json!(id);
+    start["client"] = json!("codex");
+    start["keep"] = json!(true);
+    match be.call("task.start", &start) {
+        // A clock still running (another actor's, or a cleanup stop lost on
+        // the connection) makes the start a no-op, and it is not ours to stop.
+        Ok(v) if v["already_running"] == true => Some("the task's clock is still running".into()),
+        Ok(_) => {
+            let fix = format!(
+                "tasqx stop {} --holder {}",
+                params["ref"],
+                params["actor"].as_str().unwrap_or("")
+            );
+            cleanup(be, "task.stop", params, &fix);
+            None
+        }
+        Err(e) if e.code == ErrorCode::Internal => Some(e.message),
+        Err(_) => None,
     }
 }
 
@@ -714,6 +725,29 @@ mod tests {
         assert_eq!(p["rulings"], true);
         let p = brief_params("7", Some(std::path::Path::new("/tmp/x")));
         assert_eq!(p["workdir"], "/tmp/x");
+    }
+
+    /// The task still running after the cleanup stop (another actor's
+    /// clock, or a stop lost on the connection): `task.start` answers
+    /// `already_running` and writes nothing, so the codex id is not recorded,
+    /// and the clock is not this launch's to stop.
+    #[test]
+    fn a_still_running_clock_is_left_alone_and_the_id_is_said_unrecorded() {
+        let mut be = Backend::Local(Engine::open_in_memory().unwrap());
+        be.call("task.add", &json!({ "title": "t" })).unwrap();
+        be.call(
+            "task.start",
+            &json!({ "ref": 1, "actor": "other", "keep": true }),
+        )
+        .unwrap();
+        let params = json!({ "ref": 1, "actor": "work:codex:1" });
+        let why = record_session(&mut be, &params, "x-real");
+        assert_eq!(why.as_deref(), Some("the task's clock is still running"));
+        let t = be.call("task.get", &json!({ "ref": "1" })).unwrap();
+        assert_eq!(
+            t["status"], "active",
+            "another actor's interval was stopped: {t}"
+        );
     }
 
     #[test]
