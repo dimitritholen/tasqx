@@ -931,6 +931,11 @@ const NOT_NAMES: &[(&str, &str)] = &[
         "an event kind the D172 migration records, not a method",
     ),
     ("tokens.css", "a file name in a memory-search example"),
+    ("work.json", "a file name in an export example"),
+    (
+        "work.tasqx",
+        "the demo store's project name, which shares its head with `work.agent`",
+    ),
     (
         "task.changed",
         "the notification a daemon pushes to `watch` and every subscriber, not a method",

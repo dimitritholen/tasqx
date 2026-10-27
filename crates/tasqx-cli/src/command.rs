@@ -1275,6 +1275,32 @@ pub(super) enum Command {
         #[arg(long, value_name = "ID")]
         holder: Option<String>,
     },
+    /// Launch your agent CLI (claude or codex) bound to a task (maps to
+    /// task.brief, task.claim, task.start, then task.stop and task.release).
+    ///
+    /// tasqx runs the official binary on PATH as a child on this terminal and
+    /// waits for it (D245). Before it starts, the task is claimed and its timer
+    /// started; the agent gets the task's brief, its acceptance checks and the
+    /// project's standing rulings as start context, and TASQX_WORK_TASK,
+    /// TASQX_WORK_SESSION and TASQX_WORK_CONTEXT in its environment. When it
+    /// exits, the timer stops and the claim is released, and its exit code is
+    /// this command's.
+    ///
+    /// Without a ref, the `pick` browser opens over the working set with the
+    /// cursor on what `tasqx next` would answer; enter launches. Without
+    /// --agent, the remembered `work.agent` is used, else the one agent on
+    /// PATH, else one question among them whose answer is remembered. Off a
+    /// terminal nothing is asked: a missing ref or agent is refused with exit
+    /// 2, naming what to pass. Leaving a question writes nothing.
+    #[command(after_help = crate::cmddoc::after_help("work"))]
+    Work {
+        /// short_id or UUID. Omitted, choose one in the `pick` browser.
+        #[arg(add = crate::complete::candidates::task_ids())]
+        r#ref: Option<String>,
+        /// The agent CLI to launch, this time.
+        #[arg(long, value_parser = PossibleValuesParser::new(crate::work::AGENTS))]
+        agent: Option<String>,
+    },
     /// Explain a task's urgency breakdown (maps to task.get + the D1 formula).
     #[command(after_help = crate::cmddoc::after_help("why"))]
     Why {

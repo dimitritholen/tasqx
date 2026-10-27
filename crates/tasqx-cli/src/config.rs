@@ -320,6 +320,19 @@ pub const SETTINGS: &[Setting] = &[
         choices: Choices::OneOf(&["iso", "relative", "both"]),
         summary: "How the task-detail view (`show`, MCP) writes timestamps and durations.",
     },
+    Setting {
+        key: "work.agent",
+        home: Home::Toml,
+        kind: Kind::Str,
+        // Unset: `tasqx work` asks once, among the agents on PATH, and
+        // writes the answer here (D245).
+        default: "",
+        env: None,
+        flag: Some("--agent"),
+        choices: Choices::OneOf(crate::work::AGENTS),
+        summary: "The agent CLI `tasqx work` launches when `--agent` is not given; \
+                  unset, it asks once and remembers (D245).",
+    },
 ];
 
 pub fn find(key: &str) -> Option<&'static Setting> {
@@ -1728,6 +1741,9 @@ time_format = "iso"
 [mcp]
 add_status = "triage"
 
+[work]
+agent = "codex"
+
 [extra]
 thing = 1
 
@@ -1750,6 +1766,7 @@ x = 1
             ("daemon.idle_timeout", "15"),
             ("detail.time_format", "iso"),
             ("mcp.add_status", "triage"),
+            ("work.agent", "codex"),
         ];
         let toml_keys: Vec<&str> = SETTINGS
             .iter()

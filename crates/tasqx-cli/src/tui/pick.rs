@@ -161,6 +161,9 @@ pub struct App {
     /// screen has no clock of its own, so a redraw cannot disagree with the
     /// rows the caller read.
     now: Timestamp,
+    /// `tasqx work`'s chooser (D245): Enter picks the task under the cursor
+    /// rather than opening its card.
+    choose: bool,
 }
 
 impl App {
@@ -180,7 +183,19 @@ impl App {
             time_format: ctx.time_format,
             filter: render::san(filter),
             now,
+            choose: false,
         }
+    }
+
+    /// The chooser `tasqx work` opens (D245): Enter answers with the task
+    /// under the cursor, and the cursor starts on `preselect` when it is
+    /// listed (`tasqx next`'s answer).
+    pub fn choosing(mut self, preselect: Option<i64>) -> Self {
+        self.choose = true;
+        if let Some(i) = preselect.and_then(|id| self.rows.iter().position(|r| r.short_id == id)) {
+            self.ls.cursor = i;
+        }
+        self
     }
 
     /// The terminal's size, re-read before every frame so paging and the
@@ -296,6 +311,9 @@ impl App {
     }
 
     fn list_key(&mut self, key: KeyEvent, ctrl: bool) -> Option<Action> {
+        if self.choose && key.code == KeyCode::Enter {
+            return self.start();
+        }
         let rows = &self.rows;
         let score = |i: usize, terms: &[&str]| rows[i].score(terms);
         if self
@@ -542,6 +560,95 @@ pub const LIST_EMPTY_KEYS: &[Key] = &[
     },
 ];
 
+/// `tasqx work`'s chooser (D245): enter launches, and there is no card.
+pub const CHOOSE_KEYS: &[Key] = &[
+    Key {
+        keys: "j / k",
+        help: "move down / up (the arrows too)",
+        footer: Some(Hint {
+            keys: "j/k",
+            word: "move",
+            rank: 2,
+        }),
+    },
+    Key {
+        keys: "/",
+        help: "search ids, titles, projects and tags",
+        footer: Some(Hint {
+            keys: "/",
+            word: "search",
+            rank: 2,
+        }),
+    },
+    Key {
+        keys: "enter",
+        help: "launch the agent on the task under the cursor",
+        footer: Some(Hint {
+            keys: "enter",
+            word: "launch",
+            rank: 1,
+        }),
+    },
+    Key {
+        keys: "q / esc",
+        help: "leave, launching nothing",
+        footer: Some(Hint {
+            keys: "q",
+            word: "leave",
+            rank: 0,
+        }),
+    },
+];
+
+/// [`CHOOSE_KEYS`] with a search kept: Esc clears it first.
+pub const CHOOSE_FILTERED_KEYS: &[Key] = &[
+    Key {
+        keys: "j / k",
+        help: "move down / up (the arrows too)",
+        footer: Some(Hint {
+            keys: "j/k",
+            word: "move",
+            rank: 2,
+        }),
+    },
+    Key {
+        keys: "/",
+        help: "change the search",
+        footer: Some(Hint {
+            keys: "/",
+            word: "search",
+            rank: 2,
+        }),
+    },
+    Key {
+        keys: "enter",
+        help: "launch the agent on the task under the cursor",
+        footer: Some(Hint {
+            keys: "enter",
+            word: "launch",
+            rank: 1,
+        }),
+    },
+    Key {
+        keys: "esc",
+        help: "clear the search",
+        footer: Some(Hint {
+            keys: "esc",
+            word: "clear",
+            rank: 3,
+        }),
+    },
+    Key {
+        keys: "q",
+        help: "leave, launching nothing",
+        footer: Some(Hint {
+            keys: "q",
+            word: "leave",
+            rank: 0,
+        }),
+    },
+];
+
 /// The search line's keys: every other character is part of the query.
 pub const SEARCH_KEYS: &[Key] = &[
     Key {
@@ -675,6 +782,8 @@ fn keys_for(app: &App) -> &'static [Key] {
     let empty = app.ls.matches.is_empty();
     match app.ls.mode {
         Mode::List if empty => LIST_EMPTY_KEYS,
+        Mode::List if app.choose && !app.ls.query.is_empty() => CHOOSE_FILTERED_KEYS,
+        Mode::List if app.choose => CHOOSE_KEYS,
         Mode::List if !app.ls.query.is_empty() => LIST_FILTERED_KEYS,
         Mode::List => LIST_KEYS,
         Mode::Search if empty => SEARCH_EMPTY_KEYS,

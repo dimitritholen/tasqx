@@ -189,6 +189,10 @@ fn cases(tmp: &str) -> Vec<(Case, Vec<String>)> {
         // `Case::refuses_with`. Exit 2 is `bad_request`, the same code
         // `config edit` gives a piped stdout.
         c_refuses("pick", &["pick"], 2),
+        // `work` hands the terminal to an agent CLI, and which agents are on
+        // PATH differs per machine. Words where a ref belongs are refused
+        // first on every machine (D245).
+        c_refuses("work", &["work", "not a ref"], 2),
         c("projects", &["projects"]),
         c("use", &["use", "guardproj"]),
         // `archive` needs a project of its own: archiving `guardproj` would

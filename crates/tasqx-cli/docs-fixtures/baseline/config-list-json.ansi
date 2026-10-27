@@ -111,6 +111,14 @@
       "source": "default",
       "summary": "How the task-detail view (`show`, MCP) writes timestamps and durations.",
       "value": "both"
+    },
+    {
+      "default": "",
+      "home": "config.toml",
+      "key": "work.agent",
+      "source": "default",
+      "summary": "The agent CLI `tasqx work` launches when `--agent` is not given; unset, it asks once and remembers (D245).",
+      "value": ""
     }
   ]
 }

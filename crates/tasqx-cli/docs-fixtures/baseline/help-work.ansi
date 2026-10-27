@@ -1,0 +1,47 @@
+Launch your agent CLI (claude or codex) bound to a task (maps to task.brief, task.claim, task.start, then task.stop and task.release).
+
+tasqx runs the official binary on PATH as a child on this terminal and waits for it (D245). Before it starts, the task is claimed and its timer started; the agent gets the task's brief, its acceptance checks and the project's standing rulings as start context, and TASQX_WORK_TASK, TASQX_WORK_SESSION and TASQX_WORK_CONTEXT in its environment. When it exits, the timer stops and the claim is released, and its exit code is this command's.
+
+Without a ref, the `pick` browser opens over the working set with the cursor on what `tasqx next` would answer; enter launches. Without --agent, the remembered `work.agent` is used, else the one agent on PATH, else one question among them whose answer is remembered. Off a terminal nothing is asked: a missing ref or agent is refused with exit 2, naming what to pass. Leaving a question writes nothing.
+
+Usage: tasqx work [OPTIONS] [REF]
+
+Arguments:
+  [REF]
+          short_id or UUID. Omitted, choose one in the `pick` browser
+
+Options:
+      --agent <AGENT>
+          The agent CLI to launch, this time
+          
+          [possible values: claude, codex]
+
+      --json
+          Print the raw JSON API result instead of the human table
+
+      --theme <THEME>
+          Theme name (built-in nord|gruvbox|dracula|solarized|mono, or a user file). Overrides $TASQX_THEME and the config file (DESIGN.md §8)
+
+      --socket <SOCKET>
+          Local socket / named-pipe address of a tasqx daemon. Overrides $TASQX_SOCK. When a daemon is reachable, one-shot commands route through it (single writer); otherwise they run in-process. A set $TASQX_DB naming a different store than that daemon's is refused. Also selects the address for `daemon` and `watch`
+
+      --no-daemon
+          Never route through a daemon; always run one-shot in-process (the pre-daemon behaviour). Escape hatch for scripts
+
+  -h, --help
+          Print help (see a summary with '-h')
+
+  -V, --version
+          Print version
+
+EXAMPLES
+  tasqx work    # choose the task in the browser, the agent you use
+  tasqx work 12 --agent claude    # work on #12 with Claude Code
+
+NOTE  tasqx runs the official `claude` or `codex` found on your PATH, on this terminal, and waits for it (D245). It holds no AI and no credentials of its own: the agent is logged in your way.
+      Before the agent starts, the task is claimed for 24 hours and its timer started. The agent gets the task's brief, its acceptance checks and the project's standing rulings as start context, and `TASQX_WORK_TASK`, `TASQX_WORK_SESSION` and `TASQX_WORK_CONTEXT` in its environment. A task without checks tells the agent to ask you what "done" means first and to record it with `tasqx_add_check`.
+      When the agent exits, the timer stops and the claim is released, also when it failed to start. Its exit code is this command's.
+      Without a ref, the `pick` browser opens over the working set with the cursor on what `tasqx next` would answer; enter launches. Without `--agent`, the remembered `work.agent` is used, else the one agent on your PATH, else one question among them, with the default under Enter. The answer is remembered; `tasqx config set work.agent codex` changes it.
+      Leaving the browser or the question writes nothing. Off a terminal nothing is asked: a missing ref or agent is refused with exit 2, naming what to pass.
+
+See also: pick · next · brief · claim        Full manual: tasqx manual

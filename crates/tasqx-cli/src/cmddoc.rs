@@ -335,6 +335,27 @@ pub const COMMAND_REF: &[CmdDoc] = &[
         topic: Topic::GettingStarted,
     },
     CmdDoc {
+        verb: "work",
+        aliases: &[],
+        method: "task.brief + task.claim + task.start + task.stop + task.release",
+        summary: "Launch your agent CLI (claude or codex) bound to a task.",
+        usage: "tasqx work [<ref>] [--agent claude|codex]",
+        examples: &[
+            // `NoRun`: each one starts a real agent on your terminal.
+            ex_norun("tasqx work", "choose the task in the browser, the agent you use"),
+            ex_norun("tasqx work 12 --agent claude", "work on #12 with Claude Code"),
+        ],
+        notes: &[
+            "tasqx runs the official `claude` or `codex` found on your PATH, on this terminal, and waits for it (D245). It holds no AI and no credentials of its own: the agent is logged in your way.",
+            "Before the agent starts, the task is claimed for 24 hours and its timer started. The agent gets the task's brief, its acceptance checks and the project's standing rulings as start context, and `TASQX_WORK_TASK`, `TASQX_WORK_SESSION` and `TASQX_WORK_CONTEXT` in its environment. A task without checks tells the agent to ask you what \"done\" means first and to record it with `tasqx_add_check`.",
+            "When the agent exits, the timer stops and the claim is released, also when it failed to start. Its exit code is this command's.",
+            "Without a ref, the `pick` browser opens over the working set with the cursor on what `tasqx next` would answer; enter launches. Without `--agent`, the remembered `work.agent` is used, else the one agent on your PATH, else one question among them, with the default under Enter. The answer is remembered; `tasqx config set work.agent codex` changes it.",
+            "Leaving the browser or the question writes nothing. Off a terminal nothing is asked: a missing ref or agent is refused with exit 2, naming what to pass.",
+        ],
+        see_also: &["pick", "next", "brief", "claim"],
+        topic: Topic::Automation,
+    },
+    CmdDoc {
         verb: "show",
         aliases: &["get"],
         method: "task.get",
