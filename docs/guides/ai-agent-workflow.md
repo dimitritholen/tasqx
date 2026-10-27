@@ -126,12 +126,13 @@ with `tasqx_add_task`, wire the order, then work the chain.
   project that read like the new one; look before adding another.
 - **Notes.** `tasqx_add_note` and its siblings capture a thought that is not yet
   a task or a memory doc. See [Notes](../wiki/Notes.md).
-- **Pull requests.** `tasqx git event` lets a PR start or complete its task. See
-  [Working on Tasks](../wiki/Working-on-Tasks.md#tasqx-git).
+- **Pull requests.** A CI step, hook or script that calls `tasqx git event`
+  starts or completes the task a PR names; tasqx does not watch GitHub itself.
+  See [Working on Tasks](../wiki/Working-on-Tasks.md#tasqx-git).
 - **Stale rulings.** A memory hit carries `stale_refs`, the files and symbols
   it cites that the checkout no longer has. See [Memory](../wiki/Memory.md).
-- **Setup.** `tasqx setup --list` shows what is installed and `--only retro`
-  installs one item. See [AI Agents and Automation](../wiki/AI-Agents-and-Automation.md).
+- **Setup.** `tasqx setup --list` shows what is installed and `--yes --only retro`
+  installs one item without the checklist. See [AI Agents and Automation](../wiki/AI-Agents-and-Automation.md).
 
 ## Give the agent memory
 

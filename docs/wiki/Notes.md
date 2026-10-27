@@ -162,4 +162,4 @@ note asks for nothing.
 
 Every command here takes `--json` and prints the API's answer. Agents reach
 notes through the MCP tools `tasqx_add_note`, `tasqx_list_notes`,
-`tasqx_get_note` (one note whole), `tasqx_update_note`, `tasqx_remove_note` and `tasqx_promote_note`.
+`tasqx_get_note` (one note; a body over `max_body_bytes` is cut and marked `body_truncated`, so raise it to read all), `tasqx_update_note`, `tasqx_remove_note` and `tasqx_promote_note`.

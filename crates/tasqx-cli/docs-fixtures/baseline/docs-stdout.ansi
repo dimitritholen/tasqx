@@ -458,7 +458,9 @@ cargo install --path crates/tasqx-cli --force</code></pre></div>
 automatically — you do not need it on your PATH.</p>
 <p>That installs <code>tasqx</code> alone. To <a href="#wiki-syncing-between-machines">sync between machines</a>,
 also build the connector you use:</p>
-<div class="snip"><div class="snip-h"><span class="dollar">$</span><button class="copy" type="button">Copy</button></div><pre class="cmd"><code>cargo install --path crates/tasqx-remote-dir --force
+<div class="snip"><div class="snip-h"><span class="dollar">$</span><button class="copy" type="button">Copy</button></div><pre class="cmd"><code># a synced folder
+cargo install --path crates/tasqx-remote-dir --force
+# or an R2 bucket
 cargo install --path crates/tasqx-remote-r2 --force</code></pre></div><h3 id="h-sixty-seconds-with-tasqx">Sixty seconds with tasqx</h3>
 <p>Create a project, capture some work, and look at it.</p>
 <div class="snip"><div class="snip-h"><span class="dollar">$</span><button class="copy" type="button">Copy</button></div><pre class="cmd"><code>tasqx init work.tasqx --desc &quot;The tasqx project itself&quot;</code></pre><pre class="out"><code>work.tasqx
@@ -975,7 +977,7 @@ out).</p>
 <tr><td data-label="Command" headers="wiki-finding-tasks-tbl0-h0"><code>tasqx list project:work +api</code></td><td data-label="What it does" headers="wiki-finding-tasks-tbl0-h1">Narrowed</td></tr>
 <tr><td data-label="Command" headers="wiki-finding-tasks-tbl0-h0"><code>tasqx list due.before:friday</code></td><td data-label="What it does" headers="wiki-finding-tasks-tbl0-h1">Deadline pressure only</td></tr>
 <tr><td data-label="Command" headers="wiki-finding-tasks-tbl0-h0"><code>tasqx list --sort due --limit 20</code></td><td data-label="What it does" headers="wiki-finding-tasks-tbl0-h1">Order by a key (<code>-due</code> for descending, repeat or comma-separate several); the default is <code>-urgency</code></td></tr>
-<tr><td data-label="Command" headers="wiki-finding-tasks-tbl0-h0"><code>tasqx list --fields short_id,title,due</code></td><td data-label="What it does" headers="wiki-finding-tasks-tbl0-h1">Return only those fields, mostly for <code>--json</code></td></tr>
+<tr><td data-label="Command" headers="wiki-finding-tasks-tbl0-h0"><code>tasqx list --json --fields short_id,title,due</code></td><td data-label="What it does" headers="wiki-finding-tasks-tbl0-h1">Return only those fields; use it with <code>--json</code>, the human table is not projected</td></tr>
 <tr><td data-label="Command" headers="wiki-finding-tasks-tbl0-h0"><code>tasqx list --holder me</code></td><td data-label="What it does" headers="wiki-finding-tasks-tbl0-h1">Choose work as holder <code>me</code>: with <code>@working</code>, tasks someone else has claimed are left out</td></tr>
 </tbody></table></div>
 <p>A list shows at most 100 rows. When more match, the head says so (<code>100 of 192 tasks</code>) and a last line gives the command for the rest: <code>--offset 100</code> for the
@@ -2076,8 +2078,9 @@ be. Lower finds more distant paraphrases, and more noise.</li>
 <li>The model reads English; text in another language is found mostly where the
 query shares its words.</li>
 <li><code>--scope docs</code> or <code>--scope annotations</code> searches only one half (default <code>all</code>).
-<code>--source-prefix docs/adr/</code> keeps only the docs whose source starts with that
-text (literal, case-sensitive) and leaves annotations out.</li>
+<code>--source-prefix myrepo/docs/adr/</code> keeps only the docs whose source starts
+with that text (literal, case-sensitive) and leaves annotations out. A doc
+imported from a git checkout is sourced under the repository's directory name.</li>
 <li>Power users can pass <code>--raw</code> for FTS5 operator syntax (words only).</li>
 <li>The answer includes the query that actually ran, so "no hits" is
 distinguishable from "nothing stored about this".</li>
@@ -2338,7 +2341,7 @@ the idea again, write a new note.</p>
 note asks for nothing.</p>
 <p>Every command here takes <code>--json</code> and prints the API's answer. Agents reach
 notes through the MCP tools <code>tasqx_add_note</code>, <code>tasqx_list_notes</code>,
-<code>tasqx_get_note</code> (one note whole), <code>tasqx_update_note</code>, <code>tasqx_remove_note</code> and <code>tasqx_promote_note</code>.</p>
+<code>tasqx_get_note</code> (one note; a body over <code>max_body_bytes</code> is cut and marked <code>body_truncated</code>, so raise it to read all), <code>tasqx_update_note</code>, <code>tasqx_remove_note</code> and <code>tasqx_promote_note</code>.</p>
 <div class="pagenav"><a class="prev" href="#wiki-memory"><span class="pn-k">Previous</span><span class="pn-l">Memory</span></a><a class="next" href="#wiki-ai-agents-and-automation"><span class="pn-k">Next</span><span class="pn-l">AI Agents and Automation</span></a></div></section><section class="page" id="wiki-ai-agents-and-automation"><h2>AI Agents and Automation</h2><p>tasqx treats an AI agent as a normal user. There's one JSON API underneath
 everything; the CLI is one client of it, and the built-in MCP server is
 another. An agent gets the same data, the same rules and the same safety
@@ -3169,7 +3172,7 @@ the daemon was passed over.</li>
 <tr><td data-label="Setting" headers="wiki-settings-and-themes-tbl1-h0"><code>dashboard.panels</code></td><td data-label="Default" headers="wiki-settings-and-themes-tbl1-h1"><code>tasks,projects,burndown,pulse,effort,tokens</code></td><td data-label="What it does" headers="wiki-settings-and-themes-tbl1-h2">Which panels the dashboard draws, in tab order</td></tr>
 <tr><td data-label="Setting" headers="wiki-settings-and-themes-tbl1-h0"><code>dashboard.refresh</code></td><td data-label="Default" headers="wiki-settings-and-themes-tbl1-h1"><code>auto</code></td><td data-label="What it does" headers="wiki-settings-and-themes-tbl1-h2"><code>auto</code> re-reads on a timer, <code>manual</code> only on <code>r</code></td></tr>
 <tr><td data-label="Setting" headers="wiki-settings-and-themes-tbl1-h0"><code>dashboard.window</code></td><td data-label="Default" headers="wiki-settings-and-themes-tbl1-h1"><code>week</code></td><td data-label="What it does" headers="wiki-settings-and-themes-tbl1-h2">The burndown window it opens on (<code>week</code>, <code>14d</code>, <code>30d</code>); <code>w</code> cycles it</td></tr>
-<tr><td data-label="Setting" headers="wiki-settings-and-themes-tbl1-h0"><code>notify.enabled</code></td><td data-label="Default" headers="wiki-settings-and-themes-tbl1-h1"><code>false</code></td><td data-label="What it does" headers="wiki-settings-and-themes-tbl1-h2">Lets the daemon raise OS notifications for reminders</td></tr>
+<tr><td data-label="Setting" headers="wiki-settings-and-themes-tbl1-h0"><code>notify.enabled</code></td><td data-label="Default" headers="wiki-settings-and-themes-tbl1-h1"><code>false</code></td><td data-label="What it does" headers="wiki-settings-and-themes-tbl1-h2">Lets the daemon raise OS notifications for reminders; needs a build with the <code>notify-os</code> feature (<a href="#wiki-dates-reminders-and-recurrence--who-delivers-them">Reminders</a>)</td></tr>
 <tr><td data-label="Setting" headers="wiki-settings-and-themes-tbl1-h0"><code>tokens.enabled</code></td><td data-label="Default" headers="wiki-settings-and-themes-tbl1-h1"><code>false</code></td><td data-label="What it does" headers="wiki-settings-and-themes-tbl1-h2">Lets the daemon attribute AI token use from local tool transcripts</td></tr>
 <tr><td data-label="Setting" headers="wiki-settings-and-themes-tbl1-h0"><code>otlp.enabled</code></td><td data-label="Default" headers="wiki-settings-and-themes-tbl1-h1"><code>false</code></td><td data-label="What it does" headers="wiki-settings-and-themes-tbl1-h2">Runs a local OTLP/HTTP receiver in the daemon for token telemetry</td></tr>
 <tr><td data-label="Setting" headers="wiki-settings-and-themes-tbl1-h0"><code>otlp.port</code></td><td data-label="Default" headers="wiki-settings-and-themes-tbl1-h1"><code>4318</code></td><td data-label="What it does" headers="wiki-settings-and-themes-tbl1-h2">The port it binds on 127.0.0.1</td></tr>
@@ -3323,8 +3326,10 @@ See ADR-012 for the locking decision.&#39;</code></pre></div>
 <div class="snip"><div class="snip-h"><span class="dollar">$</span><button class="copy" type="button">Copy</button></div><pre class="cmd"><code>tasqx next
 tasqx start 1
 tasqx done 1</code></pre></div>
-<p>If your pull requests follow the <code>task/&lt;id&gt;-&lt;slug&gt;</code> branch naming, <code>tasqx git event</code>
-can start and complete the task from the PR itself; see
+<p>If your pull requests follow the <code>task/&lt;id&gt;-&lt;slug&gt;</code> branch naming, <code>tasqx git event</code>,
+called from a CI step, a hook or a script, can start and complete the task when
+the PR opens and merges (a merge completes it only when every check passed and
+nothing blocks it); see
 <a href="#wiki-working-on-tasks--tasqx-git">Working on Tasks</a>. Moving to another
 machine? See <a href="#wiki-syncing-between-machines">Syncing Between Machines</a>.</p>
 <p><code>done</code> announces what its completion released — you never have to work out what is
@@ -3527,12 +3532,13 @@ agent adds over MCP without naming a <code>status</code> a proposal that waits f
 project that read like the new one; look before adding another.</li>
 <li><strong>Notes.</strong> <code>tasqx_add_note</code> and its siblings capture a thought that is not yet
 a task or a memory doc. See <a href="#wiki-notes">Notes</a>.</li>
-<li><strong>Pull requests.</strong> <code>tasqx git event</code> lets a PR start or complete its task. See
-<a href="#wiki-working-on-tasks--tasqx-git">Working on Tasks</a>.</li>
+<li><strong>Pull requests.</strong> A CI step, hook or script that calls <code>tasqx git event</code>
+starts or completes the task a PR names; tasqx does not watch GitHub itself.
+See <a href="#wiki-working-on-tasks--tasqx-git">Working on Tasks</a>.</li>
 <li><strong>Stale rulings.</strong> A memory hit carries <code>stale_refs</code>, the files and symbols
 it cites that the checkout no longer has. See <a href="#wiki-memory">Memory</a>.</li>
-<li><strong>Setup.</strong> <code>tasqx setup --list</code> shows what is installed and <code>--only retro</code>
-installs one item. See <a href="#wiki-ai-agents-and-automation">AI Agents and Automation</a>.</li>
+<li><strong>Setup.</strong> <code>tasqx setup --list</code> shows what is installed and <code>--yes --only retro</code>
+installs one item without the checklist. See <a href="#wiki-ai-agents-and-automation">AI Agents and Automation</a>.</li>
 </ul>
 <h3 id="guide-ai-agent-workflow--give-the-agent-memory">Give the agent memory</h3>
 <p><code>tasqx memory import docs/</code> turns a directory of markdown docs — ADRs, runbooks,
