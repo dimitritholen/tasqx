@@ -197,7 +197,10 @@ fn work_claims_times_spawns_claude_with_its_context_and_cleans_up_after() {
     // Owner-only: the brief and the rulings are nobody else's to read.
     assert_eq!(s.read("claude.mode").trim(), "-rw-------");
     // In-process, the agent's own tasqx is pointed at this very store.
-    assert_eq!(s.env_of("claude", "TASQX_DB"), s.db.display().to_string());
+    assert_eq!(
+        std::fs::canonicalize(s.env_of("claude", "TASQX_DB")).ok(),
+        std::fs::canonicalize(&s.db).ok()
+    );
     // ...and not at a socket this process did not route through, which may
     // serve another store.
     assert_eq!(
@@ -476,5 +479,28 @@ fn json_leaves_stdout_to_the_agent() {
         stderr(&out).contains("`work` does not honour --json"),
         "{}",
         stderr(&out)
+    );
+}
+
+/// A relative TASQX_DB reaches the agent made absolute: an agent that runs
+/// `cd subdir && tasqx …` must still open this store, not a new one there.
+#[test]
+fn a_relative_store_path_reaches_the_agent_absolute() {
+    let s = Store::new("relative");
+    s.seed();
+    s.fake_agent("claude", 0);
+    let out = s
+        .tasqx()
+        .current_dir(&s.dir)
+        .env("TASQX_DB", "tasks.db")
+        .args(["work", "1", "--agent", "claude"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{out:?}");
+    let told = s.env_of("claude", "TASQX_DB");
+    assert!(Path::new(&told).is_absolute(), "{told:?}");
+    assert_eq!(
+        std::fs::canonicalize(&told).ok(),
+        std::fs::canonicalize(&s.db).ok()
     );
 }
