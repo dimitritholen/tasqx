@@ -1152,6 +1152,38 @@ fn a_ruling_pinned_on_a_task_arrives_in_full_ahead_of_ranking() {
     }
 }
 
+/// D246: a pinned doc that is not standing is shown once, among the pins,
+/// never again as topical fill, and is not counted as a doc left out.
+#[test]
+fn a_pinned_project_note_is_not_repeated_as_topical_fill() {
+    let engine = engine();
+    engine.project_create(&json!({ "name": "alpha" })).unwrap();
+    add_doc(&engine, "a ruling", "Rule body.", Some("alpha"), true);
+    add_doc(&engine, "pinned note", "Note body.", Some("alpha"), false);
+    add_doc(&engine, "other note", "Other body.", Some("alpha"), false);
+    engine
+        .task_add(&json!({ "title": "unrelated work", "project": "alpha" }))
+        .unwrap();
+    let docs = engine.memory_list(&json!({ "limit": 50 })).unwrap();
+    let id = docs["docs"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|d| d["title"] == "pinned note")
+        .unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    engine
+        .link_add(&json!({ "from": 1, "to": format!("memory:{id}"), "relation": "pins" }))
+        .unwrap();
+
+    let text = section_for(&engine, Some(json!(1)));
+    assert_eq!(text.matches("pinned note").count(), 1, "{text}");
+    assert!(text.contains("\n- other note: Other body."), "{text}");
+    assert!(!text.contains("more docs"), "{text}");
+}
+
 #[test]
 fn the_gist_is_the_first_paragraph_without_frontmatter() {
     let engine = engine();
