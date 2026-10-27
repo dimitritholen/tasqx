@@ -84,7 +84,6 @@ $ tasqx add "Renew the TLS cert" project:work.tasqx +ops --due -1d
 | `scheduled` | When you plan to start | A future value parks the task in the backlog, out of the `@working` set, until it passes |
 | `wait` | Hide it until this moment | Same parking, different intent: "not my problem yet" |
 | `remind` | When to nudge you | Fires a reminder; see below |
-| `estimate` | How long it will take | Not a date: an effort duration, totalled by `report` |
 
 `scheduled` and `wait` both keep a task out of your working set until their
 moment arrives — the difference is what you *mean*, and
@@ -113,9 +112,7 @@ error [bad_request]: could not parse duration: "soon" (try e.g. 4h, 90m, 1h30m, 
 The offset stays *symbolic*: move the due date and the reminder moves with it.
 
 Reminders fire only while [`tasqx daemon`](AI-Agents-and-Automation.md#tasqx-daemon)
-is running, and they're quiet by default — the OS toast notification lives
-behind an off-by-default build feature (`notify-os`). tasqx is quiet by
-default: a task notifies you only if you gave it a `remind`, and nothing else
+is running. A task notifies you only if you gave it a `remind`; nothing else
 ever puts a task on the reminder heap.
 
 ### The two forms
@@ -204,8 +201,7 @@ enabled = true
 ```
 
 Even then the stderr line still comes first, so the verifiable surface never
-depends on which backend is live. Two opt-ins, both off by default — that is the
-quiet-by-default rule taken seriously.
+depends on which backend is live.
 
 ### Firing one by hand
 

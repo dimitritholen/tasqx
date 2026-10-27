@@ -139,10 +139,10 @@ $ tasqx export +api --json
 
 ### What a document carries
 
-An export is a **self-contained document**, and a project is part of it (D37):
+An export is a **self-contained document**, and a project is part of it:
 the `projects` array carries every project row — name, description, archived
 state, identity — and `default_project` names the project a bare `tasqx add`
-inherits. So are your [memory docs](Memory.md) (D41): the `docs` array carries
+inherits. So are your [memory docs](Memory.md): the `docs` array carries
 every knowledge document, all of them regardless of any filter — a filter
 selects tasks, and knowledge is not attached to a task. Restoring gives you back
 the store you exported, not just its tasks. These sections are **optional on
@@ -183,7 +183,7 @@ imported   1 task · 1 project · no memory docs
 ```
 
 > **Note** The doc count is printed even when it is zero, and a document with
-> no `docs` section at all (written by a tasqx older than D41) says so
+> no `docs` section at all (written by a tasqx older than the memory-docs format) says so
 > explicitly: ``note: the document carried no `docs` section, so no memory
 > docs were restored``. Present-and-empty and absent used to print the
 > identical line.
@@ -239,24 +239,30 @@ tasqx import backup.json --dry-run
 ```
 
 `tasqx import other.json --merge` folds a second live store into this one
-instead of restoring over it. For a task this store *already* holds, the
-annotations, checks, tags and dependency edges written on either side are
-unioned — nothing written on either side is thrown away. A
-field that can only have one value (title, status, priority, project, the
-dates) is taken from whichever side changed *that field* last, going by each
-side's history, so a task completed here and retitled there comes back
-completed and retitled. Status travels with its completion time, and the four
-dates travel together. Tracked time adds up: the time the other store logged
-since the two last met joins the total here instead of replacing it, and
-importing the same document again adds nothing. The `_rev` check is skipped
-for those tasks, because two stores count their own revisions and neither
-number means anything to the other. One line per task names each field that
-differed and the side it came from, and how much tracked time arrived. A note or a check both sides hold under the same id stays one row: a check
+instead of restoring over it. A task the document carries and this store has
+never seen is imported exactly as it would be without the flag. For a task this
+store *already* holds:
+
+- The annotations, checks, tags and dependency edges written on either side are
+  unioned — nothing written on either side is thrown away.
+- A field that can only have one value (title, status, priority, project, the
+  dates) is taken from whichever side changed *that field* last, going by each
+  side's history, so a task completed here and retitled there comes back
+  completed and retitled. Status travels with its completion time, and the four
+  dates travel together.
+- Tracked time adds up: the time the other store logged since the two last met
+  joins the total here instead of replacing it, and importing the same document
+  again adds nothing.
+- The `_rev` check is skipped, because two stores count their own revisions and
+  neither number means anything to the other.
+- One line per task names each field that differed and the side it came from,
+  and how much tracked time arrived.
+
+A note or a check both sides hold under the same id stays one row: a check
 follows its own last edit, so a `passed` recorded here is not rolled back by a
-copy that never saw it pass, and a note follows the task's. A task the document
-carries and this store has never seen is imported exactly as it would be
-without the flag. A memory doc both stores hold under the same id keeps the
-copy with the later `modified`, whatever its `_rev`; a tie keeps the one here.
+copy that never saw it pass, and a note follows the task's. A memory doc both
+stores hold under the same id keeps the copy with the later `modified`,
+whatever its `_rev`; a tie keeps the one here.
 
 Removals travel too. A tag, check, note, dependency edge, link or memory doc
 removed on one machine stays removed when that machine merges the other's
@@ -399,17 +405,8 @@ Both stores now hold both sides' work.
 ## tasqx sync
 
 The same merge, without carrying files around: each machine syncs with one
-shared remote instead of trading export files by hand.
-
-```console
-tasqx sync setup dir --set path=/mnt/share/tasqx
-tasqx sync
-tasqx sync --status
-```
-
-See [Syncing Between Machines](Syncing-Between-Machines.md) for the
-Cloudflare R2 setup, what merges and wins, secrets, headless/CI use and the
-`config edit` Sync section.
+shared remote. See [Syncing Between Machines](Syncing-Between-Machines.md) for
+setup, what merges and wins, secrets and headless use.
 
 ## Recipes
 

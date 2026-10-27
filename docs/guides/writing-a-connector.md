@@ -67,7 +67,7 @@ itself.
 **`pull`** — write every snapshot the remote holds into `out_dir` (created
 for you) and name each file, absolute or relative to `out_dir`; tasqx refuses
 a name that resolves outside it. An empty remote answers with an empty list.
-Normally there is exactly one; a connector may hand back more (D200: a folder
+Normally there is exactly one; a connector may hand back more (a folder
 connector's conflict copies).
 
 ```json
@@ -95,7 +95,7 @@ caller pulls, merges, and tries again.
 {"protocol": 1, "version": "8a71b0…"}
 ```
 
-**The blob is opaque.** Since D202 it's always sealed ciphertext by the time
+**The blob is opaque.** It is always sealed ciphertext by the time
 your connector sees it — you never need to parse or validate it, only store
 and hand back exactly the bytes you were given.
 
@@ -170,7 +170,7 @@ connector that passes is one tasqx can actually drive.
 
 Read `crates/tasqx-remote-dir/src/main.rs` first — the simplest connector
 that does something real, one setting (a folder path), content-addressed
-blobs, and D200's handling of the conflict copies a Dropbox/Syncthing/iCloud
+blobs, and its handling of the conflict copies a Dropbox/Syncthing/iCloud
 client leaves behind. `crates/tasqx-remote-r2/src/main.rs` is the other
 shape: a hand-rolled SigV4 signer over a cloud object store, a secret kept in
 the OS keyring instead of the state directory, and conditional PUT for

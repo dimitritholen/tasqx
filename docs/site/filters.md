@@ -16,7 +16,7 @@ One small grammar, used everywhere a query is taken: `list`, `report`, `export`,
 | `project:work.tasqx` | Exact project match. |
 | `proj:work` | The same as `project:`. |
 | `priority:high` | Exact priority: `H`, `M`, `L`, or `high`, `medium`, `low`. |
-| `status:pending` | Exact status: `triage`, `backlog`, `pending`, `active`, `done`, `cancelled`. `backlog` is the date-held backlog; a proposal in `triage` (D238) is never in it. |
+| `status:pending` | Exact status: `triage`, `backlog`, `pending`, `active`, `done`, `cancelled`. `backlog` is the date-held backlog; a proposal in `triage` is never in it. |
 | `status:any` | Every status, `done` and `cancelled` included; also spelled `status:all`. Overrides a default that hides closed tasks. |
 | `weekly review` | Free text: a bare word is a case-insensitive substring of the title, and several words must all appear. Quote a phrase to match it as one — `"memory explorer"`. `title:review` and `title:"weekly planning"` are the explicit spelling; `%` and `_` are ordinary characters. |
 | `@working` | Status pending or active, *and* not blocked. The default filter. |
@@ -30,29 +30,26 @@ One small grammar, used everywhere a query is taken: `list`, `report`, `export`,
 ## Values with spaces
 
 A space separates predicates, so a project whose name contains one must be
-double-quoted — `project:"Home Renovation"`. (A tag never contains one: tags are
-stored lowercased and a spaced tag is refused, so `+API` matches `api`.) The
-rule is the shell's: inside quotes, spaces and parentheses are ordinary
-characters and `and`/`or` are ordinary words, so a project named `a (b)` no
-longer breaks the grouping. Write `\"` for a literal quote and `\\` for a
-literal backslash. Quoting changes where a predicate *ends*, not what it means:
-`"project:x"` is still a project match. The quotes must REACH tasqx: on a read
-path the argument boundary is not enough, because the reader does not guess that
-a space belongs inside a value rather than between two predicates. Protect them
-from your shell — `'project:"Home Renovation"'`.
+double-quoted: `project:"Home Renovation"`. A tag never contains one — tags are
+stored lowercased and a spaced tag is refused, so `+API` matches `api`.
 
-One scanner, not a filter dialect: `tasqx add` and `tasqx modify` split their
-inline sugar with the same code the filter uses. The two sides are not
-symmetric, though, and the difference is deliberate. The *write* side also
-honours the argument boundary your shell drew, so `tasqx add "paint"
-project:Home Renovation` files the task; the *read* side refuses the same words,
-because there `project:Home Renovation` is equally a spaced name and a project
-match plus a stray token, and guessing would answer with the wrong rows at exit
-0. A refused read costs a retype; a wrong one is unfalsifiable. So the spelling
-that works on both sides is the quoted one, and it is the one to learn. The
-value that needs the escaped form on both sides is a name containing a quote —
-`project:"My \"Big\" Project"` — because an argument carrying a literal quote is
-read by the scanner rather than taken whole.
+- Inside quotes, spaces and parentheses are ordinary characters and `and`/`or`
+  are ordinary words, so a project named `a (b)` does not break the grouping.
+- Write `\"` for a literal quote and `\\` for a literal backslash.
+- Quoting changes where a predicate *ends*, not what it means: `"project:x"` is
+  still a project match.
+- The quotes must reach tasqx, so protect them from your shell:
+  `'project:"Home Renovation"'`.
+
+`tasqx add` and `tasqx modify` split their inline sugar with the same scanner,
+but the two sides differ on purpose. The write side also honours the argument
+boundary your shell drew, so `tasqx add "paint" project:Home Renovation` files
+the task. The read side refuses the same words: `project:Home Renovation` could
+equally be a project match plus a stray token, and guessing would answer with
+the wrong rows at exit 0. A refused read costs a retype; a wrong one cannot be
+noticed. The quoted spelling works on both sides, so learn that one. A name
+containing a quote needs the escaped form on both sides:
+`project:"My \"Big\" Project"`.
 
 ```console
 tasqx list project:"Home Renovation" +paint
