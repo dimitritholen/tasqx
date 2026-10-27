@@ -45,7 +45,7 @@ Worth knowing:
 | `dashboard.panels` | `tasks,projects,burndown,pulse,effort,tokens` | Which panels the dashboard draws, in tab order |
 | `dashboard.refresh` | `auto` | `auto` re-reads on a timer, `manual` only on `r` |
 | `dashboard.window` | `week` | The burndown window it opens on (`week`, `14d`, `30d`); `w` cycles it |
-| `notify.enabled` | `false` | Lets the daemon raise OS notifications for reminders |
+| `notify.enabled` | `false` | Lets the daemon raise OS notifications for reminders; needs a build with the `notify-os` feature ([Reminders](Dates-Reminders-and-Recurrence.md#who-delivers-them)) |
 | `tokens.enabled` | `false` | Lets the daemon attribute AI token use from local tool transcripts |
 | `otlp.enabled` | `false` | Runs a local OTLP/HTTP receiver in the daemon for token telemetry |
 | `otlp.port` | `4318` | The port it binds on 127.0.0.1 |

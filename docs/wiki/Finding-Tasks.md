@@ -17,7 +17,7 @@ out).
 | `tasqx list project:work +api` | Narrowed |
 | `tasqx list due.before:friday` | Deadline pressure only |
 | `tasqx list --sort due --limit 20` | Order by a key (`-due` for descending, repeat or comma-separate several); the default is `-urgency` |
-| `tasqx list --fields short_id,title,due` | Return only those fields, mostly for `--json` |
+| `tasqx list --json --fields short_id,title,due` | Return only those fields; use it with `--json`, the human table is not projected |
 | `tasqx list --holder me` | Choose work as holder `me`: with `@working`, tasks someone else has claimed are left out |
 
 A list shows at most 100 rows. When more match, the head says so (`100 of 192

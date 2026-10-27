@@ -52,7 +52,9 @@ That installs `tasqx` alone. To [sync between machines](../wiki/Syncing-Between-
 also build the connector you use:
 
 ```console
+# a synced folder
 cargo install --path crates/tasqx-remote-dir --force
+# or an R2 bucket
 cargo install --path crates/tasqx-remote-r2 --force
 ```
 

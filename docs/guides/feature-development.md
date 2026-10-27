@@ -57,8 +57,10 @@ tasqx start 1
 tasqx done 1
 ```
 
-If your pull requests follow the `task/<id>-<slug>` branch naming, `tasqx git event`
-can start and complete the task from the PR itself; see
+If your pull requests follow the `task/<id>-<slug>` branch naming, `tasqx git event`,
+called from a CI step, a hook or a script, can start and complete the task when
+the PR opens and merges (a merge completes it only when every check passed and
+nothing blocks it); see
 [Working on Tasks](../wiki/Working-on-Tasks.md#tasqx-git). Moving to another
 machine? See [Syncing Between Machines](../wiki/Syncing-Between-Machines.md).
 
