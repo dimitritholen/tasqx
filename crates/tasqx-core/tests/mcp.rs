@@ -4536,6 +4536,66 @@ fn an_unpaged_list_memory_call_is_twenty_narrow_rows() {
     }
 }
 
+/// D250: both new filters, with `standing: true`, walk a page at a time across
+/// `next_offset` and end with a null one, each doc exactly once.
+#[test]
+fn list_memory_unscoped_filters_page_across_next_offset_with_standing() {
+    let engine = engine();
+    for i in 0..5 {
+        add_doc(&engine, &format!("global {i}"), "b", None, true);
+        add_doc(&engine, &format!("alpha {i}"), "b", Some("alpha"), true);
+        add_doc(&engine, &format!("beta {i}"), "b", Some("beta"), true);
+    }
+    add_doc(&engine, "global plain", "b", None, false);
+    let server = McpServer::new(&engine, Scope::Read);
+    for (args, prefixes, total) in [
+        (
+            json!({ "unscoped_only": true, "standing": true }),
+            vec!["global"],
+            5,
+        ),
+        (
+            json!({ "project": "alpha", "include_unscoped": true, "standing": true }),
+            vec!["global", "alpha"],
+            10,
+        ),
+    ] {
+        let mut seen: Vec<String> = Vec::new();
+        let mut offset = 0;
+        loop {
+            let mut a = args.clone();
+            a["limit"] = json!(3);
+            a["offset"] = json!(offset);
+            let body = tool_json(&call(&server, 1, "tasqx_list_memory", a));
+            assert_eq!(body["total"], json!(total), "{body}");
+            for d in body["docs"].as_array().expect("docs") {
+                seen.push(d["title"].as_str().expect("title").to_string());
+            }
+            match body["next_offset"].as_u64() {
+                Some(n) => offset = n,
+                None => break,
+            }
+        }
+        assert_eq!(seen.len(), total, "{seen:?}");
+        let mut dedup = seen.clone();
+        dedup.sort();
+        dedup.dedup();
+        assert_eq!(dedup.len(), total, "no doc twice: {seen:?}");
+        assert!(
+            seen.iter()
+                .all(|t| prefixes.iter().any(|p| t.starts_with(p)) && t != "global plain"),
+            "{seen:?}"
+        );
+    }
+    let refused = call(
+        &server,
+        2,
+        "tasqx_list_memory",
+        json!({ "include_unscoped": true }),
+    );
+    assert!(is_error(&refused), "{refused}");
+}
+
 /// The narrowing is about the ROW and the page is about how many, so a caller
 /// that names its own `limit` still gets the compact row.
 #[test]

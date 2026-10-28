@@ -371,6 +371,21 @@ fn fuse(lists: &[Ranked<'_>], via_of: &dyn Fn(&HitKey) -> Via) -> Vec<Fused> {
     out
 }
 
+/// `include_unscoped` (D136), shared by `memory.search` and `memory.list`
+/// (D250): true only with a `project` to widen from.
+fn include_unscoped_flag(p: &Value, has_project: bool) -> Result<bool, ApiError> {
+    let flag = opt_bool(p, "include_unscoped")?.unwrap_or(false);
+    if flag && !has_project {
+        // D33: a value that changes nothing is refused rather than
+        // accepted and ignored.
+        return Err(ApiError::bad_request(
+            "`include_unscoped` widens a `project` scope to documents that have no \
+             project, so it needs a `project` to widen from",
+        ));
+    }
+    Ok(flag)
+}
+
 /// What one `memory.search` looks through and how much it hands back: the
 /// params every side reads, validated once.
 struct SearchWindow<'a> {
@@ -422,15 +437,7 @@ impl<'a> SearchWindow<'a> {
         // project scope hides every ADR a reader fed the store. Opt-in and
         // additive, because D115's strict scope stays the right answer when a
         // caller is asking about one project's own notes.
-        let include_unscoped = opt_bool(p, "include_unscoped")?.unwrap_or(false);
-        if include_unscoped && project.is_none() {
-            // D33: a value that changes nothing is refused rather than
-            // accepted and ignored.
-            return Err(ApiError::bad_request(
-                "`include_unscoped` widens a `project` scope to documents that have no \
-                 project, so it needs a `project` to widen from",
-            ));
-        }
+        let include_unscoped = include_unscoped_flag(p, project.is_some())?;
         Ok(SearchWindow {
             limit,
             scope,
@@ -2176,6 +2183,21 @@ impl Engine {
         // `false` only the rest — a filter, not a sort, so "what is standing
         // here?" is one call whose answer does not depend on recency.
         let standing = opt_bool(p, "standing")?;
+        // D250: `include_unscoped` adds the no-project docs to one project's;
+        // `unscoped_only` lists only them. Omitted `project` stays whole-store.
+        let unscoped_only = opt_bool(p, "unscoped_only")?.unwrap_or(false);
+        if unscoped_only && project.is_some() {
+            return Err(ApiError::bad_request(
+                "`unscoped_only` lists documents that have no project, so it cannot be \
+                 combined with `project`",
+            ));
+        }
+        if unscoped_only && opt_bool(p, "include_unscoped")?.unwrap_or(false) {
+            return Err(ApiError::bad_request(
+                "`unscoped_only` cannot be combined with `include_unscoped`",
+            ));
+        }
+        let include_unscoped = include_unscoped_flag(p, project.is_some())?;
         let offset = opt_u64(p, "offset")?.unwrap_or(0);
         let offset_i64 = i64::try_from(offset).map_err(|_| {
             ApiError::bad_request(format!(
@@ -2201,7 +2223,14 @@ impl Engine {
         // list of every statement, including the calls that name none.
         let mut conds: Vec<&str> = Vec::new();
         if project.is_some() {
-            conds.push("project = :project");
+            conds.push(if include_unscoped {
+                "(project = :project OR project IS NULL)"
+            } else {
+                "project = :project"
+            });
+        }
+        if unscoped_only {
+            conds.push("project IS NULL");
         }
         if let Some(flag) = standing {
             conds.push(if flag { "standing = 1" } else { "standing = 0" });

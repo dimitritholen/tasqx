@@ -31,6 +31,12 @@ Options:
       --standing
           Only standing docs. Like `--limit`, prints the table
 
+      --include-unscoped
+          With --project, also list docs that have no project (D250). Prints the table
+
+      --unscoped-only
+          Only docs that have no project (D250). Prints the table
+
   -h, --help
           Print help (see a summary with '-h')
 

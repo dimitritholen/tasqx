@@ -823,7 +823,7 @@ An agent must never dither over *which* tool. So: **one verb = one tool**, names
 | `tasqx_add_dependency` | W | `ref`, `depends_on` (short_id or UUID) | `{short_id, depends_on[], blocked}`; cycle → `conflict` | `dependency.add` |
 | `tasqx_remove_dependency` | W | `ref`, `depends_on` | `{short_id, depends_on[], blocked}` (D67) | `dependency.remove` |
 | `tasqx_get_memory` | R | `id` | `{id, title, body, source, created, modified}` (D71) — one doc whole; an annotation id is refused, naming `task.get` | `memory.get` |
-| `tasqx_list_memory` | R | `limit?` (default 20), `offset?`, `project?`, `include_preview?` | `{count, total, next_offset, docs[]}`; a default row is the compact `id, title, source, modified`, and `include_preview: true` asks for the engine's own nine-key row (`project`, `created`, `_rev`, `body_preview`, `body_truncated` included) (**D154**) | `memory.list` |
+| `tasqx_list_memory` | R | `limit?` (default 20), `offset?`, `project?`, `standing?`, `include_unscoped?`, `unscoped_only?` (**D250**), `include_preview?` | `{count, total, next_offset, docs[]}`; a default row is the compact `id, title, source, modified`, and `include_preview: true` asks for the engine's own nine-key row (`project`, `created`, `_rev`, `body_preview`, `body_truncated` included) (**D154**) | `memory.list` |
 | `tasqx_add_memory` | W | `title`, `body`, `source?` | `{id, title, created}` (D41) | `memory.add` |
 | `tasqx_remove_memory` | W | `id` | `{id, removed}` (D64) — permanent, outside `undo` | `memory.remove` |
 | `tasqx_create_project` | W | `name`, `description?` | `{id, name}` | `project.create` |
@@ -5216,3 +5216,15 @@ Rulings: `task.brief` takes optional `rulings: true` and `workdir`, and then ans
 **Rejected: a hard refusal.** It would block edits to legacy docs that already carry a long title.
 
 **Where:** `STANDING_TITLE_MAX` in `crates/tasqx-core/src/engine.rs`; `with_standing_title_warning`, `standing_title_made_long` in `crates/tasqx-core/src/engine/memory.rs`. Tests: the `*_title_*` cases in `crates/tasqx-core/tests/memory.rs`.
+
+### D250 — `memory.list` gains `include_unscoped` and `unscoped_only`, so standing rulings a size budget omitted can be fetched by scope (task #4195; extends D115 #134, D136, D156)
+
+**Decision.** `memory.list` takes two additive optional booleans. `include_unscoped: true` requires `project` and adds the docs with no project to that project's docs; without `project` it is refused `bad_request` with `memory.search`'s own wording (the two share one check, `include_unscoped_flag`). `unscoped_only: true` lists only docs with no project; with `project`, or with `include_unscoped`, it is refused `bad_request`. An omitted `project` keeps its whole-store meaning, and both filters combine with `standing` and with `limit`/`offset`/`next_offset` as before. `tasqx_list_memory` carries both; `tasqx memory list` gains `--include-unscoped` and `--unscoped-only`, which print the table like the other paging flags. Nothing in the response changes (D56).
+
+**Why.** The MCP initialize instructions show the standing rulings for the session's project plus the unscoped ones, within a byte budget. A footer telling an agent to fetch what was omitted needs a call that returns exactly that scope; `project` alone excluded the unscoped rulings and an omitted `project` returned every project's. The flags mirror `memory.search` (D136) so one spelling means one thing.
+
+**Rejected: making `project` on `memory.list` include unscoped docs by default.** It would change the meaning of an existing call (D115 #134's strict scope).
+
+**Rejected: a separate method for the footer's fetch.** The browse method already pages, filters on `standing` and shares the row shape.
+
+**Where:** `Engine::memory_list`, `include_unscoped_flag` in `crates/tasqx-core/src/engine/memory.rs`; `dispatch::PARAMS`; `tasqx_list_memory` in `crates/tasqx-core/src/mcp.rs`. Tests: `memory_list_*` in `crates/tasqx-core/tests/memory.rs`, `list_memory_unscoped_filters_page_across_next_offset_with_standing` in `crates/tasqx-core/tests/mcp.rs`.

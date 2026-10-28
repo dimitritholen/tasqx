@@ -1602,6 +1602,8 @@ pub(crate) fn run_memory(be: &mut Backend, ctx: &Ctx, action: &MemoryAction) -> 
             offset,
             project,
             standing,
+            include_unscoped,
+            unscoped_only,
         } => {
             let mut params = json!({ "offset": offset });
             if let Some(n) = limit {
@@ -1612,6 +1614,12 @@ pub(crate) fn run_memory(be: &mut Backend, ctx: &Ctx, action: &MemoryAction) -> 
             }
             if *standing {
                 params["standing"] = json!(true);
+            }
+            if *include_unscoped {
+                params["include_unscoped"] = json!(true);
+            }
+            if *unscoped_only {
+                params["unscoped_only"] = json!(true);
             }
             let result = be.call("memory.list", &params)?;
             let text = render::memory_table(ctx, &result, crate::clock::now());

@@ -1127,9 +1127,8 @@ fn build_tool_specs() -> Vec<ToolSpec> {
             write: false,
             destructive: false,
             idempotent: true,
-            description: "Browse memory docs without knowing a word inside one — what \
-                `tasqx_search_memory` cannot do without a query. Newest-modified first, paged \
-                like `tasqx_list_tasks`. A row is `id`, `title`, `source` and `modified`, \
+            description: "Browse memory docs without a query, which `tasqx_search_memory` \
+                needs. Newest-modified first, paged like `tasqx_list_tasks`. A row is `id`, `title`, `source` and `modified`, \
                 enough to RECOGNISE a doc; `include_preview: true` adds the rest, and \
                 `tasqx_get_memory` reads one whole (D154).",
             schema: json!({
@@ -1139,29 +1138,34 @@ fn build_tool_specs() -> Vec<ToolSpec> {
                         "type": "integer",
                         "minimum": 0,
                         "description": format!(
-                            "Rows to return; default {MEMORY_LIST_PAGE}, because an unbounded \
-                             browse page grows with the store."
+                            "Rows to return; default {MEMORY_LIST_PAGE}."
                         )
                     },
                     "include_preview": {
                         "type": "boolean",
-                        "description": "Return the whole engine row — `project`, `created`, \
-                             `_rev`, a 160-character `body_preview`, `body_truncated` — \
-                             instead of the four identifying fields. Default false (D154)."
+                        "description": "Return the whole engine row (`project`, `created`, `_rev`, \
+                             `body_preview`, `body_truncated`), not four fields. Default false (D154)."
                     },
                     "offset": {
                         "type": "integer",
                         "minimum": 0,
-                        "description": "Matching docs to skip; pass the previous response's `next_offset`."
+                        "description": "Docs to skip; pass the last `next_offset`."
                     },
                     "project": {
                         "type": "string",
-                        "description": "Restrict to docs stored with this `project`. Omit to list every doc."
+                        "description": "Only docs stored with this project; omit for all."
                     },
                     "standing": {
                         "type": "boolean",
-                        "description": "true lists only standing docs, false only the rest; \
-                            omit for all (D156)."
+                        "description": "true: only standing docs; false: only the rest (D156)."
+                    },
+                    "include_unscoped": {
+                        "type": "boolean",
+                        "description": "Also docs with no project; needs `project` (D250)."
+                    },
+                    "unscoped_only": {
+                        "type": "boolean",
+                        "description": "Only docs with no project; excludes `project` (D250)."
                     }
                 }
             }),

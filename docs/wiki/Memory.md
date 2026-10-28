@@ -43,6 +43,7 @@ tasqx memory list
   document instead — a screen would be the wrong answer to a pipe.
 - Newest-modified first, paged the same way as `tasqx list`.
 - `--standing` lists only the standing docs (and prints the table).
+- `--include-unscoped` (with `--project`) adds the docs that belong to no project; `--unscoped-only` lists only those (both print the table).
 
 ## tasqx memory search
 
