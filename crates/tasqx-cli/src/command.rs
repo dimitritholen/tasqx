@@ -1308,14 +1308,15 @@ pub(super) enum Command {
     /// The hook command `tasqx work` registers with the agent (no API call).
     ///
     /// The agent runs it on its session events with the event's JSON on
-    /// stdin (D248). It acts only inside the `tasqx work` session it was
-    /// registered for, named by TASQX_WORK_TASK and TASQX_WORK_SESSION, and
-    /// never breaks the agent: anything it cannot do is a line on stderr, and
-    /// it exits 0. You do not run it yourself.
+    /// stdin (D248, D256). It acts only inside the `tasqx work` session it was
+    /// registered for, named by TASQX_WORK_TASK and TASQX_WORK_SESSION (for
+    /// codex, TASQX_WORK_SESSIONS), and never breaks the agent: anything it
+    /// cannot do is a line on stderr, and it exits 0. You do not run it
+    /// yourself.
     #[command(after_help = crate::cmddoc::after_help("hook"))]
     Hook {
         /// The agent whose hook this is.
-        #[arg(value_parser = PossibleValuesParser::new(["claude"]))]
+        #[arg(value_parser = PossibleValuesParser::new(crate::work::AGENTS))]
         agent: String,
     },
     /// Explain a task's urgency breakdown (maps to task.get + the D1 formula).

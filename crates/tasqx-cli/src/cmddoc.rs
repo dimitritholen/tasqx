@@ -360,14 +360,16 @@ pub const COMMAND_REF: &[CmdDoc] = &[
         aliases: &[],
         method: "— (no store)",
         summary: "The hook command `tasqx work` registers with the agent.",
-        usage: "tasqx hook claude",
+        usage: "tasqx hook claude|codex",
         examples: &[
             // `NoRun`: the agent runs it, with its event JSON on stdin.
             ex_norun("tasqx hook claude", "what Claude Code runs on a session event"),
+            ex_norun("tasqx hook codex", "what Codex runs on a session event"),
         ],
         notes: &[
             "`tasqx work --agent claude` registers this one command for the session's `SessionStart` and `SessionEnd` events through `--settings`, without touching `~/.claude` (D248). The command never varies; the event is read from the JSON the agent writes on stdin.",
-            "It acts only inside the `tasqx work` session it was registered for: without `TASQX_WORK_TASK`, or when the input's `session_id` is not `TASQX_WORK_SESSION`, it does nothing. Both events record nothing yet. A work session's tokens are measured from its transcript when the task completes, by a running daemon with `tasqx config set tokens.enabled true` (off by default); until such a daemon runs, the session stays unmeasured, and it is measured once one does, while its transcript is still on disk.",
+            "Codex gets `tasqx hook codex` the same way from `tasqx work --agent codex`, through `-c hooks.*`, without touching `~/.codex` (D256). Codex runs a hook only once you trust it: run `/hooks` in codex once and trust `tasqx hook codex`. Until then codex skips it silently, and `tasqx work` finds the session from its rollout after codex exits, and says so once.",
+            "It acts only inside the `tasqx work` session it was registered for: without `TASQX_WORK_TASK`, or for claude when the input's `session_id` is not `TASQX_WORK_SESSION`, it does nothing. Codex picks its own session id, so on `SessionStart` `tasqx hook codex` hands that id to `tasqx work`, which records it on the task when codex exits. Nothing else is recorded yet. A work session's tokens are measured from its transcript when the task completes, by a running daemon with `tasqx config set tokens.enabled true` (off by default); until such a daemon runs, the session stays unmeasured, and it is measured once one does, while its transcript is still on disk.",
             "It never breaks the agent: input it cannot read or an event it does not know is one line on stderr, and it exits 0. You do not run it yourself.",
         ],
         see_also: &["work"],

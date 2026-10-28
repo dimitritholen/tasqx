@@ -62,9 +62,9 @@ pub struct CodexSessionMeta {
     /// [`crate::tokens::CONFIDENCE_HIGH`], and during discovery an id that is
     /// known but different is how every unrelated rollout gets skipped.
     pub id: Option<String>,
-    /// The working directory Codex ran in. Parsed and exposed for cwd-based
-    /// attribution, but nothing reads it today: tasqx captures no cwd on a task,
-    /// so there is nothing to compare it against (see [`crate::attribution`]).
+    /// The working directory Codex ran in. Attribution does not read it, since
+    /// tasqx captures no cwd on a task; [`sessions_started`] does, to find the
+    /// rollout a `tasqx work` launch wrote (D256).
     pub cwd: Option<String>,
     /// The Codex CLI build that wrote the file, for diagnostics. Worth having
     /// because the rollout format is an undocumented internal that has already
@@ -253,6 +253,13 @@ pub fn samples_from_file(path: &Path) -> Result<Vec<UsageSample>, ApiError> {
 /// Returns `Ok(None)` when no `session_meta` line is present (e.g. a truncated
 /// or non-Codex file); opening the file is the only hard error.
 pub fn session_meta(path: &Path) -> Result<Option<CodexSessionMeta>, ApiError> {
+    Ok(meta_and_start(path)?.map(|(m, _)| m))
+}
+
+/// [`session_meta`] and the time the session started, as Codex wrote it. The
+/// start rides beside the public struct, not on it, so that struct keeps its
+/// released shape (D235's pattern): `tasqx-core` stays semver-minor.
+fn meta_and_start(path: &Path) -> Result<Option<(CodexSessionMeta, Option<String>)>, ApiError> {
     // See `samples_from_file`: lossy decode so a non-UTF8 byte cannot turn a
     // best-effort read into a hard error.
     let bytes = std::fs::read(path).map_err(|e| {
@@ -284,14 +291,43 @@ pub fn session_meta(path: &Path) -> Result<Option<CodexSessionMeta>, ApiError> {
                 .filter(|s| !s.is_empty())
                 .map(str::to_string)
         };
-        return Ok(Some(CodexSessionMeta {
+        let meta = CodexSessionMeta {
             id: str_field("id"),
             cwd: str_field("cwd"),
             cli_version: str_field("cli_version"),
-        }));
+        };
+        // Some rollouts carry the start only on the outer record.
+        let start = str_field("timestamp").or_else(|| {
+            value
+                .get("timestamp")
+                .and_then(Value::as_str)
+                .filter(|s| !s.is_empty())
+                .map(str::to_string)
+        });
+        return Ok(Some((meta, start)));
     }
 
     Ok(None)
+}
+
+/// The ids of the sessions Codex started in `cwd` at or after `since`, from
+/// the rollouts under `roots` written since then (D256): how `tasqx work`
+/// learns the id of a session it launched when the hook that would have told
+/// it did not run. Directories compare by their canonical path.
+pub fn sessions_started(roots: &[PathBuf], cwd: &Path, since: jiff::Timestamp) -> Vec<String> {
+    let canon = |p: &Path| std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
+    let cwd = canon(cwd);
+    crate::attribution::locate_candidates(roots, since)
+        .iter()
+        .filter_map(|path| meta_and_start(path).ok().flatten())
+        .filter(|(m, _)| m.cwd.as_deref().is_some_and(|c| canon(Path::new(c)) == cwd))
+        .filter(|(_, ts)| {
+            ts.as_deref()
+                .and_then(|t| t.parse::<jiff::Timestamp>().ok())
+                .is_some_and(|t| t >= since)
+        })
+        .filter_map(|(m, _)| m.id)
+        .collect()
 }
 
 /// The directories Codex writes session data into: `sessions/` and
@@ -607,5 +643,58 @@ mod tests {
             ]
         );
         assert!(roots_from(None, None).is_empty());
+    }
+
+    /// D256: a launch finds the sessions Codex started in its directory since
+    /// it launched, and no older session there or newer one elsewhere.
+    #[test]
+    fn sessions_started_are_this_directorys_since_the_launch() {
+        let root =
+            std::env::temp_dir().join(format!("tasqx-codex-roots-{}", crate::clock::uuid_v7()));
+        let day = root.join("2026").join("10").join("27");
+        std::fs::create_dir_all(&day).unwrap();
+        let here = root.join("here");
+        let elsewhere = root.join("elsewhere");
+        std::fs::create_dir_all(&here).unwrap();
+        std::fs::create_dir_all(&elsewhere).unwrap();
+        let since: jiff::Timestamp = "2026-10-27T12:00:00.500Z".parse().unwrap();
+        let rollout = |name: &str, id: &str, cwd: &Path, ts: &str| {
+            let meta = serde_json::json!({
+                "timestamp": ts, "type": "session_meta",
+                "payload": { "id": id, "cwd": cwd, "timestamp": ts },
+            });
+            std::fs::write(day.join(format!("{name}.jsonl")), format!("{meta}\n")).unwrap();
+        };
+        rollout("old", "old", &here, "2026-10-27T12:00:00.499Z");
+        rollout("other", "other", &elsewhere, "2026-10-27T12:00:01Z");
+        rollout("mine", "mine", &here, "2026-10-27T12:00:00.500Z");
+        let found = |cwd: &Path| sessions_started(std::slice::from_ref(&root), cwd, since);
+        assert_eq!(found(&here), ["mine"]);
+        // The same directory spelled through `..` is the same directory.
+        assert_eq!(
+            found(&root.join("elsewhere").join("..").join("here")),
+            ["mine"]
+        );
+        // A second session in it is found too: which one was the launch's is
+        // for the caller to decide.
+        rollout("mine2", "mine2", &here, "2026-10-27T12:00:02Z");
+        let mut both = found(&here);
+        both.sort();
+        assert_eq!(both, ["mine", "mine2"]);
+        // A start carried only on the outer record is read from there.
+        let meta = serde_json::json!({
+            "timestamp": "2026-10-27T12:00:03Z", "type": "session_meta",
+            "payload": { "id": "outer", "cwd": elsewhere },
+        });
+        std::fs::write(day.join("outer.jsonl"), format!("{meta}\n")).unwrap();
+        let mut seen = found(&elsewhere);
+        seen.sort();
+        assert_eq!(seen, ["other", "outer"]);
+        std::fs::remove_file(day.join("outer.jsonl")).unwrap();
+        // A rollout with no start time is not provably this launch's.
+        let meta = serde_json::json!({ "type": "session_meta", "payload": { "id": "x", "cwd": elsewhere } });
+        std::fs::write(day.join("bare.jsonl"), format!("{meta}\n")).unwrap();
+        assert_eq!(found(&elsewhere), ["other"]);
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

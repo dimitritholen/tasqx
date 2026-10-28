@@ -3183,6 +3183,15 @@ fn cases() -> Vec<Case> {
             R_EVENT_LIST,
         ),
         case(
+            "event.list",
+            "in append order (`order: \"append\"`, D256)",
+            |e| {
+                plain_task(e);
+                json!({ "ref": 1, "order": "append" })
+            },
+            R_EVENT_LIST,
+        ),
+        case(
             "event.revert",
             "undoing the newest event, a `tag.remove` (D54)",
             |e| {
@@ -3483,6 +3492,13 @@ fn error_cases() -> Vec<(&'static str, String, &'static str)> {
             "a params key the method does not read (D33)",
             json!({ "tasqx": "1", "id": "e", "method": "task.add",
                     "params": { "title": "x", "prioritee": "H" } })
+            .to_string(),
+            "bad_request",
+        ),
+        (
+            "append order with an id-range bound (D256)",
+            json!({ "tasqx": "1", "id": "e", "method": "event.list",
+                    "params": { "order": "append", "from": "-1d" } })
             .to_string(),
             "bad_request",
         ),

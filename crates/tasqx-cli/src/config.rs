@@ -333,6 +333,19 @@ pub const SETTINGS: &[Setting] = &[
         summary: "The agent CLI `tasqx work` launches when `--agent` is not given; \
                   unset, it asks once and remembers (D245).",
     },
+    Setting {
+        key: "work.codex_hook_hint",
+        home: Home::Toml,
+        kind: Kind::Bool,
+        // `tasqx work` sets it false once it has said how to trust its codex
+        // hook (D256).
+        default: "true",
+        env: None,
+        flag: None,
+        choices: Choices::Free,
+        summary: "Whether `tasqx work` says, the next time codex skips its untrusted hook, \
+                  how to trust it; it is set false once said (D256).",
+    },
 ];
 
 pub fn find(key: &str) -> Option<&'static Setting> {
@@ -1743,6 +1756,7 @@ add_status = "triage"
 
 [work]
 agent = "codex"
+codex_hook_hint = false
 
 [extra]
 thing = 1
@@ -1767,6 +1781,7 @@ x = 1
             ("detail.time_format", "iso"),
             ("mcp.add_status", "triage"),
             ("work.agent", "codex"),
+            ("work.codex_hook_hint", "false"),
         ];
         let toml_keys: Vec<&str> = SETTINGS
             .iter()
