@@ -959,17 +959,17 @@ fn done_in_session(s: &Store, hooked: &str, args: &[&str]) -> Output {
         .unwrap()
 }
 
-/// Untrusted hook: no id to name, so the done is correlated by client only,
-/// and attribution reads codex's rollouts over the task's window.
+/// Untrusted hook and no rollout to match: the launch's session is unknown,
+/// so nothing is added. A client alone would read every codex rollout in the
+/// window, other projects' too: under-counting beats over-counting.
 #[test]
-fn a_done_inside_a_codex_session_without_a_hooked_id_names_codex_only() {
+fn a_done_inside_a_codex_session_without_a_known_session_adds_nothing() {
     let s = Store::new("codex-done-nohook");
     s.seed();
     let out = done_in_session(&s, "", &["1"]);
     assert!(out.status.success(), "{out:?}");
     let p = done_payload(&s, "1");
-    assert_eq!(p["client"], "codex", "{p}");
-    assert!(p["session_id"].is_null(), "{p}");
+    assert!(p["client"].is_null() && p["session_id"].is_null(), "{p}");
 }
 
 /// Correlation the caller passed is never overridden, and a done of another
@@ -1076,18 +1076,18 @@ fn a_session_before_the_previous_done_does_not_hold_the_correlation_back() {
 }
 
 /// Two distinct sessions hooked in one launch (a `/new` inside codex): a
-/// done naming one would leave the other out, so it names codex only. The
-/// same id hooked twice (a resume) is still one session.
+/// done naming one would leave the other out, and naming codex alone would
+/// read other projects' rollouts, so nothing is added. The same id hooked
+/// twice (a resume) is still one session.
 #[test]
-fn a_done_after_two_hooked_sessions_names_codex_only() {
+fn a_done_after_two_hooked_sessions_adds_nothing() {
     let s = Store::new("codex-done-two");
     s.seed();
     s.ok(&["add", "Something else"]);
     let out = done_in_session(&s, &format!("{CODEX_ID}\nsecond\n"), &["1"]);
     assert!(out.status.success(), "{out:?}");
     let p = done_payload(&s, "1");
-    assert_eq!(p["client"], "codex", "{p}");
-    assert!(p["session_id"].is_null(), "{p}");
+    assert!(p["client"].is_null() && p["session_id"].is_null(), "{p}");
 
     let file = s.dir.join("sessions");
     std::fs::write(&file, format!("{CODEX_ID}\n{CODEX_ID}\n")).unwrap();
@@ -1100,4 +1100,112 @@ fn a_done_after_two_hooked_sessions_names_codex_only() {
         .unwrap();
     assert!(out.status.success(), "{out:?}");
     assert_eq!(done_payload(&s, "2")["session_id"], CODEX_ID);
+}
+
+/// A rollout as codex writes it, under the store's `$HOME/.codex`, started
+/// in `cwd` at `ts`.
+fn write_rollout(s: &Store, id: &str, cwd: &Path, ts: &str) {
+    let day = dir_home(&s.dir).join(".codex/sessions/2026/10/28");
+    std::fs::create_dir_all(&day).unwrap();
+    let meta = serde_json::json!({
+        "type": "session_meta",
+        "payload": { "id": id, "cwd": cwd, "timestamp": ts },
+    });
+    std::fs::write(day.join(format!("rollout-{id}.jsonl")), format!("{meta}\n")).unwrap();
+}
+
+/// `tasqx done 1` inside a codex launch on task 1 whose hook wrote nothing,
+/// launched in `launch_cwd` at `since`, run from another directory (the
+/// agent may have changed it).
+fn done_unhooked(s: &Store, launch_cwd: &Path, since: &str) -> Value {
+    let file = s.dir.join("sessions");
+    std::fs::write(&file, "").unwrap();
+    let elsewhere = s.dir.join("elsewhere");
+    std::fs::create_dir_all(&elsewhere).unwrap();
+    let out = s
+        .tasqx()
+        .current_dir(&elsewhere)
+        .env("TASQX_WORK_TASK", "1")
+        .env("TASQX_WORK_SESSIONS", &file)
+        .env("TASQX_WORK_CWD", launch_cwd)
+        .env("TASQX_WORK_SINCE", since)
+        .args(["done", "1"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{out:?}");
+    done_payload(s, "1")
+}
+
+const SINCE: &str = "2020-01-01T10:00:00Z";
+
+/// D249: an untrusted hook leaves the id to the rollout match the post-exit
+/// step uses, run at done time with the launch's directory and start: one
+/// match is the launch's session.
+#[test]
+fn an_unhooked_done_names_the_one_rollout_of_the_launch() {
+    let s = Store::new("codex-done-rollout");
+    s.seed();
+    let launch = s.dir.join("project");
+    std::fs::create_dir_all(&launch).unwrap();
+    write_rollout(&s, CODEX_ID, &launch, "2020-01-01T10:00:01Z");
+    // Another project's codex, and one started before the launch here.
+    write_rollout(
+        &s,
+        "elsewhere",
+        &s.dir.join("elsewhere"),
+        "2020-01-01T10:00:02Z",
+    );
+    write_rollout(&s, "before", &launch, "2020-01-01T09:59:59Z");
+    let p = done_unhooked(&s, &launch, SINCE);
+    assert_eq!(p["client"], "codex", "{p}");
+    assert_eq!(p["session_id"], CODEX_ID, "{p}");
+}
+
+/// Two rollouts of this launch's directory since it started: which one is
+/// the launch's is unknown, so nothing is added.
+#[test]
+fn an_unhooked_done_with_two_matching_rollouts_adds_nothing() {
+    let s = Store::new("codex-done-rollout-two");
+    s.seed();
+    let launch = s.dir.join("project");
+    std::fs::create_dir_all(&launch).unwrap();
+    write_rollout(&s, CODEX_ID, &launch, "2020-01-01T10:00:01Z");
+    write_rollout(&s, "beside-it", &launch, "2020-01-01T10:00:02Z");
+    let p = done_unhooked(&s, &launch, SINCE);
+    assert!(p["client"].is_null() && p["session_id"].is_null(), "{p}");
+}
+
+/// A nested launch clears the launch directory and start too.
+#[test]
+fn a_nested_launch_does_not_inherit_the_launch_directory_or_start() {
+    let s = Store::new("nested-cwd");
+    s.seed();
+    s.fake_agent("claude", 0);
+    let out = s
+        .tasqx()
+        .env("TASQX_WORK_CWD", "/outer")
+        .env("TASQX_WORK_SINCE", SINCE)
+        .args(["work", "1", "--agent", "claude"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{out:?}");
+    assert_eq!(s.env_of("claude", "TASQX_WORK_CWD"), "");
+    assert_eq!(s.env_of("claude", "TASQX_WORK_SINCE"), "");
+}
+
+/// End to end: an untrusted hook, the agent finishes the task before codex
+/// exits, and `work` handed the done its launch directory and start, so the
+/// done names the rollout codex wrote for this launch.
+#[test]
+fn an_unhooked_codex_session_finishing_its_task_names_its_rollout() {
+    let s = Store::new("codex-done-unhooked-e2e");
+    s.seed();
+    let then = format!("{}; {}", rollout_sh(CODEX_ID), done_sh(&s));
+    s.fake_agent_then("codex", 0, &then);
+    let out = s.run(&["work", "1", "--agent", "codex"]);
+    assert!(out.status.success(), "{out:?}");
+    assert_eq!(s.task("1")["status"], "done", "{}", s.read("done.out"));
+    let p = done_payload(&s, "1");
+    assert_eq!(p["client"], "codex", "{p}");
+    assert_eq!(p["session_id"], CODEX_ID, "{p}");
 }

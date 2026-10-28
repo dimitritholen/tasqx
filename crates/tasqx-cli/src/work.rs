@@ -425,6 +425,18 @@ fn launch(be: &mut Backend, ctx: &Ctx, task_ref: &str, agent: &'static str) -> C
             .as_str()
             .and_then(|t| t.parse::<jiff::Timestamp>().ok())
     });
+    // Codex's id file, and where and when codex was launched, for a done
+    // run inside it (`launch_session`).
+    let mut codex_env: Vec<(&str, std::ffi::OsString)> = Vec::new();
+    if let Some(file) = &sessions {
+        codex_env.push(("TASQX_WORK_SESSIONS", file.into()));
+        if let Some(cwd) = &workdir {
+            codex_env.push(("TASQX_WORK_CWD", cwd.into()));
+        }
+        if let Some(since) = since {
+            codex_env.push(("TASQX_WORK_SINCE", since.to_string().into()));
+        }
+    }
     let ran = started.and_then(|_| {
         // Ctrl-C belongs to the agent: tasqx must outlive it to clean up.
         let _ = ctrlc::set_handler(|| {});
@@ -434,13 +446,16 @@ fn launch(be: &mut Backend, ctx: &Ctx, task_ref: &str, agent: &'static str) -> C
         }
         // A launch inside a codex session must not hand that session's file
         // on: the child's `tasqx done` would read as codex (D249).
-        child.env_remove("TASQX_WORK_SESSIONS");
+        child
+            .env_remove("TASQX_WORK_SESSIONS")
+            .env_remove("TASQX_WORK_CWD")
+            .env_remove("TASQX_WORK_SINCE");
         child
             .args(agent_args(agent, &session, &path, &context))
             .env("TASQX_WORK_TASK", sid.to_string())
             .env("TASQX_WORK_SESSION", &session)
             .env("TASQX_WORK_CONTEXT", &path)
-            .envs(sessions.iter().map(|f| ("TASQX_WORK_SESSIONS", f)))
+            .envs(codex_env)
             .envs(route)
             .status()
             .map_err(|e| ApiError::internal(format!("could not run {}: {e}", program.display())))
@@ -602,15 +617,35 @@ pub(crate) fn codex_done_correlation(be: &mut Backend, params: &mut Value) {
     if earlier {
         return;
     }
-    params["client"] = json!("codex");
-    // One session names it; with several (a `/new` inside codex), naming
-    // one would leave the others out, so the done is correlated by client.
+    // Never by client alone: that reads every codex rollout in the window,
+    // other projects' too. Unknown, the cycle is under-counted instead.
+    if let Some(id) = launch_session(&file) {
+        params["client"] = json!("codex");
+        params["session_id"] = json!(id);
+    }
+}
+
+/// The launch's codex session while codex still runs: the one id its hook
+/// wrote, else the one rollout codex started in the launch directory since
+/// the launch (`TASQX_WORK_CWD`, `TASQX_WORK_SINCE`; the agent may have
+/// changed directory). Several hooked ids (a `/new`) or matches: `None`.
+fn launch_session(file: &std::ffi::OsStr) -> Option<String> {
     let hooked = std::fs::read_to_string(file).unwrap_or_default();
     let mut ids: Vec<&str> = hooked.lines().collect();
     ids.sort_unstable();
     ids.dedup();
-    if let [id] = ids[..] {
-        params["session_id"] = json!(id);
+    let found = match ids[..] {
+        [id] => return Some(id.to_string()),
+        [] => tasqx_core::tokens::codex::sessions_started(
+            &tasqx_core::tokens::codex::default_roots(),
+            std::path::Path::new(&std::env::var_os("TASQX_WORK_CWD")?),
+            std::env::var("TASQX_WORK_SINCE").ok()?.parse().ok()?,
+        ),
+        _ => return None,
+    };
+    match <[String; 1]>::try_from(found) {
+        Ok([id]) => Some(id),
+        Err(_) => None,
     }
 }
 
