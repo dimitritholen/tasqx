@@ -170,6 +170,13 @@ pub const MEMORY_SEARCH_LIMIT: u64 = 10;
 /// set of standing orders.
 pub const STANDING_SOFT_CAP: usize = 15;
 
+/// D249: the longest standing-doc title, in BYTES, that is not warned about.
+/// A session whose MCP handshake overflows its budget sees only the titles
+/// (D157), so a title has to carry the rule on its own. A warning on the write
+/// that makes a title longer, never a refusal: a legacy doc keeps its title
+/// and stays editable.
+pub const STANDING_TITLE_MAX: usize = 120;
+
 /// `task.brief`'s own default memory page, and deliberately smaller than
 /// [`MEMORY_SEARCH_LIMIT`] (D154).
 ///

@@ -5206,3 +5206,13 @@ Rulings: `task.brief` takes optional `rulings: true` and `workdir`, and then ans
 **Rejected: a new read method for the rulings section.** `task.brief` is the task-aware read `work` already makes; a second method is a second round trip and another table row.
 
 **Where:** `crates/tasqx-cli/src/work.rs` (`HOOK_COMMAND`, `claude_settings`, `agent_args`, `run_hook`, `on_event`, `start_context`, `launch`); `Command::Hook`; `Engine::task_brief`. Tests: `crates/tasqx-cli/tests/work.rs` (the hook cases, `work_claims_times_spawns_claude_with_its_context_and_cleans_up_after`), `rulings_true_adds_the_d246_section_for_this_task_and_nothing_otherwise` in `crates/tasqx-core/tests/brief.rs`.
+
+### D249 — A standing doc whose title is over 120 bytes earns a `warnings` entry on the write that made it so; never a refusal (task #4196; extends D156, D157, D246)
+
+**Decision.** `memory.add` with `standing: true`, and `memory.update` that changes the title of a standing doc or sets `standing: true` on a doc, add `warnings: [<one line>]` to the response when the resulting title is longer than `STANDING_TITLE_MAX` (120) BYTES, not characters. The key is absent otherwise, as on `task.add` (D169). An update that touches neither the title nor the flag (a body-only edit) never warns, whatever the legacy title length; clearing `standing` never warns. The doc is stored either way. There is no language or imperative-mood check, and D156's 15-per-scope soft cap (`hint`) is unchanged. The CLI prints the line under `Stored`/`Updated`.
+
+**Why.** When the MCP handshake overflows its budget a session sees only the standing titles (D157, D246), so a title has to carry the rule on its own. Bytes because the budget is bytes. The warning fires on the write that makes the title long so the author can fix it while the rule is in hand, and stays quiet on unrelated edits so a legacy doc is not nagged on every touch.
+
+**Rejected: a hard refusal.** It would block edits to legacy docs that already carry a long title.
+
+**Where:** `STANDING_TITLE_MAX` in `crates/tasqx-core/src/engine.rs`; `with_standing_title_warning`, `standing_title_made_long` in `crates/tasqx-core/src/engine/memory.rs`. Tests: the `*_title_*` cases in `crates/tasqx-core/tests/memory.rs`.

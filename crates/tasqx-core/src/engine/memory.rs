@@ -909,6 +909,9 @@ impl Engine {
             }
         }
         tx.commit()?;
+        if standing {
+            with_standing_title_warning(&mut out, &title);
+        }
         out["similar"] = similar;
         out["similar_skipped"] = json!(skipped);
         Ok(out)
@@ -2596,6 +2599,14 @@ impl Engine {
             }
         }
 
+        // D249: warn only on the write that makes a standing title long, so a
+        // body-only edit of a legacy doc stays quiet.
+        let title_warns = standing_title_made_long(
+            &cur_title,
+            title.as_deref(),
+            cur_standing,
+            standing.unwrap_or(cur_standing),
+        );
         let new_title = title.clone().unwrap_or(cur_title);
         let new_body = body.clone().unwrap_or(cur_body);
         let new_search_body = crate::frontmatter::flatten(&new_body).into_owned();
@@ -2638,7 +2649,7 @@ impl Engine {
         )?;
         tx.commit()?;
 
-        Ok(json!({
+        let mut out = json!({
             "id": id,
             "title": new_title,
             "source": new_source,
@@ -2646,7 +2657,36 @@ impl Engine {
             "standing": new_standing,
             "_rev": new_rev,
             "modified": ts,
-        }))
+        });
+        if title_warns {
+            with_standing_title_warning(&mut out, &new_title);
+        }
+        Ok(out)
+    }
+}
+
+/// D249: whether an update makes a standing doc's title long: it is standing
+/// afterwards and either its title changed or it just became standing. The
+/// length test itself is [`with_standing_title_warning`]'s.
+fn standing_title_made_long(
+    cur_title: &str,
+    new_title: Option<&str>,
+    was_standing: bool,
+    now_standing: bool,
+) -> bool {
+    now_standing && (new_title.is_some_and(|t| t != cur_title) || !was_standing)
+}
+
+/// D249: a standing doc's title over `STANDING_TITLE_MAX` bytes gets one
+/// additive `warnings` entry, absent otherwise (the `task.add` convention).
+/// A warning, never a refusal.
+fn with_standing_title_warning(out: &mut Value, title: &str) {
+    if title.len() > STANDING_TITLE_MAX {
+        out["warnings"] = json!([format!(
+            "standing title is {} bytes, over the {STANDING_TITLE_MAX}-byte limit: a session whose \
+             handshake overflows sees only titles, so shorten it to carry the rule on its own (D249)",
+            title.len()
+        )]);
     }
 }
 

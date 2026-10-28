@@ -1514,6 +1514,7 @@ pub(crate) fn run_memory(be: &mut Backend, ctx: &Ctx, action: &MemoryAction) -> 
                 text.push_str(&render::san(hint));
                 text.push('\n');
             }
+            push_warnings(&mut text, &result);
             render::similar_notes(&result)
                 .into_iter()
                 .for_each(crate::note_after_output);
@@ -1645,13 +1646,24 @@ pub(crate) fn run_memory(be: &mut Backend, ctx: &Ctx, action: &MemoryAction) -> 
                 params["expected_rev"] = json!(rev);
             }
             let result = be.call("memory.update", &params)?;
-            let text = format!(
+            let mut text = format!(
                 "Updated {}  ·  {}  (rev {})\n",
                 render::san(result["id"].as_str().unwrap_or("?")),
                 render::san(result["title"].as_str().unwrap_or("?")),
                 result["_rev"].as_i64().unwrap_or(0)
             );
+            push_warnings(&mut text, &result);
             Ok((result, text))
+        }
+    }
+}
+
+/// D249: a person reads the engine's `warnings` here, a JSON caller reads the key.
+fn push_warnings(text: &mut String, result: &Value) {
+    for w in result["warnings"].as_array().into_iter().flatten() {
+        if let Some(w) = w.as_str() {
+            text.push_str(&render::san(w));
+            text.push('\n');
         }
     }
 }

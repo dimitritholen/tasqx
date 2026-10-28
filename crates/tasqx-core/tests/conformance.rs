@@ -1146,6 +1146,8 @@ const R_MEMORY_ADD: Shape = &[&[
     // `STANDING_SOFT_CAP` — a consolidation hint, so absence is the ordinary
     // answer and a client tests for the key rather than reading its value.
     opt("hint", Ty::Str),
+    // D249: present only for a standing doc whose title is over 120 bytes.
+    opt("warnings", Ty::Array),
     // D237, additive: always present, empty when nothing looks alike.
     req_of(
         "similar",
@@ -1239,6 +1241,8 @@ const R_MEMORY_UPDATE: Shape = &[&[
     req("standing", Ty::Bool),
     req("_rev", Ty::Int),
     req("modified", Ty::Str),
+    // D249: present only when the call made a standing title over 120 bytes.
+    opt("warnings", Ty::Array),
 ]];
 
 /// D241: one note, as `store.export` carries it — the stored row.
