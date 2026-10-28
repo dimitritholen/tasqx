@@ -366,7 +366,14 @@ pub const PARAMS: &[(&str, &[&str], bool)] = &[
     ("memory.refresh", &["dry_run"], false),
     (
         "memory.list",
-        &["limit", "offset", "project", "standing"],
+        &[
+            "limit",
+            "offset",
+            "project",
+            "standing",
+            "include_unscoped",
+            "unscoped_only",
+        ],
         false,
     ),
     (

@@ -1961,6 +1961,148 @@ fn listed_ids(out: &Value) -> Vec<String> {
         .collect()
 }
 
+/// D250: four docs, one per scope, so every filter below has an answer that
+/// tells the combinations apart.
+fn scoped_docs(e: &Engine) {
+    for (title, project, standing) in [
+        ("alpha rule", Some("alpha"), true),
+        ("beta rule", Some("beta"), true),
+        ("global rule", None, true),
+        ("global plain", None, false),
+    ] {
+        call(
+            e,
+            "memory.add",
+            json!({ "title": title, "body": "b", "project": project, "standing": standing }),
+        )
+        .expect("memory.add");
+    }
+}
+
+fn listed_titles(out: &Value) -> Vec<String> {
+    let mut t: Vec<String> = out["docs"]
+        .as_array()
+        .expect("docs")
+        .iter()
+        .map(|d| d["title"].as_str().expect("title").to_string())
+        .collect();
+    t.sort();
+    t
+}
+
+/// D250: omitting `project` keeps the whole-store meaning, whatever the new
+/// flags' absence implies.
+#[test]
+fn memory_list_without_project_or_the_new_flags_lists_the_whole_store() {
+    let e = engine();
+    scoped_docs(&e);
+    let out = call(&e, "memory.list", json!({})).expect("list");
+    assert_eq!(out["total"], 4, "{out}");
+    let out = call(&e, "memory.list", json!({ "project": "alpha" })).expect("list");
+    assert_eq!(
+        listed_titles(&out),
+        vec!["alpha rule"],
+        "strict scope stays: {out}"
+    );
+}
+
+#[test]
+fn memory_list_include_unscoped_adds_unscoped_docs_to_the_project_and_no_other() {
+    let e = engine();
+    scoped_docs(&e);
+    let out = call(
+        &e,
+        "memory.list",
+        json!({ "project": "alpha", "include_unscoped": true }),
+    )
+    .expect("list");
+    assert_eq!(
+        listed_titles(&out),
+        vec!["alpha rule", "global plain", "global rule"],
+        "{out}"
+    );
+    assert_eq!(out["total"], 3, "{out}");
+    let out = call(
+        &e,
+        "memory.list",
+        json!({ "project": "alpha", "include_unscoped": true, "standing": true }),
+    )
+    .expect("list");
+    assert_eq!(
+        listed_titles(&out),
+        vec!["alpha rule", "global rule"],
+        "{out}"
+    );
+}
+
+#[test]
+fn memory_list_include_unscoped_without_a_project_is_refused_like_search() {
+    let e = engine();
+    let err = call(&e, "memory.list", json!({ "include_unscoped": true }))
+        .expect_err("nothing to widen from");
+    assert_eq!(err.code, ErrorCode::BadRequest);
+    assert!(
+        err.message.contains("needs a `project` to widen from"),
+        "{}",
+        err.message
+    );
+}
+
+#[test]
+fn memory_list_unscoped_only_lists_docs_with_no_project() {
+    let e = engine();
+    scoped_docs(&e);
+    let out = call(&e, "memory.list", json!({ "unscoped_only": true })).expect("list");
+    assert_eq!(
+        listed_titles(&out),
+        vec!["global plain", "global rule"],
+        "{out}"
+    );
+    assert_eq!(out["total"], 2, "{out}");
+    let out = call(
+        &e,
+        "memory.list",
+        json!({ "unscoped_only": true, "standing": true }),
+    )
+    .expect("list");
+    assert_eq!(listed_titles(&out), vec!["global rule"], "{out}");
+}
+
+#[test]
+fn memory_list_unscoped_only_with_a_project_is_refused() {
+    let e = engine();
+    let err = call(
+        &e,
+        "memory.list",
+        json!({ "unscoped_only": true, "project": "alpha" }),
+    )
+    .expect_err("contradiction");
+    assert_eq!(err.code, ErrorCode::BadRequest);
+    assert!(
+        err.message.contains("cannot be combined with `project`"),
+        "{}",
+        err.message
+    );
+}
+
+#[test]
+fn memory_list_unscoped_only_with_include_unscoped_is_refused() {
+    let e = engine();
+    let err = call(
+        &e,
+        "memory.list",
+        json!({ "unscoped_only": true, "include_unscoped": true }),
+    )
+    .expect_err("contradiction");
+    assert_eq!(err.code, ErrorCode::BadRequest);
+    assert!(
+        err.message
+            .contains("cannot be combined with `include_unscoped`"),
+        "{}",
+        err.message
+    );
+}
+
 /// #101/D156: a correction given once ("no em-dashes in commits") has to be
 /// readable in every later session, and neither of memory's two reads can
 /// promise that on its own — keyword search never matches a rule that is not

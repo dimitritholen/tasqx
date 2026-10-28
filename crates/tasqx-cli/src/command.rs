@@ -1843,6 +1843,12 @@ pub(super) enum MemoryAction {
         /// Only standing docs. Like `--limit`, prints the table.
         #[arg(long)]
         standing: bool,
+        /// With --project, also list docs that have no project (D250). Prints the table.
+        #[arg(long, requires = "project")]
+        include_unscoped: bool,
+        /// Only docs that have no project (D250). Prints the table.
+        #[arg(long, conflicts_with_all = ["project", "include_unscoped"])]
+        unscoped_only: bool,
     },
     /// Correct a doc in place (maps to memory.update).
     Update {

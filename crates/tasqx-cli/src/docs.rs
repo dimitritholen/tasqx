@@ -623,12 +623,15 @@ const METHODS: [(&str, &str, &str); 63] = [
     ),
     (
         "memory.list",
-        "<code>limit?</code>, <code>offset?</code>, <code>project?</code>, <code>standing?</code>",
+        "<code>limit?</code>, <code>offset?</code>, <code>project?</code>, <code>standing?</code>, <code>include_unscoped?</code>, <code>unscoped_only?</code>",
         "<code>{count, total, next_offset, docs}</code> — the same paging shape as \
          <code>task.list</code> (#133). Browses docs newest-modified first, without a query; \
          each row carries a <code>body_preview</code>, not the full body, and a \
          <code>standing</code> flag; <code>standing</code> filters to only standing docs \
-         (<code>true</code>) or only the rest (<code>false</code>), omitted for all (D156).",
+         (<code>true</code>) or only the rest (<code>false</code>), omitted for all (D156). \
+         <code>include_unscoped</code> (needs <code>project</code>) adds the docs with no project \
+         to that project's; <code>unscoped_only</code> lists only those and is refused with \
+         <code>project</code> (D250).",
     ),
     (
         "memory.update",

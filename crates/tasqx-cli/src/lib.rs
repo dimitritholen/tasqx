@@ -943,10 +943,13 @@ fn execute(cli: Cli) -> Exit {
                 offset,
                 project,
                 standing,
+                include_unscoped,
+                unscoped_only,
             },
     }) = &cli.command
     {
-        let paged = limit.is_some() || *offset > 0 || *standing;
+        let paged =
+            limit.is_some() || *offset > 0 || *standing || *include_unscoped || *unscoped_only;
         if memory_screen_active(&ctx.caps, cli.json, paged, term_size, stdout_tty, stdin_tty) {
             if let Err(e) = run_memory_screen(&mut backend, &ctx, project.as_deref()) {
                 eprintln!("error [{}]: {}", code_str(&e), e.message);
