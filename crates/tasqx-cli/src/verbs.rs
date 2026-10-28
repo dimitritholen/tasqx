@@ -1631,6 +1631,7 @@ pub(crate) fn run_memory(be: &mut Backend, ctx: &Ctx, action: &MemoryAction) -> 
             body,
             source,
             project,
+            no_project,
             standing,
             expected_rev,
         } => {
@@ -1646,6 +1647,9 @@ pub(crate) fn run_memory(be: &mut Backend, ctx: &Ctx, action: &MemoryAction) -> 
             }
             if let Some(p) = project {
                 params["project"] = json!(p);
+            }
+            if *no_project {
+                params["project"] = Value::Null;
             }
             if let Some(st) = standing {
                 params["standing"] = json!(st);

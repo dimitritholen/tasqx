@@ -14,6 +14,7 @@ Options:
       --source <SOURCE>        New source. Omit to leave it unchanged
       --no-daemon              Never route through a daemon; always run one-shot in-process (the pre-daemon behaviour). Escape hatch for scripts
       --project <PROJECT>      New project scope. Omit to leave it unchanged
+      --no-project             Clear the project scope, making the doc unscoped (D251)
       --standing <true|false>  Set or clear the standing flag. Omit to leave it unchanged [possible values: true, false]
       --expected-rev <REV>     Optimistic concurrency: fail with `conflict` (exit 5) unless the doc is still at this rev. Supplied automatically from the doc's current rev when omitted
   -h, --help                   Print help

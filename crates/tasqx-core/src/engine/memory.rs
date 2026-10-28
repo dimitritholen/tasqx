@@ -2543,7 +2543,7 @@ impl Engine {
 
     /// `memory.update` — replace a doc's `title`/`body` in place (#135).
     /// Params: `id`, optional `title`, optional `body`, optional `source`,
-    /// optional `project`, optional `standing` (#101), optional
+    /// optional `project` (`null` clears it, D251), optional `standing` (#101), optional
     /// `expected_rev`. At least one of
     /// `title`/`body`/`source`/`project`/`standing` must be given.
     ///
@@ -2569,6 +2569,10 @@ impl Engine {
         let body = opt_str_nonempty(p, "body")?;
         let source = opt_str(p, "source")?;
         let project = opt_str_nonempty(p, "project")?;
+        // D251: an explicit `project: null` clears the scope; omitted still means
+        // unchanged: task.modify's D18 convention (null clears, "" refused), an
+        // explicit exception to D32's null-is-absent default.
+        let clear_project = p.get("project").is_some_and(Value::is_null);
         // #101/D156: this is the retraction half of the flag — `standing:
         // false` is how a ruling stops being re-read every session, and it is
         // a change in its own right, so an update that names ONLY it is a
@@ -2578,6 +2582,7 @@ impl Engine {
             && body.is_none()
             && source.is_none()
             && project.is_none()
+            && !clear_project
             && standing.is_none()
         {
             return Err(ApiError::bad_request(
@@ -2641,7 +2646,11 @@ impl Engine {
         let new_search_body = crate::frontmatter::flatten(&new_body).into_owned();
         let new_source = source.clone().or(cur_source);
         refuse_source_held_elsewhere(&tx, new_source.as_deref(), &id)?;
-        let new_project = project.clone().or(cur_project);
+        let new_project = if clear_project {
+            None
+        } else {
+            project.clone().or(cur_project)
+        };
         // #101: unnamed leaves the flag exactly as it was — the same "absent
         // is not `false`" the four fields above hold.
         let new_standing = standing.unwrap_or(cur_standing);

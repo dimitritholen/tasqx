@@ -1055,7 +1055,7 @@ pub const COMMAND_REF: &[CmdDoc] = &[
         // slash-joined token unbreakable past a 40-column manual page.
         method: "memory.search + get/add/remove/list/update + memory.import + memory.refresh",
         summary: "Store and search knowledge: docs, patterns, and your task annotations (D41).",
-        usage: "tasqx memory <add <title> <body> [--source s] [--project p] [--standing]|search <words…> [--limit n] [--scope s] [--mode m] [--min-similarity n] [--source-prefix p] [--raw]|list [--limit n] [--offset n] [--project p] [--standing] [--include-unscoped] [--unscoped-only]|show <id>|update <id> [--title t] [--body b] [--source s] [--project p] [--standing true|false] [--expected-rev n]|rm <id>|import <path> [--project p]|import --refresh|verify [<id>] [--project p]>",
+        usage: "tasqx memory <add <title> <body> [--source s] [--project p] [--standing]|search <words…> [--limit n] [--scope s] [--mode m] [--min-similarity n] [--source-prefix p] [--raw]|list [--limit n] [--offset n] [--project p] [--standing] [--include-unscoped] [--unscoped-only]|show <id>|update <id> [--title t] [--body b] [--source s] [--project p|--no-project] [--standing true|false] [--expected-rev n]|rm <id>|import <path> [--project p]|import --refresh|verify [<id>] [--project p]>",
         examples: &[
             ex("tasqx memory add \"Deploy runbook\" \"deploys go through the blue-green pipeline\""),
             ex("tasqx memory search blue-green"),

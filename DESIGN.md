@@ -5228,3 +5228,11 @@ Rulings: `task.brief` takes optional `rulings: true` and `workdir`, and then ans
 **Rejected: a separate method for the footer's fetch.** The browse method already pages, filters on `standing` and shares the row shape.
 
 **Where:** `Engine::memory_list`, `include_unscoped_flag` in `crates/tasqx-core/src/engine/memory.rs`; `dispatch::PARAMS`; `tasqx_list_memory` in `crates/tasqx-core/src/mcp.rs`. Tests: `memory_list_*` in `crates/tasqx-core/tests/memory.rs`, `list_memory_unscoped_filters_page_across_next_offset_with_standing` in `crates/tasqx-core/tests/mcp.rs`.
+
+### D251 — `memory.update` takes `project: null` to clear a doc's project, so a ruling can move to unscoped in place; `tasqx memory update --no-project` is the CLI spelling (task #4202; extends D143, additive per D56)
+
+**Decision.** `memory.update` with an explicit `project: null` stores NULL, the unscoped convention `memory.search`, `memory.list` and the session rulings already read (D136). Omitted `project` still leaves the scope unchanged, and `""` is still refused as `bad_request`. A lone `project: null` is a complete request, and the update bumps `rev` like any edit (D143). `tasqx_update_memory` declares `project` as `["string","null"]`; the MCP layer forwards arguments untouched, so the null reaches the engine. The CLI adds `--no-project`, which clap refuses beside `--project`. This follows `task.modify`'s D18 convention (null clears, `""` refused) and is an explicit exception to D32's null-is-absent default for `memory.update.project`: a client that serializes unset optionals as null must omit `project` instead. Moving a ruling to unscoped no longer needs a re-add and a remove, which loses the id and its history.
+
+**Rejected: `project: ""` as the clear.** It stays an error so a blank value is never a silent scope change.
+
+**Where:** `Engine::memory_update`, `tasqx_update_memory` in `crates/tasqx-core/src/mcp.rs`, `MemoryAction::Update`. Tests: `memory_update_project_null_clears_the_scope_and_omitted_keeps_it`, `update_memory_passes_a_null_project_through_to_clear_it`, `memory_update_no_project_clears_the_scope_and_conflicts_with_project`.

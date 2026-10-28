@@ -419,6 +419,7 @@ pub(super) fn schema_badge(prop: &Value) -> &'static str {
         let names: Vec<&str> = list.iter().filter_map(Value::as_str).collect();
         return match names.as_slice() {
             ["integer", "string"] | ["string", "integer"] => "integer or string",
+            ["string", "null"] | ["null", "string"] => "string or null",
             _ => "any",
         };
     }

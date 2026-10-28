@@ -1866,6 +1866,9 @@ pub(super) enum MemoryAction {
         /// New project scope. Omit to leave it unchanged.
         #[arg(long, add = crate::complete::candidates::projects())]
         project: Option<String>,
+        /// Clear the project scope, making the doc unscoped (D251).
+        #[arg(long, conflicts_with = "project")]
+        no_project: bool,
         /// Set or clear the standing flag. Omit to leave it unchanged.
         #[arg(long, value_name = "true|false")]
         standing: Option<bool>,
