@@ -63,7 +63,10 @@ they replace that tool's telemetry for the task instead of adding to it, as long
 as they hold at least as much; otherwise the telemetry stands.
 
 **Telemetry** — the opt-in OTLP receiver below. Samples are matched to the task
-by session id, and beat log-parsing when both are available.
+by session id, and beat log-parsing when both are available, except in the
+case above: for Gemini CLI and GitHub Copilot CLI on a completion without
+correlation, logs that were read and hold at least as much replace the
+telemetry.
 
 ## How much to trust a figure
 
