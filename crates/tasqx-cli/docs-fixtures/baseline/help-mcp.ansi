@@ -3,7 +3,8 @@ Bundled MCP server (DESIGN.md §7, §12-D7)
 Usage: tasqx mcp [OPTIONS] <COMMAND>
 
 Commands:
-  serve  Run the MCP stdio server: newline-delimited JSON-RPC 2.0 on stdin/stdout
+  serve         Run the MCP stdio server: newline-delimited JSON-RPC 2.0 on stdin/stdout
+  instructions  Print the `instructions` string `mcp serve` would send on `initialize` from this directory, then one counts line (D253). Refreshes no docs and changes no data: under --scope write the freshness sweep is a dry run (opening the store migrates it, like any tasqx command), so docs are shown as stored, before that pending refresh
 
 Options:
       --json             Print the raw JSON API result instead of the human table
@@ -16,7 +17,9 @@ Options:
 EXAMPLES
   tasqx mcp serve    # serve read-only over stdio JSON-RPC
   tasqx mcp serve --scope write    # serve with explicit write access
+  tasqx mcp instructions    # the instructions string initialize sends from here, with its counts
 
 NOTE  Scope configures the local process; it is not authentication. Omitted scope is read-only.
+      `instructions` prints exactly what `initialize` would send from the current directory, then one line: rulings, shown, with gist, omitted, and bytes against the cap. `--json` gives instructions, project, inference, shown, gist, omitted, bytes and cap. Under `--scope write` it reports the freshness line from a dry sweep ("would be refreshed"), refreshing no docs and changing no data (opening the store migrates it, like any tasqx command); the docs are shown as stored, before that pending refresh, so a changed imported ruling can differ from a real `initialize`.
 
 See also: api · daemon        Full manual: tasqx manual
