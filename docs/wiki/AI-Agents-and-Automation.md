@@ -148,7 +148,10 @@ Safety properties worth knowing:
   host may inject into the agent's system prompt; under read-only scope it
   names no write tool. It also carries the session's standing memory docs,
   for the project named by the directory `mcp serve` runs in (or one of its
-  parents), else the default project, within a 3 KB budget.
+  parents), else the default project. The whole string stays within 2,800
+  bytes, because a client cuts what it is sent: the rulings come first, titles
+  before any gist, and when some do not fit the string says how many and the
+  `tasqx_list_memory` call that lists them.
 - **A write-scoped `initialize` also refreshes imported docs from disk**
   before it answers, so a session opens on the working tree with no
   watcher and no daemon job needed; a read-only session skips the sweep, and
