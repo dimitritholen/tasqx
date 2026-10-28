@@ -2040,6 +2040,16 @@ pub(super) enum McpAction {
         #[arg(long, default_value = "read", value_parser = ["read", "write"])]
         scope: String,
     },
+    /// Print the `instructions` string `mcp serve` would send on `initialize` from
+    /// this directory, then one counts line (D253). Refreshes no docs and changes no data:
+    /// under --scope write the freshness sweep is a dry run (opening the store
+    /// migrates it, like any tasqx command), so docs are shown as stored, before
+    /// that pending refresh.
+    Instructions {
+        /// The scope to render for, as `mcp serve` takes it.
+        #[arg(long, default_value = "read", value_parser = ["read", "write"])]
+        scope: String,
+    },
 }
 
 #[cfg(test)]

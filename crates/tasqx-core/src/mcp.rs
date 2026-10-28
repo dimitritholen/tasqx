@@ -2675,11 +2675,17 @@ impl<'e> McpServer<'e> {
     /// nothing was refreshed or missing, or when the sweep itself errors —
     /// `initialize` must never fail on its account, so a failure is logged
     /// and otherwise treated as nothing to report.
-    fn memory_refresh_line(&self) -> Option<String> {
+    pub fn memory_refresh_line(&self) -> Option<String> {
+        self.memory_refresh_line_dry(false)
+    }
+
+    /// [`Self::memory_refresh_line`] with the sweep optionally dry: the same
+    /// line, but a diagnostic (`tasqx mcp instructions`, D253) writes nothing.
+    pub fn memory_refresh_line_dry(&self, dry_run: bool) -> Option<String> {
         if !self.scope.allows_write() {
             return None;
         }
-        let result = match self.engine.memory_refresh(&json!({ "dry_run": false })) {
+        let result = match self.engine.memory_refresh(&json!({ "dry_run": dry_run })) {
             Ok(r) => r,
             Err(e) => {
                 eprintln!("tasqx mcp: memory refresh failed: {e}");
@@ -2693,7 +2699,12 @@ impl<'e> McpServer<'e> {
         }
         let mut parts = Vec::new();
         if refreshed > 0 {
-            parts.push(format!("{refreshed} doc(s) refreshed from disk"));
+            let verb = if dry_run {
+                "would be refreshed"
+            } else {
+                "refreshed"
+            };
+            parts.push(format!("{refreshed} doc(s) {verb} from disk"));
         }
         if missing > 0 {
             parts.push(format!(

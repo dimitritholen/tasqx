@@ -5262,3 +5262,13 @@ Rulings: `task.brief` takes optional `rulings: true` and `workdir`, and then ans
 **Rejected: a title larger than the allowance stops the list.** One badly written title would then hide every ruling behind it; it is skipped and counted instead.
 
 **Where:** `crates/tasqx-core/src/mcp.rs` (`MCP_INSTRUCTIONS_CAP`, `handshake_instructions`, `HandshakeInstructions`, `instructions`). Tests: `crates/tasqx-core/tests/mcp.rs`.
+
+### D253 — `tasqx mcp instructions` prints what `initialize` would send from here, with the packer's own counts (task #4199; extends D252)
+
+**Decision.** A subcommand that refreshes no docs and changes no data, `tasqx mcp instructions [--scope read|write]`, prints the exact `instructions` string `mcp serve` would send on `initialize` from the caller's working directory: the same project inference, `mcp::handshake_instructions` (D252) and scope default (read unless `--scope write`). The freshness line is the one `initialize` passes (`McpServer::memory_refresh_line`), so a write scope shows D180's line here too, from a dry sweep (`dry_run: true`): the sweep refreshes nothing (opening the store migrates it, like any tasqx command). The line then reads "would be refreshed" (`serve` keeps "refreshed"), and the human output ends with a note that the docs are shown as stored, before that refresh: the packing runs ahead of the pending refresh, so an imported standing ruling whose file changed can differ from a real `initialize`. A store snapshot per call would be disproportionate. Failures go through the standard result path, so `--json` gets the normal error envelope. Then one counts line, `N rulings: S shown, G with gist, O omitted · B / CAP bytes`, where N is shown plus omitted. `--json` gives `{instructions, project, inference, shown, gist, omitted, bytes, cap}`; `project` and `inference` are null when no project is inferred. Unlike `serve`, the verb prints a result, so it honours `--json` and is not a carve-out. Every count is the packer's returned struct, never recomputed.
+
+**Why.** The delivery bound (D252) is only checkable by looking at what a client receives, and the hand-rolled stdin probe of `mcp serve` needed a held-open pipe. One command shows the string, whether anything was omitted, and how close the string is to the cap, including overflow caused by a few huge titles rather than by count.
+
+**Rejected: a line in `memory list`.** The listing is about documents; the handshake is about one project's delivery.
+
+**Where:** `crates/tasqx-cli/src/serve.rs` (`run_mcp_instructions`). Tests: `crates/tasqx-cli/tests/mcp_instructions.rs`.

@@ -41,6 +41,10 @@ AI tools like Claude Code connect to external systems.
 
 - `tasqx mcp serve`: read-only by default
 - `tasqx mcp serve --scope write`: explicit write access
+- `tasqx mcp instructions`: the `instructions` string `initialize` would send
+  from this directory, then a counts line (rulings shown, with gist, omitted,
+  bytes against the 2,800-byte cap); `--json` gives the same as fields. Take
+  `--scope write` to see the write-scoped text.
 
 ```console
 tasqx mcp serve

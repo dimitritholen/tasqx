@@ -1321,12 +1321,16 @@ pub const COMMAND_REF: &[CmdDoc] = &[
         aliases: &[],
         method: "(subset)",
         summary: "Serve MCP over stdio with an operator-selected scope.",
-        usage: "tasqx mcp serve [--scope read|write]",
+        usage: "tasqx mcp serve [--scope read|write] | tasqx mcp instructions [--scope read|write]",
         examples: &[
             ex_norun("tasqx mcp serve", "serve read-only over stdio JSON-RPC"),
             ex_norun("tasqx mcp serve --scope write", "serve with explicit write access"),
+            ex_norun("tasqx mcp instructions", "the instructions string initialize sends from here, with its counts"),
         ],
-        notes: &["Scope configures the local process; it is not authentication. Omitted scope is read-only."],
+        notes: &[
+            "Scope configures the local process; it is not authentication. Omitted scope is read-only.",
+            "`instructions` prints exactly what `initialize` would send from the current directory, then one line: rulings, shown, with gist, omitted, and bytes against the cap. `--json` gives instructions, project, inference, shown, gist, omitted, bytes and cap. Under `--scope write` it reports the freshness line from a dry sweep (\"would be refreshed\"), refreshing no docs and changing no data (opening the store migrates it, like any tasqx command); the docs are shown as stored, before that pending refresh, so a changed imported ruling can differ from a real `initialize`.",
+        ],
         see_also: &["api", "daemon"],
         topic: Topic::Automation,
     },

@@ -554,18 +554,63 @@ pub(crate) fn run_api() {
     exit(code);
 }
 
-/// The `tasqx mcp` subcommand family (DESIGN.md §7, D7).
+/// The `tasqx mcp` subcommand family (DESIGN.md §7, D7). `instructions`
+/// returns through [`mcp_instructions`] instead, so it keeps the standard
+/// `--json` result and error envelope.
 pub(crate) fn run_mcp(action: &McpAction) {
-    match action {
-        McpAction::Serve { scope } => {
-            let scope = if scope == "read" {
-                Scope::Read
-            } else {
-                Scope::Write
-            };
-            run_mcp_serve(scope);
-        }
+    if let McpAction::Serve { scope } = action {
+        run_mcp_serve(scope_of(scope));
     }
+}
+
+fn scope_of(s: &str) -> Scope {
+    if s == "read" {
+        Scope::Read
+    } else {
+        Scope::Write
+    }
+}
+
+/// D253: the handshake string for the current directory and the packer's own
+/// counts. The freshness line comes from a dry sweep (a diagnostic never
+/// writes) and says "would be refreshed": the docs are packed as stored,
+/// before that refresh.
+pub(crate) fn mcp_instructions(scope: &str) -> CmdOutcome {
+    let scope = scope_of(scope);
+    let engine = open_engine().map_err(ApiError::internal)?;
+    let workdir = std::env::current_dir().ok();
+    let refresh = McpServer::new(&engine, scope).memory_refresh_line_dry(true);
+    let project = engine.session_rulings(workdir.as_deref())?.project;
+    let h = tasqx_core::mcp::handshake_instructions(
+        &engine,
+        workdir.as_deref(),
+        scope,
+        refresh.as_deref(),
+    )?;
+    let cap = tasqx_core::mcp::MCP_INSTRUCTIONS_CAP;
+    let json = serde_json::json!({
+        "instructions": h.text,
+        "project": project.as_ref().map(|p| &p.0),
+        "inference": project.as_ref().map(|p| p.1),
+        "shown": h.shown, "gist": h.gist, "omitted": h.omitted,
+        "bytes": h.bytes, "cap": cap,
+    });
+    let mut human = format!(
+        "{}\n{} rulings: {} shown, {} with gist, {} omitted \u{b7} {} / {cap} bytes\n",
+        h.text.trim_end_matches('\n'),
+        h.shown + h.omitted,
+        h.shown,
+        h.gist,
+        h.omitted,
+        h.bytes
+    );
+    if refresh
+        .as_deref()
+        .is_some_and(|l| l.contains("would be refreshed"))
+    {
+        human.push_str("note: docs are shown as stored, before that refresh.\n");
+    }
+    Ok((json, human))
 }
 
 /// Run the MCP stdio server under the operator-selected capability scope.

@@ -633,6 +633,10 @@ fn execute(cli: Cli) -> Exit {
             return exit;
         }
         Some(Command::Mcp { action }) => {
+            // `instructions` prints a result like any verb; only `serve` is framed.
+            if let McpAction::Instructions { scope } = action {
+                return Exit::Out(mcp_instructions(scope));
+            }
             let exit = Exit::self_framed("mcp", cli.json);
             run_mcp(action);
             return exit;
