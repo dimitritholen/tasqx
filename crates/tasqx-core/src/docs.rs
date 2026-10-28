@@ -1326,6 +1326,11 @@ pub const R_MEMORY_ADD: &[FieldDoc] = &[
         "string",
         "Present only when this add pushed its scope past the soft cap on standing docs: a nudge to merge or retract one. Test for the key, not its value (D156).",
     ),
+    o(
+        "warnings",
+        "array",
+        "Present only when the doc is standing and its title is over 120 bytes: one line saying so, since a session whose handshake overflows sees only titles. A warning, never a refusal (D249).",
+    ),
     f(
         "similar",
         "array",
@@ -1661,6 +1666,7 @@ pub const R_MEMORY_UPDATE: &[FieldDoc] = &[
     f("standing", "boolean", "The standing flag as it now stands, whether this call set it, cleared it or left it alone (D156)."),
     f("_rev", "integer", "The row's revision counter, bumped by every write. Send it back as `expected_rev` to make a change conditional."),
     f("modified", "string", "When the update landed."),
+    o("warnings", "array", "Present only when this call changed a standing doc's title, or made a doc standing, and the title is over 120 bytes: one line saying so. An update that touches neither never warns (D249)."),
 ];
 
 /// `report.summary`'s result.

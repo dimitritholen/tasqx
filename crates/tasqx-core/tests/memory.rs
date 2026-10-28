@@ -2169,6 +2169,119 @@ fn the_standing_soft_cap_puts_a_hint_on_the_add_response() {
     );
 }
 
+/// D249: a standing doc's title is what a session sees when the handshake
+/// overflows, so one over `STANDING_TITLE_MAX` bytes earns a `warnings` entry
+/// on the write that made it so. Never a refusal, and silent for any write
+/// that leaves a legacy long title alone.
+fn long_title() -> String {
+    "x".repeat(tasqx_core::engine::STANDING_TITLE_MAX + 1)
+}
+
+fn has_title_warning(v: &Value) -> bool {
+    v["warnings"].as_array().is_some_and(|w| {
+        w.iter()
+            .any(|s| s.as_str().is_some_and(|s| s.contains("bytes")))
+    })
+}
+
+fn add_doc(e: &Engine, title: &str, standing: bool) -> Value {
+    call(
+        e,
+        "memory.add",
+        json!({ "title": title, "body": "one line", "standing": standing }),
+    )
+    .expect("memory.add")
+}
+
+fn doc_id(v: &Value) -> String {
+    v["id"].as_str().unwrap().to_string()
+}
+
+#[test]
+fn a_standing_add_with_a_long_title_warns_and_still_stores() {
+    let e = engine();
+    let r = add_doc(&e, &long_title(), true);
+    assert!(has_title_warning(&r), "{r}");
+    assert!(r["id"].is_string(), "{r}");
+    // Not standing: an ordinary doc's title is not the handshake's business.
+    assert!(add_doc(&e, &long_title(), false).get("warnings").is_none());
+}
+
+#[test]
+fn a_title_of_exactly_the_limit_does_not_warn_and_bytes_are_what_count() {
+    let e = engine();
+    let max = tasqx_core::engine::STANDING_TITLE_MAX;
+    assert!(add_doc(&e, &"x".repeat(max), true)
+        .get("warnings")
+        .is_none());
+    // 60 two-byte chars are 120 bytes: at the limit. 61 are 122, over it,
+    // though both are far under 120 characters.
+    let at = add_doc(&e, &"é".repeat(max / 2), true);
+    assert!(at.get("warnings").is_none(), "{at}");
+    let over = add_doc(&e, &"é".repeat(max / 2 + 1), true);
+    assert!(has_title_warning(&over), "{over}");
+}
+
+#[test]
+fn a_title_change_on_a_standing_doc_warns() {
+    let e = engine();
+    let id = doc_id(&add_doc(&e, "short", true));
+    let r = call(
+        &e,
+        "memory.update",
+        json!({ "id": id, "title": long_title() }),
+    )
+    .expect("update");
+    assert!(has_title_warning(&r), "{r}");
+    let ok = call(
+        &e,
+        "memory.update",
+        json!({ "id": id, "title": "short again" }),
+    )
+    .expect("update");
+    assert!(ok.get("warnings").is_none(), "{ok}");
+}
+
+#[test]
+fn a_title_change_on_a_non_standing_doc_does_not_warn() {
+    let e = engine();
+    let id = doc_id(&add_doc(&e, "short", false));
+    let r = call(
+        &e,
+        "memory.update",
+        json!({ "id": id, "title": long_title() }),
+    )
+    .expect("update");
+    assert!(r.get("warnings").is_none(), "{r}");
+}
+
+#[test]
+fn setting_standing_on_a_long_titled_doc_warns_and_clearing_never_does() {
+    let e = engine();
+    let id = doc_id(&add_doc(&e, &long_title(), false));
+    let r = call(&e, "memory.update", json!({ "id": id, "standing": true })).expect("update");
+    assert!(has_title_warning(&r), "{r}");
+    // Clearing, even with a long title in the same call.
+    let c = call(
+        &e,
+        "memory.update",
+        json!({ "id": id, "standing": false, "title": format!("{}!", long_title()) }),
+    )
+    .expect("update");
+    assert!(c.get("warnings").is_none(), "{c}");
+}
+
+#[test]
+fn a_body_only_update_of_a_legacy_long_titled_standing_doc_does_not_warn() {
+    let e = engine();
+    let id = doc_id(&add_doc(&e, &long_title(), true));
+    let r = call(&e, "memory.update", json!({ "id": id, "body": "new body" })).expect("update");
+    assert!(r.get("warnings").is_none(), "{r}");
+    // Setting standing true on a doc that already is one is not a change.
+    let s = call(&e, "memory.update", json!({ "id": id, "standing": true })).expect("update");
+    assert!(s.get("warnings").is_none(), "{s}");
+}
+
 /// `memory.search` unions docs with annotations, and only one of the two has
 /// the flag — an annotation's "standing" would be a claim about a note on a
 /// task. The column is on both arms because the UNION needs it; the value is
