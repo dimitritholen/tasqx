@@ -39,6 +39,8 @@ impl Store {
             .env("PATH", format!("{}:/usr/bin:/bin", self.bin.display()))
             .env("HOME", dir_home(&self.dir))
             .env_remove("TASQX_NOW")
+            // Codex discovery prefers it over the fake HOME's `.codex`.
+            .env_remove("CODEX_HOME")
             .arg("--no-daemon");
         c
     }
@@ -233,6 +235,8 @@ fn work_claims_times_spawns_claude_with_its_context_and_cleans_up_after() {
         "",
         "an inherited socket leaked"
     );
+    // Claude's id is the one `work` chose: no file for codex's (D255).
+    assert_eq!(s.env_of("claude", "TASQX_WORK_SESSIONS"), "");
 
     // The session id and the client are on the start event: completion-time
     // attribution finds the session's transcript through them (D248).
@@ -260,6 +264,10 @@ fn work_hands_codex_its_context_as_a_toml_string() {
     let mut lines = argv.lines();
     assert_eq!(lines.next(), Some("-c"), "{argv}");
     let rest: String = argv.split_once('\n').unwrap().1.to_string();
+    // The hook overrides (D255) follow the context.
+    let rest = rest
+        .split_once("\n-c\nhooks.")
+        .map_or(rest.as_str(), |(v, _)| v);
     let value = rest
         .strip_prefix("developer_instructions=")
         .unwrap_or_else(|| panic!("{argv}"));
@@ -271,6 +279,10 @@ fn work_hands_codex_its_context_as_a_toml_string() {
     assert!(text.contains("Fix the login redirect"), "{text}");
     assert!(text.contains("Never log tokens"), "{text}");
     assert_eq!(s.env_of("codex", "TASQX_WORK_TASK"), "1");
+    assert_eq!(
+        s.env_of("codex", "TASQX_WORK_TASK_UUID"),
+        s.task("1")["id"].as_str().unwrap()
+    );
     assert!(s.task("1")["claimed_by"].is_null());
 }
 
@@ -541,12 +553,17 @@ fn a_relative_store_path_reaches_the_agent_absolute() {
 /// `tasqx hook claude` as Claude Code runs it: the hook JSON on stdin, the
 /// work session's env (or none) around it.
 fn hook(s: &Store, env: &[(&str, &str)], stdin: &str) -> Output {
+    hook_as(s, "claude", env, stdin)
+}
+
+fn hook_as(s: &Store, agent: &str, env: &[(&str, &str)], stdin: &str) -> Output {
     use std::io::Write;
     let mut c = s.tasqx();
     c.env_remove("TASQX_WORK_TASK")
         .env_remove("TASQX_WORK_SESSION")
+        .env_remove("TASQX_WORK_SESSIONS")
         .envs(env.iter().copied())
-        .args(["hook", "claude"])
+        .args(["hook", agent])
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped());
@@ -644,4 +661,671 @@ fn a_hook_fault_goes_to_stderr_and_still_exits_zero() {
         assert_eq!(s.events(), before);
     }
     assert!(stderr(&hook(&s, &env, &hook_json(SESSION, "NoSuchEvent"))).contains("NoSuchEvent"));
+}
+
+/// The `-c` overrides after `developer_instructions`, one per line of argv.
+fn codex_overrides(s: &Store) -> Vec<String> {
+    let argv = s.read("codex.argv");
+    let lines: Vec<&str> = argv.lines().collect();
+    let at = lines
+        .iter()
+        .position(|l| l.starts_with("hooks."))
+        .unwrap_or_else(|| panic!("no hooks override: {argv}"));
+    assert_eq!(lines[at - 1], "-c", "{argv}");
+    lines[at..]
+        .iter()
+        .filter(|l| **l != "-c")
+        .map(|l| l.to_string())
+        .collect()
+}
+
+/// D255: codex gets one constant hook command on SessionStart and
+/// SessionEnd, byte-identical from run to run since codex trusts it by hash,
+/// and never the trust bypass; `~/.codex` is not written.
+#[test]
+fn codex_gets_one_constant_hook_command_and_its_home_is_untouched() {
+    let s = Store::new("codex-hooks");
+    s.seed();
+    s.fake_agent("codex", 0);
+    let out = s.run(&["work", "1", "--agent", "codex"]);
+    // Codex started no session here, so there is no hook to hint about.
+    assert!(!stderr(&out).contains("/hooks"), "{out:?}");
+    let first = codex_overrides(&s);
+    s.ok(&["work", "1", "--agent", "codex"]);
+    assert_eq!(codex_overrides(&s), first, "the hook definition varied");
+    assert_eq!(first.len(), 2, "{first:?}");
+    for (event, line) in ["SessionStart", "SessionEnd"].iter().zip(&first) {
+        // Codex parses `-c key=value` as TOML.
+        let doc: toml_edit::DocumentMut = line.parse().expect("a TOML override");
+        let groups = doc["hooks"][*event]
+            .as_array()
+            .unwrap_or_else(|| panic!("{line}"));
+        let handler = groups.get(0).unwrap().as_inline_table().unwrap()["hooks"]
+            .as_array()
+            .unwrap()
+            .get(0)
+            .unwrap()
+            .as_inline_table()
+            .unwrap()
+            .clone();
+        assert_eq!(handler["type"].as_str(), Some("command"), "{line}");
+        assert_eq!(
+            handler["command"].as_str(),
+            Some("tasqx hook codex"),
+            "{line}"
+        );
+    }
+    assert!(!s.read("codex.argv").contains("dangerously"));
+    assert!(!dir_home(&s.dir).join(".codex").exists());
+}
+
+/// A shell line that writes a rollout as codex would: `session_meta` with
+/// the id, this directory and the time now, under `$HOME/.codex/sessions`.
+fn rollout_sh(id: &str) -> String {
+    format!(
+        "d=\"$HOME/.codex/sessions/2026/10/27\"; mkdir -p \"$d\"; \
+         ts=$(perl -MPOSIX -MTime::HiRes=time -e '$t=time; printf \"%s.%03dZ\", strftime(\"%Y-%m-%dT%H:%M:%S\", gmtime $t), ($t-int $t)*1000'); \
+         printf '{{\"type\":\"session_meta\",\"payload\":{{\"id\":\"{id}\",\"cwd\":\"%s\",\"timestamp\":\"%s\"}}}}\\n' \"$(pwd -P)\" \"$ts\" > \"$d/rollout-{id}.jsonl\""
+    )
+}
+
+/// The session ids on the task's start events, in order, with their client.
+fn start_sessions(s: &Store) -> Vec<(String, String)> {
+    let log: Value = serde_json::from_str(&s.event_list(r#"{"ref":"1","limit":500}"#)).unwrap();
+    let mut events: Vec<&Value> = log["result"]["events"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|e| e["op"] == "start")
+        .collect();
+    events.sort_by_key(|e| e["id"].as_str().map(str::to_string));
+    events
+        .iter()
+        .map(|e| {
+            let p = &e["payload"];
+            let field = |k: &str| p[k].as_str().unwrap_or("").to_string();
+            (field("session_id"), field("client"))
+        })
+        .collect()
+}
+
+const CODEX_ID: &str = "01a17f55-9a67-7162-b594-48bd262d962b";
+
+/// D255: a trusted hook tells tasqx codex's own session id on SessionStart,
+/// and that id is recorded on a start of the task, where D247's fallback
+/// finds the rollout by `session_meta.id`. No hint: the hook ran.
+#[test]
+fn a_trusted_codex_hook_records_codexs_own_session_id() {
+    let s = Store::new("codex-trusted");
+    s.seed();
+    let tasqx = env!("CARGO_BIN_EXE_tasqx");
+    let json = format!(
+        r#"{{"session_id":"{CODEX_ID}","hook_event_name":"SessionStart","cwd":"/x","transcript_path":null}}"#
+    );
+    // A rollout of another id beside it: the hook's word wins over a match.
+    let then = format!(
+        "printf '%s' '{json}' | {tasqx} hook codex; {}",
+        rollout_sh("not-this-one")
+    );
+    s.fake_agent_then("codex", 0, &then);
+    let out = s.run(&["work", "1", "--agent", "codex"]);
+    assert!(out.status.success(), "{out:?}");
+    assert!(!stderr(&out).contains("/hooks"), "{out:?}");
+    let starts = start_sessions(&s);
+    assert_eq!(starts.len(), 2, "{starts:?}");
+    assert_eq!(starts[1], (CODEX_ID.to_string(), "codex".to_string()));
+    let after = s.task("1");
+    assert_eq!(after["status"], "pending", "{after}");
+    assert!(after["claimed_by"].is_null(), "{after}");
+    // Recording the id adds no time: the total is the work interval alone,
+    // whatever second the bookkeeping start and stop landed in.
+    let log: Value = serde_json::from_str(&s.event_list(r#"{"ref":"1","limit":500}"#)).unwrap();
+    let mut stops: Vec<&Value> = log["result"]["events"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|e| e["op"] == "stop")
+        .collect();
+    stops.sort_by_key(|e| e["id"].as_str().map(str::to_string));
+    assert_eq!(after["tracked"], stops[0]["payload"]["tracked"], "{after}");
+    // The record file is gone with the context file.
+    let sessions = s.env_of("codex", "TASQX_WORK_SESSIONS");
+    assert!(
+        !sessions.is_empty() && !Path::new(&sessions).exists(),
+        "{sessions:?}"
+    );
+}
+
+/// D255: an untrusted hook is skipped silently by codex. After it exits,
+/// tasqx finds the rollout its launch wrote (this directory, started since
+/// the launch) and records that id; and says once how to trust the hook.
+#[test]
+fn an_untrusted_codex_hook_falls_back_to_the_rollout_and_hints_once() {
+    let s = Store::new("codex-untrusted");
+    s.seed();
+    // A clock the user started in their shell meanwhile keeps running: the
+    // record after exit stops no other clock.
+    s.ok(&["add", "Something else"]);
+    let tasqx = env!("CARGO_BIN_EXE_tasqx");
+    let then = format!(
+        "{tasqx} --no-daemon start 2 >/dev/null; {}",
+        rollout_sh(CODEX_ID)
+    );
+    s.fake_agent_then("codex", 0, &then);
+    let out = s.run(&["work", "1", "--agent", "codex"]);
+    assert!(out.status.success(), "{out:?}");
+    assert_eq!(s.task("2")["status"], "active");
+    let err = stderr(&out);
+    assert!(
+        err.contains("/hooks") && err.contains("tasqx hook codex"),
+        "{err}"
+    );
+    let starts = start_sessions(&s);
+    assert_eq!(starts.len(), 2, "{starts:?}");
+    assert_eq!(starts[1], (CODEX_ID.to_string(), "codex".to_string()));
+    let after = s.task("1");
+    assert_eq!(after["status"], "pending", "{after}");
+    assert!(after["claimed_by"].is_null(), "{after}");
+
+    // Next run: the earlier rollout started before this launch and is not
+    // its session; the new one is. The hint is not repeated.
+    let second = "01a17f60-0000-7000-8000-000000000002";
+    s.fake_agent_then("codex", 0, &rollout_sh(second));
+    let out = s.run(&["work", "1", "--agent", "codex"]);
+    assert!(out.status.success(), "{out:?}");
+    assert!(!stderr(&out).contains("/hooks"), "{out:?}");
+    let starts = start_sessions(&s);
+    assert_eq!(starts.len(), 4, "{starts:?}");
+    assert_eq!(starts[3].0, second);
+}
+
+/// Two codex sessions in this directory since the launch (another codex
+/// running beside it): which one was the launch's is unknown, so neither is
+/// recorded, and stderr says so.
+#[test]
+fn two_candidate_rollouts_record_neither() {
+    let s = Store::new("codex-ambiguous");
+    s.seed();
+    let then = format!("{}; {}", rollout_sh(CODEX_ID), rollout_sh("beside-it"));
+    s.fake_agent_then("codex", 0, &then);
+    let out = s.run(&["work", "1", "--agent", "codex"]);
+    assert!(out.status.success(), "{out:?}");
+    assert_eq!(start_sessions(&s).len(), 1);
+    assert!(stderr(&out).contains("2 codex sessions"), "{out:?}");
+}
+
+/// `tasqx hook codex`: on SessionStart, codex's id is appended to the file
+/// `tasqx work` named; SessionEnd adds nothing; outside a work session or
+/// without that file it is silent; a fault is a stderr line and exit 0.
+#[test]
+fn the_codex_hook_appends_its_session_and_never_breaks_the_agent() {
+    let s = Store::new("hook-codex");
+    s.seed();
+    let before = s.events();
+    let file = s.dir.join("sessions");
+    std::fs::write(&file, "").unwrap();
+    let f = file.to_str().unwrap();
+    let env = [("TASQX_WORK_TASK", "1"), ("TASQX_WORK_SESSIONS", f)];
+    let codex = |s: &Store, env: &[(&str, &str)], input: &str| hook_as(s, "codex", env, input);
+
+    assert_silent(
+        &s,
+        &codex(&s, &env, &hook_json(CODEX_ID, "SessionStart")),
+        before,
+    );
+    assert_silent(
+        &s,
+        &codex(&s, &env, &hook_json("ended", "SessionEnd")),
+        before,
+    );
+    assert_eq!(
+        std::fs::read_to_string(&file).unwrap(),
+        format!("{CODEX_ID}\n")
+    );
+    // Outside a work session, or with no file named, nothing is read.
+    assert_silent(&s, &codex(&s, &[], "not json"), before);
+    assert_silent(
+        &s,
+        &codex(
+            &s,
+            &[("TASQX_WORK_TASK", "1")],
+            &hook_json("x", "SessionStart"),
+        ),
+        before,
+    );
+    assert_eq!(
+        std::fs::read_to_string(&file).unwrap(),
+        format!("{CODEX_ID}\n")
+    );
+
+    // An empty id is a fault, and nothing is appended.
+    let out = codex(
+        &s,
+        &env,
+        r#"{"hook_event_name":"SessionStart","session_id":""}"#,
+    );
+    assert!(stderr(&out).contains("session_id"), "{out:?}");
+    assert_eq!(
+        std::fs::read_to_string(&file).unwrap(),
+        format!("{CODEX_ID}\n")
+    );
+
+    // Faults: unreadable input, no session id, an unknown event, a file
+    // that is gone (never created by the hook).
+    std::fs::remove_file(&file).unwrap();
+    for input in [
+        "not json".to_string(),
+        r#"{"hook_event_name":"SessionStart"}"#.to_string(),
+        hook_json(CODEX_ID, "NoSuchEvent"),
+        hook_json(CODEX_ID, "SessionStart"),
+    ] {
+        let out = codex(&s, &env, &input);
+        assert_eq!(out.status.code(), Some(0), "{out:?}");
+        assert!(
+            stderr(&out).contains("tasqx hook codex"),
+            "{input}: {out:?}"
+        );
+    }
+    assert!(!file.exists(), "the hook created the file");
+    assert_eq!(s.events(), before);
+}
+
+/// The payload of the task's `done` event.
+fn done_payload(s: &Store, r: &str) -> Value {
+    let log: Value =
+        serde_json::from_str(&s.event_list(&format!(r#"{{"ref":"{r}","limit":500}}"#))).unwrap();
+    log["result"]["events"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|e| e["op"] == "done")
+        .unwrap_or_else(|| panic!("no done event: {log}"))["payload"]
+        .clone()
+}
+
+/// D255: the agent completes the task through its shell before codex exits.
+/// The post-exit record would come too late for a done task, so the `done`
+/// itself names codex and the id its trusted hook reported.
+#[test]
+fn a_done_inside_a_codex_session_carries_codex_and_its_hooked_id() {
+    let s = Store::new("codex-done");
+    s.seed();
+    let tasqx = env!("CARGO_BIN_EXE_tasqx");
+    let json = format!(r#"{{"session_id":"{CODEX_ID}","hook_event_name":"SessionStart"}}"#);
+    let then = format!("printf '%s' '{json}' | {tasqx} hook codex; {}", done_sh(&s));
+    s.fake_agent_then("codex", 0, &then);
+    let out = s.run(&["work", "1", "--agent", "codex"]);
+    assert!(out.status.success(), "{out:?}");
+    assert_eq!(s.task("1")["status"], "done", "{}", s.read("done.out"));
+    let p = done_payload(&s, "1");
+    assert_eq!(p["client"], "codex", "{p}");
+    assert_eq!(p["session_id"], CODEX_ID, "{p}");
+}
+
+/// `tasqx done` as the agent's shell runs it, inside a codex work session on
+/// task 1 whose sessions file holds `hooked`.
+fn done_in_session(s: &Store, hooked: &str, args: &[&str]) -> Output {
+    let uuid = s.task("1")["id"].as_str().unwrap().to_string();
+    done_in_launch_of(s, &uuid, hooked, args)
+}
+
+/// [`done_in_session`] in a session launched on the task with `uuid`.
+fn done_in_launch_of(s: &Store, uuid: &str, hooked: &str, args: &[&str]) -> Output {
+    let file = s.dir.join("sessions");
+    std::fs::write(&file, hooked).unwrap();
+    s.tasqx()
+        .env("TASQX_WORK_TASK", "1")
+        .env("TASQX_WORK_TASK_UUID", uuid)
+        .env("TASQX_WORK_SESSIONS", &file)
+        .arg("done")
+        .args(args)
+        .output()
+        .unwrap()
+}
+
+/// Untrusted hook and no rollout to match: the launch's session is unknown,
+/// so nothing is added. A client alone would read every codex rollout in the
+/// window, other projects' too: under-counting beats over-counting.
+#[test]
+fn a_done_inside_a_codex_session_without_a_known_session_adds_nothing() {
+    let s = Store::new("codex-done-nohook");
+    s.seed();
+    let out = done_in_session(&s, "", &["1"]);
+    assert!(out.status.success(), "{out:?}");
+    let p = done_payload(&s, "1");
+    assert!(p["client"].is_null() && p["session_id"].is_null(), "{p}");
+}
+
+/// D255: a short id is unique only in its store. A done of task 1 in a
+/// different store, run inside a work session on task 1, gets nothing added.
+#[test]
+fn a_done_inside_a_codex_session_against_another_store_adds_nothing() {
+    let launched = Store::new("codex-done-launched");
+    launched.seed();
+    let other = Store::new("codex-done-other");
+    other.seed();
+    let uuid = launched.task("1")["id"].as_str().unwrap().to_string();
+    let out = done_in_launch_of(&other, &uuid, &format!("{CODEX_ID}\n"), &["1"]);
+    assert!(out.status.success(), "{out:?}");
+    let p = done_payload(&other, "1");
+    assert!(p["client"].is_null() && p["session_id"].is_null(), "{p}");
+}
+
+/// Correlation the caller passed is never overridden, and a done of another
+/// task inside the session gets nothing added.
+#[test]
+fn a_done_inside_a_codex_session_keeps_explicit_correlation_and_other_tasks_alone() {
+    let s = Store::new("codex-done-explicit");
+    s.seed();
+    s.ok(&["add", "Something else"]);
+    let hooked = format!("{CODEX_ID}\n");
+    let out = done_in_session(
+        &s,
+        &hooked,
+        &["1", "--client", "mine", "--session-id", "s1"],
+    );
+    assert!(out.status.success(), "{out:?}");
+    let p = done_payload(&s, "1");
+    assert_eq!(
+        (&p["client"], &p["session_id"]),
+        (&"mine".into(), &"s1".into()),
+        "{p}"
+    );
+
+    let out = done_in_session(&s, &hooked, &["2"]);
+    assert!(out.status.success(), "{out:?}");
+    let p = done_payload(&s, "2");
+    assert!(p["client"].is_null() && p["session_id"].is_null(), "{p}");
+}
+
+/// A shell line that completes the work task as the agent would, as the
+/// claim's holder, output into `<dir>/done.out`.
+fn done_sh(s: &Store) -> String {
+    let tasqx = env!("CARGO_BIN_EXE_tasqx");
+    format!(
+        "actor=$({tasqx} --no-daemon --json show 1 | sed -n 's/.*\"claimed_by\": *\"\\([^\"]*\\)\".*/\\1/p'); \
+         {tasqx} --no-daemon done \"$TASQX_WORK_TASK\" --holder \"$actor\" > {}/done.out 2>&1",
+        s.dir.display()
+    )
+}
+
+/// D255: correlation on the done would turn off D247's measure of every
+/// session the task's starts named since its previous done. So a task that
+/// an earlier Claude session worked on gets none added: the fallback still
+/// sees that session, and the in-session codex part goes unmeasured.
+#[test]
+fn a_done_inside_codex_adds_nothing_when_an_earlier_session_worked_the_task() {
+    let s = Store::new("codex-done-mixed");
+    s.seed();
+    s.ok(&["start", "1", "--client", "claude", "--session-id", "c1"]);
+    s.ok(&["stop", "1"]);
+    let tasqx = env!("CARGO_BIN_EXE_tasqx");
+    let json = format!(r#"{{"session_id":"{CODEX_ID}","hook_event_name":"SessionStart"}}"#);
+    let then = format!("printf '%s' '{json}' | {tasqx} hook codex; {}", done_sh(&s));
+    s.fake_agent_then("codex", 0, &then);
+    let out = s.run(&["work", "1", "--agent", "codex"]);
+    assert!(out.status.success(), "{out:?}");
+    assert_eq!(s.task("1")["status"], "done", "{}", s.read("done.out"));
+    let p = done_payload(&s, "1");
+    assert!(p["client"].is_null() && p["session_id"].is_null(), "{p}");
+    // The fallback's input: `c1` on a start since the previous done.
+    assert!(start_sessions(&s)
+        .iter()
+        .any(|(sid, client)| sid == "c1" && client == "claude"));
+}
+
+/// A `tasqx work` run inside a codex work session does not hand the outer
+/// session's file on: a claude child's `tasqx done` must not read as codex.
+#[test]
+fn a_nested_launch_does_not_inherit_the_codex_sessions_file() {
+    let s = Store::new("nested");
+    s.seed();
+    s.fake_agent("claude", 0);
+    let out = s
+        .tasqx()
+        .env("TASQX_WORK_SESSIONS", s.dir.join("outer.sessions"))
+        .args(["work", "1", "--agent", "claude"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{out:?}");
+    assert_eq!(s.env_of("claude", "TASQX_WORK_SESSIONS"), "");
+}
+
+/// A session before the task's previous done was banked by that done: it is
+/// not "earlier" for this one, and the codex correlation is added.
+#[test]
+fn a_session_before_the_previous_done_does_not_hold_the_correlation_back() {
+    let s = Store::new("codex-done-reopened");
+    s.seed();
+    s.ok(&["start", "1", "--client", "claude", "--session-id", "c1"]);
+    s.ok(&["done", "1"]);
+    s.ok(&["reopen", "1"]);
+    let out = done_in_session(&s, &format!("{CODEX_ID}\n"), &["1"]);
+    assert!(out.status.success(), "{out:?}");
+    let log: Value = serde_json::from_str(&s.event_list(r#"{"ref":"1","limit":500}"#)).unwrap();
+    let last_done = log["result"]["events"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|e| e["op"] == "done")
+        .unwrap()["payload"]
+        .clone();
+    assert_eq!(last_done["client"], "codex", "{last_done}");
+    assert_eq!(last_done["session_id"], CODEX_ID, "{last_done}");
+}
+
+/// Two distinct sessions hooked in one launch (a `/new` inside codex): a
+/// done naming one would leave the other out, and naming codex alone would
+/// read other projects' rollouts, so nothing is added. The same id hooked
+/// twice (a resume) is still one session.
+#[test]
+fn a_done_after_two_hooked_sessions_adds_nothing() {
+    let s = Store::new("codex-done-two");
+    s.seed();
+    s.ok(&["add", "Something else"]);
+    let out = done_in_session(&s, &format!("{CODEX_ID}\nsecond\n"), &["1"]);
+    assert!(out.status.success(), "{out:?}");
+    let p = done_payload(&s, "1");
+    assert!(p["client"].is_null() && p["session_id"].is_null(), "{p}");
+
+    let file = s.dir.join("sessions");
+    std::fs::write(&file, format!("{CODEX_ID}\n{CODEX_ID}\n")).unwrap();
+    let out = s
+        .tasqx()
+        .env("TASQX_WORK_TASK", "2")
+        .env("TASQX_WORK_TASK_UUID", s.task("2")["id"].as_str().unwrap())
+        .env("TASQX_WORK_SESSIONS", &file)
+        .args(["done", "2"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{out:?}");
+    assert_eq!(done_payload(&s, "2")["session_id"], CODEX_ID);
+}
+
+/// A rollout as codex writes it, under the store's `$HOME/.codex`, started
+/// in `cwd` at `ts`.
+fn write_rollout(s: &Store, id: &str, cwd: &Path, ts: &str) {
+    let day = dir_home(&s.dir).join(".codex/sessions/2026/10/28");
+    std::fs::create_dir_all(&day).unwrap();
+    let meta = serde_json::json!({
+        "type": "session_meta",
+        "payload": { "id": id, "cwd": cwd, "timestamp": ts },
+    });
+    std::fs::write(day.join(format!("rollout-{id}.jsonl")), format!("{meta}\n")).unwrap();
+}
+
+/// `tasqx done 1` inside a codex launch on task 1 whose hook wrote nothing,
+/// launched in `launch_cwd` at `since`, run from another directory (the
+/// agent may have changed it).
+fn done_unhooked(s: &Store, launch_cwd: &Path, since: &str) -> Value {
+    let file = s.dir.join("sessions");
+    std::fs::write(&file, "").unwrap();
+    let elsewhere = s.dir.join("elsewhere");
+    std::fs::create_dir_all(&elsewhere).unwrap();
+    let out = s
+        .tasqx()
+        .current_dir(&elsewhere)
+        .env("TASQX_WORK_TASK", "1")
+        .env("TASQX_WORK_TASK_UUID", s.task("1")["id"].as_str().unwrap())
+        .env("TASQX_WORK_SESSIONS", &file)
+        .env("TASQX_WORK_CWD", launch_cwd)
+        .env("TASQX_WORK_SINCE", since)
+        .args(["done", "1"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{out:?}");
+    done_payload(s, "1")
+}
+
+const SINCE: &str = "2020-01-01T10:00:00Z";
+
+/// D255: an untrusted hook leaves the id to the rollout match the post-exit
+/// step uses, run at done time with the launch's directory and start: one
+/// match is the launch's session.
+#[test]
+fn an_unhooked_done_names_the_one_rollout_of_the_launch() {
+    let s = Store::new("codex-done-rollout");
+    s.seed();
+    let launch = s.dir.join("project");
+    std::fs::create_dir_all(&launch).unwrap();
+    write_rollout(&s, CODEX_ID, &launch, "2020-01-01T10:00:01Z");
+    // Another project's codex, and one started before the launch here.
+    write_rollout(
+        &s,
+        "elsewhere",
+        &s.dir.join("elsewhere"),
+        "2020-01-01T10:00:02Z",
+    );
+    write_rollout(&s, "before", &launch, "2020-01-01T09:59:59Z");
+    let p = done_unhooked(&s, &launch, SINCE);
+    assert_eq!(p["client"], "codex", "{p}");
+    assert_eq!(p["session_id"], CODEX_ID, "{p}");
+}
+
+/// Two rollouts of this launch's directory since it started: which one is
+/// the launch's is unknown, so nothing is added.
+#[test]
+fn an_unhooked_done_with_two_matching_rollouts_adds_nothing() {
+    let s = Store::new("codex-done-rollout-two");
+    s.seed();
+    let launch = s.dir.join("project");
+    std::fs::create_dir_all(&launch).unwrap();
+    write_rollout(&s, CODEX_ID, &launch, "2020-01-01T10:00:01Z");
+    write_rollout(&s, "beside-it", &launch, "2020-01-01T10:00:02Z");
+    let p = done_unhooked(&s, &launch, SINCE);
+    assert!(p["client"].is_null() && p["session_id"].is_null(), "{p}");
+}
+
+/// A nested launch clears the launch directory and start too.
+#[test]
+fn a_nested_launch_does_not_inherit_the_launch_directory_or_start() {
+    let s = Store::new("nested-cwd");
+    s.seed();
+    s.fake_agent("claude", 0);
+    let out = s
+        .tasqx()
+        .env("TASQX_WORK_CWD", "/outer")
+        .env("TASQX_WORK_SINCE", SINCE)
+        .args(["work", "1", "--agent", "claude"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{out:?}");
+    assert_eq!(s.env_of("claude", "TASQX_WORK_CWD"), "");
+    assert_eq!(s.env_of("claude", "TASQX_WORK_SINCE"), "");
+}
+
+/// End to end: an untrusted hook, the agent finishes the task before codex
+/// exits, and `work` handed the done its launch directory and start, so the
+/// done names the rollout codex wrote for this launch.
+#[test]
+fn an_unhooked_codex_session_finishing_its_task_names_its_rollout() {
+    let s = Store::new("codex-done-unhooked-e2e");
+    s.seed();
+    let then = format!("{}; {}", rollout_sh(CODEX_ID), done_sh(&s));
+    s.fake_agent_then("codex", 0, &then);
+    let out = s.run(&["work", "1", "--agent", "codex"]);
+    assert!(out.status.success(), "{out:?}");
+    assert_eq!(s.task("1")["status"], "done", "{}", s.read("done.out"));
+    let p = done_payload(&s, "1");
+    assert_eq!(p["client"], "codex", "{p}");
+    assert_eq!(p["session_id"], CODEX_ID, "{p}");
+}
+
+/// D255: the cycle boundary follows the store's append order. A previous
+/// done synced in from a machine whose clock runs ahead sorts above this
+/// cycle's Claude start by id; walked in id order, the boundary came first
+/// and `c1` was missed, so the done named codex and turned off D247's
+/// measure of `c1`.
+#[test]
+fn a_done_inside_codex_finds_an_earlier_session_past_a_done_whose_id_sorts_ahead() {
+    let s = Store::new("codex-done-synced");
+    s.seed();
+    s.ok(&["done", "1"]);
+    s.ok(&["reopen", "1"]);
+    s.ok(&["start", "1", "--client", "claude", "--session-id", "c1"]);
+    s.ok(&["stop", "1"]);
+    let engine = tasqx_core::engine::Engine::open(s.db.to_str().unwrap()).unwrap();
+    engine
+        .conn()
+        .execute(
+            "UPDATE events SET id = 'ffffffff-ffff-7fff-bfff-ffffffffffff' WHERE op = 'done'",
+            [],
+        )
+        .unwrap();
+    drop(engine);
+
+    let out = done_in_session(&s, &format!("{CODEX_ID}\n"), &["1"]);
+    assert!(out.status.success(), "{out:?}");
+    let log: Value =
+        serde_json::from_str(&s.event_list(r#"{"ref":"1","limit":500,"order":"append"}"#)).unwrap();
+    let last_done = log["result"]["events"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|e| e["op"] == "done")
+        .unwrap()["payload"]
+        .clone();
+    assert!(
+        last_done["client"].is_null() && last_done["session_id"].is_null(),
+        "{last_done}"
+    );
+}
+
+/// D255 with #4203: a task reopened and completed again in the same codex
+/// session would name that session again, and a correlated done measures
+/// from the task's earliest start, so the first cycle would count twice.
+/// The second done adds nothing, nor does a third: it under-counts until
+/// #4203.
+#[test]
+fn a_second_done_in_the_same_codex_session_adds_nothing() {
+    let s = Store::new("codex-done-again");
+    s.seed();
+    let hooked = format!("{CODEX_ID}\n");
+    let out = done_in_session(&s, &hooked, &["1"]);
+    assert!(out.status.success(), "{out:?}");
+    s.ok(&["reopen", "1"]);
+    let out = done_in_session(&s, &hooked, &["1"]);
+    assert!(out.status.success(), "{out:?}");
+    s.ok(&["reopen", "1"]);
+    let out = done_in_session(&s, &hooked, &["1"]);
+    assert!(out.status.success(), "{out:?}");
+    let log: Value =
+        serde_json::from_str(&s.event_list(r#"{"ref":"1","limit":500,"order":"append"}"#)).unwrap();
+    let dones: Vec<&Value> = log["result"]["events"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|e| e["op"] == "done")
+        .map(|e| &e["payload"])
+        .collect();
+    assert_eq!(
+        dones[2]["session_id"], CODEX_ID,
+        "the first done: {dones:?}"
+    );
+    for later in &dones[..2] {
+        assert!(
+            later["client"].is_null() && later["session_id"].is_null(),
+            "a later done: {dones:?}"
+        );
+    }
 }

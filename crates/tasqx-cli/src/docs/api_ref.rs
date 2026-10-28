@@ -1161,6 +1161,13 @@ const PARAM_DOCS: &[(&str, &str, &str, &str, &str)] = &[
         "A lower bound in the usual date grammar (`yesterday`, `2026-09-01`). It promises no events older than roughly that instant, not an exact cut.",
     ),
     (
+        "event.list",
+        "order",
+        "string",
+        "",
+        "`append` lists the events newest first in the order the store appended them, instead of by their time-ordered id, which an imported or synced event can break (D255). Refused together with `from`, which bounds the id range.",
+    ),
+    (
         "link.add",
         "from",
         "integer or string",

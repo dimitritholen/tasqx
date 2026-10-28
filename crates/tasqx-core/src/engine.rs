@@ -556,6 +556,25 @@ impl Engine {
         let mut preds: Vec<String> = Vec::new();
         let mut binds: Vec<SqlValue> = Vec::new();
 
+        // `order: "append"` (D255): the store's append order, `rowid`, which
+        // an imported or synced event cannot sort out of place the way it can
+        // the time-ordered id. `from` is an id range, so the two do not mix.
+        let append = match opt_str(p, "order")?.as_deref() {
+            None => false,
+            Some("append") => true,
+            Some(other) => {
+                return Err(ApiError::bad_request(format!(
+                    "unknown `order` {other:?} (expected \"append\", or omit it for id order)"
+                )))
+            }
+        };
+        if append && p.get("from").is_some() {
+            return Err(ApiError::bad_request(
+                "`order: \"append\"` and `from` cannot be combined: `from` bounds the id \
+                 range, which append order does not follow",
+            ));
+        }
+
         // Optional scoping: `ref` (a task) or `entity` (a type name).
         if let Some(r) = p.get("ref") {
             let task = self.resolve_ref_value(r)?;
@@ -624,9 +643,10 @@ impl Engine {
         // MUTATES on the row it picks, so one wrong answer changes the store,
         // and it orders by `rowid`, the store's own append order — see
         // `engine/undo.rs`, whose header sets the two side by side.
+        let order_by = if append { "rowid" } else { "id" };
         let sql = format!(
             "SELECT id, entity, entity_id, op, payload, ts, actor FROM events \
-             {where_sql} ORDER BY id DESC LIMIT {limit_ph}"
+             {where_sql} ORDER BY {order_by} DESC LIMIT {limit_ph}"
         );
         let mut stmt = self.conn.prepare(&sql)?;
         let map = |r: &rusqlite::Row| -> rusqlite::Result<Value> {
@@ -2689,6 +2709,47 @@ mod tests {
             future["count"], 0,
             "a bound in the future must exclude every existing event"
         );
+    }
+
+    /// `order: "append"` lists by the store's append order (`rowid`), not by
+    /// the time-ordered id, which an imported or synced event (another
+    /// machine's clock) can break (D255). It cannot be combined with `from`,
+    /// an id range.
+    #[test]
+    fn event_list_in_append_order_survives_an_event_whose_id_sorts_out_of_place() {
+        let e = Engine::open_in_memory().unwrap();
+        e.task_add(&json!({ "title": "t" })).unwrap();
+        e.task_start(&json!({ "ref": 1 })).unwrap();
+        // The add, as a clock running ahead would have stamped it.
+        e.conn()
+            .execute(
+                "UPDATE events SET id = 'ffffffff-ffff-7fff-bfff-ffffffffffff' WHERE op = 'add'",
+                [],
+            )
+            .unwrap();
+        let ops = |v: Value| -> Vec<String> {
+            v["events"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|ev| ev["op"].as_str().unwrap().to_string())
+                .collect()
+        };
+        assert_eq!(ops(e.event_list(&json!({})).unwrap())[0], "add", "id order");
+        let appended = ops(e.event_list(&json!({ "order": "append" })).unwrap());
+        assert_eq!(appended, ["start", "add"], "append order, newest first");
+
+        let both = e
+            .event_list(&json!({ "order": "append", "from": "-1d" }))
+            .unwrap_err();
+        assert_eq!(both.code, ErrorCode::BadRequest);
+        assert!(
+            both.message.contains("order") && both.message.contains("from"),
+            "{}",
+            both.message
+        );
+        let other = e.event_list(&json!({ "order": "id" })).unwrap_err();
+        assert_eq!(other.code, ErrorCode::BadRequest);
     }
 
     /// The boundary row must survive, which is what the margin in

@@ -1,6 +1,6 @@
 The hook command `tasqx work` registers with the agent (no API call).
 
-The agent runs it on its session events with the event's JSON on stdin (D248). It acts only inside the `tasqx work` session it was registered for, named by TASQX_WORK_TASK and TASQX_WORK_SESSION, and never breaks the agent: anything it cannot do is a line on stderr, and it exits 0. You do not run it yourself.
+The agent runs it on its session events with the event's JSON on stdin (D248, D255). It acts only inside the `tasqx work` session it was registered for, named by TASQX_WORK_TASK and TASQX_WORK_SESSION (for codex, TASQX_WORK_SESSIONS), and never breaks the agent: anything it cannot do is a line on stderr, and it exits 0. You do not run it yourself.
 
 Usage: tasqx hook [OPTIONS] <AGENT>
 
@@ -8,7 +8,7 @@ Arguments:
   <AGENT>
           The agent whose hook this is
           
-          [possible values: claude]
+          [possible values: claude, codex]
 
 Options:
       --json
@@ -31,9 +31,11 @@ Options:
 
 EXAMPLES
   tasqx hook claude    # what Claude Code runs on a session event
+  tasqx hook codex    # what Codex runs on a session event
 
 NOTE  `tasqx work --agent claude` registers this one command for the session's `SessionStart` and `SessionEnd` events through `--settings`, without touching `~/.claude` (D248). The command never varies; the event is read from the JSON the agent writes on stdin.
-      It acts only inside the `tasqx work` session it was registered for: without `TASQX_WORK_TASK`, or when the input's `session_id` is not `TASQX_WORK_SESSION`, it does nothing. Both events record nothing yet. A work session's tokens are measured from its transcript when the task completes, by a running daemon with `tasqx config set tokens.enabled true` (off by default); until such a daemon runs, the session stays unmeasured, and it is measured once one does, while its transcript is still on disk.
+      Codex gets `tasqx hook codex` the same way from `tasqx work --agent codex`, through `-c hooks.*`, without touching `~/.codex` (D255). Codex runs a hook only once you trust it: run `/hooks` in codex once and trust `tasqx hook codex`. Until then codex skips it silently, and `tasqx work` finds the session from its rollout after codex exits, and says so once.
+      It acts only inside the `tasqx work` session it was registered for: without `TASQX_WORK_TASK`, or for claude when the input's `session_id` is not `TASQX_WORK_SESSION`, it does nothing. Codex picks its own session id, so on `SessionStart` `tasqx hook codex` hands that id to `tasqx work`, which records it on the task when codex exits. Nothing else is recorded yet. A work session's tokens are measured from its transcript when the task completes, by a running daemon with `tasqx config set tokens.enabled true` (off by default); until such a daemon runs, the session stays unmeasured, and it is measured once one does, while its transcript is still on disk.
       It never breaks the agent: input it cannot read or an event it does not know is one line on stderr, and it exits 0. You do not run it yourself.
 
 See also: work        Full manual: tasqx manual

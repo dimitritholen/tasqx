@@ -119,6 +119,14 @@
       "source": "default",
       "summary": "The agent CLI `tasqx work` launches when `--agent` is not given; unset, it asks once and remembers (D245).",
       "value": ""
+    },
+    {
+      "default": "true",
+      "home": "config.toml",
+      "key": "work.codex_hook_hint",
+      "source": "default",
+      "summary": "Whether `tasqx work` says, the next time codex skips its untrusted hook, how to trust it; it is set false once said (D255).",
+      "value": "true"
     }
   ]
 }
