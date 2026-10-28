@@ -3917,7 +3917,10 @@ of its sessions the task had. Those logs already hold every session's spend, so
 they replace that tool's telemetry for the task instead of adding to it, as long
 as they hold at least as much; otherwise the telemetry stands.</p>
 <p><strong>Telemetry</strong> — the opt-in OTLP receiver below. Samples are matched to the task
-by session id, and beat log-parsing when both are available.</p>
+by session id, and beat log-parsing when both are available, except in the
+case above: for Gemini CLI and GitHub Copilot CLI on a completion without
+correlation, logs that were read and hold at least as much replace the
+telemetry.</p>
 <h3 id="guide-token-accounting--how-much-to-trust-a-figure">How much to trust a figure</h3>
 <p>Every measurement carries a confidence. It grades how firmly the tokens are
 tied to this task, not how precise the counts are: every channel reads
