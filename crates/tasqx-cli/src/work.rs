@@ -601,9 +601,11 @@ pub(crate) fn codex_done_correlation(be: &mut Backend, params: &mut Value) {
     // starts named since its previous done: add it only when this launch's
     // own is the only one, so an earlier session is never the one lost.
     let own = std::env::var("TASQX_WORK_SESSION").ok();
+    // In append order, as attribution walks done cycles: a done synced in
+    // from a machine whose clock runs ahead sorts out of place by id.
     let Ok(log) = be.call(
         "event.list",
-        &json!({ "ref": params["ref"], "limit": i64::MAX }),
+        &json!({ "ref": params["ref"], "limit": i64::MAX, "order": "append" }),
     ) else {
         return;
     };

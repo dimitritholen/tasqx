@@ -1209,3 +1209,43 @@ fn an_unhooked_codex_session_finishing_its_task_names_its_rollout() {
     assert_eq!(p["client"], "codex", "{p}");
     assert_eq!(p["session_id"], CODEX_ID, "{p}");
 }
+
+/// D249: the cycle boundary follows the store's append order. A previous
+/// done synced in from a machine whose clock runs ahead sorts above this
+/// cycle's Claude start by id; walked in id order, the boundary came first
+/// and `c1` was missed, so the done named codex and turned off D247's
+/// measure of `c1`.
+#[test]
+fn a_done_inside_codex_finds_an_earlier_session_past_a_done_whose_id_sorts_ahead() {
+    let s = Store::new("codex-done-synced");
+    s.seed();
+    s.ok(&["done", "1"]);
+    s.ok(&["reopen", "1"]);
+    s.ok(&["start", "1", "--client", "claude", "--session-id", "c1"]);
+    s.ok(&["stop", "1"]);
+    let engine = tasqx_core::engine::Engine::open(s.db.to_str().unwrap()).unwrap();
+    engine
+        .conn()
+        .execute(
+            "UPDATE events SET id = 'ffffffff-ffff-7fff-bfff-ffffffffffff' WHERE op = 'done'",
+            [],
+        )
+        .unwrap();
+    drop(engine);
+
+    let out = done_in_session(&s, &format!("{CODEX_ID}\n"), &["1"]);
+    assert!(out.status.success(), "{out:?}");
+    let log: Value =
+        serde_json::from_str(&s.event_list(r#"{"ref":"1","limit":500,"order":"append"}"#)).unwrap();
+    let last_done = log["result"]["events"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|e| e["op"] == "done")
+        .unwrap()["payload"]
+        .clone();
+    assert!(
+        last_done["client"].is_null() && last_done["session_id"].is_null(),
+        "{last_done}"
+    );
+}
