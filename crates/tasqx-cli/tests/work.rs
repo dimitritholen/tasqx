@@ -935,12 +935,7 @@ fn a_done_inside_a_codex_session_carries_codex_and_its_hooked_id() {
     s.seed();
     let tasqx = env!("CARGO_BIN_EXE_tasqx");
     let json = format!(r#"{{"session_id":"{CODEX_ID}","hook_event_name":"SessionStart"}}"#);
-    let then = format!(
-        "printf '%s' '{json}' | {tasqx} hook codex; \
-         actor=$({tasqx} --no-daemon --json show 1 | sed -n 's/.*\"claimed_by\": *\"\\([^\"]*\\)\".*/\\1/p'); \
-         {tasqx} --no-daemon done \"$TASQX_WORK_TASK\" --holder \"$actor\" > {}/done.out 2>&1",
-        s.dir.display()
-    );
+    let then = format!("printf '%s' '{json}' | {tasqx} hook codex; {}", done_sh(&s));
     s.fake_agent_then("codex", 0, &then);
     let out = s.run(&["work", "1", "--agent", "codex"]);
     assert!(out.status.success(), "{out:?}");
@@ -1002,4 +997,80 @@ fn a_done_inside_a_codex_session_keeps_explicit_correlation_and_other_tasks_alon
     assert!(out.status.success(), "{out:?}");
     let p = done_payload(&s, "2");
     assert!(p["client"].is_null() && p["session_id"].is_null(), "{p}");
+}
+
+/// A shell line that completes the work task as the agent would, as the
+/// claim's holder, output into `<dir>/done.out`.
+fn done_sh(s: &Store) -> String {
+    let tasqx = env!("CARGO_BIN_EXE_tasqx");
+    format!(
+        "actor=$({tasqx} --no-daemon --json show 1 | sed -n 's/.*\"claimed_by\": *\"\\([^\"]*\\)\".*/\\1/p'); \
+         {tasqx} --no-daemon done \"$TASQX_WORK_TASK\" --holder \"$actor\" > {}/done.out 2>&1",
+        s.dir.display()
+    )
+}
+
+/// D249: correlation on the done would turn off D247's measure of every
+/// session the task's starts named since its previous done. So a task that
+/// an earlier Claude session worked on gets none added: the fallback still
+/// sees that session, and the in-session codex part goes unmeasured.
+#[test]
+fn a_done_inside_codex_adds_nothing_when_an_earlier_session_worked_the_task() {
+    let s = Store::new("codex-done-mixed");
+    s.seed();
+    s.ok(&["start", "1", "--client", "claude", "--session-id", "c1"]);
+    s.ok(&["stop", "1"]);
+    let tasqx = env!("CARGO_BIN_EXE_tasqx");
+    let json = format!(r#"{{"session_id":"{CODEX_ID}","hook_event_name":"SessionStart"}}"#);
+    let then = format!("printf '%s' '{json}' | {tasqx} hook codex; {}", done_sh(&s));
+    s.fake_agent_then("codex", 0, &then);
+    let out = s.run(&["work", "1", "--agent", "codex"]);
+    assert!(out.status.success(), "{out:?}");
+    assert_eq!(s.task("1")["status"], "done", "{}", s.read("done.out"));
+    let p = done_payload(&s, "1");
+    assert!(p["client"].is_null() && p["session_id"].is_null(), "{p}");
+    // The fallback's input: `c1` on a start since the previous done.
+    assert!(start_sessions(&s)
+        .iter()
+        .any(|(sid, client)| sid == "c1" && client == "claude"));
+}
+
+/// A `tasqx work` run inside a codex work session does not hand the outer
+/// session's file on: a claude child's `tasqx done` must not read as codex.
+#[test]
+fn a_nested_launch_does_not_inherit_the_codex_sessions_file() {
+    let s = Store::new("nested");
+    s.seed();
+    s.fake_agent("claude", 0);
+    let out = s
+        .tasqx()
+        .env("TASQX_WORK_SESSIONS", s.dir.join("outer.sessions"))
+        .args(["work", "1", "--agent", "claude"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{out:?}");
+    assert_eq!(s.env_of("claude", "TASQX_WORK_SESSIONS"), "");
+}
+
+/// A session before the task's previous done was banked by that done: it is
+/// not "earlier" for this one, and the codex correlation is added.
+#[test]
+fn a_session_before_the_previous_done_does_not_hold_the_correlation_back() {
+    let s = Store::new("codex-done-reopened");
+    s.seed();
+    s.ok(&["start", "1", "--client", "claude", "--session-id", "c1"]);
+    s.ok(&["done", "1"]);
+    s.ok(&["reopen", "1"]);
+    let out = done_in_session(&s, &format!("{CODEX_ID}\n"), &["1"]);
+    assert!(out.status.success(), "{out:?}");
+    let log: Value = serde_json::from_str(&s.event_list(r#"{"ref":"1","limit":500}"#)).unwrap();
+    let last_done = log["result"]["events"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|e| e["op"] == "done")
+        .unwrap()["payload"]
+        .clone();
+    assert_eq!(last_done["client"], "codex", "{last_done}");
+    assert_eq!(last_done["session_id"], CODEX_ID, "{last_done}");
 }
