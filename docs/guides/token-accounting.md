@@ -54,13 +54,16 @@ match. Codex picks its own session id, so `tasqx work` records it when Codex
 exits: the id its `tasqx hook codex` hook reported, or, while that hook is not
 trusted, the one rollout Codex started in the launch directory. When two Codex
 sessions started there during the launch, neither is recorded. A `tasqx done`
-the agent runs on its own task before Codex exits names Codex, and that id when
-the hook gave exactly one (after a `/new` inside Codex, it names Codex only); without the hook, every Codex session in the task's window
-is counted. When a session from before this launch also worked on the task since
+the agent runs on its own task before Codex exits names Codex and that session:
+the id the hook gave, or without the hook the one rollout Codex started in the
+launch directory. When that session is not known (after a `/new` inside Codex,
+or with no single matching rollout), the `done` names nothing, and that Codex
+session is not measured rather than another one counted. When a session from before this launch also worked on the task since
 its previous completion, that `done` names nothing, so the earlier sessions are
 still measured; the Codex session finished inside the launch is then not. A
-reopened task completed again by a `done` that names Codex only can count the
-earlier cycle's Codex usage a second time (a known limit, tracked in #4203).
+reopened task completed again by the agent's MCP `tasqx_complete_task`, which
+names the client alone, can count the earlier cycle's Codex usage a second time
+(a known limit, tracked in #4203).
 
 Given a session id, Claude Code and Codex read only the matching session's
 transcript, so another session running at the same time is not counted. When a
