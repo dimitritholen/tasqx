@@ -1249,3 +1249,36 @@ fn a_done_inside_codex_finds_an_earlier_session_past_a_done_whose_id_sorts_ahead
         "{last_done}"
     );
 }
+
+/// D249 with #4203: a task reopened and completed again in the same codex
+/// session would name that session again, and a correlated done measures
+/// from the task's earliest start, so the first cycle would count twice.
+/// The second done adds nothing: it under-counts until #4203.
+#[test]
+fn a_second_done_in_the_same_codex_session_adds_nothing() {
+    let s = Store::new("codex-done-again");
+    s.seed();
+    let hooked = format!("{CODEX_ID}\n");
+    let out = done_in_session(&s, &hooked, &["1"]);
+    assert!(out.status.success(), "{out:?}");
+    s.ok(&["reopen", "1"]);
+    let out = done_in_session(&s, &hooked, &["1"]);
+    assert!(out.status.success(), "{out:?}");
+    let log: Value =
+        serde_json::from_str(&s.event_list(r#"{"ref":"1","limit":500,"order":"append"}"#)).unwrap();
+    let dones: Vec<&Value> = log["result"]["events"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|e| e["op"] == "done")
+        .map(|e| &e["payload"])
+        .collect();
+    assert_eq!(
+        dones[1]["session_id"], CODEX_ID,
+        "the first done: {dones:?}"
+    );
+    assert!(
+        dones[0]["client"].is_null() && dones[0]["session_id"].is_null(),
+        "the second done: {dones:?}"
+    );
+}

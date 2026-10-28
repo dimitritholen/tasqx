@@ -418,13 +418,10 @@ fn launch(be: &mut Backend, ctx: &Ctx, task_ref: &str, agent: &'static str) -> C
         )
     });
     let was_started = started.is_ok();
-    // Where the interval began: a rollout codex started before it is not
-    // this launch's (D249).
-    let since = started.as_ref().ok().and_then(|v| {
-        v["interval_started"]
-            .as_str()
-            .and_then(|t| t.parse::<jiff::Timestamp>().ok())
-    });
+    // When this launch began, read right before the spawn rather than taken
+    // from the timer: a rollout codex started before it is not this
+    // launch's (D249).
+    let since = started.as_ref().ok().map(|_| crate::clock::now());
     // Codex's id file, and where and when codex was launched, for a done
     // run inside it (`launch_session`).
     let mut codex_env: Vec<(&str, std::ffi::OsString)> = Vec::new();
@@ -609,10 +606,12 @@ pub(crate) fn codex_done_correlation(be: &mut Backend, params: &mut Value) {
     ) else {
         return;
     };
-    let earlier = log["events"]
+    let events = log["events"]
         .as_array()
-        .into_iter()
-        .flatten()
+        .map(Vec::as_slice)
+        .unwrap_or_default();
+    let earlier = events
+        .iter()
         .take_while(|e| e["op"] != "done")
         .filter_map(|e| e["payload"]["session_id"].as_str())
         .any(|sid| Some(sid) != own.as_deref());
@@ -621,7 +620,14 @@ pub(crate) fn codex_done_correlation(be: &mut Backend, params: &mut Value) {
     }
     // Never by client alone: that reads every codex rollout in the window,
     // other projects' too. Unknown, the cycle is under-counted instead.
-    if let Some(id) = launch_session(&file) {
+    // The session the previous done already named: a correlated done
+    // measures from the task's earliest start (#4203), so naming it again
+    // would count that cycle twice. Under-counted instead, until #4203.
+    let previous = events
+        .iter()
+        .find(|e| e["op"] == "done")
+        .and_then(|e| e["payload"]["session_id"].as_str());
+    if let Some(id) = launch_session(&file).filter(|id| Some(id.as_str()) != previous) {
         params["client"] = json!("codex");
         params["session_id"] = json!(id);
     }
