@@ -2631,7 +2631,10 @@ see <a href="#guide-token-accounting">token accounting</a>). A task that is neve
 completed shows no tokens for its work sessions; one completed without that
 setup is measured once such a daemon runs, while the transcript is still on
 disk. Codex picks its own session id, and <code>tasqx hook codex</code> tells it to
-<code>tasqx work</code>, which records it on the task when codex exits.</p>
+<code>tasqx work</code>, which records it on the task when codex exits. When the agent
+runs <code>tasqx done</code> on its task before then, that <code>done</code> names codex and the
+id itself; without the hook it names codex only, and every codex session in
+its window is counted.</p>
 <p>Codex runs a hook only after you trust it, and skips an untrusted one without
 a word. Trust it once: start <code>codex</code>, run <code>/hooks</code>, and trust
 <code>tasqx hook codex</code>. Until you do, <code>tasqx work</code> finds the session from the
@@ -3920,7 +3923,10 @@ match the agent's own transcript. Claude Code sessions launched by <code>tasqx w
 match. Codex picks its own session id, so <code>tasqx work</code> records it when Codex
 exits: the id its <code>tasqx hook codex</code> hook reported, or, while that hook is not
 trusted, the one rollout Codex started in the launch directory. When two Codex
-sessions started there during the launch, neither is recorded.</p>
+sessions started there during the launch, neither is recorded. A <code>tasqx done</code>
+the agent runs on its own task before Codex exits names Codex, and that id when
+the hook gave one; without the hook, every Codex session in the task's window
+is counted.</p>
 <p>Given a session id, Claude Code and Codex read only the matching session's
 transcript, so another session running at the same time is not counted. When a
 completion names a Claude Code session that no transcript matches, the scan

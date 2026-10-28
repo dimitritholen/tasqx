@@ -912,3 +912,94 @@ fn the_codex_hook_appends_its_session_and_never_breaks_the_agent() {
     assert!(!file.exists(), "the hook created the file");
     assert_eq!(s.events(), before);
 }
+
+/// The payload of the task's `done` event.
+fn done_payload(s: &Store, r: &str) -> Value {
+    let log: Value =
+        serde_json::from_str(&s.event_list(&format!(r#"{{"ref":"{r}","limit":500}}"#))).unwrap();
+    log["result"]["events"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|e| e["op"] == "done")
+        .unwrap_or_else(|| panic!("no done event: {log}"))["payload"]
+        .clone()
+}
+
+/// D249: the agent completes the task through its shell before codex exits.
+/// The post-exit record would come too late for a done task, so the `done`
+/// itself names codex and the id its trusted hook reported.
+#[test]
+fn a_done_inside_a_codex_session_carries_codex_and_its_hooked_id() {
+    let s = Store::new("codex-done");
+    s.seed();
+    let tasqx = env!("CARGO_BIN_EXE_tasqx");
+    let json = format!(r#"{{"session_id":"{CODEX_ID}","hook_event_name":"SessionStart"}}"#);
+    let then = format!(
+        "printf '%s' '{json}' | {tasqx} hook codex; \
+         actor=$({tasqx} --no-daemon --json show 1 | sed -n 's/.*\"claimed_by\": *\"\\([^\"]*\\)\".*/\\1/p'); \
+         {tasqx} --no-daemon done \"$TASQX_WORK_TASK\" --holder \"$actor\" > {}/done.out 2>&1",
+        s.dir.display()
+    );
+    s.fake_agent_then("codex", 0, &then);
+    let out = s.run(&["work", "1", "--agent", "codex"]);
+    assert!(out.status.success(), "{out:?}");
+    assert_eq!(s.task("1")["status"], "done", "{}", s.read("done.out"));
+    let p = done_payload(&s, "1");
+    assert_eq!(p["client"], "codex", "{p}");
+    assert_eq!(p["session_id"], CODEX_ID, "{p}");
+}
+
+/// `tasqx done` as the agent's shell runs it, inside a codex work session on
+/// task 1 whose sessions file holds `hooked`.
+fn done_in_session(s: &Store, hooked: &str, args: &[&str]) -> Output {
+    let file = s.dir.join("sessions");
+    std::fs::write(&file, hooked).unwrap();
+    s.tasqx()
+        .env("TASQX_WORK_TASK", "1")
+        .env("TASQX_WORK_SESSIONS", &file)
+        .arg("done")
+        .args(args)
+        .output()
+        .unwrap()
+}
+
+/// Untrusted hook: no id to name, so the done is correlated by client only,
+/// and attribution reads codex's rollouts over the task's window.
+#[test]
+fn a_done_inside_a_codex_session_without_a_hooked_id_names_codex_only() {
+    let s = Store::new("codex-done-nohook");
+    s.seed();
+    let out = done_in_session(&s, "", &["1"]);
+    assert!(out.status.success(), "{out:?}");
+    let p = done_payload(&s, "1");
+    assert_eq!(p["client"], "codex", "{p}");
+    assert!(p["session_id"].is_null(), "{p}");
+}
+
+/// Correlation the caller passed is never overridden, and a done of another
+/// task inside the session gets nothing added.
+#[test]
+fn a_done_inside_a_codex_session_keeps_explicit_correlation_and_other_tasks_alone() {
+    let s = Store::new("codex-done-explicit");
+    s.seed();
+    s.ok(&["add", "Something else"]);
+    let hooked = format!("{CODEX_ID}\n");
+    let out = done_in_session(
+        &s,
+        &hooked,
+        &["1", "--client", "mine", "--session-id", "s1"],
+    );
+    assert!(out.status.success(), "{out:?}");
+    let p = done_payload(&s, "1");
+    assert_eq!(
+        (&p["client"], &p["session_id"]),
+        (&"mine".into(), &"s1".into()),
+        "{p}"
+    );
+
+    let out = done_in_session(&s, &hooked, &["2"]);
+    assert!(out.status.success(), "{out:?}");
+    let p = done_payload(&s, "2");
+    assert!(p["client"].is_null() && p["session_id"].is_null(), "{p}");
+}
