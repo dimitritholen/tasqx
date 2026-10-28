@@ -834,10 +834,13 @@ const METHODS: [(&str, &str, &str); 63] = [
     ),
     (
         "event.list",
-        "<code>limit?</code>, <code>ref?</code>, <code>entity?</code>, <code>from?</code>",
-        "<code>{count, events}</code> — the append-only log. <code>from</code> takes \
+        "<code>limit?</code>, <code>ref?</code>, <code>entity?</code>, <code>from?</code>, <code>order?</code>",
+        "<code>{count, events}</code> — the append-only log, newest first. <code>from</code> takes \
          the usual date grammar and is a lower bound, not an exact filter: it \
-         promises no events older than roughly that instant.",
+         promises no events older than roughly that instant. <code>order: \"append\"</code> \
+         lists by the order the store appended the events instead of by their time-ordered id, \
+         which an imported or synced event can break; it cannot be combined with \
+         <code>from</code> (D253).",
     ),
     (
         "event.revert",

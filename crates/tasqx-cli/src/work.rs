@@ -278,6 +278,27 @@ pub(crate) fn start_context(brief: &Value, actor: &str, opts: &DetailOpts) -> St
 /// event comes from the hook's stdin.
 pub const HOOK_COMMAND: &str = "tasqx hook claude";
 
+/// Codex's one hook command (D253), constant for the same reason: it is
+/// trusted once through `/hooks` and then on every run.
+pub const CODEX_HOOK_COMMAND: &str = "tasqx hook codex";
+
+/// The `-c` overrides that register [`CODEX_HOOK_COMMAND`] on the Codex
+/// hook events `tasqx hook codex` handles, for this run only.
+fn codex_hooks() -> Vec<std::ffi::OsString> {
+    ["SessionStart", "SessionEnd"]
+        .iter()
+        .flat_map(|event| {
+            [
+                "-c".into(),
+                format!(
+                    "hooks.{event}=[{{hooks=[{{type=\"command\",command=\"{CODEX_HOOK_COMMAND}\"}}]}}]"
+                )
+                .into(),
+            ]
+        })
+        .collect()
+}
+
 /// The `--settings` JSON that registers [`HOOK_COMMAND`] on the Claude hook
 /// events `tasqx hook claude` handles. Layered on the user's own settings by
 /// Claude for this session only.
@@ -303,14 +324,17 @@ pub(crate) fn agent_args(
             "--settings".into(),
             claude_settings().into(),
         ],
-        _ => vec![
+        _ => [
             "-c".into(),
             format!(
                 "developer_instructions={}",
                 toml_edit::Value::from(context).to_string().trim()
             )
             .into(),
-        ],
+        ]
+        .into_iter()
+        .chain(codex_hooks())
+        .collect(),
     }
 }
 
@@ -346,6 +370,13 @@ fn launch(be: &mut Backend, ctx: &Ctx, task_ref: &str, agent: &'static str) -> C
     // are nobody else's to read in a shared temp dir.
     verbs::write_new(&path, &context)
         .map_err(|e| ApiError::internal(format!("cannot write {}: {e}", path.display())))?;
+    // Codex picks its own session id, and its SessionStart hook appends it
+    // here (D253); created the same way, so the hook only ever appends.
+    let sessions = (agent == "codex").then(|| path.with_extension("sessions"));
+    if let Some(file) = &sessions {
+        verbs::write_new(file, "")
+            .map_err(|e| ApiError::internal(format!("cannot write {}: {e}", file.display())))?;
+    }
     // The agent's own tasqx (its MCP server, a `tasqx` it runs) must reach
     // the store this claim is in: the daemon this process routed through, or
     // the file it holds in-process.
@@ -387,6 +418,22 @@ fn launch(be: &mut Backend, ctx: &Ctx, task_ref: &str, agent: &'static str) -> C
         )
     });
     let was_started = started.is_ok();
+    // When this launch began, read right before the spawn rather than taken
+    // from the timer: a rollout codex started before it is not this
+    // launch's (D253).
+    let since = started.as_ref().ok().map(|_| crate::clock::now());
+    // Codex's id file, and where and when codex was launched, for a done
+    // run inside it (`launch_session`).
+    let mut codex_env: Vec<(&str, std::ffi::OsString)> = Vec::new();
+    if let Some(file) = &sessions {
+        codex_env.push(("TASQX_WORK_SESSIONS", file.into()));
+        if let Some(cwd) = &workdir {
+            codex_env.push(("TASQX_WORK_CWD", cwd.into()));
+        }
+        if let Some(since) = since {
+            codex_env.push(("TASQX_WORK_SINCE", since.to_string().into()));
+        }
+    }
     let ran = started.and_then(|_| {
         // Ctrl-C belongs to the agent: tasqx must outlive it to clean up.
         let _ = ctrlc::set_handler(|| {});
@@ -394,11 +441,18 @@ fn launch(be: &mut Backend, ctx: &Ctx, task_ref: &str, agent: &'static str) -> C
         if in_process {
             child.env_remove("TASQX_SOCK");
         }
+        // A launch inside a codex session must not hand that session's file
+        // on: the child's `tasqx done` would read as codex (D253).
+        child
+            .env_remove("TASQX_WORK_SESSIONS")
+            .env_remove("TASQX_WORK_CWD")
+            .env_remove("TASQX_WORK_SINCE");
         child
             .args(agent_args(agent, &session, &path, &context))
             .env("TASQX_WORK_TASK", sid.to_string())
             .env("TASQX_WORK_SESSION", &session)
             .env("TASQX_WORK_CONTEXT", &path)
+            .envs(codex_env)
             .envs(route)
             .status()
             .map_err(|e| ApiError::internal(format!("could not run {}: {e}", program.display())))
@@ -412,10 +466,17 @@ fn launch(be: &mut Backend, ctx: &Ctx, task_ref: &str, agent: &'static str) -> C
     if was_started {
         let fix = format!("tasqx stop {sid} --holder {actor}");
         cleanup(be, "task.stop", &params, &fix);
+        if let (Some(file), Some(since), Some(cwd)) = (&sessions, since, &workdir) {
+            let ids = codex_sessions(file, cwd, since);
+            record_sessions(be, &params, &ids);
+        }
     }
     let fix = format!("tasqx release {sid} --holder {actor}");
     cleanup(be, "task.release", &params, &fix);
     let _ = std::fs::remove_file(&path);
+    if let Some(file) = &sessions {
+        let _ = std::fs::remove_file(file);
+    }
 
     // shortcut: a child killed by a signal reports 1, not 128+signal.
     let code = ran?.code().unwrap_or(1);
@@ -424,6 +485,205 @@ fn launch(be: &mut Backend, ctx: &Ctx, task_ref: &str, agent: &'static str) -> C
         json!({ "launched": true, "short_id": sid, "agent": agent, "session_id": session, "exit_code": code }),
         String::new(),
     ))
+}
+
+/// Codex's own ids for the session(s) this launch ran (D253): those its
+/// SessionStart hook wrote to `file`, else the rollout codex started in `cwd`
+/// since `since`. That fallback means the hook did not run, which is said
+/// once; two such rollouts (another codex beside this one) leave the launch's
+/// unknown, and none is taken.
+fn codex_sessions(
+    file: &std::path::Path,
+    cwd: &std::path::Path,
+    since: jiff::Timestamp,
+) -> Vec<String> {
+    let hooked: Vec<String> = std::fs::read_to_string(file)
+        .unwrap_or_default()
+        .lines()
+        .map(str::to_string)
+        .collect();
+    if !hooked.is_empty() {
+        return hooked;
+    }
+    let found = tasqx_core::tokens::codex::sessions_started(
+        &tasqx_core::tokens::codex::default_roots(),
+        cwd,
+        since,
+    );
+    if found.is_empty() {
+        // No session at all: codex never got that far, and has no hook to
+        // be told about.
+        return found;
+    }
+    hint_once();
+    if found.len() > 1 {
+        eprintln!(
+            "tasqx: warning: {} codex sessions started in this directory while it ran, and \
+             which was this one is unknown: none is recorded, so its tokens are not measured",
+            found.len()
+        );
+        return Vec::new();
+    }
+    found
+}
+
+/// Each id on a start of the task, where D247's fallback finds the session's
+/// rollout by it; what was not recorded is said on stderr.
+fn record_sessions(be: &mut Backend, params: &Value, ids: &[String]) {
+    for id in ids {
+        if let Some(why) = record_session(be, params, id) {
+            eprintln!(
+                "tasqx: warning: codex session {id} was not recorded ({why}); its tokens will \
+                 not be measured"
+            );
+        }
+    }
+}
+
+/// One id, recorded as a start and a stop at the same moment: the clock is
+/// already stopped, so no time is added; `keep`, so no other clock is
+/// stopped. `None` when recorded, or refused because the agent closed the
+/// task; otherwise why it was not recorded.
+fn record_session(be: &mut Backend, params: &Value, id: &str) -> Option<String> {
+    let mut start = params.clone();
+    start["session_id"] = json!(id);
+    start["client"] = json!("codex");
+    start["keep"] = json!(true);
+    match be.call("task.start", &start) {
+        // A clock still running (another actor's, or a cleanup stop lost on
+        // the connection) makes the start a no-op, and it is not ours to stop.
+        Ok(v) if v["already_running"] == true => Some("the task's clock is still running".into()),
+        Ok(_) => {
+            let fix = format!(
+                "tasqx stop {} --holder {}",
+                params["ref"],
+                params["actor"].as_str().unwrap_or("")
+            );
+            // The two calls read separate clocks and a stop may be delayed,
+            // so the interval is taken back: the net is exactly zero.
+            let secs = cleanup(be, "task.stop", params, &fix)
+                .and_then(|v| tasqx_core::util::duration_secs(v["interval"].as_str()?))
+                .unwrap_or(0);
+            if secs > 0 {
+                let adj = json!({
+                    "ref": params["ref"],
+                    "delta": format!("-{secs}s"),
+                    "reason": "tasqx work: recording the codex session id adds no time",
+                });
+                let _ = be.call("task.adjust_tracked", &adj);
+            }
+            None
+        }
+        Err(e) if e.code == ErrorCode::Internal => Some(e.message),
+        Err(_) => None,
+    }
+}
+
+/// D253: a `tasqx done` of the very task a codex work session is on, run
+/// inside it (the agent's shell), names codex, and codex's own id when the
+/// trusted hook wrote one. The post-exit record cannot reach a task already
+/// done, and the launcher id on its start matches no rollout. Correlation the
+/// caller passed is left as it is.
+pub(crate) fn codex_done_correlation(be: &mut Backend, params: &mut Value) {
+    let (Ok(task), Some(file)) = (
+        std::env::var("TASQX_WORK_TASK"),
+        std::env::var_os("TASQX_WORK_SESSIONS"),
+    ) else {
+        return;
+    };
+    if ["client", "session_id", "transcript_path"]
+        .iter()
+        .any(|k| !params[k].is_null())
+    {
+        return;
+    }
+    let resolved = be.call("task.get", &json!({ "ref": params["ref"] }));
+    if resolved
+        .ok()
+        .and_then(|t| t["short_id"].as_i64())
+        .map(|id| id.to_string())
+        != Some(task)
+    {
+        return;
+    }
+    // Correlation turns off D247's measure of every session the task's
+    // starts named since its previous done: add it only when this launch's
+    // own is the only one, so an earlier session is never the one lost.
+    let own = std::env::var("TASQX_WORK_SESSION").ok();
+    // In append order, as attribution walks done cycles: a done synced in
+    // from a machine whose clock runs ahead sorts out of place by id.
+    let Ok(log) = be.call(
+        "event.list",
+        &json!({ "ref": params["ref"], "limit": i64::MAX, "order": "append" }),
+    ) else {
+        return;
+    };
+    let events = log["events"]
+        .as_array()
+        .map(Vec::as_slice)
+        .unwrap_or_default();
+    let earlier = events
+        .iter()
+        .take_while(|e| e["op"] != "done")
+        .filter_map(|e| e["payload"]["session_id"].as_str())
+        .any(|sid| Some(sid) != own.as_deref());
+    if earlier {
+        return;
+    }
+    // Never by client alone: that reads every codex rollout in the window,
+    // other projects' too. Unknown, the cycle is under-counted instead.
+    // The session the previous done already named: a correlated done
+    // measures from the task's earliest start (#4203), so naming it again
+    // would count that cycle twice. Under-counted instead, until #4203.
+    let previous = events
+        .iter()
+        .find(|e| e["op"] == "done")
+        .and_then(|e| e["payload"]["session_id"].as_str());
+    if let Some(id) = launch_session(&file).filter(|id| Some(id.as_str()) != previous) {
+        params["client"] = json!("codex");
+        params["session_id"] = json!(id);
+    }
+}
+
+/// The launch's codex session while codex still runs: the one id its hook
+/// wrote, else the one rollout codex started in the launch directory since
+/// the launch (`TASQX_WORK_CWD`, `TASQX_WORK_SINCE`; the agent may have
+/// changed directory). Several hooked ids (a `/new`) or matches: `None`.
+fn launch_session(file: &std::ffi::OsStr) -> Option<String> {
+    let hooked = std::fs::read_to_string(file).unwrap_or_default();
+    let mut ids: Vec<&str> = hooked.lines().collect();
+    ids.sort_unstable();
+    ids.dedup();
+    let found = match ids[..] {
+        [id] => return Some(id.to_string()),
+        [] => tasqx_core::tokens::codex::sessions_started(
+            &tasqx_core::tokens::codex::default_roots(),
+            std::path::Path::new(&std::env::var_os("TASQX_WORK_CWD")?),
+            std::env::var("TASQX_WORK_SINCE").ok()?.parse().ok()?,
+        ),
+        _ => return None,
+    };
+    match <[String; 1]>::try_from(found) {
+        Ok([id]) => Some(id),
+        Err(_) => None,
+    }
+}
+
+/// The one-time hint that codex skipped the hook (D253), remembered in the
+/// `work.codex_hook_hint` setting.
+fn hint_once() {
+    let setting = config::find("work.codex_hook_hint").expect("work.codex_hook_hint is a setting");
+    if config::toml_value(None, setting).as_deref() == Some("false") {
+        return;
+    }
+    eprintln!(
+        "tasqx: codex did not run its `{CODEX_HOOK_COMMAND}` hook, so tasqx found the session \
+         from its rollout instead. Codex skips a hook until you trust it: run /hooks in codex \
+         once and trust `{CODEX_HOOK_COMMAND}`. (Said once.)"
+    );
+    if let Err(e) = config::write_value(None, setting, "false") {
+        eprintln!("tasqx: note: could not remember the hint: {}", e.message);
+    }
 }
 
 /// A new connection to the daemon `be` routes through; `false` when there is
@@ -444,7 +704,7 @@ fn reconnect(be: &mut Backend) -> bool {
 /// One after-session call. A refusal means the agent already stopped or
 /// closed the task, and is fine. A call that fails on the connection is
 /// retried once on a fresh one; a failure after that is said, naming `fix`.
-fn cleanup(be: &mut Backend, method: &str, params: &Value, fix: &str) {
+fn cleanup(be: &mut Backend, method: &str, params: &Value, fix: &str) -> Option<Value> {
     let lost = |r: &Result<Value, ApiError>| matches!(r, Err(e) if e.code == ErrorCode::Internal);
     let mut result = be.call(method, params);
     if lost(&result) && reconnect(be) {
@@ -456,17 +716,23 @@ fn cleanup(be: &mut Backend, method: &str, params: &Value, fix: &str) {
             e.message
         );
     }
+    result.ok()
 }
 
-/// `tasqx hook claude` (D248): what Claude Code runs on a hook event. It
-/// acts only inside the `tasqx work` session it was registered for, and never
-/// breaks the agent: every fault is a stderr line and the exit is 0.
-pub(crate) fn run_hook() {
+/// `tasqx hook claude|codex` (D248, D253): what the agent runs on a hook
+/// event. It acts only inside the `tasqx work` session it was registered
+/// for, and never breaks the agent: every fault is a stderr line and the exit
+/// is 0.
+pub(crate) fn run_hook(agent: &str) {
     // Outside a work session (a hook copied into someone's own settings),
-    // the input is not even read.
-    if std::env::var_os("TASQX_WORK_TASK").is_none() {
+    // the input is not even read. A codex session is one that named a file
+    // for codex's id.
+    if std::env::var_os("TASQX_WORK_TASK").is_none()
+        || (agent == "codex" && std::env::var_os("TASQX_WORK_SESSIONS").is_none())
+    {
         return;
     }
+    let command = format!("tasqx hook {agent}");
     let mut input = String::new();
     use std::io::Read;
     let parsed = std::io::stdin()
@@ -475,27 +741,47 @@ pub(crate) fn run_hook() {
         .and_then(|_| serde_json::from_str::<Value>(&input).map_err(|e| e.to_string()));
     let hook = match parsed {
         Ok(v) => v,
-        Err(e) => return eprintln!("{HOOK_COMMAND}: unreadable hook input: {e}"),
+        Err(e) => return eprintln!("{command}: unreadable hook input: {e}"),
     };
-    // Another session's hook, a nested `claude` say, is not this one's.
+    // Claude runs under the id `work` chose, so another id is another
+    // session's hook, a nested `claude` say. Codex picks its own id.
     let session = std::env::var("TASQX_WORK_SESSION").ok();
-    if session.is_none() || hook["session_id"].as_str() != session.as_deref() {
+    if agent == "claude" && (session.is_none() || hook["session_id"].as_str() != session.as_deref())
+    {
         return;
     }
-    if let Err(e) = on_event(hook["hook_event_name"].as_str().unwrap_or(""), &hook) {
-        eprintln!("{HOOK_COMMAND}: {e}");
+    if let Err(e) = on_event(agent, hook["hook_event_name"].as_str().unwrap_or(""), &hook) {
+        eprintln!("{command}: {e}");
     }
 }
 
-/// One arm per Claude hook event `work` registers; adding an event is an arm
-/// here and a key in [`claude_settings`].
-fn on_event(event: &str, _hook: &Value) -> Result<(), String> {
+/// One arm per hook event `work` registers; adding an event is an arm here
+/// and a key in [`claude_settings`] or [`codex_hooks`].
+fn on_event(agent: &str, event: &str, hook: &Value) -> Result<(), String> {
     match event {
+        "SessionStart" if agent == "codex" => append_session(hook),
         // Entry points: the handoff (#4177) and the per-turn push (#4185)
         // hang off these. Tokens are measured when the task completes.
         "SessionStart" | "SessionEnd" => Ok(()),
         other => Err(format!("no handler for hook event {other:?}")),
     }
+}
+
+/// Codex's SessionStart: its own session id, appended to the file `work`
+/// created for it, which `launch` records on the task after codex exits
+/// (D253). Never creates the file: it is `work`'s, made owner-only.
+fn append_session(hook: &Value) -> Result<(), String> {
+    use std::io::Write;
+    let id = hook["session_id"]
+        .as_str()
+        .filter(|s| !s.is_empty())
+        .ok_or("SessionStart without a session_id")?;
+    let file = std::env::var_os("TASQX_WORK_SESSIONS").unwrap_or_default();
+    std::fs::OpenOptions::new()
+        .append(true)
+        .open(&file)
+        .and_then(|mut f| writeln!(f, "{id}"))
+        .map_err(|e| format!("cannot record session {id}: {e}"))
 }
 
 #[cfg(test)]
@@ -557,6 +843,29 @@ mod tests {
         assert_eq!(p["rulings"], true);
         let p = brief_params("7", Some(std::path::Path::new("/tmp/x")));
         assert_eq!(p["workdir"], "/tmp/x");
+    }
+
+    /// The task still running after the cleanup stop (another actor's
+    /// clock, or a stop lost on the connection): `task.start` answers
+    /// `already_running` and writes nothing, so the codex id is not recorded,
+    /// and the clock is not this launch's to stop.
+    #[test]
+    fn a_still_running_clock_is_left_alone_and_the_id_is_said_unrecorded() {
+        let mut be = Backend::Local(Engine::open_in_memory().unwrap());
+        be.call("task.add", &json!({ "title": "t" })).unwrap();
+        be.call(
+            "task.start",
+            &json!({ "ref": 1, "actor": "other", "keep": true }),
+        )
+        .unwrap();
+        let params = json!({ "ref": 1, "actor": "work:codex:1" });
+        let why = record_session(&mut be, &params, "x-real");
+        assert_eq!(why.as_deref(), Some("the task's clock is still running"));
+        let t = be.call("task.get", &json!({ "ref": "1" })).unwrap();
+        assert_eq!(
+            t["status"], "active",
+            "another actor's interval was stopped: {t}"
+        );
     }
 
     #[test]
