@@ -603,10 +603,13 @@ pub(crate) fn codex_done_correlation(be: &mut Backend, params: &mut Value) {
         return;
     }
     params["client"] = json!("codex");
-    if let Some(id) = std::fs::read_to_string(file)
-        .ok()
-        .and_then(|s| s.lines().last().map(str::to_string))
-    {
+    // One session names it; with several (a `/new` inside codex), naming
+    // one would leave the others out, so the done is correlated by client.
+    let hooked = std::fs::read_to_string(file).unwrap_or_default();
+    let mut ids: Vec<&str> = hooked.lines().collect();
+    ids.sort_unstable();
+    ids.dedup();
+    if let [id] = ids[..] {
         params["session_id"] = json!(id);
     }
 }
