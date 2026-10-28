@@ -555,7 +555,7 @@ pub(crate) fn compute_attribution_sessions(
         AttributionResult::empty(normalize_tool_name(&pa.client.clone().unwrap_or_default()));
     let mut unscoped_read: Vec<Parser> = Vec::new();
     let mut unscoped_otel: Vec<(Parser, AttributionResult)> = Vec::new();
-    let mut logs_found: Vec<Parser> = Vec::new();
+    let mut unscoped_logs: Vec<(Parser, AttributionResult)> = Vec::new();
     for session in sessions {
         // Gemini and Copilot discovery cannot narrow to a session: every
         // session would read the same logs, so only the first one does. The
@@ -590,27 +590,40 @@ pub(crate) fn compute_attribution_sessions(
             Some(p) if result.source == SOURCE_LOG_PARSE => {
                 unscoped_read.push(p);
                 if result.found {
-                    logs_found.push(p);
+                    unscoped_logs.push((p, result));
                 }
-                out = merge_results(out, result);
             }
             Some(p) if result.found => unscoped_otel.push((p, result)),
             _ => out = merge_results(out, result),
         }
     }
     // #4191: an unscoped tool's logs hold every session's spend, its telemetry
-    // included, so a log result that found anything replaces that tool's
-    // telemetry, passed over as D111 does, rather than adding to it.
-    for (p, otel) in unscoped_otel {
-        if logs_found.contains(&p) {
-            out.otel_disagreement = Some(
-                out.otel_disagreement
-                    .unwrap_or(0)
-                    .saturating_add(otel.totals.total()),
+    // included, so they replace that tool's telemetry rather than add to it,
+    // but only when they hold at least as much: a discovery that missed a file
+    // (the cap, an unreadable one) must not lose the telemetry for good. The
+    // telemetry they replace is kept as the passed-over total (D111).
+    for (p, logs) in unscoped_logs {
+        let (held, rest) = unscoped_otel.into_iter().partition(|(q, _)| *q == p);
+        unscoped_otel = rest;
+        let held: Vec<(Parser, AttributionResult)> = held;
+        let held_total: u64 = held.iter().map(|(_, o)| o.totals.total()).sum();
+        if logs.totals.total() >= held_total {
+            let passed_over = (held_total > 0).then_some(held_total);
+            out = merge_results(
+                out,
+                AttributionResult {
+                    otel_disagreement: passed_over,
+                    ..logs
+                },
             );
         } else {
-            out = merge_results(out, otel);
+            for (_, otel) in held {
+                out = merge_results(out, otel);
+            }
         }
+    }
+    for (_, otel) in unscoped_otel {
+        out = merge_results(out, otel);
     }
     Ok(out)
 }
@@ -5063,6 +5076,22 @@ pub(crate) mod tests {
     /// Run one live tick over `engine` with every root pointed at `dir`, and
     /// return the input tokens stored for `short_id`.
     fn tick_input(engine: &Engine, dir: &Path, short_id: i64) -> i64 {
+        tick(engine, dir);
+        engine
+            .conn()
+            .query_row(
+                "SELECT COALESCE(SUM(u.input_tokens), 0) FROM token_usage u \
+                 JOIN tasks t ON t.id = u.task_id WHERE t.short_id = ?1",
+                [short_id],
+                |r| r.get(0),
+            )
+            .unwrap()
+    }
+
+    /// One live tick over `engine` with every root pointed at `dir`; the
+    /// results it stored.
+    fn tick(engine: &Engine, dir: &Path) -> Vec<AttributionResult> {
+        let mut stored = Vec::new();
         let _guard = DISCOVERY_ENV.lock().unwrap_or_else(|e| e.into_inner());
         let roots = [("CODEX_HOME", ".codex"), ("GEMINI_DATA_DIR", ".gemini")];
         let prev: Vec<_> = roots.iter().map(|(k, _)| std::env::var_os(k)).collect();
@@ -5077,6 +5106,7 @@ pub(crate) mod tests {
                     compute_attribution_sessions(pa, neighbours, sessions, crate::clock::now())
                 {
                     attribute_one(engine, pa, &r).unwrap();
+                    stored.push(r);
                 }
             }
         });
@@ -5086,15 +5116,7 @@ pub(crate) mod tests {
                 None => unsafe { std::env::remove_var(k) },
             }
         }
-        engine
-            .conn()
-            .query_row(
-                "SELECT COALESCE(SUM(u.input_tokens), 0) FROM token_usage u \
-                 JOIN tasks t ON t.id = u.task_id WHERE t.short_id = ?1",
-                [short_id],
-                |r| r.get(0),
-            )
-            .unwrap()
+        stored
     }
 
     /// D247: each fallback session is read with its own client's parser. A
@@ -5225,10 +5247,14 @@ pub(crate) mod tests {
     /// fallback sessions of one of them read the same logs once, not twice.
     #[test]
     fn unscoped_discovery_runs_once_for_several_fallback_sessions() {
-        assert_eq!(unscoped_input(None, &[100]), 100, "one log, read once");
+        assert_eq!(
+            unscoped_input(None, &[100]),
+            (100, None),
+            "one log, read once"
+        );
         assert_eq!(
             unscoped_input(Some(("g1", 7)), &[100]),
-            100,
+            (100, Some(7)),
             "g1 answered from telemetry without reading the log, so g2 reads it, and the log stands in for g1's telemetry"
         );
     }
@@ -5241,20 +5267,31 @@ pub(crate) mod tests {
         for session in ["g1", "g2"] {
             assert_eq!(
                 unscoped_input(Some((session, 100)), &[100, 20]),
-                120,
+                (120, Some(100)),
                 "telemetry on {session}"
             );
         }
         assert_eq!(
             unscoped_input(Some(("g1", 7)), &[]),
-            7,
+            (7, None),
             "an empty log leaves the telemetry standing"
+        );
+        assert_eq!(
+            unscoped_input(Some(("g1", 100)), &[20]),
+            (100, None),
+            "a log holding less than the telemetry missed it, so the telemetry stands"
+        );
+        assert_eq!(
+            unscoped_input(Some(("g1", 101)), &[100]),
+            (100, Some(101)),
+            "a log holding exactly the telemetry's total (100 in, 1 out) replaces it"
         );
     }
 
     /// Two Gemini fallback sessions over one log of `log` api responses;
     /// `telemetry` also buffers that many tokens of telemetry for a session.
-    fn unscoped_input(telemetry: Option<(&str, u64)>, log: &[u64]) -> i64 {
+    /// Returns the stored input tokens and the passed-over telemetry.
+    fn unscoped_input(telemetry: Option<(&str, u64)>, log: &[u64]) -> (i64, Option<u64>) {
         let dir = fallback_dir("fallback-unscoped");
         let engine = Engine::open_in_memory().unwrap();
         let id = engine.task_add(&json!({ "title": "t" })).unwrap()["short_id"]
@@ -5289,9 +5326,10 @@ pub(crate) mod tests {
         }
         engine.task_done(&json!({ "ref": id })).unwrap();
 
-        let input = tick_input(&engine, &dir, id);
+        let results = tick(&engine, &dir);
         let _ = std::fs::remove_dir_all(&dir);
-        input
+        let input = results.iter().map(|r| r.totals.input as i64).sum();
+        (input, results.iter().find_map(|r| r.otel_disagreement))
     }
 
     /// #4191: a neighbour naming a fallback session's transcript by path,
