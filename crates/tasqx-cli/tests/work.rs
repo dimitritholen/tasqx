@@ -1074,3 +1074,30 @@ fn a_session_before_the_previous_done_does_not_hold_the_correlation_back() {
     assert_eq!(last_done["client"], "codex", "{last_done}");
     assert_eq!(last_done["session_id"], CODEX_ID, "{last_done}");
 }
+
+/// Two distinct sessions hooked in one launch (a `/new` inside codex): a
+/// done naming one would leave the other out, so it names codex only. The
+/// same id hooked twice (a resume) is still one session.
+#[test]
+fn a_done_after_two_hooked_sessions_names_codex_only() {
+    let s = Store::new("codex-done-two");
+    s.seed();
+    s.ok(&["add", "Something else"]);
+    let out = done_in_session(&s, &format!("{CODEX_ID}\nsecond\n"), &["1"]);
+    assert!(out.status.success(), "{out:?}");
+    let p = done_payload(&s, "1");
+    assert_eq!(p["client"], "codex", "{p}");
+    assert!(p["session_id"].is_null(), "{p}");
+
+    let file = s.dir.join("sessions");
+    std::fs::write(&file, format!("{CODEX_ID}\n{CODEX_ID}\n")).unwrap();
+    let out = s
+        .tasqx()
+        .env("TASQX_WORK_TASK", "2")
+        .env("TASQX_WORK_SESSIONS", &file)
+        .args(["done", "2"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{out:?}");
+    assert_eq!(done_payload(&s, "2")["session_id"], CODEX_ID);
+}
