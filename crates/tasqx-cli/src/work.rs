@@ -432,6 +432,9 @@ fn launch(be: &mut Backend, ctx: &Ctx, task_ref: &str, agent: &'static str) -> C
         if in_process {
             child.env_remove("TASQX_SOCK");
         }
+        // A launch inside a codex session must not hand that session's file
+        // on: the child's `tasqx done` would read as codex (D249).
+        child.env_remove("TASQX_WORK_SESSIONS");
         child
             .args(agent_args(agent, &session, &path, &context))
             .env("TASQX_WORK_TASK", sid.to_string())
@@ -577,6 +580,26 @@ pub(crate) fn codex_done_correlation(be: &mut Backend, params: &mut Value) {
         .map(|id| id.to_string())
         != Some(task)
     {
+        return;
+    }
+    // Correlation turns off D247's measure of every session the task's
+    // starts named since its previous done: add it only when this launch's
+    // own is the only one, so an earlier session is never the one lost.
+    let own = std::env::var("TASQX_WORK_SESSION").ok();
+    let Ok(log) = be.call(
+        "event.list",
+        &json!({ "ref": params["ref"], "limit": i64::MAX }),
+    ) else {
+        return;
+    };
+    let earlier = log["events"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .take_while(|e| e["op"] != "done")
+        .filter_map(|e| e["payload"]["session_id"].as_str())
+        .any(|sid| Some(sid) != own.as_deref());
+    if earlier {
         return;
     }
     params["client"] = json!("codex");

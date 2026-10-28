@@ -56,7 +56,9 @@ trusted, the one rollout Codex started in the launch directory. When two Codex
 sessions started there during the launch, neither is recorded. A `tasqx done`
 the agent runs on its own task before Codex exits names Codex, and that id when
 the hook gave one; without the hook, every Codex session in the task's window
-is counted.
+is counted. When a session from before this launch also worked on the task since
+its previous completion, that `done` names nothing, so the earlier sessions are
+still measured; the Codex session finished inside the launch is then not.
 
 Given a session id, Claude Code and Codex read only the matching session's
 transcript, so another session running at the same time is not counted. When a

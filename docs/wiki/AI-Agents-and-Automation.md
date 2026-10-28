@@ -340,7 +340,9 @@ disk. Codex picks its own session id, and `tasqx hook codex` tells it to
 `tasqx work`, which records it on the task when codex exits. When the agent
 runs `tasqx done` on its task before then, that `done` names codex and the
 id itself; without the hook it names codex only, and every codex session in
-its window is counted.
+its window is counted. When an earlier session (a Claude one, say) also worked
+on the task since its last completion, the `done` names nothing, so the earlier
+session is measured, and the codex session that finished the task is not.
 
 Codex runs a hook only after you trust it, and skips an untrusted one without
 a word. Trust it once: start `codex`, run `/hooks`, and trust
