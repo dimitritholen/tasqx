@@ -2192,39 +2192,31 @@ pub fn ripwire_on_path() -> bool {
 /// do with what it cannot store. Shared paragraphs are one literal each so the
 /// two variants cannot drift into disagreeing about the same advice.
 pub fn instructions(scope: Scope) -> String {
-    const INTRO: &str = "tasqx is this workspace's organiser: its backlog, and its long-term \
-        memory, one searchable index over imported knowledge docs and the annotations written \
-        on tasks. Use it instead of an in-conversation todo list or a memory file.";
+    const INTRO: &str = "tasqx is this workspace's organiser: its backlog and long-term memory. \
+        Use it instead of an in-conversation todo list or a memory file.";
 
     const SEARCH: &str = "Search first: call tasqx_search_memory before resuming work, choosing \
         between designs, touching a convention-bearing file, or asserting how this project does \
-        something. It matches meaning as well as words; for an exact name, id or error string \
-        pass `mode: lexical`. Try a second wording before concluding nothing is there. A hit is \
-        a snippet: read a doc whole with tasqx_get_memory, an annotation (source `task:#<id>`) \
-        with tasqx_get_task.";
+        something. Try a second wording before concluding nothing is there.";
 
-    const TRACK: &str = "Track multi-step work as tasks, anything with more than one step or \
-        that could outlive this session. Pick work with tasqx_list_tasks and the filter \
-        `@working`; blocked and waiting tasks are hidden there by design. Per task: \
-        tasqx_brief_task, tasqx_start_timer, do the work, tasqx_annotate_task with what was \
-        decided and delivered, tasqx_complete_task naming in checks_passed what you proved. \
-        Beside other agents, tasqx_claim_task first. Obsolete work is cancelled, never left open.";
+    const TRACK: &str = "Track multi-step work, anything that could outlive this session, as \
+        tasks; pick with tasqx_list_tasks and the filter `@working`. Per task: tasqx_brief_task, \
+        tasqx_start_timer, do the work, tasqx_annotate_task with what was decided and delivered, \
+        tasqx_complete_task naming in checks_passed what you proved. Beside other agents, \
+        tasqx_claim_task first.";
 
-    const WRITE_BACK: &str = "Write as you go. Only annotation bodies are indexed, so name files \
-        and symbols in them. Call tasqx_add_memory when a decision settles or you learn a \
-        convention written down nowhere: the ruling in the first line, the why under it. Store a \
-        correction the user gives you the moment it lands, as a standing doc (standing: true).";
+    const WRITE_BACK: &str = "Only annotation bodies are indexed, never titles: name files and \
+        symbols in them. Record a settled decision or an unwritten convention with \
+        tasqx_add_memory: the ruling first, the why under it. Store a correction the user gives \
+        you the moment it lands, as a standing doc (standing: true).";
 
     const READ_ONLY: &str = "This server is read-only: no write tool is listed. Say so once, keep \
         searching, and put what you would have stored (decisions and their reasons, outcomes, \
         conventions) into your reply rather than dropping it. The operator grants writes by \
         relaunching with `tasqx mcp serve --scope write`.";
 
-    const SEED: &str = "An empty store is a store nobody seeded: ask the user to run `tasqx \
-        memory import <docs-dir>` once per markdown folder; no MCP tool imports. The CLI is \
-        always `tasqx <verb>`; a bare `tasqx` opens a full-screen dashboard and hangs a tool \
-        call. A rule's reasoning is in DESIGN.md §12 under the D-number a tool description \
-        cites (D155).";
+    const SEED: &str = "An empty store is unseeded: ask the user to run `tasqx memory import \
+        <docs-dir>`. The CLI is `tasqx <verb>`; a bare `tasqx` hangs a tool call.";
 
     let mut parts = vec![INTRO, SEARCH];
     if scope.allows_write() {
