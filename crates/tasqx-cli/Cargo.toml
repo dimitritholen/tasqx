@@ -62,7 +62,7 @@ jiff = { workspace = true }
 # post-processed in `src/docs/markdown.rs` before any HTML is produced, so the
 # site's own snippet, table and callout markup is what ships — not this crate's
 # default rendering.
-pulldown-cmark = { version = "0.13.4", default-features = false, features = ["html"] }
+pulldown-cmark = { version = "0.13.5", default-features = false, features = ["html"] }
 # Format-preserving TOML editing, and the only TOML parser: `config.toml` and
 # theme files are read with it too (#737). A plain table round trip drops every
 # comment and reorders sections, which is data loss in a file the user
