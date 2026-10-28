@@ -551,12 +551,13 @@ fn instructions_from(server: &McpServer) -> String {
         .to_string()
 }
 
-/// The rulings section alone: what follows the D141 text and its blank line.
+/// The rulings section alone: what leads the D141 text and its blank line
+/// (D252: rulings first).
 fn rulings_of(server: &McpServer) -> String {
     let text = instructions_from(server);
-    let base = format!("{}\n\n", tasqx_core::mcp::instructions(server.scope()));
-    text.strip_prefix(&base)
-        .unwrap_or_else(|| panic!("no rulings section after the D141 text:\n{text}"))
+    let base = format!("\n\n{}", tasqx_core::mcp::instructions(server.scope()));
+    text.strip_suffix(&base)
+        .unwrap_or_else(|| panic!("no rulings section before the D141 text:\n{text}"))
         .to_string()
 }
 
@@ -806,7 +807,9 @@ fn the_title_only_fallback_counts_stale_refs_and_stays_in_budget() {
             true,
         );
     }
-    let text = rulings_of(&McpServer::new(&engine, Scope::Write).with_workdir(Some(repo)));
+    let text = McpServer::rulings_section(&engine, Some(&repo), None)
+        .unwrap()
+        .expect("a section");
     // D246: the oldest rule falls past the gists, so it counts its refs.
     assert!(text.contains("the rest only their title"), "{text}");
     assert!(text.contains("- rule 0 [stale_refs: 20]"), "{text}");
@@ -1027,7 +1030,8 @@ fn an_oversized_standing_set_gives_the_top_rulings_their_gist_and_lists_the_rest
     }
     add_doc(&engine, "topical doc", "fill", Some("alpha"), false);
 
-    let text = rulings_of(&McpServer::new(&engine, Scope::Write));
+    // D246 is the task-aware path's contract; the handshake is D252's.
+    let text = section_for(&engine, None);
     assert!(text.contains("\n- ruling 0\n"), "{text}");
     let with_gist = text.matches(": gisttext").count();
     assert!(
@@ -1106,8 +1110,6 @@ fn with_a_task_a_relevant_ruling_outranks_newer_irrelevant_ones() {
         text.len() <= tasqx_core::mcp::STANDING_RULINGS_BUDGET,
         "{text}"
     );
-    // The same handshake text `initialize` sends when no task is known.
-    assert_eq!(plain, rulings_of(&McpServer::new(&engine, Scope::Write)));
     // A task the ruling has nothing to do with leaves D157's order alone.
     assert_eq!(section_for(&engine, Some(json!(2))), plain);
 }
@@ -1282,8 +1284,12 @@ fn initialize_runs_the_memory_refresh_sweep_before_answering() {
 
     let server = McpServer::new(&engine, Scope::Write);
     let text = instructions_from(&server);
+    // D252: the freshness line sits between the rulings and D141's text.
     assert!(
-        text.ends_with("\n\nmemory: 1 doc(s) refreshed from disk."),
+        text.ends_with(&format!(
+            "memory: 1 doc(s) refreshed from disk.\n\n{}",
+            tasqx_core::mcp::instructions(Scope::Write)
+        )),
         "{text}"
     );
 
@@ -5604,4 +5610,423 @@ fn update_memory_passes_a_null_project_through_to_clear_it() {
         tool["inputSchema"]["properties"]["project"]["type"],
         json!(["string", "null"])
     );
+}
+
+// ---- D252: the whole handshake is bounded -------------------------------
+
+use tasqx_core::mcp::{handshake_instructions, HandshakeInstructions, MCP_INSTRUCTIONS_CAP};
+
+fn pack(engine: &Engine, scope: Scope, refresh: Option<&str>) -> HandshakeInstructions {
+    handshake_instructions(engine, None, scope, refresh).expect("pack")
+}
+
+/// `n` standing rulings in project `alpha` (the default project, so the
+/// handshake infers it), each with a title and a gist of `gist_len` bytes.
+fn alpha_with(n: usize, title: &str, gist_len: usize) -> Engine {
+    let engine = engine();
+    engine.project_create(&json!({ "name": "alpha" })).unwrap();
+    for i in 0..n {
+        add_doc(
+            &engine,
+            &format!("{title} {i}"),
+            &"g".repeat(gist_len),
+            Some("alpha"),
+            true,
+        );
+    }
+    engine
+}
+
+#[test]
+fn the_whole_handshake_stays_under_the_cap_for_any_number_of_rulings() {
+    let refresh = "memory: 3 doc(s) refreshed from disk.";
+    for n in [0, 1, 12, 50] {
+        let engine = alpha_with(n, "a ruling about something", 200);
+        for scope in [Scope::Write, Scope::Read] {
+            let got = pack(&engine, scope, Some(refresh));
+            assert!(
+                got.bytes <= MCP_INSTRUCTIONS_CAP,
+                "{n} rulings, {scope:?}: {} bytes",
+                got.bytes
+            );
+            assert_eq!(got.bytes, got.text.len());
+            assert_eq!(got.shown + got.omitted, n);
+            assert!(got.text.contains(refresh), "{}", got.text);
+            assert!(got.text.ends_with(&tasqx_core::mcp::instructions(scope)));
+        }
+    }
+}
+
+#[test]
+fn rulings_lead_and_the_read_only_text_is_never_cut() {
+    let engine = alpha_with(50, "a ruling about something", 200);
+    let got = pack(&engine, Scope::Read, None);
+    assert!(got.text.starts_with("Standing rulings for project alpha"));
+    assert!(
+        got.text.contains("This server is read-only"),
+        "{}",
+        got.text
+    );
+    assert!(got.omitted > 0 && got.shown > 0, "{got:?}");
+}
+
+#[test]
+fn an_empty_store_hands_over_d141_text_alone() {
+    let got = pack(&engine(), Scope::Write, None);
+    assert_eq!(got.text, tasqx_core::mcp::instructions(Scope::Write));
+    assert_eq!((got.shown, got.gist, got.omitted), (0, 0, 0));
+}
+
+#[test]
+fn unicode_titles_and_a_long_unicode_project_name_stay_under_the_cap() {
+    let engine = engine();
+    let project = "é".repeat(100) + "日本語";
+    engine.project_create(&json!({ "name": project })).unwrap();
+    for i in 0..30 {
+        add_doc(
+            &engine,
+            &format!("日本語のルール🙂 {i} {}", "ü".repeat(20)),
+            &"ß".repeat(300),
+            Some(&project),
+            true,
+        );
+    }
+    let got = pack(&engine, Scope::Write, None);
+    assert!(got.bytes <= MCP_INSTRUCTIONS_CAP, "{} bytes", got.bytes);
+    assert!(got.omitted > 0, "{got:?}");
+    assert!(got.text.contains(&project), "{}", got.text);
+}
+
+#[test]
+fn one_oversized_title_is_skipped_and_counted_and_later_ones_still_show() {
+    let engine = engine();
+    engine.project_create(&json!({ "name": "alpha" })).unwrap();
+    for i in 0..3 {
+        add_doc(&engine, &format!("small {i}"), "x", Some("alpha"), true);
+    }
+    // Newest, so first in rank order.
+    add_doc(&engine, &"huge ".repeat(1_000), "x", Some("alpha"), true);
+    let got = pack(&engine, Scope::Write, None);
+    assert!(got.bytes <= MCP_INSTRUCTIONS_CAP, "{} bytes", got.bytes);
+    assert_eq!((got.shown, got.omitted), (3, 1), "{}", got.text);
+    for i in 0..3 {
+        assert!(got.text.contains(&format!("- small {i}")), "{}", got.text);
+    }
+    assert!(!got.text.contains("huge"), "{}", got.text);
+    assert!(
+        got.text.contains("\n1 more standing rulings"),
+        "{}",
+        got.text
+    );
+}
+
+#[test]
+fn every_short_title_is_listed_before_any_ruling_gets_a_gist() {
+    // 12 titles cost far less than the allowance; their gists cost far more.
+    let engine = alpha_with(12, "rule", 240);
+    let got = pack(&engine, Scope::Write, None);
+    assert_eq!((got.shown, got.omitted), (12, 0), "{}", got.text);
+    assert!(got.gist < 12, "{got:?}");
+    assert!(got.bytes <= MCP_INSTRUCTIONS_CAP);
+    // Rank order is newest first: the gists are a prefix.
+    for i in 0..12 {
+        let want_gist = 11 - i < got.gist;
+        let line = got
+            .text
+            .lines()
+            .find(|l| *l == format!("- rule {i}") || l.starts_with(&format!("- rule {i}: ")))
+            .unwrap_or_else(|| panic!("rule {i} missing:\n{}", got.text));
+        assert_eq!(line.contains(": ggg"), want_gist, "{line}");
+    }
+}
+
+#[test]
+fn pass_two_stops_at_the_first_gist_that_does_not_fit() {
+    // Rank order (newest first): A short gist, B long gist, C short gist, then
+    // filler titles that eat the room. Over every filler count, C may carry
+    // its gist only when B does; and some count has A with B refused.
+    let mut exercised = false;
+    for filler in 0..100 {
+        let engine = engine();
+        engine.project_create(&json!({ "name": "alpha" })).unwrap();
+        for i in 0..filler {
+            add_doc(&engine, &format!("filler {i:02}"), "f", Some("alpha"), true);
+        }
+        add_doc(&engine, "ruling c", "cgist", Some("alpha"), true);
+        add_doc(&engine, "ruling b", &"b".repeat(240), Some("alpha"), true);
+        add_doc(&engine, "ruling a", "agist", Some("alpha"), true);
+        let t = pack(&engine, Scope::Write, None).text;
+        let (a, b, c) = (
+            t.contains("- ruling a: agist"),
+            t.contains(&format!("- ruling b: {}", "b".repeat(240))),
+            t.contains("- ruling c: cgist"),
+        );
+        assert!(!c || b, "filler {filler}: c has a gist past b:\n{t}");
+        exercised |= a && !b && t.contains("- ruling c");
+    }
+    assert!(exercised, "no filler count put B just out of reach");
+}
+
+#[test]
+fn the_footer_counts_exactly_what_was_left_out_and_names_the_call() {
+    let engine = alpha_with(50, "a ruling about something", 10);
+    let got = pack(&engine, Scope::Write, None);
+    let listed = got.text.matches("\n- a ruling about something").count();
+    assert_eq!(listed, got.shown);
+    assert!(got.omitted > 0 && got.shown + got.omitted == 50, "{got:?}");
+    assert!(
+        got.text.contains(&format!(
+            "\n{} more standing rulings do not fit this handshake. List them with \
+             tasqx_list_memory {{\"project\":\"alpha\",\"standing\":true,\
+             \"include_unscoped\":true,\"include_preview\":true}} (page with next_offset), \
+             then tasqx_get_memory for a body.",
+            got.omitted
+        )),
+        "{}",
+        got.text
+    );
+    // Nothing omitted, no footer.
+    let few = pack(&alpha_with(2, "r", 10), Scope::Write, None);
+    assert_eq!(few.omitted, 0);
+    assert!(!few.text.contains("do not fit"), "{}", few.text);
+}
+
+#[test]
+fn without_a_project_the_footer_asks_for_the_unscoped_ones() {
+    let engine = engine();
+    for i in 0..50 {
+        add_doc(&engine, &format!("an unscoped ruling {i}"), "g", None, true);
+    }
+    let got = pack(&engine, Scope::Write, None);
+    assert!(got
+        .text
+        .starts_with("Standing rulings (no project inferred"));
+    assert!(got.omitted > 0, "{got:?}");
+    assert!(
+        got.text.contains(
+            "tasqx_list_memory {\"standing\":true,\"unscoped_only\":true,\
+             \"include_preview\":true} (page with next_offset)"
+        ),
+        "{}",
+        got.text
+    );
+    assert!(!got.text.contains("include_unscoped"), "{}", got.text);
+}
+
+#[test]
+fn the_footer_escapes_the_project_name_as_a_json_string() {
+    let engine = engine();
+    let name = "we\"ird\\ name";
+    engine.project_create(&json!({ "name": name })).unwrap();
+    for i in 0..50 {
+        add_doc(
+            &engine,
+            &format!("a ruling about {i}"),
+            "g",
+            Some(name),
+            true,
+        );
+    }
+    let got = pack(&engine, Scope::Write, None);
+    assert!(got.omitted > 0, "{got:?}");
+    assert!(
+        got.text
+            .contains(r#"{"project":"we\"ird\\ name","standing":true"#),
+        "{}",
+        got.text
+    );
+}
+
+#[test]
+fn topical_notes_fill_only_what_the_standing_rulings_leave() {
+    let engine = alpha_with(1, "the one rule", 10);
+    add_doc(&engine, "a note", "context", Some("alpha"), false);
+    let got = pack(&engine, Scope::Write, None);
+    assert!(
+        got.text.contains("Recent notes for project alpha"),
+        "{}",
+        got.text
+    );
+    // Overflowing standing rulings leave no room for notes (D246).
+    let full = alpha_with(50, "a ruling about something", 10);
+    add_doc(&full, "a note", "context", Some("alpha"), false);
+    assert!(!pack(&full, Scope::Write, None)
+        .text
+        .contains("Recent notes"));
+    // Nor when every title fits but some gist did not.
+    // Over rule counts, some leave a gap too small for the next gist but big
+    // enough for a short note; none may show the note.
+    let mut exercised = false;
+    for n in 4..=14 {
+        let gisty = alpha_with(n, "rule", 240);
+        add_doc(&gisty, "a note", "c", Some("alpha"), false);
+        let got = pack(&gisty, Scope::Write, None);
+        if got.omitted == 0 && got.gist < got.shown {
+            exercised = true;
+            assert!(!got.text.contains("Recent notes"), "{n}: {}", got.text);
+        }
+    }
+    assert!(exercised);
+}
+
+/// The footer's own call, parsed out of the handshake text and run through
+/// `tasqx_list_memory` a page at a time: the titles it returns.
+fn footer_call_titles(server: &McpServer, text: &str) -> std::collections::BTreeSet<String> {
+    let rest = text
+        .split("tasqx_list_memory ")
+        .nth(1)
+        .unwrap_or_else(|| panic!("no recovery call in the footer:\n{text}"));
+    let mut filter = serde_json::Deserializer::from_str(rest)
+        .into_iter::<Value>()
+        .next()
+        .expect("a filter")
+        .expect("the footer's filter is JSON");
+    filter["limit"] = json!(7);
+    let mut titles = std::collections::BTreeSet::new();
+    let mut pages = 0;
+    loop {
+        let out = call(server, 90 + pages, "tasqx_list_memory", filter.clone());
+        assert!(!is_error(&out), "{out}");
+        let page = tool_text(&out);
+        for d in page["docs"].as_array().expect("docs") {
+            assert!(d["standing"] == json!(true), "{d}");
+            titles.insert(d["title"].as_str().unwrap().to_string());
+        }
+        pages += 1;
+        match page["next_offset"].as_i64() {
+            Some(n) => filter["offset"] = json!(n),
+            None => break,
+        }
+    }
+    assert!(pages > 1, "the filter was paged through");
+    titles
+}
+
+/// What the handshake listed: the titles on its `- ` lines.
+fn listed_titles(text: &str) -> std::collections::BTreeSet<String> {
+    text.lines()
+        .filter_map(|l| l.strip_prefix("- "))
+        .map(|l| l.split(": ").next().unwrap().to_string())
+        .collect()
+}
+
+/// The footer's call, run as printed, returns every standing ruling the
+/// session is owed, so the omitted ones are among them and nothing else is,
+/// and `tasqx_get_memory` reads one whole.
+#[test]
+fn the_footers_call_returns_the_omitted_rulings_with_a_project() {
+    let engine = engine();
+    engine.project_create(&json!({ "name": "alpha" })).unwrap();
+    engine.project_create(&json!({ "name": "beta" })).unwrap();
+    let mut owed = std::collections::BTreeSet::new();
+    for i in 0..25 {
+        for (scope, label) in [(Some("alpha"), "alpha"), (None, "global")] {
+            let title = format!("{label} ruling about something {i}");
+            add_doc(&engine, &title, &format!("body of {title}"), scope, true);
+            owed.insert(title);
+        }
+    }
+    add_doc(&engine, "beta ruling", "b", Some("beta"), true);
+    add_doc(&engine, "alpha note", "n", Some("alpha"), false);
+
+    let server = McpServer::new(&engine, Scope::Write).with_workdir(Some(temp_repo("m4198/alpha")));
+    let text = instructions_from(&server);
+    let listed = listed_titles(&text);
+    assert!(
+        listed.len() < owed.len(),
+        "the handshake overflowed:\n{text}"
+    );
+    let got = footer_call_titles(&server, &text);
+    assert_eq!(got, owed);
+    assert!(listed.is_subset(&got) && !got.is_empty());
+    let omitted: Vec<_> = owed.difference(&listed).collect();
+    assert!(text.contains(&format!("\n{} more standing rulings", omitted.len())));
+
+    let one = omitted[0];
+    let docs = tool_text(&call(
+        &server,
+        200,
+        "tasqx_list_memory",
+        json!({ "project": "alpha", "standing": true, "include_unscoped": true, "limit": 50 }),
+    ));
+    let id = docs["docs"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|d| d["title"] == one.as_str())
+        .expect("the omitted doc is listed")["id"]
+        .clone();
+    let doc = tool_text(&call(&server, 201, "tasqx_get_memory", json!({ "id": id })));
+    assert_eq!(doc["body"], json!(format!("body of {one}")));
+}
+
+#[test]
+fn the_footers_call_returns_the_omitted_rulings_with_no_project() {
+    let engine = engine();
+    engine.project_create(&json!({ "name": "gone" })).unwrap();
+    let mut owed = std::collections::BTreeSet::new();
+    for i in 0..40 {
+        let title = format!("global ruling about something {i}");
+        add_doc(&engine, &title, "g", None, true);
+        owed.insert(title);
+    }
+    add_doc(&engine, "scoped ruling", "s", Some("gone"), true);
+    add_doc(&engine, "unscoped note", "n", None, false);
+    engine.project_archive(&json!({ "name": "gone" })).unwrap();
+
+    let server = McpServer::new(&engine, Scope::Write);
+    let text = instructions_from(&server);
+    assert!(text.contains("\"unscoped_only\":true"), "{text}");
+    assert!(listed_titles(&text).len() < owed.len(), "{text}");
+    assert_eq!(footer_call_titles(&server, &text), owed);
+}
+
+/// A project name too long for the header and the exact-name footer to share
+/// the allowance must not break the cap: a fixed notice without the name
+/// replaces both, and every ruling counts as omitted.
+#[test]
+fn a_project_name_too_long_for_the_footer_gets_a_bounded_notice() {
+    let engine = engine();
+    let name = "p".repeat(800);
+    engine.project_create(&json!({ "name": name })).unwrap();
+    let mut owed = std::collections::BTreeSet::new();
+    let mut ruling = |title: String, scope: Option<&str>| {
+        add_doc(&engine, &title, "x", scope, true);
+        owed.insert(title);
+    };
+    ruling("huge ".repeat(1_000), Some(&name));
+    for i in 0..10 {
+        ruling(format!("small ruling {i}"), Some(&name));
+    }
+    ruling("an unscoped ruling".into(), None);
+    let total = owed.len();
+    for scope in [Scope::Write, Scope::Read] {
+        let refresh = Some("memory: 1 doc(s) refreshed from disk.");
+        let got = pack(&engine, scope, refresh);
+        assert!(
+            got.bytes <= MCP_INSTRUCTIONS_CAP,
+            "{scope:?}: {}",
+            got.bytes
+        );
+        assert_eq!(
+            (got.shown, got.gist, got.omitted),
+            (0, 0, total),
+            "{scope:?}"
+        );
+        assert!(!got.text.contains(&name), "{scope:?}");
+        assert!(
+            got.text.starts_with(&format!(
+                "{total} standing rulings do not fit this handshake."
+            )),
+            "{}",
+            got.text
+        );
+        assert!(!got.text.contains("tasqx mcp instructions"));
+        assert!(got.text.ends_with(&tasqx_core::mcp::instructions(scope)));
+        // The printed call is real JSON and, paged through, reaches every
+        // omitted ruling (it lists every scope, so it may reach more).
+        let server = McpServer::new(&engine, scope);
+        let reached = footer_call_titles(&server, &got.text);
+        assert!(owed.is_subset(&reached), "{scope:?}: {reached:?}");
+    }
 }

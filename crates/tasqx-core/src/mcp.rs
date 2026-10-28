@@ -2196,42 +2196,35 @@ pub fn instructions(scope: Scope) -> String {
         memory, one searchable index over imported knowledge docs and the annotations written \
         on tasks. Use it instead of an in-conversation todo list or a memory file.";
 
-    const SEARCH: &str = "Search first. Call tasqx_search_memory before resuming work, choosing \
+    const SEARCH: &str = "Search first: call tasqx_search_memory before resuming work, choosing \
         between designs, touching a convention-bearing file, or asserting how this project does \
-        something. Search matches meaning as well as words, so a few keywords find a note that \
-        says the same thing differently; each hit's `via` says which matched. For an exact \
-        name, id or error string pass `mode: lexical`. Try a second wording before concluding \
-        nothing is there. A hit is a snippet: read a doc whole with tasqx_get_memory, and an \
-        annotation (source `task:#<id>`) with tasqx_get_task.";
+        something. It matches meaning as well as words; for an exact name, id or error string \
+        pass `mode: lexical`. Try a second wording before concluding nothing is there. A hit is \
+        a snippet: read a doc whole with tasqx_get_memory, an annotation (source `task:#<id>`) \
+        with tasqx_get_task.";
 
-    const TRACK: &str = "Track multi-step work as tasks. Anything with more than one step, or \
-        that could outlive this session, goes in the backlog: tasqx_list_projects before \
-        tasqx_create_project, tasqx_add_task per piece, tasqx_add_dependency to order them, \
-        tasqx_add_check for acceptance criteria. Pick work with tasqx_list_tasks and the filter \
+    const TRACK: &str = "Track multi-step work as tasks, anything with more than one step or \
+        that could outlive this session. Pick work with tasqx_list_tasks and the filter \
         `@working`; blocked and waiting tasks are hidden there by design. Per task: \
-        tasqx_brief_task, then tasqx_start_timer, do the work, tasqx_annotate_task with what was \
-        decided and delivered, and tasqx_complete_task naming in checks_passed what you proved. \
-        Working beside other agents on one store, tasqx_claim_task first: a claimed task leaves \
-        their `@working`. Obsolete work is cancelled with tasqx_cancel_task, never left open.";
+        tasqx_brief_task, tasqx_start_timer, do the work, tasqx_annotate_task with what was \
+        decided and delivered, tasqx_complete_task naming in checks_passed what you proved. \
+        Beside other agents, tasqx_claim_task first. Obsolete work is cancelled, never left open.";
 
-    const WRITE_BACK: &str = "Write as you go. Only annotation bodies are indexed, never titles, \
-        so name files and symbols in them. Call tasqx_add_memory when a decision settles or you \
-        learn a convention written down nowhere: the ruling in the first line, the why under it, \
-        the path in source. A wrong entry is removed with tasqx_remove_memory (permanent), not \
-        corrected beside. Store a correction the user gives you the moment it lands, as a \
-        standing doc (standing: true), not at completion: a session can end before the task does.";
+    const WRITE_BACK: &str = "Write as you go. Only annotation bodies are indexed, so name files \
+        and symbols in them. Call tasqx_add_memory when a decision settles or you learn a \
+        convention written down nowhere: the ruling in the first line, the why under it. Store a \
+        correction the user gives you the moment it lands, as a standing doc (standing: true).";
 
     const READ_ONLY: &str = "This server is read-only: no write tool is listed. Say so once, keep \
         searching, and put what you would have stored (decisions and their reasons, outcomes, \
         conventions) into your reply rather than dropping it. The operator grants writes by \
         relaunching with `tasqx mcp serve --scope write`.";
 
-    const SEED: &str = "An empty store is a store nobody seeded. If searches keep returning \
-        nothing, ask the user to run `tasqx memory import <docs-dir>` once per markdown folder; \
-        no MCP tool imports. The CLI is always `tasqx <verb>`: a bare `tasqx` opens a full-screen \
-        dashboard and hangs a tool call. Tool descriptions here are deliberately short and state \
-        only the contract; the reasoning behind a rule is in DESIGN.md §12 under the D-number the \
-        description cites, which tasqx_search_memory finds once those docs are imported (D155).";
+    const SEED: &str = "An empty store is a store nobody seeded: ask the user to run `tasqx \
+        memory import <docs-dir>` once per markdown folder; no MCP tool imports. The CLI is \
+        always `tasqx <verb>`; a bare `tasqx` opens a full-screen dashboard and hangs a tool \
+        call. A rule's reasoning is in DESIGN.md §12 under the D-number a tool description \
+        cites (D155).";
 
     let mut parts = vec![INTRO, SEARCH];
     if scope.allows_write() {
@@ -2249,6 +2242,262 @@ pub fn instructions(scope: Scope) -> String {
 /// the separating blank line. `instructions` is charged on every prompt, so
 /// the budget is the design, not a safety margin.
 pub const STANDING_RULINGS_BUDGET: usize = 3_072;
+
+/// The byte bound of the WHOLE `initialize` `instructions` string (D252):
+/// rulings header, entries, footer, the freshness line and the D141 text.
+/// The client truncates the string it is sent (Claude Code, at about 3,050
+/// characters), so a bound on the rulings section alone bounded nothing. A
+/// conservative first value, not a known client limit.
+pub const MCP_INSTRUCTIONS_CAP: usize = 2_800;
+
+/// What [`handshake_instructions`] packed: the string and how it was made, so a
+/// diagnostic reads the packer's own result and never estimates a second time.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HandshakeInstructions {
+    /// The complete `instructions` string.
+    pub text: String,
+    /// Standing rulings listed (title at least).
+    pub shown: usize,
+    /// Of those, the ones that carry their gist.
+    pub gist: usize,
+    /// Standing rulings left out, named by the footer.
+    pub omitted: usize,
+    /// `text.len()`, in bytes.
+    pub bytes: usize,
+}
+
+fn one_line(s: &str) -> String {
+    s.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// One standing or topical entry: `\n- title`, plus ` [stale_refs...]` and the
+/// first paragraph's gist (at most 240 bytes) when `with_gist`.
+fn ruling_entry(d: &crate::engine::SessionDoc, refs: &[String], with_gist: bool) -> String {
+    let title = one_line(&d.title);
+    let rest = crate::frontmatter::block(&d.body).map_or(d.body.as_str(), |(_, r)| r);
+    let para: Vec<&str> = rest
+        .lines()
+        .skip_while(|l| l.trim().is_empty())
+        .take_while(|l| !l.trim().is_empty())
+        .collect();
+    let mut gist = one_line(&para.join(" "));
+    if gist.len() > 240 {
+        let mut cut = 240;
+        while !gist.is_char_boundary(cut) {
+            cut -= 1;
+        }
+        gist.truncate(cut);
+        gist.push('…');
+    }
+    // D235: cited code gone from this working tree is named, even on
+    // the title-only fallback, so a ruling about it is not followed blind.
+    // The title-only fallback counts them instead of naming them,
+    // so it stays a list of titles inside the budget.
+    let stale = match (refs.len(), with_gist) {
+        (0, _) => String::new(),
+        (_, true) => format!(" [stale_refs: {}]", refs.join(", ")),
+        (n, false) => format!(" [stale_refs: {n}]"),
+    };
+    if with_gist && !gist.is_empty() {
+        format!("\n- {title}{stale}: {gist}")
+    } else {
+        format!("\n- {title}{stale}")
+    }
+}
+
+/// The standing header; empty with nothing standing, so a topical-only section
+/// never reads as though it carried rulings (PR #48 review).
+fn standing_header(r: &crate::engine::SessionRulings) -> String {
+    const FOLLOW: &str = "Follow them: they were recorded by the user or an earlier \
+        session and hold until cleared.";
+    if r.standing.is_empty() {
+        return String::new();
+    }
+    match &r.project {
+        Some((name, source)) => {
+            format!("Standing rulings for project {name} ({source}). {FOLLOW}\n")
+        }
+        None => format!("Standing rulings (no project inferred, unscoped only). {FOLLOW}\n"),
+    }
+}
+
+/// Topical fill (D157), appended to `out` while `out` stays within `limit`
+/// bytes. It sits under its own heading so it never reads as a ruling (PR #48
+/// review), and a section where nothing fit gains nothing.
+fn push_topical(out: &mut String, r: &crate::engine::SessionRulings, limit: usize) {
+    // Topical docs exist only when a project was inferred.
+    let name = r.project.as_ref().map_or("", |(n, _)| n.as_str());
+    // #686: when no standing header precedes it, this heading opens the
+    // section and carries the inference source the standing header would.
+    let basis = match &r.project {
+        Some((_, source)) if r.standing.is_empty() => format!("{source}; "),
+        _ => String::new(),
+    };
+    let topical_header =
+        format!("\n\nRecent notes for project {name} ({basis}context, not rulings):");
+    let footer = |left: usize| {
+        format!("\n{left} more docs for project {name}; tasqx_search_memory reaches them.")
+    };
+    let total = r.topical_total;
+    let mut shown = 0;
+    let mut header_written = false;
+    for d in &r.topical {
+        let e = ruling_entry(d, &[], true);
+        let left_after = total - shown - 1;
+        let reserve = if left_after > 0 {
+            footer(left_after).len()
+        } else {
+            0
+        };
+        // PR #48 review: the heading costs budget too, reserved before
+        // the first topical entry the same way the footer is reserved.
+        let header_cost = if header_written {
+            0
+        } else {
+            topical_header.len()
+        };
+        if out.len() + header_cost + e.len() + reserve > limit {
+            break;
+        }
+        if !header_written {
+            out.push_str(&topical_header);
+            header_written = true;
+        }
+        out.push_str(&e);
+        shown += 1;
+    }
+    // The previous entry reserved this footer's room; only when not even
+    // the first topical entry fit can it overflow, and then it is left off.
+    let f = footer(total - shown);
+    if shown < total && out.len() + f.len() <= limit {
+        out.push_str(&f);
+    }
+}
+
+/// The complete `initialize` `instructions` string, bounded by
+/// [`MCP_INSTRUCTIONS_CAP`] (D252): the standing rulings first, then the
+/// overflow footer, the freshness line `refresh` and the D141 text, so a
+/// client that cuts the tail eats generic guidance, never a rule.
+///
+/// Packing runs over D157's rank order in two passes after the footer and the
+/// fixed blocks are reserved. Pass 1 lists titles while they fit; a title
+/// larger than the whole allowance is skipped and counted, later ones are still
+/// considered. Pass 2 upgrades the listed titles to their gist in rank order
+/// and stops at the first that does not fit (D246's prefix rule). Whatever is
+/// left out is counted in the footer with the call that lists it. Callable
+/// from the CLI: it needs an engine and the caller's `workdir`, not a server.
+///
+/// A project name too long for the header and the exact-name footer to share
+/// the allowance gets a fixed notice without it instead, so the bound holds.
+pub fn handshake_instructions(
+    engine: &Engine,
+    workdir: Option<&std::path::Path>,
+    scope: Scope,
+    refresh: Option<&str>,
+) -> Result<HandshakeInstructions, crate::error::ApiError> {
+    let (r, stale_refs, _) = engine.session_rulings_with_refs(workdir, None)?;
+    let mut tail = String::new();
+    if let Some(line) = refresh {
+        tail = format!("{line}\n\n");
+    }
+    tail.push_str(&instructions(scope));
+    let mut out = String::new();
+    let (mut shown, mut gist, mut omitted) = (0, 0, 0);
+    if !r.standing.is_empty() || !r.topical.is_empty() {
+        // The separator before `tail` is part of what the rulings must leave.
+        let allowance = MCP_INSTRUCTIONS_CAP.saturating_sub(tail.len() + 2);
+        let header = standing_header(&r);
+        let titles: Vec<String> = r
+            .standing
+            .iter()
+            .zip(&stale_refs)
+            .map(|(d, refs)| ruling_entry(d, refs, false))
+            .collect();
+        let total = titles.len();
+        let footer = |n: usize| {
+            let filter = match &r.project {
+                Some((p, _)) => format!(
+                    r#"{{"project":{},"standing":true,"include_unscoped":true,"include_preview":true}}"#,
+                    serde_json::to_string(p).unwrap_or_default()
+                ),
+                None => r#"{"standing":true,"unscoped_only":true,"include_preview":true}"#.into(),
+            };
+            format!(
+                "\n{n} more standing rulings do not fit this handshake. List them with \
+                 tasqx_list_memory {filter} (page with next_offset), then tasqx_get_memory for a body."
+            )
+        };
+        let everything = header.len() + titles.iter().map(String::len).sum::<usize>();
+        let reserve = if everything > allowance {
+            footer(total).len()
+        } else {
+            0
+        };
+        let room = allowance.saturating_sub(reserve);
+        if reserve > 0 && header.len() + reserve > allowance {
+            // A project name so long that the header and the exact-name
+            // footer cannot share the allowance: a fixed notice that names
+            // no project replaces both, and every ruling counts as omitted.
+            omitted = total;
+            out = format!(
+                "{total} standing rulings do not fit this handshake. List them with \
+                 tasqx_list_memory {{\"standing\":true,\"include_preview\":true}} (page with \
+                 next_offset, then tasqx_get_memory for a body); it lists every scope, so keep \
+                 this project's rulings and the unscoped ones."
+            );
+        } else {
+            // Pass 1: titles in rank order; one too large is skipped, not a stop.
+            let mut used = header.len();
+            let mut picked = Vec::new();
+            for (i, t) in titles.iter().enumerate() {
+                if used + t.len() <= room {
+                    used += t.len();
+                    picked.push(i);
+                }
+            }
+            omitted = total - picked.len();
+            shown = picked.len();
+            // Pass 2: gists in rank order, stopping at the first that does not fit.
+            let mut upgraded = vec![false; total];
+            for &i in &picked {
+                let full = ruling_entry(&r.standing[i], &stale_refs[i], true);
+                let extra = full.len().saturating_sub(titles[i].len());
+                if used + extra > room {
+                    break;
+                }
+                used += extra;
+                upgraded[i] = true;
+                gist += 1;
+            }
+            out.push_str(&header);
+            for &i in &picked {
+                if upgraded[i] {
+                    out.push_str(&ruling_entry(&r.standing[i], &stale_refs[i], true));
+                } else {
+                    out.push_str(&titles[i]);
+                }
+            }
+            if omitted > 0 {
+                out.push_str(&footer(omitted));
+            } else if gist == shown {
+                push_topical(&mut out, &r, room);
+            }
+        }
+        out = out.trim_start_matches('\n').to_string();
+    }
+    let text = if out.is_empty() {
+        tail
+    } else {
+        format!("{out}\n\n{tail}")
+    };
+    Ok(HandshakeInstructions {
+        bytes: text.len(),
+        text,
+        shown,
+        gist,
+        omitted,
+    })
+}
 
 /// The methods deliberately left off the tool surface, as `(method, why)`.
 ///
@@ -2396,18 +2645,18 @@ impl<'e> McpServer<'e> {
             Some(v) if SUPPORTED_PROTOCOL_VERSIONS.contains(&v) => v,
             _ => PROTOCOL_VERSION,
         };
-        let rulings = Self::rulings_section(self.engine, self.workdir.as_deref(), None);
-        let mut instructions = match rulings.ok().flatten() {
-            // D141: what to do with the tools, not just which ones exist. Read
-            // off the session's own scope, because the read variant may not
-            // name a tool this server will refuse. D157 appends the session's
-            // standing rulings, and only when there are any.
-            Some(section) => format!("{}\n\n{section}", instructions(self.scope)),
-            None => instructions(self.scope),
-        };
-        if let Some(line) = self.memory_refresh_line() {
-            instructions = format!("{instructions}\n\n{line}");
-        }
+        // D252: the standing rulings (D157) first and the whole string
+        // bounded; the freshness line (D180) and D141's scope-aware text
+        // follow. A packing failure falls back to D141's text alone: the
+        // handshake never fails on account of rulings.
+        let refresh = self.memory_refresh_line();
+        let instructions = handshake_instructions(
+            self.engine,
+            self.workdir.as_deref(),
+            self.scope,
+            refresh.as_deref(),
+        )
+        .map_or_else(|_| instructions(self.scope), |h| h.text);
         json!({
             "protocolVersion": version,
             "capabilities": { "tools": {} },
@@ -2477,57 +2726,8 @@ impl<'e> McpServer<'e> {
         if r.standing.is_empty() && r.topical.is_empty() {
             return Ok(None);
         }
-        const FOLLOW: &str = "Follow them: they were recorded by the user or an earlier \
-            session and hold until cleared.";
-        // PR #48 review: the standing header names rulings, so it is emitted
-        // only when there is at least one standing doc to announce — a
-        // topical-only section must never read as though it carries any.
-        let mut out = if r.standing.is_empty() {
-            String::new()
-        } else {
-            match &r.project {
-                Some((name, source)) => {
-                    format!("Standing rulings for project {name} ({source}). {FOLLOW}\n")
-                }
-                None => {
-                    format!("Standing rulings (no project inferred, unscoped only). {FOLLOW}\n")
-                }
-            }
-        };
-        let one_line = |s: &str| s.split_whitespace().collect::<Vec<_>>().join(" ");
-        let entry = |d: &crate::engine::SessionDoc, refs: &[String], with_gist: bool| {
-            let title = one_line(&d.title);
-            let rest = crate::frontmatter::block(&d.body).map_or(d.body.as_str(), |(_, r)| r);
-            let para: Vec<&str> = rest
-                .lines()
-                .skip_while(|l| l.trim().is_empty())
-                .take_while(|l| !l.trim().is_empty())
-                .collect();
-            let mut gist = one_line(&para.join(" "));
-            if gist.len() > 240 {
-                let mut cut = 240;
-                while !gist.is_char_boundary(cut) {
-                    cut -= 1;
-                }
-                gist.truncate(cut);
-                gist.push('…');
-            }
-            // D235: cited code gone from this working tree is named, even on
-            // the title-only fallback, so a ruling about it is not followed blind.
-            // The title-only fallback counts them instead of naming them,
-            // so it stays a list of titles inside the budget.
-            let stale = match (refs.len(), with_gist) {
-                (0, _) => String::new(),
-                (_, true) => format!(" [stale_refs: {}]", refs.join(", ")),
-                (n, false) => format!(" [stale_refs: {n}]"),
-            };
-            if with_gist && !gist.is_empty() {
-                format!("\n- {title}{stale}: {gist}")
-            } else {
-                format!("\n- {title}{stale}")
-            }
-        };
-
+        let mut out = standing_header(&r);
+        let entry = ruling_entry;
         let standing: Vec<String> = r
             .standing
             .iter()
@@ -2571,57 +2771,7 @@ impl<'e> McpServer<'e> {
             return Ok(Some(out));
         }
         out.extend(standing);
-
-        // Topical docs exist only when a project was inferred.
-        let name = r.project.as_ref().map_or("", |(n, _)| n.as_str());
-        // PR #48 review: topical fill is context, not a ruling, so it sits
-        // under its own heading rather than reading as more of the standing
-        // list above it.
-        // #686: when no standing header precedes it, this heading opens the
-        // section and carries the inference source the standing header would.
-        let basis = match &r.project {
-            Some((_, source)) if r.standing.is_empty() => format!("{source}; "),
-            _ => String::new(),
-        };
-        let topical_header =
-            format!("\n\nRecent notes for project {name} ({basis}context, not rulings):");
-        let footer = |left: usize| {
-            format!("\n{left} more docs for project {name}; tasqx_search_memory reaches them.")
-        };
-        let total = r.topical_total;
-        let mut shown = 0;
-        let mut header_written = false;
-        for d in &r.topical {
-            let e = entry(d, &[], true);
-            let left_after = total - shown - 1;
-            let reserve = if left_after > 0 {
-                footer(left_after).len()
-            } else {
-                0
-            };
-            // PR #48 review: the heading costs budget too, reserved before
-            // the first topical entry the same way the footer is reserved.
-            let header_cost = if header_written {
-                0
-            } else {
-                topical_header.len()
-            };
-            if out.len() + header_cost + e.len() + reserve > STANDING_RULINGS_BUDGET {
-                break;
-            }
-            if !header_written {
-                out.push_str(&topical_header);
-                header_written = true;
-            }
-            out.push_str(&e);
-            shown += 1;
-        }
-        // The previous entry reserved this footer's room; only when not even
-        // the first topical entry fit can it overflow, and then it is left off.
-        let f = footer(total - shown);
-        if shown < total && out.len() + f.len() <= STANDING_RULINGS_BUDGET {
-            out.push_str(&f);
-        }
+        push_topical(&mut out, &r, STANDING_RULINGS_BUDGET);
         // A topical-only section opens on the heading's own separator, which
         // `initialize_result` already supplies; and a section where nothing
         // fit is no section at all, so the instructions stay byte-identical.
