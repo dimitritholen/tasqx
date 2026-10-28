@@ -4984,6 +4984,41 @@ fn memory_add_prints_the_soft_cap_hint_once_a_scope_is_overfull() {
     );
 }
 
+/// D249: the engine's `warnings` on a standing doc with a title over 120
+/// bytes reach the plain text of both `memory add` and `memory update`, not
+/// only `--json`; a short title prints none.
+#[test]
+fn memory_add_and_update_print_the_standing_title_warning() {
+    let dir = fresh_config_dir("memory-title-warning");
+    let long = "x".repeat(tasqx_core::engine::STANDING_TITLE_MAX + 1);
+    let run = |args: &[&str]| {
+        let out = bin("memory-title-warning", &dir)
+            .args(args)
+            .output()
+            .expect("run memory");
+        assert!(out.status.success(), "{args:?}: {out:?}");
+        String::from_utf8_lossy(&out.stdout).to_string()
+    };
+    let short = run(&["memory", "add", "--standing", "short rule", "body"]);
+    assert!(!short.contains("bytes"), "{short}");
+    let id = short
+        .strip_prefix("Stored ")
+        .and_then(|rest| rest.split_whitespace().next())
+        .expect("Stored <id>")
+        .to_string();
+
+    let added = run(&["memory", "add", "--standing", &long, "body"]);
+    assert!(added.contains("-byte limit"), "add must print it: {added}");
+
+    let updated = run(&["memory", "update", &id, "--title", &long]);
+    assert!(
+        updated.contains("-byte limit"),
+        "update must print it: {updated}"
+    );
+    let ok = run(&["memory", "update", &id, "--title", "short again"]);
+    assert!(!ok.contains("bytes"), "{ok}");
+}
+
 /// #229 item 7: the CLI, the API and MCP each name this operation
 /// differently — `memory show` (CLI), `memory.get` (`core.capabilities`),
 /// `tasqx_get_memory` (MCP) — while every other verb keeps one name across
