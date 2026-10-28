@@ -552,6 +552,42 @@ fn record_session(be: &mut Backend, params: &Value, id: &str) -> Option<String> 
     }
 }
 
+/// D249: a `tasqx done` of the very task a codex work session is on, run
+/// inside it (the agent's shell), names codex, and codex's own id when the
+/// trusted hook wrote one. The post-exit record cannot reach a task already
+/// done, and the launcher id on its start matches no rollout. Correlation the
+/// caller passed is left as it is.
+pub(crate) fn codex_done_correlation(be: &mut Backend, params: &mut Value) {
+    let (Ok(task), Some(file)) = (
+        std::env::var("TASQX_WORK_TASK"),
+        std::env::var_os("TASQX_WORK_SESSIONS"),
+    ) else {
+        return;
+    };
+    if ["client", "session_id", "transcript_path"]
+        .iter()
+        .any(|k| !params[k].is_null())
+    {
+        return;
+    }
+    let resolved = be.call("task.get", &json!({ "ref": params["ref"] }));
+    if resolved
+        .ok()
+        .and_then(|t| t["short_id"].as_i64())
+        .map(|id| id.to_string())
+        != Some(task)
+    {
+        return;
+    }
+    params["client"] = json!("codex");
+    if let Some(id) = std::fs::read_to_string(file)
+        .ok()
+        .and_then(|s| s.lines().last().map(str::to_string))
+    {
+        params["session_id"] = json!(id);
+    }
+}
+
 /// The one-time hint that codex skipped the hook (D249), remembered in the
 /// `work.codex_hook_hint` setting.
 fn hint_once() {

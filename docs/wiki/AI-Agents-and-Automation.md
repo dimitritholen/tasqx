@@ -337,7 +337,10 @@ see [token accounting](../guides/token-accounting.md)). A task that is never
 completed shows no tokens for its work sessions; one completed without that
 setup is measured once such a daemon runs, while the transcript is still on
 disk. Codex picks its own session id, and `tasqx hook codex` tells it to
-`tasqx work`, which records it on the task when codex exits.
+`tasqx work`, which records it on the task when codex exits. When the agent
+runs `tasqx done` on its task before then, that `done` names codex and the
+id itself; without the hook it names codex only, and every codex session in
+its window is counted.
 
 Codex runs a hook only after you trust it, and skips an untrusted one without
 a word. Trust it once: start `codex`, run `/hooks`, and trust

@@ -716,6 +716,7 @@ pub(crate) fn run_done(
     }
     claim_params(&mut params, holder, force_claim);
     apply_correlation(&mut params, correlation);
+    crate::work::codex_done_correlation(be, &mut params);
     apply_self_report(&mut params, self_report);
     let result = be.call("task.done", &params)?;
     let task = read_back(be, &result).unwrap_or_else(|| result.clone());

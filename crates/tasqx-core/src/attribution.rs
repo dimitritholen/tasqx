@@ -5205,6 +5205,42 @@ pub(crate) mod tests {
         assert_eq!(input, 20, "the codex session, found by its own id");
     }
 
+    /// D249: a `tasqx done` inside a codex work session whose hook is not
+    /// trusted carries `client: codex` and no session id. It is correlated
+    /// by client, and Codex discovery reads the rollouts over its window.
+    #[test]
+    fn a_client_only_codex_done_reads_the_rollouts_in_its_window() {
+        let dir = fallback_dir("codex-client-only");
+        let engine = Engine::open_in_memory().unwrap();
+        let id = engine.task_add(&json!({ "title": "t" })).unwrap()["short_id"]
+            .as_i64()
+            .unwrap();
+        engine
+            .task_start(&json!({ "ref": id, "session_id": "launcher", "client": "codex" }))
+            .unwrap();
+        let at = crate::clock::now().to_string();
+        let codex = dir.join(".codex").join("sessions");
+        std::fs::create_dir_all(&codex).unwrap();
+        std::fs::write(
+            codex.join("rollout-x-unknown.jsonl"),
+            [
+                r#"{"type":"session_meta","payload":{"id":"x-unknown"}}"#.to_string(),
+                format!(
+                    r#"{{"timestamp":"{at}","type":"event_msg","payload":{{"type":"token_count","info":{{"total_token_usage":{{"input_tokens":30,"cached_input_tokens":0,"output_tokens":1,"reasoning_output_tokens":0,"total_tokens":31}},"last_token_usage":{{"input_tokens":30,"cached_input_tokens":0,"output_tokens":1,"reasoning_output_tokens":0,"total_tokens":31}}}}}}}}"#
+                ),
+            ]
+            .join("\n"),
+        )
+        .unwrap();
+        engine
+            .task_done(&json!({ "ref": id, "client": "codex" }))
+            .unwrap();
+
+        let input = tick_input(&engine, &dir, id);
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(input, 30, "the rollout in the window, by client alone");
+    }
+
     /// D247: a fallback task is never a located neighbour. Agent A, working
     /// on task A in its own session, runs a plain `tasqx done B` for work done
     /// in session s2; that call in A's transcript is no evidence that B read
