@@ -2666,7 +2666,9 @@ impl<'e> McpServer<'e> {
     /// under a read-only scope (it may not write the re-read docs), when
     /// nothing was refreshed or missing, or when the sweep itself errors —
     /// `initialize` must never fail on its account, so a failure is logged
-    /// and otherwise treated as nothing to report.
+    /// and otherwise treated as nothing to report. Of the missing docs only
+    /// those whose origin folder exists here count (D255); `memory.refresh`
+    /// itself still lists all of them.
     pub fn memory_refresh_line(&self) -> Option<String> {
         self.memory_refresh_line_dry(false)
     }
@@ -2685,7 +2687,18 @@ impl<'e> McpServer<'e> {
             }
         };
         let refreshed = result["refreshed"].as_array().map_or(0, Vec::len);
-        let missing = result["missing"].as_array().map_or(0, Vec::len);
+        // D255: a doc whose origin folder is absent here came from another
+        // machine (D201); only a file gone from a folder that exists counts.
+        let missing = result["missing"].as_array().map_or(0, |docs| {
+            docs.iter()
+                .filter(|d| {
+                    d["origin_path"]
+                        .as_str()
+                        .and_then(|p| std::path::Path::new(p).parent())
+                        .is_some_and(std::path::Path::is_dir)
+                })
+                .count()
+        });
         if refreshed == 0 && missing == 0 {
             return None;
         }
