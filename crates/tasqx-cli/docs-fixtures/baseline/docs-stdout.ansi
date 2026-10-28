@@ -3930,7 +3930,9 @@ the agent runs on its own task before Codex exits names Codex, and that id when
 the hook gave exactly one (after a <code>/new</code> inside Codex, it names Codex only); without the hook, every Codex session in the task's window
 is counted. When a session from before this launch also worked on the task since
 its previous completion, that <code>done</code> names nothing, so the earlier sessions are
-still measured; the Codex session finished inside the launch is then not.</p>
+still measured; the Codex session finished inside the launch is then not. A
+reopened task completed again by a <code>done</code> that names Codex only can count the
+earlier cycle's Codex usage a second time (a known limit, tracked in #4203).</p>
 <p>Given a session id, Claude Code and Codex read only the matching session's
 transcript, so another session running at the same time is not counted. When a
 completion names a Claude Code session that no transcript matches, the scan
@@ -3978,9 +3980,7 @@ moves until you turn on both.</p>
 stands down for a task the agent already measured. A transcript sample banked
 by one task is claimed globally — no other task can earn it, whatever its
 re-read timestamp later says — and a sample falling inside two tasks' windows
-is contested and banked for no one. A task's window starts at its first start
-since its previous completion, so a reopened task is measured for the new work
-only. Only contest ever removes tokens: a
+is contested and banked for no one. Only contest ever removes tokens: a
 transcript that goes missing or re-reads differently keeps its counts with
 confidence downgraded to <code>low</code>, never deleted blind.</p>
 <h3 id="guide-token-accounting--budgets--the-other-direction">Budgets: the other direction</h3>
