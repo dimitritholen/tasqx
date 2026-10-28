@@ -456,7 +456,11 @@ pub const PARAMS: &[(&str, &[&str], bool)] = &[
         &["event", "branch", "pr", "sha", "task"],
         false,
     ),
-    ("event.list", &["limit", "ref", "entity", "from"], false),
+    (
+        "event.list",
+        &["limit", "ref", "entity", "from", "order"],
+        false,
+    ),
     // `event.revert` takes NO params, and that is the decision rather than an
     // omission: it undoes the newest event in the log and nothing else, because
     // that is the only position from which the inverse is exact rather than
