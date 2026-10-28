@@ -1323,6 +1323,59 @@ fn initialize_with_no_origin_docs_leaves_instructions_byte_identical() {
     );
 }
 
+/// Imports a doc whose origin file is `origin_path`, with no file behind it.
+fn import_missing_doc(engine: &Engine, name: &str, origin_path: &std::path::Path) {
+    engine
+        .memory_import(&json!({
+            "docs": [{
+                "title": name,
+                "body": "gone",
+                "source": format!("docs/{name}"),
+                "origin_path": origin_path.to_string_lossy(),
+                "origin_mtime": 1,
+                "origin_size": 4,
+            }]
+        }))
+        .expect("import the doc");
+}
+
+/// #4219 (D255): a file deleted from a folder that exists here is still
+/// reported in the handshake; one from an absent folder is another machine's.
+#[test]
+fn the_freshness_line_counts_only_missing_files_whose_folder_exists() {
+    let engine = engine();
+    let dir = temp_workdir("refresh-missing");
+    import_missing_doc(&engine, "local.md", &dir.join("deleted.md"));
+    import_missing_doc(&engine, "foreign.md", &dir.join("no-such-dir").join("x.md"));
+    let server = McpServer::new(&engine, Scope::Write);
+    assert_eq!(
+        server.memory_refresh_line().as_deref(),
+        Some("memory: 1 source file(s) missing (tasqx memory import --refresh lists them).")
+    );
+    // memory.refresh itself still lists both.
+    let all = engine.memory_refresh(&json!({})).expect("refresh");
+    assert_eq!(all["missing"].as_array().map(Vec::len), Some(2));
+}
+
+/// #4219 (D255): only foreign-path misses leave no line; with a refreshed
+/// doc the line carries the refreshed part alone.
+#[test]
+fn foreign_only_missing_files_add_no_missing_part() {
+    let engine = engine();
+    let dir = temp_workdir("refresh-foreign");
+    import_missing_doc(&engine, "a.md", &dir.join("no-such-dir").join("a.md"));
+    import_missing_doc(&engine, "b.md", std::path::Path::new("relative.md"));
+    let server = McpServer::new(&engine, Scope::Write);
+    assert_eq!(server.memory_refresh_line(), None);
+
+    import_origin_doc(&engine, &dir, "c.md", "before");
+    std::fs::write(dir.join("c.md"), "after, longer").expect("edit");
+    assert_eq!(
+        server.memory_refresh_line().as_deref(),
+        Some("memory: 1 doc(s) refreshed from disk.")
+    );
+}
+
 /// #791: a read-only scope may not write the re-read docs the sweep would
 /// store, so it must not run at all — the old text is still all
 /// `tasqx_search_memory` finds, and `instructions` carries no memory line.
