@@ -156,8 +156,11 @@ fn no_project_and_no_rulings_gives_null_project_and_zero_counts() {
 #[test]
 fn a_store_that_cannot_open_gives_the_json_error_envelope() {
     let dir = scratch("err");
+    // A directory, not `/dev/null/store.db`: that path is Unix-specific and,
+    // on Windows, is an ordinary creatable relative path, so the store opened.
+    // Neither POSIX nor Win32 will open a directory as a regular file.
     let out = bin(&dir)
-        .env("TASQX_DB", "/dev/null/store.db")
+        .env("TASQX_DB", &dir)
         .args(["--json", "mcp", "instructions"])
         .output()
         .expect("run tasqx");
