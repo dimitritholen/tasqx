@@ -554,6 +554,8 @@ pub(crate) fn compute_attribution_sessions(
     let mut out =
         AttributionResult::empty(normalize_tool_name(&pa.client.clone().unwrap_or_default()));
     let mut unscoped_read: Vec<Parser> = Vec::new();
+    let mut unscoped_otel: Vec<(Parser, AttributionResult)> = Vec::new();
+    let mut logs_found: Vec<Parser> = Vec::new();
     for session in sessions {
         // Gemini and Copilot discovery cannot narrow to a session: every
         // session would read the same logs, so only the first one does. The
@@ -561,20 +563,54 @@ pub(crate) fn compute_attribution_sessions(
         let parser = session.client.as_deref().and_then(parser_for);
         let unscoped = parser.filter(|p| !matches!(p, Parser::ClaudeCode | Parser::Codex));
         let read_before = unscoped.is_some_and(|p| unscoped_read.contains(&p));
+        // A neighbour naming this session's transcript by path alone reads
+        // the same samples (#4191).
+        let mut foreign_windows = session.foreign_windows.clone();
+        foreign_windows.extend(
+            neighbours
+                .iter()
+                .filter(|n| {
+                    parser
+                        .zip(n.canon_path.as_deref())
+                        .is_some_and(|(p, path)| p.session_matches(path, &session.session_id))
+                })
+                .map(|n| n.window.clone()),
+        );
         let one = PendingAttribution {
             client: session.client.clone().filter(|_| !read_before),
             session_id: Some(session.session_id.clone()),
             otel_samples: session.otel_samples.clone(),
             otel_tool: session.otel_tool.clone(),
-            foreign_windows: session.foreign_windows.clone(),
+            foreign_windows,
             ..pa.clone()
         };
         let result = compute_one(&one, &[], false, now)?;
-        // Telemetry answers before discovery runs; only a log-parse result read the logs.
-        if result.source == SOURCE_LOG_PARSE {
-            unscoped_read.extend(unscoped);
+        match unscoped {
+            // Telemetry answers before discovery runs; only a log-parse result read the logs.
+            Some(p) if result.source == SOURCE_LOG_PARSE => {
+                unscoped_read.push(p);
+                if result.found {
+                    logs_found.push(p);
+                }
+                out = merge_results(out, result);
+            }
+            Some(p) if result.found => unscoped_otel.push((p, result)),
+            _ => out = merge_results(out, result),
         }
-        out = merge_results(out, result);
+    }
+    // #4191: an unscoped tool's logs hold every session's spend, its telemetry
+    // included, so a log result that found anything replaces that tool's
+    // telemetry, passed over as D111 does, rather than adding to it.
+    for (p, otel) in unscoped_otel {
+        if logs_found.contains(&p) {
+            out.otel_disagreement = Some(
+                out.otel_disagreement
+                    .unwrap_or(0)
+                    .saturating_add(otel.totals.total()),
+            );
+        } else {
+            out = merge_results(out, otel);
+        }
     }
     Ok(out)
 }
@@ -2099,11 +2135,12 @@ pub(crate) fn pending_with_sessions(engine: &Engine) -> Result<Vec<PendingWithSe
             .filter(|(other_id, _)| *other_id != task_id)
             .flat_map(|(_, ids)| ids.iter().cloned())
             .collect();
-        // Only a task D188 location can reach needs its unsourced overlapping
-        // neighbours; everyone else skips the per-task window pass.
+        // Only a task D188 location can reach, or a fallback task whose
+        // sessions a neighbour may name by path (#4191), needs its unsourced
+        // overlapping neighbours; everyone else skips the per-task window pass.
         let locatable = info.transcript_path.is_none()
             && info.client.as_deref().and_then(parser_for) == Some(Parser::ClaudeCode);
-        let located_neighbours = if locatable {
+        let located_neighbours = if locatable || !sessions.is_empty() {
             scan.located_neighbours_for(task_id)
         } else {
             Vec::new()
@@ -5188,17 +5225,36 @@ pub(crate) mod tests {
     /// fallback sessions of one of them read the same logs once, not twice.
     #[test]
     fn unscoped_discovery_runs_once_for_several_fallback_sessions() {
-        assert_eq!(unscoped_input(false), 100, "one log, read once");
+        assert_eq!(unscoped_input(None, &[100]), 100, "one log, read once");
         assert_eq!(
-            unscoped_input(true),
-            107,
-            "g1 answered from telemetry without reading the log, so g2 reads it"
+            unscoped_input(Some(("g1", 7)), &[100]),
+            100,
+            "g1 answered from telemetry without reading the log, so g2 reads it, and the log stands in for g1's telemetry"
         );
     }
 
-    /// Two Gemini fallback sessions over one 100-token log; `g1_telemetry`
-    /// also buffers 7 tokens of telemetry for g1.
-    fn unscoped_input(g1_telemetry: bool) -> i64 {
+    /// #4191: the logs hold every session's spend, telemetry included, so
+    /// for one unscoped tool the task gets the logs or the telemetry, never
+    /// both. g1's 100 reached the buffer and the log; g2 spent 20 more.
+    #[test]
+    fn unscoped_logs_replace_the_telemetry_they_also_hold() {
+        for session in ["g1", "g2"] {
+            assert_eq!(
+                unscoped_input(Some((session, 100)), &[100, 20]),
+                120,
+                "telemetry on {session}"
+            );
+        }
+        assert_eq!(
+            unscoped_input(Some(("g1", 7)), &[]),
+            7,
+            "an empty log leaves the telemetry standing"
+        );
+    }
+
+    /// Two Gemini fallback sessions over one log of `log` api responses;
+    /// `telemetry` also buffers that many tokens of telemetry for a session.
+    fn unscoped_input(telemetry: Option<(&str, u64)>, log: &[u64]) -> i64 {
         let dir = fallback_dir("fallback-unscoped");
         let engine = Engine::open_in_memory().unwrap();
         let id = engine.task_add(&json!({ "title": "t" })).unwrap()["short_id"]
@@ -5214,17 +5270,20 @@ pub(crate) mod tests {
         std::fs::create_dir_all(dir.join(".gemini")).unwrap();
         std::fs::write(
             dir.join(".gemini").join("telemetry.jsonl"),
-            format!(
-                r#"{{"attributes":{{"event.name":"gemini_cli.api_response","event.timestamp":"{at}","input_token_count":100,"output_token_count":1,"thoughts_token_count":0,"cached_content_token_count":0}}}}"#
-            ),
+            log.iter()
+                .map(|input| format!(
+                    r#"{{"attributes":{{"event.name":"gemini_cli.api_response","event.timestamp":"{at}","input_token_count":{input},"output_token_count":1,"thoughts_token_count":0,"cached_content_token_count":0}}}}"#
+                ))
+                .collect::<Vec<_>>()
+                .join("\n"),
         )
         .unwrap();
-        if g1_telemetry {
+        if let Some((session, input)) = telemetry {
             engine
                 .otlp_ingest(&[crate::otlp::OtlpSample {
                     tool: "gemini".into(),
-                    session_id: Some("g1".into()),
-                    sample: sample(&at, 7, 0),
+                    session_id: Some(session.into()),
+                    sample: sample(&at, input, 0),
                 }])
                 .unwrap();
         }
@@ -5233,6 +5292,64 @@ pub(crate) mod tests {
         let input = tick_input(&engine, &dir, id);
         let _ = std::fs::remove_dir_all(&dir);
         input
+    }
+
+    /// #4191: a neighbour naming a fallback session's transcript by path,
+    /// with no session id, reads the same samples, so the fallback task
+    /// refuses its window and the spend is banked once, also when F's
+    /// latest start is a Codex session.
+    #[test]
+    fn a_neighbour_naming_a_fallback_sessions_transcript_by_path_contests_it() {
+        for then_codex in [false, true] {
+            assert_eq!(path_neighbour_total(then_codex), 100, "codex: {then_codex}");
+        }
+    }
+
+    /// The tokens banked over F and N: F falls back to session s1, and N
+    /// names s1's transcript by path.
+    fn path_neighbour_total(then_codex: bool) -> i64 {
+        let dir = fallback_dir("fallback-path-neighbour");
+        let engine = Engine::open_in_memory().unwrap();
+        let add = |title: &str| {
+            engine.task_add(&json!({ "title": title })).unwrap()["short_id"]
+                .as_i64()
+                .unwrap()
+        };
+        let f = add("F");
+        let n = add("N");
+        engine
+            .task_start(&json!({ "ref": f, "session_id": "s1", "client": "claude" }))
+            .unwrap();
+        if then_codex {
+            engine.task_stop(&json!({ "ref": f })).unwrap();
+            engine
+                .task_start(&json!({ "ref": f, "session_id": "x1", "client": "codex" }))
+                .unwrap();
+        }
+        engine
+            .task_start(&json!({ "ref": n, "keep": true }))
+            .unwrap();
+        let transcript = dir.join("projects").join("proj").join("s1.jsonl");
+        std::fs::write(
+            &transcript,
+            format!(
+                r#"{{"timestamp":"{}","message":{{"id":"s1-m","usage":{{"input_tokens":100,"output_tokens":1}}}}}}"#,
+                crate::clock::now()
+            ),
+        )
+        .unwrap();
+        engine
+            .task_done(&json!({
+                "ref": n,
+                "client": "claude",
+                "transcript_path": transcript.to_string_lossy(),
+            }))
+            .unwrap();
+        engine.task_done(&json!({ "ref": f })).unwrap();
+
+        tick_input(&engine, &dir, f);
+        let _ = std::fs::remove_dir_all(&dir);
+        count_rows(&engine, "SELECT SUM(input_tokens) FROM token_usage")
     }
 
     /// D247: a reopened task's fallback window starts at the first session
