@@ -1915,7 +1915,7 @@ fn build_tool_specs() -> Vec<ToolSpec> {
                     "title": { "type": "string", "description": "New title. Omit to leave unchanged." },
                     "body": { "type": "string", "description": "New body, stored verbatim. Omit to leave unchanged." },
                     "source": { "type": "string", "description": "New source. Omit to leave unchanged. One another doc holds is a `conflict` naming it (D174)." },
-                    "project": { "type": "string", "description": "New project scope. Omit to leave unchanged." },
+                    "project": { "type": ["string", "null"], "description": "Project scope; null clears it. Omit: unchanged." },
                     "standing": {
                         "type": "boolean",
                         "description": "Set or clear the standing flag; omit to leave \

@@ -5103,6 +5103,52 @@ fn memory_update_prints_the_actual_bumped_rev_not_a_hardcoded_zero() {
     );
 }
 
+/// #4202/D251: `memory update --no-project` clears the scope, and clap refuses
+/// it beside `--project`.
+#[test]
+fn memory_update_no_project_clears_the_scope_and_conflicts_with_project() {
+    let dir = fresh_config_dir("memory-update-no-project");
+    let run = |args: &[&str]| {
+        bin("memory-update-no-project", &dir)
+            .args(args)
+            .output()
+            .expect("run tasqx")
+    };
+    assert!(run(&["init", "ledger"]).status.success());
+    let add = run(&["memory", "add", "T", "v1", "--project", "ledger"]);
+    let stdout = String::from_utf8_lossy(&add.stdout).to_string();
+    let id = stdout
+        .strip_prefix("Stored ")
+        .and_then(|rest| rest.split_whitespace().next())
+        .unwrap_or_else(|| panic!("expected `Stored <id>`, got: {stdout}"))
+        .to_string();
+
+    let both = run(&[
+        "memory",
+        "update",
+        &id,
+        "--no-project",
+        "--project",
+        "ledger",
+    ]);
+    assert!(!both.status.success());
+    assert!(
+        String::from_utf8_lossy(&both.stderr).contains("cannot be used with"),
+        "{}",
+        String::from_utf8_lossy(&both.stderr)
+    );
+
+    let out = run(&["memory", "update", &id, "--no-project", "--json"]);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let shown = run(&["memory", "show", &id, "--json"]);
+    let doc: serde_json::Value = serde_json::from_slice(&shown.stdout).expect("json");
+    assert!(doc["project"].is_null(), "{doc}");
+}
+
 /// #657/#640: `memory import --project` scopes every doc the batch lands, so
 /// an executor with no MCP tools (the CLI-only path #640 found) can land its
 /// own repo docs scoped instead of unscoped and invisible to a

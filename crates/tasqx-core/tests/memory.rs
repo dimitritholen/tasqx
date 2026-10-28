@@ -4633,3 +4633,54 @@ fn source_prefix_that_changes_nothing_is_refused() {
         assert!(err.message.contains("source_prefix"), "{}", err.message);
     }
 }
+
+/// #4202/D251: `project: null` clears a doc's project, so a standing ruling
+/// moves to unscoped without a re-add; omitted leaves it, `""` stays refused.
+#[test]
+fn memory_update_project_null_clears_the_scope_and_omitted_keeps_it() {
+    let e = engine();
+    call(&e, "project.create", json!({ "name": "ledger" })).expect("project");
+    call(&e, "project.create", json!({ "name": "other" })).expect("project");
+    let added = call(
+        &e,
+        "memory.add",
+        json!({ "title": "Rule", "body": "zebrafish ruling", "project": "ledger", "standing": true }),
+    )
+    .unwrap();
+    let id = added["id"].as_str().unwrap().to_string();
+
+    // Omitted: unchanged. "": refused as before.
+    let kept = call(
+        &e,
+        "memory.update",
+        json!({ "id": id, "body": "zebrafish ruling v2" }),
+    )
+    .unwrap();
+    assert_eq!(kept["project"], "ledger", "{kept}");
+    let refused = call(&e, "memory.update", json!({ "id": id, "project": "" })).unwrap_err();
+    assert!(refused.message.contains("project"), "{}", refused.message);
+
+    let in_other = |e: &Engine| {
+        call(
+            e,
+            "memory.search",
+            json!({ "query": "zebrafish", "project": "other", "include_unscoped": true }),
+        )
+        .unwrap()["hits"]
+            .as_array()
+            .unwrap()
+            .len()
+    };
+    assert_eq!(in_other(&e), 0);
+
+    // null as the only field is a complete request and bumps the rev.
+    let before = call(&e, "memory.update", json!({ "id": id, "standing": true })).unwrap()["_rev"]
+        .as_i64()
+        .unwrap();
+    let cleared = call(&e, "memory.update", json!({ "id": id, "project": null })).unwrap();
+    assert!(cleared["project"].is_null(), "{cleared}");
+    assert_eq!(cleared["_rev"], before + 1, "{cleared}");
+    let doc = call(&e, "memory.get", json!({ "id": id })).unwrap();
+    assert!(doc["project"].is_null(), "{doc}");
+    assert_eq!(in_other(&e), 1);
+}

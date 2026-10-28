@@ -5566,3 +5566,42 @@ fn a_cut_note_body_written_back_is_refused_and_a_real_edit_passes() {
         "a shorter body that is not a prefix is an edit: {out}"
     );
 }
+
+// ---- tasqx_update_memory: `project: null` clears the scope (#4202, D251) ----
+
+#[test]
+fn update_memory_passes_a_null_project_through_to_clear_it() {
+    let engine = Engine::open_in_memory().expect("engine");
+    tasqx_core::dispatch(&engine, "project.create", &json!({ "name": "ledger" })).expect("project");
+    let id = tasqx_core::dispatch(
+        &engine,
+        "memory.add",
+        &json!({ "title": "R", "body": "b", "project": "ledger" }),
+    )
+    .expect("add")["id"]
+        .clone();
+    let server = McpServer::new(&engine, Scope::Write);
+    let resp = call(
+        &server,
+        1,
+        "tasqx_update_memory",
+        json!({ "id": id, "project": null }),
+    );
+    assert!(!is_error(&resp), "{resp}");
+    let doc = tasqx_core::dispatch(&engine, "memory.get", &json!({ "id": id })).expect("get");
+    assert!(doc["project"].is_null(), "{doc}");
+
+    let listed = server
+        .handle_message(&json!({ "jsonrpc": "2.0", "id": 2, "method": "tools/list" }))
+        .unwrap();
+    let tool = listed["result"]["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|t| t["name"] == "tasqx_update_memory")
+        .unwrap();
+    assert_eq!(
+        tool["inputSchema"]["properties"]["project"]["type"],
+        json!(["string", "null"])
+    );
+}
