@@ -39,6 +39,8 @@ impl Store {
             .env("PATH", format!("{}:/usr/bin:/bin", self.bin.display()))
             .env("HOME", dir_home(&self.dir))
             .env_remove("TASQX_NOW")
+            // Codex discovery prefers it over the fake HOME's `.codex`.
+            .env_remove("CODEX_HOME")
             .arg("--no-daemon");
         c
     }
@@ -771,6 +773,17 @@ fn a_trusted_codex_hook_records_codexs_own_session_id() {
     let after = s.task("1");
     assert_eq!(after["status"], "pending", "{after}");
     assert!(after["claimed_by"].is_null(), "{after}");
+    // Recording the id adds no time: the total is the work interval alone,
+    // whatever second the bookkeeping start and stop landed in.
+    let log: Value = serde_json::from_str(&s.event_list(r#"{"ref":"1","limit":500}"#)).unwrap();
+    let mut stops: Vec<&Value> = log["result"]["events"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|e| e["op"] == "stop")
+        .collect();
+    stops.sort_by_key(|e| e["id"].as_str().map(str::to_string));
+    assert_eq!(after["tracked"], stops[0]["payload"]["tracked"], "{after}");
     // The record file is gone with the context file.
     let sessions = s.env_of("codex", "TASQX_WORK_SESSIONS");
     assert!(

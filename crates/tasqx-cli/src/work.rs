@@ -559,7 +559,19 @@ fn record_session(be: &mut Backend, params: &Value, id: &str) -> Option<String> 
                 params["ref"],
                 params["actor"].as_str().unwrap_or("")
             );
-            cleanup(be, "task.stop", params, &fix);
+            // The two calls read separate clocks and a stop may be delayed,
+            // so the interval is taken back: the net is exactly zero.
+            let secs = cleanup(be, "task.stop", params, &fix)
+                .and_then(|v| tasqx_core::util::duration_secs(v["interval"].as_str()?))
+                .unwrap_or(0);
+            if secs > 0 {
+                let adj = json!({
+                    "ref": params["ref"],
+                    "delta": format!("-{secs}s"),
+                    "reason": "tasqx work: recording the codex session id adds no time",
+                });
+                let _ = be.call("task.adjust_tracked", &adj);
+            }
             None
         }
         Err(e) if e.code == ErrorCode::Internal => Some(e.message),
@@ -692,7 +704,7 @@ fn reconnect(be: &mut Backend) -> bool {
 /// One after-session call. A refusal means the agent already stopped or
 /// closed the task, and is fine. A call that fails on the connection is
 /// retried once on a fresh one; a failure after that is said, naming `fix`.
-fn cleanup(be: &mut Backend, method: &str, params: &Value, fix: &str) {
+fn cleanup(be: &mut Backend, method: &str, params: &Value, fix: &str) -> Option<Value> {
     let lost = |r: &Result<Value, ApiError>| matches!(r, Err(e) if e.code == ErrorCode::Internal);
     let mut result = be.call(method, params);
     if lost(&result) && reconnect(be) {
@@ -704,6 +716,7 @@ fn cleanup(be: &mut Backend, method: &str, params: &Value, fix: &str) {
             e.message
         );
     }
+    result.ok()
 }
 
 /// `tasqx hook claude|codex` (D248, D249): what the agent runs on a hook
