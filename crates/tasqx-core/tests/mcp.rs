@@ -517,7 +517,7 @@ fn initialize_instructions_name_only_tools_that_exist() {
         let text = instructions_of(scope);
         let named = tool_names_in(&text);
         assert!(
-            named.len() >= 3,
+            !named.is_empty(),
             "the scan of the {} instructions found only {named:?} — an empty \
              scan must not pass as a clean one",
             scope.as_str()
@@ -5640,7 +5640,7 @@ fn alpha_with(n: usize, title: &str, gist_len: usize) -> Engine {
 #[test]
 fn the_whole_handshake_stays_under_the_cap_for_any_number_of_rulings() {
     let refresh = "memory: 3 doc(s) refreshed from disk.";
-    for n in [0, 1, 12, 50] {
+    for n in [0, 1, 12, 100] {
         let engine = alpha_with(n, "a ruling about something", 200);
         for scope in [Scope::Write, Scope::Read] {
             let got = pack(&engine, scope, Some(refresh));
@@ -5659,7 +5659,7 @@ fn the_whole_handshake_stays_under_the_cap_for_any_number_of_rulings() {
 
 #[test]
 fn rulings_lead_and_the_read_only_text_is_never_cut() {
-    let engine = alpha_with(50, "a ruling about something", 200);
+    let engine = alpha_with(100, "a ruling about something", 200);
     let got = pack(&engine, Scope::Read, None);
     assert!(got.text.starts_with("Standing rulings for project alpha"));
     assert!(
@@ -5746,7 +5746,7 @@ fn pass_two_stops_at_the_first_gist_that_does_not_fit() {
     // filler titles that eat the room. Over every filler count, C may carry
     // its gist only when B does; and some count has A with B refused.
     let mut exercised = false;
-    for filler in 0..100 {
+    for filler in 0..160 {
         let engine = engine();
         engine.project_create(&json!({ "name": "alpha" })).unwrap();
         for i in 0..filler {
@@ -5769,11 +5769,11 @@ fn pass_two_stops_at_the_first_gist_that_does_not_fit() {
 
 #[test]
 fn the_footer_counts_exactly_what_was_left_out_and_names_the_call() {
-    let engine = alpha_with(50, "a ruling about something", 10);
+    let engine = alpha_with(100, "a ruling about something", 10);
     let got = pack(&engine, Scope::Write, None);
     let listed = got.text.matches("\n- a ruling about something").count();
     assert_eq!(listed, got.shown);
-    assert!(got.omitted > 0 && got.shown + got.omitted == 50, "{got:?}");
+    assert!(got.omitted > 0 && got.shown + got.omitted == 100, "{got:?}");
     assert!(
         got.text.contains(&format!(
             "\n{} more standing rulings do not fit this handshake. List them with \
@@ -5794,7 +5794,7 @@ fn the_footer_counts_exactly_what_was_left_out_and_names_the_call() {
 #[test]
 fn without_a_project_the_footer_asks_for_the_unscoped_ones() {
     let engine = engine();
-    for i in 0..50 {
+    for i in 0..100 {
         add_doc(&engine, &format!("an unscoped ruling {i}"), "g", None, true);
     }
     let got = pack(&engine, Scope::Write, None);
@@ -5818,7 +5818,7 @@ fn the_footer_escapes_the_project_name_as_a_json_string() {
     let engine = engine();
     let name = "we\"ird\\ name";
     engine.project_create(&json!({ "name": name })).unwrap();
-    for i in 0..50 {
+    for i in 0..100 {
         add_doc(
             &engine,
             &format!("a ruling about {i}"),
@@ -5848,7 +5848,7 @@ fn topical_notes_fill_only_what_the_standing_rulings_leave() {
         got.text
     );
     // Overflowing standing rulings leave no room for notes (D246).
-    let full = alpha_with(50, "a ruling about something", 10);
+    let full = alpha_with(100, "a ruling about something", 10);
     add_doc(&full, "a note", "context", Some("alpha"), false);
     assert!(!pack(&full, Scope::Write, None)
         .text
@@ -5965,7 +5965,7 @@ fn the_footers_call_returns_the_omitted_rulings_with_no_project() {
     let engine = engine();
     engine.project_create(&json!({ "name": "gone" })).unwrap();
     let mut owed = std::collections::BTreeSet::new();
-    for i in 0..40 {
+    for i in 0..80 {
         let title = format!("global ruling about something {i}");
         add_doc(&engine, &title, "g", None, true);
         owed.insert(title);
@@ -5987,7 +5987,7 @@ fn the_footers_call_returns_the_omitted_rulings_with_no_project() {
 #[test]
 fn a_project_name_too_long_for_the_footer_gets_a_bounded_notice() {
     let engine = engine();
-    let name = "p".repeat(800);
+    let name = "p".repeat(1600);
     engine.project_create(&json!({ "name": name })).unwrap();
     let mut owed = std::collections::BTreeSet::new();
     let mut ruling = |title: String, scope: Option<&str>| {
@@ -6029,4 +6029,37 @@ fn a_project_name_too_long_for_the_footer_gets_a_bounded_notice() {
         let reached = footer_call_titles(&server, &got.text);
         assert!(owed.is_subset(&reached), "{scope:?}: {reached:?}");
     }
+}
+
+// ---- D254: the write-scope base text leaves the rulings room ------------
+
+/// The write-scope text is capped so the standing rulings keep 1,500 bytes
+/// under [`MCP_INSTRUCTIONS_CAP`] (D254).
+#[test]
+fn write_scope_base_text_leaves_the_rulings_at_least_1500_bytes() {
+    let base = tasqx_core::mcp::instructions(Scope::Write).len();
+    assert!(
+        base + 2 <= MCP_INSTRUCTIONS_CAP - 1_500,
+        "write-scope base text is {base} bytes"
+    );
+}
+
+/// Eleven rulings with ~100-byte titles all appear in write scope.
+#[test]
+fn eleven_realistic_rulings_all_appear_in_write_scope() {
+    let engine = engine();
+    engine.project_create(&json!({ "name": "alpha" })).unwrap();
+    for i in 0..11 {
+        let title = format!(
+            "{i:02} {}",
+            "a ruling title of a realistic length ".repeat(3)
+        );
+        add_doc(&engine, &title[..100], "g", Some("alpha"), true);
+    }
+    let got = pack(
+        &engine,
+        Scope::Write,
+        Some("memory: 3 doc(s) refreshed from disk."),
+    );
+    assert_eq!((got.shown, got.omitted), (11, 0), "{}", got.text);
 }

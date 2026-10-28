@@ -5272,3 +5272,9 @@ Rulings: `task.brief` takes optional `rulings: true` and `workdir`, and then ans
 **Rejected: a line in `memory list`.** The listing is about documents; the handshake is about one project's delivery.
 
 **Where:** `crates/tasqx-cli/src/serve.rs` (`run_mcp_instructions`). Tests: `crates/tasqx-cli/tests/mcp_instructions.rs`.
+
+### D254 — The write-scope D141 text is trimmed to about 1,150 bytes so the standing rulings keep at least 1,500 bytes of the cap (task #4212; amends D141, D252)
+
+**Decision.** `mcp::instructions` drops what the tool descriptions already carry and keeps the cross-tool loop: search first (and a second wording), track multi-step work as tasks and pick with `@working`, the per-task flow (brief, start timer, annotate, complete naming `checks_passed`), claim beside other agents, store a user correction the moment it lands as a standing doc, and the empty-store and bare-`tasqx` warnings. Cut: the "matches meaning as well as words / `mode: lexical`" and "a hit is a snippet" sentences (`tasqx_search_memory` and `tasqx_get_memory` say them), "blocked and waiting tasks are hidden" (`tasqx_list_tasks`), "obsolete work is cancelled" (`tasqx_cancel_task`), the D-number pointer sentence, and wording in INTRO and SEED. The indexing remark and the decision/convention advice stay, compactly, because no tool description carries them. The read-only paragraph is untouched. `MCP_INSTRUCTIONS_CAP` and the packer are unchanged.
+
+**Why.** At 1,814 bytes the write text left room for 5 of 11 standing rulings (the rest omitted) under the 2,800 cap, and write scope is what Claude Code runs. Bytes by `tasqx mcp instructions` on an empty scratch store (re-derive the same way): write 1,814 before, 1,149 after; read 1,295 before, 796 after (the shared INTRO, SEARCH and SEED trims). A test pins the write text at `CAP - 1500 - 2` or less, and another packs 11 rulings with ~100-byte titles in write scope with none omitted.
