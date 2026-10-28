@@ -58,7 +58,9 @@ transcript, so another session running at the same time is not counted. When a
 completion names a Claude Code session that no transcript matches, the scan
 falls back to the whole window. Gemini CLI and GitHub Copilot CLI cannot narrow
 by session, so each one's discovery runs at most once for a task, however many
-of its sessions the task had.
+of its sessions the task had. Those logs already hold every session's spend, so
+when they find any, they replace that tool's telemetry for the task instead of
+adding to it.
 
 **Telemetry** — the opt-in OTLP receiver below. Samples are matched to the task
 by session id, and beat log-parsing when both are available.
