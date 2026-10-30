@@ -5306,3 +5306,21 @@ Rulings: `task.brief` takes optional `rulings: true` and `workdir`, and then ans
 **Where:** `crates/tasqx-cli/src/work.rs` (`CODEX_HOOK_COMMAND`, `codex_hooks`, `agent_args`, `launch`, `codex_sessions`, `record_sessions`, `record_session`, `codex_done_correlation`, `launch_session`, `hint_once`; `Engine::event_list`, `run_hook`, `on_event`, `append_session`); the `work.codex_hook_hint` setting; `tokens::codex::sessions_started` and `CodexSessionMeta::timestamp`. Tests: `crates/tasqx-cli/tests/work.rs` (the codex cases), `sessions_started_are_this_directorys_since_the_launch`, `a_codex_id_recorded_after_the_session_measures_it_from_the_launch`, `a_client_only_codex_done_reads_the_rollouts_in_its_window`; `run_done` in `verbs.rs`.
 
 **Semver.** `tasqx-core` stays semver-minor: `tokens::codex::sessions_started` is the one addition; `CodexSessionMeta` keeps its released fields, and the rollout's start time is read by a private `meta_and_start` beside `session_meta`, as D235 keeps stale refs beside `SessionDoc`.
+
+### D257 — D183's source merge folds only docs whose projects agree, and `memory.refresh` re-keys a legacy source to the D203 key (task #5321; amends D183, extends D203, D143)
+
+**Decision.** (1) `store.import`'s source merge (D183, which `tasqx sync` and `import --merge` both run, and which the non-merge import reaches through the same lookup) folds a payload doc onto the stored holder of its `source` only when their projects agree: equal, or null on either side. Both non-null and different means two different files, and the whole import is refused with `conflict`, naming the source, both ids, both projects and `tasqx memory update <stored id> --source <project>/<source>`. It is one transaction, so nothing is written; `dry_run` reports the same refusal. (2) `memory.refresh` computes, for every doc whose `origin_path` exists on this machine and sits in a git work tree, the key `memory_doc::import_source` gives that file now (the CLI's importer calls the same function). It re-keys the doc when the stored source differs from that key and is a strict path-suffix of it at a `/` boundary, so only a legacy spelling of the same file moves, never a source set by hand to something unrelated. The new key must be free: if another doc holds it, the doc is left as it was and reported. A re-key happens whether or not the file changed, bumps `rev` once (D143), writes a `memory.update` event, and honours `dry_run`. The result gains `rekeyed: [{id, from, to}]` and `rekey_blocked: [{id, from, to, held_by}]`, both always present.
+
+**Why.** Pre-D203 imports stored bare keys relative to the git toplevel, so two repos' `README.md` shared one `source`. D183 then folded the tasqx README (project tasqx) onto the letmecook README doc (project letmecook) on a real store: body and project overwritten, the other text lost. A project is the one signal on both sides that says the files differ. Re-keying removes the collision at its root, so legacy keys stop colliding. A file outside a git work tree is skipped, because its key depends on the process's working directory, which a daemon does not control.
+
+**Rejected: clearing the loser's source.** D183 already rejected it: the doc would lose its identity and the next import would duplicate it.
+
+**Rejected: deterministic ids.** D183 already rejected them: an id derived from the source would need the source to be unique across stores, which is the premise that failed here.
+
+**Rejected: re-key only, no guard.** Two clones under one directory name still produce one key, so they would still fold.
+
+**Rejected: guard only, no re-key.** Legacy keys would keep colliding forever, and every sync across two projects would keep refusing.
+
+**Where:** `crates/tasqx-core/src/engine/transfer.rs` (the `held` lookup), `crates/tasqx-core/src/engine/memory.rs` (`memory_refresh`, `rekey_target`), `crates/tasqx-core/src/memory_doc.rs` (`import_source`, moved from `tasqx-cli`'s `verbs.rs`), `run_memory_refresh`. Tests: `crates/tasqx-core/tests/memory.rs` (`store_import_refuses_a_source_merge_across_two_projects`, `memory_refresh_rekeys_a_bare_legacy_source_to_the_d203_key` and its neighbours).
+
+**Semver.** Additive: two result fields and one refusal; `import_source` is a new public function in `tasqx-core`.

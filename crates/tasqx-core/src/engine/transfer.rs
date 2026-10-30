@@ -1347,20 +1347,39 @@ impl Engine {
                     gone.insert((NodeType::Memory, did));
                     continue;
                 }
-                let held: Option<(String, String)> =
+                let held: Option<(String, String, Option<String>)> =
                     match source.as_deref().filter(|s| !s.is_empty()) {
                         Some(s) => tx
                             .query_row(
                                 // `source <> ''` restates the D174 index's
                                 // predicate so the planner can use it.
-                                "SELECT id, modified FROM docs WHERE source = ?1 AND source <> ''",
+                                "SELECT id, modified, project FROM docs \
+                                 WHERE source = ?1 AND source <> ''",
                                 params![s],
-                                |r| Ok((r.get(0)?, r.get(1)?)),
+                                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
                             )
                             .optional()?,
                         None => None,
                     };
-                if let Some((kept_id, held_modified)) = held.filter(|(id, _)| *id != did) {
+                if let Some((kept_id, held_modified, held_project)) =
+                    held.filter(|(id, _, _)| *id != did)
+                {
+                    // D257: a source is one file's identity only inside one
+                    // project. Pre-D203 keys were bare (`README.md`), so two
+                    // projects' files share one; folding them would overwrite
+                    // the stored body and project with the other file's.
+                    if let (Some(a), Some(b)) = (&held_project, &project) {
+                        if a != b {
+                            let s = source.as_deref().unwrap_or_default();
+                            return Err(ApiError::conflict(format!(
+                                "store.import: source {s:?} is held by doc {kept_id} (project \
+                                 {a}) and carried by doc {did} (project {b}) — two different \
+                                 files sharing one legacy key, which D183 will not fold. Give \
+                                 the stored one its own key and import again: `tasqx memory \
+                                 update {kept_id} --source {a}/{s}`"
+                            )));
+                        }
+                    }
                     // #800(b): the lookup above matched on `source`, not on
                     // `did` — so `did` can itself already be a LIVE doc here,
                     // under some other source, the destination's own second

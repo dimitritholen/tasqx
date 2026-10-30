@@ -1826,7 +1826,7 @@ const EXAMPLES: &[Example] = &[
         method: "memory.refresh",
         request: r#"{"tasqx":"1","id":"mf1","method":"memory.refresh","params":{"dry_run":true}}"#,
         fixture: "",
-        response: r#"{"id":"mf1","ok":true,"result":{"checked":3,"missing":[{"id":"091eb5ff-05d5-4cb2-ba2f-0afdc77f7935","origin_path":"/home/you/repo/docs/retired.md","source":"docs/retired.md"}],"refreshed":[{"id":"eb864f1e-e68a-4d96-af89-597bd0d2d52e","source":"docs/release.md"}],"unchanged":1},"tasqx":"1"}"#,
+        response: r#"{"id":"mf1","ok":true,"result":{"checked":3,"missing":[{"id":"091eb5ff-05d5-4cb2-ba2f-0afdc77f7935","origin_path":"/home/you/repo/docs/retired.md","source":"docs/retired.md"}],"refreshed":[{"id":"eb864f1e-e68a-4d96-af89-597bd0d2d52e","source":"docs/release.md"}],"rekey_blocked":[],"rekeyed":[{"from":"README.md","id":"c1a2b3d4-05d5-4cb2-ba2f-0afdc77f7935","to":"repo/README.md"}],"unchanged":1},"tasqx":"1"}"#,
         why: "the answer is whatever the files under the store's own imports look like right now, so a captured one would describe the capturing machine's disk rather than the method.",
     },
     Example {
