@@ -822,6 +822,21 @@ struct OriginDoc {
     origin_size: Option<i64>,
 }
 
+/// D257: the D203 key for `d`'s file when `d.source` is a strict path-suffix
+/// of it — a legacy spelling of the same file — and `None` otherwise (a
+/// source set by hand to something unrelated, a missing file, or a file
+/// outside any git work tree, whose key would depend on the process's cwd).
+fn rekey_target(d: &OriginDoc) -> Option<String> {
+    let src = d.source.as_deref().filter(|s| !s.is_empty())?;
+    let file = std::path::Path::new(&d.origin_path);
+    std::fs::metadata(file).ok()?;
+    crate::memory_doc::git_toplevel(&std::fs::canonicalize(file).ok()?)?;
+    let key = crate::memory_doc::import_source(file);
+    key.strip_suffix(src)
+        .filter(|head| head.ends_with('/'))
+        .map(|_| key.clone())
+}
+
 impl Engine {
     // ---- memory.add ----------------------------------------------------------
 
@@ -1224,7 +1239,32 @@ impl Engine {
         let mut refreshed = Vec::new();
         let mut missing = Vec::new();
         let mut unchanged = 0i64;
+        let mut rekeyed = Vec::new();
+        let mut rekey_blocked = Vec::new();
         for d in &docs {
+            // D257: a legacy bare source is re-keyed to what `import_source`
+            // gives the file now, content changed or not.
+            let mut source = d.source.clone();
+            let mut rekey_pending = false;
+            if let Some(to) = rekey_target(d) {
+                let held: Option<String> = tx
+                    .query_row(
+                        "SELECT id FROM docs WHERE source = ?1 AND source <> '' AND id <> ?2",
+                        params![to, d.id],
+                        |r| r.get(0),
+                    )
+                    .optional()?;
+                match held {
+                    Some(h) => rekey_blocked.push(json!({
+                        "id": d.id, "from": d.source, "to": to, "held_by": h,
+                    })),
+                    None => {
+                        rekeyed.push(json!({ "id": d.id, "from": d.source, "to": to }));
+                        source = Some(to);
+                        rekey_pending = true;
+                    }
+                }
+            }
             match self.origin_changed(
                 &d.origin_path,
                 d.origin_mtime,
@@ -1237,7 +1277,28 @@ impl Engine {
                     "source": d.source,
                     "origin_path": d.origin_path,
                 })),
-                Some(false) => unchanged += 1,
+                Some(false) => {
+                    unchanged += 1;
+                    if rekey_pending && !dry_run {
+                        let new_rev = d.rev + 1;
+                        tx.execute(
+                            "UPDATE docs SET source = ?1, rev = ?2, modified = ?3 WHERE id = ?4",
+                            params![source, new_rev, ts, d.id],
+                        )?;
+                        insert_event(
+                            &tx,
+                            Entity::Doc,
+                            &d.id,
+                            "memory.update",
+                            &json!({
+                                "title": &d.title,
+                                "source": &source,
+                                "via": "memory.refresh",
+                                "rev": new_rev,
+                            }),
+                        )?;
+                    }
+                }
                 Some(true) => {
                     let path = std::path::Path::new(&d.origin_path);
                     let (title, body) = crate::memory_doc::read_doc(path)?;
@@ -1255,7 +1316,7 @@ impl Engine {
                                 rev: d.rev + 1,
                                 title: &title,
                                 body: &body,
-                                source: d.source.as_deref(),
+                                source: source.as_deref(),
                                 // No opinion: the doc keeps the scope it has.
                                 project: None,
                                 origin_path: Some(&d.origin_path),
@@ -1281,6 +1342,8 @@ impl Engine {
             "refreshed": refreshed,
             "missing": missing,
             "unchanged": unchanged,
+            "rekeyed": rekeyed,
+            "rekey_blocked": rekey_blocked,
         }))
     }
 

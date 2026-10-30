@@ -206,6 +206,12 @@ id, the copy that won, and the dropped id — `null` when the payload document
 carried no id of its own — and links pointing at the dropped id follow the doc
 that kept the source.
 
+Two docs only fold when their projects agree, or one has none. A bare
+`README.md` imported before the repo name led the key can sit in two projects as
+two different files; importing (or syncing) one onto the other is refused whole,
+naming both docs and the fix, which is `memory update` on the stored doc with a
+`--source` that leads with its project. Nothing is written.
+
 Links come in last, after everything they point at, and are counted under
 `links_imported`. Both ends are resolved against what this store holds *after*
 the import — a project it already knew keeps its own row, and the link follows

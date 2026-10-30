@@ -106,6 +106,74 @@ pub fn repo_dir(toplevel: &Path) -> std::path::PathBuf {
     main().unwrap_or_else(|| toplevel.to_path_buf())
 }
 
+/// The `source` `memory.import` stores for `file` — a doc's identity (D174),
+/// so it has to read the same on every machine and from every starting
+/// directory. Three cases, in order:
+/// 1. `file` is inside a git work tree (found by walking up from its
+///    canonicalised directory for a `.git` entry — a worktree's is a FILE,
+///    not a directory, so either counts): the toplevel's directory name,
+///    then the path relative to that toplevel — `clouter/README.md`. A
+///    worktree is named after its MAIN checkout (`repo_dir`), so it keys the
+///    same docs the main checkout does.
+/// 2. No `.git` above it, but `file` is under the current directory: the
+///    cwd's directory name, then the path relative to the canonicalised cwd.
+/// 3. Neither (an `../elsewhere` import): the canonicalised absolute path.
+///
+/// The leading directory name is #972/D203: without it every repo's
+/// `README.md` shared one key, and importing a second repo's silently
+/// replaced the first's doc.
+///
+/// Always `/`-joined, even on Windows, so the same folder imported from
+/// either platform names the same doc (task #784).
+pub fn import_source(file: &std::path::Path) -> String {
+    let canon = canonical(file);
+    if let Some(toplevel) = git_toplevel(&canon) {
+        if let Ok(rel) = canon.strip_prefix(&toplevel) {
+            return led_by(&repo_dir(&toplevel), rel);
+        }
+    }
+    if let Ok(cwd) = std::env::current_dir().and_then(std::fs::canonicalize) {
+        if let Ok(rel) = canon.strip_prefix(&cwd) {
+            return led_by(&cwd, rel);
+        }
+    }
+    slash_joined(&canon)
+}
+
+/// `rel`, `/`-joined, under `dir`'s last component — or bare when `dir` has
+/// none (the filesystem root).
+fn led_by(dir: &std::path::Path, rel: &std::path::Path) -> String {
+    match dir.file_name() {
+        Some(name) => slash_joined(&std::path::Path::new(name).join(rel)),
+        None => slash_joined(rel),
+    }
+}
+
+/// `rel` spelled with `/`, so a source string is the same text on Windows and
+/// on Unix — the one line all three `import_source` branches share, the
+/// absolute fallback included (#797).
+///
+/// Windows-only replace: `\` IS that platform's path separator, so
+/// `PathBuf`'s own components already used it. On unix `\` is legal INSIDE a
+/// single filename — `docs/a\b.md` is one file, not two path segments — so
+/// replacing it there turned a literal backslash into a `/` and made that
+/// file compute the same `source` as an unrelated `docs/a/b.md` (#798).
+#[cfg(windows)]
+fn slash_joined(rel: &std::path::Path) -> String {
+    rel.to_string_lossy().replace('\\', "/")
+}
+
+#[cfg(not(windows))]
+fn slash_joined(rel: &std::path::Path) -> String {
+    rel.to_string_lossy().into_owned()
+}
+
+/// `file`'s canonical absolute path, or the path as given when the filesystem
+/// cannot answer (a broken symlink, a race with an editor).
+fn canonical(file: &Path) -> std::path::PathBuf {
+    std::fs::canonicalize(file).unwrap_or_else(|_| file.to_path_buf())
+}
+
 /// The title a frontmatter block would have given the document, if any:
 /// `title:` or `name:` (`title` first), a bare or single-quoted scalar value.
 /// Deliberately not a YAML parser — the values this needs to read are the

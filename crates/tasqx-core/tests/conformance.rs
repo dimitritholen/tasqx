@@ -1353,6 +1353,8 @@ const R_MEMORY_REFRESH: Shape = &[&[
     req_of("refreshed", Ty::Array, &[REFRESHED_DOC_ROW]),
     req_of("missing", Ty::Array, &[MISSING_DOC_ROW]),
     req("unchanged", Ty::Int),
+    req("rekeyed", Ty::Array),
+    req("rekey_blocked", Ty::Array),
 ]];
 
 /// The group key is *named by* `group_by` and the metric columns are exactly

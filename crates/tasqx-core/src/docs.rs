@@ -1486,6 +1486,16 @@ pub const R_MEMORY_REFRESH: &[FieldDoc] = &[
         "integer",
         "How many docs still matched their file, byte for byte, and were left alone — their `rev` did not move.",
     ),
+    f(
+        "rekeyed",
+        "array",
+        "Always present. Docs whose legacy source (a strict path-suffix of the key the file gets now, `README.md` for `repo/README.md`) was re-keyed to the D203 key, `{id, from, to}`, whether or not the file changed. Bumps `rev`; `dry_run` reports without writing (D257).",
+    ),
+    f(
+        "rekey_blocked",
+        "array",
+        "Always present. Docs that would have been re-keyed but whose new key another doc already holds, `{id, from, to, held_by}`. Left as they were (D257).",
+    ),
 ];
 
 /// One doc a refresh re-read from its file.
@@ -1974,7 +1984,7 @@ pub const R_STORE_IMPORT: &[FieldDoc] = &[
     f("renumbered", "array", "Every task whose `short_id` a DIFFERENT task in this store already held, as `{id, from, to}` — it kept its id and took the next free number (D177). Empty when nothing moved."),
     f("notes_renumbered", "array", "Every note whose `short_id` a DIFFERENT note in this store already held, as `{id, from, to}` — it kept its id and took a number above the whole payload (D177's rule, D241). Empty when nothing moved."),
     f("notes_imported", "integer", "How many notes the document's `notes` section carried in (D241): a new note keeps its short id unless one here holds it, a known one is replaced, or on `merge` takes the later `modified`. Zero for a document with none."),
-    f("docs_merged", "array", "Every memory doc that landed on a doc this store already held under the same `source`, as `{source, kept_id, dropped_id, took}` — the stored id is kept, the payload's is dropped, and `took` is `payload` when the payload's `modified` was later (its title, body, project and standing were written) or `store` when it was not (nothing was written). `dropped_id` is null when the payload doc carried no `id` of its own, rather than a minted one a dry run would then roll back. D183. Empty when nothing merged."),
+    f("docs_merged", "array", "Every memory doc that landed on a doc this store already held under the same `source`, as `{source, kept_id, dropped_id, took}` — the stored id is kept, the payload's is dropped, and `took` is `payload` when the payload's `modified` was later (its title, body, project and standing were written) or `store` when it was not (nothing was written). `dropped_id` is null when the payload doc carried no `id` of its own, rather than a minted one a dry run would then roll back. D183. Empty when nothing merged. A doc whose source is held by a doc of a different project (both non-null) is never folded: the import is refused whole with `conflict`, naming both ids and projects and the `memory update --source` remedy (D257)."),
     f("dry_run", "boolean", "Echoes the `dry_run` param (D184). True means every row above was written and then rolled back — the answer describes what WOULD have happened, not what is now on disk."),
     f("merged", "array", "Every task this store ALREADY held that `merge` unioned rather than replaced, as `{id, took, from_payload, from_store, tracked_delta_seconds}`. Each scalar field group follows the side whose latest event touched it (D189); `from_payload` and `from_store` name the fields that differed and the side each was taken from, and `took` is `payload` or `store` when one side supplied all of them, `mixed` when both did, and D185's later-`modified` side when none differed. `tracked_delta_seconds` is how far the tracked total moved: the total is counted from the union of both event logs, plus the larger of the two sides' totals the logs do not explain. Its annotations, checks, tokens, tags and edges are unioned either way, less every row whose removal, in either event log, is later than its last write (D197). D185. Empty when `merge` was not asked for, or when the document carried nothing this store had seen."),
     f("project_description_conflicts", "array", "Every project this store already held whose OWN non-empty description was kept over the payload's, as `{name, dropped}` — a project carries no `modified` stamp, so there is no later-wins call to make and the destination's text always wins (D190). `archived` is still taken from the payload unconditionally. Empty when nothing was dropped."),

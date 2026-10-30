@@ -2714,6 +2714,87 @@ fn store_import_merges_a_doc_whose_source_another_id_holds() {
     .expect("the holder itself re-imports over its own row");
 }
 
+/// D257: D183's source merge folds only when the two docs' projects agree
+/// (equal, or null on either side). Two different projects sharing one bare
+/// legacy key (`README.md`) are two different files: the import is refused
+/// whole, the message names the source, both ids, both projects and the
+/// `memory update` remedy, and nothing is written — also on a dry run.
+#[test]
+fn store_import_refuses_a_source_merge_across_two_projects() {
+    let e = engine();
+    for name in ["alpha", "beta"] {
+        call(&e, "project.create", json!({ "name": name })).unwrap();
+    }
+    let mine = call(
+        &e,
+        "memory.add",
+        json!({ "title": "R", "body": "alpha text", "source": "README.md", "project": "alpha" }),
+    )
+    .unwrap();
+    let mine_id = mine["id"].as_str().unwrap().to_string();
+    const THEIRS: &str = "0193aaaa-0000-7000-8000-00000000d0c6";
+    let payload = |extra: Value| {
+        let mut p = json!({ "tasks": [], "docs": [
+            { "id": THEIRS, "title": "R", "body": "beta text", "source": "README.md",
+              "project": "beta", "modified": "2099-01-01T00:00:00Z" }
+        ] });
+        if extra.is_object() {
+            p["dry_run"] = extra["dry_run"].clone();
+        }
+        p
+    };
+    for extra in [json!({ "dry_run": true }), json!({})] {
+        let err = call(&e, "store.import", payload(extra))
+            .expect_err("two projects must not fold one source");
+        assert_eq!(err.code, ErrorCode::Conflict, "{}", err.message);
+        for want in [
+            "README.md",
+            mine_id.as_str(),
+            THEIRS,
+            "alpha",
+            "beta",
+            &format!("tasqx memory update {mine_id} --source alpha/README.md"),
+        ] {
+            assert!(
+                err.message.contains(want),
+                "missing {want:?}: {}",
+                err.message
+            );
+        }
+    }
+    let kept = call(&e, "memory.get", json!({ "id": mine_id })).unwrap();
+    assert_eq!(kept["body"], "alpha text", "{kept}");
+    assert_eq!(kept["project"], "alpha", "{kept}");
+    assert_eq!(call(&e, "memory.list", json!({})).unwrap()["total"], 1);
+}
+
+/// D257: the same project folds, and so does null on either side.
+#[test]
+fn store_import_still_merges_when_the_projects_agree_or_one_is_null() {
+    for (stored, incoming) in [
+        (Some("alpha"), Some("alpha")),
+        (None, Some("alpha")),
+        (Some("alpha"), None),
+        (None, None),
+    ] {
+        let e = engine();
+        call(&e, "project.create", json!({ "name": "alpha" })).unwrap();
+        let mut add = json!({ "title": "R", "body": "mine", "source": "README.md" });
+        if let Some(pr) = stored {
+            add["project"] = json!(pr);
+        }
+        let mine = call(&e, "memory.add", add).unwrap();
+        let mut doc = json!({ "id": "0193aaaa-0000-7000-8000-00000000d0c7", "title": "R",
+            "body": "theirs", "source": "README.md", "modified": "2099-01-01T00:00:00Z" });
+        if let Some(pr) = incoming {
+            doc["project"] = json!(pr);
+        }
+        let r = call(&e, "store.import", json!({ "tasks": [], "docs": [doc] }))
+            .unwrap_or_else(|er| panic!("{stored:?}/{incoming:?} must fold: {}", er.message));
+        assert_eq!(r["docs_merged"][0]["kept_id"], mine["id"], "{r}");
+    }
+}
+
 /// D174: an empty-string source is no identity — it is exactly as unsourced
 /// as NULL for uniqueness, so two docs may both carry `""`. What is stored is
 /// left alone (normalisation is task #81's).
@@ -3084,7 +3165,8 @@ fn memory_refresh_never_looks_at_a_doc_with_no_origin() {
 
     assert_eq!(
         out,
-        json!({ "checked": 0, "refreshed": [], "missing": [], "unchanged": 0 }),
+        json!({ "checked": 0, "refreshed": [], "missing": [], "unchanged": 0,
+                "rekeyed": [], "rekey_blocked": [] }),
         "a store of hand-written docs has nothing to refresh: {out}"
     );
 }
@@ -3129,6 +3211,124 @@ fn memory_refresh_dry_run_reports_the_same_answer_and_writes_nothing() {
         before,
         "and this one must actually write"
     );
+}
+
+// ---- D257: memory.refresh re-keys a legacy source ----------------------------
+
+/// A git repo directory `name` under a scratch dir, holding `README.md`.
+fn repo_with_readme(tag: &str, name: &str) -> (OriginFixture, std::path::PathBuf) {
+    let files = OriginFixture::new(tag);
+    let repo = files.dir.join(name);
+    std::fs::create_dir_all(repo.join(".git")).unwrap();
+    let readme = repo.join("README.md");
+    std::fs::write(&readme, "# R\n\nbody").unwrap();
+    (files, readme)
+}
+
+fn import_with_source(e: &Engine, path: &std::path::Path, source: &str) -> String {
+    let meta = std::fs::metadata(path).unwrap();
+    let r = call(
+        e,
+        "memory.import",
+        json!({ "docs": [{
+            "title": "R", "body": "# R\n\nbody", "source": source,
+            "origin_path": std::fs::canonicalize(path).unwrap().to_string_lossy(),
+            "origin_mtime": tasqx_core::memory_doc::unix_seconds(&meta).unwrap(),
+            "origin_size": meta.len(),
+        }] }),
+    )
+    .expect("import");
+    r["docs"][0]["id"].as_str().unwrap().to_string()
+}
+
+#[test]
+fn memory_refresh_rekeys_a_bare_legacy_source_to_the_d203_key() {
+    let e = engine();
+    let (_f, readme) = repo_with_readme("rekey", "projx");
+    let id = import_with_source(&e, &readme, "README.md");
+    let before = doc_state(&e, &id)[0].as_i64().unwrap();
+
+    let dry = call(&e, "memory.refresh", json!({ "dry_run": true })).unwrap();
+    let want = json!([{ "id": id, "from": "README.md", "to": "projx/README.md" }]);
+    assert_eq!(dry["rekeyed"], want, "{dry}");
+    assert_eq!(dry["rekey_blocked"], json!([]), "{dry}");
+    let got = call(&e, "memory.get", json!({ "id": id })).unwrap();
+    assert_eq!(
+        got["source"], "README.md",
+        "a dry run writes nothing: {got}"
+    );
+
+    let out = call(&e, "memory.refresh", json!({})).unwrap();
+    assert_eq!(out["rekeyed"], want, "{out}");
+    let got = call(&e, "memory.get", json!({ "id": id })).unwrap();
+    assert_eq!(got["source"], "projx/README.md", "{got}");
+    assert_eq!(got["_rev"].as_i64().unwrap(), before + 1, "D143: {got}");
+    let again = call(&e, "memory.refresh", json!({})).unwrap();
+    assert_eq!(again["rekeyed"], json!([]), "settled: {again}");
+    assert_fts_intact(&e);
+}
+
+#[test]
+fn memory_refresh_leaves_a_hand_set_unrelated_source_alone() {
+    let e = engine();
+    let (_f, readme) = repo_with_readme("rekey-hand", "projx");
+    let id = import_with_source(&e, &readme, "notes/readme-copy.md");
+    let out = call(&e, "memory.refresh", json!({})).unwrap();
+    assert_eq!(out["rekeyed"], json!([]), "{out}");
+    assert_eq!(out["rekey_blocked"], json!([]), "{out}");
+    let got = call(&e, "memory.get", json!({ "id": id })).unwrap();
+    assert_eq!(got["source"], "notes/readme-copy.md", "{got}");
+}
+
+#[test]
+fn memory_refresh_reports_a_held_rekey_target_and_writes_nothing() {
+    let e = engine();
+    let (_f, readme) = repo_with_readme("rekey-held", "projx");
+    let id = import_with_source(&e, &readme, "README.md");
+    let holder = call(
+        &e,
+        "memory.add",
+        json!({ "title": "other", "body": "x", "source": "projx/README.md" }),
+    )
+    .unwrap();
+    let out = call(&e, "memory.refresh", json!({})).unwrap();
+    assert_eq!(out["rekeyed"], json!([]), "{out}");
+    assert_eq!(
+        out["rekey_blocked"],
+        json!([{ "id": id, "from": "README.md", "to": "projx/README.md",
+                 "held_by": holder["id"] }]),
+        "{out}"
+    );
+    let got = call(&e, "memory.get", json!({ "id": id })).unwrap();
+    assert_eq!(got["source"], "README.md", "{got}");
+}
+
+#[test]
+fn memory_refresh_does_not_rekey_a_doc_whose_file_is_missing() {
+    let e = engine();
+    let (_f, readme) = repo_with_readme("rekey-missing", "projx");
+    let id = import_with_source(&e, &readme, "README.md");
+    std::fs::remove_file(&readme).unwrap();
+    let out = call(&e, "memory.refresh", json!({})).unwrap();
+    assert_eq!(out["rekeyed"], json!([]), "{out}");
+    assert_eq!(out["missing"].as_array().unwrap().len(), 1, "{out}");
+    let got = call(&e, "memory.get", json!({ "id": id })).unwrap();
+    assert_eq!(got["source"], "README.md", "{got}");
+}
+
+#[test]
+fn memory_refresh_rekeys_and_rereads_in_one_revision_when_the_file_also_changed() {
+    let e = engine();
+    let (_f, readme) = repo_with_readme("rekey-edit", "projx");
+    let id = import_with_source(&e, &readme, "README.md");
+    let before = doc_state(&e, &id)[0].as_i64().unwrap();
+    std::fs::write(&readme, "# R\n\nbody, edited and longer").unwrap();
+    let out = call(&e, "memory.refresh", json!({})).unwrap();
+    assert_eq!(out["rekeyed"].as_array().unwrap().len(), 1, "{out}");
+    let got = call(&e, "memory.get", json!({ "id": id })).unwrap();
+    assert_eq!(got["source"], "projx/README.md", "{got}");
+    assert_eq!(got["_rev"].as_i64().unwrap(), before + 1, "{got}");
+    assert!(got["body"].as_str().unwrap().contains("edited"), "{got}");
 }
 
 // ---- the stale flag (#790, D180) --------------------------------------------

@@ -41,6 +41,19 @@ bump for tasqx-core.
   `tasqx annotate 42 "…"`; scripts that used the alias need `annotate` (D241,
   #927).
 
+### Fixed
+
+- **A store merge no longer folds two projects' files that share a bare legacy
+  source** (D257, #5321). A pre-D203 import keyed `README.md` with no repo name,
+  so `store.import` (and `tasqx sync`) folded one repo's README onto another's.
+  The merge now folds only when the two docs' projects agree or one is unset;
+  otherwise the whole import is refused with `conflict`, naming both docs and the
+  `tasqx memory update <id> --source <project>/<source>` that settles it.
+- **`memory.refresh` re-keys a legacy source** to the D203 key, `README.md` to
+  `repo/README.md`, when the file is on this machine and the new key is free.
+  The result gains `rekeyed` and `rekey_blocked`, always present;
+  `tasqx memory import --refresh` prints a note for each.
+
 ## 0.15.0
 
 A filter finds a task by its words, `tasqx sync` keeps stores in step through a

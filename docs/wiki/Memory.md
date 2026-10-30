@@ -175,6 +175,11 @@ tasqx memory import docs/adr
   fail over a file somebody moved. An MCP session runs this same sweep on its
   own `initialize` when its scope allows writes, so an agent's session opens
   on the working tree without a watcher or a daemon job.
+- The same sweep re-keys a document imported before the repo name led its
+  `source` (`README.md`) to the key the file gets now (`repo/README.md`),
+  whether or not the file changed. It does so only when the old source is the
+  tail of the new key and no other document holds the new one; a held key is
+  named under `rekey_blocked` and the document is left alone.
 - Each imported document also records where it came from: `origin_path` (the
   file's absolute path on this machine), `origin_mtime` (its modification
   time in unix seconds) and `origin_size` (its size in bytes), all shown by
