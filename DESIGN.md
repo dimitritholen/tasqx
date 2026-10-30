@@ -5313,9 +5313,9 @@ Rulings: `task.brief` takes optional `rulings: true` and `workdir`, and then ans
 
 **Why.** Pre-D203 imports stored bare keys relative to the git toplevel, so two repos' `README.md` shared one `source`. D183 then folded the tasqx README (project tasqx) onto the letmecook README doc (project letmecook) on a real store: body and project overwritten, the other text lost. A project is the one signal on both sides that says the files differ. Re-keying removes the collision at its root, so legacy keys stop colliding. A file outside a git work tree is skipped, because its key depends on the process's working directory, which a daemon does not control.
 
-**Rejected: clearing the loser's source.** D183 already rejected it: the doc would lose its identity and the next import would duplicate it.
+**Rejected: clearing the loser's source.** D183 already rejected it: the sourceless twin keeps the same text in the search index twice, under a key nothing refreshes.
 
-**Rejected: deterministic ids.** D183 already rejected them: an id derived from the source would need the source to be unique across stores, which is the premise that failed here.
+**Rejected: deterministic ids.** D183 already rejected them: they need a migration rewriting every doc's primary key, with links, events and annotation refs following, and leave two identity schemes.
 
 **Rejected: re-key only, no guard.** Two clones under one directory name still produce one key, so they would still fold.
 

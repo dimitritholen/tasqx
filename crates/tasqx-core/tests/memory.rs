@@ -3317,6 +3317,20 @@ fn memory_refresh_does_not_rekey_a_doc_whose_file_is_missing() {
 }
 
 #[test]
+fn memory_refresh_reports_no_rekey_for_a_file_that_exists_but_cannot_be_read() {
+    let e = engine();
+    let (_f, readme) = repo_with_readme("rekey-unreadable", "projx");
+    let id = import_with_source(&e, &readme, "README.md");
+    // Same size would hit the fast path, so change the length too.
+    std::fs::write(&readme, [0xff, 0xfe, 0xfd, 0xfc, 0xfb, 0xfa]).unwrap();
+    let out = call(&e, "memory.refresh", json!({})).unwrap();
+    assert_eq!(out["rekeyed"], json!([]), "{out}");
+    assert_eq!(out["missing"].as_array().unwrap().len(), 1, "{out}");
+    let got = call(&e, "memory.get", json!({ "id": id })).unwrap();
+    assert_eq!(got["source"], "README.md", "{got}");
+}
+
+#[test]
 fn memory_refresh_rekeys_and_rereads_in_one_revision_when_the_file_also_changed() {
     let e = engine();
     let (_f, readme) = repo_with_readme("rekey-edit", "projx");

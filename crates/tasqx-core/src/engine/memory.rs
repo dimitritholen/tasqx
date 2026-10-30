@@ -1246,6 +1246,9 @@ impl Engine {
             // gives the file now, content changed or not.
             let mut source = d.source.clone();
             let mut rekey_pending = false;
+            // Reported only once the file proves readable below: an unreadable
+            // one lands under `missing` and nothing is written.
+            let mut rekey_note: Option<(bool, Value)> = None;
             if let Some(to) = rekey_target(d) {
                 let held: Option<String> = tx
                     .query_row(
@@ -1255,23 +1258,35 @@ impl Engine {
                     )
                     .optional()?;
                 match held {
-                    Some(h) => rekey_blocked.push(json!({
-                        "id": d.id, "from": d.source, "to": to, "held_by": h,
-                    })),
+                    Some(h) => {
+                        rekey_note = Some((
+                            false,
+                            json!({ "id": d.id, "from": d.source, "to": to, "held_by": h }),
+                        ));
+                    }
                     None => {
-                        rekeyed.push(json!({ "id": d.id, "from": d.source, "to": to }));
+                        rekey_note =
+                            Some((true, json!({ "id": d.id, "from": d.source, "to": to })));
                         source = Some(to);
                         rekey_pending = true;
                     }
                 }
             }
-            match self.origin_changed(
+            let changed = self.origin_changed(
                 &d.origin_path,
                 d.origin_mtime,
                 d.origin_size,
                 &d.title,
                 &d.body,
-            ) {
+            );
+            if changed.is_some() {
+                match rekey_note {
+                    Some((true, v)) => rekeyed.push(v),
+                    Some((false, v)) => rekey_blocked.push(v),
+                    None => {}
+                }
+            }
+            match changed {
                 None => missing.push(json!({
                     "id": d.id,
                     "source": d.source,
