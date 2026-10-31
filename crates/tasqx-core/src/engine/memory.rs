@@ -829,7 +829,9 @@ struct OriginDoc {
 fn rekey_target(d: &OriginDoc) -> Option<String> {
     let src = d.source.as_deref().filter(|s| !s.is_empty())?;
     let file = std::path::Path::new(&d.origin_path);
-    std::fs::metadata(file).ok()?;
+    // Opened, not just stat'ed: a matching mtime and size skip the read in
+    // `origin_changed`, so an unreadable file would otherwise be re-keyed.
+    std::fs::File::open(file).ok()?;
     crate::memory_doc::git_toplevel(&std::fs::canonicalize(file).ok()?)?;
     let key = crate::memory_doc::import_source(file);
     key.strip_suffix(src)

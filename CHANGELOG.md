@@ -48,7 +48,8 @@ bump for tasqx-core.
   so `store.import` (and `tasqx sync`) folded one repo's README onto another's.
   The merge now folds only when the two docs' projects agree or one is unset;
   otherwise the whole import is refused with `conflict`, naming both docs and the
-  `tasqx memory update <id> --source <project>/<source>` that settles it.
+  key that settles it: the stored file's own D203 key when this machine has the
+  file, otherwise `tasqx memory refresh` on the machine that does.
 - **`memory.refresh` re-keys a legacy source** to the D203 key, `README.md` to
   `repo/README.md`, when the file is on this machine and the new key is free.
   The result gains `rekeyed` and `rekey_blocked`, always present;
