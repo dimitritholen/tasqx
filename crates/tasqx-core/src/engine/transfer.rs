@@ -1385,8 +1385,13 @@ impl Engine {
                             let remedy = match origin
                                 .as_deref()
                                 .map(std::path::Path::new)
-                                .filter(|p| p.exists())
-                            {
+                                // Outside a git work tree the key depends on
+                                // this process's cwd, as in `rekey_target`.
+                                .filter(|p| {
+                                    std::fs::canonicalize(p).is_ok_and(|c| {
+                                        crate::memory_doc::git_toplevel(&c).is_some()
+                                    })
+                                }) {
                                 Some(p) => format!(
                                     "`tasqx memory update {kept_id} --source {}`",
                                     crate::memory_doc::import_source(p)
@@ -1405,6 +1410,13 @@ impl Engine {
                             )));
                         }
                     }
+                    // #800(b): the lookup above matched on `source`, not on
+                    // `did` — so `did` can itself already be a LIVE doc here,
+                    // under some other source, the destination's own second
+                    // identity for a different file. Merging it onto
+                    // `kept_id` would fold two files into one row and drop
+                    // whichever text lost the race, so this is refused
+                    // before anything moves.
                     let did_is_live: bool = tx
                         .query_row("SELECT 1 FROM docs WHERE id = ?1", params![did], |_| Ok(()))
                         .optional()?
