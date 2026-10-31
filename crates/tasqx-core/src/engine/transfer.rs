@@ -1371,22 +1371,40 @@ impl Engine {
                     if let (Some(a), Some(b)) = (&held_project, &project) {
                         if a != b {
                             let s = source.as_deref().unwrap_or_default();
+                            // D203 keys lead with the checkout directory, not
+                            // the project, so the remedy is the key the stored
+                            // doc's own file gets, when this machine has it.
+                            let origin: Option<String> = tx
+                                .query_row(
+                                    "SELECT origin_path FROM docs WHERE id = ?1",
+                                    params![kept_id],
+                                    |r| r.get(0),
+                                )
+                                .optional()?
+                                .flatten();
+                            let remedy = match origin
+                                .as_deref()
+                                .map(std::path::Path::new)
+                                .filter(|p| p.exists())
+                            {
+                                Some(p) => format!(
+                                    "`tasqx memory update {kept_id} --source {}`",
+                                    crate::memory_doc::import_source(p)
+                                ),
+                                None => format!(
+                                    "run `tasqx memory refresh` on the machine that holds \
+                                     the file (it re-keys it), or `tasqx memory update \
+                                     {kept_id} --source <checkout dir>/{s}`"
+                                ),
+                            };
                             return Err(ApiError::conflict(format!(
                                 "store.import: source {s:?} is held by doc {kept_id} (project \
                                  {a}) and carried by doc {did} (project {b}) — two different \
                                  files sharing one legacy key, which D183 will not fold. Give \
-                                 the stored one its own key and import again: `tasqx memory \
-                                 update {kept_id} --source {a}/{s}`"
+                                 the stored one its own key and import again: {remedy}"
                             )));
                         }
                     }
-                    // #800(b): the lookup above matched on `source`, not on
-                    // `did` — so `did` can itself already be a LIVE doc here,
-                    // under some other source, the destination's own second
-                    // identity for a different file. Merging it onto
-                    // `kept_id` would fold two files into one row and drop
-                    // whichever text lost the race, so this is refused
-                    // before anything moves.
                     let did_is_live: bool = tx
                         .query_row("SELECT 1 FROM docs WHERE id = ?1", params![did], |_| Ok(()))
                         .optional()?
