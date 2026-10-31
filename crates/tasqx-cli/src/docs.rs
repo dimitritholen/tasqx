@@ -612,12 +612,12 @@ const METHODS: [(&str, &str, &str); 63] = [
     (
         "memory.refresh",
         "<code>dry_run?</code>",
-        "<code>{checked, refreshed, missing, unchanged}</code> — re-reads every doc that \
+        "<code>{checked, refreshed, missing, unchanged, rekeyed, rekey_blocked}</code> — re-reads every doc that \
          recorded an origin file (D180) whose file has changed since, through the same upsert a \
          re-import uses: id and creation date kept, <code>rev</code> bumped (D143), \
          <code>project</code> and <code>standing</code> left alone. Stored mtime and size are \
          the fast filter and the bytes are the truth, so a <code>touch</code> counts as \
-         <code>unchanged</code>. A doc whose file cannot be read is listed under \
+         <code>unchanged</code>, which counts content: a legacy source re-keyed to its D203 key is listed under <code>rekeyed</code> and still bumps <code>rev</code>. A doc whose file cannot be read is listed under \
          <code>missing</code> and left exactly as it is — nothing is ever deleted. \
          <code>dry_run</code> reports the same answer and writes nothing.",
     ),

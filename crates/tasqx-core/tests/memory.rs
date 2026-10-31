@@ -2753,7 +2753,9 @@ fn store_import_refuses_a_source_merge_across_two_projects() {
             THEIRS,
             "alpha",
             "beta",
-            &format!("tasqx memory update {mine_id} --source alpha/README.md"),
+            // No origin on the stored doc: the machine-neutral remedy.
+            "tasqx memory refresh",
+            &format!("tasqx memory update {mine_id} --source <checkout dir>/README.md"),
         ] {
             assert!(
                 err.message.contains(want),
@@ -3326,6 +3328,26 @@ fn memory_refresh_reports_no_rekey_for_a_file_that_exists_but_cannot_be_read() {
     let out = call(&e, "memory.refresh", json!({})).unwrap();
     assert_eq!(out["rekeyed"], json!([]), "{out}");
     assert_eq!(out["missing"].as_array().unwrap().len(), 1, "{out}");
+    let got = call(&e, "memory.get", json!({ "id": id })).unwrap();
+    assert_eq!(got["source"], "README.md", "{got}");
+}
+
+/// The fast path (matching mtime and size) never opens the file, so
+/// readability has to be probed before a re-key.
+#[test]
+#[cfg(unix)]
+fn memory_refresh_does_not_rekey_a_file_it_cannot_open() {
+    use std::os::unix::fs::PermissionsExt;
+    let e = engine();
+    let (_f, readme) = repo_with_readme("rekey-chmod", "projx");
+    let id = import_with_source(&e, &readme, "README.md");
+    std::fs::set_permissions(&readme, std::fs::Permissions::from_mode(0o000)).unwrap();
+    if std::fs::File::open(&readme).is_ok() {
+        return; // root ignores the mode
+    }
+    let out = call(&e, "memory.refresh", json!({})).unwrap();
+    std::fs::set_permissions(&readme, std::fs::Permissions::from_mode(0o644)).unwrap();
+    assert_eq!(out["rekeyed"], json!([]), "{out}");
     let got = call(&e, "memory.get", json!({ "id": id })).unwrap();
     assert_eq!(got["source"], "README.md", "{got}");
 }
