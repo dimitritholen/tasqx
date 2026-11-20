@@ -7,6 +7,13 @@ and carries the decision log (§12); when anything disagrees with it, it wins.
 
 This file is only what is specific to working here as an agent.
 
+## Language
+
+Chat replies follow the language of the user's latest message (Dutch or
+English). Everything else is always English: code, comments, docs, markdown,
+commit messages, PR titles and bodies, agent and skill definitions, tasqx tasks
+and annotations, and every brief handed to a subagent.
+
 ## Before you say something is done
 
 Run the four gates from `CONTRIBUTING.md`, every one, with `--no-fail-fast` on
