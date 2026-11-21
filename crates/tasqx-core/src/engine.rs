@@ -430,6 +430,15 @@ impl Engine {
         &self.conn
     }
 
+    /// Mutable access to the connection, for the handle-level calls rusqlite
+    /// only offers on `&mut self` — 0.41's `busy_handler` is the one that
+    /// forces this to exist (D258). Nothing in the engine itself needs it:
+    /// every mutation goes through `begin_mutation`, which keeps the `&self`
+    /// shape via `Transaction::new_unchecked`.
+    pub fn conn_mut(&mut self) -> &mut Connection {
+        &mut self.conn
+    }
+
     /// Begin a mutating transaction with `BEGIN IMMEDIATE` so the write lock is
     /// taken up front. This lets `busy_timeout` actually serialize racing
     /// one-shot writers instead of one hitting `SQLITE_BUSY_SNAPSHOT` on a

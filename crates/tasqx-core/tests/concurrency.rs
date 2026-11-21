@@ -153,14 +153,14 @@ where
     let _serial = RaceGuard::acquire();
     // Open/configure both Engines before the blocker takes the write lock:
     // Engine::open performs migrations, which are writes of their own.
-    let first = store.engine();
-    let second = store.engine();
+    let mut first = store.engine();
+    let mut second = store.engine();
     first
-        .conn()
+        .conn_mut()
         .busy_handler(Some(busy_signal))
         .expect("first busy handler");
     second
-        .conn()
+        .conn_mut()
         .busy_handler(Some(busy_signal))
         .expect("second busy handler");
 
@@ -563,14 +563,14 @@ fn inherited_add_observes_a_racing_default_archive() {
         .project_create(&json!({ "name": "work" }))
         .expect("seed default project");
 
-    let add_engine = store.engine();
-    let archive_engine = store.engine();
+    let mut add_engine = store.engine();
+    let mut archive_engine = store.engine();
     add_engine
-        .conn()
+        .conn_mut()
         .busy_handler(Some(add_busy_signal))
         .expect("add busy handler");
     archive_engine
-        .conn()
+        .conn_mut()
         .busy_handler(Some(archive_busy_signal))
         .expect("archive busy handler");
 

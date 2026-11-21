@@ -28,6 +28,15 @@ bump for tasqx-core.
 
 ### Changed
 
+- **rusqlite 0.41.1, libsqlite3-sys 0.39.1 and pulldown-cmark 0.13.6** (D258,
+  #4). The bundled SQLite moves from 3.53.2 to 3.54.1. `tasqx-core` gains
+  **`Engine::conn_mut`** (additive) because rusqlite 0.41's `busy_handler` now
+  takes `&mut self`; nothing in the engine itself uses it, since every write
+  keeps the `&self` shape through `Transaction::new_unchecked`. The declared Rust
+  floor stays **1.95**, re-measured after the bump — and the comment under it now
+  names the constraint that actually holds it there (`AtomicUsize::try_update` in
+  `daemon.rs`), not libsqlite3-sys, whose build script carries its own
+  `macro_rules! cfg_select` and never required 1.95.
 - **Standing rulings over the session budget keep their gist where it fits**
   (D246, #4178). The first rulings keep their gist until the 3 KB budget is
   full and the rest are titles, instead of titles only for all.
@@ -43,6 +52,12 @@ bump for tasqx-core.
 
 ### Fixed
 
+- **Two RUSTSEC advisories are cleared** (D258, #4). `libsqlite3-sys 0.38.1`
+  carried CVE-2026-119375 (RUSTSEC-2026-0459), in the SQLite build every user's
+  binary links; `pulldown-cmark 0.13.5` carried RUSTSEC-2026-0433 (quadratic
+  parsing with `ENABLE_WIKILINKS`, which tasqx does not enable). `deny.toml`
+  gained no exception — the policy document names "the gate is red" as an
+  unacceptable reason for one.
 - **A store merge no longer folds two projects' files that share a bare legacy
   source** (D257, #5321). A pre-D203 import keyed `README.md` with no repo name,
   so `store.import` (and `tasqx sync`) folded one repo's README onto another's.
