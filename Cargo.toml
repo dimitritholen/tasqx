@@ -18,17 +18,26 @@ members = ["crates/tasqx-core", "crates/tasqx-cli", "crates/tasqx-remote-dir", "
 version = "0.16.0"
 edition = "2021"
 # MEASURED, not read off `cargo metadata`. `cargo check --workspace
-# --all-targets --locked` was run on 1.80, 1.87, 1.88, 1.91, 1.93, 1.94 and
-# 1.95; every toolchain below 1.95 fails. Three constraints stack, and only the
-# middle one is visible to a scan of declared `rust-version` fields:
+# --all-targets --locked` was last run on 1.94 and 1.95 — 1.94 fails, 1.95
+# passes — and before that on 1.80, 1.87, 1.88, 1.91 and 1.93. Three constraints
+# stack, and only the middle one is visible to a scan of declared `rust-version`
+# fields:
 #   1.82  `Option::is_none_or` (crates/tasqx-cli/src/render.rs).
 #   1.88  ratatui 0.30 plus its darling / instability / time build-dependencies.
-#   1.95  libsqlite3-sys 0.38's BUILD SCRIPT expands `cfg_select!`, stabilised
-#         in 1.95 — and that crate declares no `rust-version`, so the failure is
-#         a hard compile error with no cargo-side diagnostic pointing at the
-#         floor. rusqlite's `bundled` feature is not optional here (the shipped
-#         binary must not dynamically link SQLite), so no configuration avoids
-#         it.
+#   1.95  `AtomicUsize::try_update` (crates/tasqx-core/src/daemon.rs). This one is
+#         in this crate's OWN source, so nothing in the dependency graph
+#         announces it and no scan of `rust-version` fields can see it — the
+#         failure is `E0658: use of unstable library feature
+#         `atomic_try_update`` and nothing else.
+#
+# D258 corrected the 1.95 entry rather than moving the number. It used to name
+# libsqlite3-sys 0.38's build script expanding the std `cfg_select!` stabilised in
+# 1.95; that script defines its OWN `macro_rules! cfg_select`, commented "Just to
+# keep MSRV low", so it never required 1.95, and the 1.94 failure blamed on it was
+# `try_update` above. 0.39.1 (the version that carries the SQLite fix) still
+# carries that hand-rolled macro and declares `rust-version = 1.88`; rusqlite
+# 0.41 declares 1.89. Both sit under this floor, which is why the bump in D258
+# moved no toolchain.
 # RE-MEASURE after any lockfile bump; do not reason about this number.
 #
 # Both members now say `rust-version.workspace = true`. That is load-bearing,
