@@ -2,7 +2,7 @@ name: Release
 
 # Prebuilt binaries are the difference between "install Rust, clone, build" and
 # "download, unpack, run" — for a task manager the first one loses most of the
-# audience at hello. A tag push builds all four targets, runs the full suite on
+# audience at hello. A tag push builds all five targets, runs the full suite on
 # every platform that can run it natively, and attaches the archives to a
 # GitHub release. No tag, no release: workflow_dispatch builds the same
 # artifacts for inspection but publishes nothing, so the pipeline can be
@@ -68,12 +68,32 @@ jobs:
             test: true
           # Cross-compiled on the arm64 runner; the binary is not executed
           # there, so this entry is build-only. Intel Macs get a binary that
-          # compiled but whose tests ran only on the other three targets —
+          # compiled but whose tests ran only on the other four targets —
           # stated here rather than hidden, the same honesty rule as the
           # "macOS is built but not in the CI test matrix" line in the README.
           - os: macos-latest
             target: x86_64-apple-darwin
             test: false
+          # Added on a REPORTER, not on anticipation (D259). The reporter is the
+          # M5Stack CardputerZero — a Raspberry Pi CM0 handheld (4x Cortex-A53
+          # @1 GHz, 512 MB, ARMv8-A) that boots Debian Trixie from microSD and
+          # installs Debian's own arm64 packages, so the triple is gnu and not
+          # armhf; `uname -m` there says aarch64. D61 recorded this target as
+          # "an audience nobody has reported yet", and the entry in DESIGN.md
+          # §12 says what changed.
+          #
+          # GitHub's hosted arm64 runner, not a cross build: rusqlite's
+          # `bundled` feature compiles sqlite3.c and tasqx-remote-r2 links
+          # `ring`, so from x86_64 it would need aarch64-linux-gnu-gcc and a
+          # linker config. Native also means `test: true` is honest — the suite
+          # runs here, which the cross-compiled Intel-Mac entry cannot do.
+          #
+          # glibc floor: ubuntu-24.04 carries 2.39 and Trixie 2.41, so an
+          # archive built here runs there. A bookworm device (2.36) would not;
+          # that is D61's musl question, still answered by "when it is reported".
+          - os: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+            test: true
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable

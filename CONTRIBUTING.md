@@ -182,7 +182,8 @@ Releases are cut from `main` by pushing a tag:
 
 The tag runs `.github/workflows/release.yml`:
 - It checks that the tag matches `Cargo.toml`.
-- It tests and builds four targets.
+- It tests and builds five targets — the suite runs on every one it can run
+  natively, which is all of them but the cross-compiled Intel Mac (D259).
 - It publishes the GitHub release, with that version's `CHANGELOG.md` section
   above the generated notes.
 - It opens pull requests that bump the Homebrew tap and the Scoop bucket. Each

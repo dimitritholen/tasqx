@@ -836,7 +836,7 @@ fn the_changelog_has_a_section_for_the_workspace_version() {
 /// Every archive the Homebrew formula points at is one the release workflow
 /// actually builds.
 ///
-/// `scripts/brew-formula.sh` names three targets and `release.yml` builds four;
+/// `scripts/brew-formula.sh` names three targets and `release.yml` builds five;
 /// nothing connected the two lists. A target renamed or dropped in the matrix
 /// leaves the formula rendering URLs to files the release never published, and
 /// the formula is generated per tag precisely so that it is never checked in
