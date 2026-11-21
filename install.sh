@@ -64,10 +64,10 @@ Environment:
 EOF
 }
 
-# The complete mapping, and nothing else is mapped. tasqx publishes four
-# archives (.github/workflows/release.yml is the matrix); three of them are
-# reachable from a POSIX shell, the fourth being x86_64-pc-windows-msvc, which
-# install.ps1 serves. Anything absent here — ARM Linux, musl, the BSDs — has no
+# The complete mapping, and nothing else is mapped. tasqx publishes five
+# archives (.github/workflows/release.yml is the matrix); four of them are
+# reachable from a POSIX shell, the fifth being x86_64-pc-windows-msvc, which
+# install.ps1 serves. Anything absent here — musl, the BSDs, 32-bit ARM — has no
 # build to point at, and a guessed triple would 404 with no explanation.
 #
 # Sets uname_s, uname_m and target.
@@ -88,11 +88,16 @@ detect_target() {
     Darwin/arm64) target="aarch64-apple-darwin" ;;
     Darwin/x86_64) target="x86_64-apple-darwin" ;;
     Linux/x86_64) target="x86_64-unknown-linux-gnu" ;;
+    # 64-bit ARM Linux (D259). `aarch64` is what Debian, Ubuntu and Raspberry Pi
+    # OS print there, including the M5Stack CardputerZero that reported the
+    # need. 32-bit ARM (`armv7l`) is deliberately absent: the matrix has no
+    # armhf build, and `armv7l` must not be mapped to the arm64 archive.
+    Linux/aarch64) target="aarch64-unknown-linux-gnu" ;;
     *)
         # Names the machine's own uname values, not the triple that failed to
         # build: the reader has to recognise their own box in this line.
         err "tasqx has no prebuilt binary for ${uname_s}/${uname_m}." \
-            "Prebuilt targets: x86_64-linux, aarch64-macos, x86_64-macos, x86_64-windows." \
+            "Prebuilt targets: x86_64-linux, aarch64-linux, aarch64-macos, x86_64-macos, x86_64-windows." \
             "Build from source instead: cargo install --git https://github.com/dimitritholen/tasqx tasqx-cli"
         return 2
         ;;

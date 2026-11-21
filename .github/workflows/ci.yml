@@ -424,7 +424,7 @@ jobs:
   # before anything else can.
   #
   # THREE RUNNERS, for the reason the test matrix above records at length rather
-  # than a new one. `release.yml` ships four targets, two of them Darwin, and the
+  # than a new one. `release.yml` ships five targets, two of them Darwin, and the
   # v0.2.0 release exposed a macOS-only daemon bug by shipping it — "the most
   # expensive place to find anything". An installer is per-platform by
   # construction: the Unix half reads a triple out of `uname` and unpacks a

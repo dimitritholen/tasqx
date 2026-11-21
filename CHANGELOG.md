@@ -25,6 +25,13 @@ bump for tasqx-core.
   down, `tasqx note <id>` prints it, and `tasqx note <id>
   edit|archive|unarchive|rm|promote task|memory` changes it. `tasqx notes` lists
   them (`--links`, `--archived`, `--all`, `--search`, `--project`).
+- **Prebuilt aarch64 Linux archives** (D259, #3). A tag now builds
+  `aarch64-unknown-linux-gnu` on GitHub's own arm64 runner, with the suite
+  running there, and `install.sh`'s `Linux/aarch64` arm serves it — so the
+  one-liner works on 64-bit ARM Linux, including the M5Stack CardputerZero that
+  reported the need. 32-bit ARM (`armv7l`) is still refused by name, and musl
+  stays unbuilt until it is reported (D61). The release also gains no ARM test
+  job on pull requests: the suite runs on that runner once per tag.
 
 ### Changed
 
